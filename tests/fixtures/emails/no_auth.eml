@@ -1,0 +1,10 @@
+From: unknown@mystery-server.net
+To: recipient@example.com
+Subject: Message with no authentication headers
+Date: Sun, 14 Jan 2024 23:00:00 +0000
+Message-ID: <no-auth-001@mystery-server.net>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+This email has no DKIM, SPF, or DMARC authentication headers at all.
+It arrived from an unknown server with no verification.

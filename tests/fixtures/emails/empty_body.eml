@@ -1,0 +1,9 @@
+From: sender@example.com
+To: recipient@example.com
+Subject: (no content)
+Date: Mon, 15 Jan 2024 12:00:00 +0000
+Message-ID: <empty-body-001@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Authentication-Results: mx.example.com; dkim=pass; spf=pass; dmarc=pass
+

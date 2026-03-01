@@ -1,0 +1,19 @@
+From: spoofed@bigbank.com
+To: victim@example.com
+Subject: Your account needs attention
+Date: Tue, 16 Jan 2024 03:00:00 +0000
+Message-ID: <dkim-fail-001@bigbank.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+DKIM-Signature: v=1; a=rsa-sha256; d=bigbank.com; s=default; b=INVALID
+Authentication-Results: mx.example.com; dkim=fail header.d=bigbank.com;
+    spf=fail smtp.mailfrom=spoofed@bigbank.com;
+    dmarc=fail header.from=bigbank.com
+
+Dear Customer,
+
+Your bank account requires immediate attention. Please log in at
+http://totally-not-bigbank.com/verify to confirm your identity.
+
+Thank you,
+BigBank Security

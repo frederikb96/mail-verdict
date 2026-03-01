@@ -1,0 +1,65 @@
+# MailVerdict Default Configuration
+#
+# This file contains all default values. To override:
+# - Place a custom mail-verdict.yaml at ~/.config/mail-verdict/mail-verdict.yaml
+# - Set environment variables: MAIL_VERDICT_<SECTION>_<KEY> (e.g., MAIL_VERDICT_SERVER_PORT)
+#
+# Loading order: env vars > mail-verdict.yaml > config.yaml (this file)
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  log_level: INFO
+  cors_origins:
+    - http://localhost:5173
+
+accounts: []
+
+database:
+  # Override via MAIL_VERDICT_DATABASE_URL env var or mail-verdict.yaml
+  url: ""
+  pool_size: 10
+  max_overflow: 5
+
+qdrant:
+  host: localhost
+  port: 6333
+  collection_name: mail_embeddings
+
+ai:
+  provider: openai
+  model: gpt-4o-mini
+  embedding_model: text-embedding-3-small
+  embedding_dimensions: 1536
+
+spam:
+  enabled: true
+  excerpt_length: 300
+  neighbor_count: 3
+  auto_mark_read: true
+  system_prompt: |
+    You are a spam analyst. Analyze the email and similar past emails.
+    Consider content, sender, authentication signals.
+    If DKIM/SPF missing or failed, that is suspicious.
+    Phishing is spam. Newsletters with unsubscribe are NOT spam.
+    When unsure, say not-spam. Return JSON: {verdict: 'spam' or 'not-spam'}
+
+sync:
+  poll_interval_seconds: 300
+  idle_enabled: true
+  idle_restart_seconds: 1500
+  lookback_days: 180
+  auto_detect_folders: true
+
+retry:
+  max_retries: 3
+  base_delay_seconds: 1.0
+  max_delay_seconds: 8.0
+  exponential_base: 2.0
+
+mcp:
+  enabled: true
+  port: 8766
+  transport: streamable-http
+
+rules: []

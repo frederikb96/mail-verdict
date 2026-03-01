@@ -1,0 +1,13 @@
+From: =?UTF-8?B?5bGx55Sw5aSq6YOO?= <yamada@example.jp>
+To: user@example.com
+Subject: =?UTF-8?B?44GK55+l44KJ44Gb?=
+Date: Mon, 15 Jan 2024 07:00:00 +0900
+Message-ID: <unicode-subject-001@example.jp>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+Authentication-Results: mx.example.com; dkim=pass; spf=pass; dmarc=pass
+
+44GK55+l44KJ44Gb44Gn44GZ44CC
+
+5LuK6YCx44Gu44Of44O844OG44Kj44Oz44Kw44GvMeaZgjHml6XjgavlpInmm7Tjgavjgarjgorjgb7jgZfjgZ/jgII=

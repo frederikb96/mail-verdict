@@ -1,0 +1,19 @@
+{
+	"/": [
+		"src/routes/+layout.ts",
+		"src/routes/+layout.ts"
+	],
+	"/mail": [
+		"src/routes/+layout.ts"
+	],
+	"/mail/[id]": [
+		"src/routes/mail/[id]/+page.ts",
+		"src/routes/+layout.ts"
+	],
+	"/search": [
+		"src/routes/+layout.ts"
+	],
+	"/settings": [
+		"src/routes/+layout.ts"
+	]
+}

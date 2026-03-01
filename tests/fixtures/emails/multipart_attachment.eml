@@ -1,0 +1,28 @@
+From: colleague@company.com
+To: team@company.com
+Subject: Q4 Report Attached
+Date: Fri, 19 Jan 2024 16:00:00 +0000
+Message-ID: <attachment-001@company.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundary-attachment-test"
+Authentication-Results: mx.example.com; dkim=pass; spf=pass; dmarc=pass
+
+--boundary-attachment-test
+Content-Type: text/plain; charset=utf-8
+
+Hi team,
+
+Please find the Q4 report attached. Let me know if you have questions.
+
+Regards,
+Colleague
+
+--boundary-attachment-test
+Content-Type: application/pdf; name="q4-report.pdf"
+Content-Disposition: attachment; filename="q4-report.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwovUGFnZXMgMiAwIFIKPj4KZW5k
+b2JqCg==
+
+--boundary-attachment-test--

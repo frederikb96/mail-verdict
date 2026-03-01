@@ -1,0 +1,22 @@
+From: service@paypa1-security.com
+To: user@example.com
+Subject: Your PayPal account is limited
+Date: Tue, 16 Jan 2024 16:00:00 +0000
+Message-ID: <phish-paypal-001@paypa1-security.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Authentication-Results: mx.example.com; dkim=fail; spf=softfail; dmarc=fail
+
+Dear PayPal Customer,
+
+We noticed suspicious login attempts on your account from an unrecognized device.
+
+Your account access has been limited. To restore full access:
+
+1. Click here: http://paypa1-security.com/restore
+2. Enter your email and password
+3. Confirm your credit card details
+
+If you don't complete verification within 48 hours, your account will be closed.
+
+PayPal Security Team

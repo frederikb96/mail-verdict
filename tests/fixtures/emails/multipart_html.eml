@@ -1,0 +1,28 @@
+From: marketing@store.example.com
+To: customer@example.com
+Subject: New arrivals in store!
+Date: Sat, 20 Jan 2024 10:00:00 +0000
+Message-ID: <multipart-html-001@store.example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="boundary-html-test"
+List-Unsubscribe: <mailto:unsub@store.example.com>
+Authentication-Results: mx.example.com; dkim=pass; spf=pass; dmarc=pass
+
+--boundary-html-test
+Content-Type: text/plain; charset=utf-8
+
+Check out our new arrivals! Visit store.example.com for the latest deals.
+
+--boundary-html-test
+Content-Type: text/html; charset=utf-8
+
+<html>
+<body>
+<h1>New Arrivals!</h1>
+<p>Check out our latest products at <a href="https://store.example.com">our store</a>.</p>
+<p>Use code SAVE20 for 20% off your first order.</p>
+<p><small><a href="mailto:unsub@store.example.com">Unsubscribe</a></small></p>
+</body>
+</html>
+
+--boundary-html-test--

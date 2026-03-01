@@ -1,0 +1,14 @@
+From: verified@legitimate.com
+To: recipient@example.com
+Subject: Verified sender with DKIM pass
+Date: Thu, 18 Jan 2024 12:00:00 +0000
+Message-ID: <dkim-pass-001@legitimate.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+DKIM-Signature: v=1; a=rsa-sha256; d=legitimate.com; s=default; b=abc123fake
+Authentication-Results: mx.example.com; dkim=pass header.d=legitimate.com;
+    spf=pass smtp.mailfrom=verified@legitimate.com;
+    dmarc=pass header.from=legitimate.com
+
+This email has valid DKIM, SPF, and DMARC authentication.
+It should be treated as a legitimate message from a verified sender.

@@ -1,0 +1,27 @@
+From: lottery-winner@europrize.co
+To: winner@example.com
+Subject: Congratulations! You Won EUR 500,000 in EuroPrize Lottery!
+Date: Thu, 18 Jan 2024 11:00:00 +0000
+Message-ID: <spam-lottery-001@europrize.co>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Authentication-Results: mx.example.com; dkim=none; spf=fail; dmarc=fail
+
+EUROPRIZE INTERNATIONAL LOTTERY
+
+WINNING NOTIFICATION
+
+Dear Winner,
+
+Your email was selected in our annual draw. You have won EUR 500,000.00!
+
+To claim your prize, send the following to our claims agent:
+- Copy of passport
+- Bank details for wire transfer
+- Processing fee of EUR 250
+
+Contact: claims@europrize.co
+Reference: EP-2024-WIN-78432
+
+Congratulations!
+The EuroPrize Team

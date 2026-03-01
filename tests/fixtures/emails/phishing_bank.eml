@@ -1,0 +1,25 @@
+From: security@bankofamerica-verify.com
+To: customer@example.com
+Subject: [URGENT] Your Account Has Been Suspended - Verify Now
+Date: Wed, 17 Jan 2024 09:00:00 +0000
+Message-ID: <phish-bank-001@bankofamerica-verify.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+Authentication-Results: mx.example.com; dkim=fail; spf=fail; dmarc=fail
+
+<html>
+<body>
+<p>Dear Valued Customer,</p>
+
+<p>We have detected unusual activity on your Bank of America account.
+Your account has been temporarily suspended for security reasons.</p>
+
+<p>Please verify your identity immediately by clicking the link below:</p>
+
+<p><a href="http://bankofamerica-verify.com/login">Verify Your Account Now</a></p>
+
+<p>If you do not verify within 24 hours, your account will be permanently closed.</p>
+
+<p>Bank of America Security Team</p>
+</body>
+</html>

@@ -1,0 +1,58 @@
+name: mail-verdict-test
+
+services:
+  stalwart:
+    image: stalwartlabs/mail-server:latest
+    container_name: mail-verdict-stalwart-test
+    ports:
+      - "1025:25"
+      - "1143:143"
+      - "1993:993"
+      - "8443:443"
+      - "8880:8080"
+    environment:
+      - STALWART_ADMIN_USER=admin
+      - STALWART_ADMIN_SECRET=testadmin123
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: "no"
+
+  postgres:
+    image: postgres:16
+    container_name: mail-verdict-postgres-test
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: mail_verdict_test
+      POSTGRES_USER: mail_verdict_test
+      POSTGRES_PASSWORD: mail_verdict_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mail_verdict_test -d mail_verdict_test"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    tmpfs:
+      - /var/lib/postgresql/data
+    restart: "no"
+
+  qdrant:
+    image: qdrant/qdrant:v1.16.3
+    container_name: mail-verdict-qdrant-test
+    ports:
+      - "6334:6333"
+    environment:
+      - QDRANT__LOG_LEVEL=WARN
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    tmpfs:
+      - /qdrant/storage
+    restart: "no"

@@ -1,0 +1,24 @@
+From: orders@shop.example.com
+To: customer@example.com
+Subject: Order Confirmation #12345
+Date: Wed, 17 Jan 2024 14:30:00 +0000
+Message-ID: <ham-receipt-001@shop.example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Authentication-Results: mx.example.com; dkim=pass; spf=pass; dmarc=pass
+
+Thank you for your order!
+
+Order #12345
+Date: January 17, 2024
+
+Items:
+- USB-C Cable (2-pack) - $12.99
+- Wireless Mouse - $29.99
+
+Subtotal: $42.98
+Shipping: Free
+Total: $42.98
+
+Your order will ship within 2 business days.
+Track your order at: https://shop.example.com/track/12345
