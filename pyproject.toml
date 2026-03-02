@@ -39,10 +39,13 @@ packages = ["src/mail_verdict"]
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 testpaths = ["tests"]
+norecursedirs = ["tests/e2e", ".archive"]
 markers = [
     "unit: Unit tests (no external services)",
     "integration: Integration tests (require container services)",
-    "e2e: End-to-end tests (full stack)",
+    "e2e: End-to-end tests (full stack with container lifecycle)",
+    "slow: Tests that take >10s",
+    "llm: Tests requiring LLM API access",
 ]
 
 [tool.ruff]
