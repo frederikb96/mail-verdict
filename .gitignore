@@ -21,6 +21,12 @@ build/
 # Claude
 .claude/
 
+# E2E test results
+tests/e2e/results/*.yaml
+
+# Archive
+.archive/
+
 # OS
 .DS_Store
 Thumbs.db
