@@ -2,21 +2,12 @@
 # Allows plain-text IMAP/SMTP auth (testing only, never for production)
 
 [server.listener.smtp]
-bind = "[::]:25"
-protocol = "smtp"
-
-[server.listener.submission]
-bind = "[::]:587"
+bind = "[::]:2525"
 protocol = "smtp"
 
 [server.listener.imap]
-bind = "[::]:143"
+bind = "[::]:1143"
 protocol = "imap"
-
-[server.listener.imaptls]
-bind = "[::]:993"
-protocol = "imap"
-tls.implicit = true
 
 [server.listener.http]
 protocol = "http"
@@ -46,6 +37,14 @@ prefix = "stalwart.log"
 rotate = "daily"
 ansi = false
 enable = true
+
+[session.auth]
+mechanisms = "[plain, login]"
+allow-plain-text = true
+
+[imap.auth]
+mechanisms = "[plain, login]"
+allow-plain-text = true
 
 [authentication]
 require-tls = false

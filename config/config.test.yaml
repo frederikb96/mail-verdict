@@ -12,7 +12,7 @@ server:
 accounts:
   - name: alice-test
     host: stalwart
-    port: 993
+    port: 1143
     username: alice@test.local
     password: testpass123
     ssl_verify: false
@@ -21,7 +21,7 @@ accounts:
     idle_folders:
       - INBOX
     smtp_host: stalwart
-    smtp_port: 25
+    smtp_port: 2525
 
 database:
   url: postgresql+asyncpg://testuser:testpass@postgres:5432/mail_verdict_test
