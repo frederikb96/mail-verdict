@@ -27,7 +27,12 @@ COPY pyproject.toml README.md ./
 RUN mkdir -p src/mail_verdict && touch src/mail_verdict/__init__.py
 RUN uv pip install --system --no-cache-dir -e ".[dev]"
 
-HEALTHCHECK --interval=10s --timeout=5s --retries=3 --start-period=15s \
+# Make site-packages writable for uid 1000 (userns_mode: keep-id compatibility)
+RUN SITE_PKG=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib'))") && \
+    chmod -R a+rw "$SITE_PKG/_mail_verdict.pth" "$SITE_PKG/mail_verdict.egg-info" 2>/dev/null || true && \
+    chown -R 1000:1000 /app
+
+HEALTHCHECK --interval=10s --timeout=5s --retries=20 --start-period=30s \
     CMD curl -sf http://localhost:8080/api/health || exit 1
 
 COPY docker/entrypoint-dev.sh /entrypoint.sh

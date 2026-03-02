@@ -336,10 +336,9 @@ class SyncManager:
             return
 
         # Parse FETCH responses.
-        # aioimaplib returns mixed types:
-        #   str: '1 FETCH (UID 1 RFC822 {1821}'  (metadata)
-        #   bytearray: message body
-        #   str: ' FLAGS (\\Seen))'  (trailing flags)
+        # aioimaplib returns:
+        #   bytearray: message body (literal data)
+        #   bytes: command response lines (metadata, flags, status)
         current_uid: int | None = None
         current_flags: set[str] = set()
         current_body: bytes | None = None
@@ -348,45 +347,37 @@ class SyncManager:
         flags_re = re.compile(r"FLAGS\s+\(([^)]*)\)")
 
         for line in response.lines:
-            # Handle bytearray (message body)
-            if isinstance(line, (bytearray, bytes)) and current_uid is not None:
-                line_bytes = bytes(line)
-                # Skip short lines that are just flags or status
-                if len(line_bytes) > 50:
-                    current_body = line_bytes
-                else:
-                    # Could be trailing FLAGS in bytes form
-                    text = line_bytes.decode(errors="replace")
-                    flags_match = flags_re.search(text)
-                    if flags_match:
-                        raw_flags = flags_match.group(1)
-                        current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
+            # bytearray = literal message body from IMAP
+            if isinstance(line, bytearray):
+                if current_uid is not None:
+                    current_body = bytes(line)
                 continue
 
-            # Handle str lines (metadata, trailing flags)
-            if isinstance(line, str):
-                uid_match = uid_re.search(line)
-                if uid_match:
-                    # New message — store previous if exists
-                    if current_uid is not None and current_body is not None:
-                        await self._store_parsed_message(
-                            folder, current_uid, current_body, current_flags
-                        )
+            # bytes or str = command response (metadata, trailing flags, status)
+            text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
 
-                    current_uid = int(uid_match.group(1))
-                    current_flags = set()
-                    current_body = None
+            uid_match = uid_re.search(text)
+            if uid_match:
+                # New message — store previous if exists
+                if current_uid is not None and current_body is not None:
+                    await self._store_parsed_message(
+                        folder, current_uid, current_body, current_flags
+                    )
 
-                    flags_match = flags_re.search(line)
-                    if flags_match:
-                        raw_flags = flags_match.group(1)
-                        current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
-                else:
-                    # Trailing FLAGS line
-                    flags_match = flags_re.search(line)
-                    if flags_match and current_uid is not None:
-                        raw_flags = flags_match.group(1)
-                        current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
+                current_uid = int(uid_match.group(1))
+                current_flags = set()
+                current_body = None
+
+                flags_match = flags_re.search(text)
+                if flags_match:
+                    raw_flags = flags_match.group(1)
+                    current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
+            else:
+                # Trailing FLAGS line or status line
+                flags_match = flags_re.search(text)
+                if flags_match and current_uid is not None:
+                    raw_flags = flags_match.group(1)
+                    current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
 
         # Store the last message
         if current_uid is not None and current_body is not None:

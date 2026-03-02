@@ -108,7 +108,16 @@ class MailRepository:
             "dmarc_pass": dmarc_pass,
         }
 
-        update_cols = {
+        # On conflict, only update fields that were explicitly provided.
+        # Boolean flags (is_read, is_flagged, is_deleted) always update.
+        # Other fields only update when non-None to avoid overwriting
+        # existing data during flag-only updates.
+        update_cols: dict[str, Any] = {
+            "is_read": is_read,
+            "is_flagged": is_flagged,
+            "is_deleted": is_deleted,
+        }
+        optional_updates = {
             "subject": subject,
             "from_addr": from_addr,
             "to_addrs": to_addrs,
@@ -120,13 +129,13 @@ class MailRepository:
             "raw_source": raw_source,
             "size_bytes": size_bytes,
             "modseq": modseq,
-            "is_read": is_read,
-            "is_flagged": is_flagged,
-            "is_deleted": is_deleted,
             "dkim_pass": dkim_pass,
             "spf_pass": spf_pass,
             "dmarc_pass": dmarc_pass,
         }
+        for key, val in optional_updates.items():
+            if val is not None:
+                update_cols[key] = val
 
         async with self._db.session() as session:
             stmt = (
