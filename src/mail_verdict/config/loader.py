@@ -174,6 +174,7 @@ class AccountConfig:
     smtp_port: int = 465
     smtp_user: str | None = None
     smtp_password: str | None = None
+    ssl_verify: bool = True
 
 
 @dataclass
@@ -306,6 +307,7 @@ def _parse_account(raw: dict[str, Any], index: int) -> AccountConfig:
         smtp_port=raw.get("smtp_port", 465),
         smtp_user=raw.get("smtp_user"),
         smtp_password=raw.get("smtp_password"),
+        ssl_verify=raw.get("ssl_verify", True),
     )
 
 

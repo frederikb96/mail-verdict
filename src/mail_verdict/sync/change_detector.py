@@ -109,16 +109,28 @@ class ChangeDetector:
         stored_modseq = folder.highestmodseq
         stored_uidvalidity = folder.uidvalidity
 
-        # SELECT the folder with appropriate extensions
+        # SELECT the folder with appropriate extensions.
+        # QRESYNC requires ENABLE QRESYNC before use; fall back if rejected.
+        select_result: SelectResult | None = None
+
         if has_qresync and stored_uidvalidity and stored_modseq:
             select_result = await extended.select_qresync(
                 folder.imap_name,
                 stored_uidvalidity,
                 stored_modseq,
             )
-        elif has_condstore:
+            if not select_result.ok:
+                logger.info(
+                    "QRESYNC SELECT rejected, falling back to CONDSTORE",
+                    extra={"folder": folder.imap_name},
+                )
+                select_result = None
+                has_qresync = False
+
+        if select_result is None and has_condstore:
             select_result = await extended.select_condstore(folder.imap_name)
-        else:
+
+        if select_result is None:
             select_result = await extended.select_plain(folder.imap_name)
 
         if not select_result.ok:
@@ -127,6 +139,10 @@ class ChangeDetector:
                 extra={
                     "folder": folder.imap_name,
                     "account_id": str(account_id),
+                    "raw_lines": [
+                        line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+                        for line in select_result.raw_lines
+                    ],
                 },
             )
             return ChangeSet(), []
@@ -145,7 +161,7 @@ class ChangeDetector:
                 extended, account_id, folder, select_result, uidvalidity_changed=True
             )
 
-        # Tier 1: QRESYNC
+        # Tier 1: QRESYNC (only if QRESYNC SELECT succeeded above)
         if has_qresync and stored_modseq:
             return await self._qresync_diff(extended, account_id, folder, select_result)
 
@@ -358,19 +374,13 @@ class ChangeDetector:
         return changeset, events
 
     async def _fetch_all_uids(self, extended: AsyncIMAPExtended) -> list[int]:
-        """Fetch all UIDs in the currently selected folder."""
-        response = await extended.client.uid("SEARCH", "ALL")
+        """Fetch all UIDs in the currently selected folder via UID FETCH."""
+        response = await extended.client.uid("FETCH", "1:*", "(FLAGS)")
         if response.result != "OK":
             return []
 
-        uids: list[int] = []
-        for line in response.lines:
-            text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
-            for part in text.split():
-                if part.isdigit():
-                    uids.append(int(part))
-
-        return uids
+        uid_flags = _parse_fetch_flags(response.lines)
+        return [uf.uid for uf in uid_flags]
 
     async def _fetch_uid_range(
         self,
@@ -378,19 +388,13 @@ class ChangeDetector:
         start: int,
         end: int,
     ) -> list[int]:
-        """Fetch UIDs in a given range."""
-        response = await extended.client.uid("SEARCH", f"{start}:{end}")
+        """Fetch UIDs in a given range via UID FETCH."""
+        response = await extended.client.uid("FETCH", f"{start}:{end}", "(FLAGS)")
         if response.result != "OK":
             return []
 
-        uids: list[int] = []
-        for line in response.lines:
-            text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
-            for part in text.split():
-                if part.isdigit():
-                    uids.append(int(part))
-
-        return uids
+        uid_flags = _parse_fetch_flags(response.lines)
+        return [uf.uid for uf in uid_flags]
 
     async def _fetch_all_uid_flags(
         self,

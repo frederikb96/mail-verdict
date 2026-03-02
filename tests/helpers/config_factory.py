@@ -7,24 +7,16 @@ via deep merge (Engram pattern).
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from mail_verdict.config.loader import _deep_merge
+
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _DEFAULT_CONFIG = _PROJECT_ROOT / "config" / "config.yaml"
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge override into a copy of base."""
-    merged = dict(base)
-    for key, value in override.items():
-        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 
 _TEST_DEFAULTS: dict[str, Any] = {
@@ -67,8 +59,9 @@ def make_config(**overrides: Any) -> dict[str, Any]:
     with open(_DEFAULT_CONFIG) as f:
         base: dict[str, Any] = yaml.safe_load(f) or {}
 
-    merged = _deep_merge(base, _TEST_DEFAULTS)
+    base = copy.deepcopy(base)
+    _deep_merge(base, _TEST_DEFAULTS)
     if overrides:
-        merged = _deep_merge(merged, overrides)
+        _deep_merge(base, overrides)
 
-    return merged
+    return base

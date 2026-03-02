@@ -277,8 +277,8 @@ def main() -> int:
     # Discover and run tests
     test_files = discover_tests(E2E_TEST_DIR, only=args.only, skip=args.skip)
     if not test_files:
-        print("[runner] No test files found.")
-        return 0
+        print("[runner] ERROR: No test files found — check test directory or --only filter")
+        return 1
 
     print(f"\n[runner] Found {len(test_files)} test file(s)")
     summary.total = len(test_files)

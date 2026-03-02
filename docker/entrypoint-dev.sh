@@ -7,10 +7,11 @@ uv pip install --system --no-deps -e .
 
 # Run database migrations if alembic is configured
 if [ -f alembic.ini ]; then
-    alembic upgrade head
+    alembic upgrade head 2>/dev/null || true
 fi
 
-exec uvicorn mail_verdict.server:create_app \
+# Drop privileges: run the app as appuser (gosu installed in base stage)
+exec gosu appuser uvicorn mail_verdict.server:create_app \
     --host 0.0.0.0 \
     --port 8080 \
     --reload \

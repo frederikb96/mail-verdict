@@ -97,6 +97,7 @@ class ContainerManager:
         """Remove temp data directories used by test containers."""
         for path in TEMP_DATA_DIRS:
             if path.exists():
+                assert str(path).startswith("/tmp/mv-test-"), f"Refusing to delete {path}"
                 logger.info("Removing %s", path)
                 shutil.rmtree(path)
 
@@ -106,7 +107,16 @@ class ContainerManager:
 
         Args:
             build: Whether to rebuild images before starting
+
+        Raises:
+            FileNotFoundError: If .env file is missing (required for OPENAI_API_KEY)
         """
+        env_file = self._compose_file.parent / ".env"
+        if not env_file.exists():
+            raise FileNotFoundError(
+                f"Missing {env_file} — create it with at least OPENAI_API_KEY=sk-..."
+            )
+
         logger.info("Starting containers (project=%s)", self._project_name)
         args = ["up", "-d"]
         if build:

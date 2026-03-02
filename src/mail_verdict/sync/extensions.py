@@ -26,10 +26,17 @@ SPECIAL_USE_FLAGS: dict[str, str] = {
     "\\Trash": "trash",
 }
 
-# Pattern: * LIST (\flags) "separator" "name"
+# Pattern: (\flags) "separator" "name" — aioimaplib strips the "* LIST " prefix
 _LIST_RESPONSE_RE = re.compile(
-    rb'\* LIST \(([^)]*)\) "([^"]*)" (.+)',
+    rb'(?:\* LIST )?\(([^)]*)\) "([^"]*)" (.+)',
 )
+
+
+def _quote_mailbox(name: str) -> str:
+    """IMAP-quote a mailbox name if it contains spaces or special characters."""
+    if " " in name or '"' in name:
+        return f'"{name}"'
+    return name
 
 
 @dataclass
@@ -199,8 +206,13 @@ class AsyncIMAPExtended:
         Args:
             mailbox: Mailbox to select
         """
-        response = await self._raw_command("SELECT", mailbox, "(CONDSTORE)")
-        return _parse_select_response(response)
+        response = await self._raw_command(
+            "SELECT", _quote_mailbox(mailbox), "(CONDSTORE)"
+        )
+        result = _parse_select_response(response)
+        if result.ok:
+            self._client.protocol.state = "SELECTED"
+        return result
 
     async def select_qresync(
         self,
@@ -226,8 +238,11 @@ class AsyncIMAPExtended:
             qresync_parts.append(known_uids)
         qresync_param = f"(QRESYNC ({' '.join(qresync_parts)}))"
 
-        response = await self._raw_command("SELECT", mailbox, qresync_param)
-        return _parse_select_response(response)
+        response = await self._raw_command("SELECT", _quote_mailbox(mailbox), qresync_param)
+        result = _parse_select_response(response)
+        if result.ok:
+            self._client.protocol.state = "SELECTED"
+        return result
 
     async def select_plain(self, mailbox: str = "INBOX") -> SelectResult:
         """
@@ -236,7 +251,7 @@ class AsyncIMAPExtended:
         Args:
             mailbox: Mailbox to select
         """
-        response = await self._client.select(mailbox)
+        response = await self._client.select(_quote_mailbox(mailbox))
         return _parse_select_response(response)
 
     async def list_folders(
@@ -283,6 +298,15 @@ class AsyncIMAPExtended:
             logger.warning("SPECIAL-USE LIST failed, falling back to regular LIST")
 
         return await self.list_folders(reference, pattern)
+
+    async def uid_search(self, *criteria: str) -> Response:
+        """
+        UID SEARCH via raw command (aioimaplib doesn't support UID SEARCH).
+
+        Args:
+            *criteria: IMAP search criteria (e.g., "ALL", "UID 1:5")
+        """
+        return await self._raw_command("UID SEARCH", *criteria)
 
     async def enable_qresync(self) -> bool:
         """

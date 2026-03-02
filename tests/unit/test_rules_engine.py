@@ -12,11 +12,8 @@ from mail_verdict.rules.bus import EventBus
 from mail_verdict.rules.engine import TRIGGER_MAP, RulesEngine, _parse_rules
 from mail_verdict.rules.executor import ActionExecutor, StopProcessing
 from mail_verdict.sync.events import (
-    FlagsChanged,
     MailDeleted,
     MailReceived,
-    MailSpamDetected,
-    MailTrashed,
 )
 
 

@@ -9,7 +9,7 @@ import pytest
 
 from mail_verdict.database.models import SpecialUse
 from mail_verdict.spam.analyst import SpamVerdict
-from mail_verdict.spam.pipeline import VerdictPipeline, _SKIP_FOLDER_TYPES
+from mail_verdict.spam.pipeline import _SKIP_FOLDER_TYPES, VerdictPipeline
 
 
 def _make_config(enabled: bool = True) -> MagicMock:
@@ -85,7 +85,10 @@ class TestVerdictPipeline:
 
         analyst = MagicMock()
         analyst.analyze = AsyncMock(
-            return_value=SpamVerdict(is_spam=verdict_is_spam, raw_response={"verdict": "spam" if verdict_is_spam else "not-spam"})
+            return_value=SpamVerdict(
+                is_spam=verdict_is_spam,
+                raw_response={"verdict": "spam" if verdict_is_spam else "not-spam"},
+            )
         )
 
         verdict_repo = MagicMock()

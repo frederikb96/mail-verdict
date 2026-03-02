@@ -9,7 +9,6 @@ import pytest
 
 from mail_verdict.rules.bus import EventBus, Subscriber
 from mail_verdict.sync.events import (
-    FlagsChanged,
     MailDeleted,
     MailReceived,
     SyncEvent,

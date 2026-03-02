@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
 from mail_verdict.semantic.worker import (
-    EMBED_BATCH_SIZE,
-    EmbedItem,
     EmbeddingWorker,
+    EmbedItem,
     get_embedding_worker,
     init_embedding_worker,
     reset_embedding_worker,

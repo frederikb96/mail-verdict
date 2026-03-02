@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from mail_verdict.sync.parser import (
     ParsedMail,
     _parse_address_list,
-    _parse_auth_results,
     _parse_date,
     parse_message,
 )

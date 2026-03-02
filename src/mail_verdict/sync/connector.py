@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator
 
@@ -103,7 +104,12 @@ class IMAPConnector:
 
         try:
             if use_ssl:
-                client = IMAP4_SSL(host=host, port=port)
+                ssl_ctx: ssl.SSLContext | None = None
+                if not self._account.ssl_verify:
+                    ssl_ctx = ssl.create_default_context()
+                    ssl_ctx.check_hostname = False
+                    ssl_ctx.verify_mode = ssl.CERT_NONE
+                client = IMAP4_SSL(host=host, port=port, ssl_context=ssl_ctx)
             else:
                 client = IMAP4(host=host, port=port)
 
@@ -140,6 +146,9 @@ class IMAPConnector:
                     },
                 )
 
+            if extended.has_capability("QRESYNC"):
+                await extended.enable_qresync()
+
             return extended
 
         except IMAPConnectionError:
@@ -166,6 +175,7 @@ class IMAPConnector:
                 last_error = exc
                 if attempt < self._retry.max_retries:
                     delay = self._retry.get_delay(attempt)
+                    print(f"IMAP connect failed: {exc}", flush=True)
                     logger.warning(
                         "Connection attempt failed, retrying",
                         extra={

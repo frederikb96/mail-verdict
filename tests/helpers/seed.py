@@ -34,6 +34,7 @@ class StalwartSeeder:
     HTTP client for seeding Stalwart via the management API.
 
     Handles domain creation, account provisioning, and health polling.
+    Use as async context manager to share a single httpx client across calls.
     """
 
     def __init__(
@@ -52,6 +53,19 @@ class StalwartSeeder:
         """
         self._base_url = base_url.rstrip("/")
         self._auth = (admin_user, admin_secret)
+        self._client: httpx.AsyncClient | None = None
+
+    async def __aenter__(self) -> StalwartSeeder:
+        """Create shared transport and client."""
+        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+        self._client = httpx.AsyncClient(transport=transport, timeout=10.0)
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        """Close the shared client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
     def _headers(self) -> dict[str, str]:
         """Build auth headers for API requests."""
@@ -61,6 +75,12 @@ class StalwartSeeder:
             "Authorization": f"Basic {encoded}",
             "Content-Type": "application/json",
         }
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Return the shared client, raising if not in context manager."""
+        if self._client is None:
+            raise RuntimeError("StalwartSeeder must be used as async context manager")
+        return self._client
 
     async def wait_ready(self, timeout: int = 30) -> None:
         """
@@ -72,18 +92,17 @@ class StalwartSeeder:
         Raises:
             TimeoutError: If API doesn't respond within timeout
         """
+        client = self._get_client()
         deadline = time.monotonic() + timeout
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        async with httpx.AsyncClient(transport=transport, timeout=5.0) as client:
-            while time.monotonic() < deadline:
-                try:
-                    resp = await client.get(f"{self._base_url}/")
-                    if resp.status_code in (200, 401):
-                        logger.info("Stalwart admin API ready")
-                        return
-                except httpx.ConnectError:
-                    pass
-                await asyncio.sleep(1.0)
+        while time.monotonic() < deadline:
+            try:
+                resp = await client.get(f"{self._base_url}/")
+                if resp.status_code in (200, 401):
+                    logger.info("Stalwart admin API ready")
+                    return
+            except httpx.ConnectError:
+                pass
+            await asyncio.sleep(1.0)
 
         raise TimeoutError(
             f"Stalwart admin API not reachable at {self._base_url} after {timeout}s"
@@ -99,25 +118,24 @@ class StalwartSeeder:
         Returns:
             True if domain was created or already exists
         """
+        client = self._get_client()
         payload: dict[str, Any] = {
             "type": "domain",
             "name": domain,
         }
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        async with httpx.AsyncClient(transport=transport) as client:
-            resp = await client.post(
-                f"{self._base_url}/api/principal",
-                headers=self._headers(),
-                json=payload,
-            )
-            if resp.status_code in (200, 201, 204, 409):
-                logger.info("Domain created: %s", domain)
-                return True
-            logger.warning(
-                "Failed to create domain %s: %d %s",
-                domain, resp.status_code, resp.text,
-            )
-            return False
+        resp = await client.post(
+            f"{self._base_url}/api/principal",
+            headers=self._headers(),
+            json=payload,
+        )
+        if resp.status_code in (200, 201, 204, 409):
+            logger.info("Domain created: %s", domain)
+            return True
+        logger.warning(
+            "Failed to create domain %s: %d %s",
+            domain, resp.status_code, resp.text,
+        )
+        return False
 
     async def create_account(
         self,
@@ -137,6 +155,7 @@ class StalwartSeeder:
         Returns:
             True if account was created or already exists
         """
+        client = self._get_client()
         payload: dict[str, Any] = {
             "type": "individual",
             "name": email,
@@ -146,22 +165,19 @@ class StalwartSeeder:
         if display_name:
             payload["description"] = display_name
 
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        async with httpx.AsyncClient(transport=transport) as client:
-            resp = await client.post(
-                f"{self._base_url}/api/principal",
-                headers=self._headers(),
-                json=payload,
+        resp = await client.post(
+            f"{self._base_url}/api/principal",
+            headers=self._headers(),
+            json=payload,
+        )
+        if resp.status_code not in (200, 201, 204, 409):
+            logger.warning(
+                "Failed to create account %s: %d %s",
+                email, resp.status_code, resp.text,
             )
-            if resp.status_code not in (200, 201, 204, 409):
-                logger.warning(
-                    "Failed to create account %s: %d %s",
-                    email, resp.status_code, resp.text,
-                )
-                return False
+            return False
 
-            logger.info("Account created: %s", email)
-
+        logger.info("Account created: %s", email)
         await self._grant_mail_permissions(email)
         return True
 
@@ -174,6 +190,7 @@ class StalwartSeeder:
         Args:
             username: Account name to update
         """
+        client = self._get_client()
         permissions = [
             "authenticate",
             "email-receive",
@@ -205,34 +222,31 @@ class StalwartSeeder:
         patch_payload = [
             {"action": "set", "field": "enabledPermissions", "value": permissions},
         ]
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        async with httpx.AsyncClient(transport=transport) as client:
-            resp = await client.patch(
-                f"{self._base_url}/api/principal/{username}",
-                headers=self._headers(),
-                json=patch_payload,
+        resp = await client.patch(
+            f"{self._base_url}/api/principal/{username}",
+            headers=self._headers(),
+            json=patch_payload,
+        )
+        if resp.status_code == 200:
+            logger.debug("Permissions granted: %s", username)
+        else:
+            logger.warning(
+                "Failed to grant permissions for %s: %d %s",
+                username, resp.status_code, resp.text,
             )
-            if resp.status_code == 200:
-                logger.debug("Permissions granted: %s", username)
-            else:
-                logger.warning(
-                    "Failed to grant permissions for %s: %d %s",
-                    username, resp.status_code, resp.text,
-                )
 
     async def delete_all(self) -> None:
         """Delete all test accounts and domain for cleanup."""
-        transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
-        async with httpx.AsyncClient(transport=transport) as client:
-            for account in TEST_ACCOUNTS:
-                await client.delete(
-                    f"{self._base_url}/api/principal/{account['email']}",
-                    headers=self._headers(),
-                )
+        client = self._get_client()
+        for account in TEST_ACCOUNTS:
             await client.delete(
-                f"{self._base_url}/api/principal/{DEFAULT_DOMAIN}",
+                f"{self._base_url}/api/principal/{account['email']}",
                 headers=self._headers(),
             )
+        await client.delete(
+            f"{self._base_url}/api/principal/{DEFAULT_DOMAIN}",
+            headers=self._headers(),
+        )
         logger.info("Deleted all test accounts and domain")
 
 
@@ -250,17 +264,18 @@ async def seed_test_environment(
         domain: Test domain to create
 
     Returns:
-        Configured StalwartSeeder instance
+        Configured StalwartSeeder instance (client already closed after seeding)
     """
     seeder = StalwartSeeder(base_url=base_url)
-    await seeder.wait_ready()
-    await seeder.create_domain(domain)
+    async with seeder:
+        await seeder.wait_ready()
+        await seeder.create_domain(domain)
 
-    for account in TEST_ACCOUNTS:
-        await seeder.create_account(
-            account["email"],
-            account["password"],
-            display_name=account["name"],
-        )
+        for account in TEST_ACCOUNTS:
+            await seeder.create_account(
+                account["email"],
+                account["password"],
+                display_name=account["name"],
+            )
 
     return seeder

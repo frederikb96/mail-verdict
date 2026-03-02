@@ -161,6 +161,7 @@ class SyncManager:
                                 "folder": folder.imap_name,
                                 "error": str(exc),
                             },
+                            exc_info=True,
                         )
 
         except Exception as exc:
@@ -334,39 +335,58 @@ class SyncManager:
             )
             return
 
-        # Parse FETCH responses
+        # Parse FETCH responses.
+        # aioimaplib returns mixed types:
+        #   str: '1 FETCH (UID 1 RFC822 {1821}'  (metadata)
+        #   bytearray: message body
+        #   str: ' FLAGS (\\Seen))'  (trailing flags)
         current_uid: int | None = None
         current_flags: set[str] = set()
         current_body: bytes | None = None
 
-        uid_re = re.compile(rb"UID\s+(\d+)")
-        flags_re = re.compile(rb"FLAGS\s+\(([^)]*)\)")
+        uid_re = re.compile(r"UID\s+(\d+)")
+        flags_re = re.compile(r"FLAGS\s+\(([^)]*)\)")
 
         for line in response.lines:
-            if not isinstance(line, bytes):
+            # Handle bytearray (message body)
+            if isinstance(line, (bytearray, bytes)) and current_uid is not None:
+                line_bytes = bytes(line)
+                # Skip short lines that are just flags or status
+                if len(line_bytes) > 50:
+                    current_body = line_bytes
+                else:
+                    # Could be trailing FLAGS in bytes form
+                    text = line_bytes.decode(errors="replace")
+                    flags_match = flags_re.search(text)
+                    if flags_match:
+                        raw_flags = flags_match.group(1)
+                        current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
                 continue
 
-            uid_match = uid_re.search(line)
-            flags_match = flags_re.search(line)
+            # Handle str lines (metadata, trailing flags)
+            if isinstance(line, str):
+                uid_match = uid_re.search(line)
+                if uid_match:
+                    # New message — store previous if exists
+                    if current_uid is not None and current_body is not None:
+                        await self._store_parsed_message(
+                            folder, current_uid, current_body, current_flags
+                        )
 
-            if uid_match:
-                # If we have a previous message, store it
-                if current_uid is not None and current_body is not None:
-                    await self._store_parsed_message(
-                        folder, current_uid, current_body, current_flags
-                    )
+                    current_uid = int(uid_match.group(1))
+                    current_flags = set()
+                    current_body = None
 
-                current_uid = int(uid_match.group(1))
-                current_flags = set()
-                current_body = None
-
-                if flags_match:
-                    raw_flags = flags_match.group(1).decode(errors="replace")
-                    current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
-
-            elif current_uid is not None and len(line) > 100:
-                # Large lines are likely message bodies
-                current_body = line
+                    flags_match = flags_re.search(line)
+                    if flags_match:
+                        raw_flags = flags_match.group(1)
+                        current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
+                else:
+                    # Trailing FLAGS line
+                    flags_match = flags_re.search(line)
+                    if flags_match and current_uid is not None:
+                        raw_flags = flags_match.group(1)
+                        current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
 
         # Store the last message
         if current_uid is not None and current_body is not None:

@@ -11,7 +11,6 @@ import pytest
 from mail_verdict.rules.conditions import MailContext
 from mail_verdict.rules.executor import (
     ActionExecutor,
-    ActionResult,
     StopProcessing,
     _render_template,
 )

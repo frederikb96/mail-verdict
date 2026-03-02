@@ -9,8 +9,6 @@ import pytest
 from mail_verdict.sync.extensions import (
     SPECIAL_USE_FLAGS,
     AsyncIMAPExtended,
-    FolderInfo,
-    SelectResult,
     _parse_list_response,
     _parse_select_response,
     _quote_mailbox,

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from mail_verdict.sync.change_detector import (
     UIDFlags,
     _parse_fetch_flags,
