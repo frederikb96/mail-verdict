@@ -67,4 +67,12 @@ mcp:
   port: 8766
   transport: streamable-http
 
-rules: []
+rules:
+  - name: tag-newsletter
+    trigger: mail.received
+    enrichment:
+      enabled: false
+    conditions:
+      sender_match: newsletter@test.local
+    actions:
+      - tag: newsletter

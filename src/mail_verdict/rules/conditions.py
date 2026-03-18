@@ -23,6 +23,7 @@ class MailContext:
     Aggregates mail data from DB model, IMAP state, and enrichment results.
     """
 
+    mail_id: Any | None = None
     subject: str = ""
     body_text: str = ""
     body_html: str = ""

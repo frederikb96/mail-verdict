@@ -267,7 +267,7 @@ class RulesEngine:
 
         # Step 3: Execute actions
         log.triggered = True
-        mail_id = self._extract_mail_id(event)
+        mail_id = ctx.mail_id or self._extract_mail_id(event)
         uid = self._extract_uid(event)
 
         for action in rule.actions:
@@ -363,6 +363,7 @@ class RulesEngine:
                     cc_list = mail.cc_addrs
 
                 return MailContext(
+                    mail_id=mail.id,
                     subject=mail.subject or "",
                     body_text=mail.body_text or "",
                     body_html=mail.body_html or "",

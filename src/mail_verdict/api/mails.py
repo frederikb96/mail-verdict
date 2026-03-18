@@ -88,18 +88,41 @@ async def get_mail(
     attachment_repo = get_attachment_repo()
     attachments = await attachment_repo.get_by_mail_id(mail_id)
 
-    detail = MailDetail.model_validate(mail)
-    detail.tags = [TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags]
-    detail.attachments = [
-        AttachmentSummary(
-            id=a.id,
-            filename=a.filename,
-            content_type=a.content_type,
-            size_bytes=a.size_bytes,
-        )
-        for a in attachments
-    ]
-    return detail
+    return MailDetail(
+        id=mail.id,
+        account_id=mail.account_id,
+        folder_id=mail.folder_id,
+        uid=mail.uid,
+        message_id=mail.message_id,
+        subject=mail.subject,
+        from_addr=mail.from_addr,
+        to_addrs=mail.to_addrs,
+        cc_addrs=mail.cc_addrs,
+        bcc_addrs=mail.bcc_addrs,
+        body_text=mail.body_text,
+        body_html=mail.body_html,
+        raw_headers=mail.raw_headers,
+        received_at=mail.received_at,
+        size_bytes=mail.size_bytes,
+        is_read=mail.is_read,
+        is_flagged=mail.is_flagged,
+        is_deleted=mail.is_deleted,
+        dkim_pass=mail.dkim_pass,
+        spf_pass=mail.spf_pass,
+        dmarc_pass=mail.dmarc_pass,
+        fetched_at=mail.fetched_at,
+        created_at=mail.created_at,
+        tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
+        attachments=[
+            AttachmentSummary(
+                id=a.id,
+                filename=a.filename,
+                content_type=a.content_type,
+                size_bytes=a.size_bytes,
+            )
+            for a in attachments
+        ],
+    )
 
 
 @router.post("/{mail_id}/action", response_model=MailActionResponse)
