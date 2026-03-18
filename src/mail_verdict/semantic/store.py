@@ -6,7 +6,7 @@ Used by spam detection to find similar previously-classified mails.
 
 Key features:
 - Async Qdrant client (shared from server lifespan)
-- OpenAI text-embedding-3-small embeddings
+- OpenAI embeddings (model configured via config.yaml)
 - Smart upsert: skip re-embedding if content unchanged
 - Metadata filtering by account_id, is_spam, from_domain, date range
 - Graceful degradation: return empty results on Qdrant/OpenAI failure

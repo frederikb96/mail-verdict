@@ -106,7 +106,7 @@ def mock_openai() -> MagicMock:
     client = MagicMock()
 
     embedding_item = MagicMock()
-    embedding_item.embedding = [0.1] * 1536
+    embedding_item.embedding = [0.1] * 3072
     embedding_response = MagicMock()
     embedding_response.data = [embedding_item]
     client.embeddings = MagicMock()

@@ -81,7 +81,7 @@ class EnrichmentRunner:
 
         Args:
             ai_provider: AI provider name (e.g. "openai")
-            ai_model: Model identifier (e.g. "gpt-4o-mini")
+            ai_model: Model identifier from config
             max_retries: Retries on malformed LLM output
             excerpt_length: Max chars of body to include in prompt
             openai_client: Shared AsyncOpenAI client (creates one if not provided)

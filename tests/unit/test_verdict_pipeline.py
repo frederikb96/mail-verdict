@@ -19,7 +19,7 @@ def _make_config(enabled: bool = True) -> MagicMock:
     config.spam.excerpt_length = 300
     config.spam.neighbor_count = 3
     config.spam.auto_mark_read = True
-    config.ai.model = "gpt-4o-mini"
+    config.ai.model = "test-model"
     return config
 
 

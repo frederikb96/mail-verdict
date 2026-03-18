@@ -150,9 +150,9 @@ class TestOpenAISpamAnalyst:
         """Create an analyst with mock dependencies."""
         ai_config = AIConfig(
             provider="openai",
-            model="gpt-4o-mini",
-            embedding_model="e",
-            embedding_dimensions=1536,
+            model="test-model",
+            embedding_model="test-embedding-model",
+            embedding_dimensions=3072,
         )
         spam_config = SpamConfig(
             enabled=True,

@@ -28,9 +28,9 @@ qdrant:
 
 ai:
   provider: openai
-  model: gpt-4o-mini
-  embedding_model: text-embedding-3-small
-  embedding_dimensions: 1536
+  model: gpt-5-mini
+  embedding_model: text-embedding-3-large
+  embedding_dimensions: 3072
 
 spam:
   enabled: true
