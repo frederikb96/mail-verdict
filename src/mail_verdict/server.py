@@ -160,12 +160,17 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         feedback = SpamFeedbackHandler(store, verdict_repo)
 
         if event_queues:
+            # Use the first account's action propagator for spam MOVE operations
+            first_account_sync = next(iter(_sync_engine._accounts.values()), None)
+            action_propagator = first_account_sync.action_propagator if first_account_sync else None
+
             first_pipeline = VerdictPipeline(
                 config=config,
                 semantic_store=store,
                 analyst=analyst,
                 verdict_repo=verdict_repo,
                 mail_repo=mail_repo,
+                action_propagator=action_propagator,
                 folder_repo=folder_repo,
             )
             _spam_processor = SpamEventProcessor(

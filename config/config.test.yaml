@@ -18,6 +18,7 @@ accounts:
     ssl_verify: false
     folders:
       - INBOX
+      - Junk Mail
     idle_folders:
       - INBOX
     smtp_host: stalwart
@@ -53,7 +54,7 @@ sync:
   idle_enabled: false
   idle_restart_seconds: 30
   lookback_days: 1
-  auto_detect_folders: false
+  auto_detect_folders: true
 
 retry:
   max_retries: 2

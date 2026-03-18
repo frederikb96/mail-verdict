@@ -248,13 +248,23 @@ class ActionPropagator:
         conn: AsyncIMAPExtended,
         action: IMAPAction,
     ) -> bool:
-        """Execute IMAP MOVE."""
+        """Execute IMAP UID MOVE, falling back to UID COPY + STORE + EXPUNGE."""
         if not action.target_folder:
             return False
 
-        response = await conn.client.move(action.uid_set, action.target_folder)
-        ok: bool = response.result == "OK"
-        if not ok:
+        target = self._quote_folder(action.target_folder)
+
+        # Try UID MOVE first (RFC 6851)
+        try:
+            response = await conn.client.uid("MOVE", action.uid_set, target)
+            if response.result == "OK":
+                return True
+        except Exception:
+            pass
+
+        # Fallback: UID COPY + flag \Deleted + EXPUNGE
+        response = await conn.client.uid("COPY", action.uid_set, target)
+        if response.result != "OK":
             logger.warning(
                 "MOVE failed",
                 extra={
@@ -263,7 +273,18 @@ class ActionPropagator:
                     "result": response.result,
                 },
             )
-        return ok
+            return False
+
+        await conn.client.uid("STORE", action.uid_set, "+FLAGS", "(\\Deleted)")
+        await conn.client.expunge()
+        return True
+
+    @staticmethod
+    def _quote_folder(name: str) -> str:
+        """Quote an IMAP folder name if it contains spaces."""
+        if " " in name and not name.startswith('"'):
+            return f'"{name}"'
+        return name
 
     async def _do_copy(
         self,

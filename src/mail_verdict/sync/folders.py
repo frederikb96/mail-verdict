@@ -48,6 +48,7 @@ _NAME_FALLBACK: dict[str, str] = {
     "bin": "trash",
     # junk/spam
     "junk": "junk",
+    "junk mail": "junk",
     "junk e-mail": "junk",
     "spam": "junk",
     "bulk mail": "junk",

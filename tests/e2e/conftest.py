@@ -14,12 +14,10 @@ import email.utils
 import imaplib
 import smtplib
 import uuid
-from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from typing import Any
 
 import httpx
-import pytest
 import pytest_asyncio
 
 from tests.helpers.seed import StalwartSeeder
@@ -103,6 +101,13 @@ def send_email(
     return msg_id
 
 
+def _imap_quote(folder: str) -> str:
+    """Quote an IMAP folder name if it contains spaces."""
+    if " " in folder and not folder.startswith('"'):
+        return f'"{folder}"'
+    return folder
+
+
 def imap_get_messages(
     user: str = ALICE_EMAIL,
     password: str = ALICE_PASSWORD,
@@ -116,7 +121,7 @@ def imap_get_messages(
     conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
     try:
         conn.login(user, password)
-        conn.select(folder)
+        conn.select(_imap_quote(folder))
         _, data = conn.search(None, "ALL")
         if not data or not data[0]:
             return []
@@ -166,8 +171,8 @@ def imap_move_message(
     conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
     try:
         conn.login(user, password)
-        conn.select(from_folder)
-        result, _ = conn.uid("COPY", str(uid), to_folder)
+        conn.select(_imap_quote(from_folder))
+        result, _ = conn.uid("COPY", str(uid), _imap_quote(to_folder))
         if result == "OK":
             conn.uid("STORE", str(uid), "+FLAGS", "(\\Deleted)")
             conn.expunge()

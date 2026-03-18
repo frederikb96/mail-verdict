@@ -238,7 +238,7 @@ class VerdictPipeline:
             parts.append(f"folder: {payload['folder']}")
         return " | ".join(parts) if parts else "(no details)"
 
-    _SPAM_FOLDER_FALLBACKS = ["Junk", "Spam", "Bulk Mail"]
+    _SPAM_FOLDER_FALLBACKS = ["Junk", "Junk Mail", "Spam", "Bulk Mail"]
 
     async def _find_spam_folder_name(self, account_id: Any) -> str | None:
         """
