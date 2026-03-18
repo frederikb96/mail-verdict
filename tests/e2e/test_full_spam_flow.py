@@ -15,14 +15,12 @@ import uuid
 
 import httpx
 import pytest
-import pytest_asyncio
 
 from tests.e2e.conftest import (
     ALICE_EMAIL,
     NEWSLETTER_EMAIL,
     SPAMMER_EMAIL,
     SPAMMER_PASSWORD,
-    get_account_id,
     get_known_mail_ids,
     send_email,
     wait_for_new_mail,
