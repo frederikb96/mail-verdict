@@ -233,7 +233,6 @@ class OpenAISpamAnalyst(SpamAnalyst):
                         {"role": "user", "content": user_prompt},
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.0,
                 )
 
                 raw_content = response.choices[0].message.content or ""
