@@ -126,7 +126,7 @@
 		{#if activeTab === 'ai'}
 			<div class="flex items-start gap-2 px-4 py-3 rounded-lg bg-accent/10 border border-accent/20">
 				<svg class="w-4 h-4 text-accent mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-				<p class="text-xs text-text-secondary">The OpenAI API key is configured via the <code class="text-accent">OPENAI_API_KEY</code> environment variable. It cannot be changed from this interface.</p>
+				<p class="text-xs text-text-secondary">Set your OpenAI API key below. The app needs a restart after changing the key for AI features to activate.</p>
 			</div>
 		{/if}
 		{#if activeTab === 'spam'}
