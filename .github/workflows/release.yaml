@@ -26,7 +26,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/frederikberg/mail-verdict
+          images: ghcr.io/frederikb96/mail-verdict
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
