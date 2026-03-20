@@ -31,9 +31,10 @@ def _make_manager() -> SyncManager:
     """Create a SyncManager with all-mock dependencies."""
     account = MagicMock()
     account.name = "test"
-    config = MagicMock()
-    config.sync.poll_interval_seconds = 1
-    config.sync.auto_detect_folders = False
+    sync_settings = {
+        "poll_interval_seconds": 1,
+        "auto_detect_folders": False,
+    }
 
     return SyncManager(
         account=account,
@@ -42,7 +43,7 @@ def _make_manager() -> SyncManager:
         folder_repo=MagicMock(),
         mail_repo=MagicMock(),
         attachment_repo=MagicMock(),
-        config=config,
+        sync_settings=sync_settings,
     )
 
 

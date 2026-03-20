@@ -8,7 +8,7 @@ const selectedMail = writable(null);
 const sidebarCollapsed = writable(false);
 derived(
   folders,
-  ($folders) => $folders.find((f) => f.special_use === "\\Inbox" || f.imap_name === "INBOX") ?? null
+  ($folders) => $folders.find((f) => f.special_use === "inbox" || f.imap_name === "INBOX") ?? null
 );
 const foldersBySpecialUse = derived(folders, ($folders) => {
   const special = [];

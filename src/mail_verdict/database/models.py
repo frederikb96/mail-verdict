@@ -70,8 +70,34 @@ class TagSource(enum.Enum):
     IMAP = "imap"
 
 
+class AccountState(enum.Enum):
+    """Account lifecycle states."""
+
+    CREATED = "created"
+    SYNCING = "syncing"
+    SEEDING = "seeding"
+    ACTIVE = "active"
+    ERROR = "error"
+
+
+class Setting(Base):
+    """Application setting stored as JSONB by category."""
+
+    __tablename__ = "settings"
+
+    category: Mapped[str] = mapped_column(String(100), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+
 class Account(Base):
-    """IMAP account configuration (passwords stored externally)."""
+    """IMAP account with encrypted credentials and lifecycle state."""
 
     __tablename__ = "accounts"
 
@@ -83,10 +109,21 @@ class Account(Base):
     imap_host: Mapped[str] = mapped_column(String(255), nullable=False)
     imap_port: Mapped[int] = mapped_column(Integer, nullable=False)
     imap_user: Mapped[str] = mapped_column(String(255), nullable=False)
+    imap_password: Mapped[str | None] = mapped_column(String(512), nullable=True)
     smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     smtp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     smtp_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_password: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    state: Mapped[AccountState] = mapped_column(
+        Enum(AccountState, native_enum=False),
+        nullable=False,
+        default=AccountState.CREATED,
+    )
+    sync_lookback_days: Mapped[int] = mapped_column(Integer, nullable=False, default=180)
+    embedding_lookback_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    spam_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    folder_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -289,6 +326,34 @@ class Verdict(Base):
     mail: Mapped[Mail] = relationship("Mail", back_populates="verdicts")
 
     __table_args__ = (Index("idx_verdict_mail_id", "mail_id"),)
+
+
+class JobState(Base):
+    """Persistent state for background jobs (cursor tracking, error counts)."""
+
+    __tablename__ = "job_states"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="idle")
+    cursor: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("name", "account_id", name="uq_job_state_name_account"),
+        Index("idx_job_state_name", "name"),
+    )
 
 
 class MailTag(Base):

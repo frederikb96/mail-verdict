@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mail_verdict.config.loader import AccountConfig, RetryConfig
-from mail_verdict.sync.connector import IMAPConnectionError, IMAPConnector
+from mail_verdict.core.retry import RetryConfig
+from mail_verdict.sync.connector import AccountConnConfig, IMAPConnectionError, IMAPConnector
 
 
-def _make_account(**overrides: object) -> AccountConfig:
-    """Create a test AccountConfig with sensible defaults."""
-    defaults = dict(
+def _make_account(**overrides: object) -> AccountConnConfig:
+    """Create a test AccountConnConfig with sensible defaults."""
+    defaults: dict[str, Any] = dict(
         name="test",
         host="localhost",
         port=993,
@@ -23,19 +24,19 @@ def _make_account(**overrides: object) -> AccountConfig:
         ssl_verify=False,
     )
     defaults.update(overrides)
-    return AccountConfig(**defaults)  # type: ignore[arg-type]
+    return AccountConnConfig(**defaults)
 
 
-def _make_retry(**overrides: object) -> RetryConfig:
+def _make_retry(**overrides: Any) -> RetryConfig:
     """Create a test RetryConfig."""
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         max_retries=2,
         base_delay_seconds=0.01,
         max_delay_seconds=0.05,
         exponential_base=2.0,
     )
     defaults.update(overrides)
-    return RetryConfig(**defaults)  # type: ignore[arg-type]
+    return RetryConfig.from_settings(defaults)
 
 
 class TestIMAPConnector:

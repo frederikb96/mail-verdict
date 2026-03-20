@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from mail_verdict.config.loader import AIConfig, RetryConfig, SpamConfig
+from mail_verdict.core.retry import RetryConfig
 from mail_verdict.spam.analyst import (
     AnalysisContext,
     NeighborContext,
@@ -148,26 +148,25 @@ class TestOpenAISpamAnalyst:
         max_retries: int = 1,
     ) -> OpenAISpamAnalyst:
         """Create an analyst with mock dependencies."""
-        ai_config = AIConfig(
-            provider="openai",
-            model="test-model",
-            embedding_model="test-embedding-model",
-            embedding_dimensions=3072,
-        )
-        spam_config = SpamConfig(
-            enabled=True,
-            excerpt_length=300,
-            neighbor_count=3,
-            auto_mark_read=True,
-            system_prompt="You are a spam analyst.",
-        )
-        retry_config = RetryConfig(
-            max_retries=max_retries,
-            base_delay_seconds=0.001,
-            max_delay_seconds=0.01,
-            exponential_base=2.0,
-        )
-        return OpenAISpamAnalyst(ai_config, spam_config, retry_config, openai_client=openai)
+        ai_settings = {
+            "provider": "openai",
+            "model": "test-model",
+            "embedding_model": "test-embedding-model",
+            "embedding_dimensions": 3072,
+        }
+        spam_settings = {
+            "enabled": True,
+            "excerpt_length": 300,
+            "neighbor_count": 3,
+            "auto_mark_read": True,
+        }
+        retry_config = RetryConfig.from_settings({
+            "max_retries": max_retries,
+            "base_delay_seconds": 0.001,
+            "max_delay_seconds": 0.01,
+            "exponential_base": 2.0,
+        })
+        return OpenAISpamAnalyst(ai_settings, spam_settings, retry_config, openai_client=openai)
 
     def _make_context(self) -> AnalysisContext:
         """Create a minimal AnalysisContext."""

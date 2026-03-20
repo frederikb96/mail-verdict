@@ -20,9 +20,10 @@ from mail_verdict.sync.manager import SyncManager
 from mail_verdict.sync.smtp_client import SMTPClient
 
 if TYPE_CHECKING:
-    from mail_verdict.config import AccountConfig, MailVerdictConfig
+    from mail_verdict.config import InfraConfig
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.rules.bus import EventBus
+    from mail_verdict.settings.service import SettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -68,77 +69,111 @@ class SyncEngine:
 
     def __init__(
         self,
-        config: MailVerdictConfig,
+        config: InfraConfig,
         db: DatabaseConnection,
         event_bus: EventBus | None = None,
+        settings_service: SettingsService | None = None,
     ) -> None:
         """
         Initialize sync engine.
 
         Args:
-            config: Global configuration
+            config: Infrastructure configuration
             db: Database connection for repository access
             event_bus: Optional event bus for broadcasting sync events
+            settings_service: Application settings service
         """
         self._config = config
         self._db = db
         self._event_bus = event_bus
+        self._settings = settings_service
         self._accounts: dict[str, AccountSync] = {}
 
     async def start(self) -> None:
-        """Start sync for all configured accounts."""
+        """Start sync for all active accounts from the database."""
+        from sqlalchemy import select
+
+        from mail_verdict.core.encryption import decrypt
+        from mail_verdict.database.models import Account
         from mail_verdict.database.repository import (
             AttachmentRepository,
             FolderRepository,
             MailRepository,
         )
+        from mail_verdict.sync.connector import AccountConnConfig
 
-        if not self._config.accounts:
-            logger.info("No accounts configured, sync engine idle")
+        # Load active accounts from DB
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Account).where(Account.is_active.is_(True))
+            )
+            db_accounts = list(result.scalars().all())
+
+        if not db_accounts:
+            logger.info("No active accounts in database, sync engine idle")
             return
 
         folder_repo = FolderRepository(self._db)
         mail_repo = MailRepository(self._db)
         attachment_repo = AttachmentRepository(self._db)
 
-        for account_cfg in self._config.accounts:
-            try:
-                account_id = await self._ensure_account(account_cfg)
+        from mail_verdict.core.retry import RetryConfig as RC
 
-                connector = IMAPConnector(account_cfg, self._config.retry)
+        sync_settings = self._settings.get("sync") if self._settings else {}
+        retry_settings = self._settings.get("retry") if self._settings else {}
+        retry_config = RC.from_settings(retry_settings)
+
+        for acct in db_accounts:
+            try:
+                imap_password = decrypt(acct.imap_password) if acct.imap_password else ""
+                smtp_password = decrypt(acct.smtp_password) if acct.smtp_password else ""
+
+                conn_config = AccountConnConfig(
+                    name=acct.name,
+                    host=acct.imap_host,
+                    port=acct.imap_port,
+                    username=acct.imap_user,
+                    password=imap_password,
+                    smtp_host=acct.smtp_host,
+                    smtp_port=acct.smtp_port,
+                    smtp_user=acct.smtp_user,
+                    smtp_password=smtp_password,
+                )
+
+                connector = IMAPConnector(conn_config, retry_config)
 
                 smtp_client: SMTPClient | None = None
-                if account_cfg.smtp_host:
-                    smtp_client = SMTPClient(account_cfg, self._config.retry)
+                if acct.smtp_host:
+                    smtp_client = SMTPClient(conn_config, retry_config)
 
                 manager = SyncManager(
-                    account=account_cfg,
-                    account_id=account_id,
+                    account=conn_config,
+                    account_id=acct.id,
                     connector=connector,
                     folder_repo=folder_repo,
                     mail_repo=mail_repo,
                     attachment_repo=attachment_repo,
-                    config=self._config,
+                    sync_settings=sync_settings,
                     event_bus=self._event_bus,
                 )
 
                 action_propagator = ActionPropagator(
                     connector=connector,
-                    retry_config=self._config.retry,
+                    retry_config=retry_config,
                     smtp_client=smtp_client,
                 )
 
                 idle_watcher = IdleWatcher(
                     connector=connector,
-                    sync_config=self._config.sync,
-                    retry_config=self._config.retry,
+                    sync_settings=sync_settings,
+                    retry_config=retry_config,
                     on_new_mail=manager.sync_once.__wrapped__
                     if hasattr(manager.sync_once, "__wrapped__")
                     else self._make_idle_callback(manager),
                 )
 
-                self._accounts[account_cfg.name] = AccountSync(
-                    account_id=account_id,
+                self._accounts[acct.name] = AccountSync(
+                    account_id=acct.id,
                     connector=connector,
                     manager=manager,
                     idle_watcher=idle_watcher,
@@ -147,18 +182,19 @@ class SyncEngine:
                 )
 
                 await manager.start()
-                await idle_watcher.start(account_cfg.idle_folders)
+                idle_folders = ["INBOX"]
+                await idle_watcher.start(idle_folders)
 
                 logger.info(
                     "Account sync started",
-                    extra={"account": account_cfg.name},
+                    extra={"account": acct.name},
                 )
 
             except Exception as exc:
                 logger.error(
                     "Failed to start sync for account",
                     extra={
-                        "account": account_cfg.name,
+                        "account": acct.name,
                         "error": str(exc),
                     },
                 )
@@ -190,54 +226,6 @@ class SyncEngine:
             AccountSync bundle or None if not found
         """
         return self._accounts.get(name)
-
-    async def _ensure_account(self, account_cfg: AccountConfig) -> uuid.UUID:
-        """
-        Ensure account exists in database, return its UUID.
-
-        Creates the account row if it doesn't exist.
-
-        Args:
-            account_cfg: Account configuration
-        """
-        from sqlalchemy import select
-        from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-        from mail_verdict.database.models import Account
-
-        async with self._db.session() as session:
-            check_result = await session.execute(
-                select(Account).where(Account.name == account_cfg.name)
-            )
-            existing = check_result.scalar_one_or_none()
-            if existing:
-                return existing.id
-
-            # Create new account
-            stmt = (
-                pg_insert(Account)
-                .values(
-                    name=account_cfg.name,
-                    imap_host=account_cfg.host,
-                    imap_port=account_cfg.port,
-                    imap_user=account_cfg.username,
-                    smtp_host=account_cfg.smtp_host,
-                    smtp_port=account_cfg.smtp_port,
-                    smtp_user=account_cfg.smtp_user,
-                )
-                .on_conflict_do_nothing(index_elements=["name"])
-                .returning(Account.id)
-            )
-            insert_result = await session.execute(stmt)
-            new_id: uuid.UUID | None = insert_result.scalar_one_or_none()
-            if new_id:
-                return new_id
-
-            # Race condition: created between our check and insert
-            race_result = await session.execute(
-                select(Account).where(Account.name == account_cfg.name)
-            )
-            return race_result.scalar_one().id
 
     @staticmethod
     def _make_idle_callback(manager: SyncManager) -> Callable[[str], Coroutine[None, None, None]]:

@@ -2,7 +2,7 @@
 	import '../app.css';
 	import Sidebar from '../components/Sidebar.svelte';
 	import SearchBar from '../components/SearchBar.svelte';
-	import { accounts, currentAccount, folders, sidebarCollapsed } from '$lib/stores';
+	import { accounts, currentAccount, folders, selectedFolder, sidebarCollapsed } from '$lib/stores';
 	import { sse } from '$lib/sse';
 	import { onMount, onDestroy, type Snippet } from 'svelte';
 
@@ -21,6 +21,15 @@
 		$folders = data.folders;
 		if (data.accounts.length > 0) {
 			$currentAccount = data.accounts[0];
+		}
+		// Auto-select Inbox folder
+		const inbox = data.folders.find(
+			(f) => f.special_use === 'inbox' || f.imap_name === 'INBOX'
+		);
+		if (inbox) {
+			$selectedFolder = inbox;
+		} else if (data.folders.length > 0) {
+			$selectedFolder = data.folders[0];
 		}
 		sse.connect($currentAccount?.id);
 	});

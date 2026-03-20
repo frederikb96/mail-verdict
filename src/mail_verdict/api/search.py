@@ -16,12 +16,12 @@ from mail_verdict.api.schemas import SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/search", tags=["search"])
+router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.get("", response_model=SearchResponse)
 async def search_mails(
-    query: str = Query(min_length=1),
+    q: str = Query(min_length=1),
     mode: str = Query(default="fulltext", pattern="^(fulltext|semantic|combined)$"),
     account_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
@@ -36,11 +36,11 @@ async def search_mails(
     results: list[SearchResult] = []
 
     if mode in ("fulltext", "combined"):
-        ft_results = await _fulltext_search(query, account_id, limit)
+        ft_results = await _fulltext_search(q, account_id, limit)
         results.extend(ft_results)
 
     if mode in ("semantic", "combined"):
-        sem_results = await _semantic_search(query, account_id, limit)
+        sem_results = await _semantic_search(q, account_id, limit)
         results.extend(sem_results)
 
     if mode == "combined":
@@ -52,7 +52,7 @@ async def search_mails(
         results=results,
         total=len(results),
         mode=mode,
-        query=query,
+        query=q,
     )
 
 

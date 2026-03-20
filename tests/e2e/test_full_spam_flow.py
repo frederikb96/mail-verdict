@@ -137,7 +137,7 @@ async def test_spam_embedding_exists_in_qdrant(
     await wait_for_verdict(app_client, mail["id"], timeout=120)
 
     resp = await qdrant_client.post(
-        "/collections/mail_verdict_test/points/scroll",
+        "/collections/mail_embeddings/points/scroll",
         json={
             "filter": {
                 "must": [

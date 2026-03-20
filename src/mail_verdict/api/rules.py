@@ -4,9 +4,7 @@ Rule API endpoints.
 GET /api/rules — list configured rules
 POST /api/rules/:id/test — test a rule against a specified mail (dry-run)
 
-Rules are defined in config.yaml, so create/update/delete are
-not applicable at runtime (config-driven). The API exposes read
-and test capabilities.
+Rules are stored in the settings DB under category 'rules'.
 """
 
 from __future__ import annotations
@@ -17,19 +15,32 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from mail_verdict.api.schemas import RuleResponse, RuleTestRequest, RuleTestResponse
-from mail_verdict.config import get_config
+from mail_verdict.settings import get_settings_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/rules", tags=["rules"])
+router = APIRouter(prefix="/rules", tags=["rules"])
+
+
+def _get_rules_list() -> list[dict[str, Any]]:
+    """Load the rules list from settings."""
+    service = get_settings_service()
+    try:
+        rules_data = service.get("rules")
+    except Exception:
+        return []
+    if isinstance(rules_data, dict):
+        result = rules_data.get("rules", [])
+        return result if isinstance(result, list) else []
+    return []
 
 
 @router.get("", response_model=list[RuleResponse])
 async def list_rules() -> list[RuleResponse]:
     """List all configured rules."""
-    config = get_config()
+    raw_rules = _get_rules_list()
     rules: list[RuleResponse] = []
-    for i, raw in enumerate(config.rules):
+    for i, raw in enumerate(raw_rules):
         rules.append(
             RuleResponse(
                 index=i,
@@ -46,11 +57,11 @@ async def list_rules() -> list[RuleResponse]:
 @router.get("/{rule_index}", response_model=RuleResponse)
 async def get_rule(rule_index: int) -> RuleResponse:
     """Get a single rule by its config index."""
-    config = get_config()
-    if rule_index < 0 or rule_index >= len(config.rules):
+    raw_rules = _get_rules_list()
+    if rule_index < 0 or rule_index >= len(raw_rules):
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    raw = config.rules[rule_index]
+    raw = raw_rules[rule_index]
     return RuleResponse(
         index=rule_index,
         name=raw.get("name", "unnamed"),
@@ -71,16 +82,15 @@ async def test_rule(
 
     Evaluates conditions but does not execute actions.
     """
-    config = get_config()
-    if rule_index < 0 or rule_index >= len(config.rules):
+    raw_rules = _get_rules_list()
+    if rule_index < 0 or rule_index >= len(raw_rules):
         raise HTTPException(status_code=404, detail="Rule not found")
 
-    raw = config.rules[rule_index]
+    raw = raw_rules[rule_index]
     rule_name = raw.get("name", "unnamed")
     conditions = raw.get("conditions", {})
     actions = raw.get("actions", [])
 
-    # Build context from mail
     from sqlalchemy import select
 
     from mail_verdict.database.connection import get_db_connection
@@ -122,7 +132,6 @@ async def test_rule(
         tags=[t.tag_name for t in tags],
     )
 
-    # Normalize conditions (same as RulesEngine)
     if isinstance(conditions, list):
         if len(conditions) == 1:
             conditions = conditions[0]

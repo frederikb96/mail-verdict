@@ -52,9 +52,9 @@ class MailRepository:
         message_id: str | None = None,
         subject: str | None = None,
         from_addr: str | None = None,
-        to_addrs: dict[str, Any] | None = None,
-        cc_addrs: dict[str, Any] | None = None,
-        bcc_addrs: dict[str, Any] | None = None,
+        to_addrs: list[str] | dict[str, Any] | None = None,
+        cc_addrs: list[str] | dict[str, Any] | None = None,
+        bcc_addrs: list[str] | dict[str, Any] | None = None,
         body_text: str | None = None,
         body_html: str | None = None,
         raw_headers: dict[str, Any] | None = None,
@@ -274,6 +274,22 @@ class MailRepository:
         async with self._db.session() as session:
             result = await session.execute(select(Mail.uid).where(Mail.folder_id == folder_id))
             return {row[0] for row in result.all()}
+
+    async def delete_by_folder(self, folder_id: uuid.UUID) -> int:
+        """
+        Delete all mails in a folder (for UIDVALIDITY change).
+
+        Args:
+            folder_id: Folder UUID
+
+        Returns:
+            Number of deleted mails
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                delete(Mail).where(Mail.folder_id == folder_id)
+            )
+            return getattr(result, "rowcount", 0) or 0
 
     async def get_by_folder_and_uid(
         self,

@@ -15,11 +15,10 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from mail_verdict.config import SpamConfig, SyncConfig
 from mail_verdict.database.models import Folder, Mail, SpecialUse
 from mail_verdict.semantic.worker import EmbedItem, get_embedding_worker
 
@@ -34,8 +33,8 @@ _SPAM_FOLDER_TYPES = {SpecialUse.JUNK}
 async def run_initial_index(
     db: DatabaseConnection,
     account_id: uuid.UUID,
-    sync_config: SyncConfig,
-    spam_config: SpamConfig,
+    sync_settings: dict[str, Any],
+    spam_settings: dict[str, Any],
 ) -> dict[str, int]:
     """
     Index historical mails for an account into the vector store.
@@ -46,8 +45,8 @@ async def run_initial_index(
     Args:
         db: Database connection
         account_id: Account to index
-        sync_config: Sync configuration (lookback_days)
-        spam_config: Spam configuration (excerpt_length)
+        sync_settings: Sync settings dict (lookback_days)
+        spam_settings: Spam settings dict (excerpt_length)
 
     Returns:
         Dict with counts: queued, skipped, total
@@ -55,10 +54,13 @@ async def run_initial_index(
     worker = get_embedding_worker()
     account_id_str = str(account_id)
 
+    lookback_days = int(sync_settings.get("lookback_days", 180))
+    excerpt_length = int(spam_settings.get("excerpt_length", 300))
+
     # Determine lookback cutoff
     cutoff: datetime | None = None
-    if sync_config.lookback_days > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=sync_config.lookback_days)
+    if lookback_days > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
 
     # Load folders to build spam folder set
     async with db.session() as session:
@@ -74,7 +76,7 @@ async def run_initial_index(
         account_id_str[:8],
         len(folders),
         len(spam_folder_ids),
-        f"{sync_config.lookback_days} days" if cutoff else "all",
+        f"{lookback_days} days" if cutoff else "all",
     )
 
     # Load mails within lookback window
@@ -111,7 +113,7 @@ async def run_initial_index(
             folder=folder_name_map.get(mail.folder_id),
             from_domain=from_domain,
             received_at=mail.received_at,
-            excerpt_length=spam_config.excerpt_length,
+            excerpt_length=excerpt_length,
         )
 
         if await worker.enqueue(item):

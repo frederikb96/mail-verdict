@@ -1,7 +1,10 @@
 import type {
+	AccountCreateRequest,
 	AccountResponse,
+	AccountUpdateRequest,
 	FeedbackResponse,
 	FolderResponse,
+	JobStatus,
 	MailActionRequest,
 	MailActionResponse,
 	MailDetail,
@@ -47,12 +50,27 @@ export const api = {
 	accounts: {
 		list(): Promise<AccountResponse[]> {
 			return request('/accounts');
+		},
+		get(id: string): Promise<AccountResponse> {
+			return request(`/accounts/${id}`);
+		},
+		create(data: AccountCreateRequest): Promise<AccountResponse> {
+			return request('/accounts', { method: 'POST', body: JSON.stringify(data) });
+		},
+		update(id: string, data: AccountUpdateRequest): Promise<AccountResponse> {
+			return request(`/accounts/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+		},
+		delete(id: string): Promise<void> {
+			return request(`/accounts/${id}`, { method: 'DELETE' });
+		},
+		testConnection(id: string): Promise<Record<string, string>> {
+			return request(`/accounts/${id}/test-connection`, { method: 'POST' });
 		}
 	},
 
 	folders: {
 		list(accountId: string): Promise<FolderResponse[]> {
-			return request(`/folders${qs({ account_id: accountId })}`);
+			return request(`/accounts/${accountId}/folders`);
 		}
 	},
 
@@ -120,6 +138,39 @@ export const api = {
 			mode?: 'semantic' | 'fulltext';
 		}): Promise<SearchResponse> {
 			return request(`/search${qs(params)}`);
+		}
+	},
+
+	settings: {
+		getAll(): Promise<Record<string, Record<string, unknown>>> {
+			return request('/settings');
+		},
+		get(category: string): Promise<Record<string, unknown>> {
+			return request(`/settings/${category}`);
+		},
+		update(category: string, data: Record<string, unknown>): Promise<Record<string, unknown>> {
+			return request(`/settings/${category}`, {
+				method: 'PUT',
+				body: JSON.stringify({ data })
+			});
+		},
+		import(data: Record<string, Record<string, unknown>>): Promise<Record<string, Record<string, unknown>>> {
+			return request('/settings/import', {
+				method: 'POST',
+				body: JSON.stringify({ data })
+			});
+		}
+	},
+
+	jobs: {
+		list(): Promise<JobStatus[]> {
+			return request('/jobs');
+		},
+		start(name: string, accountId?: string): Promise<Record<string, string>> {
+			return request(`/jobs/${name}/start${qs({ account_id: accountId })}`, { method: 'POST' });
+		},
+		stop(name: string, accountId?: string): Promise<Record<string, string>> {
+			return request(`/jobs/${name}/stop${qs({ account_id: accountId })}`, { method: 'POST' });
 		}
 	},
 

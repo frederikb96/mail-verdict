@@ -1,33 +1,25 @@
-"""MailVerdict configuration."""
+"""MailVerdict infrastructure configuration."""
 
 from mail_verdict.config.loader import (
-    AccountConfig,
-    AIConfig,
+    MCP_TRANSPORT,
     ConfigError,
     DatabaseConfig,
-    MailVerdictConfig,
-    MCPConfig,
+    InfraConfig,
     QdrantConfig,
-    RetryConfig,
     ServerConfig,
-    SpamConfig,
-    SyncConfig,
+    _deep_merge,
     get_config,
     reset_config,
 )
 
 __all__ = [
-    "AccountConfig",
-    "AIConfig",
     "ConfigError",
     "DatabaseConfig",
-    "MCPConfig",
-    "MailVerdictConfig",
+    "InfraConfig",
+    "MCP_TRANSPORT",
     "QdrantConfig",
-    "RetryConfig",
     "ServerConfig",
-    "SpamConfig",
-    "SyncConfig",
+    "_deep_merge",
     "get_config",
     "reset_config",
 ]

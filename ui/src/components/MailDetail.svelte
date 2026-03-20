@@ -12,6 +12,7 @@
 	let { mail }: Props = $props();
 	let verdict = $state<VerdictResponse | null>(null);
 	let showHtml = $state(false);
+	let loadRemoteImages = $state(false);
 	let iframeRef = $state<HTMLIFrameElement | null>(null);
 
 	onMount(() => {
@@ -52,17 +53,28 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
+	function prepareHtml(html: string): string {
+		if (loadRemoteImages) {
+			return html
+				.replace(/data-x-src="([^"]*)"/g, 'src="$1"')
+				.replace(/data-x-src='([^']*)'/g, "src='$1'")
+				.replace(/data-x-bg="([^"]*)"/g, 'background="$1"');
+		}
+		return html;
+	}
+
 	$effect(() => {
 		if (showHtml && mail.body_html && iframeRef) {
 			const doc = iframeRef.contentDocument;
 			if (doc) {
+				const html = prepareHtml(mail.body_html);
 				doc.open();
 				doc.write(`
 					<html><head><style>
 						body { font-family: sans-serif; font-size: 14px; color: #e2e8f0; background: #1e293b; margin: 12px; }
 						a { color: #60a5fa; }
 						img { max-width: 100%; height: auto; }
-					</style></head><body>${mail.body_html}</body></html>
+					</style></head><body>${html}</body></html>
 				`);
 				doc.close();
 			}
@@ -133,7 +145,7 @@
 
 	<!-- Body toggle -->
 	{#if mail.body_html}
-		<div class="px-4 py-1.5 border-b border-border flex gap-2">
+		<div class="px-4 py-1.5 border-b border-border flex items-center gap-2">
 			<button
 				class="text-[11px] px-2 py-0.5 rounded transition-colors"
 				class:bg-surface-light={!showHtml}
@@ -152,6 +164,17 @@
 			>
 				HTML
 			</button>
+			{#if showHtml && !loadRemoteImages}
+				<button
+					class="ml-auto text-[11px] px-2 py-0.5 rounded border border-warn/30 text-warn hover:bg-warn/10 transition-colors"
+					onclick={() => { loadRemoteImages = true; }}
+				>
+					Load remote images
+				</button>
+			{/if}
+			{#if showHtml && loadRemoteImages}
+				<span class="ml-auto text-[10px] text-text-muted">Remote images loaded</span>
+			{/if}
 		</div>
 	{/if}
 

@@ -21,7 +21,8 @@ from typing import TYPE_CHECKING
 import aiosmtplib
 
 if TYPE_CHECKING:
-    from mail_verdict.config import AccountConfig, RetryConfig
+    from mail_verdict.core.retry import RetryConfig
+    from mail_verdict.sync.connector import AccountConnConfig
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +41,15 @@ class SMTPClient:
 
     def __init__(
         self,
-        account: AccountConfig,
+        account: AccountConnConfig,
         retry_config: RetryConfig,
     ) -> None:
         """
         Initialize SMTP client for an account.
 
         Args:
-            account: Account config with SMTP settings
-            retry_config: Retry configuration for backoff
+            account: Account connection config with SMTP settings
+            retry_config: Retry configuration
         """
         self._account = account
         self._retry = retry_config
@@ -185,7 +186,7 @@ class SMTPClient:
             except Exception as exc:
                 last_error = exc
                 if attempt < self._retry.max_retries:
-                    delay = self._retry.get_delay(attempt)
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
                         "SMTP send failed, retrying",
                         extra={

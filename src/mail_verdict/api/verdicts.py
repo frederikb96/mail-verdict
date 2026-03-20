@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["verdicts"])
 
 
-@router.get("/api/verdicts", response_model=list[VerdictResponse])
+@router.get("/verdicts", response_model=list[VerdictResponse])
 async def list_verdicts(
     account_id: uuid.UUID | None = Query(default=None),
     mail_id: uuid.UUID | None = Query(default=None),
@@ -59,7 +59,7 @@ async def list_verdicts(
     ]
 
 
-@router.get("/api/mails/{mail_id}/verdict", response_model=VerdictResponse | None)
+@router.get("/mails/{mail_id}/verdict", response_model=VerdictResponse | None)
 async def get_mail_verdict(
     mail_id: uuid.UUID,
 ) -> VerdictResponse | None:
@@ -80,7 +80,7 @@ async def get_mail_verdict(
     )
 
 
-@router.post("/api/mails/{mail_id}/feedback", response_model=FeedbackResponse)
+@router.post("/mails/{mail_id}/feedback", response_model=FeedbackResponse)
 async def submit_feedback(
     mail_id: uuid.UUID,
     request: FeedbackRequest,

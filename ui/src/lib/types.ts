@@ -79,7 +79,52 @@ export interface AccountResponse {
 	smtp_port: number | null;
 	smtp_user: string | null;
 	is_active: boolean;
+	state: string;
+	sync_lookback_days: number;
+	embedding_lookback_days: number;
+	spam_enabled: boolean;
 	created_at: string;
+}
+
+export interface AccountCreateRequest {
+	name: string;
+	imap_host: string;
+	imap_port: number;
+	imap_user: string;
+	imap_password?: string;
+	smtp_host?: string;
+	smtp_port?: number;
+	smtp_user?: string;
+	smtp_password?: string;
+	sync_lookback_days?: number;
+	embedding_lookback_days?: number;
+	spam_enabled?: boolean;
+}
+
+export interface AccountUpdateRequest {
+	name?: string;
+	imap_host?: string;
+	imap_port?: number;
+	imap_user?: string;
+	imap_password?: string;
+	smtp_host?: string;
+	smtp_port?: number;
+	smtp_user?: string;
+	smtp_password?: string;
+	is_active?: boolean;
+	sync_lookback_days?: number;
+	embedding_lookback_days?: number;
+	spam_enabled?: boolean;
+}
+
+export interface JobStatus {
+	name: string;
+	account_id: string | null;
+	status: string;
+	cursor: Record<string, unknown> | null;
+	last_run_at: string | null;
+	error_count: number;
+	last_error: string | null;
 }
 
 export interface FolderResponse {

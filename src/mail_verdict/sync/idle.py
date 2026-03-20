@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Callable, Coroutine
+from typing import Any, Callable, Coroutine
 
+from mail_verdict.core.retry import RetryConfig
 from mail_verdict.sync.connector import IMAPConnector
 from mail_verdict.sync.extensions import AsyncIMAPExtended
-
-if TYPE_CHECKING:
-    from mail_verdict.config import RetryConfig, SyncConfig
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,7 @@ class IdleWatcher:
     def __init__(
         self,
         connector: IMAPConnector,
-        sync_config: SyncConfig,
+        sync_settings: dict[str, Any],
         retry_config: RetryConfig,
         on_new_mail: Callable[[str], Coroutine[None, None, None]],
     ) -> None:
@@ -42,13 +40,13 @@ class IdleWatcher:
 
         Args:
             connector: IMAP connector for creating dedicated connections
-            sync_config: Sync configuration (idle_restart_seconds, idle_enabled)
+            sync_settings: Sync settings dict (idle_restart_seconds, idle_enabled)
             retry_config: Retry configuration for reconnection
             on_new_mail: Callback coroutine called with folder name on new mail
         """
         self._connector = connector
-        self._sync_config = sync_config
-        self._retry_config = retry_config
+        self._sync_settings = sync_settings
+        self._retry = retry_config
         self._on_new_mail = on_new_mail
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._running = False
@@ -60,7 +58,7 @@ class IdleWatcher:
         Args:
             folders: Folder names to watch (e.g., ["INBOX"])
         """
-        if not self._sync_config.idle_enabled:
+        if not self._sync_settings.get("idle_enabled", True):
             logger.info(
                 "IDLE disabled in config",
                 extra={"account": self._connector.account_name},
@@ -141,18 +139,18 @@ class IdleWatcher:
                         },
                     )
                     await self._close_idle_conn(conn)
-                    await asyncio.sleep(self._retry_config.get_delay(0))
+                    await asyncio.sleep(self._retry.base_delay)
                     continue
 
                 # IDLE loop with periodic restart
                 while self._running:
                     idle_future = await conn.client.idle_start(
-                        timeout=self._sync_config.idle_restart_seconds,
+                        timeout=int(self._sync_settings.get("idle_restart_seconds", 1500)),
                     )
 
                     try:
                         push = await conn.client.wait_server_push(
-                            timeout=self._sync_config.idle_restart_seconds,
+                            timeout=int(self._sync_settings.get("idle_restart_seconds", 1500)),
                         )
 
                         # Check if we got an EXISTS notification
@@ -201,8 +199,8 @@ class IdleWatcher:
 
             except Exception as exc:
                 consecutive_failures += 1
-                delay = self._retry_config.get_delay(
-                    min(consecutive_failures - 1, self._retry_config.max_retries)
+                delay = self._retry.delay_for_attempt(
+                    min(consecutive_failures - 1, self._retry.max_retries),
                 )
                 logger.warning(
                     "IDLE connection failed, reconnecting",

@@ -11,16 +11,33 @@ import asyncio
 import logging
 import ssl
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, AsyncIterator
+from dataclasses import dataclass, field
+from typing import AsyncIterator
 
 from aioimaplib import IMAP4, IMAP4_SSL
 
+from mail_verdict.core.retry import RetryConfig
 from mail_verdict.sync.extensions import AsyncIMAPExtended
 
-if TYPE_CHECKING:
-    from mail_verdict.config import AccountConfig, RetryConfig
-
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AccountConnConfig:
+    """Lightweight account connection config for IMAP/SMTP."""
+
+    name: str
+    host: str
+    port: int
+    username: str
+    password: str
+    ssl_verify: bool = True
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    folders: list[str] = field(default_factory=lambda: ["INBOX"])
+    idle_folders: list[str] = field(default_factory=lambda: ["INBOX"])
 
 
 class IMAPConnectionError(Exception):
@@ -41,18 +58,18 @@ class IMAPConnector:
 
     def __init__(
         self,
-        account: AccountConfig,
-        retry: RetryConfig,
+        account: AccountConnConfig,
+        retry_config: RetryConfig,
     ) -> None:
         """
         Initialize connector for an account.
 
         Args:
-            account: Account configuration with host/port/credentials
-            retry: Retry configuration for reconnection backoff
+            account: Account connection config with host/port/credentials
+            retry_config: Retry configuration
         """
         self._account = account
-        self._retry = retry
+        self._retry = retry_config
         self._pool: asyncio.Queue[AsyncIMAPExtended] = asyncio.Queue()
         self._pool_size = 0
         self._max_pool_size = 3
@@ -174,8 +191,7 @@ class IMAPConnector:
             except IMAPConnectionError as exc:
                 last_error = exc
                 if attempt < self._retry.max_retries:
-                    delay = self._retry.get_delay(attempt)
-                    print(f"IMAP connect failed: {exc}", flush=True)
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
                         "Connection attempt failed, retrying",
                         extra={

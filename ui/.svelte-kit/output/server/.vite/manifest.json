@@ -157,7 +157,7 @@
       "_state.svelte.js"
     ],
     "css": [
-      "_app/immutable/assets/_layout.CkCkq6jt.css"
+      "_app/immutable/assets/_layout.BiTPzPBK.css"
     ]
   },
   "src/routes/+layout.ts": {
@@ -177,6 +177,12 @@
     "imports": [
       "_stores.js"
     ]
+  },
+  "src/routes/accounts/+page.svelte": {
+    "file": "entries/pages/accounts/_page.svelte.js",
+    "name": "entries/pages/accounts/_page.svelte",
+    "src": "src/routes/accounts/+page.svelte",
+    "isEntry": true
   },
   "src/routes/mail/+page.svelte": {
     "file": "entries/pages/mail/_page.svelte.js",
@@ -228,8 +234,20 @@
     "src": "src/routes/settings/+page.svelte",
     "isEntry": true,
     "imports": [
-      "_index2.js",
-      "_stores.js"
+      "_index2.js"
+    ]
+  },
+  "src/routes/verdicts/+page.svelte": {
+    "file": "entries/pages/verdicts/_page.svelte.js",
+    "name": "entries/pages/verdicts/_page.svelte",
+    "src": "src/routes/verdicts/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_stores.js",
+      "_exports.js",
+      "_utils.js",
+      "_root.js",
+      "_state.svelte.js"
     ]
   }
 }

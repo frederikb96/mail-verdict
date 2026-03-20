@@ -11,7 +11,7 @@ import pytest
 import mail_verdict.config.loader as loader
 from mail_verdict.config.loader import (
     ConfigError,
-    MailVerdictConfig,
+    InfraConfig,
     _deep_merge,
     _get_env_override,
     _require,
@@ -118,7 +118,7 @@ class TestGetConfig:
         cfg_dict = make_config()
         monkeypatch.setattr(loader, "_CONFIG", cfg_dict)
         config = get_config()
-        assert isinstance(config, MailVerdictConfig)
+        assert isinstance(config, InfraConfig)
         assert config.server.port == 18080
 
     def test_singleton_reuses(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -147,18 +147,3 @@ class TestGetConfig:
             get_config()
 
 
-class TestRetryConfig:
-    """Tests for RetryConfig.get_delay."""
-
-    def test_exponential_backoff(self, test_config: MailVerdictConfig) -> None:
-        """Delay increases exponentially."""
-        retry = test_config.retry
-        d0 = retry.get_delay(0)
-        d1 = retry.get_delay(1)
-        assert d1 > d0
-
-    def test_capped_at_max(self, test_config: MailVerdictConfig) -> None:
-        """Delay is capped at max_delay_seconds."""
-        retry = test_config.retry
-        d = retry.get_delay(100)
-        assert d == retry.max_delay_seconds

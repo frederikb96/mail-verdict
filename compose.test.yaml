@@ -14,10 +14,13 @@ services:
       - ./config:/app/config:ro,Z
       - ./alembic:/app/alembic:ro,Z
       - ./alembic.ini:/app/alembic.ini:ro,Z
+      - ./ui/build:/app/ui/build:ro,Z
     env_file:
       - .env
     environment:
-      MAIL_VERDICT_CONFIG_PATH: /app/config/config.test.yaml
+      MAIL_VERDICT_DATABASE_URL: "postgresql+asyncpg://testuser:testpass@postgres:5432/mail_verdict_test"
+      MAIL_VERDICT_QDRANT_HOST: "qdrant"
+      MAIL_VERDICT_QDRANT_PORT: "6333"
     userns_mode: keep-id
     depends_on:
       postgres:
@@ -64,7 +67,6 @@ services:
       POSTGRES_DB: mail_verdict_test
       POSTGRES_USER: testuser
       POSTGRES_PASSWORD: testpass
-    userns_mode: keep-id
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U testuser -d mail_verdict_test"]
       interval: 3s
@@ -82,7 +84,6 @@ services:
       - "16334:6333"
     environment:
       QDRANT__LOG_LEVEL: WARN
-    userns_mode: keep-id
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
       interval: 5s

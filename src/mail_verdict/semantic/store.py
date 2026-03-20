@@ -25,7 +25,7 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
-from mail_verdict.config import AIConfig, QdrantConfig
+from mail_verdict.config import QdrantConfig
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class SemanticStore:
         self,
         qdrant_client: AsyncQdrantClient,
         qdrant_config: QdrantConfig,
-        ai_config: AIConfig,
+        ai_settings: dict[str, Any],
         openai_client: AsyncOpenAI | None = None,
     ) -> None:
         """
@@ -68,13 +68,13 @@ class SemanticStore:
         Args:
             qdrant_client: Async Qdrant client (managed externally)
             qdrant_config: Collection name and connection settings
-            ai_config: Embedding model and dimensions
+            ai_settings: AI settings dict with embedding_model, embedding_dimensions
             openai_client: Shared AsyncOpenAI client (creates one if not provided)
         """
         self._qdrant = qdrant_client
         self._collection = qdrant_config.collection_name
-        self._embedding_model = ai_config.embedding_model
-        self._embedding_dimensions = ai_config.embedding_dimensions
+        self._embedding_model = ai_settings.get("embedding_model", "text-embedding-3-large")
+        self._embedding_dimensions = int(ai_settings.get("embedding_dimensions", 3072))
         self._openai: AsyncOpenAI | None = openai_client
         self._collection_ready = False
 
@@ -83,7 +83,7 @@ class SemanticStore:
         cls,
         qdrant_client: AsyncQdrantClient,
         qdrant_config: QdrantConfig,
-        ai_config: AIConfig,
+        ai_settings: dict[str, Any],
         openai_client: AsyncOpenAI | None = None,
     ) -> SemanticStore:
         """
@@ -92,7 +92,7 @@ class SemanticStore:
         Args:
             qdrant_client: Async Qdrant client
             qdrant_config: Qdrant configuration
-            ai_config: AI configuration
+            ai_settings: AI settings dict
             openai_client: Shared AsyncOpenAI client
 
         Returns:
@@ -101,7 +101,7 @@ class SemanticStore:
         cls._instance = SemanticStore(
             qdrant_client,
             qdrant_config,
-            ai_config,
+            ai_settings,
             openai_client,
         )
         return cls._instance

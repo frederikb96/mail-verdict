@@ -12,15 +12,22 @@ from mail_verdict.spam.analyst import SpamVerdict
 from mail_verdict.spam.pipeline import _SKIP_FOLDER_TYPES, VerdictPipeline
 
 
-def _make_config(enabled: bool = True) -> MagicMock:
-    """Create a mock MailVerdictConfig."""
-    config = MagicMock()
-    config.spam.enabled = enabled
-    config.spam.excerpt_length = 300
-    config.spam.neighbor_count = 3
-    config.spam.auto_mark_read = True
-    config.ai.model = "test-model"
-    return config
+def _make_settings_service(enabled: bool = True) -> MagicMock:
+    """Create a mock SettingsService."""
+    service = MagicMock()
+    service.get = MagicMock(side_effect=lambda cat: {
+        "spam": {
+            "enabled": enabled,
+            "excerpt_length": 300,
+            "neighbor_count": 3,
+            "auto_mark_read": True,
+        },
+        "ai": {"model": "test-model"},
+    }.get(cat, {}))
+    return service
+
+
+_TEST_ACCOUNT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _make_mail(
@@ -31,7 +38,7 @@ def _make_mail(
     """Create a mock Mail object."""
     mail = MagicMock()
     mail.id = uuid.uuid4()
-    mail.account_id = uuid.uuid4()
+    mail.account_id = _TEST_ACCOUNT_ID
     mail.uid = 42
     mail.from_addr = from_addr
     mail.subject = subject
@@ -72,11 +79,11 @@ class TestVerdictPipeline:
 
     def _make_pipeline(
         self,
-        config: MagicMock | None = None,
+        settings_service: MagicMock | None = None,
         verdict_is_spam: bool = False,
     ) -> tuple[VerdictPipeline, dict[str, MagicMock]]:
         """Create pipeline with mock dependencies, return (pipeline, mocks)."""
-        config = config or _make_config()
+        settings_service = settings_service or _make_settings_service()
 
         store = MagicMock()
         store.upsert = AsyncMock(return_value=True)
@@ -103,12 +110,12 @@ class TestVerdictPipeline:
         folder_repo.get_by_account = AsyncMock(return_value=[])
 
         pipeline = VerdictPipeline(
-            config=config,
+            settings_service=settings_service,
             semantic_store=store,
             analyst=analyst,
             verdict_repo=verdict_repo,
             mail_repo=mail_repo,
-            action_propagator=propagator,
+            account_propagators={str(_TEST_ACCOUNT_ID): propagator},
             folder_repo=folder_repo,
         )
 
@@ -124,8 +131,8 @@ class TestVerdictPipeline:
     @pytest.mark.asyncio
     async def test_disabled_returns_none(self) -> None:
         """Returns None when spam detection is disabled."""
-        config = _make_config(enabled=False)
-        pipeline, _ = self._make_pipeline(config=config)
+        svc = _make_settings_service(enabled=False)
+        pipeline, _ = self._make_pipeline(settings_service=svc)
         result = await pipeline.process_mail(_make_mail(), _make_folder())
         assert result is None
 

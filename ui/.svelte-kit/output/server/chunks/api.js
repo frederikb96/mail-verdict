@@ -28,11 +28,26 @@ const api = {
   accounts: {
     list() {
       return request("/accounts");
+    },
+    get(id) {
+      return request(`/accounts/${id}`);
+    },
+    create(data) {
+      return request("/accounts", { method: "POST", body: JSON.stringify(data) });
+    },
+    update(id, data) {
+      return request(`/accounts/${id}`, { method: "PUT", body: JSON.stringify(data) });
+    },
+    delete(id) {
+      return request(`/accounts/${id}`, { method: "DELETE" });
+    },
+    testConnection(id) {
+      return request(`/accounts/${id}/test-connection`, { method: "POST" });
     }
   },
   folders: {
     list(accountId) {
-      return request(`/folders${qs({ account_id: accountId })}`);
+      return request(`/accounts/${accountId}/folders`);
     }
   },
   mails: {
@@ -74,6 +89,37 @@ const api = {
   search: {
     query(params) {
       return request(`/search${qs(params)}`);
+    }
+  },
+  settings: {
+    getAll() {
+      return request("/settings");
+    },
+    get(category) {
+      return request(`/settings/${category}`);
+    },
+    update(category, data) {
+      return request(`/settings/${category}`, {
+        method: "PUT",
+        body: JSON.stringify({ data })
+      });
+    },
+    import(data) {
+      return request("/settings/import", {
+        method: "POST",
+        body: JSON.stringify({ data })
+      });
+    }
+  },
+  jobs: {
+    list() {
+      return request("/jobs");
+    },
+    start(name, accountId) {
+      return request(`/jobs/${name}/start${qs({ account_id: accountId })}`, { method: "POST" });
+    },
+    stop(name, accountId) {
+      return request(`/jobs/${name}/stop${qs({ account_id: accountId })}`, { method: "POST" });
     }
   },
   health() {

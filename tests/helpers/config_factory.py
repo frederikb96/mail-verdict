@@ -33,16 +33,6 @@ _TEST_DEFAULTS: dict[str, Any] = {
         "host": "localhost",
         "port": 16334,
     },
-    "spam": {
-        "enabled": True,
-    },
-    "sync": {
-        "poll_interval_seconds": 1,
-        "idle_enabled": False,
-    },
-    "mcp": {
-        "enabled": False,
-    },
 }
 
 

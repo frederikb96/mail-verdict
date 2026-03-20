@@ -16,19 +16,24 @@ single composed Starlette app is served on one port.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
-from starlette.routing import Route
+from starlette.responses import FileResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp
 
-from mail_verdict.config import get_config
+from mail_verdict.config import MCP_TRANSPORT, get_config
 from mail_verdict.database import close_database, get_db_connection, init_database
+from mail_verdict.jobs.manager import init_job_manager, reset_job_manager
 from mail_verdict.rules.bus import EventBus
 from mail_verdict.rules.engine import RulesEngine
 from mail_verdict.rules.enrichment import EnrichmentRunner
@@ -38,6 +43,7 @@ from mail_verdict.semantic.worker import (
     init_embedding_worker,
     reset_embedding_worker,
 )
+from mail_verdict.settings.service import init_settings_service, reset_settings_service
 from mail_verdict.spam.processor import SpamEventProcessor
 from mail_verdict.sync.actions import ActionPropagator
 from mail_verdict.sync.engine import SyncEngine
@@ -84,21 +90,49 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     global _qdrant_client
 
     config = get_config()
+
+    from mail_verdict.core.logging import setup_logging
+
+    setup_logging(config.server.log_level)
     logger.info("MailVerdict server starting")
+
+    # Validate encryption key
+    from mail_verdict.core.encryption import validate_key
+
+    validate_key()
+    logger.info("Encryption key validated")
 
     # Initialize database
     await init_database(config.database)
     logger.info("Database initialized")
 
-    # Initialize shared OpenAI client (used by SemanticStore, SpamAnalyst, EnrichmentRunner)
+    # Initialize settings from DB
+    db = get_db_connection()
+    settings_service = await init_settings_service(db)
+    logger.info("Settings loaded from DB")
+
+    # Read settings snapshots for component initialization
+    from mail_verdict.core.retry import RetryConfig as RC
+
+    ai_settings = settings_service.get("ai")
+    spam_settings = settings_service.get("spam")
+    retry_settings = settings_service.get("retry")
+    retry_config = RC.from_settings(retry_settings)
+
+    # Initialize shared OpenAI client (uses api_key from DB settings, NOT env var)
     from openai import AsyncOpenAI
 
-    openai_client = AsyncOpenAI()
-    try:
-        await openai_client.models.list()
-        logger.info("OpenAI client validated")
-    except Exception as e:
-        logger.warning("OpenAI key validation failed (AI features may not work): %s", e)
+    openai_api_key = ai_settings.get("api_key") or None
+    openai_client: AsyncOpenAI | None = None
+    if openai_api_key:
+        openai_client = AsyncOpenAI(api_key=openai_api_key)
+        try:
+            await openai_client.models.list()
+            logger.info("OpenAI client validated")
+        except Exception as e:
+            logger.warning("OpenAI key validation failed: %s", e)
+    else:
+        logger.warning("No OpenAI API key in settings — AI features disabled")
 
     # Initialize Qdrant client
     from qdrant_client import AsyncQdrantClient
@@ -109,20 +143,27 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     )
     logger.info("Qdrant client created")
 
-    # Initialize SemanticStore singleton (uses shared Qdrant + OpenAI clients)
-    store = SemanticStore.init_instance(
-        _qdrant_client,
-        config.qdrant,
-        config.ai,
-        openai_client,
-    )
-    await store.ensure_collection()
-    logger.info("SemanticStore initialized")
+    # Initialize SemanticStore + EmbeddingWorker (requires OpenAI for embeddings)
+    store: SemanticStore | None = None
+    if openai_client:
+        store = SemanticStore.init_instance(
+            _qdrant_client,
+            config.qdrant,
+            ai_settings,
+            openai_client,
+        )
+        await store.ensure_collection()
+        logger.info("SemanticStore initialized")
 
-    # Initialize and start EmbeddingWorker
-    worker = init_embedding_worker()
-    await worker.start()
-    logger.info("EmbeddingWorker started")
+        worker = init_embedding_worker()
+        await worker.start()
+        logger.info("EmbeddingWorker started")
+    else:
+        logger.info("SemanticStore skipped (no OpenAI key)")
+
+    # Initialize job manager
+    init_job_manager(db)
+    logger.info("JobManager initialized")
 
     # Initialize event bus early so sync engine can emit to it
     global _event_bus, _rules_engine
@@ -130,14 +171,13 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
 
     # Start IMAP sync engine (receives event_bus for bridging to rules/SSE)
     global _sync_engine
-    db = get_db_connection()
-    _sync_engine = SyncEngine(config, db, event_bus=_event_bus)
+    _sync_engine = SyncEngine(config, db, event_bus=_event_bus, settings_service=settings_service)
     await _sync_engine.start()
     logger.info("Sync engine started")
 
     # Initialize and start spam processing pipeline
     global _spam_processor
-    if config.spam.enabled:
+    if spam_settings.get("enabled", False) and openai_client and store:
         from mail_verdict.database.repository import (
             FolderRepository,
             MailRepository,
@@ -147,7 +187,9 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         from mail_verdict.spam.feedback import SpamFeedbackHandler
         from mail_verdict.spam.pipeline import VerdictPipeline
 
-        analyst = OpenAISpamAnalyst(config.ai, config.spam, config.retry, openai_client)
+        analyst = OpenAISpamAnalyst(
+            ai_settings, spam_settings, retry_config, openai_client,
+        )
         verdict_repo = VerdictRepository(db)
         mail_repo = MailRepository(db)
         folder_repo = FolderRepository(db)
@@ -160,17 +202,17 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         feedback = SpamFeedbackHandler(store, verdict_repo)
 
         if event_queues:
-            # Use the first account's action propagator for spam MOVE operations
-            first_account_sync = next(iter(_sync_engine._accounts.values()), None)
-            action_propagator = first_account_sync.action_propagator if first_account_sync else None
+            spam_propagators: dict[str, ActionPropagator] = {}
+            for name, account_sync in _sync_engine._accounts.items():
+                spam_propagators[str(account_sync.account_id)] = account_sync.action_propagator
 
             first_pipeline = VerdictPipeline(
-                config=config,
+                settings_service=settings_service,
                 semantic_store=store,
                 analyst=analyst,
                 verdict_repo=verdict_repo,
                 mail_repo=mail_repo,
-                action_propagator=action_propagator,
+                account_propagators=spam_propagators,
                 folder_repo=folder_repo,
             )
             _spam_processor = SpamEventProcessor(
@@ -185,25 +227,27 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         logger.info("Spam detection disabled")
 
     # Initialize rules engine (with propagators wired into ActionExecutor)
-    if config.rules:
+    # Rules now stored in settings DB under 'rules' category (or empty)
+    rules_data = settings_service.get("rules") if settings_service.has_category("rules") else {}
+    rules_list = rules_data.get("rules", []) if isinstance(rules_data, dict) else []
+
+    if rules_list and openai_client:
         from mail_verdict.database.repository import FolderRepository as FR
         from mail_verdict.database.repository import TagRepository
 
         tag_repo = TagRepository(db)
         rules_folder_repo = FR(db)
         enrichment_runner = EnrichmentRunner(
-            ai_provider=config.ai.provider,
-            ai_model=config.ai.model,
+            ai_provider=ai_settings.get("provider", "openai"),
+            ai_model=ai_settings.get("model", "gpt-5-mini"),
             openai_client=openai_client,
         )
 
         # Build multi-account propagator map for the action executor
         account_propagators: dict[str, ActionPropagator] = {}
         for name, account_sync in _sync_engine._accounts.items():
-            account_propagators[name] = account_sync.action_propagator
+            account_propagators[str(account_sync.account_id)] = account_sync.action_propagator
 
-        # Use the first account's propagator as default (rules engine
-        # typically operates on the account that triggered the event)
         default_propagator = next(iter(account_propagators.values()), None)
 
         action_executor = ActionExecutor(
@@ -212,7 +256,7 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
             folder_repo=rules_folder_repo,
         )
         _rules_engine = RulesEngine(
-            rules=config.rules,
+            rules=rules_list,
             bus=_event_bus,
             action_executor=action_executor,
             enrichment_runner=enrichment_runner,
@@ -261,6 +305,8 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         await _qdrant_client.close()
         logger.info("Qdrant client closed")
 
+    reset_job_manager()
+    reset_settings_service()
     await close_database()
     logger.info("Database connection closed")
 
@@ -271,11 +317,30 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     _rules_engine = None
 
 
+def get_action_propagator(account_id: uuid.UUID) -> ActionPropagator | None:
+    """
+    Get the ActionPropagator for a specific account.
+
+    Args:
+        account_id: Account UUID
+    """
+    if _sync_engine is None:
+        return None
+    account_id_str = str(account_id)
+    for _name, account_sync in _sync_engine._accounts.items():
+        if str(account_sync.account_id) == account_id_str:
+            return account_sync.action_propagator
+    return None
+
+
 def _build_fastapi() -> FastAPI:
     """Build the FastAPI sub-app with all REST routers and health endpoint."""
+    from mail_verdict.api.auth import require_auth
+
     fastapi_app = FastAPI(
         title="MailVerdict",
-        version="0.1.0",
+        version="0.2.0",
+        dependencies=[Depends(require_auth)],
     )
 
     from mail_verdict.api.routes import all_routers
@@ -283,7 +348,7 @@ def _build_fastapi() -> FastAPI:
     for router in all_routers:
         fastapi_app.include_router(router)
 
-    @fastapi_app.get("/api/health")
+    @fastapi_app.get("/health", dependencies=[])
     async def health() -> JSONResponse:
         """Health check endpoint for K8s liveness/readiness probes."""
         dependencies: dict[str, str] = {}
@@ -340,46 +405,53 @@ def create_app() -> ASGIApp:
     fastapi_app = _build_fastapi()
 
     from mail_verdict.api.events import sse_endpoint
+    from mail_verdict.api.mcp_tools import mcp as mcp_server
 
-    if config.mcp.enabled:
-        from mail_verdict.api.mcp_tools import mcp as mcp_server
+    # MCP creates the base Starlette app
+    composed_app = mcp_server.http_app(
+        path="/mcp",
+        transport=MCP_TRANSPORT,  # type: ignore[arg-type]
+    )
 
-        # MCP creates the base Starlette app
-        composed_app = mcp_server.http_app(
-            path="/mcp",
-            transport=config.mcp.transport,  # type: ignore[arg-type]
+    composed_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.server.cors_origins,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["*"],
+    )
+
+    # Insert SSE route before MCP catch-all
+    composed_app.routes.insert(0, Route("/api/events", sse_endpoint))
+
+    # Mount entire FastAPI app at position 0 (preserves FastAPI middleware stack)
+    # Using Mount with empty path so FastAPI handles all /api/* routes
+    composed_app.routes.insert(0, Mount("/api", app=fastapi_app, name="fastapi"))
+
+    # Assign lifespan to the composed app
+    composed_app.router.lifespan_context = lifespan  # type: ignore[attr-defined]
+
+    # Serve static UI files if build directory exists
+    ui_build_dir = Path(__file__).parent.parent.parent / "ui" / "build"
+    if not ui_build_dir.exists():
+        ui_build_dir = Path("/app/ui/build")
+
+    if ui_build_dir.exists():
+        composed_app.routes.append(
+            Mount("/_app", app=StaticFiles(directory=str(ui_build_dir / "_app")), name="app-assets")
         )
 
-        composed_app.add_middleware(
-            CORSMiddleware,
-            allow_origins=config.server.cors_origins,
-            allow_methods=["GET", "POST", "PUT", "DELETE"],
-            allow_headers=["*"],
-        )
+        async def spa_fallback(request: Any) -> FileResponse | JSONResponse:
+            """Serve index.html for SPA, 404 for API/MCP paths."""
+            path = request.path_params.get("path", "")
+            if path.startswith("api/") or path.startswith("mcp"):
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+            index = ui_build_dir / "index.html"
+            if index.exists():
+                return FileResponse(str(index))
+            return FileResponse(str(ui_build_dir / "200.html"))
 
-        # Insert SSE route before MCP catch-all
-        composed_app.routes.insert(0, Route("/api/events", sse_endpoint))
+        composed_app.routes.append(Route("/{path:path}", spa_fallback))
+        logger.info("Static UI served from %s", ui_build_dir)
 
-        # Insert all FastAPI routes at position 0 (priority over MCP)
-        for route in reversed(fastapi_app.routes):
-            composed_app.routes.insert(0, route)
-
-        # Assign lifespan to the composed app
-        composed_app.router.lifespan_context = lifespan  # type: ignore[attr-defined]
-
-        logger.info("MCP enabled at /mcp (transport=%s)", config.mcp.transport)
-        return composed_app
-
-    else:
-        # Pure FastAPI mode
-        fastapi_app.router.lifespan_context = lifespan  # type: ignore[attr-defined]
-        fastapi_app.routes.insert(0, Route("/api/events", sse_endpoint))
-
-        fastapi_app.add_middleware(
-            CORSMiddleware,
-            allow_origins=config.server.cors_origins,
-            allow_methods=["GET", "POST", "PUT", "DELETE"],
-            allow_headers=["*"],
-        )
-
-        return fastapi_app
+    logger.info("MCP enabled at /mcp (transport=%s)", MCP_TRANSPORT)
+    return composed_app

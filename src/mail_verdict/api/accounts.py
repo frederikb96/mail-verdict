@@ -2,9 +2,11 @@
 Account API endpoints.
 
 GET /api/accounts — list all accounts
-POST /api/accounts — create account
+POST /api/accounts — create account (encrypts passwords)
+GET /api/accounts/:id — account detail
 PUT /api/accounts/:id — update account
 DELETE /api/accounts/:id — delete account
+POST /api/accounts/:id/test-connection — test IMAP/SMTP connectivity
 """
 
 from __future__ import annotations
@@ -21,12 +23,13 @@ from mail_verdict.api.schemas import (
     AccountUpdateRequest,
     FolderResponse,
 )
+from mail_verdict.core.encryption import encrypt
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/accounts", tags=["accounts"])
+router = APIRouter(prefix="/accounts", tags=["accounts"])
 
 
 @router.get("", response_model=list[AccountResponse])
@@ -41,17 +44,22 @@ async def list_accounts() -> list[AccountResponse]:
 
 @router.post("", response_model=AccountResponse, status_code=201)
 async def create_account(request: AccountCreateRequest) -> AccountResponse:
-    """Create a new IMAP account."""
+    """Create a new IMAP account with encrypted passwords."""
     db = get_db_connection()
     account = Account(
         name=request.name,
         imap_host=request.imap_host,
         imap_port=request.imap_port,
         imap_user=request.imap_user,
+        imap_password=encrypt(request.imap_password) if request.imap_password else None,
         smtp_host=request.smtp_host,
         smtp_port=request.smtp_port,
         smtp_user=request.smtp_user,
+        smtp_password=encrypt(request.smtp_password) if request.smtp_password else None,
         is_active=request.is_active,
+        sync_lookback_days=request.sync_lookback_days,
+        embedding_lookback_days=request.embedding_lookback_days,
+        spam_enabled=request.spam_enabled,
     )
     async with db.session() as session:
         session.add(account)
@@ -60,16 +68,33 @@ async def create_account(request: AccountCreateRequest) -> AccountResponse:
         return AccountResponse.model_validate(account)
 
 
+@router.get("/{account_id}", response_model=AccountResponse)
+async def get_account(account_id: uuid.UUID) -> AccountResponse:
+    """Get account detail by ID."""
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return AccountResponse.model_validate(account)
+
+
 @router.put("/{account_id}", response_model=AccountResponse)
 async def update_account(
     account_id: uuid.UUID,
     request: AccountUpdateRequest,
 ) -> AccountResponse:
-    """Update an existing account."""
+    """Update an existing account. Passwords are re-encrypted if provided."""
     db = get_db_connection()
     update_values = request.model_dump(exclude_unset=True)
     if not update_values:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "imap_password" in update_values and update_values["imap_password"] is not None:
+        update_values["imap_password"] = encrypt(update_values["imap_password"])
+    if "smtp_password" in update_values and update_values["smtp_password"] is not None:
+        update_values["smtp_password"] = encrypt(update_values["smtp_password"])
 
     async with db.session() as session:
         result = await session.execute(select(Account).where(Account.id == account_id))
@@ -96,6 +121,55 @@ async def delete_account(account_id: uuid.UUID) -> None:
         await session.execute(delete(Account).where(Account.id == account_id))
 
 
+@router.post("/{account_id}/test-connection")
+async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
+    """Test IMAP/SMTP connectivity for an account."""
+    from mail_verdict.core.encryption import decrypt
+
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    results: dict[str, str] = {}
+
+    try:
+        import aioimaplib
+
+        password = decrypt(account.imap_password) if account.imap_password else ""
+        imap = aioimaplib.IMAP4_SSL(host=account.imap_host, port=account.imap_port)
+        await imap.wait_hello_from_server()
+        resp = await imap.login(account.imap_user, password)
+        if resp.result == "OK":
+            results["imap"] = "ok"
+        else:
+            results["imap"] = f"error: {resp.result}"
+        await imap.logout()
+    except Exception as e:
+        results["imap"] = f"error: {e}"
+
+    if account.smtp_host:
+        try:
+            import aiosmtplib
+
+            password = decrypt(account.smtp_password) if account.smtp_password else ""
+            smtp = aiosmtplib.SMTP(
+                hostname=account.smtp_host,
+                port=account.smtp_port or 465,
+                use_tls=True,
+            )
+            await smtp.connect()
+            await smtp.login(account.smtp_user or account.imap_user, password)
+            results["smtp"] = "ok"
+            await smtp.quit()
+        except Exception as e:
+            results["smtp"] = f"error: {e}"
+
+    return results
+
+
 @router.get("/{account_id}/folders", response_model=list[FolderResponse])
 async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
     """List all folders for an account."""
@@ -118,3 +192,55 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
         )
         for f in folders
     ]
+
+
+@router.get("/{account_id}/folder-mapping")
+async def get_folder_mapping(account_id: uuid.UUID) -> dict[str, str | None]:
+    """Get the folder mapping for an account (auto-detect if not set)."""
+    from mail_verdict.sync.folder_mapping import auto_detect_mapping
+
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if account.folder_mapping:
+        return account.folder_mapping
+
+    # Auto-detect from synced folders
+    async with db.session() as session:
+        result = await session.execute(
+            select(Folder).where(Folder.account_id == account_id)
+        )
+        folder_rows = list(result.scalars().all())  # type: ignore[assignment]
+
+    folder_dicts: list[dict[str, str | None]] = [
+        {
+            "imap_name": f.imap_name,  # type: ignore[attr-defined]
+            "special_use": f.special_use.value if f.special_use else None,  # type: ignore[attr-defined]
+        }
+        for f in folder_rows
+    ]
+    return auto_detect_mapping(folder_dicts)
+
+
+@router.put("/{account_id}/folder-mapping")
+async def update_folder_mapping(
+    account_id: uuid.UUID,
+    mapping: dict[str, str | None],
+) -> dict[str, str | None]:
+    """Save custom folder mapping for an account."""
+    from sqlalchemy import update as sql_update
+
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        await session.execute(
+            sql_update(Account).where(Account.id == account_id).values(folder_mapping=mapping)
+        )
+    return mapping

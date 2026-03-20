@@ -113,17 +113,22 @@ class EventBus:
             extra={"event": event_name, "subscriber_count": len(subs)},
         )
 
-        for sub in subs:
-            try:
-                await sub.callback(event)
-            except Exception:
+        results = await asyncio.gather(
+            *[self._safe_dispatch(sub, event) for sub in subs],
+            return_exceptions=True,
+        )
+        for sub, result in zip(subs, results):
+            if isinstance(result, Exception):
                 logger.exception(
                     "Subscriber raised exception",
-                    extra={
-                        "subscriber": sub.name,
-                        "event": event_name,
-                    },
+                    extra={"subscriber": sub.name, "event": event_name},
+                    exc_info=result,
                 )
+
+    @staticmethod
+    async def _safe_dispatch(sub: Subscriber, event: SyncEvent) -> None:
+        """Dispatch to a single subscriber with exception propagation."""
+        await sub.callback(event)
 
     async def subscriber_count(self, event_type: type[SyncEvent]) -> int:
         """

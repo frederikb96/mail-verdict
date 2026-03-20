@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import re
 import uuid
 from datetime import datetime, timezone
@@ -27,7 +28,8 @@ from mail_verdict.sync.folders import discover_folders
 from mail_verdict.sync.parser import parse_message
 
 if TYPE_CHECKING:
-    from mail_verdict.config import AccountConfig, MailVerdictConfig
+    from typing import Any
+
     from mail_verdict.database.models import Folder
     from mail_verdict.database.repository import (
         AttachmentRepository,
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
         MailRepository,
     )
     from mail_verdict.rules.bus import EventBus
+    from mail_verdict.sync.connector import AccountConnConfig
     from mail_verdict.sync.extensions import AsyncIMAPExtended
 
 logger = logging.getLogger(__name__)
@@ -50,26 +53,26 @@ class SyncManager:
 
     def __init__(
         self,
-        account: AccountConfig,
+        account: AccountConnConfig,
         account_id: uuid.UUID,
         connector: IMAPConnector,
         folder_repo: FolderRepository,
         mail_repo: MailRepository,
         attachment_repo: AttachmentRepository,
-        config: MailVerdictConfig,
+        sync_settings: dict[str, Any],
         event_bus: EventBus | None = None,
     ) -> None:
         """
         Initialize sync manager for an account.
 
         Args:
-            account: Account configuration
+            account: Account connection config
             account_id: Account UUID in database
             connector: IMAP connector for this account
             folder_repo: Folder repository
             mail_repo: Mail repository
             attachment_repo: Attachment repository
-            config: Global configuration
+            sync_settings: Sync settings dict
             event_bus: Optional event bus for broadcasting events to rules/SSE
         """
         self._account = account
@@ -78,7 +81,7 @@ class SyncManager:
         self._folder_repo = folder_repo
         self._mail_repo = mail_repo
         self._attachment_repo = attachment_repo
-        self._config = config
+        self._sync_settings = sync_settings
         self._change_detector = ChangeDetector(folder_repo, mail_repo)
         self._event_queue: asyncio.Queue[SyncEvent] = asyncio.Queue(maxsize=1000)
         self._event_bus = event_bus
@@ -105,10 +108,20 @@ class SyncManager:
             self._sync_loop(),
             name=f"sync-{self._account.name}",
         )
+        self._task.add_done_callback(self._task_done_callback)
         logger.info(
             "Sync manager started",
             extra={"account": self._account.name},
         )
+
+    @staticmethod
+    def _task_done_callback(task: asyncio.Task[None]) -> None:
+        """Log if the sync task exits unexpectedly."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.error("Sync task crashed: %s", exc, exc_info=exc)
 
     async def stop(self) -> None:
         """Stop the sync loop and wait for completion."""
@@ -144,7 +157,7 @@ class SyncManager:
                     conn,
                     self._account_id,
                     self._folder_repo,
-                    auto_detect=self._config.sync.auto_detect_folders,
+                    auto_detect=bool(self._sync_settings.get("auto_detect_folders", True)),
                 )
 
                 # Sync each folder
@@ -219,7 +232,9 @@ class SyncManager:
 
             if self._running:
                 try:
-                    await asyncio.sleep(self._config.sync.poll_interval_seconds)
+                    interval = int(self._sync_settings.get("poll_interval_seconds", 300))
+                    jitter = random.uniform(0, interval * 0.1)
+                    await asyncio.sleep(interval + jitter)
                 except asyncio.CancelledError:
                     break
 
@@ -240,6 +255,17 @@ class SyncManager:
             self._account_id,
             folder,
         )
+
+        # UIDVALIDITY changed: purge all local mails for this folder
+        if changeset.uidvalidity_changed:
+            logger.info(
+                "UIDVALIDITY changed, purging local mails for folder",
+                extra={
+                    "account": self._account.name,
+                    "folder": folder.imap_name,
+                },
+            )
+            await self._mail_repo.delete_by_folder(folder.id)
 
         # Fetch and persist new messages
         if changeset.new_uids:
@@ -409,9 +435,9 @@ class SyncManager:
                 message_id=parsed.message_id,
                 subject=parsed.subject,
                 from_addr=parsed.from_addr,
-                to_addrs={"addrs": parsed.to_addrs} if parsed.to_addrs else None,
-                cc_addrs={"addrs": parsed.cc_addrs} if parsed.cc_addrs else None,
-                bcc_addrs={"addrs": parsed.bcc_addrs} if parsed.bcc_addrs else None,
+                to_addrs=parsed.to_addrs if parsed.to_addrs else None,
+                cc_addrs=parsed.cc_addrs if parsed.cc_addrs else None,
+                bcc_addrs=parsed.bcc_addrs if parsed.bcc_addrs else None,
                 body_text=parsed.body_text,
                 body_html=parsed.body_html,
                 raw_headers=parsed.raw_headers,

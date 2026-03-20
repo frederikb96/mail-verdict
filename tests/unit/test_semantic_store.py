@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from mail_verdict.config.loader import AIConfig, QdrantConfig
+from mail_verdict.config.loader import QdrantConfig
 from mail_verdict.semantic.store import SemanticStore
 
 
@@ -17,14 +17,14 @@ def _make_store(
 ) -> SemanticStore:
     """Create a SemanticStore with mock clients."""
     qdrant_config = QdrantConfig(host="localhost", port=6333, collection_name="test_collection")
-    ai_config = AIConfig(
-        provider="openai",
-        model="test-model",
-        embedding_model="test-embedding-model",
-        embedding_dimensions=3072,
-    )
+    ai_settings = {
+        "provider": "openai",
+        "model": "test-model",
+        "embedding_model": "test-embedding-model",
+        "embedding_dimensions": 3072,
+    }
     q = qdrant or MagicMock()
-    return SemanticStore(q, qdrant_config, ai_config, openai_client=openai)
+    return SemanticStore(q, qdrant_config, ai_settings, openai_client=openai)
 
 
 class TestBuildEmbeddingText:
@@ -167,10 +167,11 @@ class TestSingleton:
     def test_init_and_reset(self) -> None:
         """init_instance sets singleton, reset_instance clears it."""
         qdrant_config = QdrantConfig(host="localhost", port=6333, collection_name="test")
-        ai_config = AIConfig(
-            provider="openai", model="m", embedding_model="e", embedding_dimensions=3072
-        )
-        instance = SemanticStore.init_instance(MagicMock(), qdrant_config, ai_config)
+        ai_settings = {
+            "provider": "openai", "model": "m",
+            "embedding_model": "e", "embedding_dimensions": 3072,
+        }
+        instance = SemanticStore.init_instance(MagicMock(), qdrant_config, ai_settings)
         assert SemanticStore._instance is instance
         SemanticStore.reset_instance()
         assert SemanticStore._instance is None

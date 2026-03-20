@@ -33,7 +33,7 @@ from mail_verdict.database.models import Mail
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/mails", tags=["mails"])
+router = APIRouter(prefix="/mails", tags=["mails"])
 
 
 @router.get("", response_model=list[MailSummary])
@@ -51,7 +51,7 @@ async def list_mails(
 
     db = get_db_connection()
     async with db.session() as session:
-        stmt = select(Mail).order_by(desc(Mail.received_at))
+        stmt = select(Mail).where(Mail.is_deleted.is_(False)).order_by(desc(Mail.received_at))
 
         if account_id is not None:
             stmt = stmt.where(Mail.account_id == account_id)
@@ -88,6 +88,10 @@ async def get_mail(
     attachment_repo = get_attachment_repo()
     attachments = await attachment_repo.get_by_mail_id(mail_id)
 
+    from mail_verdict.core.sanitizer import sanitize_email_html
+
+    sanitized_html = sanitize_email_html(mail.body_html) if mail.body_html else None
+
     return MailDetail(
         id=mail.id,
         account_id=mail.account_id,
@@ -100,7 +104,7 @@ async def get_mail(
         cc_addrs=mail.cc_addrs,
         bcc_addrs=mail.bcc_addrs,
         body_text=mail.body_text,
-        body_html=mail.body_html,
+        body_html=sanitized_html,
         raw_headers=mail.raw_headers,
         received_at=mail.received_at,
         size_bytes=mail.size_bytes,

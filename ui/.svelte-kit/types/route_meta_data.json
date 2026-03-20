@@ -3,6 +3,9 @@
 		"src/routes/+layout.ts",
 		"src/routes/+layout.ts"
 	],
+	"/accounts": [
+		"src/routes/+layout.ts"
+	],
 	"/mail": [
 		"src/routes/+layout.ts"
 	],
@@ -14,6 +17,9 @@
 		"src/routes/+layout.ts"
 	],
 	"/settings": [
+		"src/routes/+layout.ts"
+	],
+	"/verdicts": [
 		"src/routes/+layout.ts"
 	]
 }

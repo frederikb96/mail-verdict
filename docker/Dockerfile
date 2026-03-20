@@ -40,6 +40,17 @@ RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 # =============================================================================
+# UI build stage: SvelteKit static build
+# =============================================================================
+FROM node:22-slim AS ui-build
+
+WORKDIR /ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY ui/ ./
+RUN npm run build
+
+# =============================================================================
 # Prod stage: source baked in, minimal image
 # =============================================================================
 FROM base AS prod
@@ -52,6 +63,7 @@ COPY src/ ./src/
 COPY config/ ./config/
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+COPY --from=ui-build /ui/build ./ui/build
 
 RUN uv pip install --system --no-cache-dir --no-deps .
 

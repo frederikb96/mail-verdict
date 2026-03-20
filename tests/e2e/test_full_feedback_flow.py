@@ -254,7 +254,7 @@ async def test_imap_feedback_junk_to_inbox(app_client, qdrant_client) -> None:
 
     # Verify Qdrant tag was updated to not-spam
     resp = await qdrant_client.post(
-        "/collections/mail_verdict_test/points/scroll",
+        "/collections/mail_embeddings/points/scroll",
         json={
             "filter": {
                 "must": [

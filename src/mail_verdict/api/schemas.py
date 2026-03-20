@@ -137,7 +137,7 @@ class SearchResponse(BaseModel):
 
 
 class AccountResponse(BaseModel):
-    """Account summary."""
+    """Account summary (passwords never exposed)."""
 
     id: uuid.UUID
     name: str
@@ -148,6 +148,11 @@ class AccountResponse(BaseModel):
     smtp_port: int | None = None
     smtp_user: str | None = None
     is_active: bool = True
+    state: str = "created"
+    sync_lookback_days: int = 180
+    embedding_lookback_days: int = 30
+    spam_enabled: bool = False
+    folder_mapping: dict[str, str | None] | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -160,10 +165,15 @@ class AccountCreateRequest(BaseModel):
     imap_host: str
     imap_port: int = 993
     imap_user: str
+    imap_password: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None
+    smtp_password: str | None = None
     is_active: bool = True
+    sync_lookback_days: int = 180
+    embedding_lookback_days: int = 30
+    spam_enabled: bool = False
 
 
 class AccountUpdateRequest(BaseModel):
@@ -173,10 +183,15 @@ class AccountUpdateRequest(BaseModel):
     imap_host: str | None = None
     imap_port: int | None = None
     imap_user: str | None = None
+    imap_password: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None
+    smtp_password: str | None = None
     is_active: bool | None = None
+    sync_lookback_days: int | None = None
+    embedding_lookback_days: int | None = None
+    spam_enabled: bool | None = None
 
 
 # --- Folder schemas ---

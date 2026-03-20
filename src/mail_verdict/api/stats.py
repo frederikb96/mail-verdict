@@ -23,7 +23,7 @@ from mail_verdict.spam.metrics import SpamMetrics
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/stats", tags=["stats"])
+router = APIRouter(prefix="/stats", tags=["stats"])
 
 
 @router.get("", response_model=StatsResponse)

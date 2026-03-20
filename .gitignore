@@ -13,6 +13,11 @@ build/
 # Environment
 .env
 
+# UI build artifacts
+ui/.svelte-kit/
+ui/build/
+ui/node_modules/
+
 # IDE
 .idea/
 .vscode/

@@ -13,10 +13,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from mail_verdict.core.retry import RetryConfig
 from mail_verdict.sync.connector import IMAPConnector
 
 if TYPE_CHECKING:
-    from mail_verdict.config import RetryConfig
     from mail_verdict.sync.extensions import AsyncIMAPExtended
     from mail_verdict.sync.smtp_client import SMTPClient
 
@@ -74,12 +74,12 @@ class ActionPropagator:
 
         Args:
             connector: IMAP connector for server operations
-            retry_config: Retry configuration for backoff
+            retry_config: Retry configuration
             smtp_client: Optional SMTP client for forwarding
         """
         self._connector = connector
-        self._retry = retry_config
         self._smtp_client = smtp_client
+        self._retry = retry_config
 
     async def execute_imap(self, action: IMAPAction) -> bool:
         """
@@ -110,7 +110,7 @@ class ActionPropagator:
 
             except Exception as exc:
                 if attempt < self._retry.max_retries:
-                    delay = self._retry.get_delay(attempt)
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
                         "IMAP action failed, retrying",
                         extra={
@@ -180,7 +180,7 @@ class ActionPropagator:
 
             except Exception as exc:
                 if attempt < self._retry.max_retries:
-                    delay = self._retry.get_delay(attempt)
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
                         "Forward failed, retrying",
                         extra={
@@ -213,10 +213,9 @@ class ActionPropagator:
         mark_read: bool = False,
     ) -> bool:
         """
-        Convenience: move mail to spam folder, optionally mark read.
+        Move mail to spam folder, set $Junk keyword, optionally mark read.
 
-        Marks read BEFORE moving so the UID is still valid in the source folder.
-        After MOVE the original UID is invalidated.
+        Sets flags BEFORE moving so the UID is still valid in the source folder.
 
         Args:
             folder: Source folder
@@ -224,15 +223,18 @@ class ActionPropagator:
             spam_folder: Destination spam folder name
             mark_read: Whether to mark as read
         """
+        flags_to_add = ["$Junk"]
         if mark_read:
-            await self.execute_imap(
-                IMAPAction(
-                    action_type=ActionType.STORE_FLAGS,
-                    folder=folder,
-                    uid_set=uid_set,
-                    flags_add=["\\Seen"],
-                )
+            flags_to_add.append("\\Seen")
+
+        await self.execute_imap(
+            IMAPAction(
+                action_type=ActionType.STORE_FLAGS,
+                folder=folder,
+                uid_set=uid_set,
+                flags_add=flags_to_add,
             )
+        )
 
         return await self.execute_imap(
             IMAPAction(
@@ -240,6 +242,35 @@ class ActionPropagator:
                 folder=folder,
                 uid_set=uid_set,
                 target_folder=spam_folder,
+            )
+        )
+
+    async def mark_not_spam(
+        self,
+        folder: str,
+        uid_set: str,
+    ) -> bool:
+        """
+        Remove $Junk and set $NotJunk keyword (spam correction).
+
+        Args:
+            folder: Current folder containing the mail
+            uid_set: UID set to update
+        """
+        await self.execute_imap(
+            IMAPAction(
+                action_type=ActionType.STORE_FLAGS,
+                folder=folder,
+                uid_set=uid_set,
+                flags_remove=["$Junk"],
+            )
+        )
+        return await self.execute_imap(
+            IMAPAction(
+                action_type=ActionType.STORE_FLAGS,
+                folder=folder,
+                uid_set=uid_set,
+                flags_add=["$NotJunk"],
             )
         )
 

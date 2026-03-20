@@ -38,6 +38,7 @@
  * The above values will be the same _even if_ different values for `ENVIRONMENT` or `PUBLIC_BASE_URL` are set at runtime, as they are statically replaced in your code with their build time values.
  */
 declare module '$env/static/private' {
+	export const GJS_DEBUG_TOPICS: string;
 	export const HISTFILESIZE: string;
 	export const GITHUB_PAT: string;
 	export const HISTTIMEFORMAT: string;
@@ -49,13 +50,12 @@ declare module '$env/static/private' {
 	export const EMAIL_IMAP_SERVER: string;
 	export const USER: string;
 	export const EMAIL_SMTP_PORT: string;
-	export const CLAUDE_CODE_ENTRYPOINT: string;
-	export const LC_TIME: string;
 	export const OPENMEMORY_URL: string;
+	export const LC_TIME: string;
 	export const OPENMEMORY_USER_ID: string;
 	export const npm_config_user_agent: string;
 	export const STARSHIP_SHELL: string;
-	export const GIT_EDITOR: string;
+	export const MAIL_VERDICT_USERNAME: string;
 	export const XDG_SESSION_TYPE: string;
 	export const FZF_DEFAULT_OPTS: string;
 	export const npm_node_execpath: string;
@@ -64,6 +64,7 @@ declare module '$env/static/private' {
 	export const SHLVL: string;
 	export const ELASTIC_TEST_KIBANA_URL: string;
 	export const npm_config_noproxy: string;
+	export const PAI_INSTANCE: string;
 	export const HOME: string;
 	export const TERMINFO: string;
 	export const DEBGET_TOKEN: string;
@@ -84,17 +85,17 @@ declare module '$env/static/private' {
 	export const KITTY_PID: string;
 	export const ELTOP_ES_URL: string;
 	export const MANAGERPID: string;
+	export const MAIL_VERDICT_MCP_USERNAME: string;
 	export const npm_config_userconfig: string;
 	export const npm_config_local_prefix: string;
 	export const SYSTEMD_EXEC_PID: string;
+	export const HIDDEN_CLAUDE_TOKEN: string;
 	export const DBUS_SESSION_BUS_ADDRESS: string;
 	export const COLORTERM: string;
 	export const FZF_CTRL_R_OPTS: string;
 	export const DA: string;
 	export const EMAIL_IMAP_PORT: string;
-	export const GIO_LAUNCHED_DESKTOP_FILE_PID: string;
 	export const COLOR: string;
-	export const GNOME_KEYRING_CONTROL: string;
 	export const DEBUGINFOD_URLS: string;
 	export const IM_CONFIG_PHASE: string;
 	export const WAYLAND_DISPLAY: string;
@@ -102,7 +103,6 @@ declare module '$env/static/private' {
 	export const ELASTIC_FREDDY_KIBANA_URL: string;
 	export const LOGNAME: string;
 	export const CAREFUL_BORG_URL: string;
-	export const ENABLE_TOOL_SEARCH: string;
 	export const JOURNAL_STREAM: string;
 	export const _: string;
 	export const npm_config_prefix: string;
@@ -115,7 +115,6 @@ declare module '$env/static/private' {
 	export const KITTY_PUBLIC_KEY: string;
 	export const USERNAME: string;
 	export const TERM: string;
-	export const OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: string;
 	export const PAI_HOME: string;
 	export const npm_config_cache: string;
 	export const GNOME_DESKTOP_SESSION_ID: string;
@@ -131,24 +130,22 @@ declare module '$env/static/private' {
 	export const PAPERSIZE: string;
 	export const NODE: string;
 	export const npm_package_name: string;
-	export const COREPACK_ENABLE_AUTO_PIN: string;
 	export const XDG_MENU_PREFIX: string;
 	export const LC_ADDRESS: string;
 	export const GNOME_SETUP_DISPLAY: string;
 	export const PAI_DIR: string;
 	export const DA_COLOR: string;
 	export const XDG_RUNTIME_DIR: string;
+	export const MAIL_VERDICT_PASSWORD: string;
 	export const EMAIL_USERNAME: string;
 	export const DISPLAY: string;
 	export const HISTSIZE: string;
-	export const NoDefaultCurrentDirectoryInExePath: string;
 	export const LANG: string;
 	export const XDG_CURRENT_DESKTOP: string;
 	export const LC_TELEPHONE: string;
 	export const XMODIFIERS: string;
 	export const XDG_SESSION_DESKTOP: string;
 	export const XAUTHORITY: string;
-	export const CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: string;
 	export const IMMICH_API_KEY: string;
 	export const ELEVENLABS_API_KEY: string;
 	export const ELASTIC_TEST_API_KEY: string;
@@ -164,11 +161,14 @@ declare module '$env/static/private' {
 	export const GDMSESSION: string;
 	export const KIMAI_URL: string;
 	export const KITTY_WINDOW_ID: string;
-	export const CLAUDECODE: string;
+	export const PRISM_BASIC_AUTH: string;
+	export const MAIL_VERDICT_MCP_PASSWORD: string;
 	export const LC_MEASUREMENT: string;
 	export const GPG_AGENT_INFO: string;
 	export const EMAIL_SMTP_SERVER: string;
+	export const GJS_DEBUG_OUTPUT: string;
 	export const LC_IDENTIFICATION: string;
+	export const BASH_ENV: string;
 	export const QT_IM_MODULE: string;
 	export const npm_config_globalconfig: string;
 	export const npm_config_init_module: string;
@@ -176,7 +176,6 @@ declare module '$env/static/private' {
 	export const JAVA_HOME: string;
 	export const PWD: string;
 	export const WISO_TOTP_SECRET: string;
-	export const DISABLE_AUTOUPDATER: string;
 	export const CAREFUL_BORG_SSH_KEY_PATH: string;
 	export const npm_execpath: string;
 	export const XDG_CONFIG_DIRS: string;
@@ -193,8 +192,8 @@ declare module '$env/static/private' {
 	export const KITTY_LISTEN_ON: string;
 	export const QT_IM_MODULES: string;
 	export const MEMORY_PRESSURE_WRITE: string;
+	export const MANPATH: string;
 	export const BRAVE_API_KEY: string;
-	export const CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: string;
 	export const EDITOR: string;
 	export const WISO_USERNAME: string;
 	export const GOOGLE_API_KEY: string;
@@ -286,6 +285,7 @@ declare module '$env/static/public' {
  */
 declare module '$env/dynamic/private' {
 	export const env: {
+		GJS_DEBUG_TOPICS: string;
 		HISTFILESIZE: string;
 		GITHUB_PAT: string;
 		HISTTIMEFORMAT: string;
@@ -297,13 +297,12 @@ declare module '$env/dynamic/private' {
 		EMAIL_IMAP_SERVER: string;
 		USER: string;
 		EMAIL_SMTP_PORT: string;
-		CLAUDE_CODE_ENTRYPOINT: string;
-		LC_TIME: string;
 		OPENMEMORY_URL: string;
+		LC_TIME: string;
 		OPENMEMORY_USER_ID: string;
 		npm_config_user_agent: string;
 		STARSHIP_SHELL: string;
-		GIT_EDITOR: string;
+		MAIL_VERDICT_USERNAME: string;
 		XDG_SESSION_TYPE: string;
 		FZF_DEFAULT_OPTS: string;
 		npm_node_execpath: string;
@@ -312,6 +311,7 @@ declare module '$env/dynamic/private' {
 		SHLVL: string;
 		ELASTIC_TEST_KIBANA_URL: string;
 		npm_config_noproxy: string;
+		PAI_INSTANCE: string;
 		HOME: string;
 		TERMINFO: string;
 		DEBGET_TOKEN: string;
@@ -332,17 +332,17 @@ declare module '$env/dynamic/private' {
 		KITTY_PID: string;
 		ELTOP_ES_URL: string;
 		MANAGERPID: string;
+		MAIL_VERDICT_MCP_USERNAME: string;
 		npm_config_userconfig: string;
 		npm_config_local_prefix: string;
 		SYSTEMD_EXEC_PID: string;
+		HIDDEN_CLAUDE_TOKEN: string;
 		DBUS_SESSION_BUS_ADDRESS: string;
 		COLORTERM: string;
 		FZF_CTRL_R_OPTS: string;
 		DA: string;
 		EMAIL_IMAP_PORT: string;
-		GIO_LAUNCHED_DESKTOP_FILE_PID: string;
 		COLOR: string;
-		GNOME_KEYRING_CONTROL: string;
 		DEBUGINFOD_URLS: string;
 		IM_CONFIG_PHASE: string;
 		WAYLAND_DISPLAY: string;
@@ -350,7 +350,6 @@ declare module '$env/dynamic/private' {
 		ELASTIC_FREDDY_KIBANA_URL: string;
 		LOGNAME: string;
 		CAREFUL_BORG_URL: string;
-		ENABLE_TOOL_SEARCH: string;
 		JOURNAL_STREAM: string;
 		_: string;
 		npm_config_prefix: string;
@@ -363,7 +362,6 @@ declare module '$env/dynamic/private' {
 		KITTY_PUBLIC_KEY: string;
 		USERNAME: string;
 		TERM: string;
-		OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: string;
 		PAI_HOME: string;
 		npm_config_cache: string;
 		GNOME_DESKTOP_SESSION_ID: string;
@@ -379,24 +377,22 @@ declare module '$env/dynamic/private' {
 		PAPERSIZE: string;
 		NODE: string;
 		npm_package_name: string;
-		COREPACK_ENABLE_AUTO_PIN: string;
 		XDG_MENU_PREFIX: string;
 		LC_ADDRESS: string;
 		GNOME_SETUP_DISPLAY: string;
 		PAI_DIR: string;
 		DA_COLOR: string;
 		XDG_RUNTIME_DIR: string;
+		MAIL_VERDICT_PASSWORD: string;
 		EMAIL_USERNAME: string;
 		DISPLAY: string;
 		HISTSIZE: string;
-		NoDefaultCurrentDirectoryInExePath: string;
 		LANG: string;
 		XDG_CURRENT_DESKTOP: string;
 		LC_TELEPHONE: string;
 		XMODIFIERS: string;
 		XDG_SESSION_DESKTOP: string;
 		XAUTHORITY: string;
-		CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: string;
 		IMMICH_API_KEY: string;
 		ELEVENLABS_API_KEY: string;
 		ELASTIC_TEST_API_KEY: string;
@@ -412,11 +408,14 @@ declare module '$env/dynamic/private' {
 		GDMSESSION: string;
 		KIMAI_URL: string;
 		KITTY_WINDOW_ID: string;
-		CLAUDECODE: string;
+		PRISM_BASIC_AUTH: string;
+		MAIL_VERDICT_MCP_PASSWORD: string;
 		LC_MEASUREMENT: string;
 		GPG_AGENT_INFO: string;
 		EMAIL_SMTP_SERVER: string;
+		GJS_DEBUG_OUTPUT: string;
 		LC_IDENTIFICATION: string;
+		BASH_ENV: string;
 		QT_IM_MODULE: string;
 		npm_config_globalconfig: string;
 		npm_config_init_module: string;
@@ -424,7 +423,6 @@ declare module '$env/dynamic/private' {
 		JAVA_HOME: string;
 		PWD: string;
 		WISO_TOTP_SECRET: string;
-		DISABLE_AUTOUPDATER: string;
 		CAREFUL_BORG_SSH_KEY_PATH: string;
 		npm_execpath: string;
 		XDG_CONFIG_DIRS: string;
@@ -441,8 +439,8 @@ declare module '$env/dynamic/private' {
 		KITTY_LISTEN_ON: string;
 		QT_IM_MODULES: string;
 		MEMORY_PRESSURE_WRITE: string;
+		MANPATH: string;
 		BRAVE_API_KEY: string;
-		CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: string;
 		EDITOR: string;
 		WISO_USERNAME: string;
 		GOOGLE_API_KEY: string;

@@ -111,7 +111,7 @@ function MailDetail($$renderer, $$props) {
     $$renderer2.push(`<!--]--></div> `);
     if (mail.body_html) {
       $$renderer2.push("<!--[-->");
-      $$renderer2.push(`<div class="px-4 py-1.5 border-b border-border flex gap-2"><button${attr_class("text-[11px] px-2 py-0.5 rounded transition-colors", void 0, {
+      $$renderer2.push(`<div class="px-4 py-1.5 border-b border-border flex items-center gap-2"><button${attr_class("text-[11px] px-2 py-0.5 rounded transition-colors", void 0, {
         "bg-surface-light": !showHtml,
         "text-text-primary": !showHtml,
         "text-text-muted": showHtml
@@ -119,7 +119,15 @@ function MailDetail($$renderer, $$props) {
         "bg-surface-light": showHtml,
         "text-text-primary": showHtml,
         "text-text-muted": !showHtml
-      })}>HTML</button></div>`);
+      })}>HTML</button> `);
+      {
+        $$renderer2.push("<!--[!-->");
+      }
+      $$renderer2.push(`<!--]--> `);
+      {
+        $$renderer2.push("<!--[!-->");
+      }
+      $$renderer2.push(`<!--]--></div>`);
     } else {
       $$renderer2.push("<!--[!-->");
     }

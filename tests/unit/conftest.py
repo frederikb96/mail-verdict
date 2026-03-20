@@ -13,8 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from mail_verdict.config.loader import MailVerdictConfig, get_config, reset_config
+from mail_verdict.config.loader import InfraConfig, get_config, reset_config
 from mail_verdict.rules.bus import EventBus
+from mail_verdict.settings.defaults import SETTING_DEFAULTS
 from tests.helpers.config_factory import make_config
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "emails"
@@ -29,14 +30,20 @@ def test_config_dict() -> dict[str, Any]:
 @pytest.fixture()
 def test_config(
     monkeypatch: pytest.MonkeyPatch, test_config_dict: dict[str, Any],
-) -> MailVerdictConfig:
-    """Parsed MailVerdictConfig with test defaults loaded via singleton."""
+) -> InfraConfig:
+    """Parsed InfraConfig with test defaults loaded via singleton."""
     import mail_verdict.config.loader as loader
 
     reset_config()
     monkeypatch.setattr(loader, "_CONFIG", test_config_dict)
     loader._config_instance = None
     return get_config()
+
+
+@pytest.fixture()
+def test_settings() -> dict[str, dict[str, Any]]:
+    """Default settings dict for tests."""
+    return {k: dict(v) for k, v in SETTING_DEFAULTS.items()}
 
 
 @pytest.fixture()

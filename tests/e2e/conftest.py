@@ -4,6 +4,7 @@ E2E test fixtures for MailVerdict.
 Provides shared fixtures for sending emails via SMTP, checking IMAP,
 querying the REST API, and waiting for async sync/verdict operations.
 
+Seeding: via API (POST /api/accounts) + Stalwart admin API.
 All HTTP clients use IPv4 (127.0.0.1) for podman rootless compatibility.
 """
 
@@ -12,15 +13,20 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import imaplib
+import logging
+import os
 import smtplib
 import uuid
 from email.mime.text import MIMEText
 from typing import Any
 
 import httpx
+import pytest
 import pytest_asyncio
 
 from tests.helpers.seed import StalwartSeeder
+
+logger = logging.getLogger(__name__)
 
 # Test infrastructure endpoints (host-side ports from compose.test.yaml)
 APP_BASE_URL = "http://127.0.0.1:18080"
@@ -30,6 +36,7 @@ SMTP_PORT = 1025
 IMAP_HOST = "127.0.0.1"
 IMAP_PORT = 1143
 QDRANT_URL = "http://127.0.0.1:16334"
+QDRANT_COLLECTION = "mail_embeddings"
 
 # Test credentials
 ALICE_EMAIL = "alice@test.local"
@@ -40,14 +47,123 @@ NEWSLETTER_EMAIL = "newsletter@test.local"
 NEWSLETTER_PASSWORD = "testpass123"
 
 
+async def _wait_healthy(client: httpx.AsyncClient, timeout: int = 60) -> None:
+    """Poll health endpoint until healthy or timeout."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            resp = await client.get("/api/health")
+            if resp.status_code == 200:
+                return
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
+            pass
+        await asyncio.sleep(2)
+    raise TimeoutError(f"App not healthy after {timeout}s")
+
+
+async def _seed_stalwart() -> None:
+    """Seed Stalwart with test domain and accounts."""
+    seeder = StalwartSeeder(base_url=STALWART_ADMIN_URL)
+    async with seeder:
+        await seeder.wait_ready()
+        await seeder.create_domain("test.local")
+        for acct in [
+            {"email": ALICE_EMAIL, "password": ALICE_PASSWORD, "name": "Alice Test"},
+            {"email": SPAMMER_EMAIL, "password": SPAMMER_PASSWORD, "name": "Spammer Bot"},
+            {"email": NEWSLETTER_EMAIL, "password": NEWSLETTER_PASSWORD, "name": "Newsletter"},
+        ]:
+            await seeder.create_account(acct["email"], acct["password"], display_name=acct["name"])
+
+
+async def _seed_app_account(client: httpx.AsyncClient) -> str:
+    """Create the test account via API. Returns account ID."""
+    resp = await client.get("/api/accounts")
+    accounts = resp.json()
+    for acct in accounts:
+        if acct["name"] == "alice":
+            return acct["id"]
+
+    resp = await client.post("/api/accounts", json={
+        "name": "alice",
+        "imap_host": "stalwart",
+        "imap_port": 1143,
+        "imap_user": ALICE_EMAIL,
+        "imap_password": ALICE_PASSWORD,
+        "smtp_host": "stalwart",
+        "smtp_port": 2525,
+        "smtp_user": ALICE_EMAIL,
+        "smtp_password": ALICE_PASSWORD,
+        "spam_enabled": True,
+    })
+    assert resp.status_code == 201, f"Account creation failed: {resp.text}"
+    return resp.json()["id"]
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Create a session-scoped event loop for async fixtures."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+async def _restart_app() -> None:
+    """Restart the app container so sync engine picks up new accounts."""
+    proc = await asyncio.create_subprocess_exec(
+        "podman", "restart", "mv-app-test",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    await proc.communicate()
+    # Wait for container process to restart
+    await asyncio.sleep(15)
+    # Wait for healthy with a completely fresh client + transport
+    fresh_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+    async with httpx.AsyncClient(
+        base_url=APP_BASE_URL, transport=fresh_transport, timeout=30.0,
+    ) as fresh_client:
+        await _wait_healthy(fresh_client, timeout=120)
+
+
+@pytest_asyncio.fixture(scope="session")
+async def seeded_env() -> dict[str, str]:
+    """Session-scoped seed: Stalwart + app account via API, then restart for sync."""
+    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+
+    # Phase 1: seed Stalwart + create account + configure settings via API
+    async with httpx.AsyncClient(
+        base_url=APP_BASE_URL, transport=transport, timeout=30.0,
+    ) as client:
+        await _wait_healthy(client)
+        # Set OpenAI API key via Settings API (not env var)
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        assert openai_key, "OPENAI_API_KEY env var required for E2E tests"
+        await client.put("/api/settings/ai", json={
+            "data": {"api_key": openai_key},
+        })
+        # Set fast sync interval for tests (10s instead of 300s default)
+        await client.put("/api/settings/sync", json={
+            "data": {"poll_interval_seconds": 10, "idle_enabled": False},
+        })
+        await _seed_stalwart()
+        account_id = await _seed_app_account(client)
+    # Client closed here before restart
+
+    # Phase 2: restart app so SyncEngine picks up the new account from DB
+    await _restart_app()
+    logger.info("App restarted after account seeding")
+
+    # Phase 3: wait for sync to start
+    await asyncio.sleep(10)
+    return {"account_id": account_id}
+
+
 @pytest_asyncio.fixture
-async def app_client() -> httpx.AsyncClient:
+async def app_client(seeded_env: dict[str, str]) -> httpx.AsyncClient:
     """Async HTTP client for the MailVerdict REST API."""
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
-        base_url=APP_BASE_URL,
-        transport=transport,
-        timeout=30.0,
+        base_url=APP_BASE_URL, transport=transport, timeout=30.0,
     ) as client:
         yield client
 
@@ -57,9 +173,7 @@ async def qdrant_client() -> httpx.AsyncClient:
     """Async HTTP client for direct Qdrant API access."""
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
-        base_url=QDRANT_URL,
-        transport=transport,
-        timeout=10.0,
+        base_url=QDRANT_URL, transport=transport, timeout=10.0,
     ) as client:
         yield client
 
@@ -81,11 +195,7 @@ def send_email(
     subject: str,
     body: str,
 ) -> str:
-    """
-    Send an email via SMTP with authentication.
-
-    Returns the generated Message-ID.
-    """
+    """Send an email via SMTP with authentication. Returns Message-ID."""
     msg = MIMEText(body, "plain")
     msg_id = f"<{uuid.uuid4()}@test.local>"
     msg["Message-ID"] = msg_id
@@ -113,11 +223,7 @@ def imap_get_messages(
     password: str = ALICE_PASSWORD,
     folder: str = "INBOX",
 ) -> list[dict[str, Any]]:
-    """
-    Fetch message subjects and UIDs from an IMAP folder.
-
-    Returns list of dicts with 'uid', 'subject', and 'flags' keys.
-    """
+    """Fetch message subjects and UIDs from an IMAP folder."""
     conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
     try:
         conn.login(user, password)
@@ -193,22 +299,7 @@ async def wait_for_new_mail(
     timeout: int = 120,
     poll_interval: float = 3.0,
 ) -> dict[str, Any]:
-    """
-    Poll the /api/mails endpoint until a new mail appears.
-
-    Args:
-        client: httpx client targeting the app API
-        known_ids: Set of mail IDs already known (to detect new ones)
-        subject_contains: Wait for a mail whose subject contains this string
-        timeout: Max seconds to wait
-        poll_interval: Seconds between polls
-
-    Returns:
-        The new mail dict from the API
-
-    Raises:
-        TimeoutError: If no new mail appears within timeout
-    """
+    """Poll /api/mails until a new mail appears."""
     if known_ids is None:
         known_ids = set()
 
@@ -244,21 +335,7 @@ async def wait_for_verdict(
     timeout: int = 120,
     poll_interval: float = 3.0,
 ) -> dict[str, Any]:
-    """
-    Poll the verdict endpoint until a verdict exists for the given mail.
-
-    Args:
-        client: httpx client targeting the app API
-        mail_id: UUID string of the mail
-        timeout: Max seconds to wait
-        poll_interval: Seconds between polls
-
-    Returns:
-        The verdict dict from the API
-
-    Raises:
-        TimeoutError: If no verdict appears within timeout
-    """
+    """Poll the verdict endpoint until a verdict exists for the given mail."""
     deadline = asyncio.get_event_loop().time() + timeout
 
     while asyncio.get_event_loop().time() < deadline:

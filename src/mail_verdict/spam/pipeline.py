@@ -23,10 +23,10 @@ from mail_verdict.database.models import SpecialUse, VerdictSource
 from mail_verdict.spam.analyst import AnalysisContext, NeighborContext, SpamAnalyst
 
 if TYPE_CHECKING:
-    from mail_verdict.config import MailVerdictConfig
     from mail_verdict.database.models import Folder, Mail
     from mail_verdict.database.repository import FolderRepository, MailRepository, VerdictRepository
     from mail_verdict.semantic.store import SemanticStore
+    from mail_verdict.settings.service import SettingsService
     from mail_verdict.sync.actions import ActionPropagator
 
 logger = logging.getLogger(__name__)
@@ -44,32 +44,32 @@ class VerdictPipeline:
 
     def __init__(
         self,
-        config: MailVerdictConfig,
+        settings_service: SettingsService,
         semantic_store: SemanticStore,
         analyst: SpamAnalyst,
         verdict_repo: VerdictRepository,
         mail_repo: MailRepository,
-        action_propagator: ActionPropagator | None = None,
+        account_propagators: dict[str, ActionPropagator] | None = None,
         folder_repo: FolderRepository | None = None,
     ) -> None:
         """
         Initialize the verdict pipeline.
 
         Args:
-            config: Global configuration
+            settings_service: Application settings service
             semantic_store: Vector store for embeddings and search
             analyst: LLM spam analyst
             verdict_repo: Verdict persistence
             mail_repo: Mail persistence (for lookups)
-            action_propagator: IMAP action executor (optional for testing)
+            account_propagators: Per-account IMAP action executors
             folder_repo: Folder repository for spam folder lookup
         """
-        self._config = config
+        self._settings = settings_service
         self._store = semantic_store
         self._analyst = analyst
         self._verdict_repo = verdict_repo
         self._mail_repo = mail_repo
-        self._action = action_propagator
+        self._propagators = account_propagators or {}
         self._folder_repo = folder_repo
 
     async def process_mail(
@@ -88,7 +88,8 @@ class VerdictPipeline:
             mail: Mail ORM object with full content
             folder: Folder the mail resides in
         """
-        if not self._config.spam.enabled:
+        spam_settings = self._settings.get("spam")
+        if not spam_settings.get("enabled", False):
             return None
 
         if folder.special_use in _SKIP_FOLDER_TYPES:
@@ -100,7 +101,9 @@ class VerdictPipeline:
 
         mail_id_str = str(mail.id)
         account_id_str = str(mail.account_id)
-        spam_config = self._config.spam
+        excerpt_length = int(spam_settings.get("excerpt_length", 300))
+        neighbor_count = int(spam_settings.get("neighbor_count", 3))
+        auto_mark_read = bool(spam_settings.get("auto_mark_read", True))
 
         try:
             # Step 1: Build embedding text and embed
@@ -110,7 +113,7 @@ class VerdictPipeline:
                 from_addr=mail.from_addr,
                 subject=mail.subject,
                 body_text=mail.body_text,
-                excerpt_length=spam_config.excerpt_length,
+                excerpt_length=excerpt_length,
             )
 
             if not embedding_text.strip():
@@ -139,7 +142,7 @@ class VerdictPipeline:
             # Step 3: Find neighbors
             neighbors = await self._store.search(
                 query_text=embedding_text,
-                limit=spam_config.neighbor_count,
+                limit=neighbor_count,
                 account_id=account_id_str,
                 exclude_ids=[mail_id_str],
             )
@@ -154,14 +157,16 @@ class VerdictPipeline:
                 for n in neighbors
             ]
 
-            # Build to_addrs display string
+            # Build to_addrs display string (handles flat list + legacy dict)
             to_display: str | None = None
-            if mail.to_addrs and isinstance(mail.to_addrs, dict):
-                addrs = mail.to_addrs.get("addrs", [])
+            if mail.to_addrs:
+                addrs = mail.to_addrs
+                if isinstance(addrs, dict):
+                    addrs = addrs.get("addrs", [])
                 if isinstance(addrs, list):
                     to_display = ", ".join(str(a) for a in addrs[:5])
 
-            body_excerpt = (mail.body_text or "")[: spam_config.excerpt_length]
+            body_excerpt = (mail.body_text or "")[:excerpt_length]
 
             context = AnalysisContext(
                 mail_id=mail_id_str,
@@ -184,7 +189,7 @@ class VerdictPipeline:
                 mail_id=mail.id,
                 is_spam=verdict.is_spam,
                 source=VerdictSource.AI,
-                model_used=self._config.ai.model,
+                model_used=self._settings.get("ai").get("model", "gpt-5-mini"),
                 reasoning=None,
                 neighbor_ids=neighbor_id_list if neighbor_id_list else None,
             )
@@ -195,16 +200,18 @@ class VerdictPipeline:
                 payload={"is_spam": str(verdict.is_spam).lower()},
             )
 
-            # Step 8: If spam, move to spam folder and optionally mark read
-            if verdict.is_spam and self._action:
-                spam_folder = await self._find_spam_folder_name(mail.account_id)
-                if spam_folder:
-                    await self._action.move_to_spam(
-                        folder=folder.imap_name,
-                        uid_set=str(mail.uid),
-                        spam_folder=spam_folder,
-                        mark_read=spam_config.auto_mark_read,
-                    )
+            # Step 8: If spam, resolve per-account propagator and move
+            if verdict.is_spam and self._propagators:
+                propagator = self._resolve_propagator(account_id_str)
+                if propagator:
+                    spam_folder = await self._find_spam_folder_name(mail.account_id)
+                    if spam_folder:
+                        await propagator.move_to_spam(
+                            folder=folder.imap_name,
+                            uid_set=str(mail.uid),
+                            spam_folder=spam_folder,
+                            mark_read=auto_mark_read,
+                        )
 
             logger.info(
                 "Verdict pipeline complete",
@@ -224,6 +231,17 @@ class VerdictPipeline:
             )
             return None
 
+    def _resolve_propagator(self, account_id_str: str) -> ActionPropagator | None:
+        """
+        Resolve the correct ActionPropagator for an account by UUID.
+
+        Args:
+            account_id_str: Account UUID string
+        """
+        if not self._propagators:
+            return None
+        return self._propagators.get(account_id_str)
+
     def _get_neighbor_excerpt(self, payload: dict[str, Any]) -> str:
         """
         Extract a readable excerpt from a neighbor's Qdrant payload.
@@ -242,22 +260,47 @@ class VerdictPipeline:
 
     async def _find_spam_folder_name(self, account_id: Any) -> str | None:
         """
-        Look up the actual spam/junk folder for an account.
+        Look up the junk folder using account folder_mapping, then SPECIAL-USE, then name fallback.
 
-        Queries FolderRepository for a folder with special_use=JUNK.
-        Falls back to common conventional names.
+        Args:
+            account_id: Account UUID
         """
         import uuid as _uuid
 
-        if self._folder_repo and account_id:
-            account_uuid = (
-                account_id if isinstance(account_id, _uuid.UUID) else _uuid.UUID(str(account_id))
-            )
+        from mail_verdict.sync.folder_mapping import get_mapped_folder
+
+        if not account_id:
+            return self._SPAM_FOLDER_FALLBACKS[0]
+
+        account_uuid = (
+            account_id if isinstance(account_id, _uuid.UUID) else _uuid.UUID(str(account_id))
+        )
+
+        # Check account's folder_mapping first
+        try:
+            from sqlalchemy import select
+
+            from mail_verdict.database.connection import get_db_connection
+            from mail_verdict.database.models import Account
+
+            db = get_db_connection()
+            async with db.session() as session:
+                result = await session.execute(select(Account).where(Account.id == account_uuid))
+                account = result.scalar_one_or_none()
+
+            if account and account.folder_mapping:
+                mapped = get_mapped_folder(account.folder_mapping, "junk")
+                if mapped:
+                    return mapped
+        except RuntimeError:
+            pass  # DB not initialized (unit tests)
+
+        # Fallback: SPECIAL-USE from synced folders
+        if self._folder_repo:
             folders = await self._folder_repo.get_by_account(account_uuid)
             for f in folders:
                 if f.special_use and f.special_use.value == "junk":
                     return f.imap_name
-            # Fallback: check by conventional name
             folder_names = {f.imap_name for f in folders}
             for name in self._SPAM_FOLDER_FALLBACKS:
                 if name in folder_names:

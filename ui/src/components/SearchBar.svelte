@@ -20,7 +20,7 @@
 		<input
 			type="text"
 			bind:value={query}
-			placeholder="Search emails..."
+			placeholder="Search by subject, sender, or content..."
 			class="w-full pl-8 pr-3 py-1.5 text-sm bg-surface-dark border border-border rounded text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
 		/>
 	</div>

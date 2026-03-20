@@ -17,7 +17,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from mail_verdict.config import AIConfig, RetryConfig, SpamConfig
+from mail_verdict.core.retry import RetryConfig
 
 logger = logging.getLogger(__name__)
 
@@ -91,22 +91,17 @@ def _auth_str(value: bool | None) -> str:
     return "pass" if value else "fail"
 
 
-def _load_system_prompt(spam_config: SpamConfig) -> str:
+def _load_system_prompt() -> str:
     """
-    Load the system prompt from config or file.
+    Load the system prompt from the prompt file.
 
-    Config system_prompt takes precedence. Falls back to prompt file.
-
-    Args:
-        spam_config: Spam configuration with system_prompt field
+    Raises:
+        RuntimeError: If prompt file not found
     """
-    if spam_config.system_prompt and spam_config.system_prompt.strip():
-        return spam_config.system_prompt.strip()
-
     if PROMPT_FILE.exists():
         return PROMPT_FILE.read_text().strip()
 
-    raise RuntimeError("No spam analyst system prompt found in config or prompt file")
+    raise RuntimeError(f"Spam analyst system prompt not found at {PROMPT_FILE}")
 
 
 MAX_CONTENT_LENGTH = 10_000
@@ -180,8 +175,8 @@ class OpenAISpamAnalyst(SpamAnalyst):
 
     def __init__(
         self,
-        ai_config: AIConfig,
-        spam_config: SpamConfig,
+        ai_settings: dict[str, Any],
+        spam_settings: dict[str, Any],
         retry_config: RetryConfig,
         openai_client: AsyncOpenAI | None = None,
     ) -> None:
@@ -189,14 +184,14 @@ class OpenAISpamAnalyst(SpamAnalyst):
         Initialize the OpenAI spam analyst.
 
         Args:
-            ai_config: AI provider config (model name)
-            spam_config: Spam config (system prompt, excerpt length)
-            retry_config: Retry config for backoff on failures
+            ai_settings: AI settings dict (model key)
+            spam_settings: Spam settings dict
+            retry_config: Retry configuration
             openai_client: Shared AsyncOpenAI client (creates one if not provided)
         """
-        self._model = ai_config.model
+        self._model = ai_settings.get("model", "gpt-5-mini")
         self._retry = retry_config
-        self._system_prompt = _load_system_prompt(spam_config)
+        self._system_prompt = _load_system_prompt()
         self._client: AsyncOpenAI | None = openai_client
 
     def _get_client(self) -> AsyncOpenAI:
@@ -251,7 +246,7 @@ class OpenAISpamAnalyst(SpamAnalyst):
             except ValueError as e:
                 last_error = e
                 if attempt < self._retry.max_retries:
-                    delay = self._retry.get_delay(attempt)
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
                         "Malformed spam analysis response, retrying",
                         extra={
@@ -264,9 +259,25 @@ class OpenAISpamAnalyst(SpamAnalyst):
                     await asyncio.sleep(delay)
 
             except Exception as e:
+                from openai import RateLimitError
+
                 last_error = e
-                if attempt < self._retry.max_retries:
-                    delay = self._retry.get_delay(attempt)
+                if isinstance(e, RateLimitError):
+                    retry_after = getattr(e, "retry_after", None)
+                    delay = (
+                        float(retry_after) if retry_after
+                        else self._retry.delay_for_attempt(attempt)
+                    )
+                    logger.warning(
+                        "OpenAI rate limited, backing off",
+                        extra={
+                            "mail_id": context.mail_id,
+                            "delay": delay,
+                        },
+                    )
+                    await asyncio.sleep(delay)
+                elif attempt < self._retry.max_retries:
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
                         "Spam analysis API call failed, retrying",
                         extra={
