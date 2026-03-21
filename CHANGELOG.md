@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - CI: parallel UI job with Node.js 22 type check (`tsc --noEmit`) and build validation
 - Security: unit tests for SSE cross-account event isolation
+- Unit tests for SelectionManager (toggle, clear, properties, global registry)
+- Unit tests for folder management schemas (order, visibility, IDLE configuration)
+- Unit tests for image exception schemas and router registration
+- Unit tests for cursor pagination schemas and on-demand body fetch fields
+- Unit tests for folder dedup (special-use detection, RFC 6154 flag priority, name fallback)
+- Unit tests for ChangeSet/SelectInfo dataclasses and extended UID set parsing
+- Unit tests for SSE event conversion and formatting
 
 ### Changed
 
