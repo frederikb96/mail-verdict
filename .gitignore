@@ -12,6 +12,7 @@ build/
 
 # Environment
 .env
+uv.lock
 
 # UI build artifacts
 ui/.svelte-kit/
