@@ -376,7 +376,7 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     assert resp.json()["success"] is True
 
     # Wait for background IMAP propagation
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
 
     # Verify flag on IMAP
     flags = _imap_get_flags_by_uid(uid)
@@ -390,7 +390,7 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     )
     assert resp.status_code == 200
 
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
     flags = _imap_get_flags_by_uid(uid)
     assert "\\Flagged" not in flags, f"\\Flagged should be removed, got: {flags}"
 
@@ -443,7 +443,7 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
         )
 
         # Wait for IMAP propagation
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
 
         # Verify mail appeared in Junk Mail on IMAP
         junk_uids = _imap_list_uids("Junk Mail")
@@ -458,7 +458,7 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
             json={"action": "move", "target_folder": "INBOX"},
         )
         assert resp.status_code == 200
-        await asyncio.sleep(3)
+        await asyncio.sleep(5)
     finally:
         # Restore original folder mapping
         await app_client.put(
@@ -505,7 +505,7 @@ async def test_delete_action_sets_deleted_flag(app_client: httpx.AsyncClient) ->
     assert mail_id not in after_ids, "Deleted mail still in default listing"
 
     # Wait for IMAP propagation
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
 
     # After IMAP propagation, Stalwart auto-expunges.
     # Verify the UID is no longer in INBOX on IMAP.
