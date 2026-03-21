@@ -24,6 +24,7 @@ DEFAULT_DOMAIN = "test.local"
 
 TEST_ACCOUNTS = [
     {"email": "alice@test.local", "password": "testpass123", "name": "Alice Test"},
+    {"email": "bob@test.local", "password": "testpass123", "name": "Bob Test"},
     {"email": "spammer@test.local", "password": "testpass123", "name": "Spammer Bot"},
     {"email": "newsletter@test.local", "password": "testpass123", "name": "Newsletter Sender"},
 ]

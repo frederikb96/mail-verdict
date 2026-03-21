@@ -41,6 +41,8 @@ QDRANT_COLLECTION = "mail_embeddings"
 # Test credentials
 ALICE_EMAIL = "alice@test.local"
 ALICE_PASSWORD = "testpass123"
+BOB_EMAIL = "bob@test.local"
+BOB_PASSWORD = "testpass123"
 SPAMMER_EMAIL = "spammer@test.local"
 SPAMMER_PASSWORD = "testpass123"
 NEWSLETTER_EMAIL = "newsletter@test.local"
@@ -62,41 +64,59 @@ async def _wait_healthy(client: httpx.AsyncClient, timeout: int = 60) -> None:
 
 
 async def _seed_stalwart() -> None:
-    """Seed Stalwart with test domain and accounts."""
+    """Seed Stalwart with test domain and accounts (Alice, Bob, Spammer, Newsletter)."""
     seeder = StalwartSeeder(base_url=STALWART_ADMIN_URL)
     async with seeder:
         await seeder.wait_ready()
         await seeder.create_domain("test.local")
         for acct in [
             {"email": ALICE_EMAIL, "password": ALICE_PASSWORD, "name": "Alice Test"},
+            {"email": BOB_EMAIL, "password": BOB_PASSWORD, "name": "Bob Test"},
             {"email": SPAMMER_EMAIL, "password": SPAMMER_PASSWORD, "name": "Spammer Bot"},
             {"email": NEWSLETTER_EMAIL, "password": NEWSLETTER_PASSWORD, "name": "Newsletter"},
         ]:
             await seeder.create_account(acct["email"], acct["password"], display_name=acct["name"])
 
 
-async def _seed_app_account(client: httpx.AsyncClient) -> str:
-    """Create the test account via API. Returns account ID."""
+async def _seed_app_account(
+    client: httpx.AsyncClient,
+    *,
+    name: str,
+    email_addr: str,
+    password: str,
+    spam_enabled: bool = True,
+) -> str:
+    """Register a mail account in MailVerdict via API. Returns account ID.
+
+    Skips creation if an account with the given name already exists.
+
+    Args:
+        client: HTTP client pointed at the MailVerdict API
+        name: Account display name (e.g. "alice", "bob")
+        email_addr: IMAP/SMTP login email
+        password: IMAP/SMTP login password
+        spam_enabled: Whether to enable spam verdicts
+    """
     resp = await client.get("/api/accounts")
     accounts = resp.json()
     for acct in accounts:
-        if acct["name"] == "alice":
-            return acct["id"]
+        if acct["name"] == name:
+            return str(acct["id"])
 
     resp = await client.post("/api/accounts", json={
-        "name": "alice",
+        "name": name,
         "imap_host": "stalwart",
         "imap_port": 1143,
-        "imap_user": ALICE_EMAIL,
-        "imap_password": ALICE_PASSWORD,
+        "imap_user": email_addr,
+        "imap_password": password,
         "smtp_host": "stalwart",
         "smtp_port": 2525,
-        "smtp_user": ALICE_EMAIL,
-        "smtp_password": ALICE_PASSWORD,
-        "spam_enabled": True,
+        "smtp_user": email_addr,
+        "smtp_password": password,
+        "spam_enabled": spam_enabled,
     })
-    assert resp.status_code == 201, f"Account creation failed: {resp.text}"
-    return resp.json()["id"]
+    assert resp.status_code == 201, f"Account creation failed for {name}: {resp.text}"
+    return str(resp.json()["id"])
 
 
 @pytest.fixture(scope="session")
@@ -125,12 +145,127 @@ async def _restart_app() -> None:
         await _wait_healthy(fresh_client, timeout=120)
 
 
+def _send_seed_emails() -> int:
+    """Send test emails between Alice and Bob via SMTP from the host.
+
+    Sends a mix of Alice->Bob and Bob->Alice emails so both inboxes
+    have content for sync testing.
+
+    Returns:
+        Number of emails successfully sent.
+    """
+    import time
+
+    seed_emails = [
+        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
+         "subject": "Hey Bob, welcome aboard!",
+         "body": (
+             "Hi Bob,\n\nWelcome to the team. "
+             "Let me know if you need anything.\n\nBest,\nAlice"
+         )},
+        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
+         "subject": "Re: Hey Bob, welcome aboard!",
+         "body": (
+             "Thanks Alice! Happy to be here. "
+             "Looking forward to working together.\n\nBob"
+         )},
+        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
+         "subject": "Project kickoff meeting",
+         "body": (
+             "Bob,\n\nLet's schedule a kickoff for next Monday "
+             "at 10am.\nI'll send a calendar invite.\n\nAlice"
+         )},
+        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
+         "subject": "Re: Project kickoff meeting",
+         "body": (
+             "Monday 10am works for me. "
+             "Should I prepare anything?\n\nBob"
+         )},
+        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
+         "subject": "Code review request",
+         "body": (
+             "Hey Bob, could you review PR #12 "
+             "when you get a chance? No rush.\n\nAlice"
+         )},
+        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
+         "subject": "Lunch plans",
+         "body": (
+             "Alice, want to grab lunch at the new place "
+             "on Pontstrasse?\n\nBob"
+         )},
+        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
+         "subject": "Re: Lunch plans",
+         "body": "Sounds great! 12:30 works for me.\n\nAlice"},
+        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
+         "subject": "Bug report: sync stalls on large folders",
+         "body": (
+             "I noticed the sync seems to stall when a folder "
+             "has >1000 messages.\nCan you take a look?\n\nBob"
+         )},
+    ]
+
+    sent = 0
+    for msg_data in seed_emails:
+        try:
+            send_email(
+                from_addr=msg_data["from"],
+                from_password=msg_data["from_pw"],
+                to_addr=msg_data["to"],
+                subject=msg_data["subject"],
+                body=msg_data["body"],
+            )
+            sent += 1
+            time.sleep(0.3)
+        except Exception as exc:
+            logger.warning("Failed to send seed email '%s': %s", msg_data["subject"], exc)
+
+    logger.info("Sent %d/%d seed emails between Alice and Bob", sent, len(seed_emails))
+    return sent
+
+
+async def _wait_for_account_active(
+    client: httpx.AsyncClient,
+    account_id: str,
+    *,
+    timeout: int = 180,
+    poll_interval: float = 5.0,
+) -> str:
+    """Poll account state until it reaches ACTIVE (or ERROR).
+
+    Args:
+        client: HTTP client pointed at the MailVerdict API
+        account_id: Account UUID to poll
+        timeout: Maximum seconds to wait
+        poll_interval: Seconds between polls
+
+    Returns:
+        Final account state string
+
+    Raises:
+        TimeoutError: If account doesn't reach ACTIVE within timeout
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        resp = await client.get(f"/api/accounts/{account_id}")
+        if resp.status_code == 200:
+            state = resp.json().get("state", "")
+            if state == "active":
+                logger.info("Account %s reached ACTIVE state", account_id[:8])
+                return state
+            if state == "error":
+                logger.warning("Account %s entered ERROR state", account_id[:8])
+                return state
+        await asyncio.sleep(poll_interval)
+
+    raise TimeoutError(f"Account {account_id[:8]} did not reach ACTIVE within {timeout}s")
+
+
 @pytest_asyncio.fixture(scope="session")
 async def seeded_env() -> dict[str, str]:
-    """Session-scoped seed: Stalwart + app account via API, then restart for sync."""
+    """Session-scoped seed: Stalwart + app accounts (Alice, Bob) via API, then restart for sync."""
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
 
-    # Phase 1: seed Stalwart + create account + configure settings via API
+    # Phase 1: seed Stalwart + create accounts + configure settings via API
     async with httpx.AsyncClient(
         base_url=APP_BASE_URL, transport=transport, timeout=30.0,
     ) as client:
@@ -146,16 +281,33 @@ async def seeded_env() -> dict[str, str]:
             "data": {"poll_interval_seconds": 10, "idle_enabled": False},
         })
         await _seed_stalwart()
-        account_id = await _seed_app_account(client)
+        alice_id = await _seed_app_account(
+            client, name="alice", email_addr=ALICE_EMAIL, password=ALICE_PASSWORD,
+        )
+        bob_id = await _seed_app_account(
+            client, name="bob", email_addr=BOB_EMAIL, password=BOB_PASSWORD,
+        )
     # Client closed here before restart
 
-    # Phase 2: restart app so SyncEngine picks up the new account from DB
+    # Phase 2: send test emails between Alice and Bob (from host via SMTP)
+    _send_seed_emails()
+
+    # Phase 3: restart app so SyncEngine picks up both accounts from DB
     await _restart_app()
     logger.info("App restarted after account seeding")
 
-    # Phase 3: wait for sync to start
-    await asyncio.sleep(10)
-    return {"account_id": account_id}
+    # Phase 4: wait for both accounts to reach ACTIVE
+    fresh_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
+    async with httpx.AsyncClient(
+        base_url=APP_BASE_URL, transport=fresh_transport, timeout=30.0,
+    ) as client:
+        await _wait_healthy(client)
+        alice_state = await _wait_for_account_active(client, alice_id)
+        bob_state = await _wait_for_account_active(client, bob_id)
+        assert alice_state == "active", f"Alice stuck in state: {alice_state}"
+        assert bob_state == "active", f"Bob stuck in state: {bob_state}"
+
+    return {"account_id": alice_id, "alice_id": alice_id, "bob_id": bob_id}
 
 
 @pytest_asyncio.fixture
