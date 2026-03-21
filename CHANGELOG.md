@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `SyncTracker` (`sync/tracker.py`): per-account in-memory sync progress with phase, folder info, derived fields
+- `EventRing` (`api/event_ring.py`): in-memory ring buffer (500 events/account) with monotonic IDs and Last-Event-ID replay
+- SSE Last-Event-ID reconnect support: replays missed events from EventRing, falls back to state snapshot
+- SSE `sync.state` snapshot on fresh connect with full tracker state
+- Keepalive interval reduced from 30s to 15s for faster disconnect detection
+- `SyncEngine.get_tracker(account_id)` to retrieve per-account tracker
 - Alembic migration 004: `headers_synced` + `body_synced` columns on Mail table
 - Cursor-based pagination for mail list API (`before` parameter, `has_more`, `next_cursor`)
 - Composite index `(folder_id, received_at DESC)` for efficient cursor queries
@@ -19,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- SSE redesign: replaced queue-per-client fan-out with centralized EventRing + waiter pattern
+- SSE event types renamed: `new_mail` -> `mail.new`, `folder_change` -> `mail.updated`, `flags_changed` -> `mail.updated`, `verdict_issued` -> `verdict.issued`
+- SyncManager uses SyncTracker for progress (replaces `push_sync_status` calls)
 - IMAP library migration: replaced aioimaplib with imap-tools (fixes RecursionError on large mailboxes)
 - All IMAP operations wrapped in `asyncio.to_thread()` (imap-tools is synchronous)
 - Two-phase sync: headers fetched first (fast display), bodies fetched separately

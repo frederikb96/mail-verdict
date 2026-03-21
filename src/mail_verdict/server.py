@@ -158,11 +158,25 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     global _event_bus, _rules_engine
     _event_bus = EventBus()
 
-    # Start IMAP sync engine (receives event_bus for bridging to rules/SSE)
+    # Initialize EventRing for SSE event buffering
+    from mail_verdict.api.event_ring import EventRing
+    from mail_verdict.api.events import init_event_ring, set_tracker_accessor
+
+    event_ring = EventRing()
+    init_event_ring(event_ring)
+    logger.info("EventRing initialized")
+
+    # Start IMAP sync engine (receives event_bus + event_ring)
     global _sync_engine
-    _sync_engine = SyncEngine(config, db, event_bus=_event_bus, settings_service=settings_service)
+    _sync_engine = SyncEngine(
+        config, db, event_bus=_event_bus,
+        settings_service=settings_service, event_ring=event_ring,
+    )
     await _sync_engine.start()
     logger.info("Sync engine started")
+
+    # Register tracker accessor for SSE state snapshots
+    set_tracker_accessor(_sync_engine.get_tracker)
 
     # Initialize and start spam processing pipeline
     global _spam_processor

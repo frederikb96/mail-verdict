@@ -18,6 +18,7 @@ from mail_verdict.sync.idle import IdleWatcher
 from mail_verdict.sync.manager import SyncManager
 from mail_verdict.sync.parser import AuthResult, ParsedMail, parse_message
 from mail_verdict.sync.smtp_client import SMTPClient, SMTPError
+from mail_verdict.sync.tracker import SyncPhase, SyncTracker
 
 __all__ = [
     "ActionPropagator",
@@ -44,6 +45,8 @@ __all__ = [
     "SyncEngine",
     "SyncEvent",
     "SyncManager",
+    "SyncPhase",
+    "SyncTracker",
     "detect_special_use",
     "discover_folders",
     "parse_message",
