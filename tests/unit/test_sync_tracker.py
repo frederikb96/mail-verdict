@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from mail_verdict.sync.tracker import SyncPhase, SyncTracker
 
