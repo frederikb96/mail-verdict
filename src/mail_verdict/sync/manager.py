@@ -388,6 +388,9 @@ class SyncManager:
                                 errors=total_errors,
                                 last_error=f"Folder {folder.imap_name}: {exc}",
                             )
+                        # Re-raise connection errors so _sync_loop can handle backoff/drain
+                        if is_connection_error(exc):
+                            raise
 
                     if self._tracker:
                         await self._tracker.update(new_mails=total_new)
@@ -408,6 +411,9 @@ class SyncManager:
                     last_error=str(exc),
                 )
                 await self._update_account_state(SyncPhase.ERROR)
+            # Re-raise connection errors so _sync_loop can handle backoff/drain
+            if is_connection_error(exc):
+                raise
 
         if self._tracker and self._tracker.phase != SyncPhase.ERROR:
             await self._tracker.update(phase=SyncPhase.COMPLETE)
