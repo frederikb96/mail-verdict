@@ -41,9 +41,13 @@ async def test_jobs_list(app_client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mail_list_empty_or_populated(app_client: httpx.AsyncClient) -> None:
+async def test_mail_list_empty_or_populated(
+    app_client: httpx.AsyncClient,
+    seeded_env: dict[str, str],
+) -> None:
     """Mail list endpoint responds with valid paginated response."""
-    resp = await app_client.get("/api/mails", params={"limit": 10})
+    account_id = seeded_env["account_id"]
+    resp = await app_client.get("/api/mails", params={"limit": 10, "account_id": account_id})
     assert resp.status_code == 200
     data = resp.json()
     assert "mails" in data
