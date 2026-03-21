@@ -8,6 +8,8 @@ import type {
   AccountCreateRequest,
   AccountResponse,
   AccountUpdateRequest,
+  BulkActionRequest,
+  BulkActionResponse,
   FeedbackResponse,
   FolderOrderResponse,
   FolderResponse,
@@ -22,6 +24,10 @@ import type {
   MailDetail,
   MailListResponse,
   SearchResponse,
+  SelectionAll,
+  SelectionRange,
+  SelectionResponse,
+  SelectionToggle,
   StatsResponse,
   VerdictResponse,
 } from "@/types/api";
@@ -309,6 +315,53 @@ export const api = {
     ): Promise<Record<string, string>> {
       return request(`/jobs/${name}/stop${qs({ account_id: accountId })}`, {
         method: "POST",
+      });
+    },
+  },
+
+  selection: {
+    get(accountId: string): Promise<SelectionResponse> {
+      return request(`/accounts/${accountId}/selection`);
+    },
+    toggle(
+      accountId: string,
+      body: SelectionToggle,
+    ): Promise<SelectionResponse> {
+      return request(`/accounts/${accountId}/selection/toggle`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+    range(
+      accountId: string,
+      body: SelectionRange,
+    ): Promise<SelectionResponse> {
+      return request(`/accounts/${accountId}/selection/range`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+    all(
+      accountId: string,
+      body: SelectionAll,
+    ): Promise<SelectionResponse> {
+      return request(`/accounts/${accountId}/selection/all`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    },
+    clear(accountId: string): Promise<SelectionResponse> {
+      return request(`/accounts/${accountId}/selection/clear`, {
+        method: "POST",
+      });
+    },
+    action(
+      accountId: string,
+      body: BulkActionRequest,
+    ): Promise<BulkActionResponse> {
+      return request(`/accounts/${accountId}/selection/action`, {
+        method: "POST",
+        body: JSON.stringify(body),
       });
     },
   },

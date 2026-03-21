@@ -5,6 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { SSEConnector } from "@/components/layout/sse-connector";
+import { MailDndProvider } from "@/components/mail/dnd-provider";
 
 export const metadata: Metadata = {
   title: "MailVerdict",
@@ -23,10 +24,12 @@ export default function RootLayout({
           <ThemeProvider>
             <SidebarProvider>
               <SSEConnector />
-              <AppSidebar />
-              <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                {children}
-              </main>
+              <MailDndProvider>
+                <AppSidebar />
+                <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                  {children}
+                </main>
+              </MailDndProvider>
             </SidebarProvider>
           </ThemeProvider>
         </Providers>

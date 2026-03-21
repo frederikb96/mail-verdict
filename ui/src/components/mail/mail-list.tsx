@@ -6,19 +6,35 @@ import { useAtom, useAtomValue } from "jotai";
 import { Loader2, Inbox as InboxIcon } from "lucide-react";
 
 import { MailListItem } from "@/components/mail/mail-list-item";
+import { DragMail } from "@/components/mail/drag-mail";
+import { BulkToolbar } from "@/components/mail/bulk-toolbar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
+import {
+  useSelection,
+  useToggleSelection,
+  useRangeSelection,
+} from "@/hooks/use-selection";
 import {
   selectedAccountIdAtom,
   selectedFolderIdAtom,
   selectedMailIdAtom,
 } from "@/lib/atoms";
+import {
+  lastClickedMailIdAtom,
+  selectionModeAtom,
+} from "@/store/selection-atom";
 import type { MailSummary } from "@/types/api";
 
 export function MailList() {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const folderId = useAtomValue(selectedFolderIdAtom);
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const [lastClickedId, setLastClickedId] = useAtom(lastClickedMailIdAtom);
+  const selectionMode = useAtomValue(selectionModeAtom);
+  const { selectedIds: checkedIds } = useSelection();
+  const toggleSelection = useToggleSelection();
+  const rangeSelection = useRangeSelection();
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
 
@@ -37,7 +53,6 @@ export function MailList() {
     (offset: number) => {
       if (!vlistRef.current) return;
       const { scrollSize, viewportSize } = vlistRef.current;
-      // Load more when scrolled near the bottom (within 200px)
       if (
         scrollSize - offset - viewportSize < 200 &&
         hasNextPage &&
@@ -50,7 +65,10 @@ export function MailList() {
   );
 
   const handleAction = useCallback(
-    (mailId: string, action: "flag" | "unflag" | "delete") => {
+    (
+      mailId: string,
+      action: "flag" | "unflag" | "archive" | "spam" | "delete",
+    ) => {
       if (!accountId) return;
       mailAction.mutate({
         mailId,
@@ -59,6 +77,39 @@ export function MailList() {
       });
     },
     [accountId, mailAction],
+  );
+
+  const handleCheckToggle = useCallback(
+    (mailId: string, shiftKey: boolean) => {
+      if (!accountId) return;
+
+      if (shiftKey && lastClickedId && folderId) {
+        // Shift-click: range select
+        rangeSelection.mutate({
+          accountId,
+          body: {
+            from_id: lastClickedId,
+            to_id: mailId,
+            folder_id: folderId,
+          },
+        });
+      } else {
+        // Regular click: toggle
+        toggleSelection.mutate({
+          accountId,
+          body: { mail_id: mailId },
+        });
+      }
+      setLastClickedId(mailId);
+    },
+    [
+      accountId,
+      folderId,
+      lastClickedId,
+      rangeSelection,
+      toggleSelection,
+      setLastClickedId,
+    ],
   );
 
   if (isLoading) {
@@ -97,6 +148,7 @@ export function MailList() {
 
   return (
     <div className="flex h-full flex-col">
+      <BulkToolbar />
       <VList
         ref={vlistRef}
         className="flex-1"
@@ -105,13 +157,17 @@ export function MailList() {
         onScroll={handleScroll}
       >
         {allMails.map((mail) => (
-          <MailListItem
-            key={mail.id}
-            mail={mail}
-            isSelected={mail.id === selectedMailId}
-            onSelect={setSelectedMailId}
-            onAction={handleAction}
-          />
+          <DragMail key={mail.id} mailId={mail.id}>
+            <MailListItem
+              mail={mail}
+              isSelected={mail.id === selectedMailId}
+              isChecked={checkedIds.has(mail.id)}
+              selectionMode={selectionMode}
+              onSelect={setSelectedMailId}
+              onCheckToggle={handleCheckToggle}
+              onAction={handleAction}
+            />
+          </DragMail>
         ))}
       </VList>
       {isFetchingNextPage && (

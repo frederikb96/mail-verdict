@@ -39,6 +39,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 
+import { DroppableFolder } from "@/components/sidebar/droppable-folder";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
@@ -186,58 +187,68 @@ export function AppSidebar() {
                     const Icon = getFolderIcon(folder);
                     const isActive = folder.folder_id === selectedFolderId;
                     return (
-                      <SidebarMenuItem key={folder.folder_id}>
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          onClick={() => {
-                            setSelectedFolderId(folder.folder_id);
-                            setSelectedMailId(null);
-                          }}
-                          tooltip={folder.imap_name}
-                        >
-                          <Icon className="h-4 w-4" />
-                          <span className="flex-1 truncate">
-                            {folder.imap_name}
-                          </span>
-                          {folder.unread_count > 0 && (
-                            <Badge
-                              variant="secondary"
-                              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                            >
-                              {folder.unread_count}
-                            </Badge>
-                          )}
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
+                      <DroppableFolder
+                        key={folder.folder_id}
+                        folderId={folder.folder_id}
+                      >
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            isActive={isActive}
+                            onClick={() => {
+                              setSelectedFolderId(folder.folder_id);
+                              setSelectedMailId(null);
+                            }}
+                            tooltip={folder.imap_name}
+                          >
+                            <Icon className="h-4 w-4" />
+                            <span className="flex-1 truncate">
+                              {folder.imap_name}
+                            </span>
+                            {folder.unread_count > 0 && (
+                              <Badge
+                                variant="secondary"
+                                className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                              >
+                                {folder.unread_count}
+                              </Badge>
+                            )}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </DroppableFolder>
                     );
                   })
                 : sortedFolders.map((folder) => {
                     const Icon = getFolderIcon(folder);
                     const isActive = folder.id === selectedFolderId;
                     return (
-                      <SidebarMenuItem key={folder.id}>
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          onClick={() => {
-                            setSelectedFolderId(folder.id);
-                            setSelectedMailId(null);
-                          }}
-                          tooltip={getFolderDisplayName(folder)}
-                        >
-                          <Icon className="h-4 w-4" />
-                          <span className="flex-1 truncate">
-                            {getFolderDisplayName(folder)}
-                          </span>
-                          {folder.unread_count > 0 && (
-                            <Badge
-                              variant="secondary"
-                              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                            >
-                              {folder.unread_count}
-                            </Badge>
-                          )}
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
+                      <DroppableFolder
+                        key={folder.id}
+                        folderId={folder.id}
+                      >
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            isActive={isActive}
+                            onClick={() => {
+                              setSelectedFolderId(folder.id);
+                              setSelectedMailId(null);
+                            }}
+                            tooltip={getFolderDisplayName(folder)}
+                          >
+                            <Icon className="h-4 w-4" />
+                            <span className="flex-1 truncate">
+                              {getFolderDisplayName(folder)}
+                            </span>
+                            {folder.unread_count > 0 && (
+                              <Badge
+                                variant="secondary"
+                                className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                              >
+                                {folder.unread_count}
+                              </Badge>
+                            )}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </DroppableFolder>
                     );
                   })}
               {!orderedFolders && sortedFolders.length === 0 && !selectedAccountId && (

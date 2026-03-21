@@ -332,7 +332,8 @@ async def mail_action(
     """
     Perform an action on a mail.
 
-    Supported actions: move, mark_read, mark_unread, delete, flag, unflag.
+    Supported actions: move, mark_read, mark_unread, delete, flag, unflag,
+    archive, spam.
     """
     from sqlalchemy import update
 
@@ -397,5 +398,64 @@ async def mail_action(
             message=f"Moved to {request.target_folder}",
         )
 
+    elif action in ("archive", "spam"):
+        target_folder_id = await _resolve_special_folder_for_action(
+            account_id, "archive" if action == "archive" else "spam",
+        )
+        if target_folder_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No {action} folder mapped for this account",
+            )
+        async with db.session() as session:
+            await session.execute(
+                update(Mail).where(Mail.id == mail_id).values(folder_id=target_folder_id)
+            )
+        return MailActionResponse(
+            success=True,
+            action=action,
+            mail_id=mail_id,
+            message=f"{'Archived' if action == 'archive' else 'Marked as spam'}",
+        )
+
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+async def _resolve_special_folder_for_action(
+    account_id: uuid.UUID,
+    role: str,
+) -> uuid.UUID | None:
+    """
+    Resolve a special folder UUID from the account's folder_mapping.
+
+    Args:
+        account_id: Account to look up
+        role: Folder role key (e.g., "archive", "spam")
+
+    Returns:
+        Folder UUID or None if not mapped
+    """
+    from mail_verdict.database.models import Account
+
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Account.folder_mapping).where(Account.id == account_id)
+        )
+        mapping = result.scalar_one_or_none()
+
+    if not mapping or role not in mapping:
+        return None
+
+    folder_id_str = mapping[role]
+    if not folder_id_str:
+        return None
+
+    try:
+        return uuid.UUID(folder_id_str)
+    except (ValueError, TypeError):
+        folder_repo = get_folder_repo()
+        folders = await folder_repo.get_by_account(account_id)
+        target = next((f for f in folders if f.imap_name == folder_id_str), None)
+        return target.id if target else None

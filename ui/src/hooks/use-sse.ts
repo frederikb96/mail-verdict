@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { syncStatesAtom } from "@/lib/atoms";
+import { selectedMailIdsAtom } from "@/store/selection-atom";
 import type { SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
@@ -18,6 +19,7 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 
 export function useSSE(accountId?: string) {
   const setSyncStates = useSetAtom(syncStatesAtom);
+  const setSelectedMailIds = useSetAtom(selectedMailIdsAtom);
   const queryClient = useQueryClient();
   const lastEventIdRef = useRef<string | null>(null);
   const reconnectDelayRef = useRef(RECONNECT_DELAY_MS);
@@ -144,6 +146,20 @@ export function useSSE(accountId?: string) {
           // Ignore
         }
       });
+
+      // Selection state events
+      source.addEventListener("selection.changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        try {
+          const data = JSON.parse(e.data) as {
+            selected_ids: string[];
+            count: number;
+          };
+          setSelectedMailIds(new Set(data.selected_ids));
+        } catch {
+          // Ignore
+        }
+      });
     }
 
     connect();
@@ -158,5 +174,5 @@ export function useSSE(accountId?: string) {
         reconnectTimerRef.current = null;
       }
     };
-  }, [accountId, setSyncStates, queryClient]);
+  }, [accountId, setSyncStates, setSelectedMailIds, queryClient]);
 }

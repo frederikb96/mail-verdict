@@ -54,7 +54,15 @@ export interface MailDetail extends MailSummary {
 }
 
 export interface MailActionRequest {
-  action: "move" | "mark_read" | "mark_unread" | "delete" | "flag" | "unflag";
+  action:
+    | "move"
+    | "mark_read"
+    | "mark_unread"
+    | "delete"
+    | "flag"
+    | "unflag"
+    | "archive"
+    | "spam";
   target_folder?: string;
 }
 
@@ -272,4 +280,45 @@ export interface IdleValidationResponse {
   folder_id: string;
   supported: boolean;
   error: string | null;
+}
+
+// --- Selection / bulk action types ---
+
+export interface SelectionResponse {
+  selected_ids: string[];
+  count: number;
+}
+
+export interface SelectionToggle {
+  mail_id: string;
+}
+
+export interface SelectionRange {
+  from_id: string;
+  to_id: string;
+  folder_id: string;
+}
+
+export interface SelectionAll {
+  folder_id: string;
+}
+
+export interface BulkActionRequest {
+  action:
+    | "move"
+    | "archive"
+    | "spam"
+    | "star"
+    | "unstar"
+    | "mark_read"
+    | "mark_unread"
+    | "delete";
+  target_folder_id?: string;
+}
+
+export interface BulkActionResponse {
+  success: boolean;
+  action: string;
+  affected_count: number;
+  errors: string[];
 }

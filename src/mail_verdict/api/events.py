@@ -195,6 +195,34 @@ async def push_verdict_event(
     )
 
 
+def push_selection_event(
+    account_id: uuid.UUID,
+    selected_ids: set[uuid.UUID],
+    count: int,
+) -> None:
+    """
+    Push a selection.changed event into the EventRing.
+
+    Args:
+        account_id: Account UUID
+        selected_ids: Currently selected mail IDs
+        count: Number of selected mails
+    """
+    if _event_ring is None:
+        return
+
+    _event_ring.add(
+        account_id=account_id,
+        event_type="selection.changed",
+        data={
+            "account_id": str(account_id),
+            "selected_ids": [str(mid) for mid in selected_ids],
+            "count": count,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
 def _format_sse(event_id: int, event_type: str, data: dict[str, Any]) -> str:
     """
     Format an SSE message with id, event type, and JSON data.

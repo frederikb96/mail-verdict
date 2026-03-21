@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Mail interactions: per-mail hover actions (star, archive, spam, delete)
+- Backend SelectionManager: in-memory per-account selection state for virtual scroll compatibility
+- Selection API: toggle, range (shift-click), select-all, clear endpoints under `/accounts/:id/selection/`
+- Bulk actions API: move, archive, star, unstar, spam, mark_read, mark_unread, delete on all selected mails
+- SSE `selection.changed` events for real-time selection state sync
+- Multi-select UI: checkbox on mail rows, shift/ctrl-click support, bulk action toolbar
+- Drag-and-drop: drag mail(s) to sidebar folders using @dnd-kit, multi-select aware with visual feedback
+- Extended mail action endpoint with `archive` and `spam` action types
 - Complete React + Next.js UI rewrite (replaces SvelteKit)
   - Three-pane layout: collapsible sidebar, mail list, reading pane
   - shadcn/ui (base-ui) component library with dark theme

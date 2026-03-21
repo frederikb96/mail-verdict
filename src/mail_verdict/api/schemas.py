@@ -104,7 +104,10 @@ class MailDetail(BaseModel):
 class MailActionRequest(BaseModel):
     """Request to perform an action on a mail."""
 
-    action: Literal["move", "mark_read", "mark_unread", "delete", "flag", "unflag"] = Field(
+    action: Literal[
+        "move", "mark_read", "mark_unread", "delete",
+        "flag", "unflag", "archive", "spam",
+    ] = Field(
         description="Action type",
     )
     target_folder: str | None = Field(
@@ -428,3 +431,52 @@ class IdleValidationResponse(BaseModel):
     folder_id: uuid.UUID
     supported: bool
     error: str | None = None
+
+
+# --- Selection / bulk action schemas ---
+
+
+class SelectionResponse(BaseModel):
+    """Current selection state for an account."""
+
+    selected_ids: list[uuid.UUID]
+    count: int
+
+
+class SelectionToggle(BaseModel):
+    """Request to toggle a single mail's selection."""
+
+    mail_id: uuid.UUID
+
+
+class SelectionRange(BaseModel):
+    """Request for shift-click range selection."""
+
+    from_id: uuid.UUID
+    to_id: uuid.UUID
+    folder_id: uuid.UUID
+
+
+class SelectionAll(BaseModel):
+    """Request to select all mails in a folder."""
+
+    folder_id: uuid.UUID
+
+
+class BulkActionRequest(BaseModel):
+    """Request to execute an action on all selected mails."""
+
+    action: Literal[
+        "move", "archive", "spam", "star", "unstar",
+        "mark_read", "mark_unread", "delete",
+    ]
+    target_folder_id: uuid.UUID | None = None
+
+
+class BulkActionResponse(BaseModel):
+    """Result of a bulk action."""
+
+    success: bool
+    action: str
+    affected_count: int
+    errors: list[str] = Field(default_factory=list)

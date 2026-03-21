@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, Archive, Trash2 } from "lucide-react";
+import { Star, Archive, Ban, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   extractSenderName,
@@ -8,22 +8,29 @@ import {
   getInitials,
 } from "@/lib/format";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { MailSummary } from "@/types/api";
 
 interface MailListItemProps {
   mail: MailSummary;
   isSelected: boolean;
+  isChecked: boolean;
+  selectionMode: boolean;
   onSelect: (mailId: string) => void;
+  onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (
     mailId: string,
-    action: "flag" | "unflag" | "delete",
+    action: "flag" | "unflag" | "archive" | "spam" | "delete",
   ) => void;
 }
 
 export function MailListItem({
   mail,
   isSelected,
+  isChecked,
+  selectionMode,
   onSelect,
+  onCheckToggle,
   onAction,
 }: MailListItemProps) {
   const senderName = extractSenderName(mail.from_addr);
@@ -35,13 +42,39 @@ export function MailListItem({
         "group flex h-16 cursor-pointer items-center gap-3 border-b px-3 transition-colors",
         isSelected
           ? "bg-accent"
-          : "hover:bg-accent/50",
-        !mail.is_read && "bg-accent/20",
+          : isChecked
+            ? "bg-accent/70"
+            : "hover:bg-accent/50",
+        !mail.is_read && !isSelected && !isChecked && "bg-accent/20",
       )}
       onClick={() => onSelect(mail.id)}
     >
-      {/* Avatar */}
-      <Avatar className="h-8 w-8 shrink-0">
+      {/* Checkbox (visible in selection mode or on hover) */}
+      <div
+        className={cn(
+          "shrink-0",
+          selectionMode ? "block" : "hidden group-hover:block",
+        )}
+      >
+        <Checkbox
+          checked={isChecked}
+          onCheckedChange={() => {}}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCheckToggle(mail.id, e.shiftKey);
+          }}
+          className="h-4 w-4"
+        />
+      </div>
+
+      {/* Avatar (hidden when checkbox visible in selection mode) */}
+      <Avatar
+        className={cn(
+          "h-8 w-8 shrink-0",
+          selectionMode && "hidden",
+          !selectionMode && "group-hover:hidden",
+        )}
+      >
         <AvatarFallback className="text-xs">{initials}</AvatarFallback>
       </Avatar>
 
@@ -80,7 +113,7 @@ export function MailListItem({
               mail.is_flagged ? "unflag" : "flag",
             );
           }}
-          title={mail.is_flagged ? "Unflag" : "Flag"}
+          title={mail.is_flagged ? "Unflag" : "Star"}
         >
           <Star
             className={cn(
@@ -90,6 +123,26 @@ export function MailListItem({
                 : "text-muted-foreground",
             )}
           />
+        </button>
+        <button
+          className="rounded p-1 hover:bg-accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, "archive");
+          }}
+          title="Archive"
+        >
+          <Archive className="h-4 w-4 text-muted-foreground" />
+        </button>
+        <button
+          className="rounded p-1 hover:bg-accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, "spam");
+          }}
+          title="Spam"
+        >
+          <Ban className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
           className="rounded p-1 hover:bg-accent"
