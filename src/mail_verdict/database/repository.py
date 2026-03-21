@@ -68,6 +68,8 @@ class MailRepository:
         dkim_pass: bool | None = None,
         spf_pass: bool | None = None,
         dmarc_pass: bool | None = None,
+        headers_synced: bool | None = None,
+        body_synced: bool | None = None,
     ) -> Mail:
         """
         Insert or update a mail by (folder_id, uid) uniqueness.
@@ -108,6 +110,12 @@ class MailRepository:
             "dmarc_pass": dmarc_pass,
         }
 
+        # Include sync flags in insert values when provided
+        if headers_synced is not None:
+            values["headers_synced"] = headers_synced
+        if body_synced is not None:
+            values["body_synced"] = body_synced
+
         # On conflict, only update fields that were explicitly provided.
         # Boolean flags (is_read, is_flagged, is_deleted) always update.
         # Other fields only update when non-None to avoid overwriting
@@ -132,6 +140,8 @@ class MailRepository:
             "dkim_pass": dkim_pass,
             "spf_pass": spf_pass,
             "dmarc_pass": dmarc_pass,
+            "headers_synced": headers_synced,
+            "body_synced": body_synced,
         }
         for key, val in optional_updates.items():
             if val is not None:

@@ -51,8 +51,18 @@ class MailSummary(BaseModel):
     is_read: bool = False
     is_flagged: bool = False
     is_deleted: bool = False
+    headers_synced: bool = False
+    body_synced: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class MailListResponse(BaseModel):
+    """Paginated mail list response with cursor-based pagination."""
+
+    mails: list[MailSummary]
+    has_more: bool
+    next_cursor: str | None = None
 
 
 class MailDetail(BaseModel):
@@ -79,6 +89,8 @@ class MailDetail(BaseModel):
     dkim_pass: bool | None = None
     spf_pass: bool | None = None
     dmarc_pass: bool | None = None
+    headers_synced: bool = False
+    body_synced: bool = False
     fetched_at: datetime
     created_at: datetime
     tags: list[TagResponse] = Field(default_factory=list)
@@ -198,7 +210,7 @@ class AccountUpdateRequest(BaseModel):
 
 
 class FolderResponse(BaseModel):
-    """Folder summary."""
+    """Folder summary with message counts."""
 
     id: uuid.UUID
     account_id: uuid.UUID
@@ -207,6 +219,8 @@ class FolderResponse(BaseModel):
     special_use: str | None = None
     subscribed: bool = True
     last_synced_at: datetime | None = None
+    unread_count: int = 0
+    total_count: int = 0
 
     model_config = {"from_attributes": True}
 

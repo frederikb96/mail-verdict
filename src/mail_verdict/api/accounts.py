@@ -281,13 +281,33 @@ async def sync_status(account_id: uuid.UUID) -> dict[str, Any]:
 
 @router.get("/{account_id}/folders", response_model=list[FolderResponse])
 async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
-    """List all folders for an account."""
+    """List all folders for an account with message counts."""
+    from sqlalchemy import case
+    from sqlalchemy import func as sa_func
+
+    from mail_verdict.database.models import Mail
+
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(
-            select(Folder).where(Folder.account_id == account_id).order_by(Folder.imap_name)
+        # Query folders with aggregated message counts
+        stmt = (
+            select(
+                Folder,
+                sa_func.count(Mail.id).label("total_count"),
+                sa_func.count(
+                    case((Mail.is_read.is_(False), Mail.id))
+                ).label("unread_count"),
+            )
+            .outerjoin(
+                Mail,
+                (Mail.folder_id == Folder.id) & Mail.is_deleted.is_(False),
+            )
+            .where(Folder.account_id == account_id)
+            .group_by(Folder.id)
+            .order_by(Folder.imap_name)
         )
-        folders = list(result.scalars().all())
+        result = await session.execute(stmt)
+        rows = list(result.all())
 
     return [
         FolderResponse(
@@ -298,8 +318,10 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             special_use=f.special_use.value if f.special_use else None,
             subscribed=f.subscribed,
             last_synced_at=f.last_synced_at,
+            total_count=total,
+            unread_count=unread,
         )
-        for f in folders
+        for f, total, unread in rows
     ]
 
 

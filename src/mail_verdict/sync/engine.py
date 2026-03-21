@@ -18,10 +18,12 @@ from mail_verdict.sync.connector import IMAPConnector
 from mail_verdict.sync.idle import IdleWatcher
 from mail_verdict.sync.manager import SyncManager
 from mail_verdict.sync.smtp_client import SMTPClient
+from mail_verdict.sync.tracker import SyncTracker
 
 if TYPE_CHECKING:
     from typing import Any
 
+    from mail_verdict.api.event_ring import EventRing
     from mail_verdict.config import InfraConfig
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.rules.bus import EventBus
@@ -41,6 +43,7 @@ class AccountSync:
         idle_watcher: IdleWatcher,
         action_propagator: ActionPropagator,
         smtp_client: SMTPClient | None,
+        tracker: SyncTracker | None = None,
     ) -> None:
         """
         Initialize account sync bundle.
@@ -52,6 +55,7 @@ class AccountSync:
             idle_watcher: IDLE watcher
             action_propagator: Action propagator
             smtp_client: Optional SMTP client
+            tracker: Optional sync progress tracker
         """
         self.account_id = account_id
         self.connector = connector
@@ -59,6 +63,7 @@ class AccountSync:
         self.idle_watcher = idle_watcher
         self.action_propagator = action_propagator
         self.smtp_client = smtp_client
+        self.tracker = tracker
 
 
 class SyncEngine:
@@ -75,6 +80,7 @@ class SyncEngine:
         db: DatabaseConnection,
         event_bus: EventBus | None = None,
         settings_service: SettingsService | None = None,
+        event_ring: EventRing | None = None,
     ) -> None:
         """
         Initialize sync engine.
@@ -84,11 +90,13 @@ class SyncEngine:
             db: Database connection for repository access
             event_bus: Optional event bus for broadcasting sync events
             settings_service: Application settings service
+            event_ring: Optional EventRing for SSE event emission
         """
         self._config = config
         self._db = db
         self._event_bus = event_bus
         self._settings = settings_service
+        self._event_ring = event_ring
         self._accounts: dict[str, AccountSync] = {}
 
     async def start(self) -> None:
@@ -148,6 +156,8 @@ class SyncEngine:
                 if acct.smtp_host:
                     smtp_client = SMTPClient(conn_config, retry_config)
 
+                tracker = SyncTracker(acct.id, self._event_ring)
+
                 manager = SyncManager(
                     account=conn_config,
                     account_id=acct.id,
@@ -157,6 +167,7 @@ class SyncEngine:
                     attachment_repo=attachment_repo,
                     sync_settings=sync_settings,
                     event_bus=self._event_bus,
+                    tracker=tracker,
                 )
 
                 action_propagator = ActionPropagator(
@@ -181,6 +192,7 @@ class SyncEngine:
                     idle_watcher=idle_watcher,
                     action_propagator=action_propagator,
                     smtp_client=smtp_client,
+                    tracker=tracker,
                 )
 
                 await manager.start()
@@ -260,6 +272,8 @@ class SyncEngine:
         if acct.smtp_host:
             smtp_client = SMTPClient(conn_config, retry_config)
 
+        tracker = SyncTracker(acct.id, self._event_ring)
+
         manager = SyncManager(
             account=conn_config,
             account_id=acct.id,
@@ -269,6 +283,7 @@ class SyncEngine:
             attachment_repo=attachment_repo,
             sync_settings=sync_settings,
             event_bus=self._event_bus,
+            tracker=tracker,
         )
 
         action_propagator = ActionPropagator(
@@ -291,6 +306,7 @@ class SyncEngine:
             idle_watcher=idle_watcher,
             action_propagator=action_propagator,
             smtp_client=smtp_client,
+            tracker=tracker,
         )
 
         await manager.start()
@@ -321,6 +337,37 @@ class SyncEngine:
             AccountSync bundle or None if not found
         """
         return self._accounts.get(name)
+
+    def get_account_sync_by_id(self, account_id: uuid.UUID) -> AccountSync | None:
+        """
+        Get sync components by account UUID.
+
+        Args:
+            account_id: Database UUID for the account
+
+        Returns:
+            AccountSync bundle or None if not found
+        """
+        account_id_str = str(account_id)
+        for account_sync in self._accounts.values():
+            if str(account_sync.account_id) == account_id_str:
+                return account_sync
+        return None
+
+    def get_tracker(self, account_id: uuid.UUID) -> SyncTracker | None:
+        """
+        Get the SyncTracker for an account by UUID.
+
+        Args:
+            account_id: Account UUID
+
+        Returns:
+            SyncTracker or None if account not found
+        """
+        account_sync = self.get_account_sync_by_id(account_id)
+        if account_sync is not None:
+            return account_sync.tracker
+        return None
 
     @staticmethod
     def _make_idle_callback(manager: SyncManager) -> Callable[[str], Coroutine[None, None, None]]:

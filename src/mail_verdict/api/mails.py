@@ -1,8 +1,8 @@
 """
 Mail API endpoints.
 
-GET /api/mails — list with pagination, filter by folder/account/date/read
-GET /api/mails/:id — detail view
+GET /api/mails — cursor-based paginated list with filters
+GET /api/mails/:id — detail view with on-demand body fetch
 POST /api/mails/:id/action — actions (move, mark, delete)
 """
 
@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import desc, select
 
 from mail_verdict.api.deps import (
     get_attachment_repo,
@@ -25,6 +26,7 @@ from mail_verdict.api.schemas import (
     MailActionRequest,
     MailActionResponse,
     MailDetail,
+    MailListResponse,
     MailSummary,
     TagResponse,
 )
@@ -36,22 +38,32 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/mails", tags=["mails"])
 
 
-@router.get("", response_model=list[MailSummary])
+@router.get("", response_model=MailListResponse)
 async def list_mails(
     account_id: uuid.UUID | None = Query(default=None),
     folder_id: uuid.UUID | None = Query(default=None),
     is_read: bool | None = Query(default=None),
     since: datetime | None = Query(default=None),
-    before: datetime | None = Query(default=None),
+    before: uuid.UUID | None = Query(
+        default=None,
+        description="Cursor: UUID of last mail in previous page",
+    ),
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
-) -> list[MailSummary]:
-    """List mails with optional filters and pagination."""
-    from sqlalchemy import desc, select
+) -> MailListResponse:
+    """
+    List mails with cursor-based pagination.
 
+    Cursor pagination uses the `before` parameter (UUID of the last mail
+    in the previous page). Stable under concurrent inserts.
+    First page: omit `before`. Subsequent pages: pass `next_cursor` from response.
+    """
     db = get_db_connection()
     async with db.session() as session:
-        stmt = select(Mail).where(Mail.is_deleted.is_(False)).order_by(desc(Mail.received_at))
+        stmt = (
+            select(Mail)
+            .where(Mail.is_deleted.is_(False))
+            .order_by(desc(Mail.received_at), desc(Mail.id))
+        )
 
         if account_id is not None:
             stmt = stmt.where(Mail.account_id == account_id)
@@ -61,14 +73,48 @@ async def list_mails(
             stmt = stmt.where(Mail.is_read == is_read)
         if since is not None:
             stmt = stmt.where(Mail.received_at >= since)
-        if before is not None:
-            stmt = stmt.where(Mail.received_at <= before)
 
-        stmt = stmt.limit(limit).offset(offset)
+        # Cursor-based pagination: fetch mails older than the cursor mail
+        if before is not None:
+            cursor_result = await session.execute(
+                select(Mail.received_at, Mail.id).where(Mail.id == before)
+            )
+            cursor_row = cursor_result.one_or_none()
+            if cursor_row is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid cursor: mail {before} not found",
+                )
+            cursor_received_at, cursor_id = cursor_row
+            # Tiebreaker: mails with same received_at sorted by id desc
+            from sqlalchemy import and_, or_
+
+            stmt = stmt.where(
+                or_(
+                    Mail.received_at < cursor_received_at,
+                    and_(
+                        Mail.received_at == cursor_received_at,
+                        Mail.id < cursor_id,
+                    ),
+                )
+            )
+
+        # Fetch one extra to determine has_more
+        stmt = stmt.limit(limit + 1)
         result = await session.execute(stmt)
         mails = list(result.scalars().all())
 
-    return [MailSummary.model_validate(m) for m in mails]
+    has_more = len(mails) > limit
+    if has_more:
+        mails = mails[:limit]
+
+    next_cursor = str(mails[-1].id) if has_more and mails else None
+
+    return MailListResponse(
+        mails=[MailSummary.model_validate(m) for m in mails],
+        has_more=has_more,
+        next_cursor=next_cursor,
+    )
 
 
 @router.get("/{mail_id}", response_model=MailDetail)
@@ -76,11 +122,24 @@ async def get_mail(
     mail_id: uuid.UUID,
     account_id: uuid.UUID = Query(),
 ) -> MailDetail:
-    """Get full mail detail by ID."""
+    """
+    Get full mail detail by ID.
+
+    If the mail body has not been synced yet (body_synced=False),
+    triggers an on-demand IMAP fetch before returning.
+    """
     mail_repo = get_mail_repo()
     mail = await mail_repo.get_by_id(account_id, mail_id)
     if mail is None:
         raise HTTPException(status_code=404, detail="Mail not found")
+
+    # On-demand body fetch if not yet synced
+    if not mail.body_synced:
+        await _fetch_body_on_demand(mail)
+        # Re-fetch the mail to get updated body content
+        mail = await mail_repo.get_by_id(account_id, mail_id)
+        if mail is None:
+            raise HTTPException(status_code=404, detail="Mail not found after body fetch")
 
     tag_repo = get_tag_repo()
     tags = await tag_repo.get_tags_for_mail(mail_id)
@@ -114,6 +173,8 @@ async def get_mail(
         dkim_pass=mail.dkim_pass,
         spf_pass=mail.spf_pass,
         dmarc_pass=mail.dmarc_pass,
+        headers_synced=mail.headers_synced,
+        body_synced=mail.body_synced,
         fetched_at=mail.fetched_at,
         created_at=mail.created_at,
         tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
@@ -127,6 +188,65 @@ async def get_mail(
             for a in attachments
         ],
     )
+
+
+async def _fetch_body_on_demand(mail: Mail) -> None:
+    """
+    Trigger on-demand IMAP body fetch for a mail with body_synced=False.
+
+    Looks up the sync engine's manager for the mail's account
+    and fetches the body via the IMAP connector.
+
+    Args:
+        mail: Mail object with body_synced=False
+    """
+    from mail_verdict.server import get_sync_engine
+
+    sync_engine = get_sync_engine()
+    if sync_engine is None:
+        logger.warning(
+            "Sync engine not available for on-demand body fetch",
+            extra={"mail_id": str(mail.id)},
+        )
+        return
+
+    account_sync = sync_engine.get_account_sync_by_id(mail.account_id)
+    if account_sync is None:
+        logger.warning(
+            "No active sync for account, cannot fetch body on-demand",
+            extra={"mail_id": str(mail.id), "account_id": str(mail.account_id)},
+        )
+        return
+
+    # Get folder IMAP name for the folder selection
+    db = get_db_connection()
+    async with db.session() as session:
+        from sqlalchemy import select as sa_select
+
+        from mail_verdict.database.models import Folder
+
+        result = await session.execute(
+            sa_select(Folder).where(Folder.id == mail.folder_id)
+        )
+        folder = result.scalar_one_or_none()
+
+    if folder is None:
+        logger.warning(
+            "Folder not found for on-demand body fetch",
+            extra={"mail_id": str(mail.id), "folder_id": str(mail.folder_id)},
+        )
+        return
+
+    success = await account_sync.manager.fetch_body_for_mail(
+        folder_imap_name=folder.imap_name,
+        uid=mail.uid,
+        folder_id=folder.id,
+    )
+    if not success:
+        logger.warning(
+            "On-demand body fetch did not succeed",
+            extra={"mail_id": str(mail.id), "uid": mail.uid},
+        )
 
 
 @router.post("/{mail_id}/action", response_model=MailActionResponse)

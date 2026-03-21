@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Alembic migration 004: `headers_synced` + `body_synced` columns on Mail table
+- Cursor-based pagination for mail list API (`before` parameter, `has_more`, `next_cursor`)
+- Composite index `(folder_id, received_at DESC)` for efficient cursor queries
+- Folder message counts: `unread_count` and `total_count` in folder API response
+- On-demand body fetch: GET /mails/:id triggers IMAP fetch when `body_synced=False`
+- `SyncManager.fetch_body_for_mail()` for single-message body retrieval
+- `SyncEngine.get_account_sync_by_id()` for account lookup by UUID
+
 ### Changed
 
 - IMAP library migration: replaced aioimaplib with imap-tools (fixes RecursionError on large mailboxes)
@@ -16,11 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - IDLE watcher uses `mailbox.idle.wait()` in thread
 - Action propagator uses imap-tools `move()`, `flag()`, `copy()`
 - Test connection endpoint uses imap-tools MailBox
+- Mail list API returns `MailListResponse` wrapper (replaces bare list)
+- Header sync sets `headers_synced=True`, body sync sets `body_synced=True`
 
 ### Removed
 
 - `sync/extensions.py` module (imap-tools handles SELECT, CONDSTORE, SPECIAL-USE natively)
 - aioimaplib dependency
+- Offset-based pagination (`offset` parameter removed from mail list API)
 
 ## [0.2.2] - 2026-03-21
 

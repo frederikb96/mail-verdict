@@ -30,6 +30,7 @@ from mail_verdict.sync.events import (
 )
 from mail_verdict.sync.folders import discover_folders
 from mail_verdict.sync.parser import parse_message
+from mail_verdict.sync.tracker import SyncPhase, SyncTracker
 
 if TYPE_CHECKING:
     from typing import Any
@@ -65,6 +66,7 @@ class SyncManager:
         attachment_repo: AttachmentRepository,
         sync_settings: dict[str, Any],
         event_bus: EventBus | None = None,
+        tracker: SyncTracker | None = None,
     ) -> None:
         """
         Initialize sync manager for an account.
@@ -78,6 +80,7 @@ class SyncManager:
             attachment_repo: Attachment repository
             sync_settings: Sync settings dict
             event_bus: Optional event bus for broadcasting events to rules/SSE
+            tracker: Optional sync progress tracker for SSE updates
         """
         self._account = account
         self._account_id = account_id
@@ -89,6 +92,7 @@ class SyncManager:
         self._change_detector = ChangeDetector(folder_repo, mail_repo)
         self._event_queue: asyncio.Queue[SyncEvent] = asyncio.Queue(maxsize=1000)
         self._event_bus = event_bus
+        self._tracker = tracker
         self._running = False
         self._task: asyncio.Task[None] | None = None
         self._trigger_event = asyncio.Event()
@@ -149,6 +153,124 @@ class SyncManager:
         """Wake the sync loop to run immediately."""
         self._trigger_event.set()
 
+    async def fetch_body_for_mail(
+        self,
+        folder_imap_name: str,
+        uid: int,
+        folder_id: uuid.UUID,
+    ) -> bool:
+        """
+        On-demand fetch of a single mail's body from IMAP.
+
+        Used when GET /mails/:id is called and body_synced=False.
+        Fetches full RFC822 content, stores body/attachments, sets body_synced=True.
+
+        Args:
+            folder_imap_name: IMAP folder name to select
+            uid: IMAP UID of the message
+            folder_id: Database folder UUID
+
+        Returns:
+            True if body was fetched and stored successfully
+        """
+        try:
+            async with self._connector.acquire() as conn:
+                # Select the folder
+                def _select_folder() -> None:
+                    conn.folder.set(folder_imap_name)
+
+                await asyncio.to_thread(_select_folder)
+
+                uid_str = str(uid)
+
+                def _sync_fetch_body() -> dict[str, object] | None:
+                    """Fetch single message body in thread."""
+                    for msg in conn.fetch(
+                        AND(uid=uid_str),
+                        mark_seen=False,
+                    ):
+                        raw_bytes = msg.obj.as_bytes() if msg.obj else b""
+                        attachments = []
+                        for att in msg.attachments:
+                            attachments.append({
+                                "filename": att.filename,
+                                "content_type": att.content_type,
+                                "content_id": att.content_id,
+                                "size_bytes": att.size,
+                                "data": att.payload,
+                            })
+                        return {
+                            "uid": int(msg.uid) if msg.uid else 0,
+                            "body_text": msg.text,
+                            "body_html": msg.html,
+                            "raw_source": raw_bytes,
+                            "raw_headers": str(msg.headers) if msg.headers else None,
+                            "message_id": msg.headers.get("message-id", [""])[0]
+                            if msg.headers else None,
+                            "attachments": attachments,
+                        }
+                    return None
+
+                body = await asyncio.to_thread(_sync_fetch_body)
+
+                if body is None:
+                    logger.warning(
+                        "On-demand body fetch returned no message",
+                        extra={"folder": folder_imap_name, "uid": uid},
+                    )
+                    return False
+
+                raw_source = body["raw_source"]
+                assert isinstance(raw_source, bytes)
+                parsed = parse_message(raw_source)
+
+                await self._mail_repo.upsert_mail(
+                    account_id=self._account_id,
+                    folder_id=folder_id,
+                    uid=uid,
+                    message_id=str(body["message_id"]) if body["message_id"] else None,
+                    body_text=str(body["body_text"]) if body["body_text"] else None,
+                    body_html=str(body["body_html"]) if body["body_html"] else None,
+                    raw_headers=parsed.raw_headers,
+                    raw_source=raw_source,
+                    dkim_pass=parsed.auth.dkim_pass,
+                    spf_pass=parsed.auth.spf_pass,
+                    dmarc_pass=parsed.auth.dmarc_pass,
+                    body_synced=True,
+                )
+
+                # Store attachments
+                attachments = body["attachments"]
+                assert isinstance(attachments, list)
+                for att in attachments:
+                    assert isinstance(att, dict)
+                    mail = await self._mail_repo.get_by_folder_and_uid(folder_id, uid)
+                    if mail:
+                        ct = att["content_type"]
+                        ci = att["content_id"]
+                        sz = att["size_bytes"]
+                        await self._attachment_repo.create(
+                            mail_id=mail.id,
+                            filename=str(att["filename"]) if att["filename"] else None,
+                            content_type=str(ct) if ct else None,
+                            content_id=str(ci) if ci else None,
+                            size_bytes=int(str(sz)) if sz else None,
+                            data=att["data"] if isinstance(att["data"], bytes) else None,
+                        )
+
+                logger.info(
+                    "On-demand body fetch complete",
+                    extra={"folder": folder_imap_name, "uid": uid},
+                )
+                return True
+
+        except Exception as exc:
+            logger.error(
+                "On-demand body fetch failed",
+                extra={"folder": folder_imap_name, "uid": uid, "error": str(exc)},
+            )
+            return False
+
     async def sync_once(self) -> list[SyncEvent]:
         """
         Run a single sync cycle (serialized via lock).
@@ -164,12 +286,12 @@ class SyncManager:
 
     async def _sync_once_inner(self) -> list[SyncEvent]:
         """Actual sync implementation (must be called under _sync_lock)."""
-        from mail_verdict.api.events import push_sync_status
-
         all_events: list[SyncEvent] = []
-        start_time = time.monotonic()
         total_new = 0
         total_errors = 0
+
+        if self._tracker:
+            self._tracker.update(phase=SyncPhase.PREFLIGHT)
 
         try:
             async with self._connector.acquire() as conn:
@@ -192,27 +314,25 @@ class SyncManager:
                     )
                     total_messages += count
 
-                await push_sync_status(
-                    self._account_id, "started",
-                    folder_count=folder_count,
-                    total_messages=total_messages,
-                )
-
-                # TODO: tracker.update(phase="syncing")
+                if self._tracker:
+                    self._tracker.update(
+                        phase=SyncPhase.SYNCING,
+                        folder_total=folder_count,
+                        total_messages=total_messages,
+                    )
 
                 # Sync each folder with progress events
                 for idx, folder in enumerate(folders):
                     if not self._running:
                         break
 
-                    await push_sync_status(
-                        self._account_id, "folder_started",
-                        folder_name=folder.imap_name,
-                        folder_index=idx + 1,
-                        folder_total=folder_count,
-                    )
-
-                    # TODO: tracker.update(phase="syncing", folder_name=folder.imap_name)
+                    if self._tracker:
+                        self._tracker.update(
+                            folder_name=folder.imap_name,
+                            folder_index=idx + 1,
+                            folder_synced=0,
+                            folder_messages=0,
+                        )
 
                     folder_new = 0
                     try:
@@ -233,18 +353,14 @@ class SyncManager:
                             },
                             exc_info=True,
                         )
-                        await push_sync_status(
-                            self._account_id, "error",
-                            error_message=f"Folder {folder.imap_name}: {exc}",
-                        )
+                        if self._tracker:
+                            self._tracker.update(
+                                errors=total_errors,
+                                last_error=f"Folder {folder.imap_name}: {exc}",
+                            )
 
-                    await push_sync_status(
-                        self._account_id, "folder_done",
-                        folder_name=folder.imap_name,
-                        folder_index=idx + 1,
-                        folder_total=folder_count,
-                        new_mails=folder_new,
-                    )
+                    if self._tracker:
+                        self._tracker.update(new_mails=total_new)
 
         except Exception as exc:
             total_errors += 1
@@ -255,20 +371,15 @@ class SyncManager:
                     "error": str(exc),
                 },
             )
-            await push_sync_status(
-                self._account_id, "error",
-                error_message=str(exc),
-            )
+            if self._tracker:
+                self._tracker.update(
+                    phase=SyncPhase.ERROR,
+                    errors=total_errors,
+                    last_error=str(exc),
+                )
 
-        duration_s = round(time.monotonic() - start_time, 1)
-        await push_sync_status(
-            self._account_id, "complete",
-            new_mails=total_new,
-            errors=total_errors,
-            duration_s=duration_s,
-        )
-
-        # TODO: tracker.update(phase="complete")
+        if self._tracker and self._tracker.phase != SyncPhase.ERROR:
+            self._tracker.update(phase=SyncPhase.COMPLETE)
 
         # Enqueue events for spam processor
         for event in all_events:
@@ -467,10 +578,11 @@ class SyncManager:
         if not uids:
             return
 
-        from mail_verdict.api.events import push_sync_status
-
         batch_size = 50
         total = len(uids)
+
+        if self._tracker:
+            self._tracker.update(folder_messages=total, folder_synced=0)
 
         for batch_start in range(0, total, batch_size):
             if not self._running:
@@ -478,8 +590,6 @@ class SyncManager:
 
             batch = uids[batch_start: batch_start + batch_size]
             uid_str = ",".join(str(u) for u in batch)
-
-            # TODO: tracker.update(phase="syncing", folder_name=folder.imap_name)
 
             def _sync_fetch_headers(uid_criteria: str = uid_str) -> list[dict[str, object]]:
                 """Fetch headers in thread."""
@@ -529,6 +639,7 @@ class SyncManager:
                         is_read="\\Seen" in flags,
                         is_flagged="\\Flagged" in flags,
                         is_deleted="\\Deleted" in flags,
+                        headers_synced=True,
                     )
                 except Exception as exc:
                     logger.error(
@@ -536,13 +647,12 @@ class SyncManager:
                         extra={"uid": uid, "error": str(exc)},
                     )
 
-            synced = min(batch_start + len(batch), total)
-            await push_sync_status(
-                self._account_id, "progress",
-                folder_name=folder.imap_name,
-                synced=synced,
-                total_messages=total,
-            )
+            folder_synced = min(batch_start + len(batch), total)
+            if self._tracker:
+                self._tracker.update(
+                    folder_synced=folder_synced,
+                    synced=self._tracker.synced + len(batch),
+                )
 
     async def _fetch_and_store_bodies(
         self,
@@ -626,6 +736,7 @@ class SyncManager:
                         dkim_pass=parsed.auth.dkim_pass,
                         spf_pass=parsed.auth.spf_pass,
                         dmarc_pass=parsed.auth.dmarc_pass,
+                        body_synced=True,
                     )
 
                     # Store attachments

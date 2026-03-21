@@ -230,6 +230,12 @@ class Mail(Base):
         TSVECTOR,
         nullable=True,
     )
+    headers_synced: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+    body_synced: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -266,6 +272,12 @@ class Mail(Base):
         Index("idx_mail_folder_uid", "folder_id", "uid"),
         Index("idx_mail_message_id", "message_id"),
         Index("idx_mail_received_at", "received_at", postgresql_using="btree"),
+        Index(
+            "idx_mail_folder_received",
+            "folder_id",
+            received_at.desc(),
+            postgresql_using="btree",
+        ),
         Index("idx_mail_search_vector", "search_vector", postgresql_using="gin"),
         Index("idx_mail_account_id", "account_id"),
     )
