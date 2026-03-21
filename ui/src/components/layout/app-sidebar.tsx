@@ -1,0 +1,246 @@
+"use client";
+
+import { useAtom } from "jotai";
+import {
+  Inbox,
+  Send,
+  Trash2,
+  Archive,
+  AlertTriangle,
+  FileEdit,
+  Folder,
+  Mail,
+  Settings,
+  Search,
+  UserCircle,
+  ChevronDown,
+  RefreshCw,
+} from "lucide-react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
+
+import { useAccounts } from "@/hooks/use-accounts";
+import { useFolders } from "@/hooks/use-folders";
+import {
+  selectedAccountIdAtom,
+  selectedFolderIdAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
+import type { FolderResponse } from "@/types/api";
+
+const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
+  "\\Inbox": Inbox,
+  "\\Sent": Send,
+  "\\Trash": Trash2,
+  "\\Archive": Archive,
+  "\\Junk": AlertTriangle,
+  "\\Drafts": FileEdit,
+};
+
+const SPECIAL_USE_ORDER = [
+  "\\Inbox",
+  "\\Drafts",
+  "\\Sent",
+  "\\Archive",
+  "\\Junk",
+  "\\Trash",
+];
+
+function sortFolders(folders: FolderResponse[]): FolderResponse[] {
+  const special = folders.filter((f) => f.special_use);
+  const regular = folders.filter((f) => !f.special_use);
+
+  special.sort((a, b) => {
+    const ai = SPECIAL_USE_ORDER.indexOf(a.special_use!);
+    const bi = SPECIAL_USE_ORDER.indexOf(b.special_use!);
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+
+  regular.sort((a, b) => a.imap_name.localeCompare(b.imap_name));
+
+  return [...special, ...regular];
+}
+
+function getFolderIcon(folder: FolderResponse) {
+  if (folder.special_use && SPECIAL_USE_ICONS[folder.special_use]) {
+    return SPECIAL_USE_ICONS[folder.special_use];
+  }
+  return Folder;
+}
+
+function getFolderDisplayName(folder: FolderResponse): string {
+  if (folder.display_name) return folder.display_name;
+  // Strip IMAP prefix (e.g., "INBOX.Subfolder" -> "Subfolder")
+  const parts = folder.imap_name.split(/[./]/);
+  return parts[parts.length - 1];
+}
+
+export function AppSidebar() {
+  const pathname = usePathname();
+  const [selectedAccountId, setSelectedAccountId] = useAtom(
+    selectedAccountIdAtom,
+  );
+  const [selectedFolderId, setSelectedFolderId] = useAtom(
+    selectedFolderIdAtom,
+  );
+  const [, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const { data: accounts } = useAccounts();
+  const { data: folders } = useFolders(selectedAccountId);
+
+  // Auto-select first account if none selected
+  const currentAccount =
+    accounts?.find((a) => a.id === selectedAccountId) ?? accounts?.[0];
+  if (currentAccount && !selectedAccountId) {
+    setSelectedAccountId(currentAccount.id);
+  }
+
+  const sortedFolders = folders ? sortFolders(folders) : [];
+
+  return (
+    <Sidebar collapsible="icon">
+      <SidebarHeader>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <SidebarMenuButton className="w-full justify-between" />
+                }
+              >
+                <div className="flex items-center gap-2">
+                  <Mail className="h-4 w-4" />
+                  <span className="truncate">
+                    {currentAccount?.name ?? "Select Account"}
+                  </span>
+                </div>
+                <ChevronDown className="h-4 w-4 opacity-50" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-56">
+                {accounts?.map((account) => (
+                  <DropdownMenuItem
+                    key={account.id}
+                    onClick={() => {
+                      setSelectedAccountId(account.id);
+                      setSelectedFolderId(null);
+                      setSelectedMailId(null);
+                    }}
+                  >
+                    <UserCircle className="mr-2 h-4 w-4" />
+                    <span className="truncate">{account.name}</span>
+                    {account.id === selectedAccountId && (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        current
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarHeader>
+
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Folders</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {sortedFolders.map((folder) => {
+                const Icon = getFolderIcon(folder);
+                const isActive = folder.id === selectedFolderId;
+                return (
+                  <SidebarMenuItem key={folder.id}>
+                    <SidebarMenuButton
+                      isActive={isActive}
+                      onClick={() => {
+                        setSelectedFolderId(folder.id);
+                        setSelectedMailId(null);
+                      }}
+                      tooltip={getFolderDisplayName(folder)}
+                    >
+                      <Icon className="h-4 w-4" />
+                      <span className="flex-1 truncate">
+                        {getFolderDisplayName(folder)}
+                      </span>
+                      {folder.unread_count > 0 && (
+                        <Badge
+                          variant="secondary"
+                          className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                        >
+                          {folder.unread_count}
+                        </Badge>
+                      )}
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                );
+              })}
+              {sortedFolders.length === 0 && !selectedAccountId && (
+                <div className="px-4 py-3 text-sm text-muted-foreground">
+                  Select an account to view folders
+                </div>
+              )}
+              {sortedFolders.length === 0 && selectedAccountId && (
+                <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
+                  <RefreshCw className="h-3 w-3 animate-spin" />
+                  Loading folders...
+                </div>
+              )}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/search" />}
+              isActive={pathname === "/search"}
+            >
+              <Search className="h-4 w-4" />
+              <span>Search</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/accounts" />}
+              isActive={pathname === "/accounts"}
+            >
+              <UserCircle className="h-4 w-4" />
+              <span>Accounts</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/settings" />}
+              isActive={pathname === "/settings"}
+            >
+              <Settings className="h-4 w-4" />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+    </Sidebar>
+  );
+}

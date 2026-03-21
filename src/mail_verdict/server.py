@@ -438,19 +438,32 @@ def create_app() -> ASGIApp:
         ui_build_dir = Path("/app/ui/build")
 
     if ui_build_dir.exists():
-        composed_app.routes.append(
-            Mount("/_app", app=StaticFiles(directory=str(ui_build_dir / "_app")), name="app-assets")
-        )
+        # Serve Next.js static export assets
+        next_dir = ui_build_dir / "_next"
+        if next_dir.exists():
+            composed_app.routes.append(
+                Mount("/_next", app=StaticFiles(directory=str(next_dir)), name="next-assets")
+            )
+        # Legacy SvelteKit assets (backwards compat during migration)
+        app_dir = ui_build_dir / "_app"
+        if app_dir.exists():
+            composed_app.routes.append(
+                Mount("/_app", app=StaticFiles(directory=str(app_dir)), name="app-assets")
+            )
 
         async def spa_fallback(request: Any) -> FileResponse | JSONResponse:
             """Serve index.html for SPA, 404 for API/MCP paths."""
             path = request.path_params.get("path", "")
             if path.startswith("api/") or path.startswith("mcp"):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
+            # Try serving the exact path's HTML file first (pre-rendered pages)
+            page_html = ui_build_dir / f"{path}.html" if path else None
+            if page_html and page_html.exists():
+                return FileResponse(str(page_html))
             index = ui_build_dir / "index.html"
             if index.exists():
                 return FileResponse(str(index))
-            return FileResponse(str(ui_build_dir / "200.html"))
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
 
         composed_app.routes.append(Route("/{path:path}", spa_fallback))
         logger.info("Static UI served from %s", ui_build_dir)

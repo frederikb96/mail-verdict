@@ -40,7 +40,7 @@ RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 
 # =============================================================================
-# UI build stage: SvelteKit static build
+# UI build stage: Next.js static export
 # =============================================================================
 FROM node:22-slim AS ui-build
 

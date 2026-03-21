@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Complete React + Next.js UI rewrite (replaces SvelteKit)
+  - Three-pane layout: collapsible sidebar, mail list, reading pane
+  - shadcn/ui (base-ui) component library with dark theme
+  - TanStack Query for data fetching with cursor-based pagination
+  - Virtual scrolling via virtua (VList) for 100k+ mail performance
+  - Jotai state atoms for SSE-driven sync state
+  - SSE client hook with reconnect and cache invalidation
+  - Email HTML rendering via Shadow DOM with DOMPurify sanitization
+  - Remote image blocking with privacy banner
+  - Account management page with sync progress from SSE
+  - Settings editor with category tabs and theme toggle
+  - Semantic + fulltext search page with mode toggle
+  - Skeleton loading states and empty states for all views
+  - Android-ready architecture: hooks/logic separated from UI components
+- Backend: updated static file serving for Next.js export format
+
+### Changed
+
 - `SyncTracker` (`sync/tracker.py`): per-account in-memory sync progress with phase, folder info, derived fields
 - `EventRing` (`api/event_ring.py`): in-memory ring buffer (500 events/account) with monotonic IDs and Last-Event-ID replay
 - SSE Last-Event-ID reconnect support: replays missed events from EventRing, falls back to state snapshot

@@ -15,7 +15,7 @@ build/
 uv.lock
 
 # UI build artifacts
-ui/.svelte-kit/
+ui/.next/
 ui/build/
 ui/node_modules/
 
