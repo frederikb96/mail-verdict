@@ -1,6 +1,6 @@
 [project]
 name = "mail-verdict"
-version = "0.2.1"
+version = "0.2.2"
 description = "AI-powered email management: spam detection, smart rules, and vector search"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -22,6 +22,7 @@ dependencies = [
     "fastmcp>=2.0.0",
     "nh3>=0.2.0",
     "cryptography>=44.0.0",
+    "jinja2>=3.1.0",
 ]
 
 [project.urls]
@@ -73,5 +74,5 @@ disallow_untyped_defs = true
 plugins = ["sqlalchemy.ext.mypy.plugin"]
 
 [[tool.mypy.overrides]]
-module = ["fastmcp.*", "aioimaplib.*", "qdrant_client.*"]
+module = ["fastmcp.*", "aioimaplib.*", "qdrant_client.*", "jinja2.*"]
 ignore_missing_imports = true

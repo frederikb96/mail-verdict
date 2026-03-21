@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-03-21
+
+### Added
+
+- Jinja2 prompt templates: all 4 LLM prompts now external files in `config/prompts/`
+  - `spam_system.md.j2` — spam classification rules and output format
+  - `spam_user.md.j2` — email context injection template
+  - `enrichment_system.md.j2` — tag classification rules (with `{{ tag_list }}`)
+  - `enrichment_user.md.j2` — email content for tag classification
+- Prompt loader utility (`core/prompts.py`) with multi-path Jinja2 environment
+- Debug-level logging of full system + user prompts sent to LLM (spam analyst + enrichment)
+- `jinja2>=3.1.0` dependency
+
+### Changed
+
+- Prompt file resolution: multi-path search (dev source tree + container `/app/config/`)
+- Prompts rewritten: system prompt explains everything, user prompt references system and provides data
+
+### Removed
+
+- Hardcoded prompt strings from `enrichment.py`
+- Old `config/prompts/spam_analyst.md` (replaced by Jinja2 templates)
+
 ## [0.2.1] - 2026-03-21
 
 ### Added
