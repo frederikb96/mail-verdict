@@ -46,20 +46,15 @@ export default function MailPage() {
     );
   }
 
-  // Desktop: resizable two-pane layout
+  // Desktop: two-pane layout with fixed mail list width
   return (
-    <ResizablePanelGroup orientation="horizontal" className="h-full">
-      <ResizablePanel defaultSize={40} minSize={25} maxSize={60}>
-        <div className="flex h-full flex-col overflow-hidden border-r">
-          <MailList />
-        </div>
-      </ResizablePanel>
-      <ResizableHandle withHandle />
-      <ResizablePanel defaultSize={60} minSize={30}>
-        <div className="flex h-full flex-col overflow-hidden">
-          <ReadingPane />
-        </div>
-      </ResizablePanel>
-    </ResizablePanelGroup>
+    <div className="flex h-full">
+      <div className="flex h-full w-[400px] min-w-[300px] max-w-[600px] flex-shrink-0 flex-col overflow-hidden border-r">
+        <MailList />
+      </div>
+      <div className="flex h-full min-w-0 flex-1 flex-col overflow-hidden">
+        <ReadingPane />
+      </div>
+    </div>
   );
 }
