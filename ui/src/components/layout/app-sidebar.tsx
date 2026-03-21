@@ -41,14 +41,22 @@ import {
 
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
+import { useFolderOrder } from "@/hooks/use-folder-order";
 import {
   selectedAccountIdAtom,
   selectedFolderIdAtom,
   selectedMailIdAtom,
 } from "@/lib/atoms";
-import type { FolderResponse } from "@/types/api";
+import type { FolderResponse, FolderOrderItem } from "@/types/api";
 
 const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
+  inbox: Inbox,
+  sent: Send,
+  trash: Trash2,
+  archive: Archive,
+  junk: AlertTriangle,
+  drafts: FileEdit,
+  // Legacy backslash format
   "\\Inbox": Inbox,
   "\\Sent": Send,
   "\\Trash": Trash2,
@@ -58,12 +66,12 @@ const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
 };
 
 const SPECIAL_USE_ORDER = [
-  "\\Inbox",
-  "\\Drafts",
-  "\\Sent",
-  "\\Archive",
-  "\\Junk",
-  "\\Trash",
+  "\\Inbox", "inbox",
+  "\\Drafts", "drafts",
+  "\\Sent", "sent",
+  "\\Archive", "archive",
+  "\\Junk", "junk",
+  "\\Trash", "trash",
 ];
 
 function sortFolders(folders: FolderResponse[]): FolderResponse[] {
@@ -81,18 +89,17 @@ function sortFolders(folders: FolderResponse[]): FolderResponse[] {
   return [...special, ...regular];
 }
 
-function getFolderIcon(folder: FolderResponse) {
-  if (folder.special_use && SPECIAL_USE_ICONS[folder.special_use]) {
-    return SPECIAL_USE_ICONS[folder.special_use];
+function getFolderIcon(folder: FolderResponse | FolderOrderItem) {
+  const specialUse = "special_use" in folder ? folder.special_use : null;
+  if (specialUse && SPECIAL_USE_ICONS[specialUse]) {
+    return SPECIAL_USE_ICONS[specialUse];
   }
   return Folder;
 }
 
 function getFolderDisplayName(folder: FolderResponse): string {
   if (folder.display_name) return folder.display_name;
-  // Strip IMAP prefix (e.g., "INBOX.Subfolder" -> "Subfolder")
-  const parts = folder.imap_name.split(/[./]/);
-  return parts[parts.length - 1];
+  return folder.imap_name;
 }
 
 export function AppSidebar() {
@@ -106,6 +113,7 @@ export function AppSidebar() {
   const [, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const { data: accounts } = useAccounts();
   const { data: folders } = useFolders(selectedAccountId);
+  const { data: folderOrderData } = useFolderOrder(selectedAccountId);
 
   // Auto-select first account if none selected
   const currentAccount =
@@ -114,7 +122,15 @@ export function AppSidebar() {
     setSelectedAccountId(currentAccount.id);
   }
 
-  const sortedFolders = folders ? sortFolders(folders) : [];
+  // Use custom folder order if available, with visibility filtering
+  const orderedFolders: FolderOrderItem[] | null = folderOrderData?.folders
+    ? folderOrderData.folders.filter((f) => f.is_visible)
+    : null;
+
+  // Fallback to legacy sorted folders (visible ones only)
+  const sortedFolders = folders
+    ? sortFolders(folders.filter((f) => f.is_visible))
+    : [];
 
   return (
     <Sidebar collapsible="icon">
@@ -165,41 +181,71 @@ export function AppSidebar() {
           <SidebarGroupLabel>Folders</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {sortedFolders.map((folder) => {
-                const Icon = getFolderIcon(folder);
-                const isActive = folder.id === selectedFolderId;
-                return (
-                  <SidebarMenuItem key={folder.id}>
-                    <SidebarMenuButton
-                      isActive={isActive}
-                      onClick={() => {
-                        setSelectedFolderId(folder.id);
-                        setSelectedMailId(null);
-                      }}
-                      tooltip={getFolderDisplayName(folder)}
-                    >
-                      <Icon className="h-4 w-4" />
-                      <span className="flex-1 truncate">
-                        {getFolderDisplayName(folder)}
-                      </span>
-                      {folder.unread_count > 0 && (
-                        <Badge
-                          variant="secondary"
-                          className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+              {orderedFolders
+                ? orderedFolders.map((folder) => {
+                    const Icon = getFolderIcon(folder);
+                    const isActive = folder.folder_id === selectedFolderId;
+                    return (
+                      <SidebarMenuItem key={folder.folder_id}>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          onClick={() => {
+                            setSelectedFolderId(folder.folder_id);
+                            setSelectedMailId(null);
+                          }}
+                          tooltip={folder.imap_name}
                         >
-                          {folder.unread_count}
-                        </Badge>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                );
-              })}
-              {sortedFolders.length === 0 && !selectedAccountId && (
+                          <Icon className="h-4 w-4" />
+                          <span className="flex-1 truncate">
+                            {folder.imap_name}
+                          </span>
+                          {folder.unread_count > 0 && (
+                            <Badge
+                              variant="secondary"
+                              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                            >
+                              {folder.unread_count}
+                            </Badge>
+                          )}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })
+                : sortedFolders.map((folder) => {
+                    const Icon = getFolderIcon(folder);
+                    const isActive = folder.id === selectedFolderId;
+                    return (
+                      <SidebarMenuItem key={folder.id}>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          onClick={() => {
+                            setSelectedFolderId(folder.id);
+                            setSelectedMailId(null);
+                          }}
+                          tooltip={getFolderDisplayName(folder)}
+                        >
+                          <Icon className="h-4 w-4" />
+                          <span className="flex-1 truncate">
+                            {getFolderDisplayName(folder)}
+                          </span>
+                          {folder.unread_count > 0 && (
+                            <Badge
+                              variant="secondary"
+                              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                            >
+                              {folder.unread_count}
+                            </Badge>
+                          )}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    );
+                  })}
+              {!orderedFolders && sortedFolders.length === 0 && !selectedAccountId && (
                 <div className="px-4 py-3 text-sm text-muted-foreground">
                   Select an account to view folders
                 </div>
               )}
-              {sortedFolders.length === 0 && selectedAccountId && (
+              {!orderedFolders && sortedFolders.length === 0 && selectedAccountId && (
                 <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
                   <RefreshCw className="h-3 w-3 animate-spin" />
                   Loading folders...

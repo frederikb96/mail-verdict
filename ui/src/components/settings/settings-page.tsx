@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useAtomValue } from "jotai";
 import {
   Save,
   Loader2,
@@ -25,6 +26,11 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
+import { selectedAccountIdAtom } from "@/lib/atoms";
+import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
+import { FolderAssignment } from "@/components/settings/folder-assignment";
+import { FolderOrder } from "@/components/settings/folder-order";
+import { IdleConfig } from "@/components/settings/idle-config";
 
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
@@ -217,6 +223,7 @@ function ThemeSettings() {
 
 export function SettingsPage() {
   const { data: allSettings, isLoading } = useAllSettings();
+  const accountId = useAtomValue(selectedAccountIdAtom);
 
   if (isLoading) {
     return (
@@ -239,6 +246,14 @@ export function SettingsPage() {
           <ThemeSettings />
         </CardContent>
       </Card>
+
+      {/* Account-scoped settings */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <FolderAssignment accountId={accountId} />
+        <FolderOrder accountId={accountId} />
+        <IdleConfig accountId={accountId} />
+        <ImageExceptionsList accountId={accountId} />
+      </div>
 
       <Tabs defaultValue="ai">
         <TabsList>

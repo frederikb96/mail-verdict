@@ -9,7 +9,13 @@ import type {
   AccountResponse,
   AccountUpdateRequest,
   FeedbackResponse,
+  FolderOrderResponse,
   FolderResponse,
+  IdleFolderItem,
+  IdleFolderToggleResponse,
+  IdleValidationResponse,
+  ImageExceptionCreate,
+  ImageExceptionResponse,
   JobStatus,
   MailActionRequest,
   MailActionResponse,
@@ -92,6 +98,91 @@ export const api = {
     },
   },
 
+  imageExceptions: {
+    list(accountId: string): Promise<ImageExceptionResponse[]> {
+      return request(`/accounts/${accountId}/image-exceptions`);
+    },
+    create(
+      accountId: string,
+      data: ImageExceptionCreate,
+    ): Promise<ImageExceptionResponse> {
+      return request(`/accounts/${accountId}/image-exceptions`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    delete(accountId: string, exceptionId: string): Promise<void> {
+      return request(`/accounts/${accountId}/image-exceptions/${exceptionId}`, {
+        method: "DELETE",
+      });
+    },
+    check(
+      accountId: string,
+      sender: string,
+    ): Promise<{ allowed: boolean; matched_by: string | null }> {
+      return request(
+        `/accounts/${accountId}/image-exceptions/check${qs({ sender })}`,
+      );
+    },
+  },
+
+  folderManagement: {
+    getOrder(accountId: string): Promise<FolderOrderResponse> {
+      return request(`/accounts/${accountId}/folder-order`);
+    },
+    updateOrder(
+      accountId: string,
+      order: string[],
+    ): Promise<FolderOrderResponse> {
+      return request(`/accounts/${accountId}/folder-order`, {
+        method: "PUT",
+        body: JSON.stringify({ order }),
+      });
+    },
+    toggleVisibility(
+      accountId: string,
+      folderId: string,
+      isVisible: boolean,
+    ): Promise<{ folder_id: string; is_visible: boolean }> {
+      return request(
+        `/accounts/${accountId}/folders/${folderId}/visibility`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ is_visible: isVisible }),
+        },
+      );
+    },
+    autoDetectMapping(
+      accountId: string,
+    ): Promise<Record<string, string | null>> {
+      return request(`/accounts/${accountId}/folder-mapping/auto-detect`, {
+        method: "POST",
+      });
+    },
+    getIdleFolders(accountId: string): Promise<IdleFolderItem[]> {
+      return request(`/accounts/${accountId}/idle-folders`);
+    },
+    toggleIdle(
+      accountId: string,
+      folderId: string,
+      enabled: boolean,
+    ): Promise<IdleFolderToggleResponse> {
+      return request(`/accounts/${accountId}/idle-folders`, {
+        method: "PUT",
+        body: JSON.stringify({ folder_id: folderId, enabled }),
+      });
+    },
+    validateIdle(
+      accountId: string,
+      folderId: string,
+    ): Promise<IdleValidationResponse> {
+      return request(`/accounts/${accountId}/validate-idle`, {
+        method: "POST",
+        body: JSON.stringify({ folder_id: folderId }),
+      });
+    },
+  },
+
   mails: {
     list(params: {
       account_id?: string;
@@ -103,8 +194,14 @@ export const api = {
       return request(`/mails${qs(params)}`);
     },
 
-    get(id: string, accountId: string): Promise<MailDetail> {
-      return request(`/mails/${id}${qs({ account_id: accountId })}`);
+    get(
+      id: string,
+      accountId: string,
+      loadImages?: boolean,
+    ): Promise<MailDetail> {
+      return request(
+        `/mails/${id}${qs({ account_id: accountId, load_images: loadImages })}`,
+      );
     },
 
     action(

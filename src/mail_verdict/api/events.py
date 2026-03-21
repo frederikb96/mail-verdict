@@ -312,7 +312,8 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
     SSE endpoint handler.
 
     Supports ?account_id=<uuid> for per-account filtering.
-    Supports Last-Event-ID header for reconnect replay.
+    Supports Last-Event-ID header (auto-reconnect) and ?last_event_id query
+    parameter (manual reconnect) for replay.
     """
     if _event_ring is None:
         return StreamingResponse(
@@ -331,9 +332,13 @@ async def sse_endpoint(request: Request) -> StreamingResponse:
         except ValueError:
             pass
 
-    # Parse Last-Event-ID header
+    # Parse Last-Event-ID from header (auto-reconnect) or query param (manual reconnect)
     last_event_id: int | None = None
-    raw_last_id = request.headers.get("Last-Event-ID") or request.headers.get("last-event-id")
+    raw_last_id = (
+        request.headers.get("Last-Event-ID")
+        or request.headers.get("last-event-id")
+        or request.query_params.get("last_event_id")
+    )
     if raw_last_id:
         try:
             last_event_id = int(raw_last_id)

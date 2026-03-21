@@ -121,12 +121,14 @@ async def list_mails(
 async def get_mail(
     mail_id: uuid.UUID,
     account_id: uuid.UUID = Query(),
+    load_images: bool = Query(default=False, description="Load remote images if allowed"),
 ) -> MailDetail:
     """
     Get full mail detail by ID.
 
     If the mail body has not been synced yet (body_synced=False),
     triggers an on-demand IMAP fetch before returning.
+    Remote images are stripped unless sender/domain is in the exception list.
     """
     mail_repo = get_mail_repo()
     mail = await mail_repo.get_by_id(account_id, mail_id)
@@ -147,9 +149,27 @@ async def get_mail(
     attachment_repo = get_attachment_repo()
     attachments = await attachment_repo.get_by_mail_id(mail_id)
 
+    from mail_verdict.core.image_sanitizer import (
+        restore_remote_images,
+        strip_remote_images,
+    )
     from mail_verdict.core.sanitizer import sanitize_email_html
 
     sanitized_html = sanitize_email_html(mail.body_html) if mail.body_html else None
+
+    # Check image exceptions for this sender
+    images_allowed = False
+    has_blocked_images = False
+    if sanitized_html:
+        images_allowed = await _check_image_allowed(
+            account_id, mail.from_addr,
+        )
+
+        if images_allowed and load_images:
+            sanitized_html = restore_remote_images(sanitized_html)
+            has_blocked_images = False
+        else:
+            sanitized_html, has_blocked_images = strip_remote_images(sanitized_html)
 
     return MailDetail(
         id=mail.id,
@@ -175,6 +195,8 @@ async def get_mail(
         dmarc_pass=mail.dmarc_pass,
         headers_synced=mail.headers_synced,
         body_synced=mail.body_synced,
+        has_blocked_images=has_blocked_images,
+        images_allowed=images_allowed,
         fetched_at=mail.fetched_at,
         created_at=mail.created_at,
         tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
@@ -188,6 +210,58 @@ async def get_mail(
             for a in attachments
         ],
     )
+
+
+async def _check_image_allowed(
+    account_id: uuid.UUID,
+    from_addr: str | None,
+) -> bool:
+    """
+    Check if images are allowed for a sender based on image exceptions.
+
+    Args:
+        account_id: Account to check exceptions for
+        from_addr: Sender email address
+
+    Returns:
+        True if sender or domain is in the exception allowlist
+    """
+    from mail_verdict.core.image_sanitizer import extract_sender_domain, extract_sender_email
+    from mail_verdict.database.models import ImageException, ImageExceptionType
+
+    if not from_addr:
+        return False
+
+    email = extract_sender_email(from_addr)
+    domain = extract_sender_domain(from_addr)
+
+    db = get_db_connection()
+    async with db.session() as session:
+        from sqlalchemy import or_
+
+        conditions = []
+        if email:
+            conditions.append(
+                (ImageException.exception_type == ImageExceptionType.SENDER)
+                & (ImageException.value == email)
+            )
+        if domain:
+            conditions.append(
+                (ImageException.exception_type == ImageExceptionType.DOMAIN)
+                & (ImageException.value == domain)
+            )
+        if not conditions:
+            return False
+
+        result = await session.execute(
+            select(ImageException.id)
+            .where(
+                ImageException.account_id == account_id,
+                or_(*conditions),
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
 
 async def _fetch_body_on_demand(mail: Mail) -> None:

@@ -18,12 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - SSE client hook with reconnect and cache invalidation
   - Email HTML rendering via Shadow DOM with DOMPurify sanitization
   - Remote image blocking with privacy banner
+  - Per-message image/HTML loading control (Block 17): allow images per-message, per-sender, or per-domain
+  - Image exceptions management in settings (view/delete sender and domain allowlist entries)
+  - Folder assignment UI: map IMAP folders to inbox/spam/drafts/sent/archive/trash roles with auto-detect
+  - Folder ordering and visibility: reorder folders, show/hide per folder, sidebar respects custom order
+  - IMAP IDLE per-folder configuration with immediate validation
+  - Flat folder hierarchy: all folders at same indent level, dot-separated names
   - Account management page with sync progress from SSE
   - Settings editor with category tabs and theme toggle
   - Semantic + fulltext search page with mode toggle
   - Skeleton loading states and empty states for all views
   - Android-ready architecture: hooks/logic separated from UI components
 - Backend: updated static file serving for Next.js export format
+- `ImageException` model + CRUD API for per-account sender/domain image allowlist
+- `image_sanitizer.py`: read-time remote image stripping (separate from store-time nh3 XSS sanitizer)
+- `MailDetail` schema: `has_blocked_images` and `images_allowed` fields
+- `folder_management.py` API router: folder ordering, visibility toggle, IDLE config/validation
+- `folder_order` (JSONB) and `idle_folders` (JSONB) on Account model
+- `is_visible` (boolean) on Folder model
+- Alembic migration 005: image_exceptions table, folder management columns
+- SSE endpoint accepts `last_event_id` query parameter for manual reconnect replay
 
 ### Changed
 

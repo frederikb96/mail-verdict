@@ -9,6 +9,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from mail_verdict.api.accounts import router as accounts_router
+from mail_verdict.api.folder_management import router as folder_management_router
+from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.api.jobs import router as jobs_router
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.rules import router as rules_router
@@ -22,6 +24,8 @@ all_routers: list[APIRouter] = [
     mails_router,
     search_router,
     accounts_router,
+    image_exceptions_router,
+    folder_management_router,
     settings_router,
     rules_router,
     verdicts_router,

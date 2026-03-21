@@ -45,6 +45,8 @@ export interface MailDetail extends MailSummary {
   dkim_pass: boolean | null;
   spf_pass: boolean | null;
   dmarc_pass: boolean | null;
+  has_blocked_images: boolean;
+  images_allowed: boolean;
   fetched_at: string;
   created_at: string;
   tags: TagResponse[];
@@ -135,6 +137,7 @@ export interface FolderResponse {
   display_name: string | null;
   special_use: string | null;
   subscribed: boolean;
+  is_visible: boolean;
   last_synced_at: string | null;
   unread_count: number;
   total_count: number;
@@ -219,4 +222,54 @@ export interface SSEEvent {
   errors?: number;
   duration_s?: number;
   error_message?: string;
+}
+
+export interface ImageExceptionResponse {
+  id: string;
+  type: "sender" | "domain";
+  value: string;
+  created_at: string;
+}
+
+export interface ImageExceptionCreate {
+  type: "sender" | "domain";
+  value: string;
+}
+
+export interface FolderOrderItem {
+  folder_id: string;
+  imap_name: string;
+  display_name: string | null;
+  special_use: string | null;
+  is_visible: boolean;
+  unread_count: number;
+  total_count: number;
+}
+
+export interface FolderOrderResponse {
+  folders: FolderOrderItem[];
+}
+
+export interface FolderOrderUpdate {
+  order: string[];
+}
+
+export interface IdleFolderItem {
+  folder_id: string;
+  imap_name: string;
+  idle_enabled: boolean;
+  idle_supported: boolean | null;
+}
+
+export interface IdleFolderToggleResponse {
+  folder_id: string;
+  enabled: boolean;
+  success: boolean;
+  error: string | null;
+}
+
+export interface IdleValidationResponse {
+  folder_id: string;
+  supported: boolean;
+  error: string | null;
 }

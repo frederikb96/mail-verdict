@@ -1,7 +1,8 @@
 """
 SQLAlchemy ORM models for MailVerdict database.
 
-Defines all tables: accounts, folders, mails, attachments, verdicts, mail_tags.
+Defines all tables: accounts, folders, mails, attachments, verdicts,
+mail_tags, image_exceptions.
 """
 
 from __future__ import annotations
@@ -70,6 +71,13 @@ class TagSource(enum.Enum):
     IMAP = "imap"
 
 
+class ImageExceptionType(enum.Enum):
+    """Type of image loading exception."""
+
+    SENDER = "sender"
+    DOMAIN = "domain"
+
+
 class AccountState(enum.Enum):
     """Account lifecycle states."""
 
@@ -124,6 +132,8 @@ class Account(Base):
     embedding_lookback_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     spam_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     folder_mapping: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    folder_order: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    idle_folders: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -167,6 +177,7 @@ class Folder(Base):
     uidnext: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     highestmodseq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     subscribed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     flags: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -398,4 +409,38 @@ class MailTag(Base):
     __table_args__ = (
         UniqueConstraint("mail_id", "tag_name", name="uq_mail_tag"),
         Index("idx_mail_tag_mail_id", "mail_id"),
+    )
+
+
+class ImageException(Base):
+    """Per-account exception for remote image loading (sender or domain allowlist)."""
+
+    __tablename__ = "image_exceptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    exception_type: Mapped[ImageExceptionType] = mapped_column(
+        Enum(ImageExceptionType, native_enum=False),
+        nullable=False,
+    )
+    value: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "exception_type", "value",
+            name="uq_image_exception",
+        ),
+        Index("idx_image_exception_account", "account_id"),
     )

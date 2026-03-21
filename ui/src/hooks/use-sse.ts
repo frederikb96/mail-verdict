@@ -35,8 +35,16 @@ export function useSSE(accountId?: string) {
       }
 
       let url = "/api/events";
+      const params = new URLSearchParams();
       if (accountId) {
-        url += `?account_id=${accountId}`;
+        params.set("account_id", accountId);
+      }
+      if (lastEventIdRef.current) {
+        params.set("last_event_id", lastEventIdRef.current);
+      }
+      const paramStr = params.toString();
+      if (paramStr) {
+        url += `?${paramStr}`;
       }
 
       const source = new EventSource(url);

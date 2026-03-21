@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useAtomValue } from "jotai";
 import {
   Mail,
@@ -20,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmailRenderer } from "@/components/mail/email-renderer";
+import { ImageBanner } from "@/components/mail/image-banner";
 import { useMailDetail, useMailAction } from "@/hooks/use-mails";
 import { selectedAccountIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 import {
@@ -58,6 +60,7 @@ export function ReadingPane() {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const { data: mail, isLoading } = useMailDetail(mailId, accountId);
   const mailAction = useMailAction();
+  const [loadImagesForMessage, setLoadImagesForMessage] = useState(false);
 
   // Empty state
   if (!mailId) {
@@ -206,11 +209,22 @@ export function ReadingPane() {
         )}
       </div>
 
+      {/* Image blocking banner */}
+      <ImageBanner
+        accountId={mail.account_id}
+        senderEmail={senderEmail}
+        senderDomain={senderEmail?.split("@")[1] ?? null}
+        imagesAllowed={mail.images_allowed}
+        hasBlockedImages={mail.has_blocked_images}
+        onLoadForMessage={() => setLoadImagesForMessage(true)}
+      />
+
       {/* Body */}
       <div className="min-h-0 flex-1 overflow-auto">
         <EmailRenderer
           html={mail.body_html}
           plainText={mail.body_text}
+          imagesAllowed={mail.images_allowed || loadImagesForMessage}
         />
       </div>
 

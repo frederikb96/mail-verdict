@@ -317,6 +317,7 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             display_name=f.display_name,
             special_use=f.special_use.value if f.special_use else None,
             subscribed=f.subscribed,
+            is_visible=f.is_visible,
             last_synced_at=f.last_synced_at,
             total_count=total,
             unread_count=unread,

@@ -93,6 +93,8 @@ class MailDetail(BaseModel):
     body_synced: bool = False
     fetched_at: datetime
     created_at: datetime
+    has_blocked_images: bool = False
+    images_allowed: bool = False
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
 
@@ -218,6 +220,7 @@ class FolderResponse(BaseModel):
     display_name: str | None = None
     special_use: str | None = None
     subscribed: bool = True
+    is_visible: bool = True
     last_synced_at: datetime | None = None
     unread_count: int = 0
     total_count: int = 0
@@ -322,3 +325,106 @@ class StatsResponse(BaseModel):
     accuracy: float
     weekly_trend: list[WeeklyTrendPoint]
     account_sync: list[AccountSyncStatus]
+
+
+# --- Image exception schemas ---
+
+
+class ImageExceptionCreate(BaseModel):
+    """Request to create an image loading exception."""
+
+    type: Literal["sender", "domain"]
+    value: str
+
+
+class ImageExceptionResponse(BaseModel):
+    """Image loading exception detail."""
+
+    id: uuid.UUID
+    type: str
+    value: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Folder management schemas ---
+
+
+class FolderOrderItem(BaseModel):
+    """Folder in ordered list with metadata."""
+
+    folder_id: uuid.UUID
+    imap_name: str
+    display_name: str | None = None
+    special_use: str | None = None
+    is_visible: bool = True
+    unread_count: int = 0
+    total_count: int = 0
+
+
+class FolderOrderResponse(BaseModel):
+    """Ordered folder list response."""
+
+    folders: list[FolderOrderItem]
+
+
+class FolderOrderUpdate(BaseModel):
+    """Request to update folder display order."""
+
+    order: list[uuid.UUID]
+
+
+class FolderVisibilityUpdate(BaseModel):
+    """Request to toggle folder visibility."""
+
+    is_visible: bool
+
+
+class FolderVisibilityResponse(BaseModel):
+    """Folder visibility update response."""
+
+    folder_id: uuid.UUID
+    is_visible: bool
+
+
+# --- IDLE configuration schemas ---
+
+
+class IdleFolderItem(BaseModel):
+    """Folder with IDLE status."""
+
+    folder_id: uuid.UUID
+    imap_name: str
+    idle_enabled: bool
+    idle_supported: bool | None = None
+
+
+class IdleFolderToggle(BaseModel):
+    """Request to toggle IDLE for a folder."""
+
+    folder_id: uuid.UUID
+    enabled: bool
+
+
+class IdleFolderToggleResponse(BaseModel):
+    """IDLE toggle response."""
+
+    folder_id: uuid.UUID
+    enabled: bool
+    success: bool
+    error: str | None = None
+
+
+class IdleValidationRequest(BaseModel):
+    """Request to validate IDLE support for a folder."""
+
+    folder_id: uuid.UUID
+
+
+class IdleValidationResponse(BaseModel):
+    """IDLE validation result."""
+
+    folder_id: uuid.UUID
+    supported: bool
+    error: str | None = None
