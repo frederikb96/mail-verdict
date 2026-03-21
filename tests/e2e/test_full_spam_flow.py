@@ -21,6 +21,7 @@ from tests.e2e.conftest import (
     NEWSLETTER_EMAIL,
     SPAMMER_EMAIL,
     SPAMMER_PASSWORD,
+    get_account_id,
     get_known_mail_ids,
     send_email,
     wait_for_new_mail,
@@ -42,12 +43,14 @@ _ham_mail_cache: dict | None = None
 @pytest.mark.asyncio
 async def test_spam_email_synced_with_correct_metadata(
     app_client: httpx.AsyncClient,
+    seeded_env: dict[str, str],
 ) -> None:
     """Send a spam email and verify it was synced with correct metadata."""
     global _spam_mail_cache
 
     if _spam_mail_cache is None:
-        known_ids = await get_known_mail_ids(app_client)
+        account_id = seeded_env["account_id"]
+        known_ids = await get_known_mail_ids(app_client, account_id=account_id)
 
         test_id = uuid.uuid4().hex[:8]
         subject = f"URGENT: Buy Cheap Pills NOW!!! {test_id}"
@@ -73,6 +76,7 @@ async def test_spam_email_synced_with_correct_metadata(
             app_client,
             known_ids=known_ids,
             subject_contains=test_id,
+            account_id=account_id,
             timeout=90,
         )
 
@@ -93,13 +97,14 @@ async def test_spam_email_synced_with_correct_metadata(
 @pytest.mark.asyncio
 async def test_spam_verdict_is_spam(
     app_client: httpx.AsyncClient,
+    seeded_env: dict[str, str],
 ) -> None:
     """Verify the LLM classified the obvious spam correctly."""
     global _spam_mail_cache
 
     # Ensure spam mail was sent (run previous test first)
     if _spam_mail_cache is None:
-        await test_spam_email_synced_with_correct_metadata(app_client)
+        await test_spam_email_synced_with_correct_metadata(app_client, seeded_env)
 
     mail = _spam_mail_cache
     assert mail is not None
@@ -123,12 +128,13 @@ async def test_spam_verdict_is_spam(
 async def test_spam_embedding_exists_in_qdrant(
     app_client: httpx.AsyncClient,
     qdrant_client: httpx.AsyncClient,
+    seeded_env: dict[str, str],
 ) -> None:
     """Verify the email was embedded in Qdrant with spam tag."""
     global _spam_mail_cache
 
     if _spam_mail_cache is None:
-        await test_spam_email_synced_with_correct_metadata(app_client)
+        await test_spam_email_synced_with_correct_metadata(app_client, seeded_env)
 
     mail = _spam_mail_cache
     assert mail is not None
@@ -168,12 +174,13 @@ async def test_spam_embedding_exists_in_qdrant(
 @pytest.mark.asyncio
 async def test_spam_verdict_in_verdicts_list(
     app_client: httpx.AsyncClient,
+    seeded_env: dict[str, str],
 ) -> None:
     """Verify the verdict is accessible via the verdicts list endpoint."""
     global _spam_mail_cache
 
     if _spam_mail_cache is None:
-        await test_spam_email_synced_with_correct_metadata(app_client)
+        await test_spam_email_synced_with_correct_metadata(app_client, seeded_env)
 
     mail = _spam_mail_cache
     assert mail is not None
@@ -194,12 +201,14 @@ async def test_spam_verdict_in_verdicts_list(
 @pytest.mark.asyncio
 async def test_legitimate_email_not_spam(
     app_client: httpx.AsyncClient,
+    seeded_env: dict[str, str],
 ) -> None:
     """A clearly legitimate email should be classified as not-spam."""
     global _ham_mail_cache
 
     if _ham_mail_cache is None:
-        known_ids = await get_known_mail_ids(app_client)
+        account_id = seeded_env["account_id"]
+        known_ids = await get_known_mail_ids(app_client, account_id=account_id)
 
         test_id = uuid.uuid4().hex[:8]
         subject = f"Team meeting agenda for Monday {test_id}"
@@ -226,6 +235,7 @@ async def test_legitimate_email_not_spam(
             app_client,
             known_ids=known_ids,
             subject_contains=test_id,
+            account_id=account_id,
             timeout=90,
         )
 
