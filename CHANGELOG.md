@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- SSE endpoint (`/api/events`) now validates API key (was bypassing FastAPI auth middleware)
+- `EventRing.add()` protected by `asyncio.Lock` to prevent interleaved mutations
+- `list_mails` endpoint requires `account_id` (no longer returns cross-account data)
+- `restore_remote_images` validates URL scheme (blocks `javascript:`, `vbscript:` XSS vectors)
+
 ## [1.0.0] - 2026-03-21
 
 ### Breaking Changes
