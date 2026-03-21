@@ -7,172 +7,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-21
+
+### Breaking Changes
+
+- **IMAP library migration:** aioimaplib replaced with imap-tools (all IMAP operations now run in `asyncio.to_thread`)
+- **Complete UI rewrite:** SvelteKit frontend replaced with React + Next.js
+- **SSE event types renamed:** `new_mail` -> `mail.new`, `folder_change`/`flags_changed` -> `mail.updated`, `verdict_issued` -> `verdict.issued`
+- **SSE redesign:** Queue-per-client fan-out replaced with centralized EventRing + waiter pattern
+- **Pagination:** Offset-based pagination replaced with cursor-based (`before` parameter, `has_more`, `next_cursor`)
+- **Mail list API:** Returns `MailListResponse` wrapper (replaces bare list)
+- **HTML sanitization:** Moved from read-time to store-time (nh3 applied during sync)
+- **OPENAI_API_KEY:** Now environment variable only (removed from DB settings)
+
 ### Added
 
-- CI: parallel UI job with Node.js 22 type check (`tsc --noEmit`) and build validation
-- Security: unit tests for SSE cross-account event isolation
-- Unit tests for SelectionManager (toggle, clear, properties, global registry)
-- Unit tests for folder management schemas (order, visibility, IDLE configuration)
-- Unit tests for image exception schemas and router registration
-- Unit tests for cursor pagination schemas and on-demand body fetch fields
-- Unit tests for folder dedup (special-use detection, RFC 6154 flag priority, name fallback)
-- Unit tests for ChangeSet/SelectInfo dataclasses and extended UID set parsing
-- Unit tests for SSE event conversion and formatting
-
-### Changed
-
-- HTML sanitization moved from read-time to store-time (sync/manager.py) for defense-in-depth
-- Removed legacy SvelteKit `_app` static file mount from server.py
-- CI workflow split into parallel `python` and `ui` jobs
-
-### Security
-
-- Sync trigger rate limiting: 5s debounce per account prevents rapid-fire requests (429 response)
-
-- UX Polish (Block 14):
-  - SSE connection state indicator: colored dot in header (green/yellow/red) with tooltip
-  - Keyboard shortcuts: j/k navigate list, Enter/Escape open/close reading pane, x toggle selection, e/s/#/!/r/u for mail actions
-  - Responsive layout: mobile viewport (< 768px) shows mail list or reading pane with back button, never both
-  - Error boundaries: wrap sidebar and content areas to catch render errors gracefully
-  - TanStack Query persistent cache: localStorage persister for instant page loads after first visit
-  - Folder order: upgraded from up/down buttons to @dnd-kit drag-and-drop sortable
-  - Focused mail tracking via Jotai atom with visual ring indicator
-
-- Unified view: multi-account folder merging with emoji icons
+- **Two-phase sync:** Headers fetched first (fast display), bodies fetched in background
+- **SyncTracker:** Per-account in-memory sync progress with phase, folder info, derived fields
+- **EventRing:** In-memory ring buffer (500 events/account) with monotonic IDs and Last-Event-ID replay
+- **Cursor-based pagination:** Composite index `(folder_id, received_at DESC)`, `before` cursor
+- **On-demand body fetch:** GET /mails/:id triggers IMAP fetch when `body_synced=False`
+- **Account state machine:** CREATED -> SYNCING -> SEEDING -> ACTIVE (+ ERROR with retry)
+- **Image privacy:**
+  - `ImageException` model + CRUD API for per-account sender/domain image allowlist
+  - Read-time remote image stripping (separate from store-time nh3 XSS sanitizer)
+  - `has_blocked_images` and `images_allowed` fields on MailDetail schema
+  - Per-message, per-sender, per-domain image loading control
+- **Folder management:**
+  - Folder ordering, visibility toggle, IDLE per-folder config with validation
+  - `folder_order` (JSONB) and `idle_folders` (JSONB) on Account model
+  - `is_visible` on Folder model
+  - SPECIAL-USE dedup with RFC 6154 flag priority and name fallback
+- **Mail interactions:**
+  - Per-mail hover actions (star, archive, spam, delete)
+  - Backend SelectionManager: in-memory per-account selection state (virtual scroll compatible)
+  - Selection API: toggle, range (shift-click), select-all, clear under `/accounts/:id/selection/`
+  - Bulk actions API: move, archive, star, unstar, spam, mark_read, mark_unread, delete
+  - SSE `selection.changed` events for real-time selection state sync
+  - Extended mail action endpoint with `archive` and `spam` action types
+- **Unified view:**
+  - Cross-account folder merging with emoji icons
   - `unified_name` on Folder model, `emoji` on Account model (migration 006)
-  - Unified API: GET /unified/folders (merged folder list), GET /unified/mails (cross-account paginated mail list)
-  - Account emoji API: PUT /accounts/:id/emoji
-  - Folder unified name API: PUT /accounts/:id/folders/:fid/unified-name
-  - Unified folder order API: GET/PUT /unified/folder-order (stored in Settings table)
-  - Sidebar: "Unified View" option in account dropdown with merged folder list
-  - Account emojis shown in dropdown and on unified mail rows
-  - Settings: unified setup UI (per-folder unified name fields, emoji picker per account)
-  - Settings: unified folder order (dnd-kit drag-and-drop sortable list)
-  - Shared hooks: use-unified-view, use-account-emoji, use-unified-name
-  - UnifiedMailItem component with emoji badge identifying source account
-- Mail interactions: per-mail hover actions (star, archive, spam, delete)
-- Backend SelectionManager: in-memory per-account selection state for virtual scroll compatibility
-- Selection API: toggle, range (shift-click), select-all, clear endpoints under `/accounts/:id/selection/`
-- Bulk actions API: move, archive, star, unstar, spam, mark_read, mark_unread, delete on all selected mails
-- SSE `selection.changed` events for real-time selection state sync
-- Multi-select UI: checkbox on mail rows, shift/ctrl-click support, bulk action toolbar
-- Drag-and-drop: drag mail(s) to sidebar folders using @dnd-kit, multi-select aware with visual feedback
-- Extended mail action endpoint with `archive` and `spam` action types
-- Complete React + Next.js UI rewrite (replaces SvelteKit)
+  - Unified API: GET /unified/folders, GET /unified/mails (cross-account paginated)
+  - Account emoji API, folder unified name API, unified folder order API
+- **Complete React + Next.js UI:**
   - Three-pane layout: collapsible sidebar, mail list, reading pane
-  - shadcn/ui (base-ui) component library with dark theme
-  - TanStack Query for data fetching with cursor-based pagination
-  - Virtual scrolling via virtua (VList) for 100k+ mail performance
-  - Jotai state atoms for SSE-driven sync state
+  - shadcn/ui + base-ui component library with dark theme
+  - TanStack Query for data fetching with localStorage persistence
+  - Virtual scrolling via virtua VList for 100k+ mail performance
+  - Jotai state atoms for SSE-driven state
   - SSE client hook with reconnect and cache invalidation
   - Email HTML rendering via Shadow DOM with DOMPurify sanitization
-  - Remote image blocking with privacy banner
-  - Per-message image/HTML loading control (Block 17): allow images per-message, per-sender, or per-domain
-  - Image exceptions management in settings (view/delete sender and domain allowlist entries)
-  - Folder assignment UI: map IMAP folders to inbox/spam/drafts/sent/archive/trash roles with auto-detect
-  - Folder ordering and visibility: reorder folders, show/hide per folder, sidebar respects custom order
-  - IMAP IDLE per-folder configuration with immediate validation
-  - Flat folder hierarchy: all folders at same indent level, dot-separated names
+  - Folder assignment UI with auto-detect
   - Account management page with sync progress from SSE
   - Settings editor with category tabs and theme toggle
-  - Semantic + fulltext search page with mode toggle
+  - Semantic + fulltext search with mode toggle
+  - Multi-select UI: checkbox on mail rows, shift/ctrl-click, bulk action toolbar
+  - Drag-and-drop: mail(s) to sidebar folders via dnd-kit
   - Skeleton loading states and empty states for all views
   - Android-ready architecture: hooks/logic separated from UI components
-- Backend: updated static file serving for Next.js export format
-- `ImageException` model + CRUD API for per-account sender/domain image allowlist
-- `image_sanitizer.py`: read-time remote image stripping (separate from store-time nh3 XSS sanitizer)
-- `MailDetail` schema: `has_blocked_images` and `images_allowed` fields
-- `folder_management.py` API router: folder ordering, visibility toggle, IDLE config/validation
-- `folder_order` (JSONB) and `idle_folders` (JSONB) on Account model
-- `is_visible` (boolean) on Folder model
-- Alembic migration 005: image_exceptions table, folder management columns
-- SSE endpoint accepts `last_event_id` query parameter for manual reconnect replay
+- **UX polish:**
+  - SSE connection state indicator: colored dot (green/yellow/red) with tooltip
+  - Keyboard shortcuts: j/k navigate, Enter/Escape open/close, x toggle selection, e/s/#/!/r/u actions
+  - Responsive layout: mobile viewport (< 768px) shows list or pane with back button
+  - Error boundaries for sidebar and content areas
+  - Folder order via dnd-kit drag-and-drop sortable
+  - Focused mail tracking via Jotai atom with visual ring indicator
+- **Jinja2 prompt templates:** All 4 LLM prompts as external files in `config/prompts/`
+- **Prompt loader utility** (`core/prompts.py`) with multi-path Jinja2 environment
+- **Real-time sync progress:** Preflight message counts, per-folder progress, batched fetch (50/batch)
+- **Dynamic account sync:** Trigger/cancel per account without app restart
+- **Sync concurrency safety:** asyncio.Lock serializes IDLE, poll, manual triggers
+- **CI:** Parallel UI job with Node.js 22 type check and build validation
+- **E2E test suite:** 91 tests across 15 files (accounts, sync, pagination, folders, images, mail actions, search, selection, SSE, unified view, settings, health)
+- **Unit test suite:** 503 tests across 36 files
+- **Alembic migrations:** 004 (two-phase sync), 005 (image exceptions, folder management), 006 (unified view)
 
 ### Changed
 
-- `SyncTracker` (`sync/tracker.py`): per-account in-memory sync progress with phase, folder info, derived fields
-- `EventRing` (`api/event_ring.py`): in-memory ring buffer (500 events/account) with monotonic IDs and Last-Event-ID replay
-- SSE Last-Event-ID reconnect support: replays missed events from EventRing, falls back to state snapshot
-- SSE `sync.state` snapshot on fresh connect with full tracker state
-- Keepalive interval reduced from 30s to 15s for faster disconnect detection
-- `SyncEngine.get_tracker(account_id)` to retrieve per-account tracker
-- Alembic migration 004: `headers_synced` + `body_synced` columns on Mail table
-- Cursor-based pagination for mail list API (`before` parameter, `has_more`, `next_cursor`)
-- Composite index `(folder_id, received_at DESC)` for efficient cursor queries
-- Folder message counts: `unread_count` and `total_count` in folder API response
-- On-demand body fetch: GET /mails/:id triggers IMAP fetch when `body_synced=False`
-- `SyncManager.fetch_body_for_mail()` for single-message body retrieval
-- `SyncEngine.get_account_sync_by_id()` for account lookup by UUID
-
-### Changed
-
-- SSE redesign: replaced queue-per-client fan-out with centralized EventRing + waiter pattern
-- SSE event types renamed: `new_mail` -> `mail.new`, `folder_change` -> `mail.updated`, `flags_changed` -> `mail.updated`, `verdict_issued` -> `verdict.issued`
-- SyncManager uses SyncTracker for progress (replaces `push_sync_status` calls)
-- IMAP library migration: replaced aioimaplib with imap-tools (fixes RecursionError on large mailboxes)
-- All IMAP operations wrapped in `asyncio.to_thread()` (imap-tools is synchronous)
-- Two-phase sync: headers fetched first (fast display), bodies fetched separately
+- IMAP connector uses imap-tools `MailBox`, `move()`, `flag()`, `copy()`
 - Folder discovery uses `mailbox.folder.list()` with SPECIAL-USE dedup
 - IDLE watcher uses `mailbox.idle.wait()` in thread
-- Action propagator uses imap-tools `move()`, `flag()`, `copy()`
-- Test connection endpoint uses imap-tools MailBox
-- Mail list API returns `MailListResponse` wrapper (replaces bare list)
+- SyncManager uses SyncTracker for progress (replaces `push_sync_status`)
+- SSE `sync.state` snapshot on fresh connect with full tracker state
+- SSE keepalive interval reduced from 30s to 15s
+- Folder message counts: `unread_count` and `total_count` in folder API response
 - Header sync sets `headers_synced=True`, body sync sets `body_synced=True`
+- OpenAI client uses lazy provider pattern (API key changes take effect without restart)
+- Batched message fetch (chunks of 50) for progress reporting and clean cancellation
+- Static file serving updated for Next.js export format
+- CI workflow split into parallel `python` and `ui` jobs
 
 ### Removed
 
 - `sync/extensions.py` module (imap-tools handles SELECT, CONDSTORE, SPECIAL-USE natively)
 - aioimaplib dependency
-- Offset-based pagination (`offset` parameter removed from mail list API)
-
-## [0.2.2] - 2026-03-21
-
-### Added
-
-- Jinja2 prompt templates: all 4 LLM prompts now external files in `config/prompts/`
-  - `spam_system.md.j2` — spam classification rules and output format
-  - `spam_user.md.j2` — email context injection template
-  - `enrichment_system.md.j2` — tag classification rules (with `{{ tag_list }}`)
-  - `enrichment_user.md.j2` — email content for tag classification
-- Prompt loader utility (`core/prompts.py`) with multi-path Jinja2 environment
-- Debug-level logging of full system + user prompts sent to LLM (spam analyst + enrichment)
-- `jinja2>=3.1.0` dependency
-
-### Changed
-
-- Prompt file resolution: multi-path search (dev source tree + container `/app/config/`)
-- Prompts rewritten: system prompt explains everything, user prompt references system and provides data
-
-### Removed
-
+- Offset-based pagination (`offset` parameter)
 - Hardcoded prompt strings from `enrichment.py`
 - Old `config/prompts/spam_analyst.md` (replaced by Jinja2 templates)
-
-## [0.2.1] - 2026-03-21
-
-### Added
-
-- Real-time sync progress via SSE: preflight message counts, per-folder progress, batched fetch (50/batch), completion summary
-- IMAP STATUS command support for cheap message count preflight without SELECT
-- Dynamic account sync: trigger/cancel sync per account without app restart
-- Sync concurrency safety via asyncio.Lock (IDLE, poll, manual triggers serialized)
-- Global sync enable/disable toggle with precedence over per-account settings
-- Auto-refresh sidebar folders and accounts on SSE sync_status/new_mail events
-- Test email seeder (18 varied emails: spam, newsletters, normal) for manual testing
-- Inline sync progress UI on accounts page: spinner, progress bar, folder counts, error display
-
-### Changed
-
-- OpenAI client now uses lazy provider pattern — API key changes via Settings API take effect without restart
-- Batched message fetch (chunks of 50) replaces single-shot FETCH for progress reporting and clean cancellation
-- Settings page: locked immutable fields (provider, embedding_model, embedding_dimensions), removed stale sync settings
-- SSE push_sync_status() accepts rich progress payloads via **kwargs
-- SSE route ordering fix: /api/events now correctly matched before FastAPI /api mount
-
-### Removed
-
-- Static OpenAI client initialization from server lifespan (replaced by provider)
+- Static OpenAI client initialization from server lifespan
 - Sync lookback_days and auto_detect_folders from global settings (per-account only)
+- Legacy SvelteKit `_app` static file mount
+- SvelteKit frontend (entire `ui/` rewritten)
+
+### Security
+
+- Store-time HTML sanitization via nh3 (defense-in-depth)
+- Read-time remote image blocking with per-sender/domain allowlist
+- Sync trigger rate limiting: 5s debounce per account (429 response)
+- SSE cross-account event isolation
 
 ## [0.2.0] - 2026-03-20
 
