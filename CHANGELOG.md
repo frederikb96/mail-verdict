@@ -7,27 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
-- Body snippet/preview (first 120 chars) in mail list items for both single-account and unified views
-- Auto-select inbox folder on initial load and account switch
-
-### Changed
-
-- Mail list item layout: dynamic height with `py-3` padding (was fixed `h-16`)
-- Typography hierarchy: sender = `text-foreground font-medium/semibold`, subject + snippet = `text-muted-foreground`
-- Selected mail state: left border accent (`border-l-primary`)
-- Hover action buttons: improved sizing, transitions, and color feedback
-- Explicit `text-foreground` on sender name span (prevents color inheritance issues)
-- Content div uses `overflow-hidden` to prevent flex collapse
-
-### Security
-
-- SSE endpoint (`/api/events`) now validates API key (was bypassing FastAPI auth middleware)
-- `EventRing.add()` protected by `asyncio.Lock` to prevent interleaved mutations
-- `list_mails` endpoint requires `account_id` (no longer returns cross-account data)
-- `restore_remote_images` validates URL scheme (blocks `javascript:`, `vbscript:` XSS vectors)
-
 ## [1.0.0] - 2026-03-21
 
 ### Breaking Changes
@@ -100,8 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Dynamic account sync:** Trigger/cancel per account without app restart
 - **Sync concurrency safety:** asyncio.Lock serializes IDLE, poll, manual triggers
 - **CI:** Parallel UI job with Node.js 22 type check and build validation
-- **E2E test suite:** 91 tests across 15 files (accounts, sync, pagination, folders, images, mail actions, search, selection, SSE, unified view, settings, health)
-- **Unit test suite:** 503 tests across 36 files
+- **Mail action IMAP propagation:** Star/archive/spam/delete sync back to IMAP server via ActionPropagator
+- **IMAP sync resilience:** Auto-reconnect with exponential backoff, IMAP-wins conflict resolution, atomic batch actions with per-UID tracking
+- **Mobile layout:** Hamburger menu opens sidebar as Sheet overlay (<768px), independent scroll for mail list and reading pane
+- **Desktop sidebar collapse:** Toggle to icon-only mode (Ctrl+B shortcut), cookie-persisted state
+- **Per-account settings on Accounts page:** Folder assignment, ordering, IDLE config, unified names, emoji picker, sync enable/disable toggle
+- **SSE event emission:** mail.updated/mail.deleted events after every action, folder count invalidation
+- **Body snippet/preview:** First 120 chars in mail list items for both single-account and unified views
+- **E2E test suite:** 127 tests across 20 files (accounts, sync, pagination, folders, images, mail actions, search, selection, SSE, unified view, settings, health, sync recovery, account deletion cascade)
+- **Unit test suite:** 536 tests across 37 files
+- **UI test flows:** 33 documented browser automation flows with 25 playwright-local screenshots
 - **Alembic migrations:** 004 (two-phase sync), 005 (image exceptions, folder management), 006 (unified view)
 
 ### Changed
@@ -118,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Batched message fetch (chunks of 50) for progress reporting and clean cancellation
 - Static file serving updated for Next.js export format
 - CI workflow split into parallel `python` and `ui` jobs
+- Settings page: global-only (per-account settings moved to Accounts page)
+- Navigation: deterministic account/inbox auto-selection via useEffect
+- Folder click from search/settings navigates to mail view
+- Search filters by selected account (or all in unified view)
+- Settings page independent of sidebar navigation state
+- Mail list panel: fixed 400px width (replaces broken ResizablePanel)
+- Typography hierarchy: sender=foreground, subject+snippet=muted-foreground
 
 ### Removed
 
@@ -137,6 +131,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Read-time remote image blocking with per-sender/domain allowlist
 - Sync trigger rate limiting: 5s debounce per account (429 response)
 - SSE cross-account event isolation
+- SSE endpoint (`/api/events`) validates API key (was bypassing auth middleware)
+- `EventRing.add()` protected by `asyncio.Lock`
+- `list_mails` requires `account_id` (no cross-account data leaks)
+- `restore_remote_images` validates URL scheme (blocks XSS vectors)
 
 ## [0.2.0] - 2026-03-20
 
