@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAtomValue } from "jotai";
+import { Collapsible } from "@base-ui/react/collapsible";
 import {
   Plus,
   Server,
@@ -12,6 +13,12 @@ import {
   Pencil,
   Plug,
   Loader2,
+  ChevronDown,
+  FolderInput,
+  GripVertical,
+  Radio,
+  ImageOff,
+  Layers,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +34,16 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
+
+import { FolderAssignment } from "@/components/settings/folder-assignment";
+import { FolderOrder } from "@/components/settings/folder-order";
+import { IdleConfig } from "@/components/settings/idle-config";
+import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
+import {
+  EmojiPicker,
+  UnifiedNames,
+} from "@/components/settings/unified-setup";
 
 import {
   useAccounts,
@@ -36,6 +53,7 @@ import {
   useUpdateAccount,
 } from "@/hooks/use-accounts";
 import { useStartJob, useStopJob } from "@/hooks/use-jobs";
+import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
 import { syncStatesAtom } from "@/lib/atoms";
 import type { AccountCreateRequest, AccountResponse } from "@/types/api";
 
@@ -90,6 +108,25 @@ const STATE_BADGES: Record<string, { variant: "default" | "secondary" | "destruc
   error: { variant: "destructive", label: "Error" },
 };
 
+/**
+ * Collapsible section header with chevron indicator.
+ */
+function SectionTrigger({
+  icon: Icon,
+  label,
+}: {
+  icon: typeof FolderInput;
+  label: string;
+}) {
+  return (
+    <Collapsible.Trigger className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-accent [&[data-panel-open]>svg:last-child]:rotate-180">
+      <Icon className="h-4 w-4 text-muted-foreground" />
+      <span className="flex-1 text-left">{label}</span>
+      <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform duration-200" />
+    </Collapsible.Trigger>
+  );
+}
+
 function AccountCard({
   account,
   onEdit,
@@ -99,8 +136,10 @@ function AccountCard({
 }) {
   const deleteAccount = useDeleteAccount();
   const testConnection = useTestConnection();
+  const updateAccount = useUpdateAccount();
   const startJob = useStartJob();
   const stopJob = useStopJob();
+  const updateEmoji = useUpdateAccountEmoji();
   const syncStates = useAtomValue(syncStatesAtom);
   const syncState = syncStates[account.id];
 
@@ -117,13 +156,32 @@ function AccountCard({
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2">
-            <Server className="h-5 w-5 text-muted-foreground" />
+            <EmojiPicker
+              currentEmoji={account.emoji}
+              onSelect={(emoji) =>
+                updateEmoji.mutate({ accountId: account.id, emoji })
+              }
+            />
             <CardTitle className="text-base">{account.name}</CardTitle>
           </div>
           <Badge variant={badgeInfo.variant}>{badgeInfo.label}</Badge>
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {/* Sync toggle */}
+        <div className="flex items-center justify-between">
+          <Label className="text-sm">Sync enabled</Label>
+          <Switch
+            checked={account.is_active}
+            onCheckedChange={(checked: boolean) =>
+              updateAccount.mutate({
+                id: account.id,
+                data: { is_active: checked },
+              })
+            }
+          />
+        </div>
+
         <div className="grid grid-cols-2 gap-2 text-sm">
           <div className="text-muted-foreground">IMAP</div>
           <div>
@@ -227,6 +285,54 @@ function AccountCard({
             Connection failed: {(testConnection.error as Error).message}
           </div>
         )}
+
+        {/* Per-account settings sections */}
+        <div className="mt-2 flex flex-col gap-1 border-t pt-3">
+          <Collapsible.Root>
+            <SectionTrigger icon={FolderInput} label="Folder Assignment" />
+            <Collapsible.Panel className="overflow-hidden">
+              <div className="px-1 pt-2">
+                <FolderAssignment accountId={account.id} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+
+          <Collapsible.Root>
+            <SectionTrigger icon={GripVertical} label="Folder Order & Visibility" />
+            <Collapsible.Panel className="overflow-hidden">
+              <div className="px-1 pt-2">
+                <FolderOrder accountId={account.id} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+
+          <Collapsible.Root>
+            <SectionTrigger icon={Radio} label="IMAP IDLE" />
+            <Collapsible.Panel className="overflow-hidden">
+              <div className="px-1 pt-2">
+                <IdleConfig accountId={account.id} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+
+          <Collapsible.Root>
+            <SectionTrigger icon={ImageOff} label="Image Exceptions" />
+            <Collapsible.Panel className="overflow-hidden">
+              <div className="px-1 pt-2">
+                <ImageExceptionsList accountId={account.id} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+
+          <Collapsible.Root>
+            <SectionTrigger icon={Layers} label="Unified View Names" />
+            <Collapsible.Panel className="overflow-hidden">
+              <div className="px-1 pt-2">
+                <UnifiedNames accountId={account.id} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+        </div>
       </CardContent>
     </Card>
   );
@@ -464,7 +570,7 @@ export function AccountsPage() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="flex flex-col gap-4">
         {accounts?.map((account) => (
           <AccountCard
             key={account.id}

@@ -27,7 +27,7 @@ const COMMON_EMOJIS = [
   "\u{1F535}", "\u{1F534}", "\u{1F7E2}", "\u{1F7E1}", "\u{1F7E3}",
 ];
 
-function EmojiPicker({
+export function EmojiPicker({
   currentEmoji,
   onSelect,
 }: {
@@ -122,6 +122,34 @@ function UnifiedNameField({
         placeholder="Unified name..."
         className="h-8 max-w-[200px]"
       />
+    </div>
+  );
+}
+
+/**
+ * Per-account folder unified name fields (without emoji picker).
+ * Used standalone on the accounts page.
+ */
+export function UnifiedNames({ accountId }: { accountId: string }) {
+  const { data: folders } = useFolders(accountId);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label className="text-xs text-muted-foreground">
+        Folder unified names
+      </Label>
+      {folders?.map((folder) => (
+        <UnifiedNameField
+          key={folder.id}
+          folder={folder}
+          accountId={accountId}
+        />
+      ))}
+      {!folders?.length && (
+        <span className="text-sm text-muted-foreground">
+          No folders synced yet
+        </span>
+      )}
     </div>
   );
 }
