@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- UX Polish (Block 14):
+  - SSE connection state indicator: colored dot in header (green/yellow/red) with tooltip
+  - Keyboard shortcuts: j/k navigate list, Enter/Escape open/close reading pane, x toggle selection, e/s/#/!/r/u for mail actions
+  - Responsive layout: mobile viewport (< 768px) shows mail list or reading pane with back button, never both
+  - Error boundaries: wrap sidebar and content areas to catch render errors gracefully
+  - TanStack Query persistent cache: localStorage persister for instant page loads after first visit
+  - Folder order: upgraded from up/down buttons to @dnd-kit drag-and-drop sortable
+  - Focused mail tracking via Jotai atom with visual ring indicator
+
 - Unified view: multi-account folder merging with emoji icons
   - `unified_name` on Folder model, `emoji` on Account model (migration 006)
   - Unified API: GET /unified/folders (merged folder list), GET /unified/mails (cross-account paginated mail list)

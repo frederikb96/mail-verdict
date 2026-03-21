@@ -12,6 +12,7 @@ import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { syncStatesAtom } from "@/lib/atoms";
 import { selectedMailIdsAtom } from "@/store/selection-atom";
+import { sseConnectionStateAtom } from "@/store/connection-atom";
 import type { SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
@@ -20,6 +21,7 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 export function useSSE(accountId?: string) {
   const setSyncStates = useSetAtom(syncStatesAtom);
   const setSelectedMailIds = useSetAtom(selectedMailIdsAtom);
+  const setConnectionState = useSetAtom(sseConnectionStateAtom);
   const queryClient = useQueryClient();
   const lastEventIdRef = useRef<string | null>(null);
   const reconnectDelayRef = useRef(RECONNECT_DELAY_MS);
@@ -54,11 +56,13 @@ export function useSSE(accountId?: string) {
 
       source.onopen = () => {
         reconnectDelayRef.current = RECONNECT_DELAY_MS;
+        setConnectionState("connected");
       };
 
       source.onerror = () => {
         source.close();
         sourceRef.current = null;
+        setConnectionState("reconnecting");
         // Schedule reconnect with exponential backoff
         reconnectTimerRef.current = setTimeout(() => {
           connect();
@@ -173,6 +177,7 @@ export function useSSE(accountId?: string) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      setConnectionState("disconnected");
     };
-  }, [accountId, setSyncStates, setSelectedMailIds, queryClient]);
+  }, [accountId, setSyncStates, setSelectedMailIds, setConnectionState, queryClient]);
 }

@@ -6,6 +6,8 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
 import { SSEConnector } from "@/components/layout/sse-connector";
 import { MailDndProvider } from "@/components/mail/dnd-provider";
+import { ConnectionIndicator } from "@/components/layout/connection-indicator";
+import { ErrorBoundary } from "@/components/error/error-boundary";
 
 export const metadata: Metadata = {
   title: "MailVerdict",
@@ -25,9 +27,21 @@ export default function RootLayout({
             <SidebarProvider>
               <SSEConnector />
               <MailDndProvider>
-                <AppSidebar />
+                <ErrorBoundary section="sidebar">
+                  <AppSidebar />
+                </ErrorBoundary>
                 <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  {children}
+                  <div className="flex items-center justify-end border-b px-2 py-0.5 md:hidden">
+                    <ConnectionIndicator />
+                  </div>
+                  <div className="hidden items-center justify-end border-b px-2 py-0.5 md:flex">
+                    <ConnectionIndicator />
+                  </div>
+                  <ErrorBoundary section="content">
+                    <div className="min-h-0 flex-1 overflow-hidden">
+                      {children}
+                    </div>
+                  </ErrorBoundary>
                 </main>
               </MailDndProvider>
             </SidebarProvider>

@@ -2,10 +2,24 @@
 
 import { useState, useEffect } from "react";
 import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
   Save,
   Loader2,
-  ChevronUp,
-  ChevronDown,
   Eye,
   EyeOff,
   Inbox,
@@ -43,13 +57,79 @@ function getFolderIcon(specialUse: string | null) {
   return Folder;
 }
 
+function SortableFolder({
+  folder,
+  onToggleVisibility,
+}: {
+  folder: FolderOrderItem;
+  onToggleVisibility: (folderId: string, currentVisible: boolean) => void;
+}) {
+  const Icon = getFolderIcon(folder.special_use);
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: folder.folder_id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`flex items-center gap-2 px-3 py-1.5 ${
+        isDragging ? "opacity-50" : ""
+      }`}
+    >
+      <button
+        className="cursor-grab touch-none"
+        {...attributes}
+        {...listeners}
+      >
+        <GripVertical className="h-4 w-4 text-muted-foreground" />
+      </button>
+      <Icon className="h-4 w-4 text-muted-foreground" />
+      <span
+        className={`flex-1 text-sm ${!folder.is_visible ? "text-muted-foreground line-through" : ""}`}
+      >
+        {folder.imap_name}
+      </span>
+      {folder.unread_count > 0 && (
+        <span className="text-xs text-muted-foreground">
+          {folder.unread_count} unread
+        </span>
+      )}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-7 w-7"
+        onClick={() =>
+          onToggleVisibility(folder.folder_id, folder.is_visible)
+        }
+        title={folder.is_visible ? "Hide folder" : "Show folder"}
+      >
+        {folder.is_visible ? (
+          <Eye className="h-3.5 w-3.5" />
+        ) : (
+          <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
+        )}
+      </Button>
+    </div>
+  );
+}
+
 interface FolderOrderProps {
   accountId: string | null;
 }
 
 /**
- * Folder ordering and visibility management.
- * Reorder with up/down buttons, toggle visibility per folder.
+ * Folder ordering via drag-and-drop and visibility toggle per folder.
  */
 export function FolderOrder({ accountId }: FolderOrderProps) {
   const { data: orderData } = useFolderOrder(accountId);
@@ -58,6 +138,13 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
 
   const [localFolders, setLocalFolders] = useState<FolderOrderItem[]>([]);
   const [dirty, setDirty] = useState(false);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
 
   useEffect(() => {
     if (orderData?.folders) {
@@ -84,11 +171,21 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
     );
   }
 
-  const moveFolder = (index: number, direction: -1 | 1) => {
-    const newIndex = index + direction;
-    if (newIndex < 0 || newIndex >= localFolders.length) return;
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = localFolders.findIndex(
+      (f) => f.folder_id === active.id,
+    );
+    const newIndex = localFolders.findIndex(
+      (f) => f.folder_id === over.id,
+    );
+    if (oldIndex === -1 || newIndex === -1) return;
+
     const updated = [...localFolders];
-    [updated[index], updated[newIndex]] = [updated[newIndex], updated[index]];
+    updated.splice(oldIndex, 1);
+    updated.splice(newIndex, 0, localFolders[oldIndex]);
     setLocalFolders(updated);
     setDirty(true);
   };
@@ -107,7 +204,6 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
       folderId,
       isVisible: !currentVisible,
     });
-    // Optimistic update
     setLocalFolders((prev) =>
       prev.map((f) =>
         f.folder_id === folderId ? { ...f, is_visible: !currentVisible } : f,
@@ -125,8 +221,7 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
       </CardHeader>
       <CardContent>
         <p className="mb-3 text-xs text-muted-foreground">
-          Reorder folders using the arrow buttons. Hidden folders are excluded
-          from the sidebar.
+          Drag folders to reorder. Hidden folders are excluded from the sidebar.
         </p>
 
         {localFolders.length === 0 && (
@@ -136,67 +231,26 @@ export function FolderOrder({ accountId }: FolderOrderProps) {
         )}
 
         {localFolders.length > 0 && (
-          <div className="divide-y rounded-md border">
-            {localFolders.map((folder, index) => {
-              const Icon = getFolderIcon(folder.special_use);
-              return (
-                <div
-                  key={folder.folder_id}
-                  className="flex items-center gap-2 px-3 py-1.5"
-                >
-                  <div className="flex flex-col">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      disabled={index === 0}
-                      onClick={() => moveFolder(index, -1)}
-                    >
-                      <ChevronUp className="h-3 w-3" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-5 w-5"
-                      disabled={index === localFolders.length - 1}
-                      onClick={() => moveFolder(index, 1)}
-                    >
-                      <ChevronDown className="h-3 w-3" />
-                    </Button>
-                  </div>
-                  <Icon className="h-4 w-4 text-muted-foreground" />
-                  <span
-                    className={`flex-1 text-sm ${!folder.is_visible ? "text-muted-foreground line-through" : ""}`}
-                  >
-                    {folder.imap_name}
-                  </span>
-                  {folder.unread_count > 0 && (
-                    <span className="text-xs text-muted-foreground">
-                      {folder.unread_count} unread
-                    </span>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    onClick={() =>
-                      handleToggleVisibility(
-                        folder.folder_id,
-                        folder.is_visible,
-                      )
-                    }
-                    title={folder.is_visible ? "Hide folder" : "Show folder"}
-                  >
-                    {folder.is_visible ? (
-                      <Eye className="h-3.5 w-3.5" />
-                    ) : (
-                      <EyeOff className="h-3.5 w-3.5 text-muted-foreground" />
-                    )}
-                  </Button>
-                </div>
-              );
-            })}
-          </div>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            <SortableContext
+              items={localFolders.map((f) => f.folder_id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="divide-y rounded-md border">
+                {localFolders.map((folder) => (
+                  <SortableFolder
+                    key={folder.folder_id}
+                    folder={folder}
+                    onToggleVisibility={handleToggleVisibility}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
 
         {dirty && (

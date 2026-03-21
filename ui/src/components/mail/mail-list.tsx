@@ -15,6 +15,7 @@ import {
   useToggleSelection,
   useRangeSelection,
 } from "@/hooks/use-selection";
+import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import {
   selectedAccountIdAtom,
   selectedFolderIdAtom,
@@ -24,6 +25,7 @@ import {
   lastClickedMailIdAtom,
   selectionModeAtom,
 } from "@/store/selection-atom";
+import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import type { MailSummary } from "@/types/api";
 
 export function MailList() {
@@ -31,6 +33,7 @@ export function MailList() {
   const folderId = useAtomValue(selectedFolderIdAtom);
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const [lastClickedId, setLastClickedId] = useAtom(lastClickedMailIdAtom);
+  const focusedIndex = useAtomValue(focusedMailIndexAtom);
   const selectionMode = useAtomValue(selectionModeAtom);
   const { selectedIds: checkedIds } = useSelection();
   const toggleSelection = useToggleSelection();
@@ -48,6 +51,15 @@ export function MailList() {
 
   const allMails: MailSummary[] =
     data?.pages.flatMap((p) => p.mails) ?? [];
+
+  const scrollToIndex = useCallback(
+    (index: number) => {
+      vlistRef.current?.scrollToIndex(index, { align: "nearest" });
+    },
+    [],
+  );
+
+  useKeyboardShortcuts({ mails: allMails, scrollToIndex });
 
   const handleScroll = useCallback(
     (offset: number) => {
@@ -156,11 +168,12 @@ export function MailList() {
         itemSize={64}
         onScroll={handleScroll}
       >
-        {allMails.map((mail) => (
+        {allMails.map((mail, index) => (
           <DragMail key={mail.id} mailId={mail.id}>
             <MailListItem
               mail={mail}
               isSelected={mail.id === selectedMailId}
+              isFocused={index === focusedIndex}
               isChecked={checkedIds.has(mail.id)}
               selectionMode={selectionMode}
               onSelect={setSelectedMailId}

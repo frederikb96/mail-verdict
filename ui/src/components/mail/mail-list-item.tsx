@@ -14,6 +14,7 @@ import type { MailSummary } from "@/types/api";
 interface MailListItemProps {
   mail: MailSummary;
   isSelected: boolean;
+  isFocused?: boolean;
   isChecked: boolean;
   selectionMode: boolean;
   onSelect: (mailId: string) => void;
@@ -27,6 +28,7 @@ interface MailListItemProps {
 export function MailListItem({
   mail,
   isSelected,
+  isFocused,
   isChecked,
   selectionMode,
   onSelect,
@@ -46,6 +48,7 @@ export function MailListItem({
             ? "bg-accent/70"
             : "hover:bg-accent/50",
         !mail.is_read && !isSelected && !isChecked && "bg-accent/20",
+        isFocused && "ring-2 ring-inset ring-ring",
       )}
       onClick={() => onSelect(mail.id)}
     >
