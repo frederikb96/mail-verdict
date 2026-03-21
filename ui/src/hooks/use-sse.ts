@@ -128,6 +128,7 @@ export function useSSE(accountId?: string) {
           }
           queryClient.invalidateQueries({ queryKey: ["mails"] });
           queryClient.invalidateQueries({ queryKey: ["unified-mails"] });
+          queryClient.invalidateQueries({ queryKey: ["folders"] });
         } catch {
           // Ignore
         }

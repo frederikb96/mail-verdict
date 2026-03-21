@@ -8,9 +8,10 @@ POST /api/mails/:id/action — actions (move, mark, delete)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import desc, select
@@ -31,7 +32,7 @@ from mail_verdict.api.schemas import (
     TagResponse,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Mail
+from mail_verdict.database.models import Folder, Mail
 
 logger = logging.getLogger(__name__)
 
@@ -344,6 +345,9 @@ async def mail_action(
 
     Supported actions: move, mark_read, mark_unread, delete, flag, unflag,
     archive, spam.
+
+    Updates the local DB, propagates changes to IMAP (best-effort background),
+    and emits SSE events for connected clients.
     """
     from sqlalchemy import update
 
@@ -354,37 +358,69 @@ async def mail_action(
 
     db = get_db_connection()
     action = request.action
+    source_folder_id = mail.folder_id
 
     if action == "mark_read":
         async with db.session() as session:
             await session.execute(update(Mail).where(Mail.id == mail_id).values(is_read=True))
+        await _propagate_flags_to_imap(
+            account_id, source_folder_id, mail.uid, flags_add=["\\Seen"],
+        )
+        await _emit_mail_updated_event(
+            account_id, source_folder_id, mail_id, mail.uid,
+            is_read=True, is_flagged=mail.is_flagged,
+        )
         return MailActionResponse(success=True, action=action, mail_id=mail_id)
 
     elif action == "mark_unread":
         async with db.session() as session:
             await session.execute(update(Mail).where(Mail.id == mail_id).values(is_read=False))
+        await _propagate_flags_to_imap(
+            account_id, source_folder_id, mail.uid, flags_remove=["\\Seen"],
+        )
+        await _emit_mail_updated_event(
+            account_id, source_folder_id, mail_id, mail.uid,
+            is_read=False, is_flagged=mail.is_flagged,
+        )
         return MailActionResponse(success=True, action=action, mail_id=mail_id)
 
     elif action == "flag":
         async with db.session() as session:
             await session.execute(update(Mail).where(Mail.id == mail_id).values(is_flagged=True))
+        await _propagate_flags_to_imap(
+            account_id, source_folder_id, mail.uid, flags_add=["\\Flagged"],
+        )
+        await _emit_mail_updated_event(
+            account_id, source_folder_id, mail_id, mail.uid,
+            is_read=mail.is_read, is_flagged=True,
+        )
         return MailActionResponse(success=True, action=action, mail_id=mail_id)
 
     elif action == "unflag":
         async with db.session() as session:
             await session.execute(update(Mail).where(Mail.id == mail_id).values(is_flagged=False))
+        await _propagate_flags_to_imap(
+            account_id, source_folder_id, mail.uid, flags_remove=["\\Flagged"],
+        )
+        await _emit_mail_updated_event(
+            account_id, source_folder_id, mail_id, mail.uid,
+            is_read=mail.is_read, is_flagged=False,
+        )
         return MailActionResponse(success=True, action=action, mail_id=mail_id)
 
     elif action == "delete":
         async with db.session() as session:
             await session.execute(update(Mail).where(Mail.id == mail_id).values(is_deleted=True))
+        await _propagate_flags_to_imap(
+            account_id, source_folder_id, mail.uid, flags_add=["\\Deleted"],
+        )
+        await _emit_mail_deleted_event(account_id, source_folder_id, mail_id, mail.uid)
         return MailActionResponse(success=True, action=action, mail_id=mail_id)
 
     elif action == "move":
         if not request.target_folder:
             raise HTTPException(status_code=400, detail="target_folder required for move action")
 
-        # Resolve target folder
         folder_repo = get_folder_repo()
         folders = await folder_repo.get_by_account(account_id)
         target = next(
@@ -401,6 +437,13 @@ async def mail_action(
             await session.execute(
                 update(Mail).where(Mail.id == mail_id).values(folder_id=target.id)
             )
+        await _propagate_move_to_imap(
+            account_id, source_folder_id, mail.uid, request.target_folder,
+        )
+        await _emit_mail_updated_event(
+            account_id, target.id, mail_id, mail.uid,
+            is_read=mail.is_read, is_flagged=mail.is_flagged,
+        )
         return MailActionResponse(
             success=True,
             action=action,
@@ -421,6 +464,21 @@ async def mail_action(
             await session.execute(
                 update(Mail).where(Mail.id == mail_id).values(folder_id=target_folder_id)
             )
+
+        target_imap_name = await _get_folder_imap_name(target_folder_id)
+        if target_imap_name:
+            if action == "spam":
+                await _propagate_spam_to_imap(
+                    account_id, source_folder_id, mail.uid, target_imap_name,
+                )
+            else:
+                await _propagate_move_to_imap(
+                    account_id, source_folder_id, mail.uid, target_imap_name,
+                )
+        await _emit_mail_updated_event(
+            account_id, target_folder_id, mail_id, mail.uid,
+            is_read=mail.is_read, is_flagged=mail.is_flagged,
+        )
         return MailActionResponse(
             success=True,
             action=action,
@@ -430,6 +488,244 @@ async def mail_action(
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+async def _get_folder_imap_name(folder_id: uuid.UUID) -> str | None:
+    """
+    Look up the IMAP name for a folder by its UUID.
+
+    Args:
+        folder_id: Folder UUID
+
+    Returns:
+        IMAP folder name or None if not found
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Folder.imap_name).where(Folder.id == folder_id)
+        )
+        return result.scalar_one_or_none()
+
+
+async def _propagate_flags_to_imap(
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID,
+    uid: int,
+    flags_add: list[str] | None = None,
+    flags_remove: list[str] | None = None,
+) -> None:
+    """
+    Propagate flag changes to IMAP server (best-effort).
+
+    Runs in a background task so the API response is not delayed.
+    Errors are logged but never propagated to the caller.
+
+    Args:
+        account_id: Account UUID
+        folder_id: Folder containing the mail
+        uid: IMAP UID of the mail
+        flags_add: Flags to add
+        flags_remove: Flags to remove
+    """
+    from mail_verdict.server import get_action_propagator
+    from mail_verdict.sync.actions import ActionType, IMAPAction
+
+    propagator = get_action_propagator(account_id)
+    if propagator is None:
+        logger.debug(
+            "No action propagator available, skipping IMAP flag sync",
+            extra={"account_id": str(account_id)},
+        )
+        return
+
+    folder_name = await _get_folder_imap_name(folder_id)
+    if not folder_name:
+        return
+
+    async def _bg_flags() -> None:
+        try:
+            await propagator.execute_imap(IMAPAction(
+                action_type=ActionType.STORE_FLAGS,
+                folder=folder_name,
+                uid_set=str(uid),
+                flags_add=flags_add,
+                flags_remove=flags_remove,
+            ))
+        except Exception:
+            logger.warning(
+                "Background IMAP flag propagation failed",
+                extra={"account_id": str(account_id), "uid": uid},
+                exc_info=True,
+            )
+
+    asyncio.create_task(_bg_flags())
+
+
+async def _propagate_move_to_imap(
+    account_id: uuid.UUID,
+    source_folder_id: uuid.UUID,
+    uid: int,
+    target_folder_name: str,
+) -> None:
+    """
+    Propagate a move to IMAP server (best-effort background).
+
+    Args:
+        account_id: Account UUID
+        source_folder_id: Source folder UUID
+        uid: IMAP UID of the mail
+        target_folder_name: Target IMAP folder name
+    """
+    from mail_verdict.server import get_action_propagator
+    from mail_verdict.sync.actions import ActionType, IMAPAction
+
+    propagator = get_action_propagator(account_id)
+    if propagator is None:
+        return
+
+    source_name = await _get_folder_imap_name(source_folder_id)
+    if not source_name:
+        return
+
+    async def _bg_move() -> None:
+        try:
+            await propagator.execute_imap(IMAPAction(
+                action_type=ActionType.MOVE,
+                folder=source_name,
+                uid_set=str(uid),
+                target_folder=target_folder_name,
+            ))
+        except Exception:
+            logger.warning(
+                "Background IMAP move propagation failed",
+                extra={
+                    "account_id": str(account_id),
+                    "uid": uid,
+                    "target": target_folder_name,
+                },
+                exc_info=True,
+            )
+
+    asyncio.create_task(_bg_move())
+
+
+async def _propagate_spam_to_imap(
+    account_id: uuid.UUID,
+    source_folder_id: uuid.UUID,
+    uid: int,
+    spam_folder_name: str,
+) -> None:
+    """
+    Propagate a spam move to IMAP using ActionPropagator.move_to_spam.
+
+    Sets $Junk flag before moving.
+
+    Args:
+        account_id: Account UUID
+        source_folder_id: Source folder UUID
+        uid: IMAP UID of the mail
+        spam_folder_name: Target spam folder IMAP name
+    """
+    from mail_verdict.server import get_action_propagator
+
+    propagator = get_action_propagator(account_id)
+    if propagator is None:
+        return
+
+    source_name = await _get_folder_imap_name(source_folder_id)
+    if not source_name:
+        return
+
+    async def _bg_spam() -> None:
+        try:
+            await propagator.move_to_spam(
+                folder=source_name,
+                uid_set=str(uid),
+                spam_folder=spam_folder_name,
+            )
+        except Exception:
+            logger.warning(
+                "Background IMAP spam propagation failed",
+                extra={"account_id": str(account_id), "uid": uid},
+                exc_info=True,
+            )
+
+    asyncio.create_task(_bg_spam())
+
+
+async def _emit_mail_updated_event(
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID,
+    mail_id: uuid.UUID,
+    uid: int,
+    is_read: bool,
+    is_flagged: bool,
+) -> None:
+    """
+    Emit a mail.updated SSE event after an action.
+
+    Args:
+        account_id: Account UUID
+        folder_id: Folder UUID (current or target)
+        mail_id: Mail UUID
+        uid: IMAP UID
+        is_read: Current read state
+        is_flagged: Current flagged state
+    """
+    from mail_verdict.api.events import get_event_ring
+
+    ring = get_event_ring()
+    if ring is None:
+        return
+
+    await ring.add(
+        account_id=account_id,
+        event_type="mail.updated",
+        data={
+            "account_id": str(account_id),
+            "folder_id": str(folder_id),
+            "mail_id": str(mail_id),
+            "uid": uid,
+            "is_read": is_read,
+            "is_flagged": is_flagged,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+
+
+async def _emit_mail_deleted_event(
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID,
+    mail_id: uuid.UUID,
+    uid: int,
+) -> None:
+    """
+    Emit a mail.deleted SSE event after a delete action.
+
+    Args:
+        account_id: Account UUID
+        folder_id: Folder UUID
+        mail_id: Mail UUID
+        uid: IMAP UID
+    """
+    from mail_verdict.api.events import get_event_ring
+
+    ring = get_event_ring()
+    if ring is None:
+        return
+
+    await ring.add(
+        account_id=account_id,
+        event_type="mail.deleted",
+        data={
+            "account_id": str(account_id),
+            "folder_id": str(folder_id),
+            "mail_id": str(mail_id),
+            "uid": uid,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 async def _resolve_special_folder_for_action(

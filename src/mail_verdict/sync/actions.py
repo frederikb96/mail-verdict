@@ -2,7 +2,8 @@
 Action propagator for pushing local actions back to IMAP/SMTP.
 
 Handles IMAP MOVE, COPY, STORE flags, and SMTP forwarding
-with retry and error handling.
+with retry and error handling. Supports atomic batch operations
+where IMAP is confirmed before DB state is committed.
 
 Uses imap-tools MailBox operations via asyncio.to_thread.
 """
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -56,6 +57,25 @@ class ForwardAction:
     to_address: str
     subject_template: str = "Fwd: {subject}"
     mode: str = "attached"
+
+
+@dataclass
+class BatchResult:
+    """Result of a batch IMAP operation across multiple UIDs."""
+
+    succeeded_uids: list[str] = field(default_factory=list)
+    failed_uids: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def all_succeeded(self) -> bool:
+        """Whether every UID in the batch succeeded."""
+        return len(self.failed_uids) == 0
+
+    @property
+    def total(self) -> int:
+        """Total UIDs attempted."""
+        return len(self.succeeded_uids) + len(self.failed_uids)
 
 
 class ActionPropagator:
@@ -140,6 +160,61 @@ class ActionPropagator:
                     return False
 
         return False
+
+    async def execute_batch(self, action: IMAPAction) -> BatchResult:
+        """
+        Execute an IMAP action atomically per-UID.
+
+        Processes each UID individually so partial failures are tracked.
+        The caller can update DB state only for UIDs that succeeded on IMAP.
+
+        Args:
+            action: Action with a potentially multi-UID uid_set
+
+        Returns:
+            BatchResult with per-UID success/failure tracking
+        """
+        result = BatchResult()
+        all_uids = self._parse_uid_set(action.uid_set)
+
+        if not all_uids:
+            return result
+
+        for uid in all_uids:
+            single_action = IMAPAction(
+                action_type=action.action_type,
+                folder=action.folder,
+                uid_set=uid,
+                target_folder=action.target_folder,
+                flags_add=action.flags_add,
+                flags_remove=action.flags_remove,
+            )
+            try:
+                success = await self.execute_imap(single_action)
+                if success:
+                    result.succeeded_uids.append(uid)
+                else:
+                    result.failed_uids.append(uid)
+                    result.errors.append(
+                        f"UID {uid}: IMAP action returned failure"
+                    )
+            except Exception as exc:
+                result.failed_uids.append(uid)
+                result.errors.append(f"UID {uid}: {exc}")
+
+        if result.failed_uids:
+            logger.warning(
+                "Batch action had partial failures",
+                extra={
+                    "action": action.action_type.value,
+                    "folder": action.folder,
+                    "succeeded": len(result.succeeded_uids),
+                    "failed": len(result.failed_uids),
+                    "errors": result.errors,
+                },
+            )
+
+        return result
 
     async def execute_forward(self, action: ForwardAction) -> bool:
         """

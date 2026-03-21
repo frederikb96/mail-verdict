@@ -1,8 +1,14 @@
 """MailVerdict IMAP sync engine."""
 
-from mail_verdict.sync.actions import ActionPropagator, ActionType, ForwardAction, IMAPAction
+from mail_verdict.sync.actions import (
+    ActionPropagator,
+    ActionType,
+    BatchResult,
+    ForwardAction,
+    IMAPAction,
+)
 from mail_verdict.sync.change_detector import ChangeDetector, ChangeSet
-from mail_verdict.sync.connector import IMAPConnectionError, IMAPConnector
+from mail_verdict.sync.connector import IMAPConnectionError, IMAPConnector, is_connection_error
 from mail_verdict.sync.engine import AccountSync, SyncEngine
 from mail_verdict.sync.events import (
     FlagsChanged,
@@ -24,6 +30,7 @@ __all__ = [
     "ActionPropagator",
     "ActionType",
     "AccountSync",
+    "BatchResult",
     "AuthResult",
     "ChangeDetector",
     "ChangeSet",
@@ -33,6 +40,7 @@ __all__ = [
     "IMAPAction",
     "IMAPConnectionError",
     "IMAPConnector",
+    "is_connection_error",
     "IdleWatcher",
     "MailDeleted",
     "MailMoved",

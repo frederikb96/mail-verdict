@@ -21,7 +21,7 @@ from imap_tools import AND, BaseMailBox
 
 from mail_verdict.core.sanitizer import sanitize_email_html
 from mail_verdict.sync.change_detector import ChangeDetector
-from mail_verdict.sync.connector import IMAPConnector
+from mail_verdict.sync.connector import IMAPConnector, is_connection_error
 from mail_verdict.sync.events import (
     MailReceived,
     MailSpamDetected,
@@ -101,6 +101,7 @@ class SyncManager:
         self._task: asyncio.Task[None] | None = None
         self._trigger_event = asyncio.Event()
         self._sync_lock = asyncio.Lock()
+        self._needs_reconciliation = False
 
     @property
     def account_name(self) -> str:
@@ -296,6 +297,13 @@ class SyncManager:
         all_events: list[SyncEvent] = []
         total_new = 0
         total_errors = 0
+        reconciling = self._needs_reconciliation
+
+        if reconciling:
+            logger.info(
+                "Post-reconnect reconciliation: forcing full UID diff",
+                extra={"account": self._account.name},
+            )
 
         if self._tracker:
             await self._tracker.update(phase=SyncPhase.PREFLIGHT)
@@ -313,6 +321,19 @@ class SyncManager:
 
                 folders = await self._folder_repo.get_by_account(self._account_id)
                 folder_count = len(folders)
+
+                # When reconciling after connection loss, clear stored
+                # highestmodseq so the change detector uses full UID diff
+                # (tier 3) instead of CONDSTORE (tier 2). IMAP server state wins.
+                if reconciling:
+                    for folder in folders:
+                        if folder.highestmodseq:
+                            await self._folder_repo.update_state(
+                                folder_id=folder.id,
+                                highestmodseq=0,
+                            )
+                    # Re-fetch folders with cleared modseq
+                    folders = await self._folder_repo.get_by_account(self._account_id)
 
                 # Preflight: get message counts per folder via STATUS
                 total_messages = 0
@@ -392,6 +413,14 @@ class SyncManager:
             await self._tracker.update(phase=SyncPhase.COMPLETE)
             await self._update_account_state(SyncPhase.COMPLETE)
 
+        # Clear reconciliation flag on successful sync (no outer exception)
+        if reconciling and total_errors == 0:
+            self._needs_reconciliation = False
+            logger.info(
+                "Post-reconnect reconciliation complete",
+                extra={"account": self._account.name},
+            )
+
         # Enqueue events for spam processor
         for event in all_events:
             try:
@@ -421,20 +450,68 @@ class SyncManager:
         return all_events
 
     async def _sync_loop(self) -> None:
-        """Periodic sync loop running until stopped."""
+        """
+        Periodic sync loop with connection loss detection and auto-reconnect.
+
+        On connection loss, drains the pool and uses exponential backoff
+        (base_delay to max_delay) before retrying. Backoff resets on
+        successful sync.
+        """
+        consecutive_conn_failures = 0
+
         while self._running:
             try:
                 await self.sync_once()
+                # Successful sync: reset backoff counter
+                consecutive_conn_failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.error(
-                    "Sync loop error",
-                    extra={
-                        "account": self._account.name,
-                        "error": str(exc),
-                    },
-                )
+                if is_connection_error(exc):
+                    consecutive_conn_failures += 1
+                    # Drain stale connections so next acquire() creates fresh ones
+                    await self._connector.drain_pool()
+
+                    retry_settings = self._sync_settings
+                    base_delay = float(retry_settings.get("base_delay_seconds", 1.0))
+                    max_delay = float(retry_settings.get("max_delay_seconds", 60.0))
+                    exp_base = float(retry_settings.get("exponential_base", 2.0))
+                    delay = min(
+                        base_delay * (exp_base ** (consecutive_conn_failures - 1)),
+                        max_delay,
+                    )
+
+                    logger.warning(
+                        "Connection lost during sync, reconnecting with backoff",
+                        extra={
+                            "account": self._account.name,
+                            "consecutive_failures": consecutive_conn_failures,
+                            "backoff_seconds": delay,
+                            "error": str(exc),
+                        },
+                    )
+
+                    # Next successful sync must reconcile with server state
+                    self._needs_reconciliation = True
+
+                    if self._tracker:
+                        await self._tracker.update(
+                            phase=SyncPhase.ERROR,
+                            last_error=f"Connection lost: {exc}",
+                        )
+                        await self._update_account_state(SyncPhase.ERROR)
+
+                    if self._running:
+                        await asyncio.sleep(delay)
+                    continue
+                else:
+                    logger.error(
+                        "Sync loop error",
+                        extra={
+                            "account": self._account.name,
+                            "error": str(exc),
+                        },
+                    )
 
             if self._running:
                 try:

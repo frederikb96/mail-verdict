@@ -10,7 +10,9 @@ is synchronous.
 from __future__ import annotations
 
 import asyncio
+import imaplib
 import logging
+import socket
 import ssl
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -43,6 +45,29 @@ class AccountConnConfig:
 
 class IMAPConnectionError(Exception):
     """Raised when IMAP connection fails."""
+
+
+def is_connection_error(exc: BaseException) -> bool:
+    """
+    Check whether an exception indicates a lost/broken IMAP connection.
+
+    Covers imap-tools errors, socket errors, SSL errors, and
+    IMAPConnectionError from this module.
+
+    Args:
+        exc: Exception to check
+    """
+    return isinstance(exc, (
+        IMAPConnectionError,
+        ConnectionError,
+        ConnectionResetError,
+        BrokenPipeError,
+        socket.timeout,
+        socket.gaierror,
+        imaplib.IMAP4.error,
+        imaplib.IMAP4.abort,
+        ssl.SSLError,
+    ))
 
 
 class IMAPConnector:
@@ -213,6 +238,32 @@ class IMAPConnector:
                     await self._close_connection(conn)
                     async with self._lock:
                         self._pool_size -= 1
+
+    async def drain_pool(self) -> None:
+        """
+        Close and discard all pooled connections.
+
+        Used after detecting a connection loss to ensure the next
+        acquire() creates a fresh connection instead of reusing
+        a potentially dead one.
+        """
+        drained = 0
+        while not self._pool.empty():
+            try:
+                conn = self._pool.get_nowait()
+                await self._close_connection(conn)
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
+
+        async with self._lock:
+            self._pool_size = max(0, self._pool_size - drained)
+
+        if drained:
+            logger.info(
+                "Connection pool drained",
+                extra={"account": self.account_name, "drained": drained},
+            )
 
     async def create_idle_connection(self) -> BaseMailBox:
         """
