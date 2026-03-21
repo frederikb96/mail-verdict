@@ -339,7 +339,7 @@ async def _get_mail_with_uid(
     """
     resp = await client.get(
         "/api/mails",
-        params={"account_id": account_id, "limit": 10},
+        params={"account_id": account_id, "limit": 50},
     )
     assert resp.status_code == 200
     mails = resp.json()["mails"]
