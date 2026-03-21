@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAtomValue } from "jotai";
 import {
   Save,
   Loader2,
@@ -13,20 +12,28 @@ import {
   Sun,
   Moon,
   Monitor,
+  ChevronDown,
+  UserCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
+import { useAccounts } from "@/hooks/use-accounts";
 import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
-import { selectedAccountIdAtom } from "@/lib/atoms";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
 import { FolderAssignment } from "@/components/settings/folder-assignment";
 import { FolderOrder } from "@/components/settings/folder-order";
@@ -225,7 +232,17 @@ function ThemeSettings() {
 
 export function SettingsPage() {
   const { data: allSettings, isLoading } = useAllSettings();
-  const accountId = useAtomValue(selectedAccountIdAtom);
+  const { data: accounts } = useAccounts();
+  const [settingsAccountId, setSettingsAccountId] = useState<string | null>(null);
+
+  // Auto-select first account when accounts load
+  useEffect(() => {
+    if (!settingsAccountId && accounts && accounts.length > 0) {
+      setSettingsAccountId(accounts[0].id);
+    }
+  }, [settingsAccountId, accounts]);
+
+  const selectedAccount = accounts?.find((a) => a.id === settingsAccountId);
 
   if (isLoading) {
     return (
@@ -249,12 +266,56 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Account selector for account-scoped settings */}
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Account Settings</CardTitle>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="outline" size="sm" className="gap-2" />
+                }
+              >
+                {selectedAccount?.emoji ? (
+                  <span className="text-sm">{selectedAccount.emoji}</span>
+                ) : (
+                  <UserCircle className="h-4 w-4" />
+                )}
+                <span>{selectedAccount?.name ?? "Select Account"}</span>
+                <ChevronDown className="h-3 w-3 opacity-50" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {accounts?.map((account) => (
+                  <DropdownMenuItem
+                    key={account.id}
+                    onClick={() => setSettingsAccountId(account.id)}
+                  >
+                    {account.emoji ? (
+                      <span className="mr-2 text-sm">{account.emoji}</span>
+                    ) : (
+                      <UserCircle className="mr-2 h-4 w-4" />
+                    )}
+                    <span className="truncate">{account.name}</span>
+                    {account.id === settingsAccountId && (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        current
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </CardHeader>
+      </Card>
+
       {/* Account-scoped settings */}
       <div className="grid gap-4 md:grid-cols-2">
-        <FolderAssignment accountId={accountId} />
-        <FolderOrder accountId={accountId} />
-        <IdleConfig accountId={accountId} />
-        <ImageExceptionsList accountId={accountId} />
+        <FolderAssignment accountId={settingsAccountId} />
+        <FolderOrder accountId={settingsAccountId} />
+        <IdleConfig accountId={settingsAccountId} />
+        <ImageExceptionsList accountId={settingsAccountId} />
       </div>
 
       {/* Unified view configuration */}

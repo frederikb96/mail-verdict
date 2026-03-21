@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
 import { useAtom } from "jotai";
 import {
   Inbox,
@@ -18,7 +19,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -109,6 +110,7 @@ function getFolderDisplayName(folder: FolderResponse): string {
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const [selectedAccountId, setSelectedAccountId] = useAtom(
     selectedAccountIdAtom,
   );
@@ -129,26 +131,36 @@ export function AppSidebar() {
   );
   const { data: unifiedFolders } = useUnifiedFolders();
 
-  // Auto-select first account if none selected
   const currentAccount = isUnified
     ? null
     : accounts?.find((a) => a.id === selectedAccountId) ?? accounts?.[0];
-  if (currentAccount && !selectedAccountId) {
-    setSelectedAccountId(currentAccount.id);
-  }
+
+  // Auto-select first account if none selected
+  useEffect(() => {
+    if (!isUnified && !selectedAccountId && currentAccount) {
+      setSelectedAccountId(currentAccount.id);
+    }
+  }, [isUnified, selectedAccountId, currentAccount, setSelectedAccountId]);
 
   // Use custom folder order if available, with visibility filtering
-  const orderedFolders: FolderOrderItem[] | null = folderOrderData?.folders
-    ? folderOrderData.folders.filter((f) => f.is_visible)
-    : null;
+  const orderedFolders = useMemo<FolderOrderItem[] | null>(
+    () =>
+      folderOrderData?.folders
+        ? folderOrderData.folders.filter((f) => f.is_visible)
+        : null,
+    [folderOrderData],
+  );
 
   // Fallback to legacy sorted folders (visible ones only)
-  const sortedFolders = folders
-    ? sortFolders(folders.filter((f) => f.is_visible))
-    : [];
+  const sortedFolders = useMemo(
+    () => (folders ? sortFolders(folders.filter((f) => f.is_visible)) : []),
+    [folders],
+  );
 
-  // Auto-select inbox folder if none selected
-  if (!isUnified && !selectedFolderId) {
+  // Auto-select inbox folder when account changes or folders load
+  useEffect(() => {
+    if (isUnified || selectedFolderId) return;
+
     if (orderedFolders && orderedFolders.length > 0) {
       const inbox = orderedFolders.find(
         (f) => f.special_use === "inbox" || f.special_use === "\\Inbox",
@@ -160,7 +172,26 @@ export function AppSidebar() {
       );
       setSelectedFolderId(inbox ? inbox.id : sortedFolders[0].id);
     }
-  }
+  }, [isUnified, selectedFolderId, orderedFolders, sortedFolders, setSelectedFolderId]);
+
+  /** Select a folder and navigate to the mail view if on a different page. */
+  const handleFolderSelect = (folderId: string) => {
+    setSelectedFolderId(folderId);
+    setSelectedMailId(null);
+    if (pathname !== "/") {
+      router.push("/");
+    }
+  };
+
+  /** Select a unified folder and navigate to the mail view if on a different page. */
+  const handleUnifiedFolderSelect = (folderName: string) => {
+    setSelectedUnifiedFolder(folderName);
+    setSelectedFolderId(null);
+    setSelectedMailId(null);
+    if (pathname !== "/") {
+      router.push("/");
+    }
+  };
 
   return (
     <Sidebar collapsible="icon">
@@ -251,11 +282,7 @@ export function AppSidebar() {
                       <SidebarMenuItem key={uf.unified_name}>
                         <SidebarMenuButton
                           isActive={isActive}
-                          onClick={() => {
-                            setSelectedUnifiedFolder(uf.unified_name);
-                            setSelectedFolderId(null);
-                            setSelectedMailId(null);
-                          }}
+                          onClick={() => handleUnifiedFolderSelect(uf.unified_name)}
                           tooltip={`${uf.unified_name} (${uf.folders.length} accounts)`}
                         >
                           <Layers className="h-4 w-4" />
@@ -287,10 +314,7 @@ export function AppSidebar() {
                           <SidebarMenuItem>
                             <SidebarMenuButton
                               isActive={isActive}
-                              onClick={() => {
-                                setSelectedFolderId(folder.folder_id);
-                                setSelectedMailId(null);
-                              }}
+                              onClick={() => handleFolderSelect(folder.folder_id)}
                               tooltip={folder.imap_name}
                             >
                               <Icon className="h-4 w-4" />
@@ -321,10 +345,7 @@ export function AppSidebar() {
                           <SidebarMenuItem>
                             <SidebarMenuButton
                               isActive={isActive}
-                              onClick={() => {
-                                setSelectedFolderId(folder.id);
-                                setSelectedMailId(null);
-                              }}
+                              onClick={() => handleFolderSelect(folder.id)}
                               tooltip={getFolderDisplayName(folder)}
                             >
                               <Icon className="h-4 w-4" />

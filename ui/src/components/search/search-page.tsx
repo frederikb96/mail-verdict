@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useAtomValue } from "jotai";
 import {
   Search as SearchIcon,
   FileText,
@@ -15,11 +16,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { useSearch } from "@/hooks/use-search";
 import { formatRelativeDate, extractSenderName } from "@/lib/format";
+import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 
 export function SearchPage() {
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"fulltext" | "semantic">("fulltext");
-  const { data, isLoading } = useSearch(query, mode);
+  const selectedAccountId = useAtomValue(selectedAccountIdAtom);
+  const isUnified = useAtomValue(isUnifiedViewAtom);
+
+  // In unified view, search all accounts (no filter). Otherwise filter by selected account.
+  const searchAccountId = isUnified ? undefined : (selectedAccountId ?? undefined);
+  const { data, isLoading } = useSearch(query, mode, searchAccountId);
 
   return (
     <div className="flex flex-col gap-6 p-6">
