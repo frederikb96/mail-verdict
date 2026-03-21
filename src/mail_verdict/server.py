@@ -119,20 +119,14 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     retry_settings = settings_service.get("retry")
     retry_config = RC.from_settings(retry_settings)
 
-    # Initialize shared OpenAI client (uses api_key from DB settings, NOT env var)
-    from openai import AsyncOpenAI
+    # Initialize OpenAI provider (dynamic: reads api_key from settings on each call)
+    from mail_verdict.core.openai_provider import init_openai_provider, reset_openai_provider
 
-    openai_api_key = ai_settings.get("api_key") or None
-    openai_client: AsyncOpenAI | None = None
-    if openai_api_key:
-        openai_client = AsyncOpenAI(api_key=openai_api_key)
-        try:
-            await openai_client.models.list()
-            logger.info("OpenAI client validated")
-        except Exception as e:
-            logger.warning("OpenAI key validation failed: %s", e)
+    openai_provider = init_openai_provider(settings_service)
+    if openai_provider.get_client():
+        logger.info("OpenAI API key configured")
     else:
-        logger.warning("No OpenAI API key in settings — AI features disabled")
+        logger.info("No OpenAI API key yet — set via Settings API")
 
     # Initialize Qdrant client
     from qdrant_client import AsyncQdrantClient
@@ -143,23 +137,18 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     )
     logger.info("Qdrant client created")
 
-    # Initialize SemanticStore + EmbeddingWorker (requires OpenAI for embeddings)
-    store: SemanticStore | None = None
-    if openai_client:
-        store = SemanticStore.init_instance(
-            _qdrant_client,
-            config.qdrant,
-            ai_settings,
-            openai_client,
-        )
-        await store.ensure_collection()
-        logger.info("SemanticStore initialized")
+    # Initialize SemanticStore + EmbeddingWorker (always init, gracefully handles missing key)
+    store = SemanticStore.init_instance(
+        _qdrant_client,
+        config.qdrant,
+        ai_settings,
+    )
+    await store.ensure_collection()
+    logger.info("SemanticStore initialized")
 
-        worker = init_embedding_worker()
-        await worker.start()
-        logger.info("EmbeddingWorker started")
-    else:
-        logger.info("SemanticStore skipped (no OpenAI key)")
+    worker = init_embedding_worker()
+    await worker.start()
+    logger.info("EmbeddingWorker started")
 
     # Initialize job manager
     init_job_manager(db)
@@ -177,7 +166,7 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
 
     # Initialize and start spam processing pipeline
     global _spam_processor
-    if spam_settings.get("enabled", False) and openai_client and store:
+    if spam_settings.get("enabled", False):
         from mail_verdict.database.repository import (
             FolderRepository,
             MailRepository,
@@ -188,7 +177,7 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         from mail_verdict.spam.pipeline import VerdictPipeline
 
         analyst = OpenAISpamAnalyst(
-            ai_settings, spam_settings, retry_config, openai_client,
+            ai_settings, spam_settings, retry_config,
         )
         verdict_repo = VerdictRepository(db)
         mail_repo = MailRepository(db)
@@ -231,7 +220,7 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     rules_data = settings_service.get("rules") if settings_service.has_category("rules") else {}
     rules_list = rules_data.get("rules", []) if isinstance(rules_data, dict) else []
 
-    if rules_list and openai_client:
+    if rules_list:
         from mail_verdict.database.repository import FolderRepository as FR
         from mail_verdict.database.repository import TagRepository
 
@@ -240,7 +229,6 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         enrichment_runner = EnrichmentRunner(
             ai_provider=ai_settings.get("provider", "openai"),
             ai_model=ai_settings.get("model", "gpt-5-mini"),
-            openai_client=openai_client,
         )
 
         # Build multi-account propagator map for the action executor
@@ -306,6 +294,7 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         logger.info("Qdrant client closed")
 
     reset_job_manager()
+    reset_openai_provider()
     reset_settings_service()
     await close_database()
     logger.info("Database connection closed")
@@ -420,12 +409,11 @@ def create_app() -> ASGIApp:
         allow_headers=["*"],
     )
 
-    # Insert SSE route before MCP catch-all
-    composed_app.routes.insert(0, Route("/api/events", sse_endpoint))
-
     # Mount entire FastAPI app at position 0 (preserves FastAPI middleware stack)
-    # Using Mount with empty path so FastAPI handles all /api/* routes
     composed_app.routes.insert(0, Mount("/api", app=fastapi_app, name="fastapi"))
+
+    # SSE route must be BEFORE the /api mount so it's matched first
+    composed_app.routes.insert(0, Route("/api/events", sse_endpoint))
 
     # Assign lifespan to the composed app
     composed_app.router.lifespan_context = lifespan  # type: ignore[attr-defined]

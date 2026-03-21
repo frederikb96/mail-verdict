@@ -3,8 +3,10 @@
 	import Sidebar from '../components/Sidebar.svelte';
 	import SearchBar from '../components/SearchBar.svelte';
 	import { accounts, currentAccount, folders, selectedFolder, sidebarCollapsed } from '$lib/stores';
+	import { api } from '$lib/api';
 	import { sse } from '$lib/sse';
 	import { onMount, onDestroy, type Snippet } from 'svelte';
+	import type { SSEEvent } from '$lib/types';
 
 	interface Props {
 		data: {
@@ -15,6 +17,38 @@
 	}
 
 	let { data, children }: Props = $props();
+	let unsubNewMail: (() => void) | null = null;
+	let unsubSyncComplete: (() => void) | null = null;
+
+	async function refreshFolders() {
+		const acct = $currentAccount;
+		if (!acct) return;
+		try {
+			$folders = await api.folders.list(acct.id);
+		} catch {
+			// ignore refresh errors
+		}
+	}
+
+	async function refreshAccounts() {
+		try {
+			const acctList = await api.accounts.list();
+			$accounts = acctList;
+		} catch {
+			// ignore
+		}
+	}
+
+	function onNewMail(_event: SSEEvent) {
+		refreshFolders();
+	}
+
+	function onSyncStatus(event: SSEEvent) {
+		if (event.status === 'complete') {
+			refreshFolders();
+			refreshAccounts();
+		}
+	}
 
 	onMount(() => {
 		$accounts = data.accounts;
@@ -22,7 +56,6 @@
 		if (data.accounts.length > 0) {
 			$currentAccount = data.accounts[0];
 		}
-		// Auto-select Inbox folder
 		const inbox = data.folders.find(
 			(f) => f.special_use === 'inbox' || f.imap_name === 'INBOX'
 		);
@@ -32,9 +65,13 @@
 			$selectedFolder = data.folders[0];
 		}
 		sse.connect($currentAccount?.id);
+		unsubNewMail = sse.on('new_mail', onNewMail);
+		unsubSyncComplete = sse.on('sync_status', onSyncStatus);
 	});
 
 	onDestroy(() => {
+		if (unsubNewMail) unsubNewMail();
+		if (unsubSyncComplete) unsubSyncComplete();
 		sse.disconnect();
 	});
 </script>

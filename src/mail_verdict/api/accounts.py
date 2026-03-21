@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import delete, select, update
@@ -139,7 +140,11 @@ async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
         import aioimaplib
 
         password = decrypt(account.imap_password) if account.imap_password else ""
-        imap = aioimaplib.IMAP4_SSL(host=account.imap_host, port=account.imap_port)
+        use_ssl = account.imap_port in (993, 995)
+        if use_ssl:
+            imap = aioimaplib.IMAP4_SSL(host=account.imap_host, port=account.imap_port)
+        else:
+            imap = aioimaplib.IMAP4(host=account.imap_host, port=account.imap_port)
         await imap.wait_hello_from_server()
         resp = await imap.login(account.imap_user, password)
         if resp.result == "OK":
@@ -155,10 +160,14 @@ async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
             import aiosmtplib
 
             password = decrypt(account.smtp_password) if account.smtp_password else ""
+            port = account.smtp_port or 465
+            use_tls = port == 465
+            start_tls = port == 587
             smtp = aiosmtplib.SMTP(
                 hostname=account.smtp_host,
-                port=account.smtp_port or 465,
-                use_tls=True,
+                port=port,
+                use_tls=use_tls,
+                start_tls=start_tls,
             )
             await smtp.connect()
             await smtp.login(account.smtp_user or account.imap_user, password)
@@ -168,6 +177,97 @@ async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
             results["smtp"] = f"error: {e}"
 
     return results
+
+
+@router.post("/{account_id}/sync")
+async def trigger_sync(account_id: uuid.UUID) -> dict[str, str]:
+    """Trigger an immediate sync cycle for this account."""
+    from mail_verdict.server import get_sync_engine
+    from mail_verdict.settings.service import get_settings_service
+
+    # Check global sync enabled
+    svc = get_settings_service()
+    if svc:
+        sync_cfg = svc.get("sync")
+        if not sync_cfg.get("enabled", True):
+            raise HTTPException(status_code=409, detail="Global sync is disabled")
+
+    engine = get_sync_engine()
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Sync engine not initialized")
+
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if not account.is_active:
+        raise HTTPException(status_code=409, detail="Account is disabled")
+
+    # Check if account already has sync infrastructure
+    account_name = account.name
+    if account_name not in engine._accounts:
+        # Dynamically add this account to the sync engine
+        await engine.add_account(account)
+        return {"status": "sync_started", "message": f"Account '{account_name}' sync started"}
+
+    # Trigger immediate poll on existing account
+    manager = engine._accounts[account_name].manager
+    await manager.trigger_now()
+    return {"status": "sync_triggered", "message": f"Immediate sync triggered for '{account_name}'"}
+
+
+@router.delete("/{account_id}/sync")
+async def cancel_sync(account_id: uuid.UUID) -> dict[str, str]:
+    """Cancel sync and disable the account."""
+    from mail_verdict.server import get_sync_engine
+
+    engine = get_sync_engine()
+    db = get_db_connection()
+
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Set is_active = False in DB
+    async with db.session() as session:
+        await session.execute(
+            update(Account).where(Account.id == account_id).values(is_active=False)
+        )
+
+    # Stop sync if running
+    if engine and account.name in engine._accounts:
+        await engine.remove_account(account.name)
+
+    return {"status": "cancelled", "message": "Sync cancelled and account disabled"}
+
+
+@router.get("/{account_id}/sync/status")
+async def sync_status(account_id: uuid.UUID) -> dict[str, Any]:
+    """Get sync status for an account."""
+    from mail_verdict.server import get_sync_engine
+
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        account = result.scalar_one_or_none()
+    if account is None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    engine = get_sync_engine()
+    is_syncing = False
+    if engine and account.name in engine._accounts:
+        is_syncing = True
+
+    return {
+        "account_id": str(account_id),
+        "state": account.state.value,
+        "is_active": account.is_active,
+        "is_syncing": is_syncing,
+    }
 
 
 @router.get("/{account_id}/folders", response_model=list[FolderResponse])

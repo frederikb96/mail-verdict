@@ -24,7 +24,10 @@ def _make_store(
         "embedding_dimensions": 3072,
     }
     q = qdrant or MagicMock()
-    return SemanticStore(q, qdrant_config, ai_settings, openai_client=openai)
+    store = SemanticStore(q, qdrant_config, ai_settings)
+    if openai:
+        store._get_openai = lambda: openai  # type: ignore[assignment]
+    return store
 
 
 class TestBuildEmbeddingText:

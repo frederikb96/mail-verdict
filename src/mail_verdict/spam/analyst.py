@@ -15,8 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from mail_verdict.core.retry import RetryConfig
 
 logger = logging.getLogger(__name__)
@@ -178,7 +176,6 @@ class OpenAISpamAnalyst(SpamAnalyst):
         ai_settings: dict[str, Any],
         spam_settings: dict[str, Any],
         retry_config: RetryConfig,
-        openai_client: AsyncOpenAI | None = None,
     ) -> None:
         """
         Initialize the OpenAI spam analyst.
@@ -187,18 +184,19 @@ class OpenAISpamAnalyst(SpamAnalyst):
             ai_settings: AI settings dict (model key)
             spam_settings: Spam settings dict
             retry_config: Retry configuration
-            openai_client: Shared AsyncOpenAI client (creates one if not provided)
         """
         self._model = ai_settings.get("model", "gpt-5-mini")
         self._retry = retry_config
         self._system_prompt = _load_system_prompt()
-        self._client: AsyncOpenAI | None = openai_client
 
-    def _get_client(self) -> AsyncOpenAI:
-        """Get or create the async OpenAI client."""
-        if self._client is None:
-            self._client = AsyncOpenAI()
-        return self._client
+    def _get_client(self) -> Any:
+        """Get the OpenAI client from the global provider."""
+        from mail_verdict.core.openai_provider import get_openai_client
+
+        client = get_openai_client()
+        if client is None:
+            raise RuntimeError("No OpenAI API key configured")
+        return client
 
     async def analyze(self, context: AnalysisContext) -> SpamVerdict:
         """

@@ -147,14 +147,24 @@ async def push_verdict_event(
 async def push_sync_status(
     account_id: uuid.UUID,
     status: str,
+    **extra: Any,
 ) -> None:
-    """Push a sync_status event to SSE clients (filtered by account if set)."""
-    sse_event = {
+    """
+    Push a sync_status event to SSE clients (filtered by account if set).
+
+    Args:
+        account_id: Account UUID
+        status: Status phase (started, folder_started, progress, folder_done, complete, error)
+        **extra: Additional fields (folder_name, folder_index, folder_total,
+                 synced, total_messages, new_mails, errors, duration_s, error_message)
+    """
+    sse_event: dict[str, Any] = {
         "event": "sync_status",
         "account_id": str(account_id),
         "status": status,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+    sse_event.update(extra)
     event_account_str = str(account_id)
     for queue, filter_account_id in _sse_clients.items():
         if filter_account_id is not None and filter_account_id != event_account_str:

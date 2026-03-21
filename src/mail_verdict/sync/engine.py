@@ -20,6 +20,8 @@ from mail_verdict.sync.manager import SyncManager
 from mail_verdict.sync.smtp_client import SMTPClient
 
 if TYPE_CHECKING:
+    from typing import Any
+
     from mail_verdict.config import InfraConfig
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.rules.bus import EventBus
@@ -214,6 +216,99 @@ class SyncEngine:
                 )
 
         self._accounts.clear()
+
+    async def add_account(self, acct: Any) -> None:
+        """Dynamically add and start sync for a single account."""
+        from mail_verdict.core.encryption import decrypt
+        from mail_verdict.core.retry import RetryConfig as RC
+        from mail_verdict.database.repository import (
+            AttachmentRepository,
+            FolderRepository,
+            MailRepository,
+        )
+        from mail_verdict.sync.connector import AccountConnConfig
+
+        if acct.name in self._accounts:
+            return
+
+        sync_settings = self._settings.get("sync") if self._settings else {}
+        retry_settings = self._settings.get("retry") if self._settings else {}
+        retry_config = RC.from_settings(retry_settings)
+
+        folder_repo = FolderRepository(self._db)
+        mail_repo = MailRepository(self._db)
+        attachment_repo = AttachmentRepository(self._db)
+
+        imap_password = decrypt(acct.imap_password) if acct.imap_password else ""
+        smtp_password = decrypt(acct.smtp_password) if acct.smtp_password else ""
+
+        conn_config = AccountConnConfig(
+            name=acct.name,
+            host=acct.imap_host,
+            port=acct.imap_port,
+            username=acct.imap_user,
+            password=imap_password,
+            smtp_host=acct.smtp_host,
+            smtp_port=acct.smtp_port,
+            smtp_user=acct.smtp_user,
+            smtp_password=smtp_password,
+        )
+
+        connector = IMAPConnector(conn_config, retry_config)
+
+        smtp_client: SMTPClient | None = None
+        if acct.smtp_host:
+            smtp_client = SMTPClient(conn_config, retry_config)
+
+        manager = SyncManager(
+            account=conn_config,
+            account_id=acct.id,
+            connector=connector,
+            folder_repo=folder_repo,
+            mail_repo=mail_repo,
+            attachment_repo=attachment_repo,
+            sync_settings=sync_settings,
+            event_bus=self._event_bus,
+        )
+
+        action_propagator = ActionPropagator(
+            connector=connector,
+            retry_config=retry_config,
+            smtp_client=smtp_client,
+        )
+
+        idle_watcher = IdleWatcher(
+            connector=connector,
+            sync_settings=sync_settings,
+            retry_config=retry_config,
+            on_new_mail=self._make_idle_callback(manager),
+        )
+
+        self._accounts[acct.name] = AccountSync(
+            account_id=acct.id,
+            connector=connector,
+            manager=manager,
+            idle_watcher=idle_watcher,
+            action_propagator=action_propagator,
+            smtp_client=smtp_client,
+        )
+
+        await manager.start()
+        await idle_watcher.start(["INBOX"])
+        logger.info("Account dynamically added", extra={"account": acct.name})
+
+    async def remove_account(self, name: str) -> None:
+        """Stop and remove sync for a single account."""
+        if name not in self._accounts:
+            return
+        account_sync = self._accounts.pop(name)
+        try:
+            await account_sync.idle_watcher.stop()
+            await account_sync.manager.stop()
+            await account_sync.connector.close()
+            logger.info("Account sync removed", extra={"account": name})
+        except Exception as exc:
+            logger.warning("Error removing account", extra={"account": name, "error": str(exc)})
 
     def get_account_sync(self, name: str) -> AccountSync | None:
         """

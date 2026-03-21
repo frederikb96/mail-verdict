@@ -1,7 +1,21 @@
 <script lang="ts">
 	import { api } from '$lib/api';
-	import { onMount } from 'svelte';
-	import type { AccountResponse, AccountCreateRequest } from '$lib/types';
+	import { sse } from '$lib/sse';
+	import { onMount, onDestroy } from 'svelte';
+	import type { AccountResponse, AccountCreateRequest, SSEEvent } from '$lib/types';
+
+	interface SyncProgress {
+		phase: string;
+		folderName: string;
+		folderIndex: number;
+		folderTotal: number;
+		synced: number;
+		totalMessages: number;
+		newMails: number;
+		errors: number;
+		durationS: number;
+		errorMessage: string;
+	}
 
 	let accountList = $state<AccountResponse[]>([]);
 	let loading = $state(true);
@@ -10,6 +24,109 @@
 	let testResult = $state<Record<string, string> | null>(null);
 	let testingId = $state<string | null>(null);
 	let error = $state<string | null>(null);
+
+	let syncProgress = $state<Record<string, SyncProgress>>({});
+
+	let unsubscribe: (() => void) | null = null;
+
+	onMount(() => {
+		loadAccounts();
+		unsubscribe = sse.on('sync_status', handleSyncEvent);
+	});
+
+	onDestroy(() => {
+		if (unsubscribe) unsubscribe();
+	});
+
+	function handleSyncEvent(event: SSEEvent) {
+		const accountId = event.account_id;
+		if (!accountId) return;
+
+		const prev = syncProgress[accountId] ?? {
+			phase: '', folderName: '', folderIndex: 0, folderTotal: 0,
+			synced: 0, totalMessages: 0, newMails: 0, errors: 0,
+			durationS: 0, errorMessage: ''
+		};
+
+		switch (event.status) {
+			case 'started':
+				syncProgress[accountId] = {
+					...prev,
+					phase: 'started',
+					folderTotal: event.folder_count ?? 0,
+					totalMessages: event.total_messages ?? 0,
+					folderIndex: 0, synced: 0, newMails: 0, errors: 0,
+					folderName: '', durationS: 0, errorMessage: ''
+				};
+				break;
+
+			case 'folder_started':
+				syncProgress[accountId] = {
+					...prev,
+					phase: 'syncing',
+					folderName: event.folder_name ?? '',
+					folderIndex: event.folder_index ?? 0,
+					folderTotal: event.folder_total ?? prev.folderTotal,
+					synced: 0,
+				};
+				break;
+
+			case 'progress':
+				syncProgress[accountId] = {
+					...prev,
+					phase: 'syncing',
+					folderName: event.folder_name ?? prev.folderName,
+					synced: event.synced ?? prev.synced,
+					totalMessages: event.total_messages ?? prev.totalMessages,
+				};
+				break;
+
+			case 'folder_done':
+				syncProgress[accountId] = {
+					...prev,
+					phase: 'syncing',
+					folderIndex: event.folder_index ?? prev.folderIndex,
+					newMails: prev.newMails + (event.new_mails ?? 0),
+				};
+				break;
+
+			case 'error':
+				syncProgress[accountId] = {
+					...prev,
+					errors: prev.errors + 1,
+					errorMessage: event.error_message ?? 'Unknown error',
+				};
+				break;
+
+			case 'complete':
+				syncProgress[accountId] = {
+					...prev,
+					phase: 'complete',
+					newMails: event.new_mails ?? prev.newMails,
+					errors: event.errors ?? prev.errors,
+					durationS: event.duration_s ?? 0,
+				};
+				loadAccounts();
+				setTimeout(() => {
+					if (syncProgress[accountId]?.phase === 'complete') {
+						const { [accountId]: _, ...rest } = syncProgress;
+						syncProgress = rest;
+					}
+				}, 8000);
+				break;
+		}
+	}
+
+	function isSyncing(accountId: string): boolean {
+		const p = syncProgress[accountId];
+		return !!p && p.phase !== 'complete' && p.phase !== '';
+	}
+
+	function progressPercent(accountId: string): number {
+		const p = syncProgress[accountId];
+		if (!p || p.folderTotal === 0) return 0;
+		return Math.round((p.folderIndex / p.folderTotal) * 100);
+	}
 
 	let form = $state<AccountCreateRequest>({
 		name: '',
@@ -25,8 +142,6 @@
 		embedding_lookback_days: 30,
 		spam_enabled: false
 	});
-
-	onMount(loadAccounts);
 
 	async function loadAccounts() {
 		loading = true;
@@ -111,6 +226,38 @@
 			await loadAccounts();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Toggle failed';
+		}
+	}
+
+	async function toggleActive(acct: AccountResponse) {
+		try {
+			await api.accounts.update(acct.id, { is_active: !acct.is_active });
+			await loadAccounts();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Toggle failed';
+		}
+	}
+
+	async function handleSync(id: string) {
+		try {
+			const resp = await fetch(`/api/accounts/${id}/sync`, { method: 'POST' });
+			if (!resp.ok) {
+				const data = await resp.json().catch(() => ({ detail: resp.statusText }));
+				error = data.detail ?? 'Sync trigger failed';
+			}
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Sync failed';
+		}
+	}
+
+	async function handleCancelSync(id: string) {
+		try {
+			await fetch(`/api/accounts/${id}/sync`, { method: 'DELETE' });
+			const { [id]: _, ...rest } = syncProgress;
+			syncProgress = rest;
+			await loadAccounts();
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Cancel failed';
 		}
 	}
 
@@ -213,6 +360,8 @@
 	{:else}
 		<div class="space-y-3">
 			{#each accountList as acct (acct.id)}
+				{@const progress = syncProgress[acct.id]}
+				{@const syncing = isSyncing(acct.id)}
 				<div class="bg-surface rounded-lg p-4 space-y-3">
 					<div class="flex items-center justify-between">
 						<div class="flex items-center gap-3">
@@ -223,17 +372,32 @@
 						</div>
 						<div class="flex items-center gap-2">
 							<button
-								class="text-[11px] px-2 py-0.5 rounded border border-border text-text-secondary hover:text-text-primary transition-colors"
-								onclick={() => startEdit(acct)}
+								class="text-[11px] px-2 py-0.5 rounded border border-accent/30 text-accent hover:bg-accent/10 transition-colors disabled:opacity-40"
+								onclick={() => handleSync(acct.id)}
+								disabled={syncing || !acct.is_active}
 							>
-								Edit
+								{syncing ? 'Syncing...' : 'Sync'}
 							</button>
+							{#if syncing}
+								<button
+									class="text-[11px] px-2 py-0.5 rounded border border-warn/30 text-warn hover:bg-warn/10 transition-colors"
+									onclick={() => handleCancelSync(acct.id)}
+								>
+									Cancel
+								</button>
+							{/if}
 							<button
 								class="text-[11px] px-2 py-0.5 rounded border border-border text-text-secondary hover:text-text-primary transition-colors"
 								onclick={() => handleTestConnection(acct.id)}
 								disabled={testingId === acct.id}
 							>
 								{testingId === acct.id ? 'Testing...' : 'Test'}
+							</button>
+							<button
+								class="text-[11px] px-2 py-0.5 rounded border border-border text-text-secondary hover:text-text-primary transition-colors"
+								onclick={() => startEdit(acct)}
+							>
+								Edit
 							</button>
 							<button
 								class="text-[11px] px-2 py-0.5 rounded border border-spam/30 text-spam hover:bg-spam/10 transition-colors"
@@ -253,7 +417,16 @@
 						<div><span class="text-text-muted">Lookback: </span><span class="text-text-secondary">{acct.sync_lookback_days}d sync / {acct.embedding_lookback_days}d embed</span></div>
 					</div>
 
-					<div class="flex items-center gap-4">
+					<div class="flex items-center gap-4 flex-wrap">
+						<label class="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={acct.is_active}
+								onchange={() => toggleActive(acct)}
+								class="accent-accent"
+							/>
+							<span class="text-xs text-text-secondary">Sync Enabled</span>
+						</label>
 						<label class="flex items-center gap-2 cursor-pointer">
 							<input
 								type="checkbox"
@@ -264,6 +437,48 @@
 							<span class="text-xs text-text-secondary">Spam Detection</span>
 						</label>
 					</div>
+
+					<!-- Sync Progress -->
+					{#if progress}
+						<div class="bg-surface-dark rounded p-3 space-y-2">
+							{#if progress.phase === 'started'}
+								<div class="flex items-center gap-2 text-xs text-accent">
+									<span class="animate-spin inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full"></span>
+									<span>Starting sync... {progress.folderTotal} folders, {progress.totalMessages} messages</span>
+								</div>
+							{:else if progress.phase === 'syncing'}
+								<div class="space-y-1.5">
+									<div class="flex items-center justify-between text-xs">
+										<div class="flex items-center gap-2 text-accent">
+											<span class="animate-spin inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full"></span>
+											<span>{progress.folderName}</span>
+											<span class="text-text-muted">({progress.folderIndex}/{progress.folderTotal})</span>
+										</div>
+										<span class="text-text-muted">{progress.newMails} new</span>
+									</div>
+									<div class="w-full bg-border/50 rounded-full h-1.5">
+										<div
+											class="bg-accent rounded-full h-1.5 transition-all duration-300"
+											style="width: {progressPercent(acct.id)}%"
+										></div>
+									</div>
+									{#if progress.synced > 0}
+										<div class="text-[10px] text-text-muted">
+											Fetching: {progress.synced}/{progress.totalMessages} in {progress.folderName}
+										</div>
+									{/if}
+								</div>
+							{:else if progress.phase === 'complete'}
+								<div class="flex items-center justify-between text-xs">
+									<span class="text-ham">Sync complete: {progress.newMails} new mails</span>
+									<span class="text-text-muted">{progress.durationS}s{progress.errors > 0 ? ` / ${progress.errors} errors` : ''}</span>
+								</div>
+							{/if}
+							{#if progress.errorMessage}
+								<div class="text-[10px] text-spam">{progress.errorMessage}</div>
+							{/if}
+						</div>
+					{/if}
 
 					{#if testResult && testingId === null}
 						<div class="bg-surface-dark rounded p-2 space-y-1">

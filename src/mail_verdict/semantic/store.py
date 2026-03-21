@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from openai import AsyncOpenAI
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qdrant_models
 from qdrant_client.http.exceptions import UnexpectedResponse
@@ -60,7 +59,6 @@ class SemanticStore:
         qdrant_client: AsyncQdrantClient,
         qdrant_config: QdrantConfig,
         ai_settings: dict[str, Any],
-        openai_client: AsyncOpenAI | None = None,
     ) -> None:
         """
         Initialize the semantic store.
@@ -69,13 +67,11 @@ class SemanticStore:
             qdrant_client: Async Qdrant client (managed externally)
             qdrant_config: Collection name and connection settings
             ai_settings: AI settings dict with embedding_model, embedding_dimensions
-            openai_client: Shared AsyncOpenAI client (creates one if not provided)
         """
         self._qdrant = qdrant_client
         self._collection = qdrant_config.collection_name
         self._embedding_model = ai_settings.get("embedding_model", "text-embedding-3-large")
         self._embedding_dimensions = int(ai_settings.get("embedding_dimensions", 3072))
-        self._openai: AsyncOpenAI | None = openai_client
         self._collection_ready = False
 
     @classmethod
@@ -84,7 +80,6 @@ class SemanticStore:
         qdrant_client: AsyncQdrantClient,
         qdrant_config: QdrantConfig,
         ai_settings: dict[str, Any],
-        openai_client: AsyncOpenAI | None = None,
     ) -> SemanticStore:
         """
         Create and set the singleton instance.
@@ -93,7 +88,6 @@ class SemanticStore:
             qdrant_client: Async Qdrant client
             qdrant_config: Qdrant configuration
             ai_settings: AI settings dict
-            openai_client: Shared AsyncOpenAI client
 
         Returns:
             The initialized SemanticStore singleton
@@ -102,7 +96,6 @@ class SemanticStore:
             qdrant_client,
             qdrant_config,
             ai_settings,
-            openai_client,
         )
         return cls._instance
 
@@ -158,11 +151,14 @@ class SemanticStore:
             logger.warning("Failed to ensure Qdrant collection: %s", e)
             return False
 
-    def _get_openai(self) -> AsyncOpenAI:
-        """Get or create the async OpenAI client."""
-        if self._openai is None:
-            self._openai = AsyncOpenAI()
-        return self._openai
+    def _get_openai(self) -> Any:
+        """Get the OpenAI client from the global provider."""
+        from mail_verdict.core.openai_provider import get_openai_client
+
+        client = get_openai_client()
+        if client is None:
+            raise RuntimeError("No OpenAI API key configured")
+        return client
 
     async def embed(self, texts: list[str]) -> list[list[float]] | None:
         """

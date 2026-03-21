@@ -12,6 +12,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -87,6 +88,8 @@ class SyncManager:
         self._event_bus = event_bus
         self._running = False
         self._task: asyncio.Task[None] | None = None
+        self._trigger_event = asyncio.Event()
+        self._sync_lock = asyncio.Lock()
 
     @property
     def account_name(self) -> str:
@@ -139,16 +142,31 @@ class SyncManager:
             extra={"account": self._account.name},
         )
 
+    async def trigger_now(self) -> None:
+        """Wake the sync loop to run immediately."""
+        self._trigger_event.set()
+
     async def sync_once(self) -> list[SyncEvent]:
         """
-        Run a single sync cycle.
+        Run a single sync cycle (serialized via lock).
 
-        Discovers folders, detects changes in each, fetches new messages.
+        Only one sync runs at a time. IDLE, poll, and manual triggers
+        are serialized — overlapping calls wait for the current sync.
 
         Returns:
             All events generated during this sync cycle
         """
+        async with self._sync_lock:
+            return await self._sync_once_inner()
+
+    async def _sync_once_inner(self) -> list[SyncEvent]:
+        """Actual sync implementation (must be called under _sync_lock)."""
+        from mail_verdict.api.events import push_sync_status
+
         all_events: list[SyncEvent] = []
+        start_time = time.monotonic()
+        total_new = 0
+        total_errors = 0
 
         try:
             async with self._connector.acquire() as conn:
@@ -160,13 +178,43 @@ class SyncManager:
                     auto_detect=bool(self._sync_settings.get("auto_detect_folders", True)),
                 )
 
-                # Sync each folder
                 folders = await self._folder_repo.get_by_account(self._account_id)
+                folder_count = len(folders)
+
+                # Preflight: get message counts per folder via STATUS
+                total_messages = 0
                 for folder in folders:
+                    count = await conn.status_messages(folder.imap_name)
+                    total_messages += count
+
+                await push_sync_status(
+                    self._account_id, "started",
+                    folder_count=folder_count,
+                    total_messages=total_messages,
+                )
+
+                # Sync each folder with progress events
+                for idx, folder in enumerate(folders):
+                    if not self._running:
+                        break
+
+                    await push_sync_status(
+                        self._account_id, "folder_started",
+                        folder_name=folder.imap_name,
+                        folder_index=idx + 1,
+                        folder_total=folder_count,
+                    )
+
+                    folder_new = 0
                     try:
                         events = await self._sync_folder(conn, folder)
                         all_events.extend(events)
+                        folder_new = sum(
+                            1 for e in events if isinstance(e, MailReceived)
+                        )
+                        total_new += folder_new
                     except Exception as exc:
+                        total_errors += 1
                         logger.error(
                             "Folder sync failed",
                             extra={
@@ -176,8 +224,21 @@ class SyncManager:
                             },
                             exc_info=True,
                         )
+                        await push_sync_status(
+                            self._account_id, "error",
+                            error_message=f"Folder {folder.imap_name}: {exc}",
+                        )
+
+                    await push_sync_status(
+                        self._account_id, "folder_done",
+                        folder_name=folder.imap_name,
+                        folder_index=idx + 1,
+                        folder_total=folder_count,
+                        new_mails=folder_new,
+                    )
 
         except Exception as exc:
+            total_errors += 1
             logger.error(
                 "Sync cycle failed",
                 extra={
@@ -185,6 +246,18 @@ class SyncManager:
                     "error": str(exc),
                 },
             )
+            await push_sync_status(
+                self._account_id, "error",
+                error_message=str(exc),
+            )
+
+        duration_s = round(time.monotonic() - start_time, 1)
+        await push_sync_status(
+            self._account_id, "complete",
+            new_mails=total_new,
+            errors=total_errors,
+            duration_s=duration_s,
+        )
 
         # Enqueue events for spam processor
         for event in all_events:
@@ -234,7 +307,13 @@ class SyncManager:
                 try:
                     interval = int(self._sync_settings.get("poll_interval_seconds", 300))
                     jitter = random.uniform(0, interval * 0.1)
-                    await asyncio.sleep(interval + jitter)
+                    self._trigger_event.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._trigger_event.wait(), timeout=interval + jitter,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
                 except asyncio.CancelledError:
                     break
 
@@ -340,7 +419,10 @@ class SyncManager:
         uids: list[int],
     ) -> None:
         """
-        Fetch full messages for given UIDs and store in database.
+        Fetch full messages for given UIDs in batches and store in database.
+
+        Batches UIDs into chunks to enable progress reporting and
+        clean cancellation between batches.
 
         Args:
             conn: Active IMAP connection (folder already selected)
@@ -350,21 +432,49 @@ class SyncManager:
         if not uids:
             return
 
-        uid_set = ",".join(str(u) for u in uids)
+        from mail_verdict.api.events import push_sync_status
 
-        response = await conn.client.uid("FETCH", uid_set, "(RFC822 FLAGS)")
+        batch_size = 50
+        total = len(uids)
 
-        if response.result != "OK":
-            logger.error(
-                "FETCH failed",
-                extra={"folder": folder.imap_name, "uid_set": uid_set},
+        for batch_start in range(0, total, batch_size):
+            if not self._running:
+                break
+
+            batch = uids[batch_start : batch_start + batch_size]
+            uid_set = ",".join(str(u) for u in batch)
+
+            response = await conn.client.uid("FETCH", uid_set, "(RFC822 FLAGS)")
+
+            if response.result != "OK":
+                logger.error(
+                    "FETCH failed",
+                    extra={"folder": folder.imap_name, "uid_set": uid_set},
+                )
+                continue
+
+            await self._parse_and_store_batch(folder, response.lines)
+
+            synced = min(batch_start + len(batch), total)
+            await push_sync_status(
+                self._account_id, "progress",
+                folder_name=folder.imap_name,
+                synced=synced,
+                total_messages=total,
             )
-            return
 
-        # Parse FETCH responses.
-        # aioimaplib returns:
-        #   bytearray: message body (literal data)
-        #   bytes: command response lines (metadata, flags, status)
+    async def _parse_and_store_batch(
+        self,
+        folder: Folder,
+        lines: list[bytes],
+    ) -> None:
+        """
+        Parse FETCH response lines and store messages.
+
+        Args:
+            folder: Folder containing the messages
+            lines: Raw IMAP FETCH response lines
+        """
         current_uid: int | None = None
         current_flags: set[str] = set()
         current_body: bytes | None = None
@@ -372,19 +482,16 @@ class SyncManager:
         uid_re = re.compile(r"UID\s+(\d+)")
         flags_re = re.compile(r"FLAGS\s+\(([^)]*)\)")
 
-        for line in response.lines:
-            # bytearray = literal message body from IMAP
+        for line in lines:
             if isinstance(line, bytearray):
                 if current_uid is not None:
                     current_body = bytes(line)
                 continue
 
-            # bytes or str = command response (metadata, trailing flags, status)
             text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
 
             uid_match = uid_re.search(text)
             if uid_match:
-                # New message — store previous if exists
                 if current_uid is not None and current_body is not None:
                     await self._store_parsed_message(
                         folder, current_uid, current_body, current_flags
@@ -399,13 +506,11 @@ class SyncManager:
                     raw_flags = flags_match.group(1)
                     current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
             else:
-                # Trailing FLAGS line or status line
                 flags_match = flags_re.search(text)
                 if flags_match and current_uid is not None:
                     raw_flags = flags_match.group(1)
                     current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
 
-        # Store the last message
         if current_uid is not None and current_body is not None:
             await self._store_parsed_message(folder, current_uid, current_body, current_flags)
 

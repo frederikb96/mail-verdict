@@ -166,7 +166,10 @@ class TestOpenAISpamAnalyst:
             "max_delay_seconds": 0.01,
             "exponential_base": 2.0,
         })
-        return OpenAISpamAnalyst(ai_settings, spam_settings, retry_config, openai_client=openai)
+        analyst = OpenAISpamAnalyst(ai_settings, spam_settings, retry_config)
+        if openai:
+            analyst._get_client = lambda: openai  # type: ignore[assignment]
+        return analyst
 
     def _make_context(self) -> AnalysisContext:
         """Create a minimal AnalysisContext."""

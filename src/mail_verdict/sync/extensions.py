@@ -328,6 +328,31 @@ class AsyncIMAPExtended:
             logger.warning("Failed to enable QRESYNC")
         return ok
 
+    async def status_messages(self, mailbox: str) -> int:
+        """
+        Get message count for a mailbox via STATUS (without SELECT).
+
+        Cheaper than SELECT — doesn't change the selected state.
+
+        Args:
+            mailbox: Mailbox name (e.g., "INBOX")
+
+        Returns:
+            Number of messages, or 0 on failure
+        """
+        response = await self._client.status(
+            _quote_mailbox(mailbox), "(MESSAGES)"
+        )
+        if response.result != "OK":
+            return 0
+
+        for line in response.lines:
+            text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+            match = re.search(r"MESSAGES\s+(\d+)", text)
+            if match:
+                return int(match.group(1))
+        return 0
+
     async def _raw_command(self, name: str, *args: str) -> Response:
         """
         Execute a raw IMAP command via the protocol layer.

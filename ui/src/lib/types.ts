@@ -195,4 +195,14 @@ export interface SSEEvent {
 	source?: string;
 	status?: string;
 	timestamp: string;
+	folder_name?: string;
+	folder_index?: number;
+	folder_total?: number;
+	folder_count?: number;
+	synced?: number;
+	total_messages?: number;
+	new_mails?: number;
+	errors?: number;
+	duration_s?: number;
+	error_message?: string;
 }

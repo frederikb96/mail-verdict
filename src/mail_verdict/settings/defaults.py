@@ -36,11 +36,10 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "auto_mark_read": True,
     },
     SettingCategory.SYNC: {
+        "enabled": True,
         "poll_interval_seconds": 300,
         "idle_enabled": True,
         "idle_restart_seconds": 1500,
-        "lookback_days": 180,
-        "auto_detect_folders": True,
     },
     SettingCategory.RETRY: {
         "max_retries": 3,
