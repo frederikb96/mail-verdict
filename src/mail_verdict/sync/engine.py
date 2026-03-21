@@ -123,6 +123,9 @@ class SyncEngine:
             logger.info("No active accounts in database, sync engine idle")
             return
 
+        from mail_verdict.database.repository import AccountRepository
+
+        account_repo = AccountRepository(self._db)
         folder_repo = FolderRepository(self._db)
         mail_repo = MailRepository(self._db)
         attachment_repo = AttachmentRepository(self._db)
@@ -168,6 +171,7 @@ class SyncEngine:
                     sync_settings=sync_settings,
                     event_bus=self._event_bus,
                     tracker=tracker,
+                    account_repo=account_repo,
                 )
 
                 action_propagator = ActionPropagator(
@@ -234,6 +238,7 @@ class SyncEngine:
         from mail_verdict.core.encryption import decrypt
         from mail_verdict.core.retry import RetryConfig as RC
         from mail_verdict.database.repository import (
+            AccountRepository,
             AttachmentRepository,
             FolderRepository,
             MailRepository,
@@ -247,6 +252,7 @@ class SyncEngine:
         retry_settings = self._settings.get("retry") if self._settings else {}
         retry_config = RC.from_settings(retry_settings)
 
+        account_repo = AccountRepository(self._db)
         folder_repo = FolderRepository(self._db)
         mail_repo = MailRepository(self._db)
         attachment_repo = AttachmentRepository(self._db)
@@ -284,6 +290,7 @@ class SyncEngine:
             sync_settings=sync_settings,
             event_bus=self._event_bus,
             tracker=tracker,
+            account_repo=account_repo,
         )
 
         action_propagator = ActionPropagator(

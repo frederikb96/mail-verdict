@@ -14,6 +14,8 @@ from sqlalchemy import delete, desc, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mail_verdict.database.models import (
+    Account,
+    AccountState,
     Attachment,
     Folder,
     Mail,
@@ -25,6 +27,33 @@ from mail_verdict.database.models import (
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
+
+
+class AccountRepository:
+    """Repository for Account state management."""
+
+    def __init__(self, db: DatabaseConnection) -> None:
+        """
+        Initialize repository with database connection.
+
+        Args:
+            db: Database connection instance
+        """
+        self._db = db
+
+    async def update_state(self, account_id: uuid.UUID, state: AccountState) -> None:
+        """
+        Update Account state in database.
+
+        Args:
+            account_id: Account UUID
+            state: New AccountState enum value
+        """
+        async with self._db.session() as session:
+            await session.execute(
+                update(Account).where(Account.id == account_id).values(state=state)
+            )
+            await session.commit()
 
 
 class MailRepository:

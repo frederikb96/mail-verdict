@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from mail_verdict.database.models import Folder
     from mail_verdict.database.repository import (
+        AccountRepository,
         AttachmentRepository,
         FolderRepository,
         MailRepository,
@@ -67,6 +68,7 @@ class SyncManager:
         sync_settings: dict[str, Any],
         event_bus: EventBus | None = None,
         tracker: SyncTracker | None = None,
+        account_repo: AccountRepository | None = None,
     ) -> None:
         """
         Initialize sync manager for an account.
@@ -81,6 +83,7 @@ class SyncManager:
             sync_settings: Sync settings dict
             event_bus: Optional event bus for broadcasting events to rules/SSE
             tracker: Optional sync progress tracker for SSE updates
+            account_repo: Optional account repository for state updates
         """
         self._account = account
         self._account_id = account_id
@@ -89,6 +92,7 @@ class SyncManager:
         self._mail_repo = mail_repo
         self._attachment_repo = attachment_repo
         self._sync_settings = sync_settings
+        self._account_repo = account_repo
         self._change_detector = ChangeDetector(folder_repo, mail_repo)
         self._event_queue: asyncio.Queue[SyncEvent] = asyncio.Queue(maxsize=1000)
         self._event_bus = event_bus
@@ -295,6 +299,7 @@ class SyncManager:
 
         if self._tracker:
             self._tracker.update(phase=SyncPhase.PREFLIGHT)
+            await self._update_account_state(SyncPhase.PREFLIGHT)
 
         try:
             async with self._connector.acquire() as conn:
@@ -323,6 +328,7 @@ class SyncManager:
                         folder_total=folder_count,
                         total_messages=total_messages,
                     )
+                    await self._update_account_state(SyncPhase.SYNCING)
 
                 # Sync each folder with progress events
                 for idx, folder in enumerate(folders):
@@ -380,9 +386,11 @@ class SyncManager:
                     errors=total_errors,
                     last_error=str(exc),
                 )
+                await self._update_account_state(SyncPhase.ERROR)
 
         if self._tracker and self._tracker.phase != SyncPhase.ERROR:
             self._tracker.update(phase=SyncPhase.COMPLETE)
+            await self._update_account_state(SyncPhase.COMPLETE)
 
         # Enqueue events for spam processor
         for event in all_events:
@@ -775,6 +783,44 @@ class SyncManager:
                             "error": str(exc),
                         },
                     )
+
+    async def _update_account_state(self, sync_phase: SyncPhase) -> None:
+        """
+        Update Account.state in DB based on SyncTracker phase.
+
+        Maps sync phases to Account states:
+        - PREFLIGHT/SYNCING -> SYNCING
+        - COMPLETE -> ACTIVE (when no errors)
+        - ERROR -> ERROR
+
+        Args:
+            sync_phase: Current SyncPhase
+        """
+        from mail_verdict.database.models import AccountState
+
+        if not self._account_repo:
+            return
+
+        state_map = {
+            SyncPhase.PREFLIGHT: AccountState.SYNCING,
+            SyncPhase.SYNCING: AccountState.SYNCING,
+            SyncPhase.COMPLETE: AccountState.ACTIVE,
+            SyncPhase.ERROR: AccountState.ERROR,
+        }
+
+        new_state = state_map.get(sync_phase)
+        if new_state:
+            try:
+                await self._account_repo.update_state(self._account_id, new_state)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to update account state",
+                    extra={
+                        "account": self._account.name,
+                        "phase": sync_phase.value,
+                        "error": str(exc),
+                    },
+                )
 
     def _classify_folder_events(
         self,
