@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from imap_tools import AND, BaseMailBox
 
+from mail_verdict.core.sanitizer import sanitize_email_html
 from mail_verdict.sync.change_detector import ChangeDetector
 from mail_verdict.sync.connector import IMAPConnector
 from mail_verdict.sync.events import (
@@ -223,13 +224,16 @@ class SyncManager:
                 assert isinstance(raw_source, bytes)
                 parsed = parse_message(raw_source)
 
+                raw_html = str(body["body_html"]) if body["body_html"] else None
+                sanitized_html = sanitize_email_html(raw_html) if raw_html else None
+
                 await self._mail_repo.upsert_mail(
                     account_id=self._account_id,
                     folder_id=folder_id,
                     uid=uid,
                     message_id=str(body["message_id"]) if body["message_id"] else None,
                     body_text=str(body["body_text"]) if body["body_text"] else None,
-                    body_html=str(body["body_html"]) if body["body_html"] else None,
+                    body_html=sanitized_html,
                     raw_headers=parsed.raw_headers,
                     raw_source=raw_source,
                     dkim_pass=parsed.auth.dkim_pass,
@@ -723,13 +727,16 @@ class SyncManager:
                     # Parse for auth headers
                     parsed = parse_message(raw_source)
 
+                    raw_html = str(body["body_html"]) if body["body_html"] else None
+                    sanitized_html = sanitize_email_html(raw_html) if raw_html else None
+
                     await self._mail_repo.upsert_mail(
                         account_id=self._account_id,
                         folder_id=folder.id,
                         uid=uid,
                         message_id=str(body["message_id"]) if body["message_id"] else None,
                         body_text=str(body["body_text"]) if body["body_text"] else None,
-                        body_html=str(body["body_html"]) if body["body_html"] else None,
+                        body_html=sanitized_html,
                         raw_headers=parsed.raw_headers,
                         raw_source=raw_source,
                         dkim_pass=parsed.auth.dkim_pass,

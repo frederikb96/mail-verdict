@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  lint-and-test:
+  python:
+    name: Python lint + test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,3 +30,27 @@ jobs:
 
       - name: Unit tests
         run: pytest tests/unit/ -v --tb=short
+
+  ui:
+    name: UI type check + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Type check
+        working-directory: ui
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: ui
+        run: npm run build

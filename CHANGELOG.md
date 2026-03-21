@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- CI: parallel UI job with Node.js 22 type check (`tsc --noEmit`) and build validation
+- Security: unit tests for SSE cross-account event isolation
+
+### Changed
+
+- HTML sanitization moved from read-time to store-time (sync/manager.py) for defense-in-depth
+- Removed legacy SvelteKit `_app` static file mount from server.py
+- CI workflow split into parallel `python` and `ui` jobs
+
+### Security
+
+- Sync trigger rate limiting: 5s debounce per account prevents rapid-fire requests (429 response)
+
 - UX Polish (Block 14):
   - SSE connection state indicator: colored dot in header (green/yellow/red) with tooltip
   - Keyboard shortcuts: j/k navigate list, Enter/Escape open/close reading pane, x toggle selection, e/s/#/!/r/u for mail actions

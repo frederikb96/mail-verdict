@@ -153,23 +153,23 @@ async def get_mail(
         restore_remote_images,
         strip_remote_images,
     )
-    from mail_verdict.core.sanitizer import sanitize_email_html
 
-    sanitized_html = sanitize_email_html(mail.body_html) if mail.body_html else None
+    # HTML is already nh3-sanitized at store time (sync/manager.py).
+    # Read-time processing only handles remote image blocking/restoration.
+    body_html = mail.body_html
 
-    # Check image exceptions for this sender
     images_allowed = False
     has_blocked_images = False
-    if sanitized_html:
+    if body_html:
         images_allowed = await _check_image_allowed(
             account_id, mail.from_addr,
         )
 
         if images_allowed and load_images:
-            sanitized_html = restore_remote_images(sanitized_html)
+            body_html = restore_remote_images(body_html)
             has_blocked_images = False
         else:
-            sanitized_html, has_blocked_images = strip_remote_images(sanitized_html)
+            body_html, has_blocked_images = strip_remote_images(body_html)
 
     return MailDetail(
         id=mail.id,
@@ -183,7 +183,7 @@ async def get_mail(
         cc_addrs=mail.cc_addrs,
         bcc_addrs=mail.bcc_addrs,
         body_text=mail.body_text,
-        body_html=sanitized_html,
+        body_html=body_html,
         raw_headers=mail.raw_headers,
         received_at=mail.received_at,
         size_bytes=mail.size_bytes,

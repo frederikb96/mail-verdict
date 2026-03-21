@@ -444,13 +444,6 @@ def create_app() -> ASGIApp:
             composed_app.routes.append(
                 Mount("/_next", app=StaticFiles(directory=str(next_dir)), name="next-assets")
             )
-        # Legacy SvelteKit assets (backwards compat during migration)
-        app_dir = ui_build_dir / "_app"
-        if app_dir.exists():
-            composed_app.routes.append(
-                Mount("/_app", app=StaticFiles(directory=str(app_dir)), name="app-assets")
-            )
-
         async def spa_fallback(request: Any) -> FileResponse | JSONResponse:
             """Serve index.html for SPA, 404 for API/MCP paths."""
             path = request.path_params.get("path", "")

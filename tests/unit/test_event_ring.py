@@ -256,4 +256,75 @@ class TestEventRingLatestSeq:
         ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
         assert ring.get_latest_seq() == 1
         ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
+
+
+class TestEventRingAccountIsolation:
+    """Tests confirming events for one account never leak to another."""
+
+    @pytest.mark.asyncio
+    async def test_replay_filters_by_account(self) -> None:
+        """Events for account A are not returned when replaying account B."""
+        ring = EventRing()
+        acct_a = uuid.uuid4()
+        acct_b = uuid.uuid4()
+
+        id_a1 = ring.add(acct_a, "mail.new", {"uid": 1})
+        ring.add(acct_a, "mail.new", {"uid": 2})
+        id_b1 = ring.add(acct_b, "mail.new", {"uid": 100})
+
+        # Replay from the first event's ID to get subsequent events
+        events_a = await ring.replay_from(id_a1, str(acct_a))
+        events_b = await ring.replay_from(id_b1, str(acct_b))
+
+        # Account A: only uid=2 (after id_a1)
+        assert len(events_a) == 1
+        assert events_a[0]["data"]["uid"] == 2
+
+        # Account B: no events after id_b1
+        assert len(events_b) == 0
+
+        # Verify account B never sees account A events
+        all_b = await ring.replay_from(id_b1 - 1, str(acct_b))
+        assert len(all_b) == 0  # id_b1-1 < oldest_id in B's ring, gap detected
+
+        # Verify global replay shows all accounts
+        global_events = await ring.replay_from(id_a1, None)
+        assert len(global_events) == 2  # uid=2 from A, uid=100 from B
+
+    def test_waiter_not_notified_for_other_account(self) -> None:
+        """A waiter registered for account A is not triggered by account B events."""
+        ring = EventRing()
+        acct_a = uuid.uuid4()
+        acct_b = uuid.uuid4()
+
+        waiter_a = ring.register_waiter(str(acct_a))
+        assert not waiter_a.is_set()
+
+        ring.add(acct_b, "mail.new", {"uid": 1})
+        assert not waiter_a.is_set()
+
+        ring.add(acct_a, "mail.new", {"uid": 2})
+        assert waiter_a.is_set()
+
+    @pytest.mark.asyncio
+    async def test_clear_one_account_preserves_other(self) -> None:
+        """Clearing account A events does not affect account B."""
+        ring = EventRing()
+        acct_a = uuid.uuid4()
+        acct_b = uuid.uuid4()
+
+        ring.add(acct_a, "mail.new", {"uid": 1})
+        id_b = ring.add(acct_b, "mail.new", {"uid": 2})
+
+        ring.clear_account(str(acct_a))
+
+        # Account A ring is empty
+        assert str(acct_a) not in ring._rings
+
+        # Account B ring still has its event
+        events_b = await ring.replay_from(id_b, str(acct_b))
+        # id_b is the only event, replay_from returns events AFTER id_b
+        assert len(events_b) == 0
+        assert str(acct_b) in ring._rings
+        assert len(ring._rings[str(acct_b)]) == 1
         assert ring.get_latest_seq() == 2

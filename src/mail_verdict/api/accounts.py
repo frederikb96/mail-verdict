@@ -12,6 +12,7 @@ POST /api/accounts/:id/test-connection — test IMAP/SMTP connectivity
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -31,6 +32,9 @@ from mail_verdict.database.models import Account, Folder
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+SYNC_DEBOUNCE_SECONDS = 5.0
+_sync_last_triggered: dict[uuid.UUID, float] = {}
 
 
 @router.get("", response_model=list[AccountResponse])
@@ -191,6 +195,15 @@ async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
 @router.post("/{account_id}/sync")
 async def trigger_sync(account_id: uuid.UUID) -> dict[str, str]:
     """Trigger an immediate sync cycle for this account."""
+    now = time.monotonic()
+    last = _sync_last_triggered.get(account_id, 0.0)
+    if now - last < SYNC_DEBOUNCE_SECONDS:
+        wait_s = f"{SYNC_DEBOUNCE_SECONDS:.0f}"
+        raise HTTPException(
+            status_code=429,
+            detail=f"Sync triggered too recently, wait {wait_s}s between requests",
+        )
+
     from mail_verdict.server import get_sync_engine
     from mail_verdict.settings.service import get_settings_service
 
@@ -216,6 +229,8 @@ async def trigger_sync(account_id: uuid.UUID) -> dict[str, str]:
 
     # Check if account already has sync infrastructure
     account_name = account.name
+    _sync_last_triggered[account_id] = time.monotonic()
+
     if account_name not in engine._accounts:
         # Dynamically add this account to the sync engine
         await engine.add_account(account)
