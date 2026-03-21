@@ -52,3 +52,10 @@ require-tls = false
 [authentication.fallback-admin]
 user = "admin"
 secret = "testadmin123"
+
+# Disable rate limits for E2E testing
+[session.rcpt]
+max-recipients = 10000
+
+[queue.throttle.outbound]
+enable = false

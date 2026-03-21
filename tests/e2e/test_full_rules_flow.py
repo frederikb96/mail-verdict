@@ -67,9 +67,10 @@ async def test_get_rule_not_found(app_client: httpx.AsyncClient) -> None:
 async def test_rule_test_dry_run(app_client: httpx.AsyncClient) -> None:
     """Test the newsletter rule against an existing mail via dry-run."""
     await _ensure_rules(app_client)
-    account_id = await get_account_id(app_client)
-    resp = await app_client.get("/api/mails", params={"limit": 1})
-    mails = resp.json()
+    account_id = await get_account_id(app_client, name="alice")
+    resp = await app_client.get("/api/mails", params={"limit": 1, "account_id": account_id})
+    data = resp.json()
+    mails = data.get("mails", data) if isinstance(data, dict) else data
     if not mails:
         pytest.skip("No mails available for rule test")
 

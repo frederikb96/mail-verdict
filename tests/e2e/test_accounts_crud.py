@@ -19,7 +19,8 @@ async def test_list_accounts(app_client: httpx.AsyncClient) -> None:
     assert resp.status_code == 200
     accounts = resp.json()
     assert len(accounts) >= 1
-    assert accounts[0]["name"] == "alice"
+    names = [a["name"] for a in accounts]
+    assert "alice" in names, f"Expected 'alice' in accounts, got {names}"
 
 
 @pytest.mark.asyncio

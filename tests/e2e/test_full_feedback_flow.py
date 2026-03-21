@@ -49,8 +49,8 @@ async def test_submit_not_spam_feedback(app_client, qdrant_client) -> None:
     Sends a new spam email, waits for it to be classified as spam,
     then submits "not spam" feedback and verifies a correction verdict is created.
     """
-    known_ids = await get_known_mail_ids(app_client)
-    account_id = await get_account_id(app_client)
+    account_id = await get_account_id(app_client, name="alice")
+    known_ids = await get_known_mail_ids(app_client, account_id=account_id)
 
     test_id = uuid.uuid4().hex[:8]
     subject = f"WIN $1,000,000 NOW!!! {test_id}"
@@ -73,6 +73,7 @@ async def test_submit_not_spam_feedback(app_client, qdrant_client) -> None:
     mail = await wait_for_new_mail(
         app_client,
         known_ids=known_ids,
+        account_id=account_id,
         subject_contains=test_id,
         timeout=90,
     )
@@ -127,8 +128,8 @@ async def test_imap_feedback_junk_to_inbox(app_client, qdrant_client) -> None:
     6. Verify correction verdict created (source=user_feedback, is_spam=False)
     7. Verify Qdrant embedding tag updated to is_spam=false
     """
-    known_ids = await get_known_mail_ids(app_client)
-    account_id = await get_account_id(app_client)
+    account_id = await get_account_id(app_client, name="alice")
+    known_ids = await get_known_mail_ids(app_client, account_id=account_id)
 
     test_id = uuid.uuid4().hex[:8]
     subject = f"CLAIM YOUR FREE PRIZE {test_id}"
@@ -157,6 +158,7 @@ async def test_imap_feedback_junk_to_inbox(app_client, qdrant_client) -> None:
     mail = await wait_for_new_mail(
         app_client,
         known_ids=known_ids,
+        account_id=account_id,
         subject_contains=test_id,
         timeout=90,
     )

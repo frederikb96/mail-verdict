@@ -42,10 +42,13 @@ async def test_jobs_list(app_client: httpx.AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_mail_list_empty_or_populated(app_client: httpx.AsyncClient) -> None:
-    """Mail list endpoint responds with valid list."""
+    """Mail list endpoint responds with valid paginated response."""
     resp = await app_client.get("/api/mails", params={"limit": 10})
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    data = resp.json()
+    assert "mails" in data
+    assert "has_more" in data
+    assert isinstance(data["mails"], list)
 
 
 @pytest.mark.asyncio

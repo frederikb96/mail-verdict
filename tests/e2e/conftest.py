@@ -194,8 +194,15 @@ def send_email(
     to_addr: str,
     subject: str,
     body: str,
+    max_retries: int = 5,
+    retry_delay: float = 10.0,
 ) -> str:
-    """Send an email via SMTP with authentication. Returns Message-ID."""
+    """Send an email via SMTP with authentication. Returns Message-ID.
+
+    Retries on rate limit errors (452) from the test mail server.
+    """
+    import time
+
     msg = MIMEText(body, "plain")
     msg_id = f"<{uuid.uuid4()}@test.local>"
     msg["Message-ID"] = msg_id
@@ -204,9 +211,22 @@ def send_email(
     msg["Subject"] = subject
     msg["Date"] = email.utils.formatdate(localtime=True)
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.login(from_addr, from_password)
-        smtp.sendmail(from_addr, [to_addr], msg.as_string())
+    for attempt in range(max_retries):
+        try:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+                smtp.login(from_addr, from_password)
+                smtp.sendmail(from_addr, [to_addr], msg.as_string())
+            return msg_id
+        except smtplib.SMTPRecipientsRefused as exc:
+            errors = list(exc.recipients.values())
+            if errors and errors[0][0] == 452 and attempt < max_retries - 1:
+                logger.warning(
+                    "SMTP rate limit hit, retrying in %.0fs (attempt %d/%d)",
+                    retry_delay, attempt + 1, max_retries,
+                )
+                time.sleep(retry_delay)
+                continue
+            raise
 
     return msg_id
 
@@ -296,6 +316,7 @@ async def wait_for_new_mail(
     *,
     known_ids: set[str] | None = None,
     subject_contains: str | None = None,
+    account_id: str | None = None,
     timeout: int = 120,
     poll_interval: float = 3.0,
 ) -> dict[str, Any]:
@@ -304,11 +325,15 @@ async def wait_for_new_mail(
         known_ids = set()
 
     deadline = asyncio.get_event_loop().time() + timeout
+    params: dict[str, Any] = {"limit": 200}
+    if account_id:
+        params["account_id"] = account_id
 
     while asyncio.get_event_loop().time() < deadline:
-        resp = await client.get("/api/mails", params={"limit": 200})
+        resp = await client.get("/api/mails", params=params)
         if resp.status_code == 200:
-            mails = resp.json()
+            data = resp.json()
+            mails = data.get("mails", data) if isinstance(data, dict) else data
             for mail in mails:
                 mail_id = mail["id"]
                 if mail_id in known_ids:
@@ -350,18 +375,32 @@ async def wait_for_verdict(
     raise TimeoutError(f"No verdict for mail {mail_id} within {timeout}s")
 
 
-async def get_known_mail_ids(client: httpx.AsyncClient) -> set[str]:
+async def get_known_mail_ids(
+    client: httpx.AsyncClient,
+    account_id: str | None = None,
+) -> set[str]:
     """Fetch all current mail IDs from the API."""
-    resp = await client.get("/api/mails", params={"limit": 200})
+    params: dict[str, Any] = {"limit": 200}
+    if account_id:
+        params["account_id"] = account_id
+    resp = await client.get("/api/mails", params=params)
     if resp.status_code == 200:
-        return {m["id"] for m in resp.json()}
+        data = resp.json()
+        mails = data.get("mails", data) if isinstance(data, dict) else data
+        return {m["id"] for m in mails}
     return set()
 
 
-async def get_account_id(client: httpx.AsyncClient) -> str:
-    """Get the first account's ID from the API."""
+async def get_account_id(
+    client: httpx.AsyncClient,
+    name: str = "alice",
+) -> str:
+    """Get an account ID by name (defaults to 'alice')."""
     resp = await client.get("/api/accounts")
     assert resp.status_code == 200
     accounts = resp.json()
     assert len(accounts) > 0, "No accounts found"
+    for acct in accounts:
+        if acct["name"] == name:
+            return acct["id"]
     return accounts[0]["id"]
