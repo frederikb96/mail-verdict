@@ -6,10 +6,12 @@ import { useAtom, useAtomValue } from "jotai";
 import { Loader2, Inbox as InboxIcon } from "lucide-react";
 
 import { MailListItem } from "@/components/mail/mail-list-item";
+import { UnifiedMailItem } from "@/components/mail/unified-mail-item";
 import { DragMail } from "@/components/mail/drag-mail";
 import { BulkToolbar } from "@/components/mail/bulk-toolbar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
+import { useUnifiedMails } from "@/hooks/use-unified-view";
 import {
   useSelection,
   useToggleSelection,
@@ -20,17 +22,21 @@ import {
   selectedAccountIdAtom,
   selectedFolderIdAtom,
   selectedMailIdAtom,
+  isUnifiedViewAtom,
+  selectedUnifiedFolderAtom,
 } from "@/lib/atoms";
 import {
   lastClickedMailIdAtom,
   selectionModeAtom,
 } from "@/store/selection-atom";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
-import type { MailSummary } from "@/types/api";
+import type { MailSummary, UnifiedMailSummary } from "@/types/api";
 
 export function MailList() {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const folderId = useAtomValue(selectedFolderIdAtom);
+  const isUnifiedView = useAtomValue(isUnifiedViewAtom);
+  const selectedUnifiedFolder = useAtomValue(selectedUnifiedFolderAtom);
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const [lastClickedId, setLastClickedId] = useAtom(lastClickedMailIdAtom);
   const focusedIndex = useAtomValue(focusedMailIndexAtom);
@@ -41,15 +47,25 @@ export function MailList() {
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
 
+  // Use unified view hook if in unified mode, otherwise use single-account hook
+  const unifiedResult = useUnifiedMails(
+    isUnifiedView ? selectedUnifiedFolder : null,
+  );
+  const singleAccountResult = useMailList(
+    isUnifiedView ? null : accountId,
+    folderId,
+  );
+
+  const result = isUnifiedView ? unifiedResult : singleAccountResult;
   const {
     data,
     isLoading,
     isFetchingNextPage,
     hasNextPage,
     fetchNextPage,
-  } = useMailList(accountId, folderId);
+  } = result;
 
-  const allMails: MailSummary[] =
+  const allMails: (MailSummary | UnifiedMailSummary)[] =
     data?.pages.flatMap((p) => p.mails) ?? [];
 
   const scrollToIndex = useCallback(
@@ -168,20 +184,34 @@ export function MailList() {
         itemSize={64}
         onScroll={handleScroll}
       >
-        {allMails.map((mail, index) => (
-          <DragMail key={mail.id} mailId={mail.id}>
-            <MailListItem
-              mail={mail}
-              isSelected={mail.id === selectedMailId}
-              isFocused={index === focusedIndex}
-              isChecked={checkedIds.has(mail.id)}
-              selectionMode={selectionMode}
-              onSelect={setSelectedMailId}
-              onCheckToggle={handleCheckToggle}
-              onAction={handleAction}
-            />
-          </DragMail>
-        ))}
+        {allMails.map((mail, index) =>
+          isUnifiedView ? (
+            <DragMail key={mail.id} mailId={mail.id}>
+              <UnifiedMailItem
+                mail={mail as UnifiedMailSummary}
+                isSelected={mail.id === selectedMailId}
+                isChecked={checkedIds.has(mail.id)}
+                selectionMode={selectionMode}
+                onSelect={setSelectedMailId}
+                onCheckToggle={handleCheckToggle}
+                onAction={handleAction}
+              />
+            </DragMail>
+          ) : (
+            <DragMail key={mail.id} mailId={mail.id}>
+              <MailListItem
+                mail={mail as MailSummary}
+                isSelected={mail.id === selectedMailId}
+                isFocused={index === focusedIndex}
+                isChecked={checkedIds.has(mail.id)}
+                selectionMode={selectionMode}
+                onSelect={setSelectedMailId}
+                onCheckToggle={handleCheckToggle}
+                onAction={handleAction}
+              />
+            </DragMail>
+          ),
+        )}
       </VList>
       {isFetchingNextPage && (
         <div className="flex items-center justify-center py-3">
