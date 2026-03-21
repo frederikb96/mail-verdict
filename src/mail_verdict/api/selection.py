@@ -208,7 +208,7 @@ async def toggle_selection(
     """Toggle selection of a single mail."""
     manager = get_selection_manager(account_id)
     manager.toggle(body.mail_id)
-    _push_selection_event(account_id, manager)
+    await _push_selection_event(account_id, manager)
     return _make_response(manager)
 
 
@@ -223,7 +223,7 @@ async def range_selection(
         await manager.range_select(body.from_id, body.to_id, body.folder_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    _push_selection_event(account_id, manager)
+    await _push_selection_event(account_id, manager)
     return _make_response(manager)
 
 
@@ -235,7 +235,7 @@ async def select_all(
     """Select all mails in a folder."""
     manager = get_selection_manager(account_id)
     await manager.select_all(body.folder_id)
-    _push_selection_event(account_id, manager)
+    await _push_selection_event(account_id, manager)
     return _make_response(manager)
 
 
@@ -244,7 +244,7 @@ async def clear_selection(account_id: uuid.UUID) -> SelectionResponse:
     """Clear all selections for an account."""
     manager = get_selection_manager(account_id)
     manager.clear()
-    _push_selection_event(account_id, manager)
+    await _push_selection_event(account_id, manager)
     return _make_response(manager)
 
 
@@ -337,7 +337,7 @@ async def bulk_action(
 
     # Clear selection after bulk action
     manager.clear()
-    _push_selection_event(account_id, manager)
+    await _push_selection_event(account_id, manager)
 
     return BulkActionResponse(
         success=len(errors) == 0,
@@ -387,7 +387,7 @@ async def _resolve_special_folder(
         return target.id if target else None
 
 
-def _push_selection_event(account_id: uuid.UUID, manager: SelectionManager) -> None:
+async def _push_selection_event(account_id: uuid.UUID, manager: SelectionManager) -> None:
     """
     Push a selection.changed SSE event into the EventRing.
 
@@ -397,4 +397,4 @@ def _push_selection_event(account_id: uuid.UUID, manager: SelectionManager) -> N
     """
     from mail_verdict.api.events import push_selection_event
 
-    push_selection_event(account_id, manager.selected_ids, manager.count)
+    await push_selection_event(account_id, manager.selected_ids, manager.count)

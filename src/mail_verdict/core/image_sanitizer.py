@@ -43,19 +43,44 @@ def strip_remote_images(html: str) -> tuple[str, bool]:
     return stripped, has_remote
 
 
+_SAFE_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _restore_if_safe(match: re.Match[str]) -> str:
+    """
+    Restore data-x-src to src only if the URL uses http(s).
+
+    Non-http schemes (javascript:, data:, vbscript:, etc.) are stripped
+    entirely to prevent XSS.
+
+    Args:
+        match: Regex match for a data-x-src attribute with its value
+
+    Returns:
+        Restored src attribute or empty string if unsafe
+    """
+    url = match.group(1)
+    if _SAFE_SCHEME_RE.match(url):
+        return f'src="{url}"'
+    return ""
+
+
 def restore_remote_images(html: str) -> str:
     """
     Restore data-x-src attributes back to src for rendering with images allowed.
+
+    Only restores URLs with http:// or https:// schemes. Other schemes
+    (javascript:, vbscript:, data:) are dropped to prevent XSS.
 
     Args:
         html: Sanitized email HTML with data-x-src attributes
 
     Returns:
-        HTML with data-x-src converted back to src
+        HTML with safe data-x-src converted back to src
     """
     return re.sub(
-        r"\bdata-x-src\s*=",
-        "src=",
+        r'\bdata-x-src\s*=\s*["\']([^"\']*)["\']',
+        _restore_if_safe,
         html,
         flags=re.IGNORECASE,
     )

@@ -298,7 +298,7 @@ class SyncManager:
         total_errors = 0
 
         if self._tracker:
-            self._tracker.update(phase=SyncPhase.PREFLIGHT)
+            await self._tracker.update(phase=SyncPhase.PREFLIGHT)
             await self._update_account_state(SyncPhase.PREFLIGHT)
 
         try:
@@ -323,7 +323,7 @@ class SyncManager:
                     total_messages += count
 
                 if self._tracker:
-                    self._tracker.update(
+                    await self._tracker.update(
                         phase=SyncPhase.SYNCING,
                         folder_total=folder_count,
                         total_messages=total_messages,
@@ -336,7 +336,7 @@ class SyncManager:
                         break
 
                     if self._tracker:
-                        self._tracker.update(
+                        await self._tracker.update(
                             folder_name=folder.imap_name,
                             folder_index=idx + 1,
                             folder_synced=0,
@@ -363,13 +363,13 @@ class SyncManager:
                             exc_info=True,
                         )
                         if self._tracker:
-                            self._tracker.update(
+                            await self._tracker.update(
                                 errors=total_errors,
                                 last_error=f"Folder {folder.imap_name}: {exc}",
                             )
 
                     if self._tracker:
-                        self._tracker.update(new_mails=total_new)
+                        await self._tracker.update(new_mails=total_new)
 
         except Exception as exc:
             total_errors += 1
@@ -381,7 +381,7 @@ class SyncManager:
                 },
             )
             if self._tracker:
-                self._tracker.update(
+                await self._tracker.update(
                     phase=SyncPhase.ERROR,
                     errors=total_errors,
                     last_error=str(exc),
@@ -389,7 +389,7 @@ class SyncManager:
                 await self._update_account_state(SyncPhase.ERROR)
 
         if self._tracker and self._tracker.phase != SyncPhase.ERROR:
-            self._tracker.update(phase=SyncPhase.COMPLETE)
+            await self._tracker.update(phase=SyncPhase.COMPLETE)
             await self._update_account_state(SyncPhase.COMPLETE)
 
         # Enqueue events for spam processor
@@ -593,7 +593,7 @@ class SyncManager:
         total = len(uids)
 
         if self._tracker:
-            self._tracker.update(folder_messages=total, folder_synced=0)
+            await self._tracker.update(folder_messages=total, folder_synced=0)
 
         for batch_start in range(0, total, batch_size):
             if not self._running:
@@ -660,7 +660,7 @@ class SyncManager:
 
             folder_synced = min(batch_start + len(batch), total)
             if self._tracker:
-                self._tracker.update(
+                await self._tracker.update(
                     folder_synced=folder_synced,
                     synced=self._tracker.synced + len(batch),
                 )

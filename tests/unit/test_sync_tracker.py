@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import time
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from mail_verdict.sync.tracker import SyncPhase, SyncTracker
 
@@ -133,16 +135,18 @@ class TestSyncTrackerDerivedFields:
 class TestSyncTrackerUpdate:
     """Tests for update() method."""
 
-    def test_update_single_field(self) -> None:
+    @pytest.mark.asyncio
+    async def test_update_single_field(self) -> None:
         """Update a single field."""
         tracker = SyncTracker(uuid.uuid4())
-        tracker.update(folder_name="INBOX")
+        await tracker.update(folder_name="INBOX")
         assert tracker.folder_name == "INBOX"
 
-    def test_update_multiple_fields(self) -> None:
+    @pytest.mark.asyncio
+    async def test_update_multiple_fields(self) -> None:
         """Update multiple fields at once."""
         tracker = SyncTracker(uuid.uuid4())
-        tracker.update(
+        await tracker.update(
             phase=SyncPhase.SYNCING,
             folder_name="INBOX",
             folder_index=1,
@@ -153,42 +157,47 @@ class TestSyncTrackerUpdate:
         assert tracker.folder_index == 1
         assert tracker.folder_total == 5
 
-    def test_update_ignores_unknown_fields(self) -> None:
+    @pytest.mark.asyncio
+    async def test_update_ignores_unknown_fields(self) -> None:
         """Unknown field names are logged and ignored."""
         tracker = SyncTracker(uuid.uuid4())
-        tracker.update(nonexistent_field="value")
+        await tracker.update(nonexistent_field="value")
         assert not hasattr(tracker, "nonexistent_field")
 
-    def test_update_ignores_private_fields(self) -> None:
+    @pytest.mark.asyncio
+    async def test_update_ignores_private_fields(self) -> None:
         """Private fields (starting with _) cannot be set via update()."""
         tracker = SyncTracker(uuid.uuid4())
-        tracker.update(_event_ring="bad")
+        await tracker.update(_event_ring="bad")
         # Should not change
         assert tracker._event_ring is None
 
-    def test_auto_started_at_on_preflight(self) -> None:
+    @pytest.mark.asyncio
+    async def test_auto_started_at_on_preflight(self) -> None:
         """started_at is auto-set on transition to preflight from idle."""
         tracker = SyncTracker(uuid.uuid4())
         assert tracker.started_at is None
-        tracker.update(phase=SyncPhase.PREFLIGHT)
+        await tracker.update(phase=SyncPhase.PREFLIGHT)
         assert tracker.started_at is not None
 
-    def test_no_reset_started_at_on_syncing(self) -> None:
+    @pytest.mark.asyncio
+    async def test_no_reset_started_at_on_syncing(self) -> None:
         """started_at is NOT reset when transitioning from preflight to syncing."""
         tracker = SyncTracker(uuid.uuid4())
-        tracker.update(phase=SyncPhase.PREFLIGHT)
+        await tracker.update(phase=SyncPhase.PREFLIGHT)
         first_started = tracker.started_at
-        tracker.update(phase=SyncPhase.SYNCING)
+        await tracker.update(phase=SyncPhase.SYNCING)
         assert tracker.started_at == first_started
 
-    def test_pushes_to_event_ring(self) -> None:
+    @pytest.mark.asyncio
+    async def test_pushes_to_event_ring(self) -> None:
         """update() calls event_ring.add() when ring is set."""
         ring = MagicMock()
-        ring.add.return_value = 1
+        ring.add = AsyncMock(return_value=1)
         account_id = uuid.uuid4()
         tracker = SyncTracker(account_id, event_ring=ring)
 
-        tracker.update(phase=SyncPhase.SYNCING)
+        await tracker.update(phase=SyncPhase.SYNCING)
 
         ring.add.assert_called_once()
         call_kwargs = ring.add.call_args[1]
@@ -199,42 +208,46 @@ class TestSyncTrackerUpdate:
 class TestSyncTrackerEventTypes:
     """Tests for event type determination."""
 
-    def test_phase_change_emits_sync_state(self) -> None:
+    @pytest.mark.asyncio
+    async def test_phase_change_emits_sync_state(self) -> None:
         """Phase change emits sync.state event."""
         ring = MagicMock()
-        ring.add.return_value = 1
+        ring.add = AsyncMock(return_value=1)
         tracker = SyncTracker(uuid.uuid4(), event_ring=ring)
 
-        tracker.update(phase=SyncPhase.SYNCING)
+        await tracker.update(phase=SyncPhase.SYNCING)
         assert ring.add.call_args[1]["event_type"] == "sync.state"
 
-    def test_error_phase_emits_sync_error(self) -> None:
+    @pytest.mark.asyncio
+    async def test_error_phase_emits_sync_error(self) -> None:
         """Transition to error emits sync.error event."""
         ring = MagicMock()
-        ring.add.return_value = 1
+        ring.add = AsyncMock(return_value=1)
         tracker = SyncTracker(uuid.uuid4(), event_ring=ring)
 
-        tracker.update(phase=SyncPhase.ERROR, last_error="Connection failed")
+        await tracker.update(phase=SyncPhase.ERROR, last_error="Connection failed")
         assert ring.add.call_args[1]["event_type"] == "sync.error"
 
-    def test_folder_change_emits_sync_folder(self) -> None:
+    @pytest.mark.asyncio
+    async def test_folder_change_emits_sync_folder(self) -> None:
         """Folder name+index update emits sync.folder event."""
         ring = MagicMock()
-        ring.add.return_value = 1
+        ring.add = AsyncMock(return_value=1)
         tracker = SyncTracker(uuid.uuid4(), event_ring=ring)
         tracker.phase = SyncPhase.SYNCING
 
-        tracker.update(folder_name="INBOX", folder_index=1)
+        await tracker.update(folder_name="INBOX", folder_index=1)
         assert ring.add.call_args[1]["event_type"] == "sync.folder"
 
-    def test_progress_update_emits_sync_progress(self) -> None:
+    @pytest.mark.asyncio
+    async def test_progress_update_emits_sync_progress(self) -> None:
         """Synced count update emits sync.progress event."""
         ring = MagicMock()
-        ring.add.return_value = 1
+        ring.add = AsyncMock(return_value=1)
         tracker = SyncTracker(uuid.uuid4(), event_ring=ring)
         tracker.phase = SyncPhase.SYNCING
 
-        tracker.update(synced=50)
+        await tracker.update(synced=50)
         assert ring.add.call_args[1]["event_type"] == "sync.progress"
 
 

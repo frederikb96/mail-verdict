@@ -13,24 +13,26 @@ from mail_verdict.api.event_ring import EventRing
 class TestEventRingAdd:
     """Tests for adding events to the ring buffer."""
 
-    def test_add_returns_sequence_id(self) -> None:
+    @pytest.mark.asyncio
+    async def test_add_returns_sequence_id(self) -> None:
         """add() returns a monotonically increasing sequence ID."""
         ring = EventRing()
         account_id = uuid.uuid4()
 
-        id1 = ring.add(account_id, "sync.state", {"phase": "idle"})
-        id2 = ring.add(account_id, "sync.progress", {"synced": 10})
+        id1 = await ring.add(account_id, "sync.state", {"phase": "idle"})
+        id2 = await ring.add(account_id, "sync.progress", {"synced": 10})
 
         assert id1 == 1
         assert id2 == 2
 
-    def test_add_stores_event(self) -> None:
+    @pytest.mark.asyncio
+    async def test_add_stores_event(self) -> None:
         """Added event is retrievable via replay."""
         ring = EventRing()
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        ring.add(account_id, "sync.state", {"phase": "syncing"})
+        await ring.add(account_id, "sync.state", {"phase": "syncing"})
 
         # Direct access to ring internals for verification
         assert acct_str in ring._rings
@@ -41,39 +43,42 @@ class TestEventRingAdd:
         assert event["id"] == 1
         assert "timestamp" in event
 
-    def test_add_respects_max_size(self) -> None:
+    @pytest.mark.asyncio
+    async def test_add_respects_max_size(self) -> None:
         """Ring buffer evicts oldest events when full."""
         ring = EventRing(max_size=3)
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
         for i in range(5):
-            ring.add(account_id, "sync.progress", {"synced": i})
+            await ring.add(account_id, "sync.progress", {"synced": i})
 
         assert len(ring._rings[acct_str]) == 3
         # Oldest remaining should be ID 3
         assert ring._rings[acct_str][0]["id"] == 3
 
-    def test_add_separate_accounts(self) -> None:
+    @pytest.mark.asyncio
+    async def test_add_separate_accounts(self) -> None:
         """Events for different accounts are stored separately."""
         ring = EventRing()
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        ring.add(acct1, "sync.state", {"phase": "idle"})
-        ring.add(acct2, "sync.state", {"phase": "syncing"})
+        await ring.add(acct1, "sync.state", {"phase": "idle"})
+        await ring.add(acct2, "sync.state", {"phase": "syncing"})
 
         assert len(ring._rings[str(acct1)]) == 1
         assert len(ring._rings[str(acct2)]) == 1
 
-    def test_global_sequence_across_accounts(self) -> None:
+    @pytest.mark.asyncio
+    async def test_global_sequence_across_accounts(self) -> None:
         """Sequence IDs are global, not per-account."""
         ring = EventRing()
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        id1 = ring.add(acct1, "sync.state", {"phase": "idle"})
-        id2 = ring.add(acct2, "sync.state", {"phase": "syncing"})
+        id1 = await ring.add(acct1, "sync.state", {"phase": "idle"})
+        id2 = await ring.add(acct2, "sync.state", {"phase": "syncing"})
 
         assert id1 == 1
         assert id2 == 2
@@ -89,9 +94,9 @@ class TestEventRingReplay:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        ring.add(account_id, "sync.state", {"phase": "idle"})
-        ring.add(account_id, "sync.progress", {"synced": 10})
-        ring.add(account_id, "sync.progress", {"synced": 20})
+        await ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "sync.progress", {"synced": 10})
+        await ring.add(account_id, "sync.progress", {"synced": 20})
 
         events = await ring.replay_from(1, acct_str)
         assert len(events) == 2
@@ -106,7 +111,7 @@ class TestEventRingReplay:
         acct_str = str(account_id)
 
         for i in range(5):
-            ring.add(account_id, "sync.progress", {"synced": i})
+            await ring.add(account_id, "sync.progress", {"synced": i})
 
         # ID 1 is no longer in the ring (evicted)
         events = await ring.replay_from(1, acct_str)
@@ -126,9 +131,9 @@ class TestEventRingReplay:
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        ring.add(acct1, "sync.state", {"phase": "idle"})
-        ring.add(acct2, "sync.state", {"phase": "syncing"})
-        ring.add(acct1, "sync.progress", {"synced": 10})
+        await ring.add(acct1, "sync.state", {"phase": "idle"})
+        await ring.add(acct2, "sync.state", {"phase": "syncing"})
+        await ring.add(acct1, "sync.progress", {"synced": 10})
 
         events = await ring.replay_from(0)
         assert len(events) == 3
@@ -141,26 +146,28 @@ class TestEventRingReplay:
 class TestEventRingHasEventsAfter:
     """Tests for gap detection."""
 
-    def test_has_events_for_valid_id(self) -> None:
+    @pytest.mark.asyncio
+    async def test_has_events_for_valid_id(self) -> None:
         """Returns True when the ID is within the ring."""
         ring = EventRing()
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        ring.add(account_id, "sync.state", {"phase": "idle"})
-        ring.add(account_id, "sync.progress", {"synced": 10})
+        await ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "sync.progress", {"synced": 10})
 
         assert ring.has_events_after(1, acct_str) is True
 
-    def test_has_events_for_old_id(self) -> None:
+    @pytest.mark.asyncio
+    async def test_has_events_for_old_id(self) -> None:
         """Returns False when the ID has been evicted."""
         ring = EventRing(max_size=2)
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        ring.add(account_id, "sync.state", {"phase": "idle"})
-        ring.add(account_id, "sync.progress", {"synced": 10})
-        ring.add(account_id, "sync.progress", {"synced": 20})
+        await ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "sync.progress", {"synced": 10})
+        await ring.add(account_id, "sync.progress", {"synced": 20})
 
         # ID 1 evicted, oldest is ID 2
         assert ring.has_events_after(1, acct_str) is False
@@ -184,7 +191,7 @@ class TestEventRingWaiters:
         waiter = ring.register_waiter(acct_str)
         assert not waiter.is_set()
 
-        ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "sync.state", {"phase": "idle"})
         assert waiter.is_set()
 
     @pytest.mark.asyncio
@@ -196,7 +203,7 @@ class TestEventRingWaiters:
         waiter = ring.register_waiter()
         assert not waiter.is_set()
 
-        ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "sync.state", {"phase": "idle"})
         assert waiter.is_set()
 
     @pytest.mark.asyncio
@@ -209,7 +216,7 @@ class TestEventRingWaiters:
         waiter = ring.register_waiter(acct_str)
         ring.unregister_waiter(waiter, acct_str)
 
-        ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "sync.state", {"phase": "idle"})
         assert not waiter.is_set()
 
     @pytest.mark.asyncio
@@ -223,14 +230,15 @@ class TestEventRingWaiters:
 class TestEventRingClearAccount:
     """Tests for clearing account events."""
 
-    def test_clear_removes_events(self) -> None:
+    @pytest.mark.asyncio
+    async def test_clear_removes_events(self) -> None:
         """clear_account() removes all events for that account."""
         ring = EventRing()
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        ring.add(acct1, "sync.state", {"phase": "idle"})
-        ring.add(acct2, "sync.state", {"phase": "idle"})
+        await ring.add(acct1, "sync.state", {"phase": "idle"})
+        await ring.add(acct2, "sync.state", {"phase": "idle"})
 
         ring.clear_account(str(acct1))
         assert str(acct1) not in ring._rings
@@ -250,12 +258,13 @@ class TestEventRingLatestSeq:
         ring = EventRing()
         assert ring.get_latest_seq() == 0
 
-    def test_latest_seq_increases(self) -> None:
+    @pytest.mark.asyncio
+    async def test_latest_seq_increases(self) -> None:
         """Latest seq increases with each add."""
         ring = EventRing()
-        ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
+        await ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
         assert ring.get_latest_seq() == 1
-        ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
+        await ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
 
 
 class TestEventRingAccountIsolation:
@@ -268,9 +277,9 @@ class TestEventRingAccountIsolation:
         acct_a = uuid.uuid4()
         acct_b = uuid.uuid4()
 
-        id_a1 = ring.add(acct_a, "mail.new", {"uid": 1})
-        ring.add(acct_a, "mail.new", {"uid": 2})
-        id_b1 = ring.add(acct_b, "mail.new", {"uid": 100})
+        id_a1 = await ring.add(acct_a, "mail.new", {"uid": 1})
+        await ring.add(acct_a, "mail.new", {"uid": 2})
+        id_b1 = await ring.add(acct_b, "mail.new", {"uid": 100})
 
         # Replay from the first event's ID to get subsequent events
         events_a = await ring.replay_from(id_a1, str(acct_a))
@@ -291,7 +300,8 @@ class TestEventRingAccountIsolation:
         global_events = await ring.replay_from(id_a1, None)
         assert len(global_events) == 2  # uid=2 from A, uid=100 from B
 
-    def test_waiter_not_notified_for_other_account(self) -> None:
+    @pytest.mark.asyncio
+    async def test_waiter_not_notified_for_other_account(self) -> None:
         """A waiter registered for account A is not triggered by account B events."""
         ring = EventRing()
         acct_a = uuid.uuid4()
@@ -300,10 +310,10 @@ class TestEventRingAccountIsolation:
         waiter_a = ring.register_waiter(str(acct_a))
         assert not waiter_a.is_set()
 
-        ring.add(acct_b, "mail.new", {"uid": 1})
+        await ring.add(acct_b, "mail.new", {"uid": 1})
         assert not waiter_a.is_set()
 
-        ring.add(acct_a, "mail.new", {"uid": 2})
+        await ring.add(acct_a, "mail.new", {"uid": 2})
         assert waiter_a.is_set()
 
     @pytest.mark.asyncio
@@ -313,8 +323,8 @@ class TestEventRingAccountIsolation:
         acct_a = uuid.uuid4()
         acct_b = uuid.uuid4()
 
-        ring.add(acct_a, "mail.new", {"uid": 1})
-        id_b = ring.add(acct_b, "mail.new", {"uid": 2})
+        await ring.add(acct_a, "mail.new", {"uid": 1})
+        id_b = await ring.add(acct_b, "mail.new", {"uid": 2})
 
         ring.clear_account(str(acct_a))
 

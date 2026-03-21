@@ -41,13 +41,12 @@ class EventRing:
         self._rings: dict[str, deque[dict[str, Any]]] = {}
         self._waiters: dict[str, list[asyncio.Event]] = {}
 
-    def add(self, account_id: uuid.UUID, event_type: str, data: dict[str, Any]) -> int:
+    async def add(self, account_id: uuid.UUID, event_type: str, data: dict[str, Any]) -> int:
         """
         Add an event to the ring buffer for an account.
 
-        This method is synchronous (called from SyncTracker.update() which
-        may run in sync context). The ring buffer is append-only and safe
-        for single-writer patterns.
+        Protected by asyncio.Lock to prevent interleaved mutations from
+        concurrent coroutines.
 
         Args:
             account_id: Account the event belongs to
@@ -57,30 +56,31 @@ class EventRing:
         Returns:
             Sequence ID assigned to this event
         """
-        self._seq += 1
-        seq_id = self._seq
-        acct_key = str(account_id)
+        async with self._lock:
+            self._seq += 1
+            seq_id = self._seq
+            acct_key = str(account_id)
 
-        event: dict[str, Any] = {
-            "id": seq_id,
-            "event_type": event_type,
-            "data": data,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+            event: dict[str, Any] = {
+                "id": seq_id,
+                "event_type": event_type,
+                "data": data,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
 
-        if acct_key not in self._rings:
-            self._rings[acct_key] = deque(maxlen=self._max_size)
+            if acct_key not in self._rings:
+                self._rings[acct_key] = deque(maxlen=self._max_size)
 
-        self._rings[acct_key].append(event)
+            self._rings[acct_key].append(event)
 
-        # Wake any waiting SSE generators for this account
-        for waiter in self._waiters.get(acct_key, []):
-            waiter.set()
-        # Also wake global waiters (no account filter)
-        for waiter in self._waiters.get("__global__", []):
-            waiter.set()
+            # Wake any waiting SSE generators for this account
+            for waiter in self._waiters.get(acct_key, []):
+                waiter.set()
+            # Also wake global waiters (no account filter)
+            for waiter in self._waiters.get("__global__", []):
+                waiter.set()
 
-        return seq_id
+            return seq_id
 
     async def replay_from(
         self,

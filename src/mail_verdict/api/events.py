@@ -14,13 +14,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import secrets
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import StreamingResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.rules.bus import EventBus, Subscriber
@@ -97,7 +99,7 @@ async def register_sse_subscriber(bus: EventBus) -> None:
         if event_type is None:
             return
 
-        _event_ring.add(
+        await _event_ring.add(
             account_id=event.account_id,
             event_type=event_type,
             data=data,
@@ -182,7 +184,7 @@ async def push_verdict_event(
     if _event_ring is None or account_id is None:
         return
 
-    _event_ring.add(
+    await _event_ring.add(
         account_id=account_id,
         event_type="verdict.issued",
         data={
@@ -195,7 +197,7 @@ async def push_verdict_event(
     )
 
 
-def push_selection_event(
+async def push_selection_event(
     account_id: uuid.UUID,
     selected_ids: set[uuid.UUID],
     count: int,
@@ -211,7 +213,7 @@ def push_selection_event(
     if _event_ring is None:
         return
 
-    _event_ring.add(
+    await _event_ring.add(
         account_id=account_id,
         event_type="selection.changed",
         data={
@@ -335,14 +337,45 @@ def _emit_state_snapshot(
     return messages
 
 
-async def sse_endpoint(request: Request) -> StreamingResponse:
+def _validate_api_key(request: Request) -> bool:
+    """
+    Validate API key from X-API-Key header or query parameter.
+
+    Mirrors the FastAPI require_auth dependency but works with raw Starlette
+    requests (SSE route bypasses FastAPI middleware stack).
+
+    Args:
+        request: Starlette request
+
+    Returns:
+        True if auth passes (key valid or auth disabled)
+    """
+    expected = os.environ.get("MAIL_VERDICT_API_KEY")
+    if not expected:
+        return True
+    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+    if not api_key:
+        return False
+    return secrets.compare_digest(api_key, expected)
+
+
+async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
     """
     SSE endpoint handler.
+
+    Validates API key before streaming (this route bypasses FastAPI's
+    dependency injection since it's mounted as a raw Starlette Route).
 
     Supports ?account_id=<uuid> for per-account filtering.
     Supports Last-Event-ID header (auto-reconnect) and ?last_event_id query
     parameter (manual reconnect) for replay.
     """
+    if not _validate_api_key(request):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing API key"},
+        )
+
     if _event_ring is None:
         return StreamingResponse(
             iter([": server not ready\n\n"]),

@@ -95,7 +95,7 @@ class SyncTracker:
             return 0.0
         return round(min(self.synced / self.total_messages * 100, 100.0), 1)
 
-    def update(self, **kwargs: Any) -> None:
+    async def update(self, **kwargs: Any) -> None:
         """
         Update tracker fields and emit an SSE event.
 
@@ -124,7 +124,7 @@ class SyncTracker:
         # Determine event type and push to ring
         if self._event_ring is not None:
             event_type = self._determine_event_type(old_phase, kwargs)
-            self._event_ring.add(
+            await self._event_ring.add(
                 account_id=self._account_id,
                 event_type=event_type,
                 data=self.to_dict(),

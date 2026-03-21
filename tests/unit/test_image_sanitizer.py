@@ -67,6 +67,33 @@ class TestRestoreRemoteImages:
         assert 'src="https://cdn.example.com/logo.png"' in result
         assert "data-x-src" not in result
 
+    def test_blocks_javascript_scheme(self) -> None:
+        """javascript: URIs in data-x-src are dropped (XSS prevention)."""
+        html = '<img data-x-src="javascript:alert(1)" alt="xss">'
+        result = restore_remote_images(html)
+        assert "javascript:" not in result
+        assert "src=" not in result
+
+    def test_blocks_vbscript_scheme(self) -> None:
+        """vbscript: URIs in data-x-src are dropped."""
+        html = '<img data-x-src="vbscript:MsgBox" alt="xss">'
+        result = restore_remote_images(html)
+        assert "vbscript:" not in result
+        assert "src=" not in result
+
+    def test_allows_http_scheme(self) -> None:
+        """http:// URIs are restored normally."""
+        html = '<img data-x-src="http://example.com/img.png">'
+        result = restore_remote_images(html)
+        assert 'src="http://example.com/img.png"' in result
+
+    def test_blocks_data_uri_scheme(self) -> None:
+        """data: URIs in data-x-src are dropped (not expected here)."""
+        html = '<img data-x-src="data:text/html,<script>alert(1)</script>">'
+        result = restore_remote_images(html)
+        assert "data:text/html" not in result
+        assert "src=" not in result
+
 
 class TestExtractSenderEmail:
     """Tests for extracting bare email from from_addr."""

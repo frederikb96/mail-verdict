@@ -40,7 +40,7 @@ router = APIRouter(prefix="/mails", tags=["mails"])
 
 @router.get("", response_model=MailListResponse)
 async def list_mails(
-    account_id: uuid.UUID | None = Query(default=None),
+    account_id: uuid.UUID = Query(),
     folder_id: uuid.UUID | None = Query(default=None),
     is_read: bool | None = Query(default=None),
     since: datetime | None = Query(default=None),
@@ -53,6 +53,7 @@ async def list_mails(
     """
     List mails with cursor-based pagination.
 
+    Requires account_id to scope results to a single account.
     Cursor pagination uses the `before` parameter (UUID of the last mail
     in the previous page). Stable under concurrent inserts.
     First page: omit `before`. Subsequent pages: pass `next_cursor` from response.
@@ -65,8 +66,7 @@ async def list_mails(
             .order_by(desc(Mail.received_at), desc(Mail.id))
         )
 
-        if account_id is not None:
-            stmt = stmt.where(Mail.account_id == account_id)
+        stmt = stmt.where(Mail.account_id == account_id)
         if folder_id is not None:
             stmt = stmt.where(Mail.folder_id == folder_id)
         if is_read is not None:
