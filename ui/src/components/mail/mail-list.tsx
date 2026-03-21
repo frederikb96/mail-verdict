@@ -96,11 +96,13 @@ export function MailList() {
     (
       mailId: string,
       action: "flag" | "unflag" | "archive" | "spam" | "delete",
+      mailAccountId?: string,
     ) => {
-      if (!accountId) return;
+      const account = mailAccountId || accountId;
+      if (!account) return;
       mailAction.mutate({
         mailId,
-        accountId,
+        accountId: account,
         action: { action },
       });
     },
@@ -190,6 +192,7 @@ export function MailList() {
               <UnifiedMailItem
                 mail={mail as UnifiedMailSummary}
                 isSelected={mail.id === selectedMailId}
+                isFocused={index === focusedIndex}
                 isChecked={checkedIds.has(mail.id)}
                 selectionMode={selectionMode}
                 onSelect={setSelectedMailId}

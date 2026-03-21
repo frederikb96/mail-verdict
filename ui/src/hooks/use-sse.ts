@@ -108,6 +108,7 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           queryClient.invalidateQueries({ queryKey: ["mails"] });
+          queryClient.invalidateQueries({ queryKey: ["unified-mails"] });
           if (data.folder_id) {
             queryClient.invalidateQueries({ queryKey: ["folders"] });
           }
@@ -126,6 +127,7 @@ export function useSSE(accountId?: string) {
             });
           }
           queryClient.invalidateQueries({ queryKey: ["mails"] });
+          queryClient.invalidateQueries({ queryKey: ["unified-mails"] });
         } catch {
           // Ignore
         }
@@ -134,6 +136,7 @@ export function useSSE(accountId?: string) {
       source.addEventListener("mail.deleted", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["mails"] });
+        queryClient.invalidateQueries({ queryKey: ["unified-mails"] });
         queryClient.invalidateQueries({ queryKey: ["folders"] });
       });
 

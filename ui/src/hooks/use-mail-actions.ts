@@ -24,6 +24,7 @@ function useMailActionMutation() {
     }) => api.mails.action(mailId, accountId, action),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["mails"] });
+      qc.invalidateQueries({ queryKey: ["unified-mails"] });
       qc.invalidateQueries({ queryKey: ["mail"] });
       qc.invalidateQueries({ queryKey: ["folders"] });
     },

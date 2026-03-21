@@ -20,6 +20,7 @@ import type { UnifiedMailSummary } from "@/types/api";
 interface UnifiedMailItemProps {
   mail: UnifiedMailSummary;
   isSelected: boolean;
+  isFocused?: boolean;
   isChecked: boolean;
   selectionMode: boolean;
   onSelect: (mailId: string) => void;
@@ -27,12 +28,14 @@ interface UnifiedMailItemProps {
   onAction?: (
     mailId: string,
     action: "flag" | "unflag" | "archive" | "spam" | "delete",
+    mailAccountId?: string,
   ) => void;
 }
 
 export function UnifiedMailItem({
   mail,
   isSelected,
+  isFocused,
   isChecked,
   selectionMode,
   onSelect,
@@ -52,6 +55,7 @@ export function UnifiedMailItem({
             ? "bg-accent/70"
             : "hover:bg-accent/50",
         !mail.is_read && !isSelected && !isChecked && "bg-accent/20",
+        isFocused && "ring-2 ring-inset ring-ring",
       )}
       onClick={() => onSelect(mail.id)}
     >
@@ -133,6 +137,7 @@ export function UnifiedMailItem({
             onAction?.(
               mail.id,
               mail.is_flagged ? "unflag" : "flag",
+              mail.account_id,
             );
           }}
           title={mail.is_flagged ? "Unflag" : "Star"}
@@ -150,7 +155,7 @@ export function UnifiedMailItem({
           className="rounded p-1 hover:bg-accent"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, "archive");
+            onAction?.(mail.id, "archive", mail.account_id);
           }}
           title="Archive"
         >
@@ -160,7 +165,7 @@ export function UnifiedMailItem({
           className="rounded p-1 hover:bg-accent"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, "spam");
+            onAction?.(mail.id, "spam", mail.account_id);
           }}
           title="Spam"
         >
@@ -170,7 +175,7 @@ export function UnifiedMailItem({
           className="rounded p-1 hover:bg-accent"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, "delete");
+            onAction?.(mail.id, "delete", mail.account_id);
           }}
           title="Delete"
         >
