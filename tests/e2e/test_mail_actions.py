@@ -1,16 +1,28 @@
 """
-E2E test: Mail actions and on-demand body fetch.
+E2E test: Mail actions, IMAP propagation, and on-demand body fetch.
 
-Tests individual mail actions (star, read, move, archive, spam)
+Tests individual mail actions (star, read, move, archive, spam, delete)
+with verification that changes propagate to the IMAP server,
 and the on-demand body fetch for mails with body_synced=True.
 """
 
 from __future__ import annotations
 
+import asyncio
+import imaplib
+import re
+
 import httpx
 import pytest
 
-from tests.e2e.conftest import get_account_id
+from tests.e2e.conftest import (
+    ALICE_EMAIL,
+    ALICE_PASSWORD,
+    IMAP_HOST,
+    IMAP_PORT,
+    _imap_quote,
+    get_account_id,
+)
 
 pytestmark = [pytest.mark.e2e]
 
@@ -252,3 +264,271 @@ async def test_on_demand_body_fetch(
     if detail["body_synced"]:
         has_body = detail.get("body_text") is not None or detail.get("body_html") is not None
         assert has_body, "body_synced=True but no body content returned"
+
+
+# --- IMAP propagation tests ---
+
+
+def _imap_get_flags_by_uid(
+    uid: int,
+    folder: str = "INBOX",
+    user: str = ALICE_EMAIL,
+    password: str = ALICE_PASSWORD,
+) -> set[str]:
+    """Fetch IMAP flags for a message by UID."""
+    conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
+    try:
+        conn.login(user, password)
+        conn.select(_imap_quote(folder))
+        _, data = conn.uid("FETCH", str(uid), "(FLAGS)")
+        if not data or not data[0]:
+            return set()
+        line = data[0].decode() if isinstance(data[0], bytes) else str(data[0])
+        match = re.search(r"FLAGS \(([^)]*)\)", line)
+        if match:
+            return set(match.group(1).split())
+        return set()
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+def _imap_list_uids(
+    folder: str = "INBOX",
+    user: str = ALICE_EMAIL,
+    password: str = ALICE_PASSWORD,
+) -> list[int]:
+    """List all UIDs in an IMAP folder."""
+    conn = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
+    try:
+        conn.login(user, password)
+        conn.select(_imap_quote(folder))
+        _, data = conn.search(None, "ALL")
+        if not data or not data[0]:
+            return []
+        uids: list[int] = []
+        for num in data[0].split():
+            _, uid_data = conn.fetch(num, "(UID)")
+            if uid_data and uid_data[0]:
+                line = uid_data[0].decode() if isinstance(uid_data[0], bytes) else str(uid_data[0])
+                match = re.search(r"UID (\d+)", line)
+                if match:
+                    uids.append(int(match.group(1)))
+        return uids
+    finally:
+        try:
+            conn.logout()
+        except Exception:
+            pass
+
+
+async def _get_mail_with_uid(
+    client: httpx.AsyncClient,
+    account_id: str,
+    *,
+    skip: int = 0,
+) -> dict:
+    """Fetch a mail that has a valid UID for IMAP operations.
+
+    Args:
+        client: HTTP client
+        account_id: Account UUID
+        skip: Number of valid-UID mails to skip (avoids collisions with other tests)
+    """
+    resp = await client.get(
+        "/api/mails",
+        params={"account_id": account_id, "limit": 10},
+    )
+    assert resp.status_code == 200
+    mails = resp.json()["mails"]
+    found = 0
+    for mail in mails:
+        detail = await client.get(
+            f"/api/mails/{mail['id']}",
+            params={"account_id": account_id},
+        )
+        if detail.status_code == 200:
+            d = detail.json()
+            if d.get("uid") and d.get("uid") > 0:
+                if found >= skip:
+                    return d
+                found += 1
+    assert False, "No mail with valid UID found"
+
+
+@pytest.mark.asyncio
+async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
+    """Flag action propagates \\Flagged to IMAP server."""
+    account_id = await _get_alice_id(app_client)
+    mail = await _get_mail_with_uid(app_client, account_id, skip=2)
+    mail_id = mail["id"]
+    uid = mail["uid"]
+
+    # Flag via API
+    resp = await app_client.post(
+        f"/api/mails/{mail_id}/action",
+        params={"account_id": account_id},
+        json={"action": "flag"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+
+    # Wait for background IMAP propagation
+    await asyncio.sleep(3)
+
+    # Verify flag on IMAP
+    flags = _imap_get_flags_by_uid(uid)
+    assert "\\Flagged" in flags, f"Expected \\Flagged in IMAP flags, got: {flags}"
+
+    # Unflag and verify removal
+    resp = await app_client.post(
+        f"/api/mails/{mail_id}/action",
+        params={"account_id": account_id},
+        json={"action": "unflag"},
+    )
+    assert resp.status_code == 200
+
+    await asyncio.sleep(3)
+    flags = _imap_get_flags_by_uid(uid)
+    assert "\\Flagged" not in flags, f"\\Flagged should be removed, got: {flags}"
+
+
+@pytest.mark.asyncio
+async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
+    """Spam action moves mail to Junk Mail folder via IMAP.
+
+    Requires the folder_mapping to have a "spam" key pointing to the Junk folder.
+    The auto-detected mapping uses "junk" as the key, so we set it explicitly.
+    """
+    account_id = await _get_alice_id(app_client)
+
+    # Get current folder mapping and add "spam" key
+    mapping_resp = await app_client.get(
+        f"/api/accounts/{account_id}/folder-mapping",
+    )
+    assert mapping_resp.status_code == 200
+    mapping = mapping_resp.json()
+    original_mapping = dict(mapping)
+
+    # Set spam mapping (action looks for "spam" key, auto-detect uses "junk")
+    mapping["spam"] = mapping.get("junk", "Junk Mail")
+    await app_client.put(
+        f"/api/accounts/{account_id}/folder-mapping",
+        json=mapping,
+    )
+
+    try:
+        mail = await _get_mail_with_uid(app_client, account_id, skip=3)
+        mail_id = mail["id"]
+
+        resp = await app_client.post(
+            f"/api/mails/{mail_id}/action",
+            params={"account_id": account_id},
+            json={"action": "spam"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["success"] is True
+
+        # Verify in API that mail moved
+        detail = await app_client.get(
+            f"/api/mails/{mail_id}",
+            params={"account_id": account_id},
+        )
+        assert detail.status_code == 200
+        moved_folder = detail.json()["folder_id"]
+        assert moved_folder != mail["folder_id"], (
+            "Mail should be in a different folder after spam"
+        )
+
+        # Wait for IMAP propagation
+        await asyncio.sleep(3)
+
+        # Verify mail appeared in Junk Mail on IMAP
+        junk_uids = _imap_list_uids("Junk Mail")
+        assert len(junk_uids) > 0, (
+            "Junk Mail folder should have messages after spam action"
+        )
+
+        # Move back to INBOX for test cleanup
+        resp = await app_client.post(
+            f"/api/mails/{mail_id}/action",
+            params={"account_id": account_id},
+            json={"action": "move", "target_folder": "INBOX"},
+        )
+        assert resp.status_code == 200
+        await asyncio.sleep(3)
+    finally:
+        # Restore original folder mapping
+        await app_client.put(
+            f"/api/accounts/{account_id}/folder-mapping",
+            json=original_mapping,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_action_sets_deleted_flag(app_client: httpx.AsyncClient) -> None:
+    """Delete action sets is_deleted in the API and propagates \\Deleted to IMAP.
+
+    After IMAP propagation, Stalwart auto-expunges deleted messages,
+    so we verify the API-level is_deleted flag and that the mail
+    no longer appears in the default (non-deleted) mail listing.
+    """
+    account_id = await _get_alice_id(app_client)
+    mail = await _get_mail_with_uid(app_client, account_id, skip=4)
+    mail_id = mail["id"]
+    uid = mail["uid"]
+
+    # Get mails before delete
+    before_resp = await app_client.get(
+        "/api/mails",
+        params={"account_id": account_id, "limit": 200},
+    )
+    before_ids = {m["id"] for m in before_resp.json()["mails"]}
+    assert mail_id in before_ids
+
+    resp = await app_client.post(
+        f"/api/mails/{mail_id}/action",
+        params={"account_id": account_id},
+        json={"action": "delete"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+
+    # Deleted mail should be excluded from default listing (is_deleted filter)
+    after_resp = await app_client.get(
+        "/api/mails",
+        params={"account_id": account_id, "limit": 200},
+    )
+    after_ids = {m["id"] for m in after_resp.json()["mails"]}
+    assert mail_id not in after_ids, "Deleted mail still in default listing"
+
+    # Wait for IMAP propagation
+    await asyncio.sleep(3)
+
+    # After IMAP propagation, Stalwart auto-expunges.
+    # Verify the UID is no longer in INBOX on IMAP.
+    inbox_uids = _imap_list_uids("INBOX")
+    assert uid not in inbox_uids, (
+        f"UID {uid} should be expunged from INBOX after delete"
+    )
+
+
+@pytest.mark.asyncio
+async def test_archive_requires_mapped_folder(
+    app_client: httpx.AsyncClient,
+) -> None:
+    """Archive action returns 400 when no archive folder is mapped."""
+    account_id = await _get_alice_id(app_client)
+    mail = await _get_first_mail(app_client, account_id)
+    mail_id = mail["id"]
+
+    resp = await app_client.post(
+        f"/api/mails/{mail_id}/action",
+        params={"account_id": account_id},
+        json={"action": "archive"},
+    )
+    # Archive folder is not mapped in test env (null in folder_mapping)
+    assert resp.status_code == 400
+    assert "archive" in resp.json()["detail"].lower()
