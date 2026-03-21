@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- IMAP library migration: replaced aioimaplib with imap-tools (fixes RecursionError on large mailboxes)
+- All IMAP operations wrapped in `asyncio.to_thread()` (imap-tools is synchronous)
+- Two-phase sync: headers fetched first (fast display), bodies fetched separately
+- Folder discovery uses `mailbox.folder.list()` with SPECIAL-USE dedup
+- IDLE watcher uses `mailbox.idle.wait()` in thread
+- Action propagator uses imap-tools `move()`, `flag()`, `copy()`
+- Test connection endpoint uses imap-tools MailBox
+
+### Removed
+
+- `sync/extensions.py` module (imap-tools handles SELECT, CONDSTORE, SPECIAL-USE natively)
+- aioimaplib dependency
+
 ## [0.2.2] - 2026-03-21
 
 ### Added

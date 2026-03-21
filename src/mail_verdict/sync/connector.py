@@ -1,8 +1,10 @@
 """
-IMAP connection management.
+IMAP connection management via imap-tools.
 
-Handles connect, authenticate, SSL/TLS, connection pooling per account,
-capability detection, and reconnection with exponential backoff.
+Handles connect, authenticate, SSL/STARTTLS auto-detection,
+connection pooling per account, and reconnection with exponential backoff.
+All IMAP operations run in threads via asyncio.to_thread since imap-tools
+is synchronous.
 """
 
 from __future__ import annotations
@@ -14,10 +16,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
-from aioimaplib import IMAP4, IMAP4_SSL
+from imap_tools import BaseMailBox, MailBox, MailBoxStartTls, MailBoxUnencrypted
 
 from mail_verdict.core.retry import RetryConfig
-from mail_verdict.sync.extensions import AsyncIMAPExtended
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +47,12 @@ class IMAPConnectionError(Exception):
 
 class IMAPConnector:
     """
-    Manages IMAP connections for a single account.
+    Manages IMAP connections for a single account using imap-tools.
 
     Provides:
-    - SSL/TLS connection with STARTTLS fallback
-    - Connection pooling for command connections
+    - SSL/STARTTLS auto-detection based on port
+    - Connection pooling (one MailBox per thread, not shared across await)
     - Dedicated persistent connections for IDLE
-    - Capability detection (CONDSTORE, QRESYNC, SPECIAL-USE, IDLE)
     - Exponential backoff reconnection
     """
 
@@ -70,10 +70,9 @@ class IMAPConnector:
         """
         self._account = account
         self._retry = retry_config
-        self._pool: asyncio.Queue[AsyncIMAPExtended] = asyncio.Queue()
+        self._pool: asyncio.Queue[BaseMailBox] = asyncio.Queue()
         self._pool_size = 0
         self._max_pool_size = 3
-        self._capabilities: set[str] = set()
         self._closed = False
         self._lock = asyncio.Lock()
 
@@ -82,103 +81,67 @@ class IMAPConnector:
         """Account identifier for logging."""
         return self._account.name
 
-    @property
-    def capabilities(self) -> set[str]:
-        """Server capabilities detected on first connection."""
-        return self._capabilities
-
-    def has_condstore(self) -> bool:
-        """Check CONDSTORE support."""
-        return "CONDSTORE" in self._capabilities
-
-    def has_qresync(self) -> bool:
-        """Check QRESYNC support."""
-        return "QRESYNC" in self._capabilities
-
-    def has_special_use(self) -> bool:
-        """Check SPECIAL-USE support."""
-        return "SPECIAL-USE" in self._capabilities
-
-    def has_idle(self) -> bool:
-        """Check IDLE support."""
-        return "IDLE" in self._capabilities
-
-    async def connect(self) -> AsyncIMAPExtended:
+    async def connect(self) -> BaseMailBox:
         """
-        Create a new authenticated IMAP connection.
+        Create a new authenticated imap-tools MailBox connection.
 
-        Tries SSL first (port 993), falls back to STARTTLS (port 143).
+        Port 993 uses implicit SSL, port 143 uses STARTTLS,
+        other ports use unencrypted connection.
 
         Returns:
-            Authenticated AsyncIMAPExtended instance
+            Authenticated BaseMailBox instance
 
         Raises:
             IMAPConnectionError: If connection or auth fails
         """
         port = self._account.port
         host = self._account.host
-        use_ssl = port == 993
+
+        def _sync_connect() -> BaseMailBox:
+            """Synchronous connection logic for asyncio.to_thread."""
+            use_ssl = port == 993
+
+            try:
+                mailbox: BaseMailBox
+                if use_ssl:
+                    ssl_ctx: ssl.SSLContext | None = None
+                    if not self._account.ssl_verify:
+                        ssl_ctx = ssl.create_default_context()
+                        ssl_ctx.check_hostname = False
+                        ssl_ctx.verify_mode = ssl.CERT_NONE
+                    mailbox = MailBox(host, port, ssl_context=ssl_ctx)
+                elif port == 143:
+                    mailbox = MailBoxStartTls(host, port)
+                else:
+                    mailbox = MailBoxUnencrypted(host, port)
+
+                mailbox.login(
+                    self._account.username,
+                    self._account.password,
+                    initial_folder=None,
+                )
+                return mailbox
+
+            except Exception as exc:
+                raise IMAPConnectionError(
+                    f"Connection to {host}:{port} failed: {exc}"
+                ) from exc
 
         try:
-            if use_ssl:
-                ssl_ctx: ssl.SSLContext | None = None
-                if not self._account.ssl_verify:
-                    ssl_ctx = ssl.create_default_context()
-                    ssl_ctx.check_hostname = False
-                    ssl_ctx.verify_mode = ssl.CERT_NONE
-                client = IMAP4_SSL(host=host, port=port, ssl_context=ssl_ctx)
-            else:
-                client = IMAP4(host=host, port=port)
-
-            await client.wait_hello_from_server()
-
-            if not use_ssl and client.has_capability("STARTTLS"):
-                logger.info(
-                    "STARTTLS available but aioimaplib lacks native support, "
-                    "recommend using port 993 (SSL) instead",
-                    extra={"account": self.account_name},
-                )
-
-            response = await client.login(
-                self._account.username,
-                self._account.password,
-            )
-            if response.result != "OK":
-                raise IMAPConnectionError(
-                    f"Login failed for {self.account_name}: {response.result}"
-                )
-
-            extended = AsyncIMAPExtended(client)
-
-            if not self._capabilities:
-                self._capabilities = extended.capabilities.copy()
-                logger.info(
-                    "Capabilities detected",
-                    extra={
-                        "account": self.account_name,
-                        "condstore": self.has_condstore(),
-                        "qresync": self.has_qresync(),
-                        "special_use": self.has_special_use(),
-                        "idle": self.has_idle(),
-                    },
-                )
-
-            if extended.has_capability("QRESYNC"):
-                await extended.enable_qresync()
-
-            return extended
-
+            return await asyncio.to_thread(_sync_connect)
         except IMAPConnectionError:
             raise
         except Exception as exc:
-            raise IMAPConnectionError(f"Connection to {host}:{port} failed: {exc}") from exc
+            raise IMAPConnectionError(
+                f"Connection to {host}:{port} failed: {exc}"
+            ) from exc
 
-    async def connect_with_retry(self) -> AsyncIMAPExtended:
+    async def connect_with_retry(self) -> BaseMailBox:
         """
         Connect with exponential backoff retry.
 
         Returns:
-            Authenticated AsyncIMAPExtended instance
+            Authenticated BaseMailBox instance
 
         Raises:
             IMAPConnectionError: If all retries exhausted
@@ -209,7 +172,7 @@ class IMAPConnector:
         )
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncIterator[AsyncIMAPExtended]:
+    async def acquire(self) -> AsyncIterator[BaseMailBox]:
         """
         Acquire a connection from the pool.
 
@@ -217,14 +180,14 @@ class IMAPConnector:
         connection if the pool is empty and under max size.
 
         Yields:
-            AsyncIMAPExtended connection
+            Authenticated BaseMailBox connection
         """
-        conn: AsyncIMAPExtended | None = None
+        conn: BaseMailBox | None = None
 
         try:
             if not self._pool.empty():
                 conn = self._pool.get_nowait()
-                if not self._is_alive(conn):
+                if not await self._is_alive(conn):
                     await self._close_connection(conn)
                     conn = None
 
@@ -251,14 +214,14 @@ class IMAPConnector:
                     async with self._lock:
                         self._pool_size -= 1
 
-    async def create_idle_connection(self) -> AsyncIMAPExtended:
+    async def create_idle_connection(self) -> BaseMailBox:
         """
         Create a dedicated connection for IDLE.
 
         IDLE connections are not pooled - the caller manages their lifecycle.
 
         Returns:
-            Authenticated AsyncIMAPExtended for IDLE use
+            Authenticated BaseMailBox for IDLE use
         """
         return await self.connect_with_retry()
 
@@ -279,27 +242,39 @@ class IMAPConnector:
             extra={"account": self.account_name},
         )
 
-    def _is_alive(self, conn: AsyncIMAPExtended) -> bool:
+    async def _is_alive(self, conn: BaseMailBox) -> bool:
         """
-        Check if a connection is still usable.
+        Check if a connection is still usable via NOOP.
 
         Args:
             conn: Connection to check
         """
+        def _sync_noop() -> bool:
+            try:
+                conn.client.noop()
+                return True
+            except Exception:
+                return False
+
         try:
-            state = conn.client.get_state()
-            return state in ("AUTH", "SELECTED")
+            return await asyncio.to_thread(_sync_noop)
         except Exception:
             return False
 
-    async def _close_connection(self, conn: AsyncIMAPExtended) -> None:
+    async def _close_connection(self, conn: BaseMailBox) -> None:
         """
         Safely close a single connection.
 
         Args:
             conn: Connection to close
         """
+        def _sync_logout() -> None:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
         try:
-            await conn.client.logout()
+            await asyncio.to_thread(_sync_logout)
         except Exception:
             pass

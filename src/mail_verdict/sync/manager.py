@@ -1,9 +1,11 @@
 """
 Sync manager orchestrating per-account sync cycles.
 
-Coordinates folder discovery, change detection, message fetching,
-parsing, and database persistence. Manages periodic sync and
-emits events for downstream processing.
+Coordinates folder discovery, change detection, two-phase message fetching
+(headers first, bodies in background), parsing, and database persistence.
+Manages periodic sync and emits events for downstream processing.
+
+Uses imap-tools MailBox with asyncio.to_thread for all IMAP operations.
 """
 
 from __future__ import annotations
@@ -11,11 +13,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import re
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from imap_tools import AND, BaseMailBox
 
 from mail_verdict.sync.change_detector import ChangeDetector
 from mail_verdict.sync.connector import IMAPConnector
@@ -39,7 +42,6 @@ if TYPE_CHECKING:
     )
     from mail_verdict.rules.bus import EventBus
     from mail_verdict.sync.connector import AccountConnConfig
-    from mail_verdict.sync.extensions import AsyncIMAPExtended
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +50,8 @@ class SyncManager:
     """
     Orchestrates sync cycles for a single IMAP account.
 
-    Runs periodic sync, detects changes, fetches new mails,
+    Runs periodic sync, detects changes, fetches new mails in two phases
+    (headers first for immediate display, bodies in background),
     persists to database, and produces events.
     """
 
@@ -151,7 +154,7 @@ class SyncManager:
         Run a single sync cycle (serialized via lock).
 
         Only one sync runs at a time. IDLE, poll, and manual triggers
-        are serialized — overlapping calls wait for the current sync.
+        are serialized -- overlapping calls wait for the current sync.
 
         Returns:
             All events generated during this sync cycle
@@ -184,7 +187,9 @@ class SyncManager:
                 # Preflight: get message counts per folder via STATUS
                 total_messages = 0
                 for folder in folders:
-                    count = await conn.status_messages(folder.imap_name)
+                    count = await self._get_folder_message_count(
+                        conn, folder.imap_name
+                    )
                     total_messages += count
 
                 await push_sync_status(
@@ -192,6 +197,8 @@ class SyncManager:
                     folder_count=folder_count,
                     total_messages=total_messages,
                 )
+
+                # TODO: tracker.update(phase="syncing")
 
                 # Sync each folder with progress events
                 for idx, folder in enumerate(folders):
@@ -204,6 +211,8 @@ class SyncManager:
                         folder_index=idx + 1,
                         folder_total=folder_count,
                     )
+
+                    # TODO: tracker.update(phase="syncing", folder_name=folder.imap_name)
 
                     folder_new = 0
                     try:
@@ -258,6 +267,8 @@ class SyncManager:
             errors=total_errors,
             duration_s=duration_s,
         )
+
+        # TODO: tracker.update(phase="complete")
 
         # Enqueue events for spam processor
         for event in all_events:
@@ -317,16 +328,40 @@ class SyncManager:
                 except asyncio.CancelledError:
                     break
 
+    async def _get_folder_message_count(
+        self,
+        mailbox: BaseMailBox,
+        folder_name: str,
+    ) -> int:
+        """
+        Get message count for a folder via STATUS (without changing selected folder).
+
+        Args:
+            mailbox: Authenticated BaseMailBox
+            folder_name: IMAP folder name
+        """
+        def _sync() -> int:
+            try:
+                status = mailbox.folder.status(folder_name, options=("MESSAGES",))
+                return status.get("MESSAGES", 0)
+            except Exception:
+                return 0
+
+        return await asyncio.to_thread(_sync)
+
     async def _sync_folder(
         self,
-        conn: AsyncIMAPExtended,
+        conn: BaseMailBox,
         folder: Folder,
     ) -> list[SyncEvent]:
         """
         Sync a single folder: detect changes, fetch new messages, update state.
 
+        Phase 1: Fetch headers only (fast, user sees mails immediately)
+        Phase 2: Fetch full bodies in background
+
         Args:
-            conn: Active IMAP connection
+            conn: Authenticated imap-tools BaseMailBox
             folder: Folder to sync
         """
         changeset, events = await self._change_detector.detect_changes(
@@ -346,13 +381,13 @@ class SyncManager:
             )
             await self._mail_repo.delete_by_folder(folder.id)
 
-        # Fetch and persist new messages
+        # Phase 1: Fetch headers for new messages (fast)
         if changeset.new_uids:
-            await self._fetch_and_store_messages(
-                conn,
-                folder,
-                changeset.new_uids,
-            )
+            await self._fetch_and_store_headers(conn, folder, changeset.new_uids)
+
+        # Phase 2: Fetch full bodies for new messages (background)
+        if changeset.new_uids:
+            await self._fetch_and_store_bodies(conn, folder, changeset.new_uids)
 
         # Update flag changes
         for uf in changeset.flag_changes:
@@ -412,22 +447,22 @@ class SyncManager:
 
         return events
 
-    async def _fetch_and_store_messages(
+    async def _fetch_and_store_headers(
         self,
-        conn: AsyncIMAPExtended,
+        conn: BaseMailBox,
         folder: Folder,
         uids: list[int],
     ) -> None:
         """
-        Fetch full messages for given UIDs in batches and store in database.
+        Phase 1: Fetch headers only for given UIDs and store in database.
 
-        Batches UIDs into chunks to enable progress reporting and
-        clean cancellation between batches.
+        Fast fetch that gets subject, from, to, date, flags, size.
+        Stores with headers_synced=True, body_synced=False.
 
         Args:
-            conn: Active IMAP connection (folder already selected)
+            conn: Authenticated imap-tools BaseMailBox (folder already selected)
             folder: Current folder
-            uids: UIDs to fetch
+            uids: UIDs to fetch headers for
         """
         if not uids:
             return
@@ -441,19 +476,65 @@ class SyncManager:
             if not self._running:
                 break
 
-            batch = uids[batch_start : batch_start + batch_size]
-            uid_set = ",".join(str(u) for u in batch)
+            batch = uids[batch_start: batch_start + batch_size]
+            uid_str = ",".join(str(u) for u in batch)
 
-            response = await conn.client.uid("FETCH", uid_set, "(RFC822 FLAGS)")
+            # TODO: tracker.update(phase="syncing", folder_name=folder.imap_name)
 
-            if response.result != "OK":
-                logger.error(
-                    "FETCH failed",
-                    extra={"folder": folder.imap_name, "uid_set": uid_set},
-                )
-                continue
+            def _sync_fetch_headers(uid_criteria: str = uid_str) -> list[dict[str, object]]:
+                """Fetch headers in thread."""
+                results: list[dict[str, object]] = []
+                for msg in conn.fetch(
+                    AND(uid=uid_criteria),
+                    headers_only=True,
+                    mark_seen=False,
+                ):
+                    results.append({
+                        "uid": int(msg.uid) if msg.uid else 0,
+                        "subject": msg.subject,
+                        "from_addr": msg.from_,
+                        "to_addrs": [str(addr) for addr in msg.to],
+                        "cc_addrs": [str(addr) for addr in msg.cc],
+                        "bcc_addrs": [str(addr) for addr in msg.bcc],
+                        "date": msg.date,
+                        "flags": set(msg.flags),
+                        "size_bytes": msg.size,
+                    })
+                return results
 
-            await self._parse_and_store_batch(folder, response.lines)
+            headers_list = await asyncio.to_thread(_sync_fetch_headers)
+
+            for hdr in headers_list:
+                uid = int(str(hdr["uid"]))
+                flags = hdr["flags"]
+                assert isinstance(flags, set)
+
+                to_addrs = hdr["to_addrs"]
+                cc_addrs = hdr["cc_addrs"]
+                bcc_addrs = hdr["bcc_addrs"]
+                date_val = hdr["date"]
+
+                try:
+                    await self._mail_repo.upsert_mail(
+                        account_id=self._account_id,
+                        folder_id=folder.id,
+                        uid=uid,
+                        subject=str(hdr["subject"]) if hdr["subject"] else None,
+                        from_addr=str(hdr["from_addr"]) if hdr["from_addr"] else None,
+                        to_addrs=list(to_addrs) if isinstance(to_addrs, list) else None,
+                        cc_addrs=list(cc_addrs) if isinstance(cc_addrs, list) else None,
+                        bcc_addrs=list(bcc_addrs) if isinstance(bcc_addrs, list) else None,
+                        received_at=date_val if isinstance(date_val, datetime) else None,
+                        size_bytes=int(str(hdr["size_bytes"])) if hdr["size_bytes"] else None,
+                        is_read="\\Seen" in flags,
+                        is_flagged="\\Flagged" in flags,
+                        is_deleted="\\Deleted" in flags,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to store header",
+                        extra={"uid": uid, "error": str(exc)},
+                    )
 
             synced = min(batch_start + len(batch), total)
             await push_sync_status(
@@ -463,120 +544,120 @@ class SyncManager:
                 total_messages=total,
             )
 
-    async def _parse_and_store_batch(
+    async def _fetch_and_store_bodies(
         self,
+        conn: BaseMailBox,
         folder: Folder,
-        lines: list[bytes],
+        uids: list[int],
     ) -> None:
         """
-        Parse FETCH response lines and store messages.
+        Phase 2: Fetch full message bodies for given UIDs and update database.
+
+        Fetches full RFC822 content including body text, HTML, and attachments.
 
         Args:
-            folder: Folder containing the messages
-            lines: Raw IMAP FETCH response lines
+            conn: Authenticated imap-tools BaseMailBox (folder already selected)
+            folder: Current folder
+            uids: UIDs to fetch bodies for
         """
-        current_uid: int | None = None
-        current_flags: set[str] = set()
-        current_body: bytes | None = None
+        if not uids:
+            return
 
-        uid_re = re.compile(r"UID\s+(\d+)")
-        flags_re = re.compile(r"FLAGS\s+\(([^)]*)\)")
+        batch_size = 20
+        total = len(uids)
 
-        for line in lines:
-            if isinstance(line, bytearray):
-                if current_uid is not None:
-                    current_body = bytes(line)
-                continue
+        for batch_start in range(0, total, batch_size):
+            if not self._running:
+                break
 
-            text = line.decode(errors="replace") if isinstance(line, bytes) else str(line)
+            batch = uids[batch_start: batch_start + batch_size]
+            uid_str = ",".join(str(u) for u in batch)
 
-            uid_match = uid_re.search(text)
-            if uid_match:
-                if current_uid is not None and current_body is not None:
-                    await self._store_parsed_message(
-                        folder, current_uid, current_body, current_flags
+            def _sync_fetch_bodies(uid_criteria: str = uid_str) -> list[dict[str, object]]:
+                """Fetch full messages in thread."""
+                results: list[dict[str, object]] = []
+                for msg in conn.fetch(
+                    AND(uid=uid_criteria),
+                    mark_seen=False,
+                ):
+                    raw_bytes = msg.obj.as_bytes() if msg.obj else b""
+                    attachments = []
+                    for att in msg.attachments:
+                        attachments.append({
+                            "filename": att.filename,
+                            "content_type": att.content_type,
+                            "content_id": att.content_id,
+                            "size_bytes": att.size,
+                            "data": att.payload,
+                        })
+                    results.append({
+                        "uid": int(msg.uid) if msg.uid else 0,
+                        "body_text": msg.text,
+                        "body_html": msg.html,
+                        "raw_source": raw_bytes,
+                        "raw_headers": str(msg.headers) if msg.headers else None,
+                        "message_id": msg.headers.get("message-id", [""])[0]
+                        if msg.headers else None,
+                        "flags": set(msg.flags),
+                        "attachments": attachments,
+                    })
+                return results
+
+            bodies_list = await asyncio.to_thread(_sync_fetch_bodies)
+
+            for body in bodies_list:
+                uid = int(str(body["uid"]))
+                raw_source = body["raw_source"]
+                assert isinstance(raw_source, bytes)
+
+                try:
+                    # Parse for auth headers
+                    parsed = parse_message(raw_source)
+
+                    await self._mail_repo.upsert_mail(
+                        account_id=self._account_id,
+                        folder_id=folder.id,
+                        uid=uid,
+                        message_id=str(body["message_id"]) if body["message_id"] else None,
+                        body_text=str(body["body_text"]) if body["body_text"] else None,
+                        body_html=str(body["body_html"]) if body["body_html"] else None,
+                        raw_headers=parsed.raw_headers,
+                        raw_source=raw_source,
+                        dkim_pass=parsed.auth.dkim_pass,
+                        spf_pass=parsed.auth.spf_pass,
+                        dmarc_pass=parsed.auth.dmarc_pass,
                     )
 
-                current_uid = int(uid_match.group(1))
-                current_flags = set()
-                current_body = None
+                    # Store attachments
+                    attachments = body["attachments"]
+                    assert isinstance(attachments, list)
+                    for att in attachments:
+                        assert isinstance(att, dict)
+                        mail = await self._mail_repo.get_by_folder_and_uid(
+                            folder.id, uid
+                        )
+                        if mail:
+                            ct = att["content_type"]
+                            ci = att["content_id"]
+                            sz = att["size_bytes"]
+                            await self._attachment_repo.create(
+                                mail_id=mail.id,
+                                filename=str(att["filename"]) if att["filename"] else None,
+                                content_type=str(ct) if ct else None,
+                                content_id=str(ci) if ci else None,
+                                size_bytes=int(str(sz)) if sz else None,
+                                data=att["data"] if isinstance(att["data"], bytes) else None,
+                            )
 
-                flags_match = flags_re.search(text)
-                if flags_match:
-                    raw_flags = flags_match.group(1)
-                    current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
-            else:
-                flags_match = flags_re.search(text)
-                if flags_match and current_uid is not None:
-                    raw_flags = flags_match.group(1)
-                    current_flags = {f.strip() for f in raw_flags.split() if f.strip()}
-
-        if current_uid is not None and current_body is not None:
-            await self._store_parsed_message(folder, current_uid, current_body, current_flags)
-
-    async def _store_parsed_message(
-        self,
-        folder: Folder,
-        uid: int,
-        raw_bytes: bytes,
-        flags: set[str],
-    ) -> None:
-        """
-        Parse and store a single message.
-
-        Args:
-            folder: Folder containing the message
-            uid: IMAP UID
-            raw_bytes: Raw RFC 2822 message
-            flags: Current IMAP flags
-        """
-        try:
-            parsed = parse_message(raw_bytes)
-
-            mail = await self._mail_repo.upsert_mail(
-                account_id=self._account_id,
-                folder_id=folder.id,
-                uid=uid,
-                message_id=parsed.message_id,
-                subject=parsed.subject,
-                from_addr=parsed.from_addr,
-                to_addrs=parsed.to_addrs if parsed.to_addrs else None,
-                cc_addrs=parsed.cc_addrs if parsed.cc_addrs else None,
-                bcc_addrs=parsed.bcc_addrs if parsed.bcc_addrs else None,
-                body_text=parsed.body_text,
-                body_html=parsed.body_html,
-                raw_headers=parsed.raw_headers,
-                raw_source=raw_bytes,
-                received_at=parsed.date,
-                size_bytes=parsed.size_bytes,
-                is_read="\\Seen" in flags,
-                is_flagged="\\Flagged" in flags,
-                is_deleted="\\Deleted" in flags,
-                dkim_pass=parsed.auth.dkim_pass,
-                spf_pass=parsed.auth.spf_pass,
-                dmarc_pass=parsed.auth.dmarc_pass,
-            )
-
-            # Store attachments
-            for att in parsed.attachments:
-                await self._attachment_repo.create(
-                    mail_id=mail.id,
-                    filename=att.filename,
-                    content_type=att.content_type,
-                    content_id=att.content_id,
-                    size_bytes=att.size_bytes,
-                    data=att.data,
-                )
-
-        except Exception as exc:
-            logger.error(
-                "Failed to parse/store message",
-                extra={
-                    "folder": folder.imap_name,
-                    "uid": uid,
-                    "error": str(exc),
-                },
-            )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to store body",
+                        extra={
+                            "folder": folder.imap_name,
+                            "uid": uid,
+                            "error": str(exc),
+                        },
+                    )
 
     def _classify_folder_events(
         self,

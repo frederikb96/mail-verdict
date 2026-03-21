@@ -59,31 +59,42 @@ def mock_db_session() -> AsyncMock:
 
 
 @pytest.fixture()
-def mock_imap_client() -> MagicMock:
-    """Mock aioimaplib IMAP4_SSL with preset capabilities and responses."""
+def mock_mailbox() -> MagicMock:
+    """Mock imap-tools MailBox with preset folder, idle, and fetch methods."""
+    mailbox = MagicMock()
+
+    # Folder manager
+    folder_mgr = MagicMock()
+    folder_mgr.set = MagicMock()
+    folder_mgr.list = MagicMock(return_value=[])
+    folder_mgr.status = MagicMock(return_value={
+        "MESSAGES": 0, "UIDNEXT": 1, "UIDVALIDITY": 1, "UNSEEN": 0,
+    })
+    mailbox.folder = folder_mgr
+
+    # Idle manager
+    idle_mgr = MagicMock()
+    idle_mgr.wait = MagicMock(return_value=[])
+    idle_mgr.start = MagicMock()
+    idle_mgr.stop = MagicMock()
+    mailbox.idle = idle_mgr
+
+    # Fetch, uids, flag, move, copy, delete
+    mailbox.fetch = MagicMock(return_value=iter([]))
+    mailbox.uids = MagicMock(return_value=[])
+    mailbox.flag = MagicMock()
+    mailbox.move = MagicMock()
+    mailbox.copy = MagicMock()
+    mailbox.delete = MagicMock()
+    mailbox.login = MagicMock(return_value=mailbox)
+    mailbox.logout = MagicMock()
+
+    # Underlying imaplib client for NOOP health check
     client = MagicMock()
-    client.protocol = MagicMock()
-    client.protocol.capabilities = {"IMAP4rev1", "IDLE", "CONDSTORE", "SPECIAL-USE"}
-    client.protocol.state = "AUTH"
-    client.protocol.loop = None
-    client.protocol.new_tag = MagicMock(return_value="A001")
+    client.noop = MagicMock(return_value=("OK", []))
+    mailbox.client = client
 
-    ok_response = MagicMock()
-    ok_response.result = "OK"
-    ok_response.lines = []
-
-    client.wait_hello_from_server = AsyncMock()
-    client.login = AsyncMock(return_value=ok_response)
-    client.logout = AsyncMock(return_value=ok_response)
-    client.select = AsyncMock(return_value=ok_response)
-    client.uid = AsyncMock(return_value=ok_response)
-    client.list = AsyncMock(return_value=ok_response)
-    client.move = AsyncMock(return_value=ok_response)
-    client.enable = AsyncMock(return_value=ok_response)
-    client.get_state = MagicMock(return_value="AUTH")
-    client.has_capability = MagicMock(return_value=True)
-
-    return client
+    return mailbox
 
 
 @pytest.fixture()

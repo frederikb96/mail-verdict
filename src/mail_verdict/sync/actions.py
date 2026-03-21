@@ -3,6 +3,8 @@ Action propagator for pushing local actions back to IMAP/SMTP.
 
 Handles IMAP MOVE, COPY, STORE flags, and SMTP forwarding
 with retry and error handling.
+
+Uses imap-tools MailBox operations via asyncio.to_thread.
 """
 
 from __future__ import annotations
@@ -13,11 +15,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from imap_tools import BaseMailBox
+
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.sync.connector import IMAPConnector
 
 if TYPE_CHECKING:
-    from mail_verdict.sync.extensions import AsyncIMAPExtended
     from mail_verdict.sync.smtp_client import SMTPClient
 
 logger = logging.getLogger(__name__)
@@ -95,9 +98,12 @@ class ActionPropagator:
             try:
                 async with self._connector.acquire() as conn:
                     # Select the source folder
-                    result = await conn.select_plain(action.folder)
-                    if not result.ok:
-                        raise RuntimeError(f"SELECT {action.folder} failed")
+                    folder_name = action.folder
+
+                    def _sync_select() -> None:
+                        conn.folder.set(folder_name)
+
+                    await asyncio.to_thread(_sync_select)
 
                     if action.action_type == ActionType.MOVE:
                         return await self._do_move(conn, action)
@@ -153,22 +159,24 @@ class ActionPropagator:
             try:
                 # Fetch the message to forward
                 async with self._connector.acquire() as conn:
-                    result = await conn.select_plain(action.folder)
-                    if not result.ok:
-                        raise RuntimeError(f"SELECT {action.folder} failed")
+                    from imap_tools import AND
 
-                    response = await conn.client.uid("FETCH", str(action.uid), "(RFC822)")
-                    if response.result != "OK":
-                        raise RuntimeError(f"FETCH UID {action.uid} failed")
+                    fwd_folder = action.folder
+                    fwd_uid = action.uid
 
-                    raw_body: bytes | None = None
-                    for line in response.lines:
-                        if isinstance(line, bytes) and len(line) > 100:
-                            raw_body = line
-                            break
+                    def _sync_fetch() -> bytes | None:
+                        conn.folder.set(fwd_folder)
+                        for msg in conn.fetch(
+                            AND(uid=str(fwd_uid)),
+                            mark_seen=False,
+                        ):
+                            return msg.obj.as_bytes() if msg.obj else None
+                        return None
+
+                    raw_body = await asyncio.to_thread(_sync_fetch)
 
                     if raw_body is None:
-                        raise RuntimeError("No message body in FETCH response")
+                        raise RuntimeError(f"No message body for UID {action.uid}")
 
                 await self._smtp_client.forward(
                     raw_message=raw_body,
@@ -276,87 +284,75 @@ class ActionPropagator:
 
     async def _do_move(
         self,
-        conn: AsyncIMAPExtended,
+        conn: BaseMailBox,
         action: IMAPAction,
     ) -> bool:
-        """Execute IMAP UID MOVE, falling back to UID COPY + STORE + EXPUNGE."""
+        """Execute IMAP MOVE via imap-tools."""
         if not action.target_folder:
             return False
 
-        target = self._quote_folder(action.target_folder)
+        uid_list = self._parse_uid_set(action.uid_set)
 
-        # Try UID MOVE first (RFC 6851)
-        try:
-            response = await conn.client.uid("MOVE", action.uid_set, target)
-            if response.result == "OK":
-                return True
-        except Exception:
-            pass
+        def _sync_move() -> None:
+            conn.move(uid_list, action.target_folder)  # type: ignore[arg-type]
 
-        # Fallback: UID COPY + flag \Deleted + EXPUNGE
-        response = await conn.client.uid("COPY", action.uid_set, target)
-        if response.result != "OK":
-            logger.warning(
-                "MOVE failed",
-                extra={
-                    "uid_set": action.uid_set,
-                    "target": action.target_folder,
-                    "result": response.result,
-                },
-            )
-            return False
-
-        await conn.client.uid("STORE", action.uid_set, "+FLAGS", "(\\Deleted)")
-        await conn.client.expunge()
+        await asyncio.to_thread(_sync_move)
         return True
-
-    @staticmethod
-    def _quote_folder(name: str) -> str:
-        """Quote an IMAP folder name if it contains spaces."""
-        if " " in name and not name.startswith('"'):
-            return f'"{name}"'
-        return name
 
     async def _do_copy(
         self,
-        conn: AsyncIMAPExtended,
+        conn: BaseMailBox,
         action: IMAPAction,
     ) -> bool:
-        """Execute IMAP COPY."""
+        """Execute IMAP COPY via imap-tools."""
         if not action.target_folder:
             return False
 
-        response = await conn.client.uid("COPY", action.uid_set, action.target_folder)
-        ok: bool = response.result == "OK"
-        if not ok:
-            logger.warning(
-                "COPY failed",
-                extra={
-                    "uid_set": action.uid_set,
-                    "target": action.target_folder,
-                    "result": response.result,
-                },
-            )
-        return ok
+        uid_list = self._parse_uid_set(action.uid_set)
+
+        def _sync_copy() -> None:
+            conn.copy(uid_list, action.target_folder)  # type: ignore[arg-type]
+
+        await asyncio.to_thread(_sync_copy)
+        return True
 
     async def _do_store_flags(
         self,
-        conn: AsyncIMAPExtended,
+        conn: BaseMailBox,
         action: IMAPAction,
     ) -> bool:
-        """Execute IMAP STORE for flag changes."""
+        """Execute IMAP flag operations via imap-tools."""
         ok = True
+        uid_list = self._parse_uid_set(action.uid_set)
 
         if action.flags_add:
-            flags = " ".join(action.flags_add)
-            response = await conn.client.uid("STORE", action.uid_set, "+FLAGS", f"({flags})")
-            if response.result != "OK":
+            def _sync_add_flags() -> None:
+                conn.flag(uid_list, action.flags_add, True)  # type: ignore[arg-type]
+
+            try:
+                await asyncio.to_thread(_sync_add_flags)
+            except Exception:
                 ok = False
 
         if action.flags_remove:
-            flags = " ".join(action.flags_remove)
-            response = await conn.client.uid("STORE", action.uid_set, "-FLAGS", f"({flags})")
-            if response.result != "OK":
+            def _sync_remove_flags() -> None:
+                conn.flag(uid_list, action.flags_remove, False)  # type: ignore[arg-type]
+
+            try:
+                await asyncio.to_thread(_sync_remove_flags)
+            except Exception:
                 ok = False
 
         return ok
+
+    @staticmethod
+    def _parse_uid_set(uid_set: str) -> list[str]:
+        """
+        Parse a UID set string into a list of UID strings for imap-tools.
+
+        Handles comma-separated UIDs (e.g., "1,2,3").
+
+        Args:
+            uid_set: Comma-separated UID string
+        """
+        return [u.strip() for u in uid_set.split(",") if u.strip()]

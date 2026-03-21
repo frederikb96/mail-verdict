@@ -4,6 +4,9 @@ IMAP IDLE watcher for near-real-time mail detection.
 Maintains a persistent IDLE connection per folder, auto-restarts
 every 25 minutes (RFC 2177), reconnects with exponential backoff
 on disconnect.
+
+Uses imap-tools mailbox.idle.wait() in asyncio.to_thread since
+imap-tools is synchronous.
 """
 
 from __future__ import annotations
@@ -12,9 +15,10 @@ import asyncio
 import logging
 from typing import Any, Callable, Coroutine
 
+from imap_tools import BaseMailBox
+
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.sync.connector import IMAPConnector
-from mail_verdict.sync.extensions import AsyncIMAPExtended
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +65,6 @@ class IdleWatcher:
         if not self._sync_settings.get("idle_enabled", True):
             logger.info(
                 "IDLE disabled in config",
-                extra={"account": self._connector.account_name},
-            )
-            return
-
-        if not self._connector.has_idle():
-            logger.warning(
-                "Server does not support IDLE",
                 extra={"account": self._connector.account_name},
             )
             return
@@ -122,75 +119,53 @@ class IdleWatcher:
         consecutive_failures = 0
 
         while self._running:
-            conn: AsyncIMAPExtended | None = None
+            conn: BaseMailBox | None = None
 
             try:
                 conn = await self._connector.create_idle_connection()
                 consecutive_failures = 0
 
-                # Select the folder
-                result = await conn.select_plain(folder)
-                if not result.ok:
-                    logger.error(
-                        "Failed to SELECT for IDLE",
-                        extra={
-                            "account": self._connector.account_name,
-                            "folder": folder,
-                        },
-                    )
-                    await self._close_idle_conn(conn)
-                    await asyncio.sleep(self._retry.base_delay)
-                    continue
+                # Select the folder (conn is guaranteed non-None here)
+                active_conn = conn
+
+                def _sync_select() -> None:
+                    active_conn.folder.set(folder)
+
+                await asyncio.to_thread(_sync_select)
 
                 # IDLE loop with periodic restart
                 while self._running:
-                    idle_future = await conn.client.idle_start(
-                        timeout=int(self._sync_settings.get("idle_restart_seconds", 1500)),
+                    # imap-tools idle.wait() handles start/poll/stop internally
+                    idle_timeout = int(
+                        self._sync_settings.get("idle_restart_seconds", 1500)
                     )
+                    # RFC 2177 mandates max 29 minutes
+                    idle_timeout = min(idle_timeout, 29 * 60 - 60)
+                    wait_timeout = idle_timeout
 
-                    try:
-                        push = await conn.client.wait_server_push(
-                            timeout=int(self._sync_settings.get("idle_restart_seconds", 1500)),
-                        )
+                    def _sync_idle() -> list[bytes]:
+                        return active_conn.idle.wait(timeout=wait_timeout)
 
-                        # Check if we got an EXISTS notification
-                        if push and push.lines:
-                            for line in push.lines:
-                                text = (
-                                    line.decode(errors="replace")
-                                    if isinstance(line, bytes)
-                                    else str(line)
-                                )
-                                if "EXISTS" in text.upper():
-                                    logger.info(
-                                        "IDLE: new mail detected",
-                                        extra={
-                                            "account": self._connector.account_name,
-                                            "folder": folder,
-                                        },
-                                    )
-                                    await self._on_new_mail(folder)
-                                    break
+                    responses = await asyncio.to_thread(_sync_idle)
 
-                    except asyncio.TimeoutError:
-                        # Normal IDLE restart cycle
-                        pass
-
-                    # End IDLE before restarting
-                    conn.client.idle_done()
-                    await asyncio.sleep(0.1)
-
-                    if idle_future.done():
-                        idle_result = idle_future.result()
-                        if hasattr(idle_result, "result") and idle_result.result != "OK":
-                            logger.warning(
-                                "IDLE ended with error, reconnecting",
-                                extra={
-                                    "account": self._connector.account_name,
-                                    "folder": folder,
-                                },
+                    # Check if we got an EXISTS notification
+                    if responses:
+                        for line in responses:
+                            text = (
+                                line.decode(errors="replace")
+                                if isinstance(line, bytes)
+                                else str(line)
                             )
-                            break
+                            if "EXISTS" in text.upper():
+                                logger.info(
+                                    "IDLE: new mail detected",
+                                    extra={
+                                        "account": self._connector.account_name,
+                                        "folder": folder,
+                                    },
+                                )
+                                await self._on_new_mail(folder)
+                                break
 
             except asyncio.CancelledError:
                 if conn:
@@ -218,14 +193,20 @@ class IdleWatcher:
                 if conn:
                     await self._close_idle_conn(conn)
 
-    async def _close_idle_conn(self, conn: AsyncIMAPExtended) -> None:
+    async def _close_idle_conn(self, conn: BaseMailBox) -> None:
         """
         Safely close an IDLE connection.
 
         Args:
             conn: Connection to close
         """
+        def _sync_logout() -> None:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
         try:
-            await conn.client.logout()
+            await asyncio.to_thread(_sync_logout)
         except Exception:
             pass

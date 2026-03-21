@@ -137,21 +137,30 @@ async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
     results: dict[str, str] = {}
 
     try:
-        import aioimaplib
+        import asyncio
+
+        from imap_tools import BaseMailBox, MailBox, MailBoxStartTls, MailBoxUnencrypted
 
         password = decrypt(account.imap_password) if account.imap_password else ""
         use_ssl = account.imap_port in (993, 995)
-        if use_ssl:
-            imap = aioimaplib.IMAP4_SSL(host=account.imap_host, port=account.imap_port)
-        else:
-            imap = aioimaplib.IMAP4(host=account.imap_host, port=account.imap_port)
-        await imap.wait_hello_from_server()
-        resp = await imap.login(account.imap_user, password)
-        if resp.result == "OK":
-            results["imap"] = "ok"
-        else:
-            results["imap"] = f"error: {resp.result}"
-        await imap.logout()
+        port = account.imap_port
+
+        def _sync_test_imap() -> str:
+            try:
+                mb: BaseMailBox
+                if use_ssl:
+                    mb = MailBox(account.imap_host, port)
+                elif port == 143:
+                    mb = MailBoxStartTls(account.imap_host, port)
+                else:
+                    mb = MailBoxUnencrypted(account.imap_host, port)
+                mb.login(account.imap_user, password, initial_folder=None)
+                mb.logout()
+                return "ok"
+            except Exception as exc:
+                return f"error: {exc}"
+
+        results["imap"] = await asyncio.to_thread(_sync_test_imap)
     except Exception as e:
         results["imap"] = f"error: {e}"
 

@@ -13,8 +13,7 @@ from mail_verdict.sync.events import (
     MailTrashed,
     SyncEvent,
 )
-from mail_verdict.sync.extensions import AsyncIMAPExtended, FolderInfo, SelectResult
-from mail_verdict.sync.folders import detect_special_use, discover_folders
+from mail_verdict.sync.folders import FolderInfo, detect_special_use, discover_folders
 from mail_verdict.sync.idle import IdleWatcher
 from mail_verdict.sync.manager import SyncManager
 from mail_verdict.sync.parser import AuthResult, ParsedMail, parse_message
@@ -24,7 +23,6 @@ __all__ = [
     "ActionPropagator",
     "ActionType",
     "AccountSync",
-    "AsyncIMAPExtended",
     "AuthResult",
     "ChangeDetector",
     "ChangeSet",
@@ -43,7 +41,6 @@ __all__ = [
     "ParsedMail",
     "SMTPClient",
     "SMTPError",
-    "SelectResult",
     "SyncEngine",
     "SyncEvent",
     "SyncManager",
