@@ -293,6 +293,7 @@ async def list_unified_mails(
             is_deleted=mail.is_deleted,
             headers_synced=mail.headers_synced,
             body_synced=mail.body_synced,
+            snippet=mail.body_text[:120] if mail.body_text else None,
         )
         for mail, account_emoji in rows
     ]

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Body snippet/preview (first 120 chars) in mail list items for both single-account and unified views
+- Auto-select inbox folder on initial load and account switch
+
+### Changed
+
+- Mail list item layout: dynamic height with `py-3` padding (was fixed `h-16`)
+- Typography hierarchy: sender = `text-foreground font-medium/semibold`, subject + snippet = `text-muted-foreground`
+- Selected mail state: left border accent (`border-l-primary`)
+- Hover action buttons: improved sizing, transitions, and color feedback
+- Explicit `text-foreground` on sender name span (prevents color inheritance issues)
+- Content div uses `overflow-hidden` to prevent flex collapse
+
 ### Security
 
 - SSE endpoint (`/api/events`) now validates API key (was bypassing FastAPI auth middleware)

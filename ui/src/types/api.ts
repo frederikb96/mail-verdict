@@ -25,6 +25,7 @@ export interface MailSummary {
   is_deleted: boolean;
   headers_synced: boolean;
   body_synced: boolean;
+  snippet: string | null;
 }
 
 export interface MailListResponse {
@@ -356,6 +357,7 @@ export interface UnifiedMailSummary {
   is_deleted: boolean;
   headers_synced: boolean;
   body_synced: boolean;
+  snippet: string | null;
 }
 
 export interface UnifiedMailListResponse {

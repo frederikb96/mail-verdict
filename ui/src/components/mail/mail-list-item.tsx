@@ -41,9 +41,9 @@ export function MailListItem({
   return (
     <div
       className={cn(
-        "group flex h-16 cursor-pointer items-center gap-3 border-b px-3 transition-colors",
+        "group flex cursor-pointer items-start gap-3 border-b px-4 py-3 transition-colors",
         isSelected
-          ? "bg-accent"
+          ? "bg-accent border-l-2 border-l-primary"
           : isChecked
             ? "bg-accent/70"
             : "hover:bg-accent/50",
@@ -82,7 +82,7 @@ export function MailListItem({
       </Avatar>
 
       {/* Content */}
-      <div className="flex min-w-0 flex-1 flex-col justify-center">
+      <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
         <div className="flex items-center gap-2">
           {/* Unread dot */}
           {!mail.is_read && (
@@ -90,8 +90,8 @@ export function MailListItem({
           )}
           <span
             className={cn(
-              "truncate text-sm",
-              !mail.is_read && "font-semibold",
+              "truncate text-sm text-foreground",
+              !mail.is_read ? "font-semibold" : "font-medium",
             )}
           >
             {senderName}
@@ -100,15 +100,20 @@ export function MailListItem({
             {formatRelativeDate(mail.received_at)}
           </span>
         </div>
-        <div className="truncate text-sm text-foreground">
+        <div className="truncate text-sm text-muted-foreground">
           {mail.subject ?? "(no subject)"}
         </div>
+        {mail.snippet && (
+          <div className="line-clamp-1 text-xs text-muted-foreground">
+            {mail.snippet}
+          </div>
+        )}
       </div>
 
       {/* Hover actions */}
       <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
         <button
-          className="rounded p-1 hover:bg-accent"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(
@@ -128,7 +133,7 @@ export function MailListItem({
           />
         </button>
         <button
-          className="rounded p-1 hover:bg-accent"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "archive");
@@ -138,7 +143,7 @@ export function MailListItem({
           <Archive className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
-          className="rounded p-1 hover:bg-accent"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "spam");
@@ -148,7 +153,7 @@ export function MailListItem({
           <Ban className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
-          className="rounded p-1 hover:bg-accent"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "delete");

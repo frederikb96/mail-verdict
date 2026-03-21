@@ -111,7 +111,17 @@ async def list_mails(
     next_cursor = str(mails[-1].id) if has_more and mails else None
 
     return MailListResponse(
-        mails=[MailSummary.model_validate(m) for m in mails],
+        mails=[
+            MailSummary(
+                **{
+                    k: v
+                    for k, v in MailSummary.model_validate(m).model_dump().items()
+                    if k != "snippet"
+                },
+                snippet=m.body_text[:120] if m.body_text else None,
+            )
+            for m in mails
+        ],
         has_more=has_more,
         next_cursor=next_cursor,
     )

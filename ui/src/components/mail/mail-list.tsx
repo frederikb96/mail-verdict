@@ -146,11 +146,12 @@ export function MailList() {
     return (
       <div className="flex flex-col">
         {Array.from({ length: 8 }).map((_, i) => (
-          <div key={i} className="flex h-16 items-center gap-3 border-b px-3">
-            <Skeleton className="h-8 w-8 rounded-full" />
+          <div key={i} className="flex items-start gap-3 border-b px-4 py-3">
+            <Skeleton className="h-8 w-8 shrink-0 rounded-full" />
             <div className="flex flex-1 flex-col gap-1">
               <Skeleton className="h-4 w-32" />
               <Skeleton className="h-3 w-48" />
+              <Skeleton className="h-3 w-64" />
             </div>
           </div>
         ))}
@@ -183,7 +184,7 @@ export function MailList() {
         ref={vlistRef}
         className="flex-1"
         style={{ height: "100%" }}
-        itemSize={64}
+        itemSize={76}
         onScroll={handleScroll}
       >
         {allMails.map((mail, index) =>

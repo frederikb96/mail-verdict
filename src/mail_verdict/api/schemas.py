@@ -53,6 +53,7 @@ class MailSummary(BaseModel):
     is_deleted: bool = False
     headers_synced: bool = False
     body_synced: bool = False
+    snippet: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -522,6 +523,7 @@ class UnifiedMailSummary(BaseModel):
     is_deleted: bool = False
     headers_synced: bool = False
     body_synced: bool = False
+    snippet: str | None = None
 
     model_config = {"from_attributes": True}
 

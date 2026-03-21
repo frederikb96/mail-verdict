@@ -147,6 +147,21 @@ export function AppSidebar() {
     ? sortFolders(folders.filter((f) => f.is_visible))
     : [];
 
+  // Auto-select inbox folder if none selected
+  if (!isUnified && !selectedFolderId) {
+    if (orderedFolders && orderedFolders.length > 0) {
+      const inbox = orderedFolders.find(
+        (f) => f.special_use === "inbox" || f.special_use === "\\Inbox",
+      );
+      setSelectedFolderId(inbox ? inbox.folder_id : orderedFolders[0].folder_id);
+    } else if (sortedFolders.length > 0) {
+      const inbox = sortedFolders.find(
+        (f) => f.special_use === "inbox" || f.special_use === "\\Inbox",
+      );
+      setSelectedFolderId(inbox ? inbox.id : sortedFolders[0].id);
+    }
+  }
+
   return (
     <Sidebar collapsible="icon">
       <SidebarHeader>
