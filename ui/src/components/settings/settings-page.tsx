@@ -31,6 +31,8 @@ import { ImageExceptionsList } from "@/components/settings/image-exceptions-list
 import { FolderAssignment } from "@/components/settings/folder-assignment";
 import { FolderOrder } from "@/components/settings/folder-order";
 import { IdleConfig } from "@/components/settings/idle-config";
+import { UnifiedSetup } from "@/components/settings/unified-setup";
+import { UnifiedOrder } from "@/components/settings/unified-order";
 
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
@@ -253,6 +255,16 @@ export function SettingsPage() {
         <FolderOrder accountId={accountId} />
         <IdleConfig accountId={accountId} />
         <ImageExceptionsList accountId={accountId} />
+      </div>
+
+      {/* Unified view configuration */}
+      <div className="grid gap-4 md:grid-cols-2">
+        <Card>
+          <CardContent className="pt-6">
+            <UnifiedSetup />
+          </CardContent>
+        </Card>
+        <UnifiedOrder />
       </div>
 
       <Tabs defaultValue="ai">

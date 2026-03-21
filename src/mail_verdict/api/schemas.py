@@ -166,6 +166,7 @@ class AccountResponse(BaseModel):
     smtp_user: str | None = None
     is_active: bool = True
     state: str = "created"
+    emoji: str | None = None
     sync_lookback_days: int = 180
     embedding_lookback_days: int = 30
     spam_enabled: bool = False
@@ -222,6 +223,7 @@ class FolderResponse(BaseModel):
     imap_name: str
     display_name: str | None = None
     special_use: str | None = None
+    unified_name: str | None = None
     subscribed: bool = True
     is_visible: bool = True
     last_synced_at: datetime | None = None
@@ -480,3 +482,85 @@ class BulkActionResponse(BaseModel):
     action: str
     affected_count: int
     errors: list[str] = Field(default_factory=list)
+
+
+# --- Unified view schemas ---
+
+
+class UnifiedFolderSource(BaseModel):
+    """Source folder within a unified folder grouping."""
+
+    account_id: uuid.UUID
+    account_name: str
+    account_emoji: str | None
+    folder_id: uuid.UUID
+    imap_name: str
+
+
+class UnifiedFolderResponse(BaseModel):
+    """Merged folder across accounts sharing the same unified_name."""
+
+    unified_name: str
+    folders: list[UnifiedFolderSource]
+    unread_count: int
+    total_count: int
+
+
+class UnifiedMailSummary(BaseModel):
+    """Mail list item with account emoji for unified view."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    account_emoji: str | None = None
+    folder_id: uuid.UUID
+    subject: str | None = None
+    from_addr: str | None = None
+    to_addrs: Any | None = None
+    received_at: datetime | None = None
+    is_read: bool = False
+    is_flagged: bool = False
+    is_deleted: bool = False
+    headers_synced: bool = False
+    body_synced: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class UnifiedMailListResponse(BaseModel):
+    """Paginated unified mail list."""
+
+    mails: list[UnifiedMailSummary]
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class EmojiUpdate(BaseModel):
+    """Request to set an account emoji."""
+
+    emoji: str | None = Field(
+        default=None,
+        max_length=10,
+        description="Emoji character(s) for account identification",
+    )
+
+
+class UnifiedNameUpdate(BaseModel):
+    """Request to set/clear a folder's unified name."""
+
+    unified_name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Unified name for cross-account folder merging",
+    )
+
+
+class UnifiedFolderOrderResponse(BaseModel):
+    """Unified folder display order."""
+
+    order: list[str]
+
+
+class UnifiedFolderOrderUpdate(BaseModel):
+    """Request to save unified folder display order."""
+
+    order: list[str]

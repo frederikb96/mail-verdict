@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   FileEdit,
   Folder,
+  Layers,
   Mail,
   Settings,
   Search,
@@ -43,12 +44,15 @@ import { DroppableFolder } from "@/components/sidebar/droppable-folder";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
+import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import {
+  isUnifiedViewAtom,
   selectedAccountIdAtom,
   selectedFolderIdAtom,
   selectedMailIdAtom,
+  selectedUnifiedFolderAtom,
 } from "@/lib/atoms";
-import type { FolderResponse, FolderOrderItem } from "@/types/api";
+import type { FolderResponse, FolderOrderItem, UnifiedFolderResponse } from "@/types/api";
 
 const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
   inbox: Inbox,
@@ -112,13 +116,23 @@ export function AppSidebar() {
     selectedFolderIdAtom,
   );
   const [, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const [selectedUnifiedFolder, setSelectedUnifiedFolder] = useAtom(
+    selectedUnifiedFolderAtom,
+  );
+  const isUnified = useAtom(isUnifiedViewAtom)[0];
   const { data: accounts } = useAccounts();
-  const { data: folders } = useFolders(selectedAccountId);
-  const { data: folderOrderData } = useFolderOrder(selectedAccountId);
+  const { data: folders } = useFolders(
+    isUnified ? null : selectedAccountId,
+  );
+  const { data: folderOrderData } = useFolderOrder(
+    isUnified ? null : selectedAccountId,
+  );
+  const { data: unifiedFolders } = useUnifiedFolders();
 
   // Auto-select first account if none selected
-  const currentAccount =
-    accounts?.find((a) => a.id === selectedAccountId) ?? accounts?.[0];
+  const currentAccount = isUnified
+    ? null
+    : accounts?.find((a) => a.id === selectedAccountId) ?? accounts?.[0];
   if (currentAccount && !selectedAccountId) {
     setSelectedAccountId(currentAccount.id);
   }
@@ -145,14 +159,38 @@ export function AppSidebar() {
                 }
               >
                 <div className="flex items-center gap-2">
-                  <Mail className="h-4 w-4" />
+                  {isUnified ? (
+                    <Layers className="h-4 w-4" />
+                  ) : currentAccount?.emoji ? (
+                    <span className="text-sm">{currentAccount.emoji}</span>
+                  ) : (
+                    <Mail className="h-4 w-4" />
+                  )}
                   <span className="truncate">
-                    {currentAccount?.name ?? "Select Account"}
+                    {isUnified
+                      ? "Unified View"
+                      : currentAccount?.name ?? "Select Account"}
                   </span>
                 </div>
                 <ChevronDown className="h-4 w-4 opacity-50" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="w-56">
+                <DropdownMenuItem
+                  onClick={() => {
+                    setSelectedAccountId("unified");
+                    setSelectedFolderId(null);
+                    setSelectedMailId(null);
+                    setSelectedUnifiedFolder(null);
+                  }}
+                >
+                  <Layers className="mr-2 h-4 w-4" />
+                  <span>Unified View</span>
+                  {isUnified && (
+                    <span className="ml-auto text-xs text-muted-foreground">
+                      current
+                    </span>
+                  )}
+                </DropdownMenuItem>
                 {accounts?.map((account) => (
                   <DropdownMenuItem
                     key={account.id}
@@ -160,11 +198,16 @@ export function AppSidebar() {
                       setSelectedAccountId(account.id);
                       setSelectedFolderId(null);
                       setSelectedMailId(null);
+                      setSelectedUnifiedFolder(null);
                     }}
                   >
-                    <UserCircle className="mr-2 h-4 w-4" />
+                    {account.emoji ? (
+                      <span className="mr-2 text-sm">{account.emoji}</span>
+                    ) : (
+                      <UserCircle className="mr-2 h-4 w-4" />
+                    )}
                     <span className="truncate">{account.name}</span>
-                    {account.id === selectedAccountId && (
+                    {account.id === selectedAccountId && !isUnified && (
                       <span className="ml-auto text-xs text-muted-foreground">
                         current
                       </span>
@@ -179,87 +222,127 @@ export function AppSidebar() {
 
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel>Folders</SidebarGroupLabel>
+          <SidebarGroupLabel>
+            {isUnified ? "Unified Folders" : "Folders"}
+          </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {orderedFolders
-                ? orderedFolders.map((folder) => {
-                    const Icon = getFolderIcon(folder);
-                    const isActive = folder.folder_id === selectedFolderId;
+              {isUnified
+                ? /* Unified view: merged folders */
+                  (unifiedFolders ?? []).map((uf) => {
+                    const isActive =
+                      selectedUnifiedFolder === uf.unified_name;
                     return (
-                      <DroppableFolder
-                        key={folder.folder_id}
-                        folderId={folder.folder_id}
-                      >
-                        <SidebarMenuItem>
-                          <SidebarMenuButton
-                            isActive={isActive}
-                            onClick={() => {
-                              setSelectedFolderId(folder.folder_id);
-                              setSelectedMailId(null);
-                            }}
-                            tooltip={folder.imap_name}
-                          >
-                            <Icon className="h-4 w-4" />
-                            <span className="flex-1 truncate">
-                              {folder.imap_name}
-                            </span>
-                            {folder.unread_count > 0 && (
-                              <Badge
-                                variant="secondary"
-                                className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                              >
-                                {folder.unread_count}
-                              </Badge>
-                            )}
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                      </DroppableFolder>
+                      <SidebarMenuItem key={uf.unified_name}>
+                        <SidebarMenuButton
+                          isActive={isActive}
+                          onClick={() => {
+                            setSelectedUnifiedFolder(uf.unified_name);
+                            setSelectedFolderId(null);
+                            setSelectedMailId(null);
+                          }}
+                          tooltip={`${uf.unified_name} (${uf.folders.length} accounts)`}
+                        >
+                          <Layers className="h-4 w-4" />
+                          <span className="flex-1 truncate">
+                            {uf.unified_name}
+                          </span>
+                          {uf.unread_count > 0 && (
+                            <Badge
+                              variant="secondary"
+                              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                            >
+                              {uf.unread_count}
+                            </Badge>
+                          )}
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
                     );
                   })
-                : sortedFolders.map((folder) => {
-                    const Icon = getFolderIcon(folder);
-                    const isActive = folder.id === selectedFolderId;
-                    return (
-                      <DroppableFolder
-                        key={folder.id}
-                        folderId={folder.id}
-                      >
-                        <SidebarMenuItem>
-                          <SidebarMenuButton
-                            isActive={isActive}
-                            onClick={() => {
-                              setSelectedFolderId(folder.id);
-                              setSelectedMailId(null);
-                            }}
-                            tooltip={getFolderDisplayName(folder)}
-                          >
-                            <Icon className="h-4 w-4" />
-                            <span className="flex-1 truncate">
-                              {getFolderDisplayName(folder)}
-                            </span>
-                            {folder.unread_count > 0 && (
-                              <Badge
-                                variant="secondary"
-                                className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                              >
-                                {folder.unread_count}
-                              </Badge>
-                            )}
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                      </DroppableFolder>
-                    );
-                  })}
-              {!orderedFolders && sortedFolders.length === 0 && !selectedAccountId && (
+                : /* Single-account view */
+                  orderedFolders
+                  ? orderedFolders.map((folder) => {
+                      const Icon = getFolderIcon(folder);
+                      const isActive = folder.folder_id === selectedFolderId;
+                      return (
+                        <DroppableFolder
+                          key={folder.folder_id}
+                          folderId={folder.folder_id}
+                        >
+                          <SidebarMenuItem>
+                            <SidebarMenuButton
+                              isActive={isActive}
+                              onClick={() => {
+                                setSelectedFolderId(folder.folder_id);
+                                setSelectedMailId(null);
+                              }}
+                              tooltip={folder.imap_name}
+                            >
+                              <Icon className="h-4 w-4" />
+                              <span className="flex-1 truncate">
+                                {folder.imap_name}
+                              </span>
+                              {folder.unread_count > 0 && (
+                                <Badge
+                                  variant="secondary"
+                                  className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                                >
+                                  {folder.unread_count}
+                                </Badge>
+                              )}
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        </DroppableFolder>
+                      );
+                    })
+                  : sortedFolders.map((folder) => {
+                      const Icon = getFolderIcon(folder);
+                      const isActive = folder.id === selectedFolderId;
+                      return (
+                        <DroppableFolder
+                          key={folder.id}
+                          folderId={folder.id}
+                        >
+                          <SidebarMenuItem>
+                            <SidebarMenuButton
+                              isActive={isActive}
+                              onClick={() => {
+                                setSelectedFolderId(folder.id);
+                                setSelectedMailId(null);
+                              }}
+                              tooltip={getFolderDisplayName(folder)}
+                            >
+                              <Icon className="h-4 w-4" />
+                              <span className="flex-1 truncate">
+                                {getFolderDisplayName(folder)}
+                              </span>
+                              {folder.unread_count > 0 && (
+                                <Badge
+                                  variant="secondary"
+                                  className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                                >
+                                  {folder.unread_count}
+                                </Badge>
+                              )}
+                            </SidebarMenuButton>
+                          </SidebarMenuItem>
+                        </DroppableFolder>
+                      );
+                    })}
+              {!isUnified && !orderedFolders && sortedFolders.length === 0 && !selectedAccountId && (
                 <div className="px-4 py-3 text-sm text-muted-foreground">
                   Select an account to view folders
                 </div>
               )}
-              {!orderedFolders && sortedFolders.length === 0 && selectedAccountId && (
+              {!isUnified && !orderedFolders && sortedFolders.length === 0 && selectedAccountId && (
                 <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
                   <RefreshCw className="h-3 w-3 animate-spin" />
                   Loading folders...
+                </div>
+              )}
+              {isUnified && (!unifiedFolders || unifiedFolders.length === 0) && (
+                <div className="px-4 py-3 text-sm text-muted-foreground">
+                  No unified folders configured
                 </div>
               )}
             </SidebarMenu>

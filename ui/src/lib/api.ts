@@ -29,6 +29,9 @@ import type {
   SelectionResponse,
   SelectionToggle,
   StatsResponse,
+  UnifiedFolderOrderResponse,
+  UnifiedFolderResponse,
+  UnifiedMailListResponse,
   VerdictResponse,
 } from "@/types/api";
 
@@ -362,6 +365,50 @@ export const api = {
       return request(`/accounts/${accountId}/selection/action`, {
         method: "POST",
         body: JSON.stringify(body),
+      });
+    },
+  },
+
+  unified: {
+    setEmoji(
+      accountId: string,
+      emoji: string | null,
+    ): Promise<{ emoji: string | null }> {
+      return request(`/accounts/${accountId}/emoji`, {
+        method: "PUT",
+        body: JSON.stringify({ emoji }),
+      });
+    },
+    setUnifiedName(
+      accountId: string,
+      folderId: string,
+      unifiedName: string | null,
+    ): Promise<FolderResponse> {
+      return request(
+        `/accounts/${accountId}/folders/${folderId}/unified-name`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ unified_name: unifiedName }),
+        },
+      );
+    },
+    folders(): Promise<UnifiedFolderResponse[]> {
+      return request("/unified/folders");
+    },
+    mails(params: {
+      folder_name: string;
+      before?: string;
+      limit?: number;
+    }): Promise<UnifiedMailListResponse> {
+      return request(`/unified/mails${qs(params)}`);
+    },
+    getFolderOrder(): Promise<UnifiedFolderOrderResponse> {
+      return request("/unified/folder-order");
+    },
+    setFolderOrder(order: string[]): Promise<UnifiedFolderOrderResponse> {
+      return request("/unified/folder-order", {
+        method: "PUT",
+        body: JSON.stringify({ order }),
       });
     },
   },

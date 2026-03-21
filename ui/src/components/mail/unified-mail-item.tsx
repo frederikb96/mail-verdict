@@ -1,0 +1,189 @@
+"use client";
+
+/**
+ * Mail list item variant for unified view.
+ *
+ * Same as MailListItem but with an emoji badge identifying the source account.
+ */
+
+import { Star, Archive, Ban, Trash2 } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+  extractSenderName,
+  formatRelativeDate,
+  getInitials,
+} from "@/lib/format";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Checkbox } from "@/components/ui/checkbox";
+import type { UnifiedMailSummary } from "@/types/api";
+
+interface UnifiedMailItemProps {
+  mail: UnifiedMailSummary;
+  isSelected: boolean;
+  isChecked: boolean;
+  selectionMode: boolean;
+  onSelect: (mailId: string) => void;
+  onCheckToggle: (mailId: string, shiftKey: boolean) => void;
+  onAction?: (
+    mailId: string,
+    action: "flag" | "unflag" | "archive" | "spam" | "delete",
+  ) => void;
+}
+
+export function UnifiedMailItem({
+  mail,
+  isSelected,
+  isChecked,
+  selectionMode,
+  onSelect,
+  onCheckToggle,
+  onAction,
+}: UnifiedMailItemProps) {
+  const senderName = extractSenderName(mail.from_addr);
+  const initials = getInitials(senderName);
+
+  return (
+    <div
+      className={cn(
+        "group flex h-16 cursor-pointer items-center gap-3 border-b px-3 transition-colors",
+        isSelected
+          ? "bg-accent"
+          : isChecked
+            ? "bg-accent/70"
+            : "hover:bg-accent/50",
+        !mail.is_read && !isSelected && !isChecked && "bg-accent/20",
+      )}
+      onClick={() => onSelect(mail.id)}
+    >
+      {/* Checkbox (visible in selection mode or on hover) */}
+      <div
+        className={cn(
+          "shrink-0",
+          selectionMode ? "block" : "hidden group-hover:block",
+        )}
+      >
+        <Checkbox
+          checked={isChecked}
+          onCheckedChange={() => {}}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCheckToggle(mail.id, e.shiftKey);
+          }}
+          className="h-4 w-4"
+        />
+      </div>
+
+      {/* Avatar with emoji badge (hidden when checkbox visible) */}
+      <div
+        className={cn(
+          "relative shrink-0",
+          selectionMode && "hidden",
+          !selectionMode && "group-hover:hidden",
+        )}
+      >
+        <Avatar className="h-8 w-8">
+          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
+        </Avatar>
+        {mail.account_emoji && (
+          <span
+            className="absolute -bottom-1 -right-1 text-xs leading-none"
+            title="Source account"
+          >
+            {mail.account_emoji}
+          </span>
+        )}
+      </div>
+
+      {/* Content */}
+      <div className="flex min-w-0 flex-1 flex-col justify-center">
+        <div className="flex items-center gap-2">
+          {/* Emoji badge inline (always visible, small) */}
+          {mail.account_emoji && (
+            <span className="shrink-0 text-xs" title="Source account">
+              {mail.account_emoji}
+            </span>
+          )}
+          {/* Unread dot */}
+          {!mail.is_read && (
+            <div className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
+          )}
+          <span
+            className={cn(
+              "truncate text-sm",
+              !mail.is_read && "font-semibold",
+            )}
+          >
+            {senderName}
+          </span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+            {formatRelativeDate(mail.received_at)}
+          </span>
+        </div>
+        <div className="truncate text-sm text-foreground">
+          {mail.subject ?? "(no subject)"}
+        </div>
+      </div>
+
+      {/* Hover actions */}
+      <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
+        <button
+          className="rounded p-1 hover:bg-accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(
+              mail.id,
+              mail.is_flagged ? "unflag" : "flag",
+            );
+          }}
+          title={mail.is_flagged ? "Unflag" : "Star"}
+        >
+          <Star
+            className={cn(
+              "h-4 w-4",
+              mail.is_flagged
+                ? "fill-yellow-400 text-yellow-400"
+                : "text-muted-foreground",
+            )}
+          />
+        </button>
+        <button
+          className="rounded p-1 hover:bg-accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, "archive");
+          }}
+          title="Archive"
+        >
+          <Archive className="h-4 w-4 text-muted-foreground" />
+        </button>
+        <button
+          className="rounded p-1 hover:bg-accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, "spam");
+          }}
+          title="Spam"
+        >
+          <Ban className="h-4 w-4 text-muted-foreground" />
+        </button>
+        <button
+          className="rounded p-1 hover:bg-accent"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, "delete");
+          }}
+          title="Delete"
+        >
+          <Trash2 className="h-4 w-4 text-muted-foreground" />
+        </button>
+      </div>
+
+      {/* Star indicator (visible when not hovering) */}
+      {mail.is_flagged && (
+        <div className="shrink-0 group-hover:hidden">
+          <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
+        </div>
+      )}
+    </div>
+  );
+}

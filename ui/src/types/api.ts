@@ -100,6 +100,7 @@ export interface AccountResponse {
   smtp_user: string | null;
   is_active: boolean;
   state: string;
+  emoji: string | null;
   sync_lookback_days: number;
   embedding_lookback_days: number;
   spam_enabled: boolean;
@@ -144,6 +145,7 @@ export interface FolderResponse {
   imap_name: string;
   display_name: string | null;
   special_use: string | null;
+  unified_name: string | null;
   subscribed: boolean;
   is_visible: boolean;
   last_synced_at: string | null;
@@ -321,4 +323,47 @@ export interface BulkActionResponse {
   action: string;
   affected_count: number;
   errors: string[];
+}
+
+// --- Unified view types ---
+
+export interface UnifiedFolderSource {
+  account_id: string;
+  account_name: string;
+  account_emoji: string | null;
+  folder_id: string;
+  imap_name: string;
+}
+
+export interface UnifiedFolderResponse {
+  unified_name: string;
+  folders: UnifiedFolderSource[];
+  unread_count: number;
+  total_count: number;
+}
+
+export interface UnifiedMailSummary {
+  id: string;
+  account_id: string;
+  account_emoji: string | null;
+  folder_id: string;
+  subject: string | null;
+  from_addr: string | null;
+  to_addrs: string | string[] | null;
+  received_at: string | null;
+  is_read: boolean;
+  is_flagged: boolean;
+  is_deleted: boolean;
+  headers_synced: boolean;
+  body_synced: boolean;
+}
+
+export interface UnifiedMailListResponse {
+  mails: UnifiedMailSummary[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface UnifiedFolderOrderResponse {
+  order: string[];
 }

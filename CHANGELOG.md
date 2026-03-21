@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Unified view: multi-account folder merging with emoji icons
+  - `unified_name` on Folder model, `emoji` on Account model (migration 006)
+  - Unified API: GET /unified/folders (merged folder list), GET /unified/mails (cross-account paginated mail list)
+  - Account emoji API: PUT /accounts/:id/emoji
+  - Folder unified name API: PUT /accounts/:id/folders/:fid/unified-name
+  - Unified folder order API: GET/PUT /unified/folder-order (stored in Settings table)
+  - Sidebar: "Unified View" option in account dropdown with merged folder list
+  - Account emojis shown in dropdown and on unified mail rows
+  - Settings: unified setup UI (per-folder unified name fields, emoji picker per account)
+  - Settings: unified folder order (dnd-kit drag-and-drop sortable list)
+  - Shared hooks: use-unified-view, use-account-emoji, use-unified-name
+  - UnifiedMailItem component with emoji badge identifying source account
 - Mail interactions: per-mail hover actions (star, archive, spam, delete)
 - Backend SelectionManager: in-memory per-account selection state for virtual scroll compatibility
 - Selection API: toggle, range (shift-click), select-all, clear endpoints under `/accounts/:id/selection/`
