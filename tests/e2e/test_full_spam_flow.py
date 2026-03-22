@@ -21,7 +21,6 @@ from tests.e2e.conftest import (
     NEWSLETTER_EMAIL,
     SPAMMER_EMAIL,
     SPAMMER_PASSWORD,
-    get_account_id,
     get_known_mail_ids,
     send_email,
     wait_for_new_mail,
