@@ -777,8 +777,20 @@ async def _resolve_special_folder_for_action(
         )
         mapping = result.scalar_one_or_none()
 
+    # Fall back to auto-detection from folder SPECIAL-USE attributes
     if not mapping or role not in mapping:
-        return None
+        from mail_verdict.sync.folder_mapping import auto_detect_mapping
+
+        folder_repo = get_folder_repo()
+        folders = await folder_repo.get_by_account(account_id)
+        detected = auto_detect_mapping(
+            [{"imap_name": f.imap_name, "special_use": f.special_use} for f in folders]
+        )
+        imap_name = detected.get(role)
+        if not imap_name:
+            return None
+        target = next((f for f in folders if f.imap_name == imap_name), None)
+        return target.id if target else None
 
     folder_id_str = mapping[role]
     if not folder_id_str:
