@@ -1,6 +1,6 @@
 /** TanStack Query hooks for folder operations. */
 
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 export const folderKeys = {
@@ -13,5 +13,6 @@ export function useFolders(accountId: string | null) {
     queryFn: () => api.folders.list(accountId!),
     enabled: !!accountId,
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 }

@@ -1,6 +1,7 @@
 /** TanStack Query hooks for mail operations. */
 
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -30,6 +31,7 @@ export function useMailList(accountId: string | null, folderId: string | null) {
       lastPage.has_more ? lastPage.next_cursor : undefined,
     enabled: !!accountId,
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   });
 }
 

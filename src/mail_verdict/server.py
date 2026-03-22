@@ -446,14 +446,27 @@ def create_app() -> ASGIApp:
                 Mount("/_next", app=StaticFiles(directory=str(next_dir)), name="next-assets")
             )
         async def spa_fallback(request: Any) -> FileResponse | JSONResponse:
-            """Serve index.html for SPA, 404 for API/MCP paths."""
+            """Serve pre-rendered pages, RSC flight payloads, and SPA fallback."""
             path = request.path_params.get("path", "")
             if path.startswith("api/") or path.startswith("mcp"):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
-            # Try serving the exact path's HTML file first (pre-rendered pages)
-            page_html = ui_build_dir / f"{path}.html" if path else None
-            if page_html and page_html.exists():
-                return FileResponse(str(page_html))
+
+            # Serve exact file if it exists (RSC .txt payloads, subdirectory files)
+            if path:
+                exact_file = ui_build_dir / path
+                if (
+                    exact_file.is_file()
+                    and exact_file.resolve().is_relative_to(ui_build_dir.resolve())
+                ):
+                    return FileResponse(str(exact_file))
+
+            # Pre-rendered HTML pages
+            if path:
+                page_html = ui_build_dir / f"{path}.html"
+                if page_html.exists():
+                    return FileResponse(str(page_html))
+
+            # SPA fallback to index.html
             index = ui_build_dir / "index.html"
             if index.exists():
                 return FileResponse(str(index))
