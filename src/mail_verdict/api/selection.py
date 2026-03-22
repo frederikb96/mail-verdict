@@ -328,7 +328,7 @@ async def bulk_action(
             result = await session.execute(
                 update(Mail)
                 .where(Mail.id.in_(selected), Mail.account_id == account_id)
-                .values(folder_id=target_folder_id)
+                .values(is_deleted=True)
             )
             affected = result.rowcount  # type: ignore[attr-defined]
 

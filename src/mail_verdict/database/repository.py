@@ -302,17 +302,45 @@ class MailRepository:
 
     async def get_uids_by_folder(self, folder_id: uuid.UUID) -> set[int]:
         """
-        Get all UIDs for a folder (lightweight, no full ORM load).
+        Get all active UIDs for a folder (lightweight, no full ORM load).
+
+        Excludes soft-deleted mails so they don't re-appear in UID diffs.
 
         Args:
             folder_id: Folder UUID
 
         Returns:
-            Set of IMAP UIDs in the folder
+            Set of IMAP UIDs in the folder (excluding deleted)
         """
         async with self._db.session() as session:
-            result = await session.execute(select(Mail.uid).where(Mail.folder_id == folder_id))
+            result = await session.execute(
+                select(Mail.uid).where(
+                    Mail.folder_id == folder_id,
+                    Mail.is_deleted.is_(False),
+                )
+            )
             return {row[0] for row in result.all()}
+
+    async def get_flags_by_folder(
+        self, folder_id: uuid.UUID
+    ) -> dict[int, tuple[bool, bool]]:
+        """
+        Bulk-load flag state for all active mails in a folder.
+
+        Args:
+            folder_id: Folder UUID
+
+        Returns:
+            Dict mapping UID to (is_read, is_flagged) tuples
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Mail.uid, Mail.is_read, Mail.is_flagged).where(
+                    Mail.folder_id == folder_id,
+                    Mail.is_deleted.is_(False),
+                )
+            )
+            return {row[0]: (row[1], row[2]) for row in result.all()}
 
     async def delete_by_folder(self, folder_id: uuid.UUID) -> int:
         """

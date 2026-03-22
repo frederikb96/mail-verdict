@@ -167,18 +167,22 @@ class ChangeDetector:
             try:
                 mailbox.folder.set(folder_name)
 
-                # Use STATUS command for reliable metadata
+                # Use STATUS command for reliable metadata.
+                # HIGHESTMODSEQ enables Tier 2 (CONDSTORE) if the server supports it.
                 uidvalidity = 0
                 uidnext = 0
                 exists = 0
                 highestmodseq: int | None = None
                 status = mailbox.folder.status(
                     folder_name,
-                    options=("MESSAGES", "UIDNEXT", "UIDVALIDITY"),
+                    options=(
+                        "MESSAGES", "UIDNEXT", "UIDVALIDITY", "HIGHESTMODSEQ",
+                    ),
                 )
                 uidvalidity = status.get("UIDVALIDITY", uidvalidity)
                 uidnext = status.get("UIDNEXT", uidnext)
                 exists = status.get("MESSAGES", exists)
+                highestmodseq = status.get("HIGHESTMODSEQ")
 
                 return SelectInfo(
                     ok=True,
@@ -207,6 +211,7 @@ class ChangeDetector:
         Tier 2: CONDSTORE-based change detection.
 
         Manual UID diff + flag comparison for existing UIDs.
+        Only reports flag changes where server state actually differs from DB.
         """
         changeset = ChangeSet(
             new_uidvalidity=select_info.uidvalidity,
@@ -222,11 +227,14 @@ class ChangeDetector:
         changeset.new_uids = sorted(server_uids - local_uids)
         changeset.deleted_uids = sorted(local_uids - server_uids)
 
-        # Fetch flags for all existing UIDs to detect changes
+        # Fetch flags for existing UIDs and compare against DB state
         existing_uids = server_uids & local_uids
         if existing_uids:
-            flag_changes = await self._fetch_uid_flags(mailbox, existing_uids)
-            changeset.flag_changes = flag_changes
+            server_flags = await self._fetch_uid_flags(mailbox, existing_uids)
+            local_flags = await self._mail_repo.get_flags_by_folder(folder.id)
+            changeset.flag_changes = _filter_real_flag_changes(
+                server_flags, local_flags,
+            )
 
         # Generate events
         events.extend(
@@ -263,6 +271,7 @@ class ChangeDetector:
         Tier 3: Full UID+FLAGS diff.
 
         Fetches all UIDs and flags, compares against local state.
+        Only reports flag changes where server state actually differs from DB.
         """
         changeset = ChangeSet(
             uidvalidity_changed=uidvalidity_changed,
@@ -283,11 +292,17 @@ class ChangeDetector:
             changeset.new_uids = sorted(server_uids_set - local_uids)
             changeset.deleted_uids = sorted(local_uids - server_uids_set)
 
-            # All existing UIDs get flag updates
+            # Compare server flags against DB to find real changes
             existing_uids = server_uids_set & local_uids
             if existing_uids:
-                changeset.flag_changes = await self._fetch_uid_flags(
+                server_flags = await self._fetch_uid_flags(
                     mailbox, existing_uids
+                )
+                local_flags = await self._mail_repo.get_flags_by_folder(
+                    folder.id
+                )
+                changeset.flag_changes = _filter_real_flag_changes(
+                    server_flags, local_flags,
                 )
 
         events.extend(
@@ -352,6 +367,37 @@ class ChangeDetector:
     async def _get_local_uids(self, folder_id: uuid.UUID) -> set[int]:
         """Get all known UIDs for a folder from the database."""
         return await self._mail_repo.get_uids_by_folder(folder_id)
+
+
+def _filter_real_flag_changes(
+    server_flags: list[UIDFlags],
+    local_flags: dict[int, tuple[bool, bool]],
+) -> list[UIDFlags]:
+    """
+    Filter server flag results to only include UIDs with actual changes.
+
+    Compares server \\Seen/\\Flagged against local is_read/is_flagged.
+
+    Args:
+        server_flags: Flags fetched from the IMAP server
+        local_flags: Dict mapping UID to (is_read, is_flagged) from DB
+
+    Returns:
+        Only UIDFlags entries where flags actually differ from DB state
+    """
+    changed: list[UIDFlags] = []
+    for uf in server_flags:
+        local = local_flags.get(uf.uid)
+        if local is None:
+            # UID not in DB (race condition), include it
+            changed.append(uf)
+            continue
+        local_is_read, local_is_flagged = local
+        server_is_read = "\\Seen" in uf.flags
+        server_is_flagged = "\\Flagged" in uf.flags
+        if server_is_read != local_is_read or server_is_flagged != local_is_flagged:
+            changed.append(uf)
+    return changed
 
 
 def _parse_uid_set(text: str) -> list[int]:

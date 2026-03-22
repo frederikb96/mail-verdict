@@ -433,17 +433,16 @@ async def mail_action(
                 detail=f"Folder not found: {request.target_folder}",
             )
 
+        # Mark old record as deleted (keeps original folder_id).
+        # Target folder sync will discover the mail as a new UID.
         async with db.session() as session:
             await session.execute(
-                update(Mail).where(Mail.id == mail_id).values(folder_id=target.id)
+                update(Mail).where(Mail.id == mail_id).values(is_deleted=True)
             )
         await _propagate_move_to_imap(
             account_id, source_folder_id, mail.uid, request.target_folder,
         )
-        await _emit_mail_updated_event(
-            account_id, target.id, mail_id, mail.uid,
-            is_read=mail.is_read, is_flagged=mail.is_flagged,
-        )
+        await _emit_mail_deleted_event(account_id, source_folder_id, mail_id, mail.uid)
         return MailActionResponse(
             success=True,
             action=action,
@@ -460,9 +459,12 @@ async def mail_action(
                 status_code=400,
                 detail=f"No {action} folder mapped for this account",
             )
+
+        # Mark old record as deleted (keeps original folder_id).
+        # Target folder sync will discover the mail as a new UID.
         async with db.session() as session:
             await session.execute(
-                update(Mail).where(Mail.id == mail_id).values(folder_id=target_folder_id)
+                update(Mail).where(Mail.id == mail_id).values(is_deleted=True)
             )
 
         target_imap_name = await _get_folder_imap_name(target_folder_id)
@@ -475,9 +477,8 @@ async def mail_action(
                 await _propagate_move_to_imap(
                     account_id, source_folder_id, mail.uid, target_imap_name,
                 )
-        await _emit_mail_updated_event(
-            account_id, target_folder_id, mail_id, mail.uid,
-            is_read=mail.is_read, is_flagged=mail.is_flagged,
+        await _emit_mail_deleted_event(
+            account_id, source_folder_id, mail_id, mail.uid,
         )
         return MailActionResponse(
             success=True,
