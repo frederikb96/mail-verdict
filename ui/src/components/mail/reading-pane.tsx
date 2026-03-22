@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import {
   Mail,
@@ -61,6 +61,19 @@ export function ReadingPane() {
   const { data: mail, isLoading } = useMailDetail(mailId, accountId);
   const mailAction = useMailAction();
   const [loadImagesForMessage, setLoadImagesForMessage] = useState(false);
+
+  // Auto mark-as-read when a mail is displayed
+  const autoReadRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (mail && !mail.is_read && mail.id !== autoReadRef.current) {
+      autoReadRef.current = mail.id;
+      mailAction.mutate({
+        mailId: mail.id,
+        accountId: mail.account_id,
+        action: { action: "mark_read" },
+      });
+    }
+  }, [mail?.id, mail?.is_read]);
 
   // Empty state
   if (!mailId) {

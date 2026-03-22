@@ -12,7 +12,7 @@ export function useFolders(accountId: string | null) {
     queryKey: folderKeys.list(accountId!),
     queryFn: () => api.folders.list(accountId!),
     enabled: !!accountId,
-    staleTime: 30_000,
+    staleTime: 5_000,
     placeholderData: keepPreviousData,
   });
 }

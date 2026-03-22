@@ -95,7 +95,7 @@ export function MailList() {
   const handleAction = useCallback(
     (
       mailId: string,
-      action: "flag" | "unflag" | "archive" | "spam" | "delete",
+      action: "flag" | "unflag" | "archive" | "spam" | "delete" | "mark_read" | "mark_unread",
       mailAccountId?: string,
     ) => {
       const account = mailAccountId || accountId;

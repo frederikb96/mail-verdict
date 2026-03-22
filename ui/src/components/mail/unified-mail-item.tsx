@@ -6,7 +6,7 @@
  * Same as MailListItem but with an emoji badge identifying the source account.
  */
 
-import { Star, Archive, Ban, Trash2 } from "lucide-react";
+import { Star, Archive, Ban, Trash2, MailOpen, Mail as MailIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   extractSenderName,
@@ -27,7 +27,7 @@ interface UnifiedMailItemProps {
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (
     mailId: string,
-    action: "flag" | "unflag" | "archive" | "spam" | "delete",
+    action: "flag" | "unflag" | "archive" | "spam" | "delete" | "mark_read" | "mark_unread",
     mailAccountId?: string,
   ) => void;
 }
@@ -133,6 +133,28 @@ export function UnifiedMailItem({
         )}
       </div>
 
+      {/* Always-visible indicators */}
+      <div className="flex shrink-0 items-center gap-1">
+        <button
+          className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, mail.is_read ? "mark_unread" : "mark_read", mail.account_id);
+          }}
+          title={mail.is_read ? "Mark as unread" : "Mark as read"}
+        >
+          {mail.is_read ? (
+            <MailIcon className="h-3.5 w-3.5" />
+          ) : (
+            <MailOpen className="h-3.5 w-3.5" />
+          )}
+        </button>
+
+        {mail.is_flagged && (
+          <Star className="h-4 w-4 fill-yellow-400 text-yellow-400 group-hover:hidden" />
+        )}
+      </div>
+
       {/* Hover actions */}
       <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
         <button
@@ -187,13 +209,6 @@ export function UnifiedMailItem({
           <Trash2 className="h-4 w-4 text-muted-foreground" />
         </button>
       </div>
-
-      {/* Star indicator (visible when not hovering) */}
-      {mail.is_flagged && (
-        <div className="shrink-0 group-hover:hidden">
-          <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
-        </div>
-      )}
     </div>
   );
 }
