@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-03-21
+## [1.0.0] - 2026-03-22
 
 ### Breaking Changes
 
@@ -89,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **E2E test suite:** 127 tests across 20 files (accounts, sync, pagination, folders, images, mail actions, search, selection, SSE, unified view, settings, health, sync recovery, account deletion cascade)
 - **Unit test suite:** 536 tests across 37 files
 - **UI test flows:** 33 documented browser automation flows with 25 playwright-local screenshots
+- **Sync stability E2E test:** Verifies actions don't cause sync thrashing
+- **Reasoning effort setting:** minimal/low/medium/high for OpenAI reasoning models
+- **Embedding field locking:** embedding_model and dimensions locked after first use
 - **Alembic migrations:** 004 (two-phase sync), 005 (image exceptions, folder management), 006 (unified view)
 
 ### Changed
@@ -112,6 +115,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Settings page independent of sidebar navigation state
 - Mail list panel: fixed 400px width (replaces broken ResizablePanel)
 - Typography hierarchy: sender=foreground, subject+snippet=muted-foreground
+- SPA navigation: serve RSC flight payloads for client-side transitions (no full page reload)
+- Provider field: static "OpenAI" label (not editable)
+- API key: dynamically settable via UI (password field)
+
+### Fixed
+
+- **Sync thrashing:** Actions (flag, delete, move, archive, spam) no longer cause infinite sync loops
+- **Deleted mail UID leak:** Soft-deleted mails filtered from UID diff
+- **Flag comparison:** Only report actual flag changes (was reporting all UIDs every cycle)
+- **Move phantom records:** Moved mails marked is_deleted instead of updating folder_id
+- **HIGHESTMODSEQ fallback:** Graceful fallback when server doesn't support CONDSTORE
+- **Connection error propagation:** Sync manager re-raises connection errors for proper backoff
+- **Theme FOUC:** Blocking script sets dark class before first paint
+- **Account switching jank:** keepPreviousData prevents loading skeleton flashes
+- **Settings/accounts scroll:** overflow-y-auto on content wrapper
 
 ### Removed
 
