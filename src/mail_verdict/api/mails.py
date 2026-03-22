@@ -409,13 +409,38 @@ async def mail_action(
         return MailActionResponse(success=True, action=action, mail_id=mail_id)
 
     elif action == "delete":
-        async with db.session() as session:
-            await session.execute(update(Mail).where(Mail.id == mail_id).values(is_deleted=True))
-        await _propagate_flags_to_imap(
-            account_id, source_folder_id, mail.uid, flags_add=["\\Deleted"],
-        )
-        await _emit_mail_deleted_event(account_id, source_folder_id, mail_id, mail.uid)
-        return MailActionResponse(success=True, action=action, mail_id=mail_id)
+        # Move to trash if mapped and not already in trash; otherwise permanent delete
+        trash_folder_id = await _resolve_special_folder_for_action(account_id, "trash")
+        if trash_folder_id and source_folder_id != trash_folder_id:
+            # Move to trash (same pattern as archive/spam)
+            async with db.session() as session:
+                await session.execute(
+                    update(Mail).where(Mail.id == mail_id).values(is_deleted=True)
+                )
+            target_imap_name = await _get_folder_imap_name(trash_folder_id)
+            if target_imap_name:
+                await _propagate_move_to_imap(
+                    account_id, source_folder_id, mail.uid, target_imap_name,
+                )
+            await _emit_mail_deleted_event(account_id, source_folder_id, mail_id, mail.uid)
+            return MailActionResponse(
+                success=True, action=action, mail_id=mail_id,
+                message="Moved to trash",
+            )
+        else:
+            # Permanent delete (already in trash or no trash folder)
+            async with db.session() as session:
+                await session.execute(
+                    update(Mail).where(Mail.id == mail_id).values(is_deleted=True)
+                )
+            await _propagate_flags_to_imap(
+                account_id, source_folder_id, mail.uid, flags_add=["\\Deleted"],
+            )
+            await _emit_mail_deleted_event(account_id, source_folder_id, mail_id, mail.uid)
+            return MailActionResponse(
+                success=True, action=action, mail_id=mail_id,
+                message="Permanently deleted",
+            )
 
     elif action == "move":
         if not request.target_folder:

@@ -83,7 +83,7 @@ function SyncProgressBar({
         </span>
         {state.synced !== undefined && state.total_messages !== undefined && (
           <span>
-            {state.synced}/{state.total_messages}
+            {Math.min(state.synced, state.total_messages)}/{state.total_messages}
           </span>
         )}
       </div>

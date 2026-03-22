@@ -221,11 +221,13 @@ export interface SSEEvent {
   is_read?: boolean;
   is_flagged?: boolean;
   timestamp: string;
-  /** Sync state fields */
+  /** Sync state fields (backend sends phase/folder_name/elapsed_s/last_error) */
   status?: string;
+  phase?: string;
   can_sync?: boolean;
   can_cancel?: boolean;
   current_folder?: string;
+  folder_name?: string;
   folder_index?: number;
   folder_total?: number;
   synced?: number;
@@ -233,7 +235,9 @@ export interface SSEEvent {
   new_mails?: number;
   errors?: number;
   duration_s?: number;
+  elapsed_s?: number;
   error_message?: string;
+  last_error?: string;
 }
 
 export interface ImageExceptionResponse {

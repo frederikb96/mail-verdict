@@ -82,18 +82,18 @@ export function useSSE(accountId?: string) {
             setSyncStates((prev) => ({
               ...prev,
               [data.account_id!]: {
-                status: data.status ?? "unknown",
+                status: data.phase ?? data.status ?? "unknown",
                 can_sync: data.can_sync ?? false,
                 can_cancel: data.can_cancel ?? false,
-                current_folder: data.current_folder,
+                current_folder: data.folder_name ?? data.current_folder,
                 folder_index: data.folder_index,
                 folder_total: data.folder_total,
                 synced: data.synced,
                 total_messages: data.total_messages,
                 new_mails: data.new_mails,
                 errors: data.errors,
-                duration_s: data.duration_s,
-                error_message: data.error_message,
+                duration_s: data.elapsed_s ?? data.duration_s,
+                error_message: data.last_error ?? data.error_message,
               },
             }));
           }
