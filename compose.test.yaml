@@ -7,6 +7,9 @@ services:
       dockerfile: docker/Dockerfile
       target: dev
     container_name: mv-app-test
+    # Override dev entrypoint to disable --reload (source mounts trigger restarts mid-test)
+    entrypoint: ["/bin/bash", "-c"]
+    command: ["uv pip install --system --no-deps -e . 2>/dev/null || true && alembic upgrade head 2>/dev/null || true && exec python -m mail_verdict"]
     ports:
       - "18080:8080"
     volumes:

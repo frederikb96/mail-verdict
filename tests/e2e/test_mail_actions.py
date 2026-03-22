@@ -27,6 +27,94 @@ from tests.e2e.conftest import (
 pytestmark = [pytest.mark.e2e]
 
 
+async def _poll_imap_flags(
+    uid: int,
+    expected: str,
+    *,
+    present: bool = True,
+    folder: str = "INBOX",
+    timeout: float = 10.0,
+    interval: float = 0.5,
+) -> set[str]:
+    """Poll IMAP flags until expected flag is present/absent or timeout.
+
+    Args:
+        uid: Message UID to check
+        expected: Flag string (e.g. '\\\\Flagged')
+        present: True to wait for flag to appear, False for removal
+        folder: IMAP folder to check
+        timeout: Max seconds to wait
+        interval: Seconds between polls
+
+    Returns:
+        Final set of flags
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    flags: set[str] = set()
+    while asyncio.get_event_loop().time() < deadline:
+        flags = _imap_get_flags_by_uid(uid, folder=folder)
+        if present and expected in flags:
+            return flags
+        if not present and expected not in flags:
+            return flags
+        await asyncio.sleep(interval)
+    return flags
+
+
+async def _poll_imap_uid_absent(
+    uid: int,
+    *,
+    folder: str = "INBOX",
+    timeout: float = 10.0,
+    interval: float = 0.5,
+) -> list[int]:
+    """Poll until a UID is no longer present in an IMAP folder.
+
+    Args:
+        uid: UID that should disappear
+        folder: IMAP folder to check
+        timeout: Max seconds to wait
+        interval: Seconds between polls
+
+    Returns:
+        Final list of UIDs in folder
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    uids: list[int] = []
+    while asyncio.get_event_loop().time() < deadline:
+        uids = _imap_list_uids(folder)
+        if uid not in uids:
+            return uids
+        await asyncio.sleep(interval)
+    return uids
+
+
+async def _poll_imap_folder_nonempty(
+    folder: str = "INBOX",
+    *,
+    timeout: float = 10.0,
+    interval: float = 0.5,
+) -> list[int]:
+    """Poll until an IMAP folder has at least one message.
+
+    Args:
+        folder: IMAP folder to check
+        timeout: Max seconds to wait
+        interval: Seconds between polls
+
+    Returns:
+        List of UIDs in folder
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    uids: list[int] = []
+    while asyncio.get_event_loop().time() < deadline:
+        uids = _imap_list_uids(folder)
+        if len(uids) > 0:
+            return uids
+        await asyncio.sleep(interval)
+    return uids
+
+
 async def _get_alice_id(client: httpx.AsyncClient) -> str:
     """Get alice's account ID."""
     return await get_account_id(client, name="alice")
@@ -375,11 +463,8 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     assert resp.status_code == 200
     assert resp.json()["success"] is True
 
-    # Wait for background IMAP propagation
-    await asyncio.sleep(5)
-
-    # Verify flag on IMAP
-    flags = _imap_get_flags_by_uid(uid)
+    # Poll IMAP until flag appears
+    flags = await _poll_imap_flags(uid, "\\Flagged", present=True)
     assert "\\Flagged" in flags, f"Expected \\Flagged in IMAP flags, got: {flags}"
 
     # Unflag and verify removal
@@ -390,8 +475,7 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     )
     assert resp.status_code == 200
 
-    await asyncio.sleep(5)
-    flags = _imap_get_flags_by_uid(uid)
+    flags = await _poll_imap_flags(uid, "\\Flagged", present=False)
     assert "\\Flagged" not in flags, f"\\Flagged should be removed, got: {flags}"
 
 
@@ -442,11 +526,8 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
             "Mail should be in a different folder after spam"
         )
 
-        # Wait for IMAP propagation
-        await asyncio.sleep(5)
-
-        # Verify mail appeared in Junk Mail on IMAP
-        junk_uids = _imap_list_uids("Junk Mail")
+        # Poll IMAP until mail appears in Junk Mail
+        junk_uids = await _poll_imap_folder_nonempty("Junk Mail")
         assert len(junk_uids) > 0, (
             "Junk Mail folder should have messages after spam action"
         )
@@ -458,7 +539,8 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
             json={"action": "move", "target_folder": "INBOX"},
         )
         assert resp.status_code == 200
-        await asyncio.sleep(5)
+        # Brief wait for cleanup move to propagate
+        await asyncio.sleep(2)
     finally:
         # Restore original folder mapping
         await app_client.put(
@@ -504,12 +586,8 @@ async def test_delete_action_sets_deleted_flag(app_client: httpx.AsyncClient) ->
     after_ids = {m["id"] for m in after_resp.json()["mails"]}
     assert mail_id not in after_ids, "Deleted mail still in default listing"
 
-    # Wait for IMAP propagation
-    await asyncio.sleep(5)
-
-    # After IMAP propagation, Stalwart auto-expunges.
-    # Verify the UID is no longer in INBOX on IMAP.
-    inbox_uids = _imap_list_uids("INBOX")
+    # Poll IMAP until UID is expunged from INBOX
+    inbox_uids = await _poll_imap_uid_absent(uid)
     assert uid not in inbox_uids, (
         f"UID {uid} should be expunged from INBOX after delete"
     )

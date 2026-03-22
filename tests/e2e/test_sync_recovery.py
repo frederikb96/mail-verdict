@@ -40,7 +40,7 @@ async def _wait_healthy(client: httpx.AsyncClient, timeout: int = 120) -> None:
                 return
         except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
     raise TimeoutError(f"App not healthy after {timeout}s")
 
 
@@ -48,7 +48,7 @@ async def _wait_for_state(
     client: httpx.AsyncClient,
     account_id: str,
     target_state: str,
-    timeout: int = 180,
+    timeout: int = 60,
 ) -> str:
     """Poll account state until it reaches the target or ERROR."""
     deadline = asyncio.get_event_loop().time() + timeout
@@ -61,7 +61,7 @@ async def _wait_for_state(
                 return last_state
             if last_state == "error":
                 return last_state
-        await asyncio.sleep(5)
+        await asyncio.sleep(1)
     raise TimeoutError(
         f"Account {account_id[:8]} did not reach {target_state} "
         f"within {timeout}s (last: {last_state})"
@@ -107,8 +107,7 @@ async def test_sync_resumes_after_restart(
     )
     await proc.communicate()
 
-    # Wait for app to come back
-    await asyncio.sleep(15)
+    # Poll for healthy immediately (no hardcoded sleep)
 
     # Reconnect with fresh transport after restart
     fresh_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")

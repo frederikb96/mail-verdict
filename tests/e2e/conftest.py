@@ -59,7 +59,7 @@ async def _wait_healthy(client: httpx.AsyncClient, timeout: int = 60) -> None:
                 return
         except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError):
             pass
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
     raise TimeoutError(f"App not healthy after {timeout}s")
 
 
@@ -135,9 +135,7 @@ async def _restart_app() -> None:
         stderr=asyncio.subprocess.PIPE,
     )
     await proc.communicate()
-    # Wait for container process to restart
-    await asyncio.sleep(15)
-    # Wait for healthy with a completely fresh client + transport
+    # Poll for healthy immediately (no hardcoded sleep)
     fresh_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
         base_url=APP_BASE_URL, transport=fresh_transport, timeout=30.0,
@@ -215,7 +213,7 @@ def _send_seed_emails() -> int:
                 body=msg_data["body"],
             )
             sent += 1
-            time.sleep(0.3)
+            time.sleep(0.1)
         except Exception as exc:
             logger.warning("Failed to send seed email '%s': %s", msg_data["subject"], exc)
 
@@ -227,8 +225,8 @@ async def _wait_for_account_active(
     client: httpx.AsyncClient,
     account_id: str,
     *,
-    timeout: int = 180,
-    poll_interval: float = 5.0,
+    timeout: int = 60,
+    poll_interval: float = 1.0,
 ) -> str:
     """Poll account state until it reaches ACTIVE (or ERROR).
 
@@ -469,8 +467,8 @@ async def wait_for_new_mail(
     known_ids: set[str] | None = None,
     subject_contains: str | None = None,
     account_id: str | None = None,
-    timeout: int = 120,
-    poll_interval: float = 3.0,
+    timeout: int = 60,
+    poll_interval: float = 1.0,
 ) -> dict[str, Any]:
     """Poll /api/mails until a new mail appears."""
     if known_ids is None:
@@ -509,8 +507,8 @@ async def wait_for_verdict(
     client: httpx.AsyncClient,
     mail_id: str,
     *,
-    timeout: int = 120,
-    poll_interval: float = 3.0,
+    timeout: int = 60,
+    poll_interval: float = 1.0,
 ) -> dict[str, Any]:
     """Poll the verdict endpoint until a verdict exists for the given mail."""
     deadline = asyncio.get_event_loop().time() + timeout

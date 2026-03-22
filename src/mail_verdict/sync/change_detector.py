@@ -168,17 +168,27 @@ class ChangeDetector:
                 mailbox.folder.set(folder_name)
 
                 # Use STATUS command for reliable metadata.
-                # HIGHESTMODSEQ enables Tier 2 (CONDSTORE) if the server supports it.
+                # Try with HIGHESTMODSEQ first (enables Tier 2 CONDSTORE).
+                # Fall back without it for servers that don't support CONDSTORE.
                 uidvalidity = 0
                 uidnext = 0
                 exists = 0
                 highestmodseq: int | None = None
-                status = mailbox.folder.status(
-                    folder_name,
-                    options=(
-                        "MESSAGES", "UIDNEXT", "UIDVALIDITY", "HIGHESTMODSEQ",
-                    ),
-                )
+                try:
+                    status = mailbox.folder.status(
+                        folder_name,
+                        options=(
+                            "MESSAGES", "UIDNEXT", "UIDVALIDITY",
+                            "HIGHESTMODSEQ",
+                        ),
+                    )
+                except Exception:
+                    status = mailbox.folder.status(
+                        folder_name,
+                        options=(
+                            "MESSAGES", "UIDNEXT", "UIDVALIDITY",
+                        ),
+                    )
                 uidvalidity = status.get("UIDVALIDITY", uidvalidity)
                 uidnext = status.get("UIDNEXT", uidnext)
                 exists = status.get("MESSAGES", exists)

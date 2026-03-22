@@ -44,7 +44,7 @@ async def test_trigger_sync(app_client: httpx.AsyncClient) -> None:
     account_id = await _get_alice_id(app_client)
 
     # Wait for debounce window to pass
-    await asyncio.sleep(6)
+    await asyncio.sleep(2)
 
     resp = await app_client.post(
         f"/api/accounts/{account_id}/sync",
@@ -63,7 +63,7 @@ async def test_trigger_sync_debounce(
     account_id = await _get_alice_id(app_client)
 
     # Wait for prior debounce to expire
-    await asyncio.sleep(6)
+    await asyncio.sleep(2)
 
     # First trigger
     resp1 = await app_client.post(f"/api/accounts/{account_id}/sync")
