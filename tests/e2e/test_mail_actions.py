@@ -283,11 +283,12 @@ async def test_move_action_requires_target(
 async def test_move_to_folder_and_back(
     app_client: httpx.AsyncClient,
 ) -> None:
-    """Move a mail to Drafts and back to INBOX."""
+    """Move a mail to Drafts: old record marked deleted, IMAP propagates."""
     account_id = await _get_alice_id(app_client)
-    mail = await _get_first_mail(app_client, account_id)
+    inbox_id = await _get_inbox_folder_id(app_client, account_id)
+    mail = await _get_mail_with_uid(app_client, account_id, skip=0, folder_id=inbox_id)
     mail_id = mail["id"]
-    original_folder = mail["folder_id"]
+    uid = mail["uid"]
 
     # Move to Drafts
     resp = await app_client.post(
@@ -298,20 +299,29 @@ async def test_move_to_folder_and_back(
     assert resp.status_code == 200
     assert resp.json()["success"] is True
 
-    # Verify it moved
+    # Old record should be marked deleted (is_deleted=True, folder_id unchanged)
     detail = await app_client.get(
         f"/api/mails/{mail_id}",
         params={"account_id": account_id},
     )
-    assert detail.json()["folder_id"] != original_folder
+    assert detail.status_code == 200
+    assert detail.json()["is_deleted"] is True
 
-    # Move back to INBOX
-    resp = await app_client.post(
-        f"/api/mails/{mail_id}/action",
-        params={"account_id": account_id},
-        json={"action": "move", "target_folder": "INBOX"},
+    # Old mail excluded from default listing
+    listing = await app_client.get(
+        "/api/mails",
+        params={"account_id": account_id, "limit": 200},
     )
-    assert resp.status_code == 200
+    listing_ids = {m["id"] for m in listing.json()["mails"]}
+    assert mail_id not in listing_ids, "Deleted mail should not appear in listing"
+
+    # IMAP: UID should disappear from INBOX
+    inbox_uids = await _poll_imap_uid_absent(uid, folder="INBOX")
+    assert uid not in inbox_uids, f"UID {uid} should be gone from INBOX"
+
+    # IMAP: mail should appear in Drafts
+    drafts_uids = await _poll_imap_folder_nonempty("Drafts")
+    assert len(drafts_uids) > 0, "Drafts should have the moved mail"
 
 
 @pytest.mark.asyncio
@@ -412,11 +422,25 @@ def _imap_list_uids(
             pass
 
 
+async def _get_inbox_folder_id(
+    client: httpx.AsyncClient,
+    account_id: str,
+) -> str:
+    """Get the INBOX folder UUID for an account."""
+    resp = await client.get(
+        f"/api/accounts/{account_id}/folders",
+    )
+    assert resp.status_code == 200
+    inbox = next(f for f in resp.json() if f["imap_name"] == "INBOX")
+    return inbox["id"]
+
+
 async def _get_mail_with_uid(
     client: httpx.AsyncClient,
     account_id: str,
     *,
     skip: int = 0,
+    folder_id: str | None = None,
 ) -> dict:
     """Fetch a mail that has a valid UID for IMAP operations.
 
@@ -424,11 +448,12 @@ async def _get_mail_with_uid(
         client: HTTP client
         account_id: Account UUID
         skip: Number of valid-UID mails to skip (avoids collisions with other tests)
+        folder_id: Restrict to mails in this folder (avoids cross-folder UID issues)
     """
-    resp = await client.get(
-        "/api/mails",
-        params={"account_id": account_id, "limit": 50},
-    )
+    params: dict = {"account_id": account_id, "limit": 50}
+    if folder_id is not None:
+        params["folder_id"] = folder_id
+    resp = await client.get("/api/mails", params=params)
     assert resp.status_code == 200
     mails = resp.json()["mails"]
     found = 0
@@ -443,14 +468,15 @@ async def _get_mail_with_uid(
                 if found >= skip:
                     return d
                 found += 1
-    assert False, "No mail with valid UID found"
+    assert False, f"No mail with valid UID found (skip={skip}, folder_id={folder_id})"
 
 
 @pytest.mark.asyncio
 async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     """Flag action propagates \\Flagged to IMAP server."""
     account_id = await _get_alice_id(app_client)
-    mail = await _get_mail_with_uid(app_client, account_id, skip=2)
+    inbox_id = await _get_inbox_folder_id(app_client, account_id)
+    mail = await _get_mail_with_uid(app_client, account_id, skip=1, folder_id=inbox_id)
     mail_id = mail["id"]
     uid = mail["uid"]
 
@@ -463,8 +489,8 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     assert resp.status_code == 200
     assert resp.json()["success"] is True
 
-    # Poll IMAP until flag appears
-    flags = await _poll_imap_flags(uid, "\\Flagged", present=True)
+    # Poll IMAP until flag appears (longer timeout for full-suite runs)
+    flags = await _poll_imap_flags(uid, "\\Flagged", present=True, timeout=20.0)
     assert "\\Flagged" in flags, f"Expected \\Flagged in IMAP flags, got: {flags}"
 
     # Unflag and verify removal
@@ -475,13 +501,13 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     )
     assert resp.status_code == 200
 
-    flags = await _poll_imap_flags(uid, "\\Flagged", present=False)
+    flags = await _poll_imap_flags(uid, "\\Flagged", present=False, timeout=20.0)
     assert "\\Flagged" not in flags, f"\\Flagged should be removed, got: {flags}"
 
 
 @pytest.mark.asyncio
 async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
-    """Spam action moves mail to Junk Mail folder via IMAP.
+    """Spam action marks old record deleted and moves mail to Junk via IMAP.
 
     Requires the folder_mapping to have a "spam" key pointing to the Junk folder.
     The auto-detected mapping uses "junk" as the key, so we set it explicitly.
@@ -504,7 +530,8 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
     )
 
     try:
-        mail = await _get_mail_with_uid(app_client, account_id, skip=3)
+        inbox_id = await _get_inbox_folder_id(app_client, account_id)
+        mail = await _get_mail_with_uid(app_client, account_id, skip=2, folder_id=inbox_id)
         mail_id = mail["id"]
 
         resp = await app_client.post(
@@ -515,32 +542,27 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
         assert resp.status_code == 200
         assert resp.json()["success"] is True
 
-        # Verify in API that mail moved
+        # Old record should be marked deleted (folder_id unchanged)
         detail = await app_client.get(
             f"/api/mails/{mail_id}",
             params={"account_id": account_id},
         )
         assert detail.status_code == 200
-        moved_folder = detail.json()["folder_id"]
-        assert moved_folder != mail["folder_id"], (
-            "Mail should be in a different folder after spam"
+        assert detail.json()["is_deleted"] is True
+
+        # Old mail excluded from default listing
+        listing = await app_client.get(
+            "/api/mails",
+            params={"account_id": account_id, "limit": 200},
         )
+        listing_ids = {m["id"] for m in listing.json()["mails"]}
+        assert mail_id not in listing_ids, "Spam-marked mail should not appear in listing"
 
         # Poll IMAP until mail appears in Junk Mail
         junk_uids = await _poll_imap_folder_nonempty("Junk Mail")
         assert len(junk_uids) > 0, (
             "Junk Mail folder should have messages after spam action"
         )
-
-        # Move back to INBOX for test cleanup
-        resp = await app_client.post(
-            f"/api/mails/{mail_id}/action",
-            params={"account_id": account_id},
-            json={"action": "move", "target_folder": "INBOX"},
-        )
-        assert resp.status_code == 200
-        # Brief wait for cleanup move to propagate
-        await asyncio.sleep(2)
     finally:
         # Restore original folder mapping
         await app_client.put(
@@ -558,7 +580,8 @@ async def test_delete_action_sets_deleted_flag(app_client: httpx.AsyncClient) ->
     no longer appears in the default (non-deleted) mail listing.
     """
     account_id = await _get_alice_id(app_client)
-    mail = await _get_mail_with_uid(app_client, account_id, skip=4)
+    inbox_id = await _get_inbox_folder_id(app_client, account_id)
+    mail = await _get_mail_with_uid(app_client, account_id, skip=3, folder_id=inbox_id)
     mail_id = mail["id"]
     uid = mail["uid"]
 
