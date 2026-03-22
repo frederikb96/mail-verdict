@@ -99,6 +99,12 @@ export const api = {
     testConnection(id: string): Promise<Record<string, string>> {
       return request(`/accounts/${id}/test-connection`, { method: "POST" });
     },
+    triggerSync(id: string): Promise<Record<string, string>> {
+      return request(`/accounts/${id}/sync`, { method: "POST" });
+    },
+    cancelSync(id: string): Promise<Record<string, string>> {
+      return request(`/accounts/${id}/sync`, { method: "DELETE" });
+    },
   },
 
   folders: {

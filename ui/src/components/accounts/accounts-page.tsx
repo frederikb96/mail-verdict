@@ -52,7 +52,7 @@ import {
   useTestConnection,
   useUpdateAccount,
 } from "@/hooks/use-accounts";
-import { useStartJob, useStopJob } from "@/hooks/use-jobs";
+import { useTriggerSync, useCancelSync } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
 import { syncStatesAtom } from "@/lib/atoms";
 import type { AccountCreateRequest, AccountResponse } from "@/types/api";
@@ -137,8 +137,8 @@ function AccountCard({
   const deleteAccount = useDeleteAccount();
   const testConnection = useTestConnection();
   const updateAccount = useUpdateAccount();
-  const startJob = useStartJob();
-  const stopJob = useStopJob();
+  const triggerSync = useTriggerSync();
+  const cancelSync = useCancelSync();
   const updateEmoji = useUpdateAccountEmoji();
   const syncStates = useAtomValue(syncStatesAtom);
   const syncState = syncStates[account.id];
@@ -214,12 +214,7 @@ function AccountCard({
             <Button
               variant="outline"
               size="sm"
-              onClick={() =>
-                startJob.mutate({
-                  name: "sync",
-                  accountId: account.id,
-                })
-              }
+              onClick={() => triggerSync.mutate(account.id)}
             >
               <RefreshCw className="mr-1 h-3 w-3" />
               Sync
@@ -229,12 +224,7 @@ function AccountCard({
             <Button
               variant="outline"
               size="sm"
-              onClick={() =>
-                stopJob.mutate({
-                  name: "sync",
-                  accountId: account.id,
-                })
-              }
+              onClick={() => cancelSync.mutate(account.id)}
             >
               Cancel
             </Button>
