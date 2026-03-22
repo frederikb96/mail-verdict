@@ -28,6 +28,7 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "embedding_model": "text-embedding-3-large",
         "embedding_dimensions": 3072,
         "api_key": "",
+        "reasoning_effort": "medium",
     },
     SettingCategory.SPAM: {
         "enabled": True,

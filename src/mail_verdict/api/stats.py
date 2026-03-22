@@ -118,6 +118,17 @@ async def get_stats(
     fn_rate = total_fn / automated if automated > 0 else 0.0
     accuracy = total_accuracy_sum / total_accuracy_count if total_accuracy_count > 0 else 1.0
 
+    # Query Qdrant for embedding count
+    embedding_count = 0
+    try:
+        from mail_verdict.semantic.store import SemanticStore
+        if SemanticStore._instance is not None:
+            store = SemanticStore._instance
+            collection_info = await store._qdrant.get_collection(store._collection)
+            embedding_count = collection_info.points_count or 0
+    except Exception as e:
+        logger.debug("Could not get embedding count: %s", e)
+
     return StatsResponse(
         total_mails=total_mails,
         total_accounts=len(accounts),
@@ -130,4 +141,5 @@ async def get_stats(
         accuracy=round(accuracy, 4),
         weekly_trend=all_trends,
         account_sync=account_sync,
+        embedding_count=embedding_count,
     )

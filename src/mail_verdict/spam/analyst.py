@@ -178,6 +178,7 @@ class OpenAISpamAnalyst(SpamAnalyst):
             retry_config: Retry configuration
         """
         self._model = ai_settings.get("model", "gpt-5-mini")
+        self._reasoning_effort = ai_settings.get("reasoning_effort")
         self._retry = retry_config
         self._system_prompt = _load_system_prompt()
 
@@ -221,14 +222,18 @@ class OpenAISpamAnalyst(SpamAnalyst):
 
         for attempt in range(self._retry.max_retries + 1):
             try:
-                response = await client.chat.completions.create(
-                    model=self._model,
-                    messages=[
+                create_kwargs: dict[str, Any] = {
+                    "model": self._model,
+                    "messages": [
                         {"role": "system", "content": self._system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    response_format={"type": "json_object"},
-                )
+                    "response_format": {"type": "json_object"},
+                }
+                if self._reasoning_effort:
+                    create_kwargs["reasoning"] = {"effort": self._reasoning_effort}
+
+                response = await client.chat.completions.create(**create_kwargs)
 
                 raw_content = response.choices[0].message.content or ""
                 verdict = _parse_verdict(raw_content)

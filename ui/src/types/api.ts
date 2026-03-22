@@ -208,6 +208,7 @@ export interface StatsResponse {
   accuracy: number;
   weekly_trend: WeeklyTrendPoint[];
   account_sync: AccountSyncStatus[];
+  embedding_count: number;
 }
 
 export interface SSEEvent {

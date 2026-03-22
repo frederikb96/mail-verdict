@@ -243,6 +243,7 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
         enrichment_runner = EnrichmentRunner(
             ai_provider=ai_settings.get("provider", "openai"),
             ai_model=ai_settings.get("model", "gpt-5-mini"),
+            reasoning_effort=ai_settings.get("reasoning_effort"),
         )
 
         # Build multi-account propagator map for the action executor

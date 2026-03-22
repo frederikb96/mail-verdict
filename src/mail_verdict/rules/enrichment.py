@@ -53,6 +53,7 @@ class EnrichmentRunner:
         ai_model: str,
         max_retries: int = 2,
         excerpt_length: int = 500,
+        reasoning_effort: str | None = None,
     ) -> None:
         """
         Initialize enrichment runner.
@@ -62,11 +63,13 @@ class EnrichmentRunner:
             ai_model: Model identifier from config
             max_retries: Retries on malformed LLM output
             excerpt_length: Max chars of body to include in prompt
+            reasoning_effort: OpenAI reasoning effort level (minimal/low/medium/high)
         """
         self._provider = ai_provider
         self._model = ai_model
         self._max_retries = max_retries
         self._excerpt_length = excerpt_length
+        self._reasoning_effort = reasoning_effort
 
     async def run(
         self,
@@ -160,14 +163,18 @@ class EnrichmentRunner:
             },
         )
 
-        response = await client.chat.completions.create(
-            model=self._model,
-            messages=[
+        create_kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=256,
-        )
+            "max_tokens": 256,
+        }
+        if self._reasoning_effort:
+            create_kwargs["reasoning"] = {"effort": self._reasoning_effort}
+
+        response = await client.chat.completions.create(**create_kwargs)
 
         content = response.choices[0].message.content
         if content is None:

@@ -331,6 +331,7 @@ class StatsResponse(BaseModel):
     accuracy: float
     weekly_trend: list[WeeklyTrendPoint]
     account_sync: list[AccountSyncStatus]
+    embedding_count: int = 0
 
 
 # --- Image exception schemas ---
