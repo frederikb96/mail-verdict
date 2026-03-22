@@ -200,6 +200,18 @@ def _send_seed_emails() -> int:
              "I noticed the sync seems to stall when a folder "
              "has >1000 messages.\nCan you take a look?\n\nBob"
          )},
+        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
+         "subject": "Team standup notes",
+         "body": "Quick update from today's standup: deployment on track.\n\nAlice"},
+        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
+         "subject": "Re: Team standup notes",
+         "body": "Got it. I'll finish the API tests today.\n\nBob"},
+        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
+         "subject": "Security review findings",
+         "body": "Found a few issues in the auth module. Details in PR #15.\n\nAlice"},
+        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
+         "subject": "Re: Security review findings",
+         "body": "I'll address those comments by EOD.\n\nBob"},
     ]
 
     sent = 0
