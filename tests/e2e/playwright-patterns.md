@@ -1,8 +1,11 @@
 # Playwright-Local MCP Patterns for MailVerdict
 
 Reusable browser automation patterns using the `playwright-local` MCP server tools.
-All examples target the test container at `http://10.69.243.241:18080` (host IP for cross-container access)
-or `http://127.0.0.1:18080` (localhost).
+
+**App URL:** `http://<HOST_IP>:18080/` — get host IP via `hostname -I | awk '{print $1}'`.
+The playwright-local container can't reach `127.0.0.1` on the host, so use the actual network IP.
+
+**Invocation:** Always use `mcp-call playwright-local <tool> [args]`. Run `mcp-call playwright-local` to list available tools. Run `mcp-call playwright-local <tool> -h` before every call to check arguments.
 
 ## Tool Overview
 
@@ -29,16 +32,16 @@ or `http://127.0.0.1:18080` (localhost).
 
 ```bash
 # Main mail view (three-pane layout)
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/"
 
 # Accounts management
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/accounts"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/accounts"
 
 # Settings
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/settings"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/settings"
 
 # Search
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/search"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/search"
 ```
 
 ### Navigate via Sidebar Links
@@ -391,7 +394,7 @@ or through the Settings UI before testing AI features.
 
 ```bash
 # 1. Navigate to accounts
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/accounts"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/accounts"
 mcp-call playwright-local browser_wait_for --text "Accounts"
 
 # 2. Open add dialog
@@ -459,7 +462,7 @@ mcp-call playwright-local browser_snapshot
 
 ```bash
 # 1. Navigate to search
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/search"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/search"
 mcp-call playwright-local browser_wait_for --text "Search"
 
 # 2. Enter search query
@@ -481,7 +484,7 @@ mcp-call playwright-local browser_click --element "search result" --ref "eXX"
 ### Switch Settings Tab
 
 ```bash
-mcp-call playwright-local browser_navigate --url "http://10.69.243.241:18080/settings"
+mcp-call playwright-local browser_navigate --url "http://<HOST_IP>:18080/settings"
 mcp-call playwright-local browser_wait_for --text "Settings"
 
 mcp-call playwright-local browser_snapshot
@@ -626,3 +629,63 @@ Test values for Stalwart test server:
 - IMAP Host: `stalwart`, Port: `1143`
 - SMTP Host: `stalwart`, Port: `2525`
 - User: `alice@test.local`, Password: `testpass123`
+
+---
+
+## Debugging Workflows & Lessons Learned
+
+### Hover-revealed buttons (delete, archive, spam, star)
+
+Mail list action buttons are CSS-hidden (`hidden group-hover:flex`). Playwright `hover()` triggers CSS state but the buttons are NOT interactable via `click()` or even `click({ force: true })`. Instead use `dispatchEvent` or `browser_run_code`:
+
+```js
+async (page) => {
+  // Find the button in DOM by title attribute and dispatch native click
+  const result = await page.evaluate(() => {
+    const btn = document.querySelector('[title="Delete"]');
+    if (!btn) return "not found";
+    btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    return "clicked";
+  });
+  return result;
+}
+```
+
+**Caveat:** `dispatchEvent` with native `MouseEvent` may NOT trigger React synthetic event handlers reliably. For verifying action results, prefer calling the API directly:
+```bash
+curl -X POST "http://127.0.0.1:18080/api/mails/${MAIL_ID}/action?account_id=${ACCOUNT_ID}" \
+  -H "Content-Type: application/json" -d '{"action":"delete"}'
+```
+
+### Auto-selection timing
+
+On first load, auto-selection (account → folders → inbox) happens via `useEffect` chains. There's a brief window (~500ms) where the page shows empty states. Always `browser_wait_for --time 3` after navigation before asserting content.
+
+### Snapshot vs Screenshot
+
+- `browser_snapshot` returns the accessibility tree (roles, names, refs) — best for finding interactive elements and asserting content
+- `browser_take_screenshot` saves a PNG on the container filesystem (NOT host) — useful for visual verification but can't be read by agents
+- For asserting text content, use `browser_run_code` with `page.evaluate(() => document.querySelector("main").innerText)`
+
+### IP address changes
+
+The host IP (`hostname -I`) changes when the network changes (WiFi, VPN, etc.). Always resolve it dynamically:
+```bash
+HOST_IP=$(hostname -I | awk '{print $1}')
+mcp-call playwright-local browser_navigate --url "http://${HOST_IP}:18080/"
+```
+
+### Data seeding for testing
+
+Run a single E2E test to trigger the `seeded_env` session-scoped fixture which creates Alice + Bob with seed emails:
+```bash
+pytest tests/e2e/test_health_api.py -x -q
+```
+
+### Common pitfalls
+
+- `browser_click` on refs works ONLY for visible elements — CSS-hidden buttons fail silently
+- `browser_fill_form` requires fields with `name`, `type`, `ref`, `value` keys — check `-h` first
+- Refs are ephemeral — they change on every DOM update, always snapshot before interacting
+- `force: true` in `click()` still fails for elements with `display: none` (only bypasses actionability checks, not visibility)
+- React event handlers may not fire with native `dispatchEvent` — prefer API calls for action verification

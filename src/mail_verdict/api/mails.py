@@ -477,7 +477,7 @@ async def mail_action(
 
     elif action in ("archive", "spam"):
         target_folder_id = await _resolve_special_folder_for_action(
-            account_id, "archive" if action == "archive" else "spam",
+            account_id, "archive" if action == "archive" else "junk",
         )
         if target_folder_id is None:
             raise HTTPException(

@@ -219,7 +219,7 @@ export function useMailAction() {
       qc.invalidateQueries({ queryKey: ["mails"] });
       qc.invalidateQueries({ queryKey: ["mail"] });
       qc.invalidateQueries({ queryKey: ["folders"] });
-      qc.invalidateQueries({ queryKey: ["unified-mails"] });
+      qc.invalidateQueries({ queryKey: ["unified"] });
     },
   });
 }
