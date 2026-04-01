@@ -1,4 +1,4 @@
-"""Tests for Account API: CRUD, encryption, state machine fields."""
+"""Tests for Account API: CRUD, encryption, PostIMAP account model."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class TestAccountEncryption:
         assert len(ciphertext) > 20
 
     def test_account_create_request_schema(self) -> None:
-        """AccountCreateRequest includes password fields."""
+        """AccountCreateRequest includes password and prefs fields."""
         from mail_verdict.api.schemas import AccountCreateRequest
 
         req = AccountCreateRequest(
@@ -45,12 +45,12 @@ class TestAccountEncryption:
             smtp_user="user@example.com",
             smtp_password="smtp_secret",
             spam_enabled=True,
-            sync_lookback_days=90,
+            embedding_lookback_days=90,
         )
         assert req.imap_password == "secret"
         assert req.smtp_password == "smtp_secret"
         assert req.spam_enabled is True
-        assert req.sync_lookback_days == 90
+        assert req.embedding_lookback_days == 90
 
 
 class TestAccountResponseSchema:
@@ -64,14 +64,13 @@ class TestAccountResponseSchema:
         assert "imap_password" not in fields
         assert "smtp_password" not in fields
 
-    def test_response_includes_new_fields(self) -> None:
-        """AccountResponse includes state, spam_enabled, lookback fields."""
+    def test_response_includes_postimap_fields(self) -> None:
+        """AccountResponse includes state and prefs fields."""
         from mail_verdict.api.schemas import AccountResponse
 
         fields = set(AccountResponse.model_fields.keys())
         assert "state" in fields
         assert "spam_enabled" in fields
-        assert "sync_lookback_days" in fields
         assert "embedding_lookback_days" in fields
 
 
@@ -98,22 +97,28 @@ class TestAccountUpdateSchema:
 
 
 class TestAccountModel:
-    """Tests for Account database model fields."""
+    """Tests for Account database model fields (PostIMAP-owned)."""
 
-    def test_account_model_has_new_columns(self) -> None:
+    def test_account_model_has_core_columns(self) -> None:
         """Account model includes encrypted password and state fields."""
         from mail_verdict.database.models import Account
 
         assert hasattr(Account, "imap_password")
         assert hasattr(Account, "smtp_password")
         assert hasattr(Account, "state")
-        assert hasattr(Account, "spam_enabled")
-        assert hasattr(Account, "sync_lookback_days")
-        assert hasattr(Account, "embedding_lookback_days")
+        assert hasattr(Account, "capabilities")
+
+    def test_account_prefs_model_has_pref_columns(self) -> None:
+        """AccountPrefs model has spam_enabled and embedding_lookback_days."""
+        from mail_verdict.database.models import AccountPrefs
+
+        assert hasattr(AccountPrefs, "spam_enabled")
+        assert hasattr(AccountPrefs, "embedding_lookback_days")
+        assert hasattr(AccountPrefs, "folder_mapping")
 
     def test_account_state_enum_values(self) -> None:
         """AccountState enum has all expected values."""
         from mail_verdict.database.models import AccountState
 
         states = {s.value for s in AccountState}
-        assert states == {"created", "syncing", "seeding", "active", "error"}
+        assert states == {"created", "syncing", "active", "error", "disabled"}

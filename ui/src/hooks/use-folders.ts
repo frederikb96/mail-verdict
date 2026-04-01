@@ -1,6 +1,6 @@
 /** TanStack Query hooks for folder operations. */
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { type QueryClient, keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 export const folderKeys = {
@@ -15,4 +15,15 @@ export function useFolders(accountId: string | null) {
     staleTime: 5_000,
     placeholderData: keepPreviousData,
   });
+}
+
+/**
+ * Invalidate ALL folder-related caches.
+ * Must be used everywhere instead of individual invalidations
+ * to keep ["folders"] and ["folder-order"] in sync.
+ */
+export function invalidateAllFolderCaches(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: ["folders"] });
+  qc.invalidateQueries({ queryKey: ["folder-order"] });
+  qc.invalidateQueries({ queryKey: ["unified"] });
 }

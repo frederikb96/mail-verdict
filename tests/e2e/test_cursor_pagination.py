@@ -30,11 +30,11 @@ async def test_first_page_returns_mails(app_client: httpx.AsyncClient) -> None:
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "mails" in data
+    assert "messages" in data
     assert "has_more" in data
     assert "next_cursor" in data
-    assert isinstance(data["mails"], list)
-    assert len(data["mails"]) <= 3
+    assert isinstance(data["messages"], list)
+    assert len(data["messages"]) <= 3
 
 
 @pytest.mark.asyncio
@@ -55,7 +55,7 @@ async def test_cursor_pagination_traverses_all_mails(
         resp = await app_client.get("/api/mails", params=params)
         assert resp.status_code == 200
         data = resp.json()
-        mails = data["mails"]
+        mails = data["messages"]
 
         for m in mails:
             assert m["id"] not in all_ids, f"Duplicate mail ID {m['id']} across pages"
@@ -88,7 +88,7 @@ async def test_cursor_maintains_sort_order(
         assert resp.status_code == 200
         data = resp.json()
 
-        for m in data["mails"]:
+        for m in data["messages"]:
             if m["received_at"]:
                 all_dates.append(m["received_at"])
 
@@ -131,7 +131,7 @@ async def test_limit_respected(app_client: httpx.AsyncClient) -> None:
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["mails"]) <= limit
+        assert len(data["messages"]) <= limit
 
 
 @pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_account_filter_isolates_mails(
     )
     assert resp.status_code == 200
     data = resp.json()
-    for m in data["mails"]:
+    for m in data["messages"]:
         assert m["account_id"] == account_id, (
             f"Mail {m['id']} has account_id={m['account_id']}, expected {account_id}"
         )

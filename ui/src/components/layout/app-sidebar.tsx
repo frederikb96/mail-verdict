@@ -133,14 +133,14 @@ export function AppSidebar() {
 
   const currentAccount = isUnified
     ? null
-    : accounts?.find((a) => a.id === selectedAccountId) ?? accounts?.[0];
+    : accounts?.find((a) => a.id === selectedAccountId) ?? null;
 
   // Auto-select first account if none selected
   useEffect(() => {
-    if (!isUnified && !selectedAccountId && currentAccount) {
-      setSelectedAccountId(currentAccount.id);
+    if (!isUnified && !selectedAccountId && accounts?.length) {
+      setSelectedAccountId(accounts[0].id);
     }
-  }, [isUnified, selectedAccountId, currentAccount, setSelectedAccountId]);
+  }, [isUnified, selectedAccountId, accounts, setSelectedAccountId]);
 
   // Use custom folder order if available, with visibility filtering
   const orderedFolders = useMemo<FolderOrderItem[] | null>(

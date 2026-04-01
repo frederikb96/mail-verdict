@@ -12,7 +12,7 @@ import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import { selectedMailIdAtom, selectedAccountIdAtom } from "@/lib/atoms";
 import { useMailAction } from "@/hooks/use-mails";
 import { useToggleSelection } from "@/hooks/use-selection";
-import type { MailSummary } from "@/types/api";
+import type { MessageSummary } from "@/types/api";
 
 /** Whether an element is an interactive input that should suppress shortcuts. */
 function isEditableElement(el: EventTarget | null): boolean {
@@ -28,7 +28,7 @@ function isEditableElement(el: EventTarget | null): boolean {
 
 interface UseKeyboardShortcutsOptions {
   /** Current visible mail list. */
-  mails: MailSummary[];
+  mails: MessageSummary[];
   /** Callback to scroll the VList to a given index. */
   scrollToIndex?: (index: number) => void;
 }
@@ -58,7 +58,7 @@ export function useKeyboardShortcuts({
   const mailAction = useMailAction();
   const toggleSelection = useToggleSelection();
 
-  const getFocusedMail = useCallback((): MailSummary | null => {
+  const getFocusedMail = useCallback((): MessageSummary | null => {
     if (focusedIndex < 0 || focusedIndex >= mails.length) return null;
     return mails[focusedIndex];
   }, [focusedIndex, mails]);
@@ -97,7 +97,7 @@ export function useKeyboardShortcuts({
           e.preventDefault();
           const mail = getFocusedMail();
           if (mail && accountId) {
-            toggleSelection.mutate({ accountId, body: { mail_id: mail.id } });
+            toggleSelection.mutate({ accountId, body: { message_id: mail.id } });
           }
           break;
         }

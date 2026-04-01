@@ -96,63 +96,6 @@ class TestFolderVisibilitySchemas:
         assert resp.is_visible is False
 
 
-class TestIdleSchemas:
-    """Tests for IDLE configuration schemas."""
-
-    def test_idle_folder_item(self) -> None:
-        """IdleFolderItem has required fields."""
-        from mail_verdict.api.schemas import IdleFolderItem
-
-        item = IdleFolderItem(
-            folder_id=uuid.uuid4(),
-            imap_name="INBOX",
-            idle_enabled=True,
-        )
-        assert item.idle_enabled is True
-        assert item.idle_supported is None
-
-    def test_idle_folder_toggle(self) -> None:
-        """IdleFolderToggle has folder_id and enabled."""
-        from mail_verdict.api.schemas import IdleFolderToggle
-
-        toggle = IdleFolderToggle(
-            folder_id=uuid.uuid4(),
-            enabled=True,
-        )
-        assert toggle.enabled is True
-
-    def test_idle_folder_toggle_response(self) -> None:
-        """IdleFolderToggleResponse includes success flag."""
-        from mail_verdict.api.schemas import IdleFolderToggleResponse
-
-        resp = IdleFolderToggleResponse(
-            folder_id=uuid.uuid4(),
-            enabled=False,
-            success=True,
-        )
-        assert resp.success is True
-        assert resp.error is None
-
-    def test_idle_validation_request(self) -> None:
-        """IdleValidationRequest has folder_id."""
-        from mail_verdict.api.schemas import IdleValidationRequest
-
-        req = IdleValidationRequest(folder_id=uuid.uuid4())
-        assert req.folder_id is not None
-
-    def test_idle_validation_response(self) -> None:
-        """IdleValidationResponse includes supported and error."""
-        from mail_verdict.api.schemas import IdleValidationResponse
-
-        resp = IdleValidationResponse(
-            folder_id=uuid.uuid4(),
-            supported=False,
-            error="Server does not support IDLE",
-        )
-        assert resp.supported is False
-        assert resp.error is not None
-
-
 class TestFolderManagementRouterRegistration:
     """Tests for router registration and endpoint presence."""
 
@@ -170,6 +113,4 @@ class TestFolderManagementRouterRegistration:
         routes = [r.path for r in router.routes]  # type: ignore[union-attr]
         assert any("folder-order" in r for r in routes)
         assert any("visibility" in r for r in routes)
-        assert any("idle-folders" in r for r in routes)
-        assert any("validate-idle" in r for r in routes)
         assert any("auto-detect" in r for r in routes)

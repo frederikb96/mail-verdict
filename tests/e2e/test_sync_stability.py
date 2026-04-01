@@ -36,7 +36,7 @@ async def _get_mail_list(
         params={"account_id": account_id, "limit": 200},
     )
     assert resp.status_code == 200
-    return resp.json()["mails"]
+    return resp.json()["messages"]
 
 
 async def _send_test_mails(count: int = 3) -> list[str]:
@@ -82,10 +82,7 @@ async def test_sync_stabilizes_after_thrashing(
     # Send 3 test mails
     subjects = await _send_test_mails(3)
 
-    # Trigger sync so engine picks up new emails promptly
-    await app_client.post(f"/api/accounts/{account_id}/sync")
-
-    # Wait for all 3 to appear
+    # Wait for PostIMAP to pick up new emails
     new_mails: list[dict[str, Any]] = []
     for subj in subjects:
         mail = await wait_for_new_mail(
@@ -131,7 +128,7 @@ async def test_sync_stabilizes_after_thrashing(
     snapshot_1 = await _get_mail_list(app_client, account_id)
     snapshot_1_ids = {m["id"] for m in snapshot_1}
     snapshot_1_states = {
-        m["id"]: (m.get("is_flagged"), m.get("is_read"))
+        m["id"]: (m.get("is_flagged"), m.get("is_seen"))
         for m in snapshot_1
     }
 
@@ -142,7 +139,7 @@ async def test_sync_stabilizes_after_thrashing(
     snapshot_2 = await _get_mail_list(app_client, account_id)
     snapshot_2_ids = {m["id"] for m in snapshot_2}
     snapshot_2_states = {
-        m["id"]: (m.get("is_flagged"), m.get("is_read"))
+        m["id"]: (m.get("is_flagged"), m.get("is_seen"))
         for m in snapshot_2
     }
 
@@ -178,7 +175,7 @@ async def test_sync_stabilizes_after_thrashing(
         params={"account_id": account_id},
     )
     assert mail_1_detail.status_code == 200
-    assert mail_1_detail.json()["is_read"] is True
+    assert mail_1_detail.json()["is_seen"] is True
 
     # Mail 2 should be deleted (not in default listing)
     assert new_mails[2]["id"] not in snapshot_2_ids

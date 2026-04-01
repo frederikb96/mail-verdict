@@ -1,8 +1,8 @@
 """
-E2E test: Sync recovery after disruption.
+E2E test: Recovery after disruption.
 
-Tests that the sync engine recovers gracefully after app restart
-and that accounts return to ACTIVE state with data intact.
+Tests that accounts return to ACTIVE state with data intact
+after app restart. PostIMAP handles sync; MailVerdict reads state.
 """
 
 from __future__ import annotations
@@ -69,20 +69,20 @@ async def _wait_for_state(
 
 
 @pytest.mark.asyncio
-async def test_sync_resumes_after_restart(
+async def test_recovery_after_restart(
     seeded_env: dict[str, str],
 ) -> None:
-    """Sync resumes and accounts return to ACTIVE after app restart.
+    """Accounts return to ACTIVE and messages persist after app restart.
 
     Verifies:
     - App health endpoint responds after restart
-    - Both Alice and Bob accounts reach ACTIVE state
-    - Mails are still present and queryable
+    - Both Alice and Bob accounts reach ACTIVE state (set by PostIMAP)
+    - Messages are still present and queryable
     """
     alice_id = seeded_env["alice_id"]
     bob_id = seeded_env["bob_id"]
 
-    # Get mail counts before restart
+    # Get message counts before restart
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
         base_url=APP_BASE_URL, transport=transport, timeout=30.0,
@@ -92,12 +92,12 @@ async def test_sync_resumes_after_restart(
         alice_resp = await client.get(
             "/api/mails", params={"account_id": alice_id, "limit": 200},
         )
-        alice_count_before = len(alice_resp.json()["mails"])
+        alice_count_before = len(alice_resp.json()["messages"])
 
         bob_resp = await client.get(
             "/api/mails", params={"account_id": bob_id, "limit": 200},
         )
-        bob_count_before = len(bob_resp.json()["mails"])
+        bob_count_before = len(bob_resp.json()["messages"])
 
     # Restart the container
     proc = await asyncio.create_subprocess_exec(
@@ -107,8 +107,6 @@ async def test_sync_resumes_after_restart(
     )
     await proc.communicate()
 
-    # Poll for healthy immediately (no hardcoded sleep)
-
     # Reconnect with fresh transport after restart
     fresh_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
@@ -116,38 +114,38 @@ async def test_sync_resumes_after_restart(
     ) as client:
         await _wait_healthy(client, timeout=120)
 
-        # Wait for both accounts to reach ACTIVE
+        # Wait for both accounts to reach ACTIVE (PostIMAP sets state)
         alice_state = await _wait_for_state(client, alice_id, "active")
         assert alice_state == "active", f"Alice stuck in: {alice_state}"
 
         bob_state = await _wait_for_state(client, bob_id, "active")
         assert bob_state == "active", f"Bob stuck in: {bob_state}"
 
-        # Verify mails are still present
+        # Verify messages are still present
         alice_resp = await client.get(
             "/api/mails", params={"account_id": alice_id, "limit": 200},
         )
         assert alice_resp.status_code == 200
-        alice_count_after = len(alice_resp.json()["mails"])
+        alice_count_after = len(alice_resp.json()["messages"])
         assert alice_count_after >= alice_count_before, (
-            f"Alice lost mails after restart: {alice_count_before} -> {alice_count_after}"
+            f"Alice lost messages: {alice_count_before} -> {alice_count_after}"
         )
 
         bob_resp = await client.get(
             "/api/mails", params={"account_id": bob_id, "limit": 200},
         )
         assert bob_resp.status_code == 200
-        bob_count_after = len(bob_resp.json()["mails"])
+        bob_count_after = len(bob_resp.json()["messages"])
         assert bob_count_after >= bob_count_before, (
-            f"Bob lost mails after restart: {bob_count_before} -> {bob_count_after}"
+            f"Bob lost messages: {bob_count_before} -> {bob_count_after}"
         )
 
 
 @pytest.mark.asyncio
-async def test_sync_status_reports_active_after_recovery(
+async def test_account_state_active_after_recovery(
     seeded_env: dict[str, str],
 ) -> None:
-    """Sync status endpoint reports is_syncing=True after recovery."""
+    """Account state is ACTIVE after recovery."""
     alice_id = seeded_env["alice_id"]
 
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
@@ -156,9 +154,8 @@ async def test_sync_status_reports_active_after_recovery(
     ) as client:
         await _wait_healthy(client)
 
-        resp = await client.get(f"/api/accounts/{alice_id}/sync/status")
+        resp = await client.get(f"/api/accounts/{alice_id}")
         assert resp.status_code == 200
         data = resp.json()
         assert data["state"] == "active"
         assert data["is_active"] is True
-        assert data["is_syncing"] is True

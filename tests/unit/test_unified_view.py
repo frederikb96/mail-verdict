@@ -7,19 +7,19 @@ from datetime import datetime, timezone
 
 
 class TestUnifiedViewModels:
-    """Tests for unified view model columns."""
+    """Tests for unified view model columns (PostIMAP + Prefs split)."""
 
-    def test_folder_has_unified_name(self) -> None:
-        """Folder model includes unified_name column."""
-        from mail_verdict.database.models import Folder
+    def test_folder_prefs_has_unified_name(self) -> None:
+        """FolderPrefs model includes unified_name column."""
+        from mail_verdict.database.models import FolderPrefs
 
-        assert hasattr(Folder, "unified_name")
+        assert hasattr(FolderPrefs, "unified_name")
 
-    def test_account_has_emoji(self) -> None:
-        """Account model includes emoji column."""
-        from mail_verdict.database.models import Account
+    def test_account_prefs_has_emoji(self) -> None:
+        """AccountPrefs model includes emoji column."""
+        from mail_verdict.database.models import AccountPrefs
 
-        assert hasattr(Account, "emoji")
+        assert hasattr(AccountPrefs, "emoji")
 
 
 class TestUnifiedViewSchemas:
@@ -69,11 +69,11 @@ class TestUnifiedViewSchemas:
         assert resp.unread_count == 15
         assert resp.total_count == 100
 
-    def test_unified_mail_summary_schema(self) -> None:
-        """UnifiedMailSummary includes account_emoji field."""
-        from mail_verdict.api.schemas import UnifiedMailSummary
+    def test_unified_message_summary_schema(self) -> None:
+        """UnifiedMessageSummary includes account_emoji field."""
+        from mail_verdict.api.schemas import UnifiedMessageSummary
 
-        mail = UnifiedMailSummary(
+        msg = UnifiedMessageSummary(
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             account_emoji="📮",
@@ -81,32 +81,32 @@ class TestUnifiedViewSchemas:
             subject="Test",
             from_addr="user@example.com",
             received_at=datetime.now(timezone.utc),
-            is_read=False,
+            is_seen=False,
         )
-        assert mail.account_emoji == "📮"
-        assert not mail.is_read
+        assert msg.account_emoji == "📮"
+        assert not msg.is_seen
 
-    def test_unified_mail_summary_nullable_emoji(self) -> None:
-        """UnifiedMailSummary allows null emoji."""
-        from mail_verdict.api.schemas import UnifiedMailSummary
+    def test_unified_message_summary_nullable_emoji(self) -> None:
+        """UnifiedMessageSummary allows null emoji."""
+        from mail_verdict.api.schemas import UnifiedMessageSummary
 
-        mail = UnifiedMailSummary(
+        msg = UnifiedMessageSummary(
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
         )
-        assert mail.account_emoji is None
+        assert msg.account_emoji is None
 
-    def test_unified_mail_list_response(self) -> None:
-        """UnifiedMailListResponse has pagination fields."""
-        from mail_verdict.api.schemas import UnifiedMailListResponse
+    def test_unified_message_list_response(self) -> None:
+        """UnifiedMessageListResponse has pagination fields."""
+        from mail_verdict.api.schemas import UnifiedMessageListResponse
 
-        resp = UnifiedMailListResponse(
-            mails=[],
+        resp = UnifiedMessageListResponse(
+            messages=[],
             has_more=False,
             next_cursor=None,
         )
-        assert resp.mails == []
+        assert resp.messages == []
         assert not resp.has_more
 
     def test_emoji_update_schema(self) -> None:
@@ -165,6 +165,7 @@ class TestAccountResponseEmoji:
             imap_port=993,
             imap_user="user@example.com",
             created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
         assert resp.emoji is None
 
@@ -205,7 +206,7 @@ class TestUnifiedRouterRegistration:
             p for p in prefixes
             if p.startswith("/accounts/{account_id}")
         ]
-        assert len(account_prefixes) >= 3  # folder-management, image-exceptions, unified
+        assert len(account_prefixes) >= 2  # folder-management, unified
 
     def test_unified_router_endpoints(self) -> None:
         """Unified router has expected endpoint paths."""
@@ -213,7 +214,7 @@ class TestUnifiedRouterRegistration:
 
         routes = [r.path for r in unified_router.routes]  # type: ignore[union-attr]
         assert any("folders" in r for r in routes)
-        assert any("mails" in r for r in routes)
+        assert any("mails" in r or "messages" in r for r in routes)
         assert any("folder-order" in r for r in routes)
 
     def test_account_router_endpoints(self) -> None:
@@ -223,33 +224,3 @@ class TestUnifiedRouterRegistration:
         routes = [r.path for r in account_router.routes]  # type: ignore[union-attr]
         assert any("emoji" in r for r in routes)
         assert any("unified-name" in r for r in routes)
-
-
-class TestMigrationFile:
-    """Tests for the Alembic migration file."""
-
-    def test_migration_exists_and_has_correct_revision(self) -> None:
-        """Migration file exists with correct revision chain."""
-        import importlib.util
-        from pathlib import Path
-
-        migration_path = (
-            Path(__file__).parent.parent.parent
-            / "alembic"
-            / "versions"
-            / "006_add_unified_view.py"
-        )
-        assert migration_path.exists(), "Migration file not found"
-
-        spec = importlib.util.spec_from_file_location(
-            "migration_006", migration_path,
-        )
-        assert spec is not None
-        assert spec.loader is not None
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-
-        assert mod.revision == "006"
-        assert mod.down_revision == "005"
-        assert callable(mod.upgrade)
-        assert callable(mod.downgrade)

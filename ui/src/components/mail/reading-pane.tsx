@@ -6,12 +6,11 @@ import {
   Mail,
   Paperclip,
   Download,
-  Shield,
   ShieldAlert,
-  ShieldCheck,
-  ShieldX,
   Trash2,
   Star,
+  Archive,
+  Ban,
   MailOpen,
   MailIcon,
 } from "lucide-react";
@@ -32,29 +31,6 @@ import {
   formatAddresses,
 } from "@/lib/format";
 
-function AuthBadge({
-  label,
-  pass,
-}: {
-  label: string;
-  pass: boolean | null;
-}) {
-  if (pass === null) return null;
-  return (
-    <Badge
-      variant={pass ? "default" : "destructive"}
-      className="gap-1 text-xs"
-    >
-      {pass ? (
-        <ShieldCheck className="h-3 w-3" />
-      ) : (
-        <ShieldX className="h-3 w-3" />
-      )}
-      {label}
-    </Badge>
-  );
-}
-
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
   const accountId = useAtomValue(selectedAccountIdAtom);
@@ -65,7 +41,7 @@ export function ReadingPane() {
   // Auto mark-as-read when a mail is displayed
   const autoReadRef = useRef<string | null>(null);
   useEffect(() => {
-    if (mail && !mail.is_read && mail.id !== autoReadRef.current) {
+    if (mail && !mail.is_seen && mail.id !== autoReadRef.current) {
       autoReadRef.current = mail.id;
       mailAction.mutate({
         mailId: mail.id,
@@ -73,7 +49,7 @@ export function ReadingPane() {
         action: { action: "mark_read" },
       });
     }
-  }, [mail?.id, mail?.is_read]);
+  }, [mail?.id, mail?.is_seen]);
 
   // Empty state
   if (!mailId) {
@@ -129,13 +105,13 @@ export function ReadingPane() {
                   mailId: mail.id,
                   accountId: mail.account_id,
                   action: {
-                    action: mail.is_read ? "mark_unread" : "mark_read",
+                    action: mail.is_seen ? "mark_unread" : "mark_read",
                   },
                 })
               }
-              title={mail.is_read ? "Mark as unread" : "Mark as read"}
+              title={mail.is_seen ? "Mark as unread" : "Mark as read"}
             >
-              {mail.is_read ? (
+              {mail.is_seen ? (
                 <MailIcon className="h-4 w-4" />
               ) : (
                 <MailOpen className="h-4 w-4" />
@@ -163,6 +139,36 @@ export function ReadingPane() {
                     : "h-4 w-4"
                 }
               />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: mail.id,
+                  accountId: mail.account_id,
+                  action: { action: "archive" },
+                })
+              }
+              title="Archive"
+            >
+              <Archive className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: mail.id,
+                  accountId: mail.account_id,
+                  action: { action: "spam" },
+                })
+              }
+              title="Spam"
+            >
+              <Ban className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
@@ -201,23 +207,14 @@ export function ReadingPane() {
           </div>
         </div>
 
-        {/* Auth badges */}
-        <div className="flex flex-wrap gap-1.5">
-          <AuthBadge label="DKIM" pass={mail.dkim_pass} />
-          <AuthBadge label="SPF" pass={mail.spf_pass} />
-          <AuthBadge label="DMARC" pass={mail.dmarc_pass} />
-          {mail.tags.map((tag) => (
-            <Badge key={tag.tag_name} variant="outline" className="text-xs">
-              {tag.tag_name}
-            </Badge>
-          ))}
-        </div>
-
-        {/* Body sync indicator */}
-        {!mail.body_synced && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <div className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
-            Loading message body...
+        {/* Tags */}
+        {mail.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {mail.tags.map((tag) => (
+              <Badge key={tag.tag_name} variant="outline" className="text-xs">
+                {tag.tag_name}
+              </Badge>
+            ))}
           </div>
         )}
       </div>

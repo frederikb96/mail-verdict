@@ -9,10 +9,10 @@ import {
 } from "@/lib/format";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { MailSummary } from "@/types/api";
+import type { MessageSummary } from "@/types/api";
 
 interface MailListItemProps {
-  mail: MailSummary;
+  mail: MessageSummary;
   isSelected: boolean;
   isFocused?: boolean;
   isChecked: boolean;
@@ -47,7 +47,7 @@ export function MailListItem({
           : isChecked
             ? "bg-accent/70"
             : "hover:bg-accent/50",
-        !mail.is_read && !isSelected && !isChecked && "bg-accent/20",
+        !mail.is_seen && !isSelected && !isChecked && "bg-accent/20",
         isFocused && "ring-2 ring-inset ring-ring",
       )}
       onClick={() => onSelect(mail.id)}
@@ -85,13 +85,13 @@ export function MailListItem({
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
         <div className="flex items-center gap-2">
           {/* Unread dot */}
-          {!mail.is_read && (
+          {!mail.is_seen && (
             <div className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
           )}
           <span
             className={cn(
               "truncate text-sm text-foreground",
-              !mail.is_read ? "font-semibold" : "font-medium",
+              !mail.is_seen ? "font-semibold" : "font-medium",
             )}
           >
             {senderName}
@@ -113,17 +113,17 @@ export function MailListItem({
       {/* Always-visible indicators */}
       <div className="flex shrink-0 items-center gap-1">
         <button
-          className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, mail.is_read ? "mark_unread" : "mark_read");
+            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read");
           }}
-          title={mail.is_read ? "Mark as unread" : "Mark as read"}
+          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
         >
-          {mail.is_read ? (
-            <MailIcon className="h-3.5 w-3.5" />
+          {mail.is_seen ? (
+            <MailIcon className="h-4 w-4" />
           ) : (
-            <MailOpen className="h-3.5 w-3.5" />
+            <MailOpen className="h-4 w-4" />
           )}
         </button>
 

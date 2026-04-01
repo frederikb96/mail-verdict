@@ -30,7 +30,7 @@ import {
   selectionModeAtom,
 } from "@/store/selection-atom";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
-import type { MailSummary, UnifiedMailSummary } from "@/types/api";
+import type { MessageSummary, UnifiedMessageSummary } from "@/types/api";
 
 export function MailList() {
   const accountId = useAtomValue(selectedAccountIdAtom);
@@ -65,8 +65,8 @@ export function MailList() {
     fetchNextPage,
   } = result;
 
-  const allMails: (MailSummary | UnifiedMailSummary)[] =
-    data?.pages.flatMap((p) => p.mails) ?? [];
+  const allMails: (MessageSummary | UnifiedMessageSummary)[] =
+    data?.pages.flatMap((p) => p.messages) ?? [];
 
   const scrollToIndex = useCallback(
     (index: number) => {
@@ -127,7 +127,7 @@ export function MailList() {
         // Regular click: toggle
         toggleSelection.mutate({
           accountId,
-          body: { mail_id: mailId },
+          body: { message_id: mailId },
         });
       }
       setLastClickedId(mailId);
@@ -168,6 +168,15 @@ export function MailList() {
     );
   }
 
+  if (!folderId && !isUnifiedView) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+        <Loader2 className="h-8 w-8 animate-spin opacity-50" />
+        <p className="text-sm">Loading folders...</p>
+      </div>
+    );
+  }
+
   if (allMails.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
@@ -191,7 +200,7 @@ export function MailList() {
           isUnifiedView ? (
             <DragMail key={mail.id} mailId={mail.id}>
               <UnifiedMailItem
-                mail={mail as UnifiedMailSummary}
+                mail={mail as UnifiedMessageSummary}
                 isSelected={mail.id === selectedMailId}
                 isFocused={index === focusedIndex}
                 isChecked={checkedIds.has(mail.id)}
@@ -204,7 +213,7 @@ export function MailList() {
           ) : (
             <DragMail key={mail.id} mailId={mail.id}>
               <MailListItem
-                mail={mail as MailSummary}
+                mail={mail as MessageSummary}
                 isSelected={mail.id === selectedMailId}
                 isFocused={index === focusedIndex}
                 isChecked={checkedIds.has(mail.id)}

@@ -50,9 +50,9 @@ async def test_mail_list_empty_or_populated(
     resp = await app_client.get("/api/mails", params={"limit": 10, "account_id": account_id})
     assert resp.status_code == 200
     data = resp.json()
-    assert "mails" in data
+    assert "messages" in data
     assert "has_more" in data
-    assert isinstance(data["mails"], list)
+    assert isinstance(data["messages"], list)
 
 
 @pytest.mark.asyncio

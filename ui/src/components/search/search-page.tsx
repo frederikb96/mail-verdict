@@ -84,7 +84,7 @@ export function SearchPage() {
             </div>
           )}
           {data.results.map((result) => (
-            <Card key={result.mail_id}>
+            <Card key={result.message_id}>
               <CardContent className="flex items-center gap-4 py-3">
                 <div className="flex min-w-0 flex-1 flex-col">
                   <div className="flex items-center gap-2">

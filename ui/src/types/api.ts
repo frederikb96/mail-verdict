@@ -12,7 +12,7 @@ export interface AttachmentSummary {
   size_bytes: number | null;
 }
 
-export interface MailSummary {
+export interface MessageSummary {
   id: string;
   account_id: string;
   folder_id: string;
@@ -20,41 +20,41 @@ export interface MailSummary {
   from_addr: string | null;
   to_addrs: string | string[] | null;
   received_at: string | null;
-  is_read: boolean;
+  is_seen: boolean;
   is_flagged: boolean;
+  is_answered: boolean;
+  is_draft: boolean;
   is_deleted: boolean;
-  headers_synced: boolean;
-  body_synced: boolean;
+  deleted_at: string | null;
   snippet: string | null;
 }
 
-export interface MailListResponse {
-  mails: MailSummary[];
+export interface MessageListResponse {
+  messages: MessageSummary[];
   has_more: boolean;
   next_cursor: string | null;
 }
 
-export interface MailDetail extends MailSummary {
-  uid: number;
+export interface MessageDetail extends MessageSummary {
+  imap_uid: number;
   message_id: string | null;
   cc_addrs: string | string[] | null;
   bcc_addrs: string | string[] | null;
+  reply_to: string | null;
+  in_reply_to: string | null;
   body_text: string | null;
   body_html: string | null;
   raw_headers: Record<string, unknown> | null;
   size_bytes: number | null;
-  dkim_pass: boolean | null;
-  spf_pass: boolean | null;
-  dmarc_pass: boolean | null;
+  keywords: string[];
   has_blocked_images: boolean;
   images_allowed: boolean;
-  fetched_at: string;
   created_at: string;
   tags: TagResponse[];
   attachments: AttachmentSummary[];
 }
 
-export interface MailActionRequest {
+export interface MessageActionRequest {
   action:
     | "move"
     | "mark_read"
@@ -65,17 +65,18 @@ export interface MailActionRequest {
     | "archive"
     | "spam";
   target_folder?: string;
+  target_folder_id?: string;
 }
 
-export interface MailActionResponse {
+export interface MessageActionResponse {
   success: boolean;
   action: string;
-  mail_id: string;
+  message_id: string;
   message: string | null;
 }
 
 export interface SearchResult {
-  mail_id: string;
+  message_id: string;
   subject: string | null;
   from_addr: string | null;
   received_at: string | null;
@@ -101,12 +102,15 @@ export interface AccountResponse {
   smtp_user: string | null;
   is_active: boolean;
   state: string;
+  state_error: string | null;
+  capabilities: Record<string, unknown> | null;
   emoji: string | null;
-  sync_lookback_days: number;
   embedding_lookback_days: number;
   spam_enabled: boolean;
   folder_mapping: Record<string, string | null> | null;
+  folder_order: string[] | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface AccountCreateRequest {
@@ -119,7 +123,6 @@ export interface AccountCreateRequest {
   smtp_port?: number;
   smtp_user?: string;
   smtp_password?: string;
-  sync_lookback_days?: number;
   embedding_lookback_days?: number;
   spam_enabled?: boolean;
 }
@@ -135,7 +138,6 @@ export interface AccountUpdateRequest {
   smtp_user?: string;
   smtp_password?: string;
   is_active?: boolean;
-  sync_lookback_days?: number;
   embedding_lookback_days?: number;
   spam_enabled?: boolean;
 }
@@ -146,17 +148,21 @@ export interface FolderResponse {
   imap_name: string;
   display_name: string | null;
   special_use: string | null;
+  mailbox_id: string | null;
+  exists_count: number;
   unified_name: string | null;
   subscribed: boolean;
   is_visible: boolean;
   last_synced_at: string | null;
+  sync_error: string | null;
+  created_at: string | null;
   unread_count: number;
   total_count: number;
 }
 
 export interface VerdictResponse {
   id: string;
-  mail_id: string;
+  message_id: string;
   is_spam: boolean;
   model_used: string | null;
   reasoning: string | null;
@@ -166,7 +172,7 @@ export interface VerdictResponse {
 
 export interface FeedbackResponse {
   success: boolean;
-  mail_id: string;
+  message_id: string;
   is_spam: boolean;
   message: string | null;
 }
@@ -193,11 +199,11 @@ export interface AccountSyncStatus {
   account_name: string;
   last_synced_at: string | null;
   folder_count: number;
-  mail_count: number;
+  message_count: number;
 }
 
 export interface StatsResponse {
-  total_mails: number;
+  total_messages: number;
   total_accounts: number;
   spam_caught: number;
   ham_count: number;
@@ -215,10 +221,9 @@ export interface SSEEvent {
   event_type?: string;
   account_id?: string;
   folder_id?: string;
-  mail_id?: string;
-  uid?: number;
   message_id?: string;
-  is_read?: boolean;
+  imap_uid?: number;
+  is_seen?: boolean;
   is_flagged?: boolean;
   timestamp: string;
   /** Sync state fields (backend sends phase/folder_name/elapsed_s/last_error) */
@@ -298,7 +303,7 @@ export interface SelectionResponse {
 }
 
 export interface SelectionToggle {
-  mail_id: string;
+  message_id: string;
 }
 
 export interface SelectionRange {
@@ -348,7 +353,7 @@ export interface UnifiedFolderResponse {
   total_count: number;
 }
 
-export interface UnifiedMailSummary {
+export interface UnifiedMessageSummary {
   id: string;
   account_id: string;
   account_emoji: string | null;
@@ -357,16 +362,17 @@ export interface UnifiedMailSummary {
   from_addr: string | null;
   to_addrs: string | string[] | null;
   received_at: string | null;
-  is_read: boolean;
+  is_seen: boolean;
   is_flagged: boolean;
+  is_answered: boolean;
+  is_draft: boolean;
   is_deleted: boolean;
-  headers_synced: boolean;
-  body_synced: boolean;
+  deleted_at: string | null;
   snippet: string | null;
 }
 
-export interface UnifiedMailListResponse {
-  mails: UnifiedMailSummary[];
+export interface UnifiedMessageListResponse {
+  messages: UnifiedMessageSummary[];
   has_more: boolean;
   next_cursor: string | null;
 }

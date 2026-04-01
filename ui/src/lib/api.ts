@@ -19,10 +19,10 @@ import type {
   ImageExceptionCreate,
   ImageExceptionResponse,
   JobStatus,
-  MailActionRequest,
-  MailActionResponse,
-  MailDetail,
-  MailListResponse,
+  MessageActionRequest,
+  MessageActionResponse,
+  MessageDetail,
+  MessageListResponse,
   SearchResponse,
   SelectionAll,
   SelectionRange,
@@ -31,7 +31,7 @@ import type {
   StatsResponse,
   UnifiedFolderOrderResponse,
   UnifiedFolderResponse,
-  UnifiedMailListResponse,
+  UnifiedMessageListResponse,
   VerdictResponse,
 } from "@/types/api";
 
@@ -202,10 +202,10 @@ export const api = {
     list(params: {
       account_id?: string;
       folder_id?: string;
-      is_read?: boolean;
+      is_seen?: boolean;
       before?: string;
       limit?: number;
-    }): Promise<MailListResponse> {
+    }): Promise<MessageListResponse> {
       return request(`/mails${qs(params)}`);
     },
 
@@ -213,7 +213,7 @@ export const api = {
       id: string,
       accountId: string,
       loadImages?: boolean,
-    ): Promise<MailDetail> {
+    ): Promise<MessageDetail> {
       return request(
         `/mails/${id}${qs({ account_id: accountId, load_images: loadImages })}`,
       );
@@ -222,8 +222,8 @@ export const api = {
     action(
       id: string,
       accountId: string,
-      body: MailActionRequest,
-    ): Promise<MailActionResponse> {
+      body: MessageActionRequest,
+    ): Promise<MessageActionResponse> {
       return request(`/mails/${id}/action${qs({ account_id: accountId })}`, {
         method: "POST",
         body: JSON.stringify(body),
@@ -405,7 +405,7 @@ export const api = {
       folder_name: string;
       before?: string;
       limit?: number;
-    }): Promise<UnifiedMailListResponse> {
+    }): Promise<UnifiedMessageListResponse> {
       return request(`/unified/mails${qs(params)}`);
     },
     getFolderOrder(): Promise<UnifiedFolderOrderResponse> {

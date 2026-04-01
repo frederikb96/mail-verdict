@@ -21,7 +21,8 @@ export function Providers({ children }: { children: ReactNode }) {
         defaultOptions: {
           queries: {
             retry: 1,
-            refetchOnWindowFocus: false,
+            refetchOnWindowFocus: true,
+            refetchOnMount: "always",
             staleTime: DEFAULT_STALE_TIME,
             gcTime: PERSIST_MAX_AGE,
           },

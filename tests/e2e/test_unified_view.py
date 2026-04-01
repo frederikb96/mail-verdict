@@ -171,9 +171,9 @@ async def test_unified_mails_endpoint(
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert "mails" in data
+    assert "messages" in data
     assert "has_more" in data
-    assert isinstance(data["mails"], list)
+    assert isinstance(data["messages"], list)
 
     # Clean up
     await app_client.put(
@@ -334,10 +334,10 @@ async def test_unified_mails_returns_both_accounts(
         )
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["mails"]) > 0
+        assert len(data["messages"]) > 0
 
         # Collect unique account_ids from returned mails
-        account_ids_in_results = {m["account_id"] for m in data["mails"]}
+        account_ids_in_results = {m["account_id"] for m in data["messages"]}
         assert alice_id in account_ids_in_results, "Alice's mails missing from unified view"
         assert bob_id in account_ids_in_results, "Bob's mails missing from unified view"
     finally:
@@ -366,7 +366,7 @@ async def test_unified_mails_sorted_by_date(
             params={"folder_name": unified_name, "limit": 50},
         )
         assert resp.status_code == 200
-        mails = resp.json()["mails"]
+        mails = resp.json()["messages"]
 
         # Verify descending date order
         dates = [m["received_at"] for m in mails if m["received_at"]]
@@ -451,7 +451,7 @@ async def test_switching_unified_to_per_account_view(
         )
         assert unified_resp.status_code == 200
         unified_account_ids = {
-            m["account_id"] for m in unified_resp.json()["mails"]
+            m["account_id"] for m in unified_resp.json()["messages"]
         }
         assert len(unified_account_ids) == 2
 
@@ -461,7 +461,7 @@ async def test_switching_unified_to_per_account_view(
             params={"account_id": alice_id, "limit": 50},
         )
         assert alice_resp.status_code == 200
-        alice_mails = alice_resp.json()["mails"]
+        alice_mails = alice_resp.json()["messages"]
         for m in alice_mails:
             assert m["account_id"] == alice_id, (
                 f"Per-account view returned wrong account: {m['account_id']}"
@@ -473,7 +473,7 @@ async def test_switching_unified_to_per_account_view(
             params={"account_id": bob_id, "limit": 50},
         )
         assert bob_resp.status_code == 200
-        bob_mails = bob_resp.json()["mails"]
+        bob_mails = bob_resp.json()["messages"]
         for m in bob_mails:
             assert m["account_id"] == bob_id, (
                 f"Per-account view returned wrong account: {m['account_id']}"

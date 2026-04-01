@@ -13,6 +13,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { syncStatesAtom } from "@/lib/atoms";
 import { selectedMailIdsAtom } from "@/store/selection-atom";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
+import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import type { SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
@@ -108,9 +109,8 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           queryClient.invalidateQueries({ queryKey: ["mails"] });
-          queryClient.invalidateQueries({ queryKey: ["unified"] });
           if (data.folder_id) {
-            queryClient.invalidateQueries({ queryKey: ["folders"] });
+            invalidateAllFolderCaches(queryClient);
           }
         } catch {
           // Ignore
@@ -121,14 +121,13 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
-          if (data.mail_id) {
+          if (data.message_id) {
             queryClient.invalidateQueries({
-              queryKey: ["mail", data.mail_id],
+              queryKey: ["mail", data.message_id],
             });
           }
           queryClient.invalidateQueries({ queryKey: ["mails"] });
-          queryClient.invalidateQueries({ queryKey: ["unified"] });
-          queryClient.invalidateQueries({ queryKey: ["folders"] });
+          invalidateAllFolderCaches(queryClient);
         } catch {
           // Ignore
         }
@@ -145,9 +144,9 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
-          if (data.mail_id) {
+          if (data.message_id) {
             queryClient.invalidateQueries({
-              queryKey: ["mail", data.mail_id],
+              queryKey: ["mail", data.message_id],
             });
           }
         } catch {

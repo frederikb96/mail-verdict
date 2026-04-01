@@ -31,7 +31,7 @@ async def _get_mail_ids(
         params={"account_id": account_id, "limit": limit},
     )
     assert resp.status_code == 200
-    return [m["id"] for m in resp.json()["mails"]]
+    return [m["id"] for m in resp.json()["messages"]]
 
 
 async def _get_inbox_folder_id(
@@ -153,7 +153,7 @@ async def test_range_selection(app_client: httpx.AsyncClient) -> None:
         params={"account_id": account_id, "folder_id": folder_id, "limit": 20},
     )
     assert resp.status_code == 200
-    inbox_mails = resp.json()["mails"]
+    inbox_mails = resp.json()["messages"]
 
     if len(inbox_mails) < 3:
         pytest.skip("Need at least 3 mails in INBOX for range selection test")

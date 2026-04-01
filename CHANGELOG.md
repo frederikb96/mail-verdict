@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **DB-centric architecture:** API layer is now pure DB reads/writes — zero IMAP imports
+- **`is_deleted` → `deleted_at`:** Boolean soft-delete replaced with nullable timestamp (retention-ready)
+- **Fresh Alembic migration:** All migration history removed, single v2 initial schema
+- **Folder counts:** Now maintained by Postgres triggers (not computed at query time)
+
+### Added
+
+- **sync_queue outbox:** Persistent outbound change queue — survives crashes, retries with backoff, dead-letter handling
+- **sync_audit:** Audit log for all sync operations (inbound, outbound, conflict resolution)
+- **OutboundProcessor:** Background processor reads sync_queue and executes on IMAP
+- **Conflict awareness:** Inbound sync checks for pending outbound actions before overwriting
+- **Folder resolution utility:** Shared `database/folder_utils.py` — eliminates duplicate resolution logic
+- **search_vector trigger:** Postgres auto-populates tsvector from subject + body_text
+- **Test CLI:** `python -m tests.helpers.testenv [reset-seed|seed|inspect|wait|reset]`
+- **Compose split:** Production (`compose.yaml`), development (`compose.dev.yaml`), test (`compose.test.yaml`) with isolated ports and `--env-file` secret injection
+- **Config override directory:** `config-custom/` for sparse YAML overrides (gitignored)
+
+### Changed
+
+- API mail actions (move, delete, flag) now write to DB + sync_queue (instant response)
+- Move = `UPDATE folder_id` (was: `is_deleted=True` + wait for target sync)
+- Spam/rules engine decoupled from ActionPropagator — uses sync_queue instead
+- Test infrastructure: constants centralized in `tests/helpers/testenv.py` (DRY)
+- Seed emails consolidated in `tests/helpers/seed.py` (single source of truth)
+
+### Fixed
+
+- INBOX appears empty on first visit after fresh start (race condition in auto-select)
+- Bulk move missing source_folder_id in sync_queue payload (data loss bug)
+- `get_action_propagator()` dead code removed from server.py
+
 ## [1.0.0] - 2026-03-22
 
 ### Breaking Changes

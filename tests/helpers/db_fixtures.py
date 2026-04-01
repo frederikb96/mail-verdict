@@ -46,7 +46,7 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _generate_mails(
+def _generate_messages(
     account_id: uuid.UUID,
     folder_id: uuid.UUID,
     count: int = 10,
@@ -54,30 +54,32 @@ def _generate_mails(
     from_addr: str = "bob@test.local",
     prefix: str = "Test",
 ) -> list[dict[str, Any]]:
-    """Generate mail fixture dicts for direct DB insertion."""
-    mails = []
+    """Generate message fixture dicts for direct DB insertion."""
+    messages = []
     base_time = _now() - timedelta(days=count)
     for i in range(count):
-        mail_id = MAIL_IDS[i] if i < len(MAIL_IDS) else uuid.uuid4()
-        mails.append({
-            "id": str(mail_id),
+        msg_id = MAIL_IDS[i] if i < len(MAIL_IDS) else uuid.uuid4()
+        messages.append({
+            "id": str(msg_id),
             "account_id": str(account_id),
             "folder_id": str(folder_id),
-            "uid": start_uid + i,
+            "imap_uid": start_uid + i,
             "message_id": f"<{prefix.lower()}-{i+1}@test.local>",
             "subject": f"{prefix} Email #{i+1}",
             "from_addr": from_addr,
-            "to_addrs": ["alice@test.local"] if account_id == ALICE_ACCOUNT_ID else ["bob@test.local"],
+            "to_addrs": (
+                ["alice@test.local"]
+                if account_id == ALICE_ACCOUNT_ID
+                else ["bob@test.local"]
+            ),
             "body_text": f"This is test email {i+1} body content for testing.",
             "body_html": f"<p>This is test email {i+1} body content for testing.</p>",
             "received_at": (base_time + timedelta(hours=i)).isoformat(),
             "size_bytes": 1024 + i * 100,
-            "is_read": i % 3 == 0,
+            "is_seen": i % 3 == 0,
             "is_flagged": i % 5 == 0,
-            "headers_synced": True,
-            "body_synced": True,
         })
-    return mails
+    return messages
 
 
 async def seed_db() -> dict[str, str]:
@@ -155,12 +157,12 @@ async def inspect_db() -> None:
         print(f"\nAccounts ({len(accounts)}):")
         for acct in accounts:
             aid = acct["id"]
-            mails_resp = await client.get(f"/api/mails?account_id={aid}")
-            mails = mails_resp.json() if mails_resp.status_code == 200 else {}
+            msgs_resp = await client.get(f"/api/mails?account_id={aid}")
+            msgs = msgs_resp.json() if msgs_resp.status_code == 200 else {}
             folders_resp = await client.get(f"/api/accounts/{aid}/folders")
             folders = folders_resp.json() if folders_resp.status_code == 200 else []
             print(f"  {acct['name']}: state={acct['state']}, "
-                  f"folders={len(folders)}, mails={len(mails.get('mails', []))}")
+                  f"folders={len(folders)}, messages={len(msgs.get('messages', []))}")
             for f in folders:
                 print(f"    {f.get('imap_name', '?')}: "
                       f"total={f.get('total_count', '?')}, "
@@ -174,7 +176,7 @@ async def _main(cmd: str) -> None:
     elif cmd == "inspect":
         await inspect_db()
     else:
-        print(f"Usage: python -m tests.helpers.db_fixtures [seed|inspect]")
+        print("Usage: python -m tests.helpers.db_fixtures [seed|inspect]")
         sys.exit(1)
 
 

@@ -1,9 +1,8 @@
 """
-E2E test: Mail actions, IMAP propagation, and on-demand body fetch.
+E2E test: Mail actions and IMAP propagation.
 
 Tests individual mail actions (star, read, move, archive, spam, delete)
-with verification that changes propagate to the IMAP server,
-and the on-demand body fetch for mails with body_synced=True.
+with verification that changes propagate to the IMAP server.
 """
 
 from __future__ import annotations
@@ -130,7 +129,7 @@ async def _get_first_mail(
         params={"account_id": account_id, "limit": 1},
     )
     assert resp.status_code == 200
-    mails = resp.json()["mails"]
+    mails = resp.json()["messages"]
     assert len(mails) > 0, "No mails available"
     return mails[0]
 
@@ -152,8 +151,6 @@ async def test_get_mail_detail(app_client: httpx.AsyncClient) -> None:
     detail = resp.json()
     assert detail["id"] == mail_summary["id"]
     assert "body_text" in detail or "body_html" in detail
-    assert "headers_synced" in detail
-    assert "body_synced" in detail
     assert "has_blocked_images" in detail
     assert "images_allowed" in detail
     assert "tags" in detail
@@ -161,10 +158,10 @@ async def test_get_mail_detail(app_client: httpx.AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_mail_detail_has_auth_results(
+async def test_mail_detail_has_raw_headers(
     app_client: httpx.AsyncClient,
 ) -> None:
-    """Mail detail includes DKIM/SPF/DMARC authentication results."""
+    """Mail detail includes raw_headers for auth inspection."""
     account_id = await _get_alice_id(app_client)
     mail_summary = await _get_first_mail(app_client, account_id)
 
@@ -174,10 +171,8 @@ async def test_mail_detail_has_auth_results(
     )
     assert resp.status_code == 200
     detail = resp.json()
-    # These fields should exist (values may be null for test server)
-    assert "dkim_pass" in detail
-    assert "spf_pass" in detail
-    assert "dmarc_pass" in detail
+    # raw_headers field should exist (may be null for test server)
+    assert "raw_headers" in detail
 
 
 @pytest.mark.asyncio
@@ -218,7 +213,7 @@ async def test_mark_read_unread(app_client: httpx.AsyncClient) -> None:
         f"/api/mails/{mail_id}",
         params={"account_id": account_id},
     )
-    assert detail_resp.json()["is_read"] is True
+    assert detail_resp.json()["is_seen"] is True
 
     # Mark unread
     resp = await app_client.post(
@@ -288,7 +283,7 @@ async def test_move_to_folder_and_back(
     inbox_id = await _get_inbox_folder_id(app_client, account_id)
     mail = await _get_mail_with_uid(app_client, account_id, skip=0, folder_id=inbox_id)
     mail_id = mail["id"]
-    uid = mail["uid"]
+    uid = mail["imap_uid"]
 
     # Move to Drafts
     resp = await app_client.post(
@@ -312,7 +307,7 @@ async def test_move_to_folder_and_back(
         "/api/mails",
         params={"account_id": account_id, "limit": 200},
     )
-    listing_ids = {m["id"] for m in listing.json()["mails"]}
+    listing_ids = {m["id"] for m in listing.json()["messages"]}
     assert mail_id not in listing_ids, "Deleted mail should not appear in listing"
 
     # IMAP: UID should disappear from INBOX
@@ -339,14 +334,10 @@ async def test_action_on_nonexistent_mail_404(
 
 
 @pytest.mark.asyncio
-async def test_on_demand_body_fetch(
+async def test_mail_detail_has_body(
     app_client: httpx.AsyncClient,
 ) -> None:
-    """Requesting a mail detail triggers body fetch if not yet synced.
-
-    Since test mails already have body_synced=True, we verify the detail
-    endpoint returns body content.
-    """
+    """Mail detail returns body content (PostIMAP syncs full messages)."""
     account_id = await _get_alice_id(app_client)
     mail = await _get_first_mail(app_client, account_id)
     mail_id = mail["id"]
@@ -358,10 +349,12 @@ async def test_on_demand_body_fetch(
     assert resp.status_code == 200
     detail = resp.json()
 
-    # Since body_synced=True, body should be populated
-    if detail["body_synced"]:
-        has_body = detail.get("body_text") is not None or detail.get("body_html") is not None
-        assert has_body, "body_synced=True but no body content returned"
+    # PostIMAP syncs full messages, so body should be populated
+    has_body = (
+        detail.get("body_text") is not None
+        or detail.get("body_html") is not None
+    )
+    assert has_body, "No body content returned"
 
 
 # --- IMAP propagation tests ---
@@ -455,7 +448,7 @@ async def _get_mail_with_uid(
         params["folder_id"] = folder_id
     resp = await client.get("/api/mails", params=params)
     assert resp.status_code == 200
-    mails = resp.json()["mails"]
+    mails = resp.json()["messages"]
     found = 0
     for mail in mails:
         detail = await client.get(
@@ -464,7 +457,7 @@ async def _get_mail_with_uid(
         )
         if detail.status_code == 200:
             d = detail.json()
-            if d.get("uid") and d.get("uid") > 0:
+            if d.get("imap_uid") and d.get("imap_uid") > 0:
                 if found >= skip:
                     return d
                 found += 1
@@ -478,7 +471,7 @@ async def test_flag_propagates_to_imap(app_client: httpx.AsyncClient) -> None:
     inbox_id = await _get_inbox_folder_id(app_client, account_id)
     mail = await _get_mail_with_uid(app_client, account_id, skip=1, folder_id=inbox_id)
     mail_id = mail["id"]
-    uid = mail["uid"]
+    uid = mail["imap_uid"]
 
     # Flag via API
     resp = await app_client.post(
@@ -555,7 +548,7 @@ async def test_spam_action_moves_to_junk(app_client: httpx.AsyncClient) -> None:
             "/api/mails",
             params={"account_id": account_id, "limit": 200},
         )
-        listing_ids = {m["id"] for m in listing.json()["mails"]}
+        listing_ids = {m["id"] for m in listing.json()["messages"]}
         assert mail_id not in listing_ids, "Spam-marked mail should not appear in listing"
 
         # Poll IMAP until mail appears in Junk Mail
@@ -583,14 +576,14 @@ async def test_delete_action_sets_deleted_flag(app_client: httpx.AsyncClient) ->
     inbox_id = await _get_inbox_folder_id(app_client, account_id)
     mail = await _get_mail_with_uid(app_client, account_id, skip=3, folder_id=inbox_id)
     mail_id = mail["id"]
-    uid = mail["uid"]
+    uid = mail["imap_uid"]
 
     # Get mails before delete
     before_resp = await app_client.get(
         "/api/mails",
         params={"account_id": account_id, "limit": 200},
     )
-    before_ids = {m["id"] for m in before_resp.json()["mails"]}
+    before_ids = {m["id"] for m in before_resp.json()["messages"]}
     assert mail_id in before_ids
 
     resp = await app_client.post(
@@ -606,7 +599,7 @@ async def test_delete_action_sets_deleted_flag(app_client: httpx.AsyncClient) ->
         "/api/mails",
         params={"account_id": account_id, "limit": 200},
     )
-    after_ids = {m["id"] for m in after_resp.json()["mails"]}
+    after_ids = {m["id"] for m in after_resp.json()["messages"]}
     assert mail_id not in after_ids, "Deleted mail still in default listing"
 
     # Poll IMAP until UID is expunged from INBOX

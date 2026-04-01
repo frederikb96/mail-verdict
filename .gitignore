@@ -12,7 +12,12 @@ build/
 
 # Environment
 .env
+.dev.env
+.prod.env
 uv.lock
+
+# Custom config overrides
+config-custom/*.yaml
 
 # UI build artifacts
 ui/.next/
@@ -27,8 +32,9 @@ ui/node_modules/
 # Claude
 .claude/
 
-# E2E test results
+# E2E test artifacts
 tests/e2e/results/*.yaml
+tests/e2e/screenshots/
 
 # Archive
 .archive/

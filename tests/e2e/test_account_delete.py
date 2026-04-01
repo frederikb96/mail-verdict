@@ -130,7 +130,7 @@ async def test_delete_account_cascade(
             "/api/mails", params={"account_id": account_id, "limit": 200},
         )
         assert mails_resp.status_code == 200
-        mails = mails_resp.json()["mails"]
+        mails = mails_resp.json()["messages"]
         assert len(mails) > 0, "Account should have mails after sync"
 
         mail_ids = [m["id"] for m in mails]

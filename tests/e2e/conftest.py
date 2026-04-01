@@ -28,23 +28,28 @@ from tests.helpers.seed import StalwartSeeder
 
 logger = logging.getLogger(__name__)
 
-# Test infrastructure endpoints (host-side ports from compose.test.yaml)
-APP_BASE_URL = "http://127.0.0.1:18080"
-STALWART_ADMIN_URL = "http://127.0.0.1:8880"
-SMTP_HOST = "127.0.0.1"
-SMTP_PORT = 1025
-IMAP_HOST = "127.0.0.1"
-IMAP_PORT = 1143
+# Single source of truth for test infrastructure (see tests/helpers/testenv.py)
+from tests.helpers.testenv import (  # noqa: E402
+    ALICE_EMAIL,
+    ALICE_PASSWORD,
+    APP_BASE_URL,
+    BOB_EMAIL,
+    BOB_PASSWORD,
+    IMAP_HOST,
+    IMAP_PORT,
+    SMTP_HOST,
+    SMTP_PORT,
+    SPAMMER_EMAIL,
+    SPAMMER_PASSWORD,
+    STALWART_ADMIN_URL,
+    STALWART_INTERNAL_HOST,
+    STALWART_INTERNAL_IMAP_PORT,
+    STALWART_INTERNAL_SMTP_PORT,
+)
+
 QDRANT_URL = "http://127.0.0.1:16334"
 QDRANT_COLLECTION = "mail_embeddings"
 
-# Test credentials
-ALICE_EMAIL = "alice@test.local"
-ALICE_PASSWORD = "testpass123"
-BOB_EMAIL = "bob@test.local"
-BOB_PASSWORD = "testpass123"
-SPAMMER_EMAIL = "spammer@test.local"
-SPAMMER_PASSWORD = "testpass123"
 NEWSLETTER_EMAIL = "newsletter@test.local"
 NEWSLETTER_PASSWORD = "testpass123"
 
@@ -105,12 +110,12 @@ async def _seed_app_account(
 
     resp = await client.post("/api/accounts", json={
         "name": name,
-        "imap_host": "stalwart",
-        "imap_port": 1143,
+        "imap_host": STALWART_INTERNAL_HOST,
+        "imap_port": STALWART_INTERNAL_IMAP_PORT,
         "imap_user": email_addr,
         "imap_password": password,
-        "smtp_host": "stalwart",
-        "smtp_port": 2525,
+        "smtp_host": STALWART_INTERNAL_HOST,
+        "smtp_port": STALWART_INTERNAL_SMTP_PORT,
         "smtp_user": email_addr,
         "smtp_password": password,
         "spam_enabled": spam_enabled,
@@ -128,7 +133,7 @@ def event_loop():
 
 
 async def _restart_app() -> None:
-    """Restart the app container so sync engine picks up new accounts."""
+    """Restart the app container so PostIMAP picks up new accounts."""
     proc = await asyncio.create_subprocess_exec(
         "podman", "restart", "mv-app-test",
         stdout=asyncio.subprocess.PIPE,
@@ -144,92 +149,22 @@ async def _restart_app() -> None:
 
 
 def _send_seed_emails() -> int:
-    """Send test emails between Alice and Bob via SMTP from the host.
-
-    Sends a mix of Alice->Bob and Bob->Alice emails so both inboxes
-    have content for sync testing.
+    """Send test emails between Alice and Bob using the shared seed module.
 
     Returns:
         Number of emails successfully sent.
     """
-    import time
+    from tests.helpers.seed import send_bidirectional_emails
 
-    seed_emails = [
-        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
-         "subject": "Hey Bob, welcome aboard!",
-         "body": (
-             "Hi Bob,\n\nWelcome to the team. "
-             "Let me know if you need anything.\n\nBest,\nAlice"
-         )},
-        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
-         "subject": "Re: Hey Bob, welcome aboard!",
-         "body": (
-             "Thanks Alice! Happy to be here. "
-             "Looking forward to working together.\n\nBob"
-         )},
-        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
-         "subject": "Project kickoff meeting",
-         "body": (
-             "Bob,\n\nLet's schedule a kickoff for next Monday "
-             "at 10am.\nI'll send a calendar invite.\n\nAlice"
-         )},
-        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
-         "subject": "Re: Project kickoff meeting",
-         "body": (
-             "Monday 10am works for me. "
-             "Should I prepare anything?\n\nBob"
-         )},
-        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
-         "subject": "Code review request",
-         "body": (
-             "Hey Bob, could you review PR #12 "
-             "when you get a chance? No rush.\n\nAlice"
-         )},
-        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
-         "subject": "Lunch plans",
-         "body": (
-             "Alice, want to grab lunch at the new place "
-             "on Pontstrasse?\n\nBob"
-         )},
-        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
-         "subject": "Re: Lunch plans",
-         "body": "Sounds great! 12:30 works for me.\n\nAlice"},
-        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
-         "subject": "Bug report: sync stalls on large folders",
-         "body": (
-             "I noticed the sync seems to stall when a folder "
-             "has >1000 messages.\nCan you take a look?\n\nBob"
-         )},
-        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
-         "subject": "Team standup notes",
-         "body": "Quick update from today's standup: deployment on track.\n\nAlice"},
-        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
-         "subject": "Re: Team standup notes",
-         "body": "Got it. I'll finish the API tests today.\n\nBob"},
-        {"from": ALICE_EMAIL, "from_pw": ALICE_PASSWORD, "to": BOB_EMAIL,
-         "subject": "Security review findings",
-         "body": "Found a few issues in the auth module. Details in PR #15.\n\nAlice"},
-        {"from": BOB_EMAIL, "from_pw": BOB_PASSWORD, "to": ALICE_EMAIL,
-         "subject": "Re: Security review findings",
-         "body": "I'll address those comments by EOD.\n\nBob"},
-    ]
-
-    sent = 0
-    for msg_data in seed_emails:
-        try:
-            send_email(
-                from_addr=msg_data["from"],
-                from_password=msg_data["from_pw"],
-                to_addr=msg_data["to"],
-                subject=msg_data["subject"],
-                body=msg_data["body"],
-            )
-            sent += 1
-            time.sleep(0.1)
-        except Exception as exc:
-            logger.warning("Failed to send seed email '%s': %s", msg_data["subject"], exc)
-
-    logger.info("Sent %d/%d seed emails between Alice and Bob", sent, len(seed_emails))
+    sent = send_bidirectional_emails(
+        smtp_host=SMTP_HOST,
+        smtp_port=SMTP_PORT,
+        alice_email=ALICE_EMAIL,
+        alice_password=ALICE_PASSWORD,
+        bob_email=BOB_EMAIL,
+        bob_password=BOB_PASSWORD,
+    )
+    logger.info("Sent %d seed emails between Alice and Bob", sent)
     return sent
 
 
@@ -272,7 +207,10 @@ async def _wait_for_account_active(
 
 @pytest_asyncio.fixture(scope="session")
 async def seeded_env() -> dict[str, str]:
-    """Session-scoped seed: Stalwart + app accounts (Alice, Bob) via API, then restart for sync."""
+    """Session-scoped seed: Stalwart + app accounts (Alice, Bob) via API.
+
+    Restarts app for PostIMAP sync, waits for ACTIVE state.
+    """
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
 
     # Phase 1: seed Stalwart + create accounts + configure settings via API
@@ -286,10 +224,6 @@ async def seeded_env() -> dict[str, str]:
         await client.put("/api/settings/ai", json={
             "data": {"api_key": openai_key},
         })
-        # Set fast sync interval for tests (10s instead of 300s default)
-        await client.put("/api/settings/sync", json={
-            "data": {"poll_interval_seconds": 10, "idle_enabled": False},
-        })
         await _seed_stalwart()
         alice_id = await _seed_app_account(
             client, name="alice", email_addr=ALICE_EMAIL, password=ALICE_PASSWORD,
@@ -302,11 +236,11 @@ async def seeded_env() -> dict[str, str]:
     # Phase 2: send test emails between Alice and Bob (from host via SMTP)
     _send_seed_emails()
 
-    # Phase 3: restart app so SyncEngine picks up both accounts from DB
+    # Phase 3: restart app so PostIMAP picks up both accounts from DB
     await _restart_app()
     logger.info("App restarted after account seeding")
 
-    # Phase 4: wait for both accounts to reach ACTIVE
+    # Phase 4: wait for both accounts to reach ACTIVE (PostIMAP sets state)
     fresh_transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
         base_url=APP_BASE_URL, transport=fresh_transport, timeout=30.0,
@@ -495,7 +429,7 @@ async def wait_for_new_mail(
         resp = await client.get("/api/mails", params=params)
         if resp.status_code == 200:
             data = resp.json()
-            mails = data.get("mails", data) if isinstance(data, dict) else data
+            mails = data.get("messages", data) if isinstance(data, dict) else data
             for mail in mails:
                 mail_id = mail["id"]
                 if mail_id in known_ids:
@@ -548,7 +482,7 @@ async def get_known_mail_ids(
     resp = await client.get("/api/mails", params=params)
     if resp.status_code == 200:
         data = resp.json()
-        mails = data.get("mails", data) if isinstance(data, dict) else data
+        mails = data.get("messages", data) if isinstance(data, dict) else data
         return {m["id"] for m in mails}
     return set()
 

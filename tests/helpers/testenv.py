@@ -17,9 +17,7 @@ from __future__ import annotations
 import asyncio
 import smtplib
 import sys
-import time
 from email.mime.text import MIMEText
-from typing import Any
 
 import httpx
 
@@ -149,7 +147,7 @@ def send_seed_emails() -> int:
 
 
 async def wait_accounts_active(timeout: int = 60) -> None:
-    """Wait for all accounts to reach ACTIVE state."""
+    """Wait for all accounts to reach ACTIVE state (set by PostIMAP after sync)."""
     transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")
     async with httpx.AsyncClient(
         base_url=APP_BASE_URL, transport=transport, timeout=30.0,
@@ -191,27 +189,27 @@ async def inspect() -> None:
         print(f"\nAccounts ({len(accounts)}):")
         for acct in accounts:
             aid = acct["id"]
-            mails = (await client.get(f"/api/mails?account_id={aid}")).json()
+            msgs = (await client.get(f"/api/mails?account_id={aid}")).json()
             folders = (await client.get(f"/api/accounts/{aid}/folders")).json()
             print(f"  {acct['name']}: state={acct['state']}, "
-                  f"folders={len(folders)}, mails={len(mails.get('mails', []))}")
+                  f"folders={len(folders)}, messages={len(msgs.get('messages', []))}")
 
 
 async def full_seed() -> dict[str, str]:
-    """Complete seed: Stalwart + accounts + emails + restart + wait."""
+    """Complete seed: Stalwart + accounts + emails + restart + wait for PostIMAP sync."""
     await wait_healthy()
     await seed_stalwart()
     alice_id = await create_app_account("alice", ALICE_EMAIL, ALICE_PASSWORD)
     bob_id = await create_app_account("bob", BOB_EMAIL, BOB_PASSWORD)
     send_seed_emails()
 
-    # Restart to trigger sync
+    # Restart so PostIMAP picks up new accounts and syncs IMAP
     proc = await asyncio.create_subprocess_exec(
         "podman", "restart", APP_CONTAINER,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     await proc.communicate()
-    print("App restarted for sync")
+    print("App restarted for PostIMAP sync")
 
     await wait_healthy(timeout=120)
     await wait_accounts_active(timeout=60)

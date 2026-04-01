@@ -13,10 +13,8 @@ import { useState } from "react";
 import { useAtomValue } from "jotai";
 import { GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { useBulkAction } from "@/hooks/use-selection";
 import { useMailAction } from "@/hooks/use-mails";
 import { selectedAccountIdAtom } from "@/lib/atoms";
-import { selectedMailIdsAtom } from "@/store/selection-atom";
 
 interface MailDndProviderProps {
   children: React.ReactNode;
@@ -24,19 +22,16 @@ interface MailDndProviderProps {
 
 /**
  * Top-level DndContext wrapper for mail drag-and-drop.
- * Handles onDragEnd to dispatch move actions when mails are dropped on folders.
+ * Uses individual mailAction (move by folder_id) for each dragged mail.
  */
 export function MailDndProvider({ children }: MailDndProviderProps) {
   const accountId = useAtomValue(selectedAccountIdAtom);
-  const selectedIds = useAtomValue(selectedMailIdsAtom);
-  const bulkAction = useBulkAction();
   const mailAction = useMailAction();
   const [dragData, setDragData] = useState<{
     count: number;
     mailIds: string[];
   } | null>(null);
 
-  // Require 5px movement before starting drag (prevents click interference)
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -69,26 +64,11 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
     const targetFolderId = overData.folderId as string;
     const mailIds = activeData.mailIds as string[];
 
-    if (mailIds.length > 1) {
-      // Multi-drag: use bulk action
-      bulkAction.mutate({
+    for (const mailId of mailIds) {
+      mailAction.mutate({
+        mailId,
         accountId,
-        body: {
-          action: "move",
-          target_folder_id: targetFolderId,
-        },
-      });
-    } else if (mailIds.length === 1) {
-      // Single drag: use individual mail action
-      // Need to resolve folder name — use the folder_id directly via move
-      // The backend move action accepts target_folder (imap name),
-      // but we have folder_id. Use bulk action for consistency.
-      bulkAction.mutate({
-        accountId,
-        body: {
-          action: "move",
-          target_folder_id: targetFolderId,
-        },
+        action: { action: "move", target_folder_id: targetFolderId },
       });
     }
   }

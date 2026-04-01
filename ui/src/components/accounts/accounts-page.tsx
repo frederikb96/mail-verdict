@@ -354,7 +354,6 @@ function AccountForm({
         : undefined,
       smtp_user: (form.get("smtp_user") as string) || undefined,
       smtp_password: (form.get("smtp_password") as string) || undefined,
-      sync_lookback_days: Number(form.get("sync_lookback_days")) || 180,
       spam_enabled: form.get("spam_enabled") === "on",
     };
 
@@ -463,15 +462,6 @@ function AccountForm({
               placeholder={isEditing ? "(unchanged)" : ""}
             />
           </div>
-        </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="sync_lookback_days">Sync Lookback (days)</Label>
-          <Input
-            id="sync_lookback_days"
-            name="sync_lookback_days"
-            type="number"
-            defaultValue={account?.sync_lookback_days ?? 180}
-          />
         </div>
         <div className="flex items-center gap-2">
           <input

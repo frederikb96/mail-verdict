@@ -70,7 +70,7 @@ async def test_rule_test_dry_run(app_client: httpx.AsyncClient) -> None:
     account_id = await get_account_id(app_client, name="alice")
     resp = await app_client.get("/api/mails", params={"limit": 1, "account_id": account_id})
     data = resp.json()
-    mails = data.get("mails", data) if isinstance(data, dict) else data
+    mails = data.get("messages", data) if isinstance(data, dict) else data
     if not mails:
         pytest.skip("No mails available for rule test")
 

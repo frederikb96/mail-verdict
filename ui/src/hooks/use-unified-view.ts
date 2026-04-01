@@ -6,7 +6,7 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { UnifiedFolderResponse, UnifiedMailListResponse } from "@/types/api";
+import type { UnifiedFolderResponse, UnifiedMessageListResponse } from "@/types/api";
 
 /** Fetch merged folder list across all accounts. */
 export function useUnifiedFolders() {
@@ -18,7 +18,7 @@ export function useUnifiedFolders() {
 
 /** Fetch paginated merged mails for a unified folder. */
 export function useUnifiedMails(folderName: string | null) {
-  return useInfiniteQuery<UnifiedMailListResponse>({
+  return useInfiniteQuery<UnifiedMessageListResponse>({
     queryKey: ["unified", "mails", folderName],
     queryFn: ({ pageParam }) =>
       api.unified.mails({

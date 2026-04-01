@@ -15,10 +15,10 @@ import {
 } from "@/lib/format";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { UnifiedMailSummary } from "@/types/api";
+import type { UnifiedMessageSummary } from "@/types/api";
 
 interface UnifiedMailItemProps {
-  mail: UnifiedMailSummary;
+  mail: UnifiedMessageSummary;
   isSelected: boolean;
   isFocused?: boolean;
   isChecked: boolean;
@@ -54,7 +54,7 @@ export function UnifiedMailItem({
           : isChecked
             ? "bg-accent/70"
             : "hover:bg-accent/50",
-        !mail.is_read && !isSelected && !isChecked && "bg-accent/20",
+        !mail.is_seen && !isSelected && !isChecked && "bg-accent/20",
         isFocused && "ring-2 ring-inset ring-ring",
       )}
       onClick={() => onSelect(mail.id)}
@@ -108,13 +108,13 @@ export function UnifiedMailItem({
             </span>
           )}
           {/* Unread dot */}
-          {!mail.is_read && (
+          {!mail.is_seen && (
             <div className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
           )}
           <span
             className={cn(
               "truncate text-sm text-foreground",
-              !mail.is_read ? "font-semibold" : "font-medium",
+              !mail.is_seen ? "font-semibold" : "font-medium",
             )}
           >
             {senderName}
@@ -139,11 +139,11 @@ export function UnifiedMailItem({
           className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, mail.is_read ? "mark_unread" : "mark_read", mail.account_id);
+            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read", mail.account_id);
           }}
-          title={mail.is_read ? "Mark as unread" : "Mark as read"}
+          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
         >
-          {mail.is_read ? (
+          {mail.is_seen ? (
             <MailIcon className="h-3.5 w-3.5" />
           ) : (
             <MailOpen className="h-3.5 w-3.5" />
