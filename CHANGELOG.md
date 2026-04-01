@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking Changes
 
+- **PostIMAP integration:** Entire IMAP sync layer (~4,700 LOC) replaced with PostIMAP microservice — MailVerdict is now a pure PostgreSQL application
+- **`Mail` → `Message`:** Model renamed, table `mails` → `messages`
+- **`uid` → `imap_uid`:** IMAP UID field renamed across entire stack
+- **`is_read` → `is_seen`:** Read state field renamed across entire stack
 - **DB-centric architecture:** API layer is now pure DB reads/writes — zero IMAP imports
 - **`is_deleted` → `deleted_at`:** Boolean soft-delete replaced with nullable timestamp (retention-ready)
 - **Fresh Alembic migration:** All migration history removed, single v2 initial schema
@@ -16,11 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **sync_queue outbox:** Persistent outbound change queue — survives crashes, retries with backoff, dead-letter handling
-- **sync_audit:** Audit log for all sync operations (inbound, outbound, conflict resolution)
-- **OutboundProcessor:** Background processor reads sync_queue and executes on IMAP
-- **Conflict awareness:** Inbound sync checks for pending outbound actions before overwriting
-- **Folder resolution utility:** Shared `database/folder_utils.py` — eliminates duplicate resolution logic
+- **PostIMAP container:** All 3 compose files now include PostIMAP service (v0.2.0 with AES-256-GCM credential encryption)
+- **`pg_listener.py`:** PG LISTEN/NOTIFY event dispatcher — replaces in-process SyncManager events for real-time SSE
+- **`AccountPrefs` model:** Account preferences split to dedicated `account_prefs` table
+- **`FolderPrefs` model:** Folder preferences split to dedicated `folder_prefs` table
 - **search_vector trigger:** Postgres auto-populates tsvector from subject + body_text
 - **Test CLI:** `python -m tests.helpers.testenv [reset-seed|seed|inspect|wait|reset]`
 - **Compose split:** Production (`compose.yaml`), development (`compose.dev.yaml`), test (`compose.test.yaml`) with isolated ports and `--env-file` secret injection
@@ -28,17 +31,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- API mail actions (move, delete, flag) now write to DB + sync_queue (instant response)
-- Move = `UPDATE folder_id` (was: `is_deleted=True` + wait for target sync)
-- Spam/rules engine decoupled from ActionPropagator — uses sync_queue instead
+- All mail actions are now direct SQL `UPDATE` statements — PostIMAP PG triggers propagate changes to IMAP automatically
+- PG LISTEN/NOTIFY replaces SyncManager event queue for real-time SSE delivery
+- API mail actions (move, delete, flag) write directly to DB (instant response, no sync_queue)
+- Spam/rules engine actions now pure DB writes
 - Test infrastructure: constants centralized in `tests/helpers/testenv.py` (DRY)
 - Seed emails consolidated in `tests/helpers/seed.py` (single source of truth)
 
 ### Fixed
 
 - INBOX appears empty on first visit after fresh start (race condition in auto-select)
-- Bulk move missing source_folder_id in sync_queue payload (data loss bug)
-- `get_action_propagator()` dead code removed from server.py
+
+### Removed
+
+- `sync/` directory (14 files, ~4,700 LOC) — replaced by PostIMAP microservice
+- `jobs/` directory (3 files) — PostIMAP manages account state
+- `sync_utils.py`, `folder_utils.py` — no longer needed
+- `SyncQueue`, `SyncAudit`, `JobState` models
+- `imap-tools` dependency
+- Direct IMAP connection management (SyncEngine, SyncManager, SyncConnector)
+- IDLE watchers (`sync/idle.py`), sync trackers (`sync/tracker.py`)
+- OutboundProcessor (`sync/outbound.py`), ActionPropagator (`sync/actions.py`)
+- `jobs.py` API endpoint (job state managed by PostIMAP)
 
 ## [1.0.0] - 2026-03-22
 

@@ -32,7 +32,7 @@ All config with defaults and comments lives in `config/config.yaml` -- this is t
 | Variable | Description |
 |----------|-------------|
 | `OPENAI_API_KEY` | OpenAI API key for AI verdict and embeddings |
-| `MAIL_VERDICT_ENCRYPTION_KEY` | Fernet key for IMAP/SMTP credential encryption |
+| `MAIL_VERDICT_ENCRYPTION_KEY` | AES-256-GCM key for IMAP/SMTP credential encryption (used by PostIMAP) |
 | `POSTGRES_PASSWORD` | Database password (used by compose `${VAR}` interpolation) |
 
 Compose injects secrets via `--env-file` flag -- see `.dev.env.example` / `.prod.env.example` for the structure.
@@ -50,9 +50,10 @@ Dev and prod can run simultaneously on different ports. Test compose is for E2E 
 ## Tech Stack
 
 - **Python 3.13+**, FastAPI, SQLAlchemy 2.0 async, Alembic, asyncpg
+- **PostIMAP** (external TypeScript microservice — IMAP↔PostgreSQL sync, v0.2.0)
 - **Qdrant** + OpenAI embeddings for semantic search
 - **React 19 + Next.js 16** (static export served by FastAPI)
-- **imap-tools** (IMAP), **aiosmtplib** (SMTP), **FastMCP** (MCP tool interface)
+- **aiosmtplib** (SMTP), **FastMCP** (MCP tool interface)
 
 ## License
 
