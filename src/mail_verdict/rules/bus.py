@@ -1,8 +1,8 @@
 """
 Async event bus for internal publish/subscribe messaging.
 
-All mail state changes emit events through this bus.
-Subscribers register by event type and are dispatched in priority order.
+Simplified for PostIMAP mode: dispatches dict-based events from
+PG LISTEN to registered subscribers by event key (e.g. "message", "folder").
 """
 
 from __future__ import annotations
@@ -13,12 +13,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
 
-from mail_verdict.sync.events import SyncEvent
-
 logger = logging.getLogger(__name__)
 
-# Subscriber callback: receives a SyncEvent, returns None
-SubscriberCallback = Callable[[SyncEvent], Coroutine[Any, Any, None]]
+# Subscriber callback: receives an event dict, returns None
+SubscriberCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
 @dataclass
@@ -37,80 +35,80 @@ class Subscriber:
 @dataclass
 class EventBus:
     """
-    Async event bus dispatching SyncEvents to registered subscribers.
+    Async event bus dispatching PG LISTEN events to registered subscribers.
 
     Thread-safe via asyncio lock. Subscribers are called sequentially
-    in priority order per event type.
+    in priority order per event key.
     """
 
-    _subscribers: dict[type[SyncEvent], list[Subscriber]] = field(
+    _subscribers: dict[str, list[Subscriber]] = field(
         default_factory=lambda: defaultdict(list)
     )
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def subscribe(
         self,
-        event_type: type[SyncEvent],
+        event_key: str,
         subscriber: Subscriber,
     ) -> None:
         """
-        Register a subscriber for a specific event type.
+        Register a subscriber for a specific event key.
 
         Args:
-            event_type: The SyncEvent subclass to subscribe to
+            event_key: Event key to subscribe to (e.g. "message", "folder")
             subscriber: Subscriber with callback and priority
         """
         async with self._lock:
-            subs = self._subscribers[event_type]
+            subs = self._subscribers[event_key]
             subs.append(subscriber)
             subs.sort(key=lambda s: s.priority)
             logger.debug(
                 "Subscriber registered",
                 extra={
                     "subscriber": subscriber.name,
-                    "event_type": event_type.__name__,
+                    "event_key": event_key,
                     "priority": subscriber.priority,
                 },
             )
 
     async def unsubscribe(
         self,
-        event_type: type[SyncEvent],
+        event_key: str,
         name: str,
     ) -> bool:
         """
-        Remove a named subscriber from an event type.
+        Remove a named subscriber from an event key.
 
         Args:
-            event_type: The event type to unsubscribe from
+            event_key: The event key to unsubscribe from
             name: Subscriber name to remove
 
         Returns:
             True if subscriber was found and removed
         """
         async with self._lock:
-            subs = self._subscribers[event_type]
+            subs = self._subscribers[event_key]
             before = len(subs)
-            self._subscribers[event_type] = [s for s in subs if s.name != name]
-            return len(self._subscribers[event_type]) < before
+            self._subscribers[event_key] = [s for s in subs if s.name != name]
+            return len(self._subscribers[event_key]) < before
 
-    async def emit(self, event: SyncEvent) -> None:
+    async def emit(self, event_key: str, event: dict[str, Any]) -> None:
         """
-        Dispatch an event to all subscribers registered for its type.
+        Dispatch an event to all subscribers registered for its key.
 
         Subscribers are called sequentially in priority order.
         Individual subscriber failures are logged but do not stop dispatch.
 
         Args:
-            event: The event to dispatch
+            event_key: Event key identifying the event type
+            event: The event payload dict
         """
         async with self._lock:
-            subs = list(self._subscribers.get(type(event), []))
+            subs = list(self._subscribers.get(event_key, []))
 
-        event_name = type(event).__name__
         logger.debug(
             "Dispatching event",
-            extra={"event": event_name, "subscriber_count": len(subs)},
+            extra={"event_key": event_key, "subscriber_count": len(subs)},
         )
 
         results = await asyncio.gather(
@@ -121,21 +119,21 @@ class EventBus:
             if isinstance(result, Exception):
                 logger.exception(
                     "Subscriber raised exception",
-                    extra={"subscriber": sub.name, "event": event_name},
+                    extra={"subscriber": sub.name, "event_key": event_key},
                     exc_info=result,
                 )
 
     @staticmethod
-    async def _safe_dispatch(sub: Subscriber, event: SyncEvent) -> None:
+    async def _safe_dispatch(sub: Subscriber, event: dict[str, Any]) -> None:
         """Dispatch to a single subscriber with exception propagation."""
         await sub.callback(event)
 
-    async def subscriber_count(self, event_type: type[SyncEvent]) -> int:
+    async def subscriber_count(self, event_key: str) -> int:
         """
-        Get the number of subscribers for an event type.
+        Get the number of subscribers for an event key.
 
         Args:
-            event_type: The event type to check
+            event_key: The event key to check
         """
         async with self._lock:
-            return len(self._subscribers.get(event_type, []))
+            return len(self._subscribers.get(event_key, []))

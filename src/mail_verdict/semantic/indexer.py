@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from mail_verdict.database.models import Folder, Mail, SpecialUse
+from mail_verdict.database.models import Folder, Message
 from mail_verdict.semantic.worker import EmbedItem, get_embedding_worker
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SPAM_FOLDER_TYPES = {SpecialUse.JUNK}
+_SPAM_FOLDER_TYPES = {"junk"}
 
 
 async def run_initial_index(
@@ -81,38 +81,38 @@ async def run_initial_index(
 
     # Load mails within lookback window
     async with db.session() as session:
-        stmt = select(Mail).where(Mail.account_id == account_id)
+        stmt = select(Message).where(Message.account_id == account_id)
         if cutoff is not None:
-            stmt = stmt.where(Mail.received_at >= cutoff)
-        stmt = stmt.order_by(Mail.received_at.asc())
+            stmt = stmt.where(Message.received_at >= cutoff)
+        stmt = stmt.order_by(Message.received_at.asc())
 
-        mail_result = await session.execute(stmt)
-        mails = list(mail_result.scalars().all())
+        msg_result = await session.execute(stmt)
+        messages = list(msg_result.scalars().all())
 
-    total = len(mails)
+    total = len(messages)
     queued = 0
     skipped = 0
 
-    for mail in mails:
+    for msg in messages:
         # Determine ground truth from folder
-        is_spam = mail.folder_id in spam_folder_ids
+        is_spam = msg.folder_id in spam_folder_ids
 
         # Extract sender domain
         from_domain: str | None = None
-        if mail.from_addr and "@" in mail.from_addr:
-            from_domain = mail.from_addr.rsplit("@", 1)[-1].lower().strip(">")
+        if msg.from_addr and "@" in msg.from_addr:
+            from_domain = msg.from_addr.rsplit("@", 1)[-1].lower().strip(">")
 
         # Build embed item
         item = EmbedItem(
-            mail_id=str(mail.id),
+            mail_id=str(msg.id),
             account_id=account_id_str,
-            from_addr=mail.from_addr,
-            subject=mail.subject,
-            body_text=mail.body_text,
+            from_addr=msg.from_addr,
+            subject=msg.subject,
+            body_text=msg.body_text,
             is_spam=is_spam,
-            folder=folder_name_map.get(mail.folder_id),
+            folder=folder_name_map.get(msg.folder_id),
             from_domain=from_domain,
-            received_at=mail.received_at,
+            received_at=msg.received_at,
             excerpt_length=excerpt_length,
         )
 

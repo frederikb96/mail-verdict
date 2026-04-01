@@ -179,7 +179,7 @@ class EnrichmentRunner:
         content = response.choices[0].message.content
         if content is None:
             raise ValueError("LLM returned empty response")
-        return content
+        return str(content)
 
     def _parse_and_validate(
         self,

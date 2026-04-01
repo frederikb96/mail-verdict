@@ -16,12 +16,12 @@ from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
     Folder,
-    Mail,
+    Message,
     TagSource,
 )
 from mail_verdict.database.repository import (
     FolderRepository,
-    MailRepository,
+    MessageRepository,
     TagRepository,
     VerdictRepository,
 )
@@ -49,7 +49,7 @@ async def search_mail(
         limit: Max results (default 20)
 
     Returns:
-        List of matching mail summaries with id, subject, from, date
+        List of matching message summaries with id, subject, from, date
     """
     results: list[dict] = []
     db = get_db_connection()
@@ -67,7 +67,7 @@ async def search_mail(
             for hit in hits:
                 results.append(
                     {
-                        "mail_id": hit.mail_id,
+                        "message_id": hit.mail_id,
                         "score": hit.score,
                         "source": "semantic",
                     }
@@ -75,28 +75,28 @@ async def search_mail(
         except RuntimeError:
             return [{"error": "SemanticStore not initialized"}]
     else:
-        mail_repo = MailRepository(db)
+        msg_repo = MessageRepository(db)
         if account_id:
-            mails = await mail_repo.search_fulltext(
+            messages = await msg_repo.search_fulltext(
                 uuid.UUID(account_id),
                 query,
                 limit=limit,
             )
-            for mail in mails:
-                results.append(_mail_summary(mail))
+            for msg in messages:
+                results.append(_message_summary(msg))
         else:
             from sqlalchemy import select
 
             async with db.session() as session:
                 accts = await session.execute(select(Account.id))
                 for row in accts.all():
-                    mails = await mail_repo.search_fulltext(
+                    messages = await msg_repo.search_fulltext(
                         row[0],
                         query,
                         limit=limit,
                     )
-                    for mail in mails:
-                        results.append(_mail_summary(mail))
+                    for msg in messages:
+                        results.append(_message_summary(msg))
 
     return results[:limit]
 
@@ -110,31 +110,28 @@ async def get_mail(
     Get full email details by ID.
 
     Args:
-        mail_id: Mail UUID
+        mail_id: Message UUID
         account_id: Account UUID (for scoping)
 
     Returns:
-        Full mail content including subject, body, headers, auth signals
+        Full message content including subject, body, headers
     """
     db = get_db_connection()
-    mail_repo = MailRepository(db)
-    mail = await mail_repo.get_by_id(uuid.UUID(account_id), uuid.UUID(mail_id))
-    if mail is None:
-        return {"error": "Mail not found"}
+    msg_repo = MessageRepository(db)
+    msg = await msg_repo.get_by_id(uuid.UUID(account_id), uuid.UUID(mail_id))
+    if msg is None:
+        return {"error": "Message not found"}
 
     return {
-        "id": str(mail.id),
-        "subject": mail.subject,
-        "from_addr": mail.from_addr,
-        "to_addrs": mail.to_addrs,
-        "cc_addrs": mail.cc_addrs,
-        "body_text": mail.body_text,
-        "received_at": mail.received_at.isoformat() if mail.received_at else None,
-        "is_read": mail.is_read,
-        "is_flagged": mail.is_flagged,
-        "dkim_pass": mail.dkim_pass,
-        "spf_pass": mail.spf_pass,
-        "dmarc_pass": mail.dmarc_pass,
+        "id": str(msg.id),
+        "subject": msg.subject,
+        "from_addr": msg.from_addr,
+        "to_addrs": msg.to_addrs,
+        "cc_addrs": msg.cc_addrs,
+        "body_text": msg.body_text,
+        "received_at": msg.received_at.isoformat() if msg.received_at else None,
+        "is_seen": msg.is_seen,
+        "is_flagged": msg.is_flagged,
     }
 
 
@@ -159,7 +156,7 @@ async def list_folders(
             "id": str(f.id),
             "imap_name": f.imap_name,
             "display_name": f.display_name,
-            "special_use": f.special_use.value if f.special_use else None,
+            "special_use": f.special_use,
             "last_synced_at": f.last_synced_at.isoformat() if f.last_synced_at else None,
         }
         for f in folders
@@ -199,10 +196,12 @@ async def move_mail(
     target_folder: str,
 ) -> dict:
     """
-    Move a mail to a different folder (in database).
+    Move a message to a different folder (in database).
+
+    PostIMAP's PG trigger handles IMAP propagation.
 
     Args:
-        mail_id: Mail UUID to move
+        mail_id: Message UUID to move
         account_id: Account UUID
         target_folder: Target folder IMAP name
 
@@ -212,10 +211,10 @@ async def move_mail(
     from sqlalchemy import select, update
 
     db = get_db_connection()
-    mail_repo = MailRepository(db)
-    mail = await mail_repo.get_by_id(uuid.UUID(account_id), uuid.UUID(mail_id))
-    if mail is None:
-        return {"success": False, "error": "Mail not found"}
+    msg_repo = MessageRepository(db)
+    msg = await msg_repo.get_by_id(uuid.UUID(account_id), uuid.UUID(mail_id))
+    if msg is None:
+        return {"success": False, "error": "Message not found"}
 
     async with db.session() as session:
         result = await session.execute(
@@ -228,8 +227,10 @@ async def move_mail(
         if folder is None:
             return {"success": False, "error": f"Folder not found: {target_folder}"}
 
+        mid = uuid.UUID(mail_id)
         await session.execute(
-            update(Mail).where(Mail.id == uuid.UUID(mail_id)).values(folder_id=folder.id)
+            update(Message).where(Message.id == mid)
+            .values(folder_id=folder.id)
         )
 
     return {"success": True, "message": f"Moved to {target_folder}"}
@@ -242,10 +243,10 @@ async def tag_mail(
     source: str = "user",
 ) -> dict:
     """
-    Add a tag to a mail.
+    Add a tag to a message.
 
     Args:
-        mail_id: Mail UUID
+        mail_id: Message UUID
         tag_name: Tag string to add
         source: Tag source (user, rule, enrichment, spam, imap)
 
@@ -273,10 +274,10 @@ async def get_verdict(
     mail_id: str,
 ) -> dict | None:
     """
-    Get the latest spam verdict for a mail.
+    Get the latest spam verdict for a message.
 
     Args:
-        mail_id: Mail UUID
+        mail_id: Message UUID
 
     Returns:
         Verdict details or None
@@ -289,7 +290,7 @@ async def get_verdict(
 
     return {
         "id": str(verdict.id),
-        "mail_id": str(verdict.mail_id),
+        "message_id": str(verdict.mail_id),
         "is_spam": verdict.is_spam,
         "model_used": verdict.model_used,
         "reasoning": verdict.reasoning,
@@ -359,13 +360,13 @@ async def get_stats(
     return totals
 
 
-def _mail_summary(mail: Mail) -> dict:
-    """Convert a Mail model to a summary dict for MCP responses."""
+def _message_summary(msg: Message) -> dict:
+    """Convert a Message model to a summary dict for MCP responses."""
     return {
-        "id": str(mail.id),
-        "subject": mail.subject,
-        "from_addr": mail.from_addr,
-        "received_at": mail.received_at.isoformat() if mail.received_at else None,
-        "is_read": mail.is_read,
-        "is_flagged": mail.is_flagged,
+        "id": str(msg.id),
+        "subject": msg.subject,
+        "from_addr": msg.from_addr,
+        "received_at": msg.received_at.isoformat() if msg.received_at else None,
+        "is_seen": msg.is_seen,
+        "is_flagged": msg.is_flagged,
     }

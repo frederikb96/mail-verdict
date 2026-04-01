@@ -11,7 +11,7 @@ import uuid
 
 from fastapi import APIRouter, Query
 
-from mail_verdict.api.deps import get_mail_repo
+from mail_verdict.api.deps import get_message_repo
 from mail_verdict.api.schemas import SearchResponse, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -20,14 +20,14 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 @router.get("", response_model=SearchResponse)
-async def search_mails(
+async def search_messages(
     q: str = Query(min_length=1),
     mode: str = Query(default="fulltext", pattern="^(fulltext|semantic|combined)$"),
     account_id: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> SearchResponse:
     """
-    Search mails by full-text, semantic similarity, or combined mode.
+    Search messages by full-text, semantic similarity, or combined mode.
 
     - fulltext: PostgreSQL tsvector + pg_trgm search
     - semantic: Qdrant vector similarity search
@@ -75,34 +75,34 @@ async def _fulltext_search(
             account_ids = [row[0] for row in result.all()]
 
         all_results: list[SearchResult] = []
-        mail_repo = get_mail_repo()
+        msg_repo = get_message_repo()
         for aid in account_ids:
-            mails = await mail_repo.search_fulltext(aid, query, limit=limit)
-            for i, mail in enumerate(mails):
-                score = 1.0 - (i / max(len(mails), 1))
+            messages = await msg_repo.search_fulltext(aid, query, limit=limit)
+            for i, msg in enumerate(messages):
+                score = 1.0 - (i / max(len(messages), 1))
                 all_results.append(
                     SearchResult(
-                        mail_id=mail.id,
-                        subject=mail.subject,
-                        from_addr=mail.from_addr,
-                        received_at=mail.received_at,
+                        message_id=msg.id,
+                        subject=msg.subject,
+                        from_addr=msg.from_addr,
+                        received_at=msg.received_at,
                         score=score,
                         source="fulltext",
                     )
                 )
         return all_results[:limit]
 
-    mail_repo = get_mail_repo()
-    mails = await mail_repo.search_fulltext(account_id, query, limit=limit)
+    msg_repo = get_message_repo()
+    messages = await msg_repo.search_fulltext(account_id, query, limit=limit)
     results: list[SearchResult] = []
-    for i, mail in enumerate(mails):
-        score = 1.0 - (i / max(len(mails), 1))
+    for i, msg in enumerate(messages):
+        score = 1.0 - (i / max(len(messages), 1))
         results.append(
             SearchResult(
-                mail_id=mail.id,
-                subject=mail.subject,
-                from_addr=mail.from_addr,
-                received_at=mail.received_at,
+                message_id=msg.id,
+                subject=msg.subject,
+                from_addr=msg.from_addr,
+                received_at=msg.received_at,
                 score=score,
                 source="fulltext",
             )
@@ -133,28 +133,28 @@ async def _semantic_search(
     results: list[SearchResult] = []
     for hit in hits:
         try:
-            mail_uuid = uuid.UUID(hit.mail_id)
+            msg_uuid = uuid.UUID(hit.mail_id)
         except ValueError:
             continue
 
         results.append(
             SearchResult(
-                mail_id=mail_uuid,
+                message_id=msg_uuid,
                 score=hit.score,
                 source="semantic",
             )
         )
 
-    # Enrich with mail metadata from DB
+    # Enrich with message metadata from DB
     if results:
-        mail_repo = get_mail_repo()
+        msg_repo = get_message_repo()
         for r in results:
             if account_id:
-                mail = await mail_repo.get_by_id(account_id, r.mail_id)
-                if mail:
-                    r.subject = mail.subject
-                    r.from_addr = mail.from_addr
-                    r.received_at = mail.received_at
+                msg = await msg_repo.get_by_id(account_id, r.message_id)
+                if msg:
+                    r.subject = msg.subject
+                    r.from_addr = msg.from_addr
+                    r.received_at = msg.received_at
 
     return results
 
@@ -166,21 +166,21 @@ def _merge_and_normalize(
     """
     Merge fulltext and semantic results, normalize scores to [0, 1].
 
-    For mails appearing in both sets, scores are averaged.
+    For messages appearing in both sets, scores are averaged.
     """
-    by_mail: dict[uuid.UUID, SearchResult] = {}
+    by_msg: dict[uuid.UUID, SearchResult] = {}
     scores: dict[uuid.UUID, list[float]] = {}
 
     for r in results:
-        if r.mail_id not in by_mail:
-            by_mail[r.mail_id] = r
-            scores[r.mail_id] = [r.score]
+        if r.message_id not in by_msg:
+            by_msg[r.message_id] = r
+            scores[r.message_id] = [r.score]
         else:
-            scores[r.mail_id].append(r.score)
-            by_mail[r.mail_id].source = "combined"
+            scores[r.message_id].append(r.score)
+            by_msg[r.message_id].source = "combined"
 
-    for mail_id, score_list in scores.items():
-        by_mail[mail_id].score = sum(score_list) / len(score_list)
+    for msg_id, score_list in scores.items():
+        by_msg[msg_id].score = sum(score_list) / len(score_list)
 
-    merged = sorted(by_mail.values(), key=lambda r: r.score, reverse=True)
+    merged = sorted(by_msg.values(), key=lambda r: r.score, reverse=True)
     return merged[:limit]

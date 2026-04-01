@@ -1,8 +1,9 @@
 """
 Rule evaluation engine.
 
-Loads rules from config, subscribes to the event bus, evaluates conditions,
-runs enrichment, and executes actions for matching rules.
+Loads rules from config, evaluates conditions, runs enrichment,
+and executes actions for matching rules. Triggered by PG LISTEN
+events for new messages.
 """
 
 from __future__ import annotations
@@ -12,33 +13,25 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from mail_verdict.rules.bus import EventBus, Subscriber
+from sqlalchemy import select
+
+from mail_verdict.database.models import Attachment, MailTag, Message
 from mail_verdict.rules.conditions import MailContext, evaluate_condition
 from mail_verdict.rules.enrichment import EnrichmentConfig, EnrichmentResult, EnrichmentRunner
 from mail_verdict.rules.executor import ActionExecutor, ActionResult, StopProcessing
-from mail_verdict.sync.events import (
-    FlagsChanged,
-    MailDeleted,
-    MailMoved,
-    MailReceived,
-    MailSpamDetected,
-    MailTrashed,
-    SyncEvent,
-)
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
 
 logger = logging.getLogger(__name__)
 
-# Map trigger strings from config to SyncEvent types
-TRIGGER_MAP: dict[str, type[SyncEvent]] = {
-    "mail.received": MailReceived,
-    "mail.moved": MailMoved,
-    "mail.trashed": MailTrashed,
-    "mail.spam_detected": MailSpamDetected,
-    "mail.deleted": MailDeleted,
-    "flags.changed": FlagsChanged,
+# Supported trigger strings from rule config
+TRIGGER_TYPES = {
+    "mail.received",
+    "mail.moved",
+    "mail.trashed",
+    "mail.deleted",
+    "flags.changed",
 }
 
 
@@ -79,7 +72,7 @@ def _parse_rules(raw_rules: list[dict[str, Any]]) -> list[RuleConfig]:
     for raw in raw_rules:
         name = raw.get("name", "unnamed")
         trigger = raw.get("trigger", "")
-        if trigger not in TRIGGER_MAP:
+        if trigger not in TRIGGER_TYPES:
             logger.warning(
                 "Rule has unknown trigger, skipping",
                 extra={"rule": name, "trigger": trigger},
@@ -117,18 +110,25 @@ def _parse_rules(raw_rules: list[dict[str, Any]]) -> list[RuleConfig]:
     return rules
 
 
+# Map PG LISTEN operation types to trigger strings
+_OP_TO_TRIGGER: dict[str, str] = {
+    "insert": "mail.received",
+    "update": "mail.moved",
+    "delete": "mail.deleted",
+}
+
+
 class RulesEngine:
     """
-    Event-driven rule evaluation engine.
+    Rule evaluation engine triggered by PG LISTEN events.
 
-    Subscribes to the event bus, evaluates rules in config order,
-    and executes matching actions. Integrates AI enrichment per-rule.
+    Evaluates rules in config order and executes matching actions.
+    Integrates AI enrichment per-rule.
     """
 
     def __init__(
         self,
         rules: list[dict[str, Any]],
-        bus: EventBus,
         action_executor: ActionExecutor,
         enrichment_runner: EnrichmentRunner | None = None,
         db: DatabaseConnection | None = None,
@@ -138,58 +138,32 @@ class RulesEngine:
 
         Args:
             rules: Raw rule dicts from config
-            bus: Event bus to subscribe to
             action_executor: Executor for rule actions
             enrichment_runner: Optional AI enrichment runner
             db: Database connection for fetching mail context
         """
         self._rules = _parse_rules(rules)
-        self._bus = bus
         self._executor = action_executor
         self._enrichment = enrichment_runner
         self._db = db
 
-    async def start(self) -> None:
-        """Register with the event bus for all trigger types used by rules."""
-        trigger_types: set[type[SyncEvent]] = set()
-        for rule in self._rules:
-            event_type = TRIGGER_MAP.get(rule.trigger)
-            if event_type:
-                trigger_types.add(event_type)
-
-        for event_type in trigger_types:
-            await self._bus.subscribe(
-                event_type,
-                Subscriber(
-                    name="rules_engine",
-                    callback=self._handle_event,
-                    priority=50,
-                ),
-            )
-
-        logger.info(
-            "Rules engine started",
-            extra={
-                "rule_count": len(self._rules),
-                "trigger_types": [t.__name__ for t in trigger_types],
-            },
-        )
-
-    async def stop(self) -> None:
-        """Unsubscribe from the event bus."""
-        for event_type in TRIGGER_MAP.values():
-            await self._bus.unsubscribe(event_type, "rules_engine")
-        logger.info("Rules engine stopped")
-
-    async def _handle_event(self, event: SyncEvent) -> None:
+    async def handle_message_event(self, event: dict[str, Any]) -> None:
         """
-        Handle a dispatched event by evaluating matching rules.
+        Handle a message event from PG LISTEN.
+
+        Maps the event operation to a trigger string and evaluates
+        all matching rules.
 
         Args:
-            event: The SyncEvent to process
+            event: PG LISTEN event payload with keys:
+                - op: "insert", "update", or "delete"
+                - id: Message UUID string
+                - account_id: Account UUID string
+                - folder_id: Current folder UUID string
+                - folder_name: Current folder IMAP name
         """
-        event_name = type(event).__name__
-        trigger_str = self._event_to_trigger(event)
+        op = event.get("op", "")
+        trigger_str = _OP_TO_TRIGGER.get(op)
         if not trigger_str:
             return
 
@@ -210,7 +184,7 @@ class RulesEngine:
         logger.info(
             "Rules evaluated",
             extra={
-                "event": event_name,
+                "op": op,
                 "rules_checked": len(matching_rules),
                 "rules_triggered": triggered_count,
             },
@@ -220,7 +194,7 @@ class RulesEngine:
         self,
         rule: RuleConfig,
         ctx: MailContext,
-        event: SyncEvent,
+        event: dict[str, Any],
     ) -> RuleExecutionLog:
         """
         Evaluate a single rule: enrichment -> conditions -> actions.
@@ -228,7 +202,7 @@ class RulesEngine:
         Args:
             rule: Rule configuration
             ctx: Mail context
-            event: Original event
+            event: Original PG LISTEN event
 
         Returns:
             Execution log for this rule
@@ -267,8 +241,8 @@ class RulesEngine:
 
         # Step 3: Execute actions
         log.triggered = True
-        mail_id = ctx.mail_id or self._extract_mail_id(event)
-        uid = self._extract_uid(event)
+        mail_id = ctx.mail_id or self._extract_message_id(event)
+        uid = self._extract_imap_uid(event)
 
         for action in rule.actions:
             try:
@@ -304,77 +278,72 @@ class RulesEngine:
 
         return log
 
-    async def _build_context(self, event: SyncEvent) -> MailContext:
+    async def _build_context(self, event: dict[str, Any]) -> MailContext:
         """
-        Build MailContext from event and database.
+        Build MailContext from PG LISTEN event and database.
 
         Args:
-            event: The triggering event
+            event: The triggering PG LISTEN event
 
         Returns:
-            MailContext populated with mail data
+            MailContext populated with message data
         """
         if not self._db:
             return MailContext()
 
-        uid = self._extract_uid(event)
-        if uid == 0:
+        message_id = self._extract_message_id(event)
+        if not message_id:
             return MailContext()
 
         try:
-            from sqlalchemy import select
-
-            from mail_verdict.database.models import Attachment, Mail, MailTag
-
             async with self._db.session() as session:
-                # Fetch mail by folder_id + uid
+                # Fetch message by ID
                 result = await session.execute(
-                    select(Mail).where(
-                        Mail.folder_id == event.folder_id,
-                        Mail.uid == uid,
-                    )
+                    select(Message).where(Message.id == message_id)
                 )
-                mail = result.scalar_one_or_none()
-                if not mail:
+                msg = result.scalar_one_or_none()
+                if not msg:
                     return MailContext()
 
                 # Fetch attachments
                 att_result = await session.execute(
-                    select(Attachment).where(Attachment.mail_id == mail.id)
+                    select(Attachment).where(Attachment.message_id == msg.id)
                 )
                 attachments = list(att_result.scalars().all())
 
                 # Fetch tags
                 tag_result = await session.execute(
-                    select(MailTag).where(MailTag.mail_id == mail.id)
+                    select(MailTag).where(MailTag.mail_id == msg.id)
                 )
                 tags = list(tag_result.scalars().all())
 
                 to_list: list[str] = []
-                if mail.to_addrs and isinstance(mail.to_addrs, dict):
-                    to_list = mail.to_addrs.get("addrs", [])
-                elif mail.to_addrs and isinstance(mail.to_addrs, list):
-                    to_list = mail.to_addrs
+                if msg.to_addrs and isinstance(msg.to_addrs, dict):
+                    to_list = msg.to_addrs.get("addrs", [])
+                elif msg.to_addrs and isinstance(msg.to_addrs, list):
+                    to_list = msg.to_addrs
 
                 cc_list: list[str] = []
-                if mail.cc_addrs and isinstance(mail.cc_addrs, dict):
-                    cc_list = mail.cc_addrs.get("addrs", [])
-                elif mail.cc_addrs and isinstance(mail.cc_addrs, list):
-                    cc_list = mail.cc_addrs
+                if msg.cc_addrs and isinstance(msg.cc_addrs, dict):
+                    cc_list = msg.cc_addrs.get("addrs", [])
+                elif msg.cc_addrs and isinstance(msg.cc_addrs, list):
+                    cc_list = msg.cc_addrs
+
+                folder_name = event.get("folder_name", "")
 
                 return MailContext(
-                    mail_id=mail.id,
-                    subject=mail.subject or "",
-                    body_text=mail.body_text or "",
-                    body_html=mail.body_html or "",
-                    from_addr=mail.from_addr or "",
+                    mail_id=msg.id,
+                    subject=msg.subject or "",
+                    body_text=msg.body_text or "",
+                    body_html=msg.body_html or "",
+                    from_addr=msg.from_addr or "",
                     to_addrs=to_list,
                     cc_addrs=cc_list,
-                    raw_headers=mail.raw_headers or {},
-                    size_bytes=mail.size_bytes or 0,
+                    raw_headers=msg.raw_headers or {},
+                    size_bytes=msg.size_bytes or 0,
                     has_attachments=len(attachments) > 0,
                     attachment_types=[a.content_type for a in attachments if a.content_type],
-                    folder=self._get_folder_name(event),
+                    folder=folder_name,
                     tags=[t.tag_name for t in tags],
                 )
 
@@ -385,21 +354,16 @@ class RulesEngine:
             )
             return MailContext()
 
-    def _event_to_trigger(self, event: SyncEvent) -> str | None:
-        """Map a SyncEvent instance to its trigger string."""
-        for trigger, event_type in TRIGGER_MAP.items():
-            if isinstance(event, event_type):
-                return trigger
-        return None
+    def _extract_message_id(self, event: dict[str, Any]) -> uuid.UUID | None:
+        """Extract message UUID from PG LISTEN event."""
+        id_str = event.get("id")
+        if not id_str:
+            return None
+        try:
+            return uuid.UUID(id_str)
+        except (ValueError, TypeError):
+            return None
 
-    def _extract_uid(self, event: SyncEvent) -> int:
-        """Extract UID from event if available."""
-        return getattr(event, "uid", 0)
-
-    def _extract_mail_id(self, event: SyncEvent) -> uuid.UUID | None:
-        """Extract mail_id from event if available."""
-        return getattr(event, "mail_id", None)
-
-    def _get_folder_name(self, event: SyncEvent) -> str:
-        """Get folder name from event context."""
-        return getattr(event, "folder_name", "")
+    def _extract_imap_uid(self, event: dict[str, Any]) -> int:
+        """Extract IMAP UID from PG LISTEN event if available."""
+        return int(event.get("imap_uid", 0))

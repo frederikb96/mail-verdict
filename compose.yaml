@@ -1,0 +1,84 @@
+name: mail-verdict
+
+services:
+  app:
+    image: ghcr.io/frederikb96/mail-verdict:latest
+    container_name: mv-app
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config-custom:/app/config-custom:ro,Z
+    environment:
+      MAIL_VERDICT_DATABASE_URL: "postgresql+asyncpg://mailverdict:${POSTGRES_PASSWORD}@postgres:5432/mail_verdict"
+      MAIL_VERDICT_QDRANT_HOST: "qdrant"
+      MAIL_VERDICT_QDRANT_PORT: "6333"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      MAIL_VERDICT_ENCRYPTION_KEY: "${MAIL_VERDICT_ENCRYPTION_KEY}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      postimap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  postimap:
+    image: ghcr.io/frederikb96/postimap:0.2.0
+    container_name: mv-postimap
+    environment:
+      POSTIMAP_DATABASE_HOST: postgres
+      POSTIMAP_DATABASE_PORT: "5432"
+      POSTIMAP_DATABASE_NAME: mail_verdict
+      POSTIMAP_DATABASE_USER: mailverdict
+      DB_PASSWORD: "${POSTGRES_PASSWORD}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: mv-postgres
+    environment:
+      POSTGRES_DB: mail_verdict
+      POSTGRES_USER: mailverdict
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailverdict -d mail_verdict"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - mv-pgdata:/var/lib/postgresql/data:Z
+    restart: unless-stopped
+
+  qdrant:
+    image: docker.io/qdrant/qdrant:v1.16.3
+    container_name: mv-qdrant
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - mv-qdrant:/qdrant/storage:Z
+    restart: unless-stopped
+
+volumes:
+  mv-pgdata:
+  mv-qdrant:

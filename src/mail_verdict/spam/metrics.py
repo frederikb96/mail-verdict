@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import case, desc, func, select
 
-from mail_verdict.database.models import Mail, Verdict, VerdictSource
+from mail_verdict.database.models import Message, Verdict, VerdictSource
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -88,7 +88,7 @@ class SpamMetrics:
         """
         async with self._db.session() as session:
             # Base filter
-            base_filter = [Mail.account_id == account_id]
+            base_filter = [Message.account_id == account_id]
             if since:
                 base_filter.append(Verdict.created_at >= since)
 
@@ -98,7 +98,7 @@ class SpamMetrics:
                     Verdict.source,
                     func.count(Verdict.id).label("cnt"),
                 )
-                .join(Mail, Verdict.mail_id == Mail.id)
+                .join(Message, Verdict.mail_id == Message.id)
                 .where(*base_filter)
                 .group_by(Verdict.source)
             )
@@ -124,7 +124,7 @@ class SpamMetrics:
                     )
                     .label("rn"),
                 )
-                .join(Mail, Verdict.mail_id == Mail.id)
+                .join(Message, Verdict.mail_id == Message.id)
                 .where(*base_filter)
                 .subquery()
             )
@@ -196,9 +196,9 @@ class SpamMetrics:
                         )
                     ).label("corrections"),
                 )
-                .join(Mail, Verdict.mail_id == Mail.id)
+                .join(Message, Verdict.mail_id == Message.id)
                 .where(
-                    Mail.account_id == account_id,
+                    Message.account_id == account_id,
                     Verdict.created_at >= cutoff,
                 )
                 .group_by(week_trunc)
@@ -241,7 +241,7 @@ class SpamMetrics:
         """
         async with self._db.session() as session:
             filters = [
-                Mail.account_id == account_id,
+                Message.account_id == account_id,
                 Verdict.source == VerdictSource.RULE,
             ]
             if since:
@@ -252,7 +252,7 @@ class SpamMetrics:
                     Verdict.model_used.label("rule_name"),
                     func.count(Verdict.id).label("cnt"),
                 )
-                .join(Mail, Verdict.mail_id == Mail.id)
+                .join(Message, Verdict.mail_id == Message.id)
                 .where(*filters)
                 .group_by(Verdict.model_used)
                 .order_by(desc(func.count(Verdict.id)))
@@ -287,7 +287,7 @@ class SpamMetrics:
         user_verdict = aliased(Verdict)
 
         filters = [
-            Mail.account_id == account_id,
+            Message.account_id == account_id,
             ai_verdict.source.in_([VerdictSource.AI, VerdictSource.RULE]),
             user_verdict.source == VerdictSource.USER_FEEDBACK,
             user_verdict.created_at > ai_verdict.created_at,
@@ -301,7 +301,7 @@ class SpamMetrics:
             select(func.count(func.distinct(ai_verdict.mail_id)))
             .select_from(ai_verdict)
             .join(user_verdict, ai_verdict.mail_id == user_verdict.mail_id)
-            .join(Mail, ai_verdict.mail_id == Mail.id)
+            .join(Message, ai_verdict.mail_id == Message.id)
             .where(
                 *filters,
                 ai_verdict.is_spam.is_(True),
@@ -314,7 +314,7 @@ class SpamMetrics:
             select(func.count(func.distinct(ai_verdict.mail_id)))
             .select_from(ai_verdict)
             .join(user_verdict, ai_verdict.mail_id == user_verdict.mail_id)
-            .join(Mail, ai_verdict.mail_id == Mail.id)
+            .join(Message, ai_verdict.mail_id == Message.id)
             .where(
                 *filters,
                 ai_verdict.is_spam.is_(False),

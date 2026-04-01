@@ -472,6 +472,88 @@ def send_test_emails(
     return sent
 
 
+BIDIRECTIONAL_EMAILS = [
+    {"from_key": "alice", "to_key": "bob", "subject": "Hey Bob, welcome aboard!",
+     "body": "Hi Bob,\n\nWelcome to the team. Let me know if you need anything.\n\nBest,\nAlice"},
+    {"from_key": "bob", "to_key": "alice", "subject": "Re: Hey Bob, welcome aboard!",
+     "body": "Thanks Alice! Happy to be here. Looking forward to working together.\n\nBob"},
+    {"from_key": "alice", "to_key": "bob", "subject": "Project kickoff meeting",
+     "body": "Bob,\n\nLet's schedule a kickoff for next Monday at 10am.\n\nAlice"},
+    {"from_key": "bob", "to_key": "alice", "subject": "Re: Project kickoff meeting",
+     "body": "Monday 10am works for me. Should I prepare anything?\n\nBob"},
+    {"from_key": "alice", "to_key": "bob", "subject": "Code review request",
+     "body": "Hey Bob, could you review PR #12 when you get a chance? No rush.\n\nAlice"},
+    {"from_key": "bob", "to_key": "alice", "subject": "Lunch plans",
+     "body": "Alice, want to grab lunch at the new place on Pontstrasse?\n\nBob"},
+    {"from_key": "alice", "to_key": "bob", "subject": "Re: Lunch plans",
+     "body": "Sounds great! 12:30 works for me.\n\nAlice"},
+    {"from_key": "bob", "to_key": "alice", "subject": "Bug report: sync stalls on large folders",
+     "body": "I noticed sync stalls when a folder has >1000 messages. Can you look?\n\nBob"},
+    {"from_key": "alice", "to_key": "bob", "subject": "Team standup notes",
+     "body": "Quick update from today's standup: deployment on track.\n\nAlice"},
+    {"from_key": "bob", "to_key": "alice", "subject": "Re: Team standup notes",
+     "body": "Got it. I'll finish the API tests today.\n\nBob"},
+    {"from_key": "alice", "to_key": "bob", "subject": "Security review findings",
+     "body": "Found a few issues in the auth module. Details in PR #15.\n\nAlice"},
+    {"from_key": "bob", "to_key": "alice", "subject": "Re: Security review findings",
+     "body": "I'll address those comments by EOD.\n\nBob"},
+]
+
+
+def send_bidirectional_emails(
+    smtp_host: str = "127.0.0.1",
+    smtp_port: int = 1025,
+    alice_email: str = "alice@test.local",
+    alice_password: str = "testpass123",
+    bob_email: str = "bob@test.local",
+    bob_password: str = "testpass123",
+) -> int:
+    """
+    Send bidirectional emails between Alice and Bob.
+
+    Args:
+        smtp_host: SMTP server host
+        smtp_port: SMTP server port
+        alice_email: Alice's email address
+        alice_password: Alice's SMTP password
+        bob_email: Bob's email address
+        bob_password: Bob's SMTP password
+
+    Returns:
+        Number of emails sent
+    """
+    import email.utils
+    import smtplib
+    import uuid as uuid_mod
+    from email.mime.text import MIMEText
+
+    addr_map = {"alice": (alice_email, alice_password), "bob": (bob_email, bob_password)}
+    sent = 0
+
+    for msg_data in BIDIRECTIONAL_EMAILS:
+        from_addr, from_pw = addr_map[msg_data["from_key"]]
+        to_addr, _ = addr_map[msg_data["to_key"]]
+
+        msg = MIMEText(msg_data["body"], "plain")
+        msg["Message-ID"] = f"<{uuid_mod.uuid4()}@test.local>"
+        msg["From"] = from_addr
+        msg["To"] = to_addr
+        msg["Subject"] = msg_data["subject"]
+        msg["Date"] = email.utils.formatdate(localtime=True)
+
+        try:
+            with smtplib.SMTP(smtp_host, smtp_port) as smtp:
+                smtp.login(from_addr, from_pw)
+                smtp.sendmail(from_addr, [to_addr], msg.as_string())
+            sent += 1
+            time.sleep(0.1)
+        except Exception as exc:
+            logger.warning("Failed to send '%s': %s", msg_data["subject"], exc)
+
+    logger.info("Sent %d/%d bidirectional emails", sent, len(BIDIRECTIONAL_EMAILS))
+    return sent
+
+
 async def seed_test_environment(
     base_url: str = DEFAULT_BASE_URL,
     domain: str = DEFAULT_DOMAIN,

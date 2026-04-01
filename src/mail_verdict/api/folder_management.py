@@ -1,33 +1,29 @@
 """
 Folder management API endpoints.
 
-Folder ordering, visibility, and IDLE configuration per account.
+Folder ordering, visibility, and auto-detect per account.
+IDLE endpoints removed -- PostIMAP handles IMAP IDLE.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import case, select, update
+from sqlalchemy import case, select
 from sqlalchemy import func as sa_func
 
+from mail_verdict.api.deps import get_account_prefs_repo, get_folder_prefs_repo
 from mail_verdict.api.schemas import (
     FolderOrderItem,
     FolderOrderResponse,
     FolderOrderUpdate,
     FolderVisibilityResponse,
     FolderVisibilityUpdate,
-    IdleFolderItem,
-    IdleFolderToggle,
-    IdleFolderToggleResponse,
-    IdleValidationRequest,
-    IdleValidationResponse,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, Mail
+from mail_verdict.database.models import Account, Folder, FolderPrefs, Message
 
 logger = logging.getLogger(__name__)
 
@@ -47,24 +43,26 @@ async def _get_account_or_404(account_id: uuid.UUID) -> Account:
 
 async def _get_folders_with_counts(
     account_id: uuid.UUID,
-) -> list[tuple[Folder, int, int]]:
-    """Get all folders for an account with unread/total counts."""
+) -> list[tuple[Folder, FolderPrefs | None, int, int]]:
+    """Get all folders for an account with prefs and unread/total counts."""
     db = get_db_connection()
     async with db.session() as session:
         stmt = (
             select(
                 Folder,
-                sa_func.count(Mail.id).label("total_count"),
+                FolderPrefs,
+                sa_func.count(Message.id).label("total_count"),
                 sa_func.count(
-                    case((Mail.is_read.is_(False), Mail.id))
+                    case((Message.is_seen.is_(False), Message.id))
                 ).label("unread_count"),
             )
+            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(
-                Mail,
-                (Mail.folder_id == Folder.id) & Mail.is_deleted.is_(False),
+                Message,
+                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
             )
             .where(Folder.account_id == account_id)
-            .group_by(Folder.id)
+            .group_by(Folder.id, FolderPrefs.folder_id)
         )
         result = await session.execute(stmt)
         return list(result.all())  # type: ignore[arg-type]
@@ -76,16 +74,20 @@ async def _get_folders_with_counts(
 @router.get("/folder-order", response_model=FolderOrderResponse)
 async def get_folder_order(account_id: uuid.UUID) -> FolderOrderResponse:
     """Get ordered folder list with visibility and counts."""
-    account = await _get_account_or_404(account_id)
+    await _get_account_or_404(account_id)
     rows = await _get_folders_with_counts(account_id)
 
+    # Get folder order from AccountPrefs
+    prefs_repo = get_account_prefs_repo()
+    acct_prefs = await prefs_repo.get_by_account(account_id)
+    order = (acct_prefs.folder_order if acct_prefs else None) or []
+
     # Build lookup by folder ID
-    folder_map: dict[uuid.UUID, tuple[Folder, int, int]] = {
-        f.id: (f, total, unread) for f, total, unread in rows
+    folder_map: dict[uuid.UUID, tuple[Folder, FolderPrefs | None, int, int]] = {
+        f.id: (f, fp, total, unread) for f, fp, total, unread in rows
     }
 
     # Apply custom order if set, otherwise alphabetical
-    order = account.folder_order or []
     ordered_ids: list[uuid.UUID] = []
     for fid_str in order:
         try:
@@ -102,14 +104,14 @@ async def get_folder_order(account_id: uuid.UUID) -> FolderOrderResponse:
 
     items = []
     for fid in ordered_ids:
-        f, total, unread = folder_map[fid]
+        f, fp, total, unread = folder_map[fid]
         items.append(
             FolderOrderItem(
                 folder_id=f.id,
                 imap_name=f.imap_name,
-                display_name=f.display_name,
-                special_use=f.special_use.value if f.special_use else None,
-                is_visible=f.is_visible,
+                display_name=f.display_name or (fp.display_name if fp else None),
+                special_use=f.special_use,
+                is_visible=fp.is_visible if fp else True,
                 unread_count=unread,
                 total_count=total,
             )
@@ -123,17 +125,12 @@ async def update_folder_order(
     account_id: uuid.UUID,
     request: FolderOrderUpdate,
 ) -> FolderOrderResponse:
-    """Save custom folder display order."""
+    """Save custom folder display order in AccountPrefs."""
     await _get_account_or_404(account_id)
 
     order_strs = [str(fid) for fid in request.order]
-    db = get_db_connection()
-    async with db.session() as session:
-        await session.execute(
-            update(Account)
-            .where(Account.id == account_id)
-            .values(folder_order=order_strs)
-        )
+    prefs_repo = get_account_prefs_repo()
+    await prefs_repo.update(account_id, folder_order=order_strs)
 
     return await get_folder_order(account_id)
 
@@ -147,7 +144,7 @@ async def toggle_folder_visibility(
     folder_id: uuid.UUID,
     request: FolderVisibilityUpdate,
 ) -> FolderVisibilityResponse:
-    """Toggle visibility for a folder."""
+    """Toggle visibility for a folder (stored in FolderPrefs)."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
@@ -159,11 +156,8 @@ async def toggle_folder_visibility(
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Folder not found")
 
-        await session.execute(
-            update(Folder)
-            .where(Folder.id == folder_id)
-            .values(is_visible=request.is_visible)
-        )
+    prefs_repo = get_folder_prefs_repo()
+    await prefs_repo.update(folder_id, is_visible=request.is_visible)
 
     return FolderVisibilityResponse(
         folder_id=folder_id,
@@ -178,9 +172,7 @@ async def toggle_folder_visibility(
 async def auto_detect_folder_mapping(
     account_id: uuid.UUID,
 ) -> dict[str, str | None]:
-    """Re-run folder auto-detection from IMAP special-use flags and name matching."""
-    from mail_verdict.sync.folder_mapping import auto_detect_mapping
-
+    """Auto-detect folder mapping from PostIMAP's Folder.special_use column."""
     await _get_account_or_404(account_id)
 
     db = get_db_connection()
@@ -190,154 +182,16 @@ async def auto_detect_folder_mapping(
         )
         folders = list(result.scalars().all())
 
-    folder_dicts: list[dict[str, str | None]] = [
-        {
-            "imap_name": f.imap_name,
-            "special_use": f.special_use.value if f.special_use else None,
-        }
-        for f in folders
-    ]
-    return auto_detect_mapping(folder_dicts)
+    mapping: dict[str, str | None] = {
+        "inbox": None,
+        "sent": None,
+        "drafts": None,
+        "trash": None,
+        "junk": None,
+        "archive": None,
+    }
+    for f in folders:
+        if f.special_use and f.special_use in mapping:
+            mapping[f.special_use] = f.imap_name
 
-
-# --- IDLE Configuration ---
-
-
-@router.get("/idle-folders", response_model=list[IdleFolderItem])
-async def get_idle_folders(account_id: uuid.UUID) -> list[IdleFolderItem]:
-    """List all folders with their IDLE enabled status."""
-    account = await _get_account_or_404(account_id)
-    idle_set = set(account.idle_folders or [])
-
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(
-            select(Folder)
-            .where(Folder.account_id == account_id)
-            .order_by(Folder.imap_name)
-        )
-        folders = list(result.scalars().all())
-
-    return [
-        IdleFolderItem(
-            folder_id=f.id,
-            imap_name=f.imap_name,
-            idle_enabled=str(f.id) in idle_set,
-        )
-        for f in folders
-    ]
-
-
-@router.put("/idle-folders", response_model=IdleFolderToggleResponse)
-async def toggle_idle_folder(
-    account_id: uuid.UUID,
-    request: IdleFolderToggle,
-) -> IdleFolderToggleResponse:
-    """Enable or disable IDLE for a specific folder."""
-    account = await _get_account_or_404(account_id)
-
-    # Verify folder exists and belongs to account
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(
-            select(Folder).where(
-                Folder.id == request.folder_id,
-                Folder.account_id == account_id,
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
-
-    idle_set = set(account.idle_folders or [])
-    fid_str = str(request.folder_id)
-
-    if request.enabled:
-        idle_set.add(fid_str)
-    else:
-        idle_set.discard(fid_str)
-
-    async with db.session() as session:
-        await session.execute(
-            update(Account)
-            .where(Account.id == account_id)
-            .values(idle_folders=list(idle_set))
-        )
-
-    return IdleFolderToggleResponse(
-        folder_id=request.folder_id,
-        enabled=request.enabled,
-        success=True,
-    )
-
-
-@router.post("/validate-idle", response_model=IdleValidationResponse)
-async def validate_idle(
-    account_id: uuid.UUID,
-    request: IdleValidationRequest,
-) -> IdleValidationResponse:
-    """Test if a folder supports IMAP IDLE."""
-    from mail_verdict.core.encryption import decrypt
-
-    account = await _get_account_or_404(account_id)
-
-    # Get folder IMAP name
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(
-            select(Folder).where(
-                Folder.id == request.folder_id,
-                Folder.account_id == account_id,
-            )
-        )
-        folder = result.scalar_one_or_none()
-    if folder is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
-
-    password = decrypt(account.imap_password) if account.imap_password else ""
-    use_ssl = account.imap_port in (993, 995)
-
-    def _check_idle() -> tuple[bool, str | None]:
-        """Test IDLE support on the folder via imap-tools."""
-        try:
-            from imap_tools import (
-                BaseMailBox,
-                MailBox,
-                MailBoxStartTls,
-                MailBoxUnencrypted,
-            )
-
-            mb: BaseMailBox
-            if use_ssl:
-                mb = MailBox(account.imap_host, account.imap_port)
-            elif account.imap_port == 143:
-                mb = MailBoxStartTls(account.imap_host, account.imap_port)
-            else:
-                mb = MailBoxUnencrypted(account.imap_host, account.imap_port)
-
-            mb.login(account.imap_user, password, initial_folder=folder.imap_name)
-
-            # Check CAPABILITY for IDLE support
-            caps = mb.client.capabilities
-            has_idle = b"IDLE" in caps if caps else False
-
-            mb.logout()
-            if has_idle:
-                return True, None
-            return False, "Server does not support IDLE"
-        except Exception as exc:
-            return False, str(exc)
-
-    try:
-        supported, error = await asyncio.wait_for(
-            asyncio.to_thread(_check_idle),
-            timeout=10.0,
-        )
-    except asyncio.TimeoutError:
-        supported = False
-        error = "IDLE validation timed out"
-
-    return IdleValidationResponse(
-        folder_id=request.folder_id,
-        supported=supported,
-        error=error,
-    )
+    return mapping

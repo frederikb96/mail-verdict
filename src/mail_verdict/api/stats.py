@@ -1,7 +1,7 @@
 """
 Stats/dashboard API endpoint.
 
-GET /api/stats — returns total mails, spam caught, FP/FN rates, sync status.
+GET /api/stats — returns total messages, spam caught, FP/FN rates, sync status.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from mail_verdict.api.schemas import (
     WeeklyTrendPoint,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, Mail
+from mail_verdict.database.models import Account, Folder, Message
 from mail_verdict.spam.metrics import SpamMetrics
 
 logger = logging.getLogger(__name__)
@@ -77,13 +77,13 @@ async def get_stats(
                 )
             )
 
-    # Total mail count
+    # Total message count
     async with db.session() as session:
-        mail_count_stmt = select(func.count(Mail.id))
+        msg_count_stmt = select(func.count(Message.id))
         if account_id:
-            mail_count_stmt = mail_count_stmt.where(Mail.account_id == account_id)
-        count_result = await session.execute(mail_count_stmt)
-        total_mails: int = count_result.scalar_one()
+            msg_count_stmt = msg_count_stmt.where(Message.account_id == account_id)
+        count_result = await session.execute(msg_count_stmt)
+        total_messages: int = count_result.scalar_one()
 
     # Per-account sync status
     account_sync: list[AccountSyncStatus] = []
@@ -94,10 +94,10 @@ async def get_stats(
             folder_result = await session.execute(select(Folder).where(Folder.account_id == acc.id))
             folders = list(folder_result.scalars().all())
 
-            mail_result = await session.execute(
-                select(func.count(Mail.id)).where(Mail.account_id == acc.id)
+            msg_result = await session.execute(
+                select(func.count(Message.id)).where(Message.account_id == acc.id)
             )
-            acc_mail_count = mail_result.scalar_one()
+            acc_msg_count = msg_result.scalar_one()
 
         last_sync = max(
             (f.last_synced_at for f in folders if f.last_synced_at),
@@ -109,7 +109,7 @@ async def get_stats(
                 account_name=acc.name,
                 last_synced_at=last_sync,
                 folder_count=len(folders),
-                mail_count=acc_mail_count,
+                message_count=acc_msg_count,
             )
         )
 
@@ -130,7 +130,7 @@ async def get_stats(
         logger.debug("Could not get embedding count: %s", e)
 
     return StatsResponse(
-        total_mails=total_mails,
+        total_messages=total_messages,
         total_accounts=len(accounts),
         spam_caught=total_spam,
         ham_count=total_ham,

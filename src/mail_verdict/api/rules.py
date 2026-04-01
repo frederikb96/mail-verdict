@@ -2,7 +2,7 @@
 Rule API endpoints.
 
 GET /api/rules — list configured rules
-POST /api/rules/:id/test — test a rule against a specified mail (dry-run)
+POST /api/rules/:id/test — test a rule against a specified message (dry-run)
 
 Rules are stored in the settings DB under category 'rules'.
 """
@@ -78,7 +78,7 @@ async def test_rule(
     request: RuleTestRequest,
 ) -> RuleTestResponse:
     """
-    Test a rule against a specified mail in dry-run mode.
+    Test a rule against a specified message in dry-run mode.
 
     Evaluates conditions but does not execute actions.
     """
@@ -94,39 +94,43 @@ async def test_rule(
     from sqlalchemy import select
 
     from mail_verdict.database.connection import get_db_connection
-    from mail_verdict.database.models import Attachment, Mail, MailTag
+    from mail_verdict.database.models import Attachment, MailTag, Message
     from mail_verdict.rules.conditions import MailContext, evaluate_condition
 
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
-            select(Mail).where(
-                Mail.id == request.mail_id,
-                Mail.account_id == request.account_id,
+            select(Message).where(
+                Message.id == request.message_id,
+                Message.account_id == request.account_id,
             )
         )
-        mail = result.scalar_one_or_none()
-        if mail is None:
-            raise HTTPException(status_code=404, detail="Mail not found")
+        msg = result.scalar_one_or_none()
+        if msg is None:
+            raise HTTPException(status_code=404, detail="Message not found")
 
-        att_result = await session.execute(select(Attachment).where(Attachment.mail_id == mail.id))
+        att_result = await session.execute(
+            select(Attachment).where(Attachment.message_id == msg.id)
+        )
         attachments = list(att_result.scalars().all())
 
-        tag_result = await session.execute(select(MailTag).where(MailTag.mail_id == mail.id))
+        tag_result = await session.execute(
+            select(MailTag).where(MailTag.mail_id == msg.id)
+        )
         tags = list(tag_result.scalars().all())
 
-    to_list = _extract_addr_list(mail.to_addrs)
-    cc_list = _extract_addr_list(mail.cc_addrs)
+    to_list = _extract_addr_list(msg.to_addrs)
+    cc_list = _extract_addr_list(msg.cc_addrs)
 
     ctx = MailContext(
-        subject=mail.subject or "",
-        body_text=mail.body_text or "",
-        body_html=mail.body_html or "",
-        from_addr=mail.from_addr or "",
+        subject=msg.subject or "",
+        body_text=msg.body_text or "",
+        body_html=msg.body_html or "",
+        from_addr=msg.from_addr or "",
         to_addrs=to_list,
         cc_addrs=cc_list,
-        raw_headers=mail.raw_headers or {},
-        size_bytes=mail.size_bytes or 0,
+        raw_headers=msg.raw_headers or {},
+        size_bytes=msg.size_bytes or 0,
         has_attachments=len(attachments) > 0,
         attachment_types=[a.content_type for a in attachments if a.content_type],
         tags=[t.tag_name for t in tags],

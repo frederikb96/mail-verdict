@@ -1,7 +1,9 @@
 """
 Alembic migration environment configuration.
 
-Loads database URL from MailVerdict config system.
+Only manages MailVerdict-owned tables. PostIMAP-owned tables
+(accounts, folders, messages, attachments, sync_queue, sync_state, sync_audit)
+are created by PostIMAP's Kysely migrations and excluded here.
 """
 
 import asyncio
@@ -15,7 +17,6 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
 
-# Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from mail_verdict.config import get_config  # noqa: E402
@@ -28,6 +29,20 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+POSTIMAP_TABLES = frozenset({
+    "accounts", "folders", "messages", "attachments",
+    "sync_queue", "sync_state", "sync_audit",
+})
+
+
+def include_object(
+    obj: object, name: str | None, type_: str, reflected: bool, compare_to: object,
+) -> bool:
+    """Exclude PostIMAP-owned tables from Alembic autogeneration."""
+    if type_ == "table" and name in POSTIMAP_TABLES:
+        return False
+    return True
+
 
 def get_database_url() -> str:
     """Get database URL from MailVerdict config."""
@@ -36,11 +51,7 @@ def get_database_url() -> str:
 
 
 def run_migrations_offline() -> None:
-    """
-    Run migrations in 'offline' mode.
-
-    Generates SQL scripts without connecting to the database.
-    """
+    """Run migrations in 'offline' mode."""
     url = get_database_url()
     context.configure(
         url=url,
@@ -48,6 +59,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -60,6 +72,7 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         render_as_batch=True,
+        include_object=include_object,
     )
 
     with context.begin_transaction():
@@ -67,11 +80,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 
 async def run_async_migrations() -> None:
-    """
-    Run migrations in 'online' mode with async engine.
-
-    Creates engine from config and runs migrations.
-    """
+    """Run migrations in 'online' mode with async engine."""
     db_url = get_database_url()
 
     configuration = config.get_section(config.config_ini_section, {})

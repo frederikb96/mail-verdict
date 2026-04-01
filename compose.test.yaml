@@ -32,12 +32,35 @@ services:
         condition: service_healthy
       stalwart:
         condition: service_healthy
+      postimap:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/api/health"]
       interval: 10s
       timeout: 5s
       retries: 20
       start_period: 45s
+    restart: "no"
+
+  postimap:
+    image: ghcr.io/frederikb96/postimap:0.2.0
+    container_name: mv-postimap-test
+    environment:
+      POSTIMAP_DATABASE_HOST: postgres
+      POSTIMAP_DATABASE_PORT: "5432"
+      POSTIMAP_DATABASE_NAME: mail_verdict_test
+      POSTIMAP_DATABASE_USER: testuser
+      DB_PASSWORD: testpass
+      POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     restart: "no"
 
   stalwart:

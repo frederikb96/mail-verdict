@@ -2,7 +2,8 @@
 Rule action executor.
 
 Executes actions defined in rule configs by delegating to
-ActionPropagator, TagRepository, and SMTPClient.
+direct SQL UPDATEs (PostIMAP triggers handle IMAP propagation),
+TagRepository, and notification callbacks.
 """
 
 from __future__ import annotations
@@ -14,12 +15,6 @@ from typing import Any
 
 from mail_verdict.database.models import TagSource
 from mail_verdict.rules.conditions import MailContext
-from mail_verdict.sync.actions import (
-    ActionPropagator,
-    ActionType,
-    ForwardAction,
-    IMAPAction,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -68,15 +63,14 @@ def _render_template(template: str, ctx: MailContext) -> str:
 
 class ActionExecutor:
     """
-    Executes rule actions against IMAP, database, and SMTP.
+    Executes rule actions via direct SQL UPDATEs.
 
-    Each action type maps to a handler method that delegates
-    to the appropriate service (ActionPropagator, TagRepository, etc.).
+    Each action type maps to a handler method that updates the local
+    DB state. PostIMAP PG triggers handle outbound IMAP propagation.
     """
 
     def __init__(
         self,
-        propagator: ActionPropagator | None = None,
         tag_repo: Any | None = None,
         notify_callback: Any | None = None,
         folder_repo: Any | None = None,
@@ -85,12 +79,10 @@ class ActionExecutor:
         Initialize action executor with service dependencies.
 
         Args:
-            propagator: IMAP action propagator
             tag_repo: TagRepository for tag persistence
             notify_callback: Async callback for notify actions (emits SSE events)
             folder_repo: FolderRepository for dynamic folder lookups
         """
-        self._propagator = propagator
         self._tag_repo = tag_repo
         self._notify_callback = notify_callback
         self._folder_repo = folder_repo
@@ -109,8 +101,8 @@ class ActionExecutor:
         Args:
             action: Action config dict (e.g. {"move_to": "Archive"})
             ctx: Mail context for template rendering
-            mail_id: Database mail UUID (needed for tag operations)
-            uid: IMAP UID for IMAP operations
+            mail_id: Database message UUID (needed for tag operations)
+            uid: IMAP UID (kept for interface compatibility)
 
         Returns:
             ActionResult with success status
@@ -118,7 +110,6 @@ class ActionExecutor:
         Raises:
             StopProcessing: When action is "stop"
         """
-        # Detect action type from the dict key
         action_type, value = self._extract_action(action)
 
         handler = getattr(self, f"_action_{action_type}", None)
@@ -152,6 +143,75 @@ class ActionExecutor:
             return key, value
         raise ValueError("Empty action dict")
 
+    async def _resolve_account_id(self, mail_id: uuid.UUID) -> uuid.UUID | None:
+        """
+        Look up the account_id for a message.
+
+        Args:
+            mail_id: Message UUID
+
+        Returns:
+            Account UUID or None if not found
+        """
+        from sqlalchemy import select
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
+        async with db.session() as session:
+            result = await session.execute(
+                select(Message.account_id).where(Message.id == mail_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def _resolve_folder_id_by_name(
+        self, account_id: uuid.UUID, folder_name: str,
+    ) -> uuid.UUID | None:
+        """
+        Resolve a folder UUID from an IMAP folder name.
+
+        Args:
+            account_id: Account UUID
+            folder_name: IMAP folder name
+
+        Returns:
+            Folder UUID or None if not found
+        """
+        if not self._folder_repo:
+            return None
+        folders = await self._folder_repo.get_by_account(account_id)
+        target = next((f for f in folders if f.imap_name == folder_name), None)
+        return target.id if target else None
+
+    async def _resolve_special_folder(
+        self, account_id: uuid.UUID, special_use: str,
+    ) -> uuid.UUID | None:
+        """
+        Resolve a special-use folder UUID by querying Folder.special_use.
+
+        Args:
+            account_id: Account UUID
+            special_use: Special use value (e.g. "junk", "trash")
+
+        Returns:
+            Folder UUID or None if not found
+        """
+        from sqlalchemy import select
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Folder
+
+        db = get_db_connection()
+        async with db.session() as session:
+            result = await session.execute(
+                select(Folder.id).where(
+                    Folder.account_id == account_id,
+                    Folder.special_use == special_use,
+                ).limit(1)
+            )
+            return result.scalar_one_or_none()
+
     async def _action_move_to(
         self,
         folder: str,
@@ -160,18 +220,31 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Move mail to target folder via IMAP."""
-        if not self._propagator:
-            logger.warning("No ActionPropagator configured, skipping move")
+        """Move message to target folder via direct SQL UPDATE."""
+        if not mail_id:
+            logger.warning("No mail_id for move_to action, skipping")
             return
-        await self._propagator.execute_imap(
-            IMAPAction(
-                action_type=ActionType.MOVE,
-                folder=ctx.folder,
-                uid_set=str(uid),
-                target_folder=folder,
+
+        account_id = await self._resolve_account_id(mail_id)
+        if not account_id:
+            return
+
+        target_folder_id = await self._resolve_folder_id_by_name(account_id, folder)
+        if not target_folder_id:
+            logger.warning("Target folder not found", extra={"folder": folder})
+            return
+
+        from sqlalchemy import update
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
+        async with db.session() as session:
+            await session.execute(
+                update(Message).where(Message.id == mail_id)
+                .values(folder_id=target_folder_id)
             )
-        )
 
     async def _action_copy_to(
         self,
@@ -181,17 +254,11 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Copy mail to target folder via IMAP."""
-        if not self._propagator:
-            logger.warning("No ActionPropagator configured, skipping copy")
-            return
-        await self._propagator.execute_imap(
-            IMAPAction(
-                action_type=ActionType.COPY,
-                folder=ctx.folder,
-                uid_set=str(uid),
-                target_folder=folder,
-            )
+        """Copy message to target folder (not yet supported in PostIMAP mode)."""
+        # Copy requires creating a new message row -- not yet supported.
+        logger.warning(
+            "Copy action not yet supported in PostIMAP mode, skipping",
+            extra={"mail_id": str(mail_id) if mail_id else None},
         )
 
     async def _action_mark_as(
@@ -202,27 +269,26 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Mark mail as read or unread via IMAP STORE flags."""
-        if not self._propagator:
+        """Mark message as read or unread via direct SQL UPDATE."""
+        if not mail_id:
             return
+
+        from sqlalchemy import update
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
         if value == "read":
-            await self._propagator.execute_imap(
-                IMAPAction(
-                    action_type=ActionType.STORE_FLAGS,
-                    folder=ctx.folder,
-                    uid_set=str(uid),
-                    flags_add=["\\Seen"],
+            async with db.session() as session:
+                await session.execute(
+                    update(Message).where(Message.id == mail_id).values(is_seen=True)
                 )
-            )
         elif value == "unread":
-            await self._propagator.execute_imap(
-                IMAPAction(
-                    action_type=ActionType.STORE_FLAGS,
-                    folder=ctx.folder,
-                    uid_set=str(uid),
-                    flags_remove=["\\Seen"],
+            async with db.session() as session:
+                await session.execute(
+                    update(Message).where(Message.id == mail_id).values(is_seen=False)
                 )
-            )
 
     async def _action_star(
         self,
@@ -232,17 +298,20 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Star a mail via IMAP STORE flags."""
-        if not self._propagator:
+        """Star a message via direct SQL UPDATE."""
+        if not mail_id:
             return
-        await self._propagator.execute_imap(
-            IMAPAction(
-                action_type=ActionType.STORE_FLAGS,
-                folder=ctx.folder,
-                uid_set=str(uid),
-                flags_add=["\\Flagged"],
+
+        from sqlalchemy import update
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
+        async with db.session() as session:
+            await session.execute(
+                update(Message).where(Message.id == mail_id).values(is_flagged=True)
             )
-        )
 
     async def _action_unstar(
         self,
@@ -252,17 +321,20 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Unstar a mail via IMAP STORE flags."""
-        if not self._propagator:
+        """Unstar a message via direct SQL UPDATE."""
+        if not mail_id:
             return
-        await self._propagator.execute_imap(
-            IMAPAction(
-                action_type=ActionType.STORE_FLAGS,
-                folder=ctx.folder,
-                uid_set=str(uid),
-                flags_remove=["\\Flagged"],
+
+        from sqlalchemy import update
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
+        async with db.session() as session:
+            await session.execute(
+                update(Message).where(Message.id == mail_id).values(is_flagged=False)
             )
-        )
 
     async def _action_tag(
         self,
@@ -272,19 +344,9 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Add a tag to the mail in Postgres + best-effort IMAP keyword sync."""
+        """Add a tag to the message in Postgres."""
         if self._tag_repo and mail_id:
             await self._tag_repo.add_tag(mail_id, tag_name, TagSource.RULE)
-        # Best-effort IMAP keyword sync
-        if self._propagator:
-            await self._propagator.execute_imap(
-                IMAPAction(
-                    action_type=ActionType.STORE_FLAGS,
-                    folder=ctx.folder,
-                    uid_set=str(uid),
-                    flags_add=[tag_name],
-                )
-            )
 
     async def _action_remove_tag(
         self,
@@ -294,18 +356,9 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Remove a tag from the mail."""
+        """Remove a tag from the message in Postgres."""
         if self._tag_repo and mail_id:
             await self._tag_repo.remove_tag(mail_id, tag_name)
-        if self._propagator:
-            await self._propagator.execute_imap(
-                IMAPAction(
-                    action_type=ActionType.STORE_FLAGS,
-                    folder=ctx.folder,
-                    uid_set=str(uid),
-                    flags_remove=[tag_name],
-                )
-            )
 
     async def _action_forward_to(
         self,
@@ -315,29 +368,10 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Forward the mail via SMTP."""
-        if not self._propagator:
-            logger.warning("No ActionPropagator configured, skipping forward")
-            return
-
-        if isinstance(value, dict):
-            address = value.get("address", "")
-            subject_template = value.get(
-                "subject_rewrite",
-                "Fwd: {subject}",
-            )
-        else:
-            address = str(value)
-            subject_template = "Fwd: {subject}"
-
-        subject_rendered = _render_template(subject_template, ctx)
-        await self._propagator.execute_forward(
-            ForwardAction(
-                folder=ctx.folder,
-                uid=uid,
-                to_address=address,
-                subject_template=subject_rendered,
-            )
+        """Forward the message via SMTP (not yet supported)."""
+        logger.warning(
+            "Forward action not yet supported, skipping",
+            extra={"mail_id": str(mail_id) if mail_id else None},
         )
 
     async def _action_trash(
@@ -348,19 +382,30 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Move mail to Trash folder."""
-        if not self._propagator:
+        """Move message to Trash folder via direct SQL UPDATE."""
+        if not mail_id:
             return
-        await self._propagator.execute_imap(
-            IMAPAction(
-                action_type=ActionType.MOVE,
-                folder=ctx.folder,
-                uid_set=str(uid),
-                target_folder="Trash",
-            )
-        )
 
-    _SPAM_FOLDER_FALLBACKS = ["Junk", "Spam", "Bulk Mail"]
+        account_id = await self._resolve_account_id(mail_id)
+        if not account_id:
+            return
+
+        trash_folder_id = await self._resolve_special_folder(account_id, "trash")
+        if not trash_folder_id:
+            logger.warning("No trash folder found, skipping trash action")
+            return
+
+        from sqlalchemy import update
+
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
+        async with db.session() as session:
+            await session.execute(
+                update(Message).where(Message.id == mail_id)
+                .values(folder_id=trash_folder_id)
+            )
 
     async def _action_move_to_spam(
         self,
@@ -370,45 +415,30 @@ class ActionExecutor:
         mail_id: uuid.UUID | None = None,
         uid: int = 0,
     ) -> None:
-        """Move mail to spam folder via ActionPropagator convenience method."""
-        if not self._propagator:
+        """Move message to spam folder via direct SQL UPDATE."""
+        if not mail_id:
             return
-        spam_folder = self._SPAM_FOLDER_FALLBACKS[0]
-        if self._folder_repo and mail_id:
-            spam_folder = await self._resolve_spam_folder(mail_id) or spam_folder
-        await self._propagator.move_to_spam(
-            folder=ctx.folder,
-            uid_set=str(uid),
-            spam_folder=spam_folder,
-        )
 
-    async def _resolve_spam_folder(self, mail_id: uuid.UUID) -> str | None:
-        """Look up the spam folder name for the account owning this mail."""
-        try:
-            from sqlalchemy import select
+        account_id = await self._resolve_account_id(mail_id)
+        if not account_id:
+            return
 
-            from mail_verdict.database.models import Mail, SpecialUse
+        spam_folder_id = await self._resolve_special_folder(account_id, "junk")
+        if not spam_folder_id:
+            logger.warning("No spam folder found, skipping move_to_spam action")
+            return
 
-            folder_repo = self._folder_repo
-            if folder_repo is None or not hasattr(folder_repo, "_db"):
-                return None
-            async with folder_repo._db.session() as session:
-                result = await session.execute(select(Mail.account_id).where(Mail.id == mail_id))
-                account_id = result.scalar_one_or_none()
-                if not account_id:
-                    return None
+        from sqlalchemy import update
 
-            folders = await folder_repo.get_by_account(account_id)
-            for f in folders:
-                if f.special_use and f.special_use == SpecialUse.JUNK:
-                    return str(f.imap_name)
-            folder_names = {f.imap_name for f in folders}
-            for name in self._SPAM_FOLDER_FALLBACKS:
-                if name in folder_names:
-                    return name
-        except Exception:
-            pass
-        return None
+        from mail_verdict.database.connection import get_db_connection
+        from mail_verdict.database.models import Message
+
+        db = get_db_connection()
+        async with db.session() as session:
+            await session.execute(
+                update(Message).where(Message.id == mail_id)
+                .values(folder_id=spam_folder_id)
+            )
 
     async def _action_notify(
         self,

@@ -1,12 +1,12 @@
 """
 Unified view API endpoints.
 
-Multi-account folder merging and cross-account mail listing.
+Multi-account folder merging and cross-account message listing.
 
-PUT /api/accounts/:id/emoji — set account emoji
-PUT /api/accounts/:id/folders/:fid/unified-name — set folder unified name
+PUT /api/accounts/:id/emoji — set account emoji (via AccountPrefs)
+PUT /api/accounts/:id/folders/:fid/unified-name — set folder unified name (via FolderPrefs)
 GET /api/unified/folders — merged folder list across all accounts
-GET /api/unified/mails — merged mail list sorted by date
+GET /api/unified/mails — merged message list sorted by date
 GET /api/unified/folder-order — unified folder display order
 PUT /api/unified/folder-order — save unified folder display order
 """
@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import and_, case, desc, or_, select, update
 from sqlalchemy import func as sa_func
 
+from mail_verdict.api.deps import get_account_prefs_repo, get_folder_prefs_repo
 from mail_verdict.api.schemas import (
     EmojiUpdate,
     FolderResponse,
@@ -28,12 +29,19 @@ from mail_verdict.api.schemas import (
     UnifiedFolderOrderUpdate,
     UnifiedFolderResponse,
     UnifiedFolderSource,
-    UnifiedMailListResponse,
-    UnifiedMailSummary,
+    UnifiedMessageListResponse,
+    UnifiedMessageSummary,
     UnifiedNameUpdate,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, Mail, Setting
+from mail_verdict.database.models import (
+    Account,
+    AccountPrefs,
+    Folder,
+    FolderPrefs,
+    Message,
+    Setting,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +62,7 @@ async def set_account_emoji(
     account_id: uuid.UUID,
     request: EmojiUpdate,
 ) -> dict[str, str | None]:
-    """Set the emoji icon for an account."""
+    """Set the emoji icon for an account (stored in AccountPrefs)."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
@@ -63,11 +71,8 @@ async def set_account_emoji(
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Account not found")
 
-        await session.execute(
-            update(Account)
-            .where(Account.id == account_id)
-            .values(emoji=request.emoji)
-        )
+    prefs_repo = get_account_prefs_repo()
+    await prefs_repo.update(account_id, emoji=request.emoji)
 
     return {"emoji": request.emoji}
 
@@ -81,7 +86,7 @@ async def set_unified_name(
     folder_id: uuid.UUID,
     request: UnifiedNameUpdate,
 ) -> FolderResponse:
-    """Set or clear the unified name for a folder."""
+    """Set or clear the unified name for a folder (stored in FolderPrefs)."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
@@ -94,28 +99,28 @@ async def set_unified_name(
         if folder is None:
             raise HTTPException(status_code=404, detail="Folder not found")
 
-        await session.execute(
-            update(Folder)
-            .where(Folder.id == folder_id)
-            .values(unified_name=request.unified_name)
-        )
+    # Update FolderPrefs
+    prefs_repo = get_folder_prefs_repo()
+    await prefs_repo.update(folder_id, unified_name=request.unified_name)
 
     # Re-fetch with counts to return FolderResponse
     async with db.session() as session:
         stmt = (
             select(
                 Folder,
-                sa_func.count(Mail.id).label("total_count"),
+                FolderPrefs,
+                sa_func.count(Message.id).label("total_count"),
                 sa_func.count(
-                    case((Mail.is_read.is_(False), Mail.id))
+                    case((Message.is_seen.is_(False), Message.id))
                 ).label("unread_count"),
             )
+            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(
-                Mail,
-                (Mail.folder_id == Folder.id) & Mail.is_deleted.is_(False),
+                Message,
+                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
             )
             .where(Folder.id == folder_id)
-            .group_by(Folder.id)
+            .group_by(Folder.id, FolderPrefs.folder_id)
         )
         result = await session.execute(stmt)
         row = result.one_or_none()
@@ -123,17 +128,21 @@ async def set_unified_name(
     if row is None:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    f, total, unread = row
+    f, fp, total, unread = row
     return FolderResponse(
         id=f.id,
         account_id=f.account_id,
         imap_name=f.imap_name,
-        display_name=f.display_name,
-        special_use=f.special_use.value if f.special_use else None,
-        unified_name=f.unified_name,
-        subscribed=f.subscribed,
-        is_visible=f.is_visible,
+        display_name=f.display_name or (fp.display_name if fp else None),
+        special_use=f.special_use,
+        mailbox_id=f.mailbox_id,
+        exists_count=f.exists_count,
         last_synced_at=f.last_synced_at,
+        sync_error=f.sync_error,
+        created_at=f.created_at,
+        unified_name=fp.unified_name if fp else None,
+        subscribed=fp.subscribed if fp else True,
+        is_visible=fp.is_visible if fp else True,
         total_count=total,
         unread_count=unread,
     )
@@ -147,7 +156,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
     """
     List merged folders across all active accounts.
 
-    Groups folders by unified_name and aggregates counts.
+    Groups folders by unified_name (from FolderPrefs) and aggregates counts.
     Ordered by stored folder order, with unordered folders appended.
     """
     db = get_db_connection()
@@ -155,32 +164,38 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
         stmt = (
             select(
                 Folder,
+                FolderPrefs,
                 Account.name.label("account_name"),
-                Account.emoji.label("account_emoji"),
-                sa_func.count(Mail.id).label("total_count"),
+                AccountPrefs.emoji.label("account_emoji"),
+                sa_func.count(Message.id).label("total_count"),
                 sa_func.count(
-                    case((Mail.is_read.is_(False), Mail.id))
+                    case((Message.is_seen.is_(False), Message.id))
                 ).label("unread_count"),
             )
             .join(Account, Folder.account_id == Account.id)
+            .join(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+            .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
             .outerjoin(
-                Mail,
-                (Mail.folder_id == Folder.id) & Mail.is_deleted.is_(False),
+                Message,
+                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
             )
             .where(
-                Folder.unified_name.isnot(None),
-                Folder.unified_name != "",
+                FolderPrefs.unified_name.isnot(None),
+                FolderPrefs.unified_name != "",
                 Account.is_active.is_(True),
             )
-            .group_by(Folder.id, Account.name, Account.emoji)
+            .group_by(
+                Folder.id, FolderPrefs.folder_id,
+                Account.name, AccountPrefs.emoji,
+            )
         )
         result = await session.execute(stmt)
         rows = list(result.all())
 
     # Group by unified_name
     groups: dict[str, dict[str, Any]] = {}
-    for folder, account_name, account_emoji, total, unread in rows:
-        name = folder.unified_name
+    for folder, fp, account_name, account_emoji, total, unread in rows:
+        name = fp.unified_name
         if name not in groups:
             groups[name] = {
                 "unified_name": name,
@@ -218,52 +233,54 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
     return result_list
 
 
-@unified_router.get("/mails", response_model=UnifiedMailListResponse)
-async def list_unified_mails(
-    folder_name: str = Query(description="Unified folder name to list mails from"),
+@unified_router.get("/mails", response_model=UnifiedMessageListResponse)
+async def list_unified_messages(
+    folder_name: str = Query(description="Unified folder name to list messages from"),
     before: uuid.UUID | None = Query(
         default=None,
-        description="Cursor: UUID of last mail in previous page",
+        description="Cursor: UUID of last message in previous page",
     ),
     limit: int = Query(default=50, ge=1, le=200),
-) -> UnifiedMailListResponse:
+) -> UnifiedMessageListResponse:
     """
-    List mails from all folders matching a unified name, sorted by date.
+    List messages from all folders matching a unified name, sorted by date.
 
     Cross-account cursor-based pagination.
     """
     db = get_db_connection()
     async with db.session() as session:
         stmt = (
-            select(Mail, Account.emoji.label("account_emoji"))
-            .join(Folder, Mail.folder_id == Folder.id)
-            .join(Account, Mail.account_id == Account.id)
+            select(Message, AccountPrefs.emoji.label("account_emoji"))
+            .join(Folder, Message.folder_id == Folder.id)
+            .join(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+            .join(Account, Message.account_id == Account.id)
+            .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
             .where(
-                Folder.unified_name == folder_name,
+                FolderPrefs.unified_name == folder_name,
                 Account.is_active.is_(True),
-                Mail.is_deleted.is_(False),
+                Message.deleted_at.is_(None),
             )
-            .order_by(desc(Mail.received_at), desc(Mail.id))
+            .order_by(desc(Message.received_at), desc(Message.id))
         )
 
         # Cursor-based pagination
         if before is not None:
             cursor_result = await session.execute(
-                select(Mail.received_at, Mail.id).where(Mail.id == before)
+                select(Message.received_at, Message.id).where(Message.id == before)
             )
             cursor_row = cursor_result.one_or_none()
             if cursor_row is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid cursor: mail {before} not found",
+                    detail=f"Invalid cursor: message {before} not found",
                 )
             cursor_received_at, cursor_id = cursor_row
             stmt = stmt.where(
                 or_(
-                    Mail.received_at < cursor_received_at,
+                    Message.received_at < cursor_received_at,
                     and_(
-                        Mail.received_at == cursor_received_at,
-                        Mail.id < cursor_id,
+                        Message.received_at == cursor_received_at,
+                        Message.id < cursor_id,
                     ),
                 )
             )
@@ -278,28 +295,29 @@ async def list_unified_mails(
 
     next_cursor = str(rows[-1][0].id) if has_more and rows else None
 
-    mails = [
-        UnifiedMailSummary(
-            id=mail.id,
-            account_id=mail.account_id,
+    messages = [
+        UnifiedMessageSummary(
+            id=msg.id,
+            account_id=msg.account_id,
             account_emoji=account_emoji,
-            folder_id=mail.folder_id,
-            subject=mail.subject,
-            from_addr=mail.from_addr,
-            to_addrs=mail.to_addrs,
-            received_at=mail.received_at,
-            is_read=mail.is_read,
-            is_flagged=mail.is_flagged,
-            is_deleted=mail.is_deleted,
-            headers_synced=mail.headers_synced,
-            body_synced=mail.body_synced,
-            snippet=mail.body_text[:120] if mail.body_text else None,
+            folder_id=msg.folder_id,
+            subject=msg.subject,
+            from_addr=msg.from_addr,
+            to_addrs=msg.to_addrs,
+            received_at=msg.received_at,
+            is_seen=msg.is_seen,
+            is_flagged=msg.is_flagged,
+            is_answered=msg.is_answered,
+            is_draft=msg.is_draft,
+            is_deleted=msg.is_deleted,
+            deleted_at=msg.deleted_at,
+            snippet=msg.body_text[:120] if msg.body_text else None,
         )
-        for mail, account_emoji in rows
+        for msg, account_emoji in rows
     ]
 
-    return UnifiedMailListResponse(
-        mails=mails,
+    return UnifiedMessageListResponse(
+        messages=messages,
         has_more=has_more,
         next_cursor=next_cursor,
     )

@@ -1,28 +1,20 @@
 """
 Spam event processor.
 
-Consumes events from SyncManager event queues, routes them
-to VerdictPipeline (for new mails) and SpamFeedbackHandler
-(for user folder moves). Runs as a background asyncio task
-per account.
+Handles PG LISTEN events for new messages, routes them to
+VerdictPipeline (for new messages) and SpamFeedbackHandler
+(for user folder moves).
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from typing import TYPE_CHECKING
-
-from mail_verdict.database.models import SpecialUse
-from mail_verdict.sync.events import (
-    MailMoved,
-    MailReceived,
-    MailSpamDetected,
-    SyncEvent,
-)
+import uuid
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from mail_verdict.database.repository import FolderRepository, MailRepository
+    from mail_verdict.database.connection import DatabaseConnection
+    from mail_verdict.database.repository import FolderRepository, MessageRepository
     from mail_verdict.spam.feedback import SpamFeedbackHandler
     from mail_verdict.spam.pipeline import VerdictPipeline
 
@@ -31,185 +23,124 @@ logger = logging.getLogger(__name__)
 
 class SpamEventProcessor:
     """
-    Background processor consuming sync events for spam analysis.
+    Processes PG LISTEN events for spam analysis.
 
-    Subscribes to SyncManager event queues and routes events
-    to the appropriate handler:
-    - MailReceived -> VerdictPipeline.process_mail()
-    - MailSpamDetected -> SpamFeedbackHandler.handle_moved_to_spam()
-    - MailMoved (from spam) -> SpamFeedbackHandler.handle_moved_from_spam()
+    Routes events to the appropriate handler:
+    - New message INSERT -> VerdictPipeline.process_message()
+    - Message folder change (moved to junk) -> SpamFeedbackHandler.handle_moved_to_spam()
+    - Message folder change (moved from junk) -> SpamFeedbackHandler.handle_moved_from_spam()
     """
 
     def __init__(
         self,
         pipeline: VerdictPipeline,
         feedback: SpamFeedbackHandler,
-        mail_repo: MailRepository,
+        message_repo: MessageRepository,
         folder_repo: FolderRepository,
+        db: DatabaseConnection,
     ) -> None:
         """
         Initialize the spam event processor.
 
         Args:
-            pipeline: VerdictPipeline for new mail analysis
+            pipeline: VerdictPipeline for new message analysis
             feedback: SpamFeedbackHandler for user corrections
-            mail_repo: Mail repository for lookups
+            message_repo: Message repository for lookups
             folder_repo: Folder repository for lookups
+            db: Database connection for queries
         """
         self._pipeline = pipeline
         self._feedback = feedback
-        self._mail_repo = mail_repo
+        self._message_repo = message_repo
         self._folder_repo = folder_repo
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._running = False
+        self._db = db
 
-    async def start(self, event_queues: dict[str, asyncio.Queue[SyncEvent]]) -> None:
+    async def handle_message_event(self, event: dict[str, Any]) -> None:
         """
-        Start processing events from the given queues.
+        Handle a message event from PG LISTEN.
+
+        Dispatches to the appropriate handler based on the operation type.
 
         Args:
-            event_queues: Mapping of account_name -> event queue
+            event: PG LISTEN event payload with keys:
+                - op: "insert" or "update"
+                - id: Message UUID string
+                - account_id: Account UUID string
+                - folder_id: Current folder UUID string
+                - old_folder_id: Previous folder UUID (for updates/moves)
         """
-        self._running = True
-        for name, queue in event_queues.items():
-            self._tasks[name] = asyncio.create_task(
-                self._process_loop(name, queue),
-                name=f"spam-processor-{name}",
-            )
-        logger.info("Spam event processor started for %d accounts", len(event_queues))
+        op = event.get("op")
 
-    async def stop(self) -> None:
-        """Stop all processing loops."""
-        self._running = False
-        for task in self._tasks.values():
-            task.cancel()
-        for task in self._tasks.values():
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        self._tasks.clear()
-        logger.info("Spam event processor stopped")
+        if op == "insert":
+            await self._handle_new_message(event)
+        elif op == "update":
+            await self._handle_message_update(event)
 
-    async def _process_loop(
-        self,
-        account_name: str,
-        queue: asyncio.Queue[SyncEvent],
-    ) -> None:
+    async def _handle_new_message(self, event: dict[str, Any]) -> None:
         """
-        Process events from a single account's queue.
+        Handle new message: look up full message + folder, run verdict pipeline.
 
         Args:
-            account_name: Account identifier for logging
-            queue: Event queue to consume from
+            event: PG LISTEN event payload
         """
-        logger.info("Spam processor started for account %s", account_name)
-
-        while self._running:
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=60.0)
-            except asyncio.TimeoutError:
-                continue
-            except asyncio.CancelledError:
-                break
-
-            try:
-                await self._handle_event(event, account_name)
-            except Exception:
-                logger.exception(
-                    "Spam processor error handling event",
-                    extra={"account": account_name, "event_type": type(event).__name__},
-                )
-
-    async def _handle_event(
-        self,
-        event: SyncEvent,
-        account_name: str,
-    ) -> None:
-        """
-        Route a single event to the appropriate handler.
-
-        Args:
-            event: Sync event to process
-            account_name: Account name for logging
-        """
-        if isinstance(event, MailReceived):
-            await self._handle_mail_received(event)
-
-        elif isinstance(event, MailSpamDetected):
-            await self._handle_spam_detected(event)
-
-        elif isinstance(event, MailMoved):
-            await self._handle_mail_moved(event)
-
-    async def _handle_mail_received(self, event: MailReceived) -> None:
-        """
-        Handle new mail: look up full mail + folder, run verdict pipeline.
-
-        Args:
-            event: MailReceived event
-        """
-        mail = await self._mail_repo.get_by_folder_and_uid(event.folder_id, event.uid)
-        if mail is None:
-            logger.debug("Mail uid=%d not found in folder for spam check", event.uid)
+        try:
+            message_id = uuid.UUID(event["id"])
+            account_id = uuid.UUID(event["account_id"])
+            folder_id = uuid.UUID(event["folder_id"])
+        except (KeyError, ValueError) as exc:
+            logger.warning("Invalid message event payload: %s", exc)
             return
 
-        # Look up folder
-        folders = await self._folder_repo.get_by_account(event.account_id)
-        folder = None
-        for f in folders:
-            if f.id == event.folder_id:
-                folder = f
-                break
+        msg = await self._message_repo.get_by_id(account_id, message_id)
+        if msg is None:
+            logger.debug("Message %s not found for spam check", str(message_id)[:8])
+            return
 
+        folder = await self._folder_repo.get_by_id(folder_id)
         if folder is None:
+            logger.debug("Folder %s not found for spam check", str(folder_id)[:8])
             return
 
-        await self._pipeline.process_mail(mail, folder)
+        await self._pipeline.process_message(msg, folder)
 
-    async def _handle_spam_detected(self, event: MailSpamDetected) -> None:
+    async def _handle_message_update(self, event: dict[str, Any]) -> None:
         """
-        Handle mail moved to spam by user.
+        Handle message update: check if folder changed (user move to/from spam).
 
         Args:
-            event: MailSpamDetected event
+            event: PG LISTEN event payload
         """
-        if not event.message_id:
+        old_folder_id_str = event.get("old_folder_id")
+        new_folder_id_str = event.get("folder_id")
+
+        if not old_folder_id_str or not new_folder_id_str:
             return
 
-        mails = await self._mail_repo.get_by_message_id(event.account_id, event.message_id)
-        if mails:
-            await self._feedback.handle_moved_to_spam(
-                mail_id=mails[0].id,
-                account_id=event.account_id,
-            )
+        if old_folder_id_str == new_folder_id_str:
+            return  # Not a folder move
 
-    async def _handle_mail_moved(self, event: MailMoved) -> None:
-        """
-        Handle mail moved between folders.
-
-        If moved FROM a spam folder, record as user correction (not-spam).
-
-        Args:
-            event: MailMoved event
-        """
-        if not event.from_folder_id or not event.message_id:
+        try:
+            message_id = uuid.UUID(event["id"])
+            account_id = uuid.UUID(event["account_id"])
+            old_folder_id = uuid.UUID(old_folder_id_str)
+            new_folder_id = uuid.UUID(new_folder_id_str)
+        except (KeyError, ValueError) as exc:
+            logger.warning("Invalid message update event payload: %s", exc)
             return
 
-        # Check if source folder was spam
-        folders = await self._folder_repo.get_by_account(event.account_id)
-        from_folder = None
-        for f in folders:
-            if f.id == event.from_folder_id:
-                from_folder = f
-                break
+        # Look up folder special_use for both old and new folders
+        old_folder = await self._folder_repo.get_by_id(old_folder_id)
+        new_folder = await self._folder_repo.get_by_id(new_folder_id)
 
-        if from_folder is None or from_folder.special_use != SpecialUse.JUNK:
-            return
-
-        mails = await self._mail_repo.get_by_message_id(event.account_id, event.message_id)
-        if mails:
+        if old_folder and old_folder.special_use == "junk":
+            # Moved FROM spam -> user correction (not-spam)
             await self._feedback.handle_moved_from_spam(
-                mail_id=mails[0].id,
-                account_id=event.account_id,
+                mail_id=message_id,
+                account_id=account_id,
+            )
+        elif new_folder and new_folder.special_use == "junk":
+            # Moved TO spam -> user feedback (spam)
+            await self._feedback.handle_moved_to_spam(
+                mail_id=message_id,
+                account_id=account_id,
             )

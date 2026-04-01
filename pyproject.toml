@@ -74,5 +74,5 @@ disallow_untyped_defs = true
 plugins = ["sqlalchemy.ext.mypy.plugin"]
 
 [[tool.mypy.overrides]]
-module = ["fastmcp.*", "imap_tools.*", "qdrant_client.*", "jinja2.*"]
+module = ["fastmcp.*", "imap_tools.*", "qdrant_client.*", "jinja2.*", "asyncpg", "asyncpg.*"]
 ignore_missing_imports = true

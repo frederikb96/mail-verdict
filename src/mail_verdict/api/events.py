@@ -4,9 +4,13 @@ Server-Sent Events (SSE) endpoint for real-time updates.
 GET /api/events — SSE stream with Last-Event-ID replay support.
 Supports ?account_id=<uuid> query parameter to filter events by account.
 
-On fresh connect: sends sync.state snapshot, then streams live events.
+On fresh connect: sends connected event, then streams live events.
 On reconnect (Last-Event-ID header): replays missed events from EventRing,
-falls back to full snapshot if the ID is too old.
+falls back to connected event if the ID is too old.
+
+PostIMAP integration: PG LISTEN/NOTIFY (via pg_listener.py) pushes
+message events into the EventRing. The SSE subscriber on the event bus
+is no longer needed.
 """
 
 from __future__ import annotations
@@ -25,25 +29,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 from mail_verdict.api.event_ring import EventRing
-from mail_verdict.rules.bus import EventBus, Subscriber
-from mail_verdict.sync.events import (
-    FlagsChanged,
-    MailDeleted,
-    MailMoved,
-    MailReceived,
-    MailSpamDetected,
-    MailTrashed,
-    SyncEvent,
-)
 
 logger = logging.getLogger(__name__)
 
 # Global EventRing instance (set during lifespan)
 _event_ring: EventRing | None = None
-_subscriber_registered = False
-
-# Tracker accessor (set during lifespan, avoids circular import)
-_get_tracker: Any = None
 
 KEEPALIVE_INTERVAL_S = 15
 
@@ -66,106 +56,6 @@ def get_event_ring() -> EventRing | None:
     return _event_ring
 
 
-def set_tracker_accessor(accessor: Any) -> None:
-    """
-    Register a callable that retrieves a SyncTracker by account_id.
-
-    Avoids circular imports between api.events and sync.engine.
-
-    Args:
-        accessor: Callable(account_id: uuid.UUID) -> SyncTracker | None
-    """
-    global _get_tracker
-    _get_tracker = accessor
-
-
-async def register_sse_subscriber(bus: EventBus) -> None:
-    """
-    Register event bus subscriber to push mail events into the EventRing.
-
-    Called once during server lifespan. Mail events (new, deleted, moved,
-    flags changed) are converted and added to the ring buffer.
-    """
-    global _subscriber_registered
-    if _subscriber_registered:
-        return
-
-    async def _dispatch_to_ring(event: SyncEvent) -> None:
-        """Forward event bus events into the EventRing."""
-        if _event_ring is None:
-            return
-
-        event_type, data = _sync_event_to_sse(event)
-        if event_type is None:
-            return
-
-        await _event_ring.add(
-            account_id=event.account_id,
-            event_type=event_type,
-            data=data,
-        )
-
-    event_types = [
-        MailReceived,
-        MailDeleted,
-        MailMoved,
-        MailTrashed,
-        MailSpamDetected,
-        FlagsChanged,
-    ]
-    for et in event_types:
-        await bus.subscribe(
-            et,
-            Subscriber(name="sse_ring_broadcaster", callback=_dispatch_to_ring, priority=90),
-        )
-
-    _subscriber_registered = True
-    logger.info("SSE ring broadcaster registered on event bus")
-
-
-def _sync_event_to_sse(event: SyncEvent) -> tuple[str | None, dict[str, Any]]:
-    """
-    Convert a SyncEvent to an SSE event type and payload.
-
-    Args:
-        event: Sync event from event bus
-
-    Returns:
-        Tuple of (event_type, data) or (None, {}) if unmapped
-    """
-    event_name = type(event).__name__
-
-    type_map = {
-        "MailReceived": "mail.new",
-        "MailMoved": "mail.updated",
-        "MailTrashed": "mail.updated",
-        "MailSpamDetected": "mail.updated",
-        "MailDeleted": "mail.deleted",
-        "FlagsChanged": "mail.updated",
-    }
-
-    sse_type = type_map.get(event_name)
-    if sse_type is None:
-        return None, {}
-
-    data: dict[str, Any] = {
-        "account_id": str(event.account_id),
-        "folder_id": str(event.folder_id),
-        "timestamp": event.timestamp.isoformat(),
-    }
-
-    if hasattr(event, "uid"):
-        data["uid"] = event.uid
-    if hasattr(event, "message_id") and event.message_id:  # type: ignore[union-attr]
-        data["message_id"] = event.message_id  # type: ignore[union-attr]
-    if hasattr(event, "is_read"):
-        data["is_read"] = event.is_read  # type: ignore[union-attr]
-    if hasattr(event, "is_flagged"):
-        data["is_flagged"] = event.is_flagged  # type: ignore[union-attr]
-
-    return sse_type, data
-
-
 async def push_verdict_event(
     mail_id: uuid.UUID,
     is_spam: bool,
@@ -176,7 +66,7 @@ async def push_verdict_event(
     Push a verdict_issued event into the EventRing.
 
     Args:
-        mail_id: Mail UUID
+        mail_id: Message UUID
         is_spam: Spam classification result
         source: Verdict source identifier
         account_id: Optional account UUID for scoping
@@ -188,7 +78,7 @@ async def push_verdict_event(
         account_id=account_id,
         event_type="verdict.issued",
         data={
-            "mail_id": str(mail_id),
+            "message_id": str(mail_id),
             "is_spam": is_spam,
             "source": source,
             "account_id": str(account_id),
@@ -207,8 +97,8 @@ async def push_selection_event(
 
     Args:
         account_id: Account UUID
-        selected_ids: Currently selected mail IDs
-        count: Number of selected mails
+        selected_ids: Currently selected message IDs
+        count: Number of selected messages
     """
     if _event_ring is None:
         return
@@ -249,7 +139,7 @@ async def _sse_generator(
     """
     Async generator yielding SSE-formatted strings from the EventRing.
 
-    On first connect (no Last-Event-ID): sends sync.state snapshot, then live.
+    On first connect (no Last-Event-ID): sends connected event, then live.
     On reconnect (with Last-Event-ID): replays missed events, then live.
     Sends keepalive every 15s.
 
@@ -268,13 +158,13 @@ async def _sse_generator(
                 for event in missed:
                     yield _format_sse(event["id"], event["event_type"], event["data"])
             else:
-                # Gap too large: send full state snapshot
-                for msg in _emit_state_snapshot(event_ring, account_id):
-                    yield msg
+                # Gap too large: send connected event
+                seq = event_ring.get_latest_seq()
+                yield f"id: {seq}\nevent: connected\ndata: {{}}\n\n"
         else:
-            # Fresh connect: send current state snapshot
-            for msg in _emit_state_snapshot(event_ring, account_id):
-                yield msg
+            # Fresh connect: send connected event
+            seq = event_ring.get_latest_seq()
+            yield f"id: {seq}\nevent: connected\ndata: {{}}\n\n"
 
         # Stream live events
         last_seen = event_ring.get_latest_seq()
@@ -299,42 +189,6 @@ async def _sse_generator(
         return
     finally:
         event_ring.unregister_waiter(waiter, account_id)
-
-
-def _emit_state_snapshot(
-    event_ring: EventRing,
-    account_id: str | None,
-) -> list[str]:
-    """
-    Build sync.state snapshot messages for connected accounts.
-
-    Args:
-        event_ring: Ring buffer (used for sequence ID)
-        account_id: Optional account filter
-
-    Returns:
-        List of SSE-formatted strings with state snapshots
-    """
-    messages: list[str] = []
-    seq = event_ring.get_latest_seq()
-
-    if _get_tracker is None:
-        return messages
-
-    if account_id:
-        try:
-            acct_uuid = uuid.UUID(account_id)
-        except ValueError:
-            return messages
-        tracker = _get_tracker(acct_uuid)
-        if tracker:
-            messages.append(_format_sse(seq, "sync.state", tracker.to_dict()))
-    else:
-        # Would need access to all trackers — for now just send the seq
-        # as a keepalive so the client knows the connection is alive
-        messages.append(f"id: {seq}\nevent: connected\ndata: {{}}\n\n")
-
-    return messages
 
 
 def _validate_api_key(request: Request) -> bool:

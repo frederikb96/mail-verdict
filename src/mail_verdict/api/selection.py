@@ -2,25 +2,25 @@
 Selection API for multi-select operations.
 
 Backend-driven selection state compatible with virtual scrolling.
-SelectionManager is in-memory per-account (like SyncTracker).
+SelectionManager is in-memory per-account.
 
-POST /accounts/:id/selection/toggle — toggle single mail
+POST /accounts/:id/selection/toggle — toggle single message
 POST /accounts/:id/selection/range — shift-select range
 POST /accounts/:id/selection/all — select all in folder
 POST /accounts/:id/selection/clear — clear selection
 GET /accounts/:id/selection — current selection state
-POST /accounts/:id/selection/action — bulk action on selected mails
+POST /accounts/:id/selection/action — bulk action on selected messages
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select, update
 
-from mail_verdict.api.deps import get_folder_repo
 from mail_verdict.api.schemas import (
     BulkActionRequest,
     BulkActionResponse,
@@ -30,13 +30,13 @@ from mail_verdict.api.schemas import (
     SelectionToggle,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Mail
+from mail_verdict.database.models import Folder, Message
 
 logger = logging.getLogger(__name__)
 
 
 class SelectionManager:
-    """Per-account mail selection state for virtual scroll compatibility."""
+    """Per-account message selection state for virtual scroll compatibility."""
 
     def __init__(self, account_id: uuid.UUID) -> None:
         """
@@ -49,21 +49,21 @@ class SelectionManager:
         self._selected: set[uuid.UUID] = set()
         self._last_toggled: uuid.UUID | None = None
 
-    def toggle(self, mail_id: uuid.UUID) -> set[uuid.UUID]:
+    def toggle(self, message_id: uuid.UUID) -> set[uuid.UUID]:
         """
-        Toggle single mail selection.
+        Toggle single message selection.
 
         Args:
-            mail_id: Mail to toggle
+            message_id: Message to toggle
 
         Returns:
             Current selection set after toggle
         """
-        if mail_id in self._selected:
-            self._selected.discard(mail_id)
+        if message_id in self._selected:
+            self._selected.discard(message_id)
         else:
-            self._selected.add(mail_id)
-        self._last_toggled = mail_id
+            self._selected.add(message_id)
+        self._last_toggled = message_id
         return self._selected
 
     async def range_select(
@@ -73,14 +73,14 @@ class SelectionManager:
         folder_id: uuid.UUID,
     ) -> set[uuid.UUID]:
         """
-        Select all mails between from_id and to_id in sort order.
+        Select all messages between from_id and to_id in sort order.
 
-        Queries DB for all mail IDs between the two anchors
+        Queries DB for all message IDs between the two anchors
         in received_at DESC order (matching the list sort).
 
         Args:
-            from_id: First anchor mail ID
-            to_id: Second anchor mail ID
+            from_id: First anchor message ID
+            to_id: Second anchor message ID
             folder_id: Folder to constrain range within
 
         Returns:
@@ -88,24 +88,24 @@ class SelectionManager:
         """
         db = get_db_connection()
         async with db.session() as session:
-            anchor_stmt = select(Mail.id, Mail.received_at).where(
-                Mail.id.in_([from_id, to_id]),
-                Mail.folder_id == folder_id,
+            anchor_stmt = select(Message.id, Message.received_at).where(
+                Message.id.in_([from_id, to_id]),
+                Message.folder_id == folder_id,
             )
             result = await session.execute(anchor_stmt)
             anchors = {row.id: row.received_at for row in result}
 
             if from_id not in anchors or to_id not in anchors:
-                raise ValueError("One or both anchor mails not found in folder")
+                raise ValueError("One or both anchor messages not found in folder")
 
             t1, t2 = anchors[from_id], anchors[to_id]
             lo, hi = min(t1, t2), max(t1, t2)
 
-            range_stmt = select(Mail.id).where(
-                Mail.folder_id == folder_id,
-                Mail.received_at >= lo,
-                Mail.received_at <= hi,
-                Mail.is_deleted.is_(False),
+            range_stmt = select(Message.id).where(
+                Message.folder_id == folder_id,
+                Message.received_at >= lo,
+                Message.received_at <= hi,
+                Message.deleted_at.is_(None),
             )
             result = await session.execute(range_stmt)
             range_ids = {row.id for row in result}
@@ -115,19 +115,19 @@ class SelectionManager:
 
     async def select_all(self, folder_id: uuid.UUID) -> set[uuid.UUID]:
         """
-        Select all mails in a folder.
+        Select all messages in a folder.
 
         Args:
-            folder_id: Folder to select all mails from
+            folder_id: Folder to select all messages from
 
         Returns:
-            Current selection set (replaced with all folder mails)
+            Current selection set (replaced with all folder messages)
         """
         db = get_db_connection()
         async with db.session() as session:
-            stmt = select(Mail.id).where(
-                Mail.folder_id == folder_id,
-                Mail.is_deleted.is_(False),
+            stmt = select(Message.id).where(
+                Message.folder_id == folder_id,
+                Message.deleted_at.is_(None),
             )
             result = await session.execute(stmt)
             self._selected = {row.id for row in result}
@@ -146,16 +146,16 @@ class SelectionManager:
 
     @property
     def selected_ids(self) -> set[uuid.UUID]:
-        """Current set of selected mail IDs."""
+        """Current set of selected message IDs."""
         return self._selected
 
     @property
     def count(self) -> int:
-        """Number of currently selected mails."""
+        """Number of currently selected messages."""
         return len(self._selected)
 
 
-# Global selection managers (in-memory, like SyncTracker)
+# Global selection managers (in-memory)
 _selection_managers: dict[uuid.UUID, SelectionManager] = {}
 
 
@@ -205,9 +205,9 @@ async def toggle_selection(
     account_id: uuid.UUID,
     body: SelectionToggle,
 ) -> SelectionResponse:
-    """Toggle selection of a single mail."""
+    """Toggle selection of a single message."""
     manager = get_selection_manager(account_id)
-    manager.toggle(body.mail_id)
+    manager.toggle(body.message_id)
     await _push_selection_event(account_id, manager)
     return _make_response(manager)
 
@@ -217,7 +217,7 @@ async def range_selection(
     account_id: uuid.UUID,
     body: SelectionRange,
 ) -> SelectionResponse:
-    """Select all mails between two anchor points (shift-click)."""
+    """Select all messages between two anchor points (shift-click)."""
     manager = get_selection_manager(account_id)
     try:
         await manager.range_select(body.from_id, body.to_id, body.folder_id)
@@ -232,7 +232,7 @@ async def select_all(
     account_id: uuid.UUID,
     body: SelectionAll,
 ) -> SelectionResponse:
-    """Select all mails in a folder."""
+    """Select all messages in a folder."""
     manager = get_selection_manager(account_id)
     await manager.select_all(body.folder_id)
     await _push_selection_event(account_id, manager)
@@ -254,15 +254,16 @@ async def bulk_action(
     body: BulkActionRequest,
 ) -> BulkActionResponse:
     """
-    Execute an action on all selected mails.
+    Execute an action on all selected messages.
 
-    Clears selection after successful action.
+    Updates the local DB directly. PostIMAP's PG trigger handles
+    IMAP propagation. Clears selection after successful action.
     """
     manager = get_selection_manager(account_id)
     selected = list(manager.selected_ids)
 
     if not selected:
-        raise HTTPException(status_code=400, detail="No mails selected")
+        raise HTTPException(status_code=400, detail="No messages selected")
 
     db = get_db_connection()
     errors: list[str] = []
@@ -271,26 +272,26 @@ async def bulk_action(
     if body.action == "mark_read":
         async with db.session() as session:
             result = await session.execute(
-                update(Mail)
-                .where(Mail.id.in_(selected), Mail.account_id == account_id)
-                .values(is_read=True)
+                update(Message)
+                .where(Message.id.in_(selected), Message.account_id == account_id)
+                .values(is_seen=True)
             )
             affected = result.rowcount  # type: ignore[attr-defined]
 
     elif body.action == "mark_unread":
         async with db.session() as session:
             result = await session.execute(
-                update(Mail)
-                .where(Mail.id.in_(selected), Mail.account_id == account_id)
-                .values(is_read=False)
+                update(Message)
+                .where(Message.id.in_(selected), Message.account_id == account_id)
+                .values(is_seen=False)
             )
             affected = result.rowcount  # type: ignore[attr-defined]
 
     elif body.action == "star":
         async with db.session() as session:
             result = await session.execute(
-                update(Mail)
-                .where(Mail.id.in_(selected), Mail.account_id == account_id)
+                update(Message)
+                .where(Message.id.in_(selected), Message.account_id == account_id)
                 .values(is_flagged=True)
             )
             affected = result.rowcount  # type: ignore[attr-defined]
@@ -298,26 +299,61 @@ async def bulk_action(
     elif body.action == "unstar":
         async with db.session() as session:
             result = await session.execute(
-                update(Mail)
-                .where(Mail.id.in_(selected), Mail.account_id == account_id)
+                update(Message)
+                .where(Message.id.in_(selected), Message.account_id == account_id)
                 .values(is_flagged=False)
             )
             affected = result.rowcount  # type: ignore[attr-defined]
 
     elif body.action == "delete":
-        async with db.session() as session:
-            result = await session.execute(
-                update(Mail)
-                .where(Mail.id.in_(selected), Mail.account_id == account_id)
-                .values(is_deleted=True)
+        # Bulk delete: move to trash or permanent delete
+        trash_folder_id = await _resolve_special_folder(account_id, "trash")
+        if trash_folder_id:
+            # Move non-trash messages to trash, permanently delete messages already in trash
+            trash_msgs, non_trash_msgs = await _partition_by_folder(
+                account_id, selected, trash_folder_id,
             )
-            affected = result.rowcount  # type: ignore[attr-defined]
+
+            if non_trash_msgs:
+                async with db.session() as session:
+                    result = await session.execute(
+                        update(Message)
+                        .where(
+                            Message.id.in_(non_trash_msgs),
+                            Message.account_id == account_id,
+                        )
+                        .values(folder_id=trash_folder_id)
+                    )
+                    affected += result.rowcount  # type: ignore[attr-defined]
+
+            if trash_msgs:
+                now = datetime.now(timezone.utc)
+                async with db.session() as session:
+                    result = await session.execute(
+                        update(Message)
+                        .where(
+                            Message.id.in_(trash_msgs),
+                            Message.account_id == account_id,
+                        )
+                        .values(deleted_at=now)
+                    )
+                    affected += result.rowcount  # type: ignore[attr-defined]
+        else:
+            # No trash folder -- permanent delete all
+            now = datetime.now(timezone.utc)
+            async with db.session() as session:
+                result = await session.execute(
+                    update(Message)
+                    .where(Message.id.in_(selected), Message.account_id == account_id)
+                    .values(deleted_at=now)
+                )
+                affected = result.rowcount  # type: ignore[attr-defined]
 
     elif body.action in ("move", "archive", "spam"):
         target_folder_id = body.target_folder_id
         if body.action in ("archive", "spam"):
             target_folder_id = await _resolve_special_folder(
-                account_id, "archive" if body.action == "archive" else "spam",
+                account_id, "archive" if body.action == "archive" else "junk",
             )
         if target_folder_id is None:
             raise HTTPException(
@@ -326,14 +362,17 @@ async def bulk_action(
             )
         async with db.session() as session:
             result = await session.execute(
-                update(Mail)
-                .where(Mail.id.in_(selected), Mail.account_id == account_id)
-                .values(is_deleted=True)
+                update(Message)
+                .where(Message.id.in_(selected), Message.account_id == account_id)
+                .values(folder_id=target_folder_id)
             )
             affected = result.rowcount  # type: ignore[attr-defined]
 
     else:
         raise HTTPException(status_code=400, detail=f"Unknown bulk action: {body.action}")
+
+    # Emit SSE events so connected clients update their caches
+    await _emit_bulk_sse(account_id, body.action)
 
     # Clear selection after bulk action
     manager.clear()
@@ -352,39 +391,87 @@ async def _resolve_special_folder(
     role: str,
 ) -> uuid.UUID | None:
     """
-    Resolve a special folder (archive/spam) from the account's folder_mapping.
+    Resolve a special folder by querying Folder.special_use directly.
 
     Args:
         account_id: Account to look up
-        role: Folder role key in folder_mapping (e.g., "archive", "spam")
+        role: Folder role key (e.g., "archive", "junk", "trash")
 
     Returns:
-        Folder UUID or None if not mapped
+        Folder UUID or None if not found
     """
-    from mail_verdict.database.models import Account
-
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
-            select(Account.folder_mapping).where(Account.id == account_id)
+            select(Folder.id).where(
+                Folder.account_id == account_id,
+                Folder.special_use == role,
+            ).limit(1)
         )
-        mapping = result.scalar_one_or_none()
+        return result.scalar_one_or_none()
 
-    if not mapping or role not in mapping:
-        return None
 
-    folder_id_str = mapping[role]
-    if not folder_id_str:
-        return None
+async def _partition_by_folder(
+    account_id: uuid.UUID,
+    message_ids: list[uuid.UUID],
+    folder_id: uuid.UUID,
+) -> tuple[list[uuid.UUID], list[uuid.UUID]]:
+    """
+    Split message IDs into those in the given folder and those not.
 
-    try:
-        return uuid.UUID(folder_id_str)
-    except (ValueError, TypeError):
-        # folder_mapping might store imap_name instead of UUID — resolve it
-        folder_repo = get_folder_repo()
-        folders = await folder_repo.get_by_account(account_id)
-        target = next((f for f in folders if f.imap_name == folder_id_str), None)
-        return target.id if target else None
+    Args:
+        account_id: Account UUID
+        message_ids: Message IDs to partition
+        folder_id: Folder to check against
+
+    Returns:
+        Tuple of (in_folder, not_in_folder) message ID lists
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Message.id, Message.folder_id)
+            .where(Message.id.in_(message_ids), Message.account_id == account_id)
+        )
+        rows = result.all()
+
+    in_folder = [r.id for r in rows if r.folder_id == folder_id]
+    not_in_folder = [r.id for r in rows if r.folder_id != folder_id]
+    return in_folder, not_in_folder
+
+
+async def _emit_bulk_sse(account_id: uuid.UUID, action: str) -> None:
+    """
+    Emit an SSE event after a bulk action so connected clients refresh.
+
+    Uses mail.deleted for move/delete/archive/spam (messages leave current folder),
+    mail.updated for flag/read changes.
+
+    Args:
+        account_id: Account UUID
+        action: Bulk action name
+    """
+    from mail_verdict.api.events import get_event_ring
+
+    ring = get_event_ring()
+    if ring is None:
+        return
+
+    event_type = (
+        "mail.deleted"
+        if action in ("move", "delete", "archive", "spam")
+        else "mail.updated"
+    )
+    await ring.add(
+        account_id=account_id,
+        event_type=event_type,
+        data={
+            "account_id": str(account_id),
+            "bulk": True,
+            "action": action,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        },
+    )
 
 
 async def _push_selection_event(account_id: uuid.UUID, manager: SelectionManager) -> None:

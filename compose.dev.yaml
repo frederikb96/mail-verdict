@@ -1,0 +1,95 @@
+name: mv-dev
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    container_name: mv-app-dev
+    ports:
+      - "18081:8080"
+    volumes:
+      - ./src:/app/src:Z
+      - ./config:/app/config:ro,Z
+      - ./config-custom:/app/config-custom:ro,Z
+      - ./alembic:/app/alembic:ro,Z
+      - ./alembic.ini:/app/alembic.ini:ro,Z
+      - ./ui/build:/app/ui/build:ro,Z
+    environment:
+      MAIL_VERDICT_DATABASE_URL: "postgresql+asyncpg://devuser:${POSTGRES_PASSWORD}@postgres:5432/mail_verdict_dev"
+      MAIL_VERDICT_QDRANT_HOST: "qdrant"
+      MAIL_VERDICT_QDRANT_PORT: "6333"
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+      MAIL_VERDICT_ENCRYPTION_KEY: "${MAIL_VERDICT_ENCRYPTION_KEY}"
+    userns_mode: keep-id
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      postimap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 45s
+    restart: "no"
+
+  postimap:
+    image: ghcr.io/frederikb96/postimap:0.2.0
+    container_name: mv-postimap-dev
+    environment:
+      POSTIMAP_DATABASE_HOST: postgres
+      POSTIMAP_DATABASE_PORT: "5432"
+      POSTIMAP_DATABASE_NAME: mail_verdict_dev
+      POSTIMAP_DATABASE_USER: devuser
+      DB_PASSWORD: "${POSTGRES_PASSWORD}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: "no"
+
+  postgres:
+    image: docker.io/postgres:16-alpine
+    container_name: mv-postgres-dev
+    ports:
+      - "15433:5432"
+    environment:
+      POSTGRES_DB: mail_verdict_dev
+      POSTGRES_USER: devuser
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devuser -d mail_verdict_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - /tmp/mv-dev-pgdata:/var/lib/postgresql/data:Z
+    restart: "no"
+
+  qdrant:
+    image: docker.io/qdrant/qdrant:v1.16.3
+    container_name: mv-qdrant-dev
+    ports:
+      - "16335:6333"
+    environment:
+      QDRANT__LOG_LEVEL: WARN
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - /tmp/mv-dev-qdrant:/qdrant/storage:Z
+    restart: "no"

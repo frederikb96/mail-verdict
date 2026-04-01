@@ -2,24 +2,26 @@
 Repository layer for database operations.
 
 All queries are account_id scoped for multi-account isolation.
+PostIMAP owns message ingestion — MailVerdict reads/queries messages
+and manages its own tables (verdicts, tags, prefs, settings).
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, desc, func, select, update
+from sqlalchemy import delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mail_verdict.database.models import (
     Account,
-    AccountState,
+    AccountPrefs,
     Attachment,
     Folder,
-    Mail,
+    FolderPrefs,
     MailTag,
+    Message,
     TagSource,
     Verdict,
     VerdictSource,
@@ -30,7 +32,7 @@ if TYPE_CHECKING:
 
 
 class AccountRepository:
-    """Repository for Account state management."""
+    """Repository for Account queries."""
 
     def __init__(self, db: DatabaseConnection) -> None:
         """
@@ -41,26 +43,235 @@ class AccountRepository:
         """
         self._db = db
 
-    async def update_state(self, account_id: uuid.UUID, state: AccountState) -> None:
+    async def get_by_id(self, account_id: uuid.UUID) -> Account | None:
         """
-        Update Account state in database.
+        Get an account by ID.
 
         Args:
             account_id: Account UUID
-            state: New AccountState enum value
+
+        Returns:
+            Account if found, None otherwise
         """
         async with self._db.session() as session:
-            await session.execute(
-                update(Account).where(Account.id == account_id).values(state=state)
+            result = await session.execute(
+                select(Account).where(Account.id == account_id)
             )
-            await session.commit()
+            return result.scalar_one_or_none()
+
+    async def get_all(self) -> list[Account]:
+        """
+        Get all accounts.
+
+        Returns:
+            List of all Account objects
+        """
+        async with self._db.session() as session:
+            result = await session.execute(select(Account))
+            return list(result.scalars().all())
 
 
-class MailRepository:
+class AccountPrefsRepository:
+    """Repository for AccountPrefs CRUD operations."""
+
+    def __init__(self, db: DatabaseConnection) -> None:
+        """
+        Initialize repository with database connection.
+
+        Args:
+            db: Database connection instance
+        """
+        self._db = db
+
+    async def get_or_create(self, account_id: uuid.UUID) -> AccountPrefs:
+        """
+        Get existing prefs or create defaults for an account.
+
+        Args:
+            account_id: Account UUID
+
+        Returns:
+            AccountPrefs for the account
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(AccountPrefs).where(
+                    AccountPrefs.account_id == account_id,
+                )
+            )
+            prefs = result.scalar_one_or_none()
+            if prefs is not None:
+                return prefs
+
+            prefs = AccountPrefs(account_id=account_id)
+            session.add(prefs)
+            await session.flush()
+            await session.refresh(prefs)
+            return prefs
+
+    async def update(
+        self,
+        account_id: uuid.UUID,
+        **kwargs: Any,
+    ) -> AccountPrefs:
+        """
+        Update account prefs fields.
+
+        Creates the prefs row if it doesn't exist yet.
+
+        Args:
+            account_id: Account UUID
+            **kwargs: Fields to update (emoji, spam_enabled,
+                      embedding_lookback_days, folder_mapping, folder_order)
+
+        Returns:
+            Updated AccountPrefs
+        """
+        async with self._db.session() as session:
+            # Upsert: insert defaults then update on conflict
+            stmt = (
+                pg_insert(AccountPrefs)
+                .values(account_id=account_id, **kwargs)
+                .on_conflict_do_update(
+                    index_elements=["account_id"],
+                    set_=kwargs,
+                )
+                .returning(AccountPrefs)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one()
+
+    async def get_by_account(self, account_id: uuid.UUID) -> AccountPrefs | None:
+        """
+        Get prefs for an account (without auto-creation).
+
+        Args:
+            account_id: Account UUID
+
+        Returns:
+            AccountPrefs if exists, None otherwise
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(AccountPrefs).where(
+                    AccountPrefs.account_id == account_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+
+class FolderPrefsRepository:
+    """Repository for FolderPrefs CRUD operations."""
+
+    def __init__(self, db: DatabaseConnection) -> None:
+        """
+        Initialize repository with database connection.
+
+        Args:
+            db: Database connection instance
+        """
+        self._db = db
+
+    async def get_or_create(self, folder_id: uuid.UUID) -> FolderPrefs:
+        """
+        Get existing prefs or create defaults for a folder.
+
+        Args:
+            folder_id: Folder UUID
+
+        Returns:
+            FolderPrefs for the folder
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(FolderPrefs).where(
+                    FolderPrefs.folder_id == folder_id,
+                )
+            )
+            prefs = result.scalar_one_or_none()
+            if prefs is not None:
+                return prefs
+
+            prefs = FolderPrefs(folder_id=folder_id)
+            session.add(prefs)
+            await session.flush()
+            await session.refresh(prefs)
+            return prefs
+
+    async def update(
+        self,
+        folder_id: uuid.UUID,
+        **kwargs: Any,
+    ) -> FolderPrefs:
+        """
+        Update folder prefs fields.
+
+        Creates the prefs row if it doesn't exist yet.
+
+        Args:
+            folder_id: Folder UUID
+            **kwargs: Fields to update (unified_name, is_visible,
+                      subscribed, display_name)
+
+        Returns:
+            Updated FolderPrefs
+        """
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(FolderPrefs)
+                .values(folder_id=folder_id, **kwargs)
+                .on_conflict_do_update(
+                    index_elements=["folder_id"],
+                    set_=kwargs,
+                )
+                .returning(FolderPrefs)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one()
+
+    async def get_by_folder(self, folder_id: uuid.UUID) -> FolderPrefs | None:
+        """
+        Get prefs for a folder (without auto-creation).
+
+        Args:
+            folder_id: Folder UUID
+
+        Returns:
+            FolderPrefs if exists, None otherwise
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(FolderPrefs).where(
+                    FolderPrefs.folder_id == folder_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def get_by_account(self, account_id: uuid.UUID) -> list[FolderPrefs]:
+        """
+        Get all folder prefs for an account's folders.
+
+        Args:
+            account_id: Account UUID
+
+        Returns:
+            List of FolderPrefs for all folders belonging to the account
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(FolderPrefs)
+                .join(Folder, FolderPrefs.folder_id == Folder.id)
+                .where(Folder.account_id == account_id)
+            )
+            return list(result.scalars().all())
+
+
+class MessageRepository:
     """
-    Repository for Mail CRUD operations.
+    Repository for Message read operations.
 
-    All queries are scoped by account_id.
+    All queries are scoped by account_id. PostIMAP handles message
+    ingestion — this repository is read-only for messages.
     """
 
     def __init__(self, db: DatabaseConnection) -> None:
@@ -72,143 +283,108 @@ class MailRepository:
         """
         self._db = db
 
-    async def upsert_mail(
+    async def get_by_id(
         self,
         account_id: uuid.UUID,
-        folder_id: uuid.UUID,
-        uid: int,
-        *,
-        message_id: str | None = None,
-        subject: str | None = None,
-        from_addr: str | None = None,
-        to_addrs: list[str] | dict[str, Any] | None = None,
-        cc_addrs: list[str] | dict[str, Any] | None = None,
-        bcc_addrs: list[str] | dict[str, Any] | None = None,
-        body_text: str | None = None,
-        body_html: str | None = None,
-        raw_headers: dict[str, Any] | None = None,
-        raw_source: bytes | None = None,
-        received_at: datetime | None = None,
-        size_bytes: int | None = None,
-        modseq: int | None = None,
-        is_read: bool = False,
-        is_flagged: bool = False,
-        is_deleted: bool = False,
-        dkim_pass: bool | None = None,
-        spf_pass: bool | None = None,
-        dmarc_pass: bool | None = None,
-        headers_synced: bool | None = None,
-        body_synced: bool | None = None,
-    ) -> Mail:
+        message_id: uuid.UUID,
+    ) -> Message | None:
         """
-        Insert or update a mail by (folder_id, uid) uniqueness.
-
-        On conflict, updates mutable fields (flags, body, headers).
+        Get a single message by ID with account scoping.
 
         Args:
-            account_id: Owning account
-            folder_id: IMAP folder
-            uid: IMAP UID within folder
-            **kwargs: Mail field values
+            account_id: Account scope
+            message_id: Message UUID
 
         Returns:
-            The upserted Mail object
+            Message if found and owned by account, None otherwise
         """
-        values: dict[str, Any] = {
-            "account_id": account_id,
-            "folder_id": folder_id,
-            "uid": uid,
-            "message_id": message_id,
-            "subject": subject,
-            "from_addr": from_addr,
-            "to_addrs": to_addrs,
-            "cc_addrs": cc_addrs,
-            "bcc_addrs": bcc_addrs,
-            "body_text": body_text,
-            "body_html": body_html,
-            "raw_headers": raw_headers,
-            "raw_source": raw_source,
-            "received_at": received_at,
-            "size_bytes": size_bytes,
-            "modseq": modseq,
-            "is_read": is_read,
-            "is_flagged": is_flagged,
-            "is_deleted": is_deleted,
-            "dkim_pass": dkim_pass,
-            "spf_pass": spf_pass,
-            "dmarc_pass": dmarc_pass,
-        }
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Message).where(
+                    Message.id == message_id,
+                    Message.account_id == account_id,
+                )
+            )
+            return result.scalar_one_or_none()
 
-        # Include sync flags in insert values when provided
-        if headers_synced is not None:
-            values["headers_synced"] = headers_synced
-        if body_synced is not None:
-            values["body_synced"] = body_synced
+    async def get_by_folder(
+        self,
+        folder_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[Message]:
+        """
+        Get messages in a folder, newest first.
 
-        # On conflict, only update fields that were explicitly provided.
-        # Boolean flags (is_read, is_flagged, is_deleted) always update.
-        # Other fields only update when non-None to avoid overwriting
-        # existing data during flag-only updates.
-        update_cols: dict[str, Any] = {
-            "is_read": is_read,
-            "is_flagged": is_flagged,
-            "is_deleted": is_deleted,
-        }
-        optional_updates = {
-            "subject": subject,
-            "from_addr": from_addr,
-            "to_addrs": to_addrs,
-            "cc_addrs": cc_addrs,
-            "bcc_addrs": bcc_addrs,
-            "body_text": body_text,
-            "body_html": body_html,
-            "raw_headers": raw_headers,
-            "raw_source": raw_source,
-            "size_bytes": size_bytes,
-            "modseq": modseq,
-            "dkim_pass": dkim_pass,
-            "spf_pass": spf_pass,
-            "dmarc_pass": dmarc_pass,
-            "headers_synced": headers_synced,
-            "body_synced": body_synced,
-        }
-        for key, val in optional_updates.items():
-            if val is not None:
-                update_cols[key] = val
+        Excludes soft-deleted messages (deleted_at IS NOT NULL).
 
+        Args:
+            folder_id: Folder to list
+            limit: Max results
+            offset: Skip count
+
+        Returns:
+            Messages in the folder
+        """
         async with self._db.session() as session:
             stmt = (
-                pg_insert(Mail)
-                .values(**values)
-                .on_conflict_do_update(
-                    constraint="uq_mail_folder_uid",
-                    set_=update_cols,
+                select(Message)
+                .where(
+                    Message.folder_id == folder_id,
+                    Message.deleted_at.is_(None),
                 )
-                .returning(Mail)
+                .order_by(desc(Message.received_at))
+                .limit(limit)
+                .offset(offset)
             )
             result = await session.execute(stmt)
-            return result.scalar_one()
+            return list(result.scalars().all())
+
+    async def get_by_folder_and_uid(
+        self,
+        folder_id: uuid.UUID,
+        imap_uid: int,
+    ) -> Message | None:
+        """
+        Get a single message by folder and IMAP UID.
+
+        Args:
+            folder_id: Folder UUID
+            imap_uid: IMAP UID within folder
+
+        Returns:
+            Message if found, None otherwise
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Message).where(
+                    Message.folder_id == folder_id,
+                    Message.imap_uid == imap_uid,
+                )
+            )
+            return result.scalar_one_or_none()
 
     async def get_by_message_id(
         self,
         account_id: uuid.UUID,
         message_id: str,
-    ) -> list[Mail]:
+    ) -> list[Message]:
         """
-        Find mails by RFC 2822 Message-ID.
+        Find messages by RFC 2822 Message-ID header.
 
         Args:
             account_id: Account scope
             message_id: RFC 2822 Message-ID header value
 
         Returns:
-            Matching mails (may span folders)
+            Matching messages (may span folders)
         """
         async with self._db.session() as session:
             result = await session.execute(
-                select(Mail).where(
-                    Mail.account_id == account_id,
-                    Mail.message_id == message_id,
+                select(Message).where(
+                    Message.account_id == account_id,
+                    Message.message_id == message_id,
                 )
             )
             return list(result.scalars().all())
@@ -221,7 +397,7 @@ class MailRepository:
         limit: int = 50,
         fuzzy: bool = False,
         similarity_threshold: float = 0.3,
-    ) -> list[Mail]:
+    ) -> list[Message]:
         """
         Full-text search on subject + body_text using tsvector.
 
@@ -235,33 +411,35 @@ class MailRepository:
             similarity_threshold: Minimum trigram similarity score
 
         Returns:
-            Mails ranked by relevance
+            Messages ranked by relevance
         """
         async with self._db.session() as session:
             ts_query = func.plainto_tsquery("english", query)
 
             if fuzzy:
                 # Combined: tsvector rank + trigram similarity
-                rank = func.ts_rank(Mail.search_vector, ts_query)
-                trgm_sim = func.similarity(Mail.subject, query)
+                rank = func.ts_rank(Message.search_vector, ts_query)
+                trgm_sim = func.similarity(Message.subject, query)
                 stmt = (
-                    select(Mail)
+                    select(Message)
                     .where(
-                        Mail.account_id == account_id,
-                        (Mail.search_vector.op("@@")(ts_query))
-                        | (func.similarity(Mail.subject, query) >= similarity_threshold)
-                        | (func.similarity(Mail.body_text, query) >= similarity_threshold),
+                        Message.account_id == account_id,
+                        Message.deleted_at.is_(None),
+                        (Message.search_vector.op("@@")(ts_query))
+                        | (func.similarity(Message.subject, query) >= similarity_threshold)
+                        | (func.similarity(Message.body_text, query) >= similarity_threshold),
                     )
                     .order_by(desc(rank + trgm_sim))
                     .limit(limit)
                 )
             else:
-                rank = func.ts_rank(Mail.search_vector, ts_query)
+                rank = func.ts_rank(Message.search_vector, ts_query)
                 stmt = (
-                    select(Mail)
+                    select(Message)
                     .where(
-                        Mail.account_id == account_id,
-                        Mail.search_vector.op("@@")(ts_query),
+                        Message.account_id == account_id,
+                        Message.deleted_at.is_(None),
+                        Message.search_vector.op("@@")(ts_query),
                     )
                     .order_by(desc(rank))
                     .limit(limit)
@@ -269,171 +447,6 @@ class MailRepository:
 
             result = await session.execute(stmt)
             return list(result.scalars().all())
-
-    async def get_unprocessed(
-        self,
-        account_id: uuid.UUID,
-        *,
-        limit: int = 100,
-    ) -> list[Mail]:
-        """
-        Get mails without any verdict.
-
-        Args:
-            account_id: Account scope
-            limit: Max results
-
-        Returns:
-            Mails that have no associated verdict
-        """
-        async with self._db.session() as session:
-            subq = select(Verdict.mail_id).distinct()
-            stmt = (
-                select(Mail)
-                .where(
-                    Mail.account_id == account_id,
-                    ~Mail.id.in_(subq),
-                )
-                .order_by(desc(Mail.received_at))
-                .limit(limit)
-            )
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-
-    async def get_uids_by_folder(self, folder_id: uuid.UUID) -> set[int]:
-        """
-        Get all active UIDs for a folder (lightweight, no full ORM load).
-
-        Excludes soft-deleted mails so they don't re-appear in UID diffs.
-
-        Args:
-            folder_id: Folder UUID
-
-        Returns:
-            Set of IMAP UIDs in the folder (excluding deleted)
-        """
-        async with self._db.session() as session:
-            result = await session.execute(
-                select(Mail.uid).where(
-                    Mail.folder_id == folder_id,
-                    Mail.is_deleted.is_(False),
-                )
-            )
-            return {row[0] for row in result.all()}
-
-    async def get_flags_by_folder(
-        self, folder_id: uuid.UUID
-    ) -> dict[int, tuple[bool, bool]]:
-        """
-        Bulk-load flag state for all active mails in a folder.
-
-        Args:
-            folder_id: Folder UUID
-
-        Returns:
-            Dict mapping UID to (is_read, is_flagged) tuples
-        """
-        async with self._db.session() as session:
-            result = await session.execute(
-                select(Mail.uid, Mail.is_read, Mail.is_flagged).where(
-                    Mail.folder_id == folder_id,
-                    Mail.is_deleted.is_(False),
-                )
-            )
-            return {row[0]: (row[1], row[2]) for row in result.all()}
-
-    async def delete_by_folder(self, folder_id: uuid.UUID) -> int:
-        """
-        Delete all mails in a folder (for UIDVALIDITY change).
-
-        Args:
-            folder_id: Folder UUID
-
-        Returns:
-            Number of deleted mails
-        """
-        async with self._db.session() as session:
-            result = await session.execute(
-                delete(Mail).where(Mail.folder_id == folder_id)
-            )
-            return getattr(result, "rowcount", 0) or 0
-
-    async def get_by_folder_and_uid(
-        self,
-        folder_id: uuid.UUID,
-        uid: int,
-    ) -> Mail | None:
-        """
-        Get a single mail by folder and IMAP UID.
-
-        Args:
-            folder_id: Folder UUID
-            uid: IMAP UID within folder
-
-        Returns:
-            Mail if found, None otherwise
-        """
-        async with self._db.session() as session:
-            result = await session.execute(
-                select(Mail).where(
-                    Mail.folder_id == folder_id,
-                    Mail.uid == uid,
-                )
-            )
-            return result.scalar_one_or_none()
-
-    async def get_by_folder(
-        self,
-        folder_id: uuid.UUID,
-        *,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[Mail]:
-        """
-        Get mails in a folder, newest first.
-
-        Args:
-            folder_id: Folder to list
-            limit: Max results
-            offset: Skip count
-
-        Returns:
-            Mails in the folder
-        """
-        async with self._db.session() as session:
-            stmt = (
-                select(Mail)
-                .where(Mail.folder_id == folder_id)
-                .order_by(desc(Mail.received_at))
-                .limit(limit)
-                .offset(offset)
-            )
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-
-    async def get_by_id(
-        self,
-        account_id: uuid.UUID,
-        mail_id: uuid.UUID,
-    ) -> Mail | None:
-        """
-        Get a single mail by ID with account scoping.
-
-        Args:
-            account_id: Account scope
-            mail_id: Mail UUID
-
-        Returns:
-            Mail if found and owned by account, None otherwise
-        """
-        async with self._db.session() as session:
-            result = await session.execute(
-                select(Mail).where(
-                    Mail.id == mail_id,
-                    Mail.account_id == account_id,
-                )
-            )
-            return result.scalar_one_or_none()
 
 
 class VerdictRepository:
@@ -459,10 +472,10 @@ class VerdictRepository:
         neighbor_ids: list[str] | None = None,
     ) -> Verdict:
         """
-        Create a new verdict for a mail.
+        Create a new verdict for a message.
 
         Args:
-            mail_id: Mail this verdict applies to
+            mail_id: Message this verdict applies to (FK column is still mail_id)
             is_spam: Spam classification result
             source: How this verdict was produced
             model_used: AI model identifier
@@ -488,10 +501,10 @@ class VerdictRepository:
 
     async def get_latest_for_mail(self, mail_id: uuid.UUID) -> Verdict | None:
         """
-        Get the most recent verdict for a mail.
+        Get the most recent verdict for a message.
 
         Args:
-            mail_id: Mail UUID
+            mail_id: Message UUID (FK column name)
 
         Returns:
             Latest Verdict or None
@@ -513,7 +526,7 @@ class VerdictRepository:
         Get verdict statistics for an account.
 
         Args:
-            account_id: Account scope (joins through Mail)
+            account_id: Account scope (joins through Message)
 
         Returns:
             Dict with keys: total, spam, ham
@@ -525,8 +538,8 @@ class VerdictRepository:
                     func.count(Verdict.id).filter(Verdict.is_spam.is_(True)).label("spam"),
                     func.count(Verdict.id).filter(Verdict.is_spam.is_(False)).label("ham"),
                 )
-                .join(Mail, Verdict.mail_id == Mail.id)
-                .where(Mail.account_id == account_id)
+                .join(Message, Verdict.mail_id == Message.id)
+                .where(Message.account_id == account_id)
             )
             result = await session.execute(stmt)
             row = result.one()
@@ -538,10 +551,10 @@ class VerdictRepository:
 
 
 class FolderRepository:
-    """
-    Repository for Folder CRUD and sync state operations.
+    """Repository for Folder read operations.
 
-    Combines folder management with sync state tracking.
+    PostIMAP handles folder creation and sync state updates.
+    This repository provides read access and preference management.
     """
 
     def __init__(self, db: DatabaseConnection) -> None:
@@ -552,67 +565,6 @@ class FolderRepository:
             db: Database connection instance
         """
         self._db = db
-
-    async def upsert_folder(
-        self,
-        account_id: uuid.UUID,
-        imap_name: str,
-        *,
-        display_name: str | None = None,
-        special_use: str | None = None,
-        separator: str | None = None,
-        subscribed: bool = True,
-        flags: list[str] | None = None,
-    ) -> Folder:
-        """
-        Insert or update a folder by (account_id, imap_name) uniqueness.
-
-        Args:
-            account_id: Owning account
-            imap_name: Raw IMAP folder path
-            display_name: Human-readable name
-            special_use: RFC 6154 special-use attribute
-            separator: IMAP hierarchy separator
-            subscribed: Whether folder is subscribed
-            flags: IMAP folder flags
-
-        Returns:
-            The upserted Folder
-        """
-        from mail_verdict.database.models import SpecialUse
-
-        special_use_enum = SpecialUse(special_use) if special_use else None
-
-        values: dict[str, Any] = {
-            "account_id": account_id,
-            "imap_name": imap_name,
-            "display_name": display_name,
-            "special_use": special_use_enum,
-            "separator": separator,
-            "subscribed": subscribed,
-            "flags": flags,
-        }
-
-        update_cols = {
-            "display_name": display_name,
-            "special_use": special_use_enum,
-            "separator": separator,
-            "subscribed": subscribed,
-            "flags": flags,
-        }
-
-        async with self._db.session() as session:
-            stmt = (
-                pg_insert(Folder)
-                .values(**values)
-                .on_conflict_do_update(
-                    constraint="uq_folder_account_imap_name",
-                    set_=update_cols,
-                )
-                .returning(Folder)
-            )
-            result = await session.execute(stmt)
-            return result.scalar_one()
 
     async def get_by_account(self, account_id: uuid.UUID) -> list[Folder]:
         """
@@ -625,23 +577,41 @@ class FolderRepository:
             List of Folder objects
         """
         async with self._db.session() as session:
-            result = await session.execute(select(Folder).where(Folder.account_id == account_id))
+            result = await session.execute(
+                select(Folder).where(Folder.account_id == account_id)
+            )
             return list(result.scalars().all())
 
-    async def get_state(
+    async def get_by_id(self, folder_id: uuid.UUID) -> Folder | None:
+        """
+        Get a folder by ID.
+
+        Args:
+            folder_id: Folder UUID
+
+        Returns:
+            Folder if found, None otherwise
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Folder).where(Folder.id == folder_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_by_imap_name(
         self,
         account_id: uuid.UUID,
         imap_name: str,
     ) -> Folder | None:
         """
-        Get sync state for a specific folder.
+        Get a folder by IMAP name within an account.
 
         Args:
             account_id: Account scope
             imap_name: IMAP folder path
 
         Returns:
-            Folder with sync state fields, or None
+            Folder if found, None otherwise
         """
         async with self._db.session() as session:
             result = await session.execute(
@@ -652,51 +622,9 @@ class FolderRepository:
             )
             return result.scalar_one_or_none()
 
-    async def update_state(
-        self,
-        folder_id: uuid.UUID,
-        *,
-        uidvalidity: int | None = None,
-        uidnext: int | None = None,
-        highestmodseq: int | None = None,
-        last_synced_at: datetime | None = None,
-    ) -> bool:
-        """
-        Update sync state fields for a folder.
-
-        Args:
-            folder_id: Folder to update
-            uidvalidity: IMAP UIDVALIDITY
-            uidnext: IMAP UIDNEXT
-            highestmodseq: CONDSTORE HIGHESTMODSEQ
-            last_synced_at: Timestamp of last successful sync
-
-        Returns:
-            True if folder was updated
-        """
-        values: dict[str, Any] = {}
-        if uidvalidity is not None:
-            values["uidvalidity"] = uidvalidity
-        if uidnext is not None:
-            values["uidnext"] = uidnext
-        if highestmodseq is not None:
-            values["highestmodseq"] = highestmodseq
-        if last_synced_at is not None:
-            values["last_synced_at"] = last_synced_at
-        else:
-            values["last_synced_at"] = datetime.now(timezone.utc)
-
-        if not values:
-            return True
-
-        async with self._db.session() as session:
-            stmt = update(Folder).where(Folder.id == folder_id).values(**values)
-            result = await session.execute(stmt)
-            return bool(result.rowcount > 0)  # type: ignore[attr-defined]
-
 
 class AttachmentRepository:
-    """Repository for Attachment CRUD operations."""
+    """Repository for Attachment read operations."""
 
     def __init__(self, db: DatabaseConnection) -> None:
         """
@@ -707,56 +635,20 @@ class AttachmentRepository:
         """
         self._db = db
 
-    async def create(
-        self,
-        mail_id: uuid.UUID,
-        *,
-        filename: str | None = None,
-        content_type: str | None = None,
-        content_id: str | None = None,
-        size_bytes: int | None = None,
-        data: bytes | None = None,
-    ) -> Attachment:
+    async def get_by_message_id(self, message_id: uuid.UUID) -> list[Attachment]:
         """
-        Store an attachment.
+        Get all attachments for a message.
 
         Args:
-            mail_id: Parent mail
-            filename: Original filename
-            content_type: MIME type
-            content_id: CID for inline attachments
-            size_bytes: Size in bytes
-            data: Raw attachment bytes (TOAST-compressed by Postgres)
-
-        Returns:
-            Created Attachment
-        """
-        attachment = Attachment(
-            mail_id=mail_id,
-            filename=filename,
-            content_type=content_type,
-            content_id=content_id,
-            size_bytes=size_bytes,
-            data=data,
-        )
-        async with self._db.session() as session:
-            session.add(attachment)
-            await session.flush()
-            await session.refresh(attachment)
-            return attachment
-
-    async def get_by_mail_id(self, mail_id: uuid.UUID) -> list[Attachment]:
-        """
-        Get all attachments for a mail.
-
-        Args:
-            mail_id: Parent mail UUID
+            message_id: Parent message UUID
 
         Returns:
             List of Attachment objects
         """
         async with self._db.session() as session:
-            result = await session.execute(select(Attachment).where(Attachment.mail_id == mail_id))
+            result = await session.execute(
+                select(Attachment).where(Attachment.message_id == message_id)
+            )
             return list(result.scalars().all())
 
 
@@ -779,10 +671,10 @@ class TagRepository:
         source: TagSource,
     ) -> MailTag:
         """
-        Add a tag to a mail (idempotent via upsert).
+        Add a tag to a message (idempotent via upsert).
 
         Args:
-            mail_id: Mail to tag
+            mail_id: Message to tag (FK column is still mail_id)
             tag_name: Tag string
             source: Where this tag came from
 
@@ -821,10 +713,10 @@ class TagRepository:
         tag_name: str,
     ) -> bool:
         """
-        Remove a tag from a mail.
+        Remove a tag from a message.
 
         Args:
-            mail_id: Mail UUID
+            mail_id: Message UUID (FK column name)
             tag_name: Tag to remove
 
         Returns:
@@ -840,14 +732,16 @@ class TagRepository:
 
     async def get_tags_for_mail(self, mail_id: uuid.UUID) -> list[MailTag]:
         """
-        Get all tags for a mail.
+        Get all tags for a message.
 
         Args:
-            mail_id: Mail UUID
+            mail_id: Message UUID (FK column name)
 
         Returns:
             List of MailTag objects
         """
         async with self._db.session() as session:
-            result = await session.execute(select(MailTag).where(MailTag.mail_id == mail_id))
+            result = await session.execute(
+                select(MailTag).where(MailTag.mail_id == mail_id)
+            )
             return list(result.scalars().all())

@@ -1,8 +1,8 @@
 """
-Tag storage with IMAP keyword sync.
+Tag storage — Postgres only.
 
-Postgres mail_tags table (already exists) + best-effort IMAP keyword sync.
-Checks PERMANENTFLAGS before writing custom keywords to IMAP.
+Manages tags in the mail_tags table. IMAP keyword sync is handled by
+PostIMAP PG triggers when the message keywords column is updated.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import uuid
 from typing import TYPE_CHECKING
 
 from mail_verdict.database.models import TagSource
-from mail_verdict.sync.actions import ActionPropagator, ActionType, IMAPAction
 
 if TYPE_CHECKING:
     from mail_verdict.database.repository import TagRepository
@@ -22,112 +21,59 @@ logger = logging.getLogger(__name__)
 
 class TagSyncService:
     """
-    Manages tag persistence in Postgres with best-effort IMAP keyword sync.
+    Manages tag persistence in Postgres.
 
-    On tag add:
-        1. Write to Postgres via TagRepository
-        2. Try IMAP STORE +FLAGS keyword (if server supports custom keywords)
+    On tag add: write to Postgres via TagRepository.
+    On tag remove: remove from Postgres via TagRepository.
 
-    On tag remove:
-        1. Remove from Postgres
-        2. Try IMAP STORE -FLAGS keyword
+    IMAP keyword sync is no longer managed here -- PostIMAP handles
+    keyword propagation via PG triggers on the messages table.
     """
 
     def __init__(
         self,
         tag_repo: TagRepository,
-        propagator: ActionPropagator | None = None,
     ) -> None:
         """
         Initialize tag sync service.
 
         Args:
             tag_repo: Repository for Postgres tag operations
-            propagator: IMAP action propagator for keyword sync
         """
         self._tag_repo = tag_repo
-        self._propagator = propagator
 
     async def add_tag(
         self,
         mail_id: uuid.UUID,
         tag_name: str,
         source: TagSource,
-        *,
-        folder: str = "",
-        uid: int = 0,
-        sync_imap: bool = True,
     ) -> None:
         """
-        Add a tag to a mail with optional IMAP sync.
+        Add a tag to a message in Postgres.
 
         Args:
-            mail_id: Database mail UUID
+            mail_id: Database message UUID
             tag_name: Tag string to add
             source: Where this tag came from (rule, enrichment, user, etc.)
-            folder: IMAP folder for keyword sync
-            uid: IMAP UID for keyword sync
-            sync_imap: Whether to attempt IMAP keyword sync
         """
         await self._tag_repo.add_tag(mail_id, tag_name, source)
-
-        if sync_imap and self._propagator and folder and uid:
-            try:
-                await self._propagator.execute_imap(
-                    IMAPAction(
-                        action_type=ActionType.STORE_FLAGS,
-                        folder=folder,
-                        uid_set=str(uid),
-                        flags_add=[tag_name],
-                    )
-                )
-            except Exception:
-                logger.debug(
-                    "IMAP keyword sync failed (Postgres tag still saved)",
-                    extra={"tag": tag_name, "folder": folder},
-                )
 
     async def remove_tag(
         self,
         mail_id: uuid.UUID,
         tag_name: str,
-        *,
-        folder: str = "",
-        uid: int = 0,
-        sync_imap: bool = True,
     ) -> bool:
         """
-        Remove a tag from a mail with optional IMAP sync.
+        Remove a tag from a message in Postgres.
 
         Args:
-            mail_id: Database mail UUID
-            tag_name: Tag string to remove
-            folder: IMAP folder for keyword sync
-            uid: IMAP UID for keyword sync
-            sync_imap: Whether to attempt IMAP keyword sync
+            mail_id: Database message UUID
+            tag_name: Tag to remove
 
         Returns:
             True if tag was removed from Postgres
         """
-        removed = await self._tag_repo.remove_tag(mail_id, tag_name)
-
-        if sync_imap and self._propagator and folder and uid:
-            try:
-                await self._propagator.execute_imap(
-                    IMAPAction(
-                        action_type=ActionType.STORE_FLAGS,
-                        folder=folder,
-                        uid_set=str(uid),
-                        flags_remove=[tag_name],
-                    )
-                )
-            except Exception:
-                logger.debug(
-                    "IMAP keyword removal failed",
-                    extra={"tag": tag_name, "folder": folder},
-                )
-
-        return removed
+        return await self._tag_repo.remove_tag(mail_id, tag_name)
 
     async def import_imap_keywords(
         self,
@@ -140,7 +86,7 @@ class TagSyncService:
         Called during sync to capture server-side keywords into Postgres.
 
         Args:
-            mail_id: Database mail UUID
+            mail_id: Database message UUID
             keywords: IMAP keyword strings to import
 
         Returns:

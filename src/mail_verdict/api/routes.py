@@ -11,7 +11,6 @@ from fastapi import APIRouter
 from mail_verdict.api.accounts import router as accounts_router
 from mail_verdict.api.folder_management import router as folder_management_router
 from mail_verdict.api.image_exceptions import router as image_exceptions_router
-from mail_verdict.api.jobs import router as jobs_router
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.rules import router as rules_router
 from mail_verdict.api.search import router as search_router
@@ -36,5 +35,4 @@ all_routers: list[APIRouter] = [
     rules_router,
     verdicts_router,
     stats_router,
-    jobs_router,
 ]

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mail_verdict.database.models import SpecialUse
 from mail_verdict.spam.analyst import SpamVerdict
 from mail_verdict.spam.pipeline import _SKIP_FOLDER_TYPES, VerdictPipeline
 
@@ -30,29 +29,29 @@ def _make_settings_service(enabled: bool = True) -> MagicMock:
 _TEST_ACCOUNT_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
-def _make_mail(
+def _make_message(
     from_addr: str = "alice@example.com",
     subject: str = "Test",
     body_text: str = "Hello world",
 ) -> MagicMock:
-    """Create a mock Mail object."""
-    mail = MagicMock()
-    mail.id = uuid.uuid4()
-    mail.account_id = _TEST_ACCOUNT_ID
-    mail.uid = 42
-    mail.from_addr = from_addr
-    mail.subject = subject
-    mail.body_text = body_text
-    mail.to_addrs = {"addrs": ["bob@example.com"]}
-    mail.cc_addrs = None
-    mail.dkim_pass = True
-    mail.spf_pass = True
-    mail.dmarc_pass = True
-    mail.received_at = None
-    return mail
+    """Create a mock Message object."""
+    msg = MagicMock()
+    msg.id = uuid.uuid4()
+    msg.account_id = _TEST_ACCOUNT_ID
+    msg.imap_uid = 42
+    msg.from_addr = from_addr
+    msg.subject = subject
+    msg.body_text = body_text
+    msg.to_addrs = {"addrs": ["bob@example.com"]}
+    msg.cc_addrs = None
+    msg.raw_headers = {
+        "authentication-results": "dkim=pass; spf=pass; dmarc=pass",
+    }
+    msg.received_at = None
+    return msg
 
 
-def _make_folder(special_use: SpecialUse | None = None) -> MagicMock:
+def _make_folder(special_use: str | None = None) -> MagicMock:
     """Create a mock Folder."""
     folder = MagicMock()
     folder.id = uuid.uuid4()
@@ -65,17 +64,17 @@ class TestSkipFolderTypes:
     """Tests for folder-type-based skipping."""
 
     def test_skip_sent(self) -> None:
-        assert SpecialUse.SENT in _SKIP_FOLDER_TYPES
+        assert "sent" in _SKIP_FOLDER_TYPES
 
     def test_skip_drafts(self) -> None:
-        assert SpecialUse.DRAFTS in _SKIP_FOLDER_TYPES
+        assert "drafts" in _SKIP_FOLDER_TYPES
 
     def test_skip_trash(self) -> None:
-        assert SpecialUse.TRASH in _SKIP_FOLDER_TYPES
+        assert "trash" in _SKIP_FOLDER_TYPES
 
 
 class TestVerdictPipeline:
-    """Tests for VerdictPipeline.process_mail."""
+    """Tests for VerdictPipeline.process_message (PostIMAP mode, direct SQL UPDATEs)."""
 
     def _make_pipeline(
         self,
@@ -101,10 +100,7 @@ class TestVerdictPipeline:
         verdict_repo = MagicMock()
         verdict_repo.create_verdict = AsyncMock()
 
-        mail_repo = MagicMock()
-
-        propagator = MagicMock()
-        propagator.move_to_spam = AsyncMock(return_value=True)
+        message_repo = MagicMock()
 
         folder_repo = MagicMock()
         folder_repo.get_by_account = AsyncMock(return_value=[])
@@ -114,8 +110,7 @@ class TestVerdictPipeline:
             semantic_store=store,
             analyst=analyst,
             verdict_repo=verdict_repo,
-            mail_repo=mail_repo,
-            account_propagators={str(_TEST_ACCOUNT_ID): propagator},
+            message_repo=message_repo,
             folder_repo=folder_repo,
         )
 
@@ -123,7 +118,6 @@ class TestVerdictPipeline:
             "store": store,
             "analyst": analyst,
             "verdict_repo": verdict_repo,
-            "propagator": propagator,
             "folder_repo": folder_repo,
         }
         return pipeline, mocks
@@ -133,52 +127,54 @@ class TestVerdictPipeline:
         """Returns None when spam detection is disabled."""
         svc = _make_settings_service(enabled=False)
         pipeline, _ = self._make_pipeline(settings_service=svc)
-        result = await pipeline.process_mail(_make_mail(), _make_folder())
+        result = await pipeline.process_message(_make_message(), _make_folder())
         assert result is None
 
     @pytest.mark.asyncio
     async def test_skip_sent_folder(self) -> None:
         """Returns None for sent folder."""
         pipeline, _ = self._make_pipeline()
-        result = await pipeline.process_mail(_make_mail(), _make_folder(SpecialUse.SENT))
+        result = await pipeline.process_message(_make_message(), _make_folder("sent"))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_skip_drafts_folder(self) -> None:
         """Returns None for drafts folder."""
         pipeline, _ = self._make_pipeline()
-        result = await pipeline.process_mail(_make_mail(), _make_folder(SpecialUse.DRAFTS))
+        result = await pipeline.process_message(_make_message(), _make_folder("drafts"))
         assert result is None
 
     @pytest.mark.asyncio
     async def test_not_spam_flow(self) -> None:
-        """Not-spam verdict returns False, stores verdict."""
+        """Not-spam verdict returns False, stores verdict, does not move."""
         pipeline, mocks = self._make_pipeline(verdict_is_spam=False)
-        result = await pipeline.process_mail(_make_mail(), _make_folder())
+        result = await pipeline.process_message(_make_message(), _make_folder())
         assert result is False
         mocks["verdict_repo"].create_verdict.assert_awaited_once()
-        mocks["propagator"].move_to_spam.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_spam_flow_moves_to_spam(self) -> None:
-        """Spam verdict returns True and triggers move_to_spam."""
+        """Spam verdict returns True and triggers direct SQL spam move."""
         pipeline, mocks = self._make_pipeline(verdict_is_spam=True)
-        result = await pipeline.process_mail(_make_mail(), _make_folder())
-        assert result is True
-        mocks["propagator"].move_to_spam.assert_awaited_once()
+
+        # Mock the _move_to_spam to avoid DB access
+        with patch.object(pipeline, "_move_to_spam", new_callable=AsyncMock) as mock_move:
+            result = await pipeline.process_message(_make_message(), _make_folder())
+            assert result is True
+            mock_move.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_embed_failure_returns_none(self) -> None:
         """Returns None when embedding fails."""
         pipeline, mocks = self._make_pipeline()
         mocks["store"].upsert = AsyncMock(return_value=False)
-        result = await pipeline.process_mail(_make_mail(), _make_folder())
+        result = await pipeline.process_message(_make_message(), _make_folder())
         assert result is None
 
     @pytest.mark.asyncio
     async def test_empty_body_skipped(self) -> None:
-        """Mail with no embeddable text returns None."""
+        """Message with no embeddable text returns None."""
         pipeline, _ = self._make_pipeline()
-        mail = _make_mail(from_addr="", subject="", body_text="")
-        result = await pipeline.process_mail(mail, _make_folder())
+        msg = _make_message(from_addr="", subject="", body_text="")
+        result = await pipeline.process_message(msg, _make_folder())
         assert result is None

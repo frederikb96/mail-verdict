@@ -2,6 +2,10 @@
 Pydantic models for REST API request/response schemas.
 
 Provides typed serialization for all API endpoints.
+
+PostIMAP integration: schemas align with PostIMAP-owned tables
+(accounts, folders, messages, attachments) plus MailVerdict-owned
+preferences tables (account_prefs, folder_prefs).
 """
 
 from __future__ import annotations
@@ -12,11 +16,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-# --- Tag / Attachment schemas (referenced by MailDetail) ---
+# --- Tag / Attachment schemas (referenced by MessageDetail) ---
 
 
 class TagResponse(BaseModel):
-    """Tag on a mail."""
+    """Tag on a message."""
 
     tag_name: str
     source: str
@@ -35,11 +39,11 @@ class AttachmentSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# --- Mail schemas ---
+# --- Message schemas ---
 
 
-class MailSummary(BaseModel):
-    """Mail list item (lightweight)."""
+class MessageSummary(BaseModel):
+    """Message list item (lightweight)."""
 
     id: uuid.UUID
     account_id: uuid.UUID
@@ -48,51 +52,52 @@ class MailSummary(BaseModel):
     from_addr: str | None = None
     to_addrs: Any | None = None
     received_at: datetime | None = None
-    is_read: bool = False
+    is_seen: bool = False
     is_flagged: bool = False
+    is_answered: bool = False
+    is_draft: bool = False
     is_deleted: bool = False
-    headers_synced: bool = False
-    body_synced: bool = False
+    deleted_at: datetime | None = None
     snippet: str | None = None
 
     model_config = {"from_attributes": True}
 
 
-class MailListResponse(BaseModel):
-    """Paginated mail list response with cursor-based pagination."""
+class MessageListResponse(BaseModel):
+    """Paginated message list response with cursor-based pagination."""
 
-    mails: list[MailSummary]
+    messages: list[MessageSummary]
     has_more: bool
     next_cursor: str | None = None
 
 
-class MailDetail(BaseModel):
-    """Full mail detail view."""
+class MessageDetail(BaseModel):
+    """Full message detail view."""
 
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
-    uid: int
+    imap_uid: int
     message_id: str | None = None
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
     cc_addrs: Any | None = None
     bcc_addrs: Any | None = None
+    reply_to: str | None = None
+    in_reply_to: str | None = None
     body_text: str | None = None
     body_html: str | None = None
     raw_headers: dict[str, Any] | None = None
     received_at: datetime | None = None
     size_bytes: int | None = None
-    is_read: bool = False
+    is_seen: bool = False
     is_flagged: bool = False
+    is_answered: bool = False
+    is_draft: bool = False
     is_deleted: bool = False
-    dkim_pass: bool | None = None
-    spf_pass: bool | None = None
-    dmarc_pass: bool | None = None
-    headers_synced: bool = False
-    body_synced: bool = False
-    fetched_at: datetime
+    keywords: list[str] = Field(default_factory=list)
+    deleted_at: datetime | None = None
     created_at: datetime
     has_blocked_images: bool = False
     images_allowed: bool = False
@@ -102,8 +107,8 @@ class MailDetail(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class MailActionRequest(BaseModel):
-    """Request to perform an action on a mail."""
+class MessageActionRequest(BaseModel):
+    """Request to perform an action on a message."""
 
     action: Literal[
         "move", "mark_read", "mark_unread", "delete",
@@ -113,16 +118,16 @@ class MailActionRequest(BaseModel):
     )
     target_folder: str | None = Field(
         default=None,
-        description="Target folder for move action",
+        description="Target folder IMAP name for move action",
     )
 
 
-class MailActionResponse(BaseModel):
-    """Response from a mail action."""
+class MessageActionResponse(BaseModel):
+    """Response from a message action."""
 
     success: bool
     action: str
-    mail_id: uuid.UUID
+    message_id: uuid.UUID
     message: str | None = None
 
 
@@ -132,7 +137,7 @@ class MailActionResponse(BaseModel):
 class SearchResult(BaseModel):
     """A single search result."""
 
-    mail_id: uuid.UUID
+    message_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     received_at: datetime | None = None
@@ -155,7 +160,10 @@ class SearchResponse(BaseModel):
 
 
 class AccountResponse(BaseModel):
-    """Account summary (passwords never exposed)."""
+    """Account summary (passwords never exposed).
+
+    Combines PostIMAP Account fields with MailVerdict AccountPrefs.
+    """
 
     id: uuid.UUID
     name: str
@@ -167,12 +175,16 @@ class AccountResponse(BaseModel):
     smtp_user: str | None = None
     is_active: bool = True
     state: str = "created"
-    emoji: str | None = None
-    sync_lookback_days: int = 180
-    embedding_lookback_days: int = 30
-    spam_enabled: bool = False
-    folder_mapping: dict[str, str | None] | None = None
+    state_error: str | None = None
+    capabilities: dict[str, Any] | None = None
     created_at: datetime
+    updated_at: datetime
+    # AccountPrefs fields (from account_prefs table)
+    emoji: str | None = None
+    spam_enabled: bool = False
+    embedding_lookback_days: int = 30
+    folder_mapping: dict[str, str | None] | None = None
+    folder_order: list[str] | None = None
 
     model_config = {"from_attributes": True}
 
@@ -190,7 +202,8 @@ class AccountCreateRequest(BaseModel):
     smtp_user: str | None = None
     smtp_password: str | None = None
     is_active: bool = True
-    sync_lookback_days: int = 180
+    # AccountPrefs fields
+    emoji: str | None = None
     embedding_lookback_days: int = 30
     spam_enabled: bool = False
 
@@ -208,7 +221,8 @@ class AccountUpdateRequest(BaseModel):
     smtp_user: str | None = None
     smtp_password: str | None = None
     is_active: bool | None = None
-    sync_lookback_days: int | None = None
+    # AccountPrefs fields
+    emoji: str | None = None
     embedding_lookback_days: int | None = None
     spam_enabled: bool | None = None
 
@@ -217,19 +231,27 @@ class AccountUpdateRequest(BaseModel):
 
 
 class FolderResponse(BaseModel):
-    """Folder summary with message counts."""
+    """Folder summary with message counts.
+
+    Combines PostIMAP Folder fields with MailVerdict FolderPrefs.
+    """
 
     id: uuid.UUID
     account_id: uuid.UUID
     imap_name: str
     display_name: str | None = None
     special_use: str | None = None
-    unified_name: str | None = None
-    subscribed: bool = True
-    is_visible: bool = True
+    mailbox_id: str | None = None
+    exists_count: int = 0
     last_synced_at: datetime | None = None
+    sync_error: str | None = None
+    created_at: datetime | None = None
     unread_count: int = 0
     total_count: int = 0
+    # FolderPrefs fields (from folder_prefs table)
+    unified_name: str | None = None
+    is_visible: bool = True
+    subscribed: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -241,7 +263,7 @@ class VerdictResponse(BaseModel):
     """Verdict detail."""
 
     id: uuid.UUID
-    mail_id: uuid.UUID
+    message_id: uuid.UUID
     is_spam: bool
     model_used: str | None = None
     reasoning: str | None = None
@@ -252,7 +274,7 @@ class VerdictResponse(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    """User spam feedback for a mail."""
+    """User spam feedback for a message."""
 
     is_spam: bool
 
@@ -261,7 +283,7 @@ class FeedbackResponse(BaseModel):
     """Response from spam feedback submission."""
 
     success: bool
-    mail_id: uuid.UUID
+    message_id: uuid.UUID
     is_spam: bool
     message: str | None = None
 
@@ -281,9 +303,9 @@ class RuleResponse(BaseModel):
 
 
 class RuleTestRequest(BaseModel):
-    """Request to test a rule against a mail."""
+    """Request to test a rule against a message."""
 
-    mail_id: uuid.UUID
+    message_id: uuid.UUID
     account_id: uuid.UUID
 
 
@@ -314,13 +336,13 @@ class AccountSyncStatus(BaseModel):
     account_name: str
     last_synced_at: datetime | None = None
     folder_count: int = 0
-    mail_count: int = 0
+    message_count: int = 0
 
 
 class StatsResponse(BaseModel):
     """Dashboard statistics."""
 
-    total_mails: int
+    total_messages: int
     total_accounts: int
     spam_caught: int
     ham_count: int
@@ -395,48 +417,6 @@ class FolderVisibilityResponse(BaseModel):
     is_visible: bool
 
 
-# --- IDLE configuration schemas ---
-
-
-class IdleFolderItem(BaseModel):
-    """Folder with IDLE status."""
-
-    folder_id: uuid.UUID
-    imap_name: str
-    idle_enabled: bool
-    idle_supported: bool | None = None
-
-
-class IdleFolderToggle(BaseModel):
-    """Request to toggle IDLE for a folder."""
-
-    folder_id: uuid.UUID
-    enabled: bool
-
-
-class IdleFolderToggleResponse(BaseModel):
-    """IDLE toggle response."""
-
-    folder_id: uuid.UUID
-    enabled: bool
-    success: bool
-    error: str | None = None
-
-
-class IdleValidationRequest(BaseModel):
-    """Request to validate IDLE support for a folder."""
-
-    folder_id: uuid.UUID
-
-
-class IdleValidationResponse(BaseModel):
-    """IDLE validation result."""
-
-    folder_id: uuid.UUID
-    supported: bool
-    error: str | None = None
-
-
 # --- Selection / bulk action schemas ---
 
 
@@ -448,9 +428,9 @@ class SelectionResponse(BaseModel):
 
 
 class SelectionToggle(BaseModel):
-    """Request to toggle a single mail's selection."""
+    """Request to toggle a single message's selection."""
 
-    mail_id: uuid.UUID
+    message_id: uuid.UUID
 
 
 class SelectionRange(BaseModel):
@@ -462,13 +442,13 @@ class SelectionRange(BaseModel):
 
 
 class SelectionAll(BaseModel):
-    """Request to select all mails in a folder."""
+    """Request to select all messages in a folder."""
 
     folder_id: uuid.UUID
 
 
 class BulkActionRequest(BaseModel):
-    """Request to execute an action on all selected mails."""
+    """Request to execute an action on all selected messages."""
 
     action: Literal[
         "move", "archive", "spam", "star", "unstar",
@@ -508,8 +488,8 @@ class UnifiedFolderResponse(BaseModel):
     total_count: int
 
 
-class UnifiedMailSummary(BaseModel):
-    """Mail list item with account emoji for unified view."""
+class UnifiedMessageSummary(BaseModel):
+    """Message list item with account emoji for unified view."""
 
     id: uuid.UUID
     account_id: uuid.UUID
@@ -519,20 +499,21 @@ class UnifiedMailSummary(BaseModel):
     from_addr: str | None = None
     to_addrs: Any | None = None
     received_at: datetime | None = None
-    is_read: bool = False
+    is_seen: bool = False
     is_flagged: bool = False
+    is_answered: bool = False
+    is_draft: bool = False
     is_deleted: bool = False
-    headers_synced: bool = False
-    body_synced: bool = False
+    deleted_at: datetime | None = None
     snippet: str | None = None
 
     model_config = {"from_attributes": True}
 
 
-class UnifiedMailListResponse(BaseModel):
-    """Paginated unified mail list."""
+class UnifiedMessageListResponse(BaseModel):
+    """Paginated unified message list."""
 
-    mails: list[UnifiedMailSummary]
+    messages: list[UnifiedMessageSummary]
     has_more: bool
     next_cursor: str | None = None
 

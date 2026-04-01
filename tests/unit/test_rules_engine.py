@@ -8,35 +8,23 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from mail_verdict.rules.bus import EventBus
-from mail_verdict.rules.engine import TRIGGER_MAP, RulesEngine, _parse_rules
+from mail_verdict.rules.engine import TRIGGER_TYPES, RulesEngine, _parse_rules
 from mail_verdict.rules.executor import ActionExecutor, StopProcessing
-from mail_verdict.sync.events import (
-    MailDeleted,
-    MailReceived,
-)
 
 
-class TestTriggerMap:
-    """Tests for TRIGGER_MAP configuration."""
+class TestTriggerTypes:
+    """Tests for TRIGGER_TYPES configuration."""
 
     def test_all_triggers_present(self) -> None:
-        """All expected trigger strings are mapped."""
+        """All expected trigger strings are present."""
         expected = {
             "mail.received",
             "mail.moved",
             "mail.trashed",
-            "mail.spam_detected",
             "mail.deleted",
             "flags.changed",
         }
-        assert set(TRIGGER_MAP.keys()) == expected
-
-    def test_mail_received_maps(self) -> None:
-        assert TRIGGER_MAP["mail.received"] is MailReceived
-
-    def test_mail_deleted_maps(self) -> None:
-        assert TRIGGER_MAP["mail.deleted"] is MailDeleted
+        assert TRIGGER_TYPES == expected
 
 
 class TestParseRules:
@@ -96,14 +84,13 @@ class TestParseRules:
 
 
 class TestRulesEngine:
-    """Tests for RulesEngine event handling."""
+    """Tests for RulesEngine PG LISTEN event handling."""
 
     def _make_engine(
         self,
         rules: list[dict[str, Any]] | None = None,
-    ) -> tuple[RulesEngine, EventBus, MagicMock]:
+    ) -> tuple[RulesEngine, MagicMock]:
         """Create a RulesEngine with mock executor."""
-        bus = EventBus()
         executor = MagicMock(spec=ActionExecutor)
         executor.execute = AsyncMock()
 
@@ -117,26 +104,44 @@ class TestRulesEngine:
 
         engine = RulesEngine(
             rules=rules,
-            bus=bus,
             action_executor=executor,
         )
-        return engine, bus, executor
+        return engine, executor
 
     @pytest.mark.asyncio
-    async def test_start_subscribes_to_bus(self) -> None:
-        """start() registers with event bus."""
-        engine, bus, _ = self._make_engine()
-        await engine.start()
-        assert await bus.subscriber_count(MailReceived) > 0
-        await engine.stop()
+    async def test_handle_insert_event(self) -> None:
+        """Insert event triggers matching rules."""
+        engine, executor = self._make_engine(rules=[{
+            "name": "catch_all",
+            "trigger": "mail.received",
+            "conditions": {},
+            "actions": [{"tag": "test"}],
+        }])
+
+        event = {
+            "op": "insert",
+            "id": str(uuid.uuid4()),
+            "account_id": str(uuid.uuid4()),
+            "folder_id": str(uuid.uuid4()),
+            "folder_name": "INBOX",
+        }
+        await engine.handle_message_event(event)
+        # With no DB, context is empty, so conditions match empty rule
+        executor.execute.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_stop_unsubscribes(self) -> None:
-        """stop() removes subscriptions."""
-        engine, bus, _ = self._make_engine()
-        await engine.start()
-        await engine.stop()
-        assert await bus.subscriber_count(MailReceived) == 0
+    async def test_unrelated_op_ignored(self) -> None:
+        """Events with unknown op are ignored."""
+        engine, executor = self._make_engine()
+
+        event = {
+            "op": "truncate",
+            "id": str(uuid.uuid4()),
+            "account_id": str(uuid.uuid4()),
+            "folder_id": str(uuid.uuid4()),
+        }
+        await engine.handle_message_event(event)
+        executor.execute.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_stop_action_halts_processing(self) -> None:
@@ -155,15 +160,15 @@ class TestRulesEngine:
                 "actions": [{"tag": "test"}],
             },
         ]
-        engine, bus, executor = self._make_engine(rules=rules)
+        engine, executor = self._make_engine(rules=rules)
         executor.execute = AsyncMock(side_effect=StopProcessing())
-        await engine.start()
 
-        event = MailReceived(
-            account_id=uuid.uuid4(),
-            folder_id=uuid.uuid4(),
-            uid=1,
-        )
-        await engine._handle_event(event)
+        event = {
+            "op": "insert",
+            "id": str(uuid.uuid4()),
+            "account_id": str(uuid.uuid4()),
+            "folder_id": str(uuid.uuid4()),
+            "folder_name": "INBOX",
+        }
+        await engine.handle_message_event(event)
         assert executor.execute.await_count == 1
-        await engine.stop()
