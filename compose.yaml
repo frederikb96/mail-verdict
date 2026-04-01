@@ -30,7 +30,7 @@ services:
     restart: unless-stopped
 
   postimap:
-    image: ghcr.io/frederikb96/postimap:0.2.0
+    image: ghcr.io/frederikb96/postimap:0.2.1
     container_name: mv-postimap
     environment:
       POSTIMAP_DATABASE_HOST: postgres
