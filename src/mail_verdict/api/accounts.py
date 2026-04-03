@@ -17,7 +17,6 @@ AccountPrefs stores MailVerdict-specific preferences.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 
@@ -33,6 +32,7 @@ from mail_verdict.api.schemas import (
     FolderResponse,
 )
 from mail_verdict.core.encryption import encrypt
+from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, AccountPrefs, Folder, FolderPrefs, Message
 
@@ -67,11 +67,7 @@ def _build_account_response(
         is_active=account.is_active,
         state=account.state,
         state_error=account.state_error,
-        capabilities=(
-            json.loads(account.capabilities)
-            if isinstance(account.capabilities, str)
-            else account.capabilities
-        ),
+        capabilities=parse_jsonb(account.capabilities),
         created_at=account.created_at,
         updated_at=account.updated_at,
         emoji=prefs.emoji if prefs else None,

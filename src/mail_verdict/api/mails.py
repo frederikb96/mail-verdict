@@ -34,6 +34,7 @@ from mail_verdict.api.schemas import (
     MessageSummary,
     TagResponse,
 )
+from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Folder, Message
 
@@ -115,11 +116,19 @@ async def list_messages(
     return MessageListResponse(
         messages=[
             MessageSummary(
-                **{
-                    k: v
-                    for k, v in MessageSummary.model_validate(m).model_dump().items()
-                    if k != "snippet"
-                },
+                id=m.id,
+                account_id=m.account_id,
+                folder_id=m.folder_id,
+                subject=m.subject,
+                from_addr=m.from_addr,
+                to_addrs=parse_jsonb(m.to_addrs),
+                received_at=m.received_at,
+                is_seen=m.is_seen,
+                is_flagged=m.is_flagged,
+                is_answered=m.is_answered,
+                is_draft=m.is_draft,
+                is_deleted=m.is_deleted,
+                deleted_at=m.deleted_at,
                 snippet=m.body_text[:120] if m.body_text else None,
             )
             for m in messages
@@ -181,14 +190,14 @@ async def get_message(
         message_id=msg.message_id,
         subject=msg.subject,
         from_addr=msg.from_addr,
-        to_addrs=msg.to_addrs,
-        cc_addrs=msg.cc_addrs,
-        bcc_addrs=msg.bcc_addrs,
+        to_addrs=parse_jsonb(msg.to_addrs),
+        cc_addrs=parse_jsonb(msg.cc_addrs),
+        bcc_addrs=parse_jsonb(msg.bcc_addrs),
         reply_to=msg.reply_to,
         in_reply_to=msg.in_reply_to,
         body_text=msg.body_text,
         body_html=body_html,
-        raw_headers=msg.raw_headers,
+        raw_headers=parse_jsonb(msg.raw_headers),
         received_at=msg.received_at,
         size_bytes=msg.size_bytes,
         is_seen=msg.is_seen,

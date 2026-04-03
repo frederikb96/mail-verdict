@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, update
 
+from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.models import (
     AccountPrefs,
     Folder,
@@ -171,7 +172,7 @@ class VerdictPipeline:
             # Build to_addrs display string (handles flat list + legacy dict)
             to_display: str | None = None
             if msg.to_addrs:
-                addrs = msg.to_addrs
+                addrs = parse_jsonb(msg.to_addrs)
                 if isinstance(addrs, dict):
                     addrs = addrs.get("addrs", [])
                 if isinstance(addrs, list):
@@ -180,9 +181,11 @@ class VerdictPipeline:
             body_excerpt = (msg.body_text or "")[:excerpt_length]
 
             # Extract auth signals from raw_headers if available
-            dkim_pass = _extract_auth_signal(msg.raw_headers, "dkim")
-            spf_pass = _extract_auth_signal(msg.raw_headers, "spf")
-            dmarc_pass = _extract_auth_signal(msg.raw_headers, "dmarc")
+            parsed_headers = parse_jsonb(msg.raw_headers)
+            headers_dict = parsed_headers if isinstance(parsed_headers, dict) else None
+            dkim_pass = _extract_auth_signal(headers_dict, "dkim")
+            spf_pass = _extract_auth_signal(headers_dict, "spf")
+            dmarc_pass = _extract_auth_signal(headers_dict, "dmarc")
 
             context = AnalysisContext(
                 mail_id=msg_id_str,

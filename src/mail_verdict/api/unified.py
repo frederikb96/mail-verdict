@@ -33,6 +33,7 @@ from mail_verdict.api.schemas import (
     UnifiedMessageSummary,
     UnifiedNameUpdate,
 )
+from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -303,7 +304,7 @@ async def list_unified_messages(
             folder_id=msg.folder_id,
             subject=msg.subject,
             from_addr=msg.from_addr,
-            to_addrs=msg.to_addrs,
+            to_addrs=parse_jsonb(msg.to_addrs),
             received_at=msg.received_at,
             is_seen=msg.is_seen,
             is_flagged=msg.is_flagged,

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.models import Attachment, MailTag, Message
 from mail_verdict.rules.conditions import MailContext, evaluate_condition
 from mail_verdict.rules.enrichment import EnrichmentConfig, EnrichmentResult, EnrichmentRunner
@@ -317,17 +318,21 @@ class RulesEngine:
                 )
                 tags = list(tag_result.scalars().all())
 
+                parsed_to = parse_jsonb(msg.to_addrs)
                 to_list: list[str] = []
-                if msg.to_addrs and isinstance(msg.to_addrs, dict):
-                    to_list = msg.to_addrs.get("addrs", [])
-                elif msg.to_addrs and isinstance(msg.to_addrs, list):
-                    to_list = msg.to_addrs
+                if parsed_to and isinstance(parsed_to, dict):
+                    to_list = parsed_to.get("addrs", [])
+                elif parsed_to and isinstance(parsed_to, list):
+                    to_list = parsed_to
 
+                parsed_cc = parse_jsonb(msg.cc_addrs)
                 cc_list: list[str] = []
-                if msg.cc_addrs and isinstance(msg.cc_addrs, dict):
-                    cc_list = msg.cc_addrs.get("addrs", [])
-                elif msg.cc_addrs and isinstance(msg.cc_addrs, list):
-                    cc_list = msg.cc_addrs
+                if parsed_cc and isinstance(parsed_cc, dict):
+                    cc_list = parsed_cc.get("addrs", [])
+                elif parsed_cc and isinstance(parsed_cc, list):
+                    cc_list = parsed_cc
+
+                parsed_headers = parse_jsonb(msg.raw_headers)
 
                 folder_name = event.get("folder_name", "")
 
@@ -339,7 +344,7 @@ class RulesEngine:
                     from_addr=msg.from_addr or "",
                     to_addrs=to_list,
                     cc_addrs=cc_list,
-                    raw_headers=msg.raw_headers or {},
+                    raw_headers=parsed_headers if isinstance(parsed_headers, dict) else {},
                     size_bytes=msg.size_bytes or 0,
                     has_attachments=len(attachments) > 0,
                     attachment_types=[a.content_type for a in attachments if a.content_type],
