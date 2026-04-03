@@ -17,6 +17,7 @@ AccountPrefs stores MailVerdict-specific preferences.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -66,7 +67,11 @@ def _build_account_response(
         is_active=account.is_active,
         state=account.state,
         state_error=account.state_error,
-        capabilities=account.capabilities,
+        capabilities=(
+            json.loads(account.capabilities)
+            if isinstance(account.capabilities, str)
+            else account.capabilities
+        ),
         created_at=account.created_at,
         updated_at=account.updated_at,
         emoji=prefs.emoji if prefs else None,

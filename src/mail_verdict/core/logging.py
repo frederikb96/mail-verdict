@@ -82,7 +82,7 @@ _LIBRARY_LOGGERS = (
     "asyncio",
     "fastmcp",
     "httpx",
-    "imap_tools",
+    "asyncpg",
     "openai",
     "qdrant_client",
 )

@@ -6,17 +6,17 @@ import os
 from unittest.mock import patch
 
 import pytest
-from cryptography.fernet import Fernet
 
-from mail_verdict.core.encryption import encrypt, reset_encryption
+from mail_verdict.core.encryption import decrypt, encrypt, reset_encryption
+
+TEST_HEX_KEY = "0" * 64
 
 
 @pytest.fixture(autouse=True)
 def _setup_encryption_key() -> None:
     """Provide a test encryption key and reset state."""
     reset_encryption()
-    key = Fernet.generate_key().decode()
-    with patch.dict(os.environ, {"MAIL_VERDICT_ENCRYPTION_KEY": key}):
+    with patch.dict(os.environ, {"MAIL_VERDICT_ENCRYPTION_KEY": TEST_HEX_KEY}):
         yield
     reset_encryption()
 
@@ -25,10 +25,12 @@ class TestAccountEncryption:
     """Tests for password encryption in account operations."""
 
     def test_encrypt_produces_non_plaintext(self) -> None:
-        """Encrypted password is not the same as plaintext."""
+        """Encrypted password is bytes, round-trips correctly."""
         ciphertext = encrypt("my_imap_password")
-        assert ciphertext != "my_imap_password"
+        assert isinstance(ciphertext, bytes)
+        assert ciphertext != b"my_imap_password"
         assert len(ciphertext) > 20
+        assert decrypt(ciphertext) == "my_imap_password"
 
     def test_account_create_request_schema(self) -> None:
         """AccountCreateRequest includes password and prefs fields."""

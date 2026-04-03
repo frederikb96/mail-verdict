@@ -98,6 +98,7 @@ async def seed_stalwart() -> None:
             (ALICE_EMAIL, ALICE_PASSWORD, "Alice Test"),
             (BOB_EMAIL, BOB_PASSWORD, "Bob Test"),
             (SPAMMER_EMAIL, SPAMMER_PASSWORD, "Spammer Bot"),
+            ("newsletter@test.local", "testpass123", "Newsletter Sender"),
         ]:
             await seeder.create_account(email, password, display_name=name)
     print("Stalwart seeded with domain + 3 accounts")
@@ -203,16 +204,10 @@ async def full_seed() -> dict[str, str]:
     bob_id = await create_app_account("bob", BOB_EMAIL, BOB_PASSWORD)
     send_seed_emails()
 
-    # Restart so PostIMAP picks up new accounts and syncs IMAP
-    proc = await asyncio.create_subprocess_exec(
-        "podman", "restart", APP_CONTAINER,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    await proc.communicate()
-    print("App restarted for PostIMAP sync")
-
-    await wait_healthy(timeout=120)
-    await wait_accounts_active(timeout=60)
+    # PostIMAP auto-detects new accounts via PG NOTIFY — no restart needed
+    # Wait for PostIMAP to sync accounts to ACTIVE state
+    print("Waiting for PostIMAP to sync accounts...")
+    await wait_accounts_active(timeout=120)
     return {"alice_id": alice_id, "bob_id": bob_id}
 
 

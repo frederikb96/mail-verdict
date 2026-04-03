@@ -1,97 +1,101 @@
 """
-Credential encryption using Fernet symmetric encryption.
+Credential encryption using AES-256-GCM.
 
-Encrypts IMAP/SMTP passwords at rest in the database.
-Requires MAIL_VERDICT_ENCRYPTION_KEY environment variable.
+Binary format: [12-byte IV][ciphertext][16-byte auth tag]
+Compatible with PostIMAP's crypto.ts (same format, shared key).
+
+Key: 64 hex characters (32 bytes) from MAIL_VERDICT_ENCRYPTION_KEY env var.
+Passthrough mode when no key is set (stores plaintext as bytes).
 """
 
 from __future__ import annotations
 
 import os
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 ENV_KEY = "MAIL_VERDICT_ENCRYPTION_KEY"
+IV_LEN = 12
+TAG_LEN = 16
 
-_fernet: Fernet | None = None
+_key_bytes: bytes | None = None
+_key_loaded = False
 
 
 class EncryptionError(Exception):
     """Raised when encryption/decryption fails."""
 
 
-def _get_fernet() -> Fernet:
+def _get_key() -> bytes | None:
+    """Load the hex key from env var. Returns None if not set (passthrough mode)."""
+    global _key_bytes, _key_loaded
+    if not _key_loaded:
+        hex_key = os.environ.get(ENV_KEY, "").strip()
+        if hex_key:
+            if len(hex_key) != 64:
+                raise EncryptionError(
+                    f"{ENV_KEY} must be 64 hex characters (32 bytes), got {len(hex_key)}"
+                )
+            try:
+                _key_bytes = bytes.fromhex(hex_key)
+            except ValueError as e:
+                raise EncryptionError(f"Invalid hex in {ENV_KEY}: {e}") from e
+        else:
+            _key_bytes = None
+        _key_loaded = True
+    return _key_bytes
+
+
+def encrypt(plaintext: str) -> bytes:
+    """Encrypt a plaintext string to bytes using AES-256-GCM.
+
+    Returns [12-byte IV][ciphertext][16-byte tag] as bytes.
+    In passthrough mode (no key), returns plaintext encoded as UTF-8.
     """
-    Get or create the Fernet instance from the encryption key env var.
+    key = _get_key()
+    if key is None:
+        return plaintext.encode("utf-8")
+    aesgcm = AESGCM(key)
+    iv = os.urandom(IV_LEN)
+    ct_with_tag = aesgcm.encrypt(iv, plaintext.encode("utf-8"), None)
+    return iv + ct_with_tag
 
-    Raises:
-        EncryptionError: If the encryption key is not set or invalid
+
+def decrypt(ciphertext: bytes) -> str:
+    """Decrypt bytes back to a plaintext string.
+
+    Expects [12-byte IV][ciphertext][16-byte tag] format.
+    In passthrough mode (no key), returns bytes decoded as UTF-8.
     """
-    global _fernet
-    if _fernet is None:
-        key = os.environ.get(ENV_KEY)
-        if not key:
-            raise EncryptionError(
-                f"{ENV_KEY} environment variable is required. "
-                f"Generate one with: python -c \"from cryptography.fernet import Fernet; "
-                f"print(Fernet.generate_key().decode())\""
-            )
-        try:
-            _fernet = Fernet(key.encode() if isinstance(key, str) else key)
-        except (ValueError, Exception) as e:
-            raise EncryptionError(f"Invalid encryption key in {ENV_KEY}: {e}") from e
-    return _fernet
-
-
-def encrypt(plaintext: str) -> str:
-    """
-    Encrypt a plaintext string.
-
-    Args:
-        plaintext: Value to encrypt
-
-    Returns:
-        Base64-encoded encrypted string
-    """
-    f = _get_fernet()
-    return f.encrypt(plaintext.encode()).decode()
-
-
-def decrypt(ciphertext: str) -> str:
-    """
-    Decrypt an encrypted string.
-
-    Args:
-        ciphertext: Base64-encoded encrypted value
-
-    Returns:
-        Decrypted plaintext string
-
-    Raises:
-        EncryptionError: If decryption fails (wrong key or corrupted data)
-    """
-    f = _get_fernet()
+    key = _get_key()
+    if key is None:
+        return ciphertext.decode("utf-8")
+    if len(ciphertext) < IV_LEN + TAG_LEN:
+        raise EncryptionError("Ciphertext too short to contain IV + auth tag")
+    iv = ciphertext[:IV_LEN]
+    ct_with_tag = ciphertext[IV_LEN:]
+    aesgcm = AESGCM(key)
     try:
-        return f.decrypt(ciphertext.encode()).decode()
-    except InvalidToken as e:
-        raise EncryptionError("Failed to decrypt value (wrong key or corrupted data)") from e
+        plaintext = aesgcm.decrypt(iv, ct_with_tag, None)
+    except Exception as e:
+        raise EncryptionError("Decryption failed (wrong key or corrupted data)") from e
+    return plaintext.decode("utf-8")
 
 
 def validate_key() -> None:
-    """
-    Validate that the encryption key is set and functional.
-
-    Should be called at app startup.
-
-    Raises:
-        EncryptionError: If key is missing or invalid
-    """
-    f = _get_fernet()
-    test = f.encrypt(b"test")
-    f.decrypt(test)
+    """Validate encryption key with a round-trip test. Called at app startup."""
+    key = _get_key()
+    if key is None:
+        return
+    test = "validation-test"
+    encrypted = encrypt(test)
+    decrypted = decrypt(encrypted)
+    if decrypted != test:
+        raise EncryptionError("Encryption key validation failed: round-trip mismatch")
 
 
 def reset_encryption() -> None:
-    """Reset the cached Fernet instance. Useful for testing."""
-    global _fernet
-    _fernet = None
+    """Reset cached key. Useful for testing."""
+    global _key_bytes, _key_loaded
+    _key_bytes = None
+    _key_loaded = False

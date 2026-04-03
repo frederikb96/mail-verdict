@@ -293,10 +293,7 @@ async def message_action(
             await session.execute(
                 update(Message).where(Message.id == message_id).values(is_seen=True)
             )
-        await _emit_message_updated_event(
-            account_id, source_folder_id, message_id, msg.imap_uid,
-            is_seen=True, is_flagged=msg.is_flagged,
-        )
+
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "mark_unread":
@@ -304,10 +301,7 @@ async def message_action(
             await session.execute(
                 update(Message).where(Message.id == message_id).values(is_seen=False)
             )
-        await _emit_message_updated_event(
-            account_id, source_folder_id, message_id, msg.imap_uid,
-            is_seen=False, is_flagged=msg.is_flagged,
-        )
+
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "flag":
@@ -315,10 +309,7 @@ async def message_action(
             await session.execute(
                 update(Message).where(Message.id == message_id).values(is_flagged=True)
             )
-        await _emit_message_updated_event(
-            account_id, source_folder_id, message_id, msg.imap_uid,
-            is_seen=msg.is_seen, is_flagged=True,
-        )
+
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "unflag":
@@ -326,10 +317,7 @@ async def message_action(
             await session.execute(
                 update(Message).where(Message.id == message_id).values(is_flagged=False)
             )
-        await _emit_message_updated_event(
-            account_id, source_folder_id, message_id, msg.imap_uid,
-            is_seen=msg.is_seen, is_flagged=False,
-        )
+
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "delete":
@@ -342,9 +330,7 @@ async def message_action(
                     update(Message).where(Message.id == message_id)
                     .values(folder_id=trash_folder_id)
                 )
-            await _emit_message_deleted_event(
-                account_id, source_folder_id, message_id, msg.imap_uid,
-            )
+
             return MessageActionResponse(
                 success=True, action=action, message_id=message_id,
                 message="Moved to trash",
@@ -356,9 +342,7 @@ async def message_action(
                 await session.execute(
                     update(Message).where(Message.id == message_id).values(deleted_at=now)
                 )
-            await _emit_message_deleted_event(
-                account_id, source_folder_id, message_id, msg.imap_uid,
-            )
+
             return MessageActionResponse(
                 success=True, action=action, message_id=message_id,
                 message="Permanently deleted",
@@ -386,9 +370,7 @@ async def message_action(
                 update(Message).where(Message.id == message_id)
                 .values(folder_id=target.id)
             )
-        await _emit_message_deleted_event(
-            account_id, source_folder_id, message_id, msg.imap_uid,
-        )
+
         return MessageActionResponse(
             success=True,
             action=action,
@@ -412,9 +394,7 @@ async def message_action(
                 .values(folder_id=target_folder_id)
             )
 
-        await _emit_message_deleted_event(
-            account_id, source_folder_id, message_id, msg.imap_uid,
-        )
+
         return MessageActionResponse(
             success=True,
             action=action,
@@ -451,75 +431,3 @@ async def _resolve_special_folder(
         return result.scalar_one_or_none()
 
 
-async def _emit_message_updated_event(
-    account_id: uuid.UUID,
-    folder_id: uuid.UUID,
-    message_id: uuid.UUID,
-    imap_uid: int,
-    is_seen: bool,
-    is_flagged: bool,
-) -> None:
-    """
-    Emit a mail.updated SSE event after an action.
-
-    Args:
-        account_id: Account UUID
-        folder_id: Folder UUID (current or target)
-        message_id: Message UUID
-        imap_uid: IMAP UID
-        is_seen: Current seen state
-        is_flagged: Current flagged state
-    """
-    from mail_verdict.api.events import get_event_ring
-
-    ring = get_event_ring()
-    if ring is None:
-        return
-
-    await ring.add(
-        account_id=account_id,
-        event_type="mail.updated",
-        data={
-            "account_id": str(account_id),
-            "folder_id": str(folder_id),
-            "message_id": str(message_id),
-            "imap_uid": imap_uid,
-            "is_seen": is_seen,
-            "is_flagged": is_flagged,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-
-
-async def _emit_message_deleted_event(
-    account_id: uuid.UUID,
-    folder_id: uuid.UUID,
-    message_id: uuid.UUID,
-    imap_uid: int,
-) -> None:
-    """
-    Emit a mail.deleted SSE event after a delete/move action.
-
-    Args:
-        account_id: Account UUID
-        folder_id: Folder UUID
-        message_id: Message UUID
-        imap_uid: IMAP UID
-    """
-    from mail_verdict.api.events import get_event_ring
-
-    ring = get_event_ring()
-    if ring is None:
-        return
-
-    await ring.add(
-        account_id=account_id,
-        event_type="mail.deleted",
-        data={
-            "account_id": str(account_id),
-            "folder_id": str(folder_id),
-            "message_id": str(message_id),
-            "imap_uid": imap_uid,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-    )
