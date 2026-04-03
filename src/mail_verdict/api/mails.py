@@ -13,6 +13,7 @@ mv_message_notify trigger handles SSE events.
 from __future__ import annotations
 
 import logging
+import random
 import uuid
 from datetime import datetime, timezone
 
@@ -337,7 +338,7 @@ async def message_action(
             async with db.session() as session:
                 await session.execute(
                     update(Message).where(Message.id == message_id)
-                    .values(folder_id=trash_folder_id, imap_uid=0)
+                    .values(folder_id=trash_folder_id, imap_uid=-random.randint(1, 2_000_000_000))
                 )
 
             return MessageActionResponse(
@@ -384,7 +385,7 @@ async def message_action(
         async with db.session() as session:
             await session.execute(
                 update(Message).where(Message.id == message_id)
-                .values(folder_id=target_id, imap_uid=0)
+                .values(folder_id=target_id, imap_uid=-random.randint(1, 2_000_000_000))
             )
 
         return MessageActionResponse(
@@ -407,7 +408,7 @@ async def message_action(
         async with db.session() as session:
             await session.execute(
                 update(Message).where(Message.id == message_id)
-                .values(folder_id=target_folder_id, imap_uid=0)
+                .values(folder_id=target_folder_id, imap_uid=-random.randint(1, 2_000_000_000))
             )
 
         return MessageActionResponse(
