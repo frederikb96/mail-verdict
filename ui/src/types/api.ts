@@ -177,16 +177,6 @@ export interface FeedbackResponse {
   message: string | null;
 }
 
-export interface JobStatus {
-  name: string;
-  account_id: string | null;
-  status: string;
-  cursor: Record<string, unknown> | null;
-  last_run_at: string | null;
-  error_count: number;
-  last_error: string | null;
-}
-
 export interface WeeklyTrendPoint {
   week_start: string;
   total: number;
@@ -221,28 +211,15 @@ export interface SSEEvent {
   event_type?: string;
   account_id?: string;
   folder_id?: string;
+  folder_name?: string;
   message_id?: string;
-  imap_uid?: number;
   is_seen?: boolean;
   is_flagged?: boolean;
-  timestamp: string;
-  /** Sync state fields (backend sends phase/folder_name/elapsed_s/last_error) */
+  is_spam?: boolean;
+  source?: string;
   status?: string;
-  phase?: string;
-  can_sync?: boolean;
-  can_cancel?: boolean;
-  current_folder?: string;
-  folder_name?: string;
-  folder_index?: number;
-  folder_total?: number;
-  synced?: number;
-  total_messages?: number;
-  new_mails?: number;
-  errors?: number;
-  duration_s?: number;
-  elapsed_s?: number;
-  error_message?: string;
-  last_error?: string;
+  timestamp: string;
+  old_folder_id?: string;
 }
 
 export interface ImageExceptionResponse {
@@ -273,26 +250,6 @@ export interface FolderOrderResponse {
 
 export interface FolderOrderUpdate {
   order: string[];
-}
-
-export interface IdleFolderItem {
-  folder_id: string;
-  imap_name: string;
-  idle_enabled: boolean;
-  idle_supported: boolean | null;
-}
-
-export interface IdleFolderToggleResponse {
-  folder_id: string;
-  enabled: boolean;
-  success: boolean;
-  error: string | null;
-}
-
-export interface IdleValidationResponse {
-  folder_id: string;
-  supported: boolean;
-  error: string | null;
 }
 
 // --- Selection / bulk action types ---
@@ -379,4 +336,19 @@ export interface UnifiedMessageListResponse {
 
 export interface UnifiedFolderOrderResponse {
   order: string[];
+}
+
+export interface SyncStatusResponse {
+  account_id: string;
+  state: string;
+  state_error: string | null;
+  last_full_sync: string | null;
+  last_incr_sync: string | null;
+  sync_tier: string | null;
+  folders_synced: number;
+  folders_total: number;
+  messages_synced: number;
+  error_count: number;
+  last_error: string | null;
+  updated_at: string | null;
 }

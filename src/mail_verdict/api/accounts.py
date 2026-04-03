@@ -10,6 +10,8 @@ POST /api/accounts/:id/test-connection — test IMAP/SMTP connectivity
 GET /api/accounts/:id/folders — folder listing with counts
 GET /api/accounts/:id/folder-mapping — get/auto-detect folder mapping
 PUT /api/accounts/:id/folder-mapping — save folder mapping
+GET /api/accounts/:id/sync-status — sync progress from PostIMAP sync_state
+POST /api/accounts/:id/sync — trigger immediate sync via PG NOTIFY
 
 PostIMAP integration: accounts table is PostIMAP-owned.
 AccountPrefs stores MailVerdict-specific preferences.
@@ -17,11 +19,12 @@ AccountPrefs stores MailVerdict-specific preferences.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import case, delete, select, update
+from sqlalchemy import case, delete, select, text, update
 from sqlalchemy import func as sa_func
 
 from mail_verdict.api.deps import get_account_prefs_repo
@@ -30,11 +33,19 @@ from mail_verdict.api.schemas import (
     AccountResponse,
     AccountUpdateRequest,
     FolderResponse,
+    SyncStatusResponse,
 )
 from mail_verdict.core.encryption import encrypt
 from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, AccountPrefs, Folder, FolderPrefs, Message
+from mail_verdict.database.models import (
+    Account,
+    AccountPrefs,
+    Folder,
+    FolderPrefs,
+    Message,
+    SyncState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -326,3 +337,81 @@ async def update_folder_mapping(
     prefs_repo = get_account_prefs_repo()
     await prefs_repo.update(account_id, folder_mapping=mapping)
     return mapping
+
+
+@router.get("/{account_id}/sync-status", response_model=SyncStatusResponse)
+async def get_sync_status(account_id: uuid.UUID) -> SyncStatusResponse:
+    """Get sync status for an account (reads PostIMAP's sync_state table).
+
+    Combines the account lifecycle state from accounts.state with
+    detailed sync progress from the sync_state table.
+
+    Args:
+        account_id: UUID of the account to query.
+
+    Returns:
+        SyncStatusResponse with combined account state and sync progress.
+
+    Raises:
+        HTTPException: 404 if account not found.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        acct_result = await session.execute(
+            select(Account).where(Account.id == account_id)
+        )
+        account = acct_result.scalar_one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        sync_result = await session.execute(
+            select(SyncState).where(SyncState.account_id == account_id)
+        )
+        ss = sync_result.scalar_one_or_none()
+
+        return SyncStatusResponse(
+            account_id=account.id,
+            state=account.state,
+            state_error=account.state_error,
+            last_full_sync=ss.last_full_sync if ss else None,
+            last_incr_sync=ss.last_incr_sync if ss else None,
+            sync_tier=ss.sync_tier if ss else None,
+            folders_synced=ss.folders_synced if ss else 0,
+            folders_total=ss.folders_total if ss else 0,
+            messages_synced=ss.messages_synced if ss else 0,
+            error_count=ss.error_count if ss else 0,
+            last_error=ss.last_error if ss else None,
+            updated_at=ss.updated_at if ss else None,
+        )
+
+
+@router.post("/{account_id}/sync")
+async def trigger_sync(account_id: uuid.UUID) -> dict[str, str]:
+    """Trigger an immediate sync for an account via PG NOTIFY to PostIMAP.
+
+    Sends a JSON payload on the 'postimap_commands' PG NOTIFY channel,
+    which PostIMAP listens on to initiate an out-of-band sync cycle.
+
+    Args:
+        account_id: UUID of the account to sync.
+
+    Returns:
+        Dict confirming the sync request was sent.
+
+    Raises:
+        HTTPException: 404 if account not found.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(select(Account).where(Account.id == account_id))
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+    async with db.session() as session:
+        payload = json.dumps({"action": "sync", "account_id": str(account_id)})
+        await session.execute(
+            text("SELECT pg_notify('postimap_commands', :payload)"),
+            {"payload": payload},
+        )
+
+    return {"status": "sync_requested", "account_id": str(account_id)}

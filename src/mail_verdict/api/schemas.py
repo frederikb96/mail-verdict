@@ -163,6 +163,25 @@ class SearchResponse(BaseModel):
 # --- Account schemas ---
 
 
+class SyncStatusResponse(BaseModel):
+    """Sync status for an account from PostIMAP's sync_state table."""
+
+    account_id: uuid.UUID
+    state: str
+    state_error: str | None = None
+    last_full_sync: datetime | None = None
+    last_incr_sync: datetime | None = None
+    sync_tier: str | None = None
+    folders_synced: int = 0
+    folders_total: int = 0
+    messages_synced: int = 0
+    error_count: int = 0
+    last_error: str | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class AccountResponse(BaseModel):
     """Account summary (passwords never exposed).
 

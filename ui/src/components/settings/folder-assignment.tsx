@@ -22,7 +22,7 @@ import {
 
 const ROLE_LABELS: Record<string, string> = {
   inbox: "Inbox",
-  spam: "Spam",
+  junk: "Spam / Junk",
   drafts: "Drafts",
   sent: "Sent",
   archive: "Archive",

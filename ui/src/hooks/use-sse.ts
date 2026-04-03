@@ -10,7 +10,6 @@
 import { useEffect, useRef } from "react";
 import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
-import { syncStatesAtom } from "@/lib/atoms";
 import { selectedMailIdsAtom } from "@/store/selection-atom";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
@@ -20,7 +19,6 @@ const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 
 export function useSSE(accountId?: string) {
-  const setSyncStates = useSetAtom(syncStatesAtom);
   const setSelectedMailIds = useSetAtom(selectedMailIdsAtom);
   const setConnectionState = useSetAtom(sseConnectionStateAtom);
   const queryClient = useQueryClient();
@@ -74,35 +72,6 @@ export function useSSE(accountId?: string) {
         );
       };
 
-      // Sync state events
-      source.addEventListener("sync.state", (e: MessageEvent) => {
-        try {
-          lastEventIdRef.current = e.lastEventId;
-          const data: SSEEvent = JSON.parse(e.data);
-          if (data.account_id) {
-            setSyncStates((prev) => ({
-              ...prev,
-              [data.account_id!]: {
-                status: data.phase ?? data.status ?? "unknown",
-                can_sync: data.can_sync ?? false,
-                can_cancel: data.can_cancel ?? false,
-                current_folder: data.folder_name ?? data.current_folder,
-                folder_index: data.folder_index,
-                folder_total: data.folder_total,
-                synced: data.synced,
-                total_messages: data.total_messages,
-                new_mails: data.new_mails,
-                errors: data.errors,
-                duration_s: data.elapsed_s ?? data.duration_s,
-                error_message: data.last_error ?? data.error_message,
-              },
-            }));
-          }
-        } catch {
-          // Ignore parse errors
-        }
-      });
-
       // Mail events - invalidate queries
       source.addEventListener("mail.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
@@ -154,6 +123,13 @@ export function useSSE(accountId?: string) {
         }
       });
 
+      // Account state events
+      source.addEventListener("account.changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["accounts"] });
+        queryClient.invalidateQueries({ queryKey: ["sync-status"] });
+      });
+
       // Selection state events
       source.addEventListener("selection.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
@@ -182,5 +158,5 @@ export function useSSE(accountId?: string) {
       }
       setConnectionState("disconnected");
     };
-  }, [accountId, setSyncStates, setSelectedMailIds, setConnectionState, queryClient]);
+  }, [accountId, setSelectedMailIds, setConnectionState, queryClient]);
 }

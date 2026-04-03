@@ -198,7 +198,7 @@ export function MailList() {
       >
         {allMails.map((mail, index) =>
           isUnifiedView ? (
-            <DragMail key={mail.id} mailId={mail.id}>
+            <DragMail key={mail.id} mailId={mail.id} accountId={mail.account_id}>
               <UnifiedMailItem
                 mail={mail as UnifiedMessageSummary}
                 isSelected={mail.id === selectedMailId}
@@ -211,7 +211,7 @@ export function MailList() {
               />
             </DragMail>
           ) : (
-            <DragMail key={mail.id} mailId={mail.id}>
+            <DragMail key={mail.id} mailId={mail.id} accountId={mail.account_id}>
               <MailListItem
                 mail={mail as MessageSummary}
                 isSelected={mail.id === selectedMailId}

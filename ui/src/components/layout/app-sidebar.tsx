@@ -62,22 +62,15 @@ const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
   archive: Archive,
   junk: AlertTriangle,
   drafts: FileEdit,
-  // Legacy backslash format
-  "\\Inbox": Inbox,
-  "\\Sent": Send,
-  "\\Trash": Trash2,
-  "\\Archive": Archive,
-  "\\Junk": AlertTriangle,
-  "\\Drafts": FileEdit,
 };
 
 const SPECIAL_USE_ORDER = [
-  "\\Inbox", "inbox",
-  "\\Drafts", "drafts",
-  "\\Sent", "sent",
-  "\\Archive", "archive",
-  "\\Junk", "junk",
-  "\\Trash", "trash",
+  "inbox",
+  "drafts",
+  "sent",
+  "archive",
+  "junk",
+  "trash",
 ];
 
 function sortFolders(folders: FolderResponse[]): FolderResponse[] {
@@ -162,14 +155,10 @@ export function AppSidebar() {
     if (isUnified || selectedFolderId) return;
 
     if (orderedFolders && orderedFolders.length > 0) {
-      const inbox = orderedFolders.find(
-        (f) => f.special_use === "inbox" || f.special_use === "\\Inbox",
-      );
+      const inbox = orderedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.folder_id : orderedFolders[0].folder_id);
     } else if (sortedFolders.length > 0) {
-      const inbox = sortedFolders.find(
-        (f) => f.special_use === "inbox" || f.special_use === "\\Inbox",
-      );
+      const inbox = sortedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.id : sortedFolders[0].id);
     }
   }, [isUnified, selectedFolderId, orderedFolders, sortedFolders, setSelectedFolderId]);
@@ -278,27 +267,37 @@ export function AppSidebar() {
                   (unifiedFolders ?? []).map((uf) => {
                     const isActive =
                       selectedUnifiedFolder === uf.unified_name;
+                    const folderMapping = uf.folders.map((f) => ({
+                      account_id: f.account_id,
+                      folder_id: f.folder_id,
+                    }));
                     return (
-                      <SidebarMenuItem key={uf.unified_name}>
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          onClick={() => handleUnifiedFolderSelect(uf.unified_name)}
-                          tooltip={`${uf.unified_name} (${uf.folders.length} accounts)`}
-                        >
-                          <Layers className="h-4 w-4" />
-                          <span className="flex-1 truncate">
-                            {uf.unified_name}
-                          </span>
-                          {uf.unread_count > 0 && (
-                            <Badge
-                              variant="secondary"
-                              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                            >
-                              {uf.unread_count}
-                            </Badge>
-                          )}
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
+                      <DroppableFolder
+                        key={uf.unified_name}
+                        folderId={folderMapping[0]?.folder_id ?? uf.unified_name}
+                        folderMapping={folderMapping}
+                      >
+                        <SidebarMenuItem>
+                          <SidebarMenuButton
+                            isActive={isActive}
+                            onClick={() => handleUnifiedFolderSelect(uf.unified_name)}
+                            tooltip={`${uf.unified_name} (${uf.folders.length} accounts)`}
+                          >
+                            <Layers className="h-4 w-4" />
+                            <span className="flex-1 truncate">
+                              {uf.unified_name}
+                            </span>
+                            {uf.unread_count > 0 && (
+                              <Badge
+                                variant="secondary"
+                                className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+                              >
+                                {uf.unread_count}
+                              </Badge>
+                            )}
+                          </SidebarMenuButton>
+                        </SidebarMenuItem>
+                      </DroppableFolder>
                     );
                   })
                 : /* Single-account view */
@@ -315,11 +314,11 @@ export function AppSidebar() {
                             <SidebarMenuButton
                               isActive={isActive}
                               onClick={() => handleFolderSelect(folder.folder_id)}
-                              tooltip={folder.imap_name}
+                              tooltip={folder.display_name || folder.imap_name}
                             >
                               <Icon className="h-4 w-4" />
                               <span className="flex-1 truncate">
-                                {folder.imap_name}
+                                {folder.display_name || folder.imap_name}
                               </span>
                               {folder.unread_count > 0 && (
                                 <Badge

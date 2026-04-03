@@ -337,7 +337,7 @@ async def message_action(
             async with db.session() as session:
                 await session.execute(
                     update(Message).where(Message.id == message_id)
-                    .values(folder_id=trash_folder_id)
+                    .values(folder_id=trash_folder_id, imap_uid=0)
                 )
 
             return MessageActionResponse(
@@ -384,7 +384,7 @@ async def message_action(
         async with db.session() as session:
             await session.execute(
                 update(Message).where(Message.id == message_id)
-                .values(folder_id=target_id)
+                .values(folder_id=target_id, imap_uid=0)
             )
 
         return MessageActionResponse(
@@ -407,9 +407,8 @@ async def message_action(
         async with db.session() as session:
             await session.execute(
                 update(Message).where(Message.id == message_id)
-                .values(folder_id=target_folder_id)
+                .values(folder_id=target_folder_id, imap_uid=0)
             )
-
 
         return MessageActionResponse(
             success=True,

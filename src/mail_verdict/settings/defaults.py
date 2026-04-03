@@ -16,7 +16,6 @@ class SettingCategory(str, enum.Enum):
 
     AI = "ai"
     SPAM = "spam"
-    SYNC = "sync"
     RETRY = "retry"
     RULES = "rules"
 
@@ -35,12 +34,6 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "excerpt_length": 300,
         "neighbor_count": 3,
         "auto_mark_read": True,
-    },
-    SettingCategory.SYNC: {
-        "enabled": True,
-        "poll_interval_seconds": 300,
-        "idle_enabled": True,
-        "idle_restart_seconds": 1500,
     },
     SettingCategory.RETRY: {
         "max_retries": 3,

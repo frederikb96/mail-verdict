@@ -267,6 +267,35 @@ class Message(Base):
     )
 
 
+class SyncState(Base):
+    """Per-account sync state — PostIMAP-owned table (read-only from MailVerdict).
+
+    Tracks IMAP sync progress, tier detection, and error state.
+    Written exclusively by PostIMAP during sync operations.
+    """
+
+    __tablename__ = "sync_state"
+
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True,
+    )
+    last_full_sync: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_incr_sync: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    sync_tier: Mapped[str | None] = mapped_column(Text, nullable=True)
+    folders_synced: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    folders_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    messages_synced: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
 class Attachment(Base):
     """Email attachment — PostIMAP-owned table."""
 

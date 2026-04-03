@@ -13,12 +13,8 @@ import type {
   FeedbackResponse,
   FolderOrderResponse,
   FolderResponse,
-  IdleFolderItem,
-  IdleFolderToggleResponse,
-  IdleValidationResponse,
   ImageExceptionCreate,
   ImageExceptionResponse,
-  JobStatus,
   MessageActionRequest,
   MessageActionResponse,
   MessageDetail,
@@ -29,6 +25,7 @@ import type {
   SelectionResponse,
   SelectionToggle,
   StatsResponse,
+  SyncStatusResponse,
   UnifiedFolderOrderResponse,
   UnifiedFolderResponse,
   UnifiedMessageListResponse,
@@ -99,11 +96,11 @@ export const api = {
     testConnection(id: string): Promise<Record<string, string>> {
       return request(`/accounts/${id}/test-connection`, { method: "POST" });
     },
+    syncStatus(id: string): Promise<SyncStatusResponse> {
+      return request(`/accounts/${id}/sync-status`);
+    },
     triggerSync(id: string): Promise<Record<string, string>> {
       return request(`/accounts/${id}/sync`, { method: "POST" });
-    },
-    cancelSync(id: string): Promise<Record<string, string>> {
-      return request(`/accounts/${id}/sync`, { method: "DELETE" });
     },
   },
 
@@ -174,26 +171,18 @@ export const api = {
         method: "POST",
       });
     },
-    getIdleFolders(accountId: string): Promise<IdleFolderItem[]> {
-      return request(`/accounts/${accountId}/idle-folders`);
-    },
-    toggleIdle(
+    getMapping(
       accountId: string,
-      folderId: string,
-      enabled: boolean,
-    ): Promise<IdleFolderToggleResponse> {
-      return request(`/accounts/${accountId}/idle-folders`, {
+    ): Promise<Record<string, string | null>> {
+      return request(`/accounts/${accountId}/folder-mapping`);
+    },
+    updateMapping(
+      accountId: string,
+      mapping: Record<string, string | null>,
+    ): Promise<Record<string, string | null>> {
+      return request(`/accounts/${accountId}/folder-mapping`, {
         method: "PUT",
-        body: JSON.stringify({ folder_id: folderId, enabled }),
-      });
-    },
-    validateIdle(
-      accountId: string,
-      folderId: string,
-    ): Promise<IdleValidationResponse> {
-      return request(`/accounts/${accountId}/validate-idle`, {
-        method: "POST",
-        body: JSON.stringify({ folder_id: folderId }),
+        body: JSON.stringify(mapping),
       });
     },
   },
@@ -302,28 +291,6 @@ export const api = {
       return request("/settings/import", {
         method: "POST",
         body: JSON.stringify({ data }),
-      });
-    },
-  },
-
-  jobs: {
-    list(): Promise<JobStatus[]> {
-      return request("/jobs");
-    },
-    start(
-      name: string,
-      accountId?: string,
-    ): Promise<Record<string, string>> {
-      return request(`/jobs/${name}/start${qs({ account_id: accountId })}`, {
-        method: "POST",
-      });
-    },
-    stop(
-      name: string,
-      accountId?: string,
-    ): Promise<Record<string, string>> {
-      return request(`/jobs/${name}/stop${qs({ account_id: accountId })}`, {
-        method: "POST",
       });
     },
   },

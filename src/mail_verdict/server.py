@@ -228,6 +228,17 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
                     "id": msg_id, "account_id": account_id_str, "folder_id": folder_id,
                 })
 
+        elif channel == "account_changes":
+            account_id_str = event.get("id", "")
+            try:
+                account_uuid = _uuid.UUID(account_id_str)
+            except (ValueError, AttributeError):
+                return
+            await event_ring.add(account_uuid, "account.changed", {
+                "id": account_id_str,
+                "op": event.get("op", ""),
+            })
+
     dsn = parse_dsn_from_sqlalchemy_url(config.database.url)
     _pg_listener = PgListener(dsn)
     _pg_listener.add_handler(_on_pg_event)

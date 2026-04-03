@@ -6,15 +6,15 @@ import { selectedMailIdsAtom, selectionModeAtom } from "@/store/selection-atom";
 
 interface DragMailProps {
   mailId: string;
+  accountId?: string;
   children: React.ReactNode;
 }
 
 /**
  * Draggable wrapper for a mail list item.
  * When dragging a selected mail, all selected mails move together.
- * Renders a count badge overlay during drag.
  */
-export function DragMail({ mailId, children }: DragMailProps) {
+export function DragMail({ mailId, accountId, children }: DragMailProps) {
   const selectedIds = useAtomValue(selectedMailIdsAtom);
   const selectionMode = useAtomValue(selectionModeAtom);
   const isInSelection = selectedIds.has(mailId);
@@ -24,7 +24,7 @@ export function DragMail({ mailId, children }: DragMailProps) {
     data: {
       type: "mail",
       mailId,
-      // If this mail is in the selection, drag all selected mails
+      accountId,
       mailIds: isInSelection ? Array.from(selectedIds) : [mailId],
       count: isInSelection ? selectedIds.size : 1,
     },

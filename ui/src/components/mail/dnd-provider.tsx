@@ -14,7 +14,7 @@ import { useAtomValue } from "jotai";
 import { GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useMailAction } from "@/hooks/use-mails";
-import { selectedAccountIdAtom } from "@/lib/atoms";
+import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 
 interface MailDndProviderProps {
   children: React.ReactNode;
@@ -22,10 +22,11 @@ interface MailDndProviderProps {
 
 /**
  * Top-level DndContext wrapper for mail drag-and-drop.
- * Uses individual mailAction (move by folder_id) for each dragged mail.
+ * Supports both single-account and unified view with per-account folder mapping.
  */
 export function MailDndProvider({ children }: MailDndProviderProps) {
   const accountId = useAtomValue(selectedAccountIdAtom);
+  const isUnified = useAtomValue(isUnifiedViewAtom);
   const mailAction = useMailAction();
   const [dragData, setDragData] = useState<{
     count: number;
@@ -54,20 +55,35 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
     setDragData(null);
 
     const { active, over } = event;
-    if (!over || !accountId) return;
+    if (!over) return;
 
     const activeData = active.data.current;
     const overData = over.data.current;
 
     if (activeData?.type !== "mail" || overData?.type !== "folder") return;
 
-    const targetFolderId = overData.folderId as string;
     const mailIds = activeData.mailIds as string[];
+    const mailAccountId = activeData.accountId as string | undefined;
+    const folderMapping = overData.folderMapping as
+      | { account_id: string; folder_id: string }[]
+      | undefined;
+
+    let targetFolderId = overData.folderId as string;
+    let effectiveAccountId = isUnified ? mailAccountId : accountId;
+
+    if (isUnified && folderMapping && mailAccountId) {
+      const match = folderMapping.find((f) => f.account_id === mailAccountId);
+      if (match) {
+        targetFolderId = match.folder_id;
+      }
+    }
+
+    if (!effectiveAccountId) return;
 
     for (const mailId of mailIds) {
       mailAction.mutate({
         mailId,
-        accountId,
+        accountId: effectiveAccountId,
         action: { action: "move", target_folder_id: targetFolderId },
       });
     }

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useAtomValue } from "jotai";
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
   Plus,
@@ -11,14 +10,16 @@ import {
   RefreshCw,
   Trash2,
   Pencil,
-  Plug,
+  Activity,
   Loader2,
   ChevronDown,
   FolderInput,
   GripVertical,
-  Radio,
   ImageOff,
   Layers,
+  Clock,
+  Zap,
+  AlertCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -38,7 +39,6 @@ import { Switch } from "@/components/ui/switch";
 
 import { FolderAssignment } from "@/components/settings/folder-assignment";
 import { FolderOrder } from "@/components/settings/folder-order";
-import { IdleConfig } from "@/components/settings/idle-config";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
 import {
   EmojiPicker,
@@ -52,58 +52,14 @@ import {
   useTestConnection,
   useUpdateAccount,
 } from "@/hooks/use-accounts";
-import { useTriggerSync, useCancelSync } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
-import { syncStatesAtom } from "@/lib/atoms";
+import { useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
 import type { AccountCreateRequest, AccountResponse } from "@/types/api";
-
-function SyncProgressBar({
-  accountId,
-}: {
-  accountId: string;
-}) {
-  const syncStates = useAtomValue(syncStatesAtom);
-  const state = syncStates[accountId];
-
-  if (!state) return null;
-
-  const progress =
-    state.synced && state.total_messages
-      ? Math.round((state.synced / state.total_messages) * 100)
-      : 0;
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>
-          {state.current_folder ?? state.status}
-          {state.folder_index !== undefined &&
-            state.folder_total !== undefined &&
-            ` (${state.folder_index}/${state.folder_total})`}
-        </span>
-        {state.synced !== undefined && state.total_messages !== undefined && (
-          <span>
-            {Math.min(state.synced, state.total_messages)}/{state.total_messages}
-          </span>
-        )}
-      </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-        <div
-          className="h-full rounded-full bg-primary transition-all duration-300"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      {state.error_message && (
-        <div className="text-xs text-destructive">{state.error_message}</div>
-      )}
-    </div>
-  );
-}
 
 const STATE_BADGES: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
   created: { variant: "outline", label: "Created" },
   syncing: { variant: "default", label: "Syncing" },
-  seeding: { variant: "default", label: "Seeding" },
+  disabled: { variant: "outline", label: "Disabled" },
   active: { variant: "secondary", label: "Active" },
   error: { variant: "destructive", label: "Error" },
 };
@@ -137,19 +93,14 @@ function AccountCard({
   const deleteAccount = useDeleteAccount();
   const testConnection = useTestConnection();
   const updateAccount = useUpdateAccount();
-  const triggerSync = useTriggerSync();
-  const cancelSync = useCancelSync();
   const updateEmoji = useUpdateAccountEmoji();
-  const syncStates = useAtomValue(syncStatesAtom);
-  const syncState = syncStates[account.id];
+  const { data: syncStatus } = useSyncStatus(account.id);
+  const triggerSync = useTriggerSync();
 
   const badgeInfo = STATE_BADGES[account.state] ?? {
     variant: "outline" as const,
     label: account.state,
   };
-
-  const canSync = syncState?.can_sync ?? true;
-  const canCancel = syncState?.can_cancel ?? false;
 
   return (
     <Card>
@@ -207,28 +158,47 @@ function AccountCard({
           </div>
         </div>
 
-        <SyncProgressBar accountId={account.id} />
+        {/* Sync status */}
+        {syncStatus && (
+          <div className="rounded-md border p-2 text-xs text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1">
+                <Zap className="h-3 w-3" />
+                {syncStatus.sync_tier ?? "pending"}
+              </span>
+              <span className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {syncStatus.last_incr_sync
+                  ? new Date(syncStatus.last_incr_sync).toLocaleTimeString()
+                  : "never"}
+              </span>
+            </div>
+            {syncStatus.error_count > 0 && (
+              <div className="mt-1 flex items-center gap-1 text-destructive">
+                <AlertCircle className="h-3 w-3" />
+                {syncStatus.error_count} errors — {syncStatus.last_error}
+              </div>
+            )}
+            <div className="mt-1 text-[10px] opacity-70">
+              Real-time sync via IMAP IDLE &bull; Periodic fallback every 60s
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2">
-          {canSync && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => triggerSync.mutate(account.id)}
-            >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => triggerSync.mutate(account.id)}
+            disabled={triggerSync.isPending}
+          >
+            {triggerSync.isPending ? (
+              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+            ) : (
               <RefreshCw className="mr-1 h-3 w-3" />
-              Sync
-            </Button>
-          )}
-          {canCancel && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => cancelSync.mutate(account.id)}
-            >
-              Cancel
-            </Button>
-          )}
+            )}
+            Sync
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -238,9 +208,9 @@ function AccountCard({
             {testConnection.isPending ? (
               <Loader2 className="mr-1 h-3 w-3 animate-spin" />
             ) : (
-              <Plug className="mr-1 h-3 w-3" />
+              <Activity className="mr-1 h-3 w-3" />
             )}
-            Test
+            Status
           </Button>
           <Button
             variant="ghost"
@@ -267,7 +237,7 @@ function AccountCard({
 
         {testConnection.isSuccess && (
           <div className="text-sm text-green-600 dark:text-green-400">
-            Connection successful
+            Status: {syncStatus?.state ?? "unknown"}
           </div>
         )}
         {testConnection.isError && (
@@ -292,15 +262,6 @@ function AccountCard({
             <Collapsible.Panel className="overflow-hidden">
               <div className="px-1 pt-2">
                 <FolderOrder accountId={account.id} />
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
-
-          <Collapsible.Root>
-            <SectionTrigger icon={Radio} label="IMAP IDLE" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <IdleConfig accountId={account.id} />
               </div>
             </Collapsible.Panel>
           </Collapsible.Root>

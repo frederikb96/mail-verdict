@@ -6,7 +6,7 @@ import {
   Loader2,
   Bot,
   ShieldAlert,
-  RefreshCw,
+
   Repeat,
   FileCode,
   Sun,
@@ -48,7 +48,6 @@ import type { StatsResponse } from "@/types/api";
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
   { key: "spam", label: "Spam", icon: ShieldAlert },
-  { key: "sync", label: "Sync", icon: RefreshCw },
   { key: "retry", label: "Retry", icon: Repeat },
   { key: "rules", label: "Rules", icon: FileCode },
 ] as const;

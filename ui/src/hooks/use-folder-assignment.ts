@@ -10,14 +10,7 @@ export const folderMappingKeys = {
 export function useFolderMapping(accountId: string | null) {
   return useQuery({
     queryKey: folderMappingKeys.get(accountId!),
-    queryFn: () =>
-      api.folders
-        .list(accountId!)
-        .then(() =>
-          fetch(`/api/accounts/${accountId}/folder-mapping`).then((r) =>
-            r.json(),
-          ),
-        ),
+    queryFn: () => api.folderManagement.getMapping(accountId!),
     enabled: !!accountId,
     staleTime: 60_000,
   });
@@ -45,12 +38,7 @@ export function useUpdateFolderMapping() {
     }: {
       accountId: string;
       mapping: Record<string, string | null>;
-    }) =>
-      fetch(`/api/accounts/${accountId}/folder-mapping`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(mapping),
-      }).then((r) => r.json()),
+    }) => api.folderManagement.updateMapping(accountId, mapping),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
         queryKey: folderMappingKeys.get(variables.accountId),
