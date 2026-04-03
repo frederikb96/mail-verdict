@@ -120,6 +120,10 @@ class MessageActionRequest(BaseModel):
         default=None,
         description="Target folder IMAP name for move action",
     )
+    target_folder_id: uuid.UUID | None = Field(
+        default=None,
+        description="Target folder UUID for move action (alternative to target_folder)",
+    )
 
 
 class MessageActionResponse(BaseModel):

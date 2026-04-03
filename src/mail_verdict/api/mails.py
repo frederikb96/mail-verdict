@@ -358,33 +358,40 @@ async def message_action(
             )
 
     elif action == "move":
-        if not request.target_folder:
+        if not request.target_folder and not request.target_folder_id:
             raise HTTPException(
                 status_code=400,
-                detail="target_folder required for move action",
+                detail="target_folder or target_folder_id required for move action",
             )
 
-        folder_repo = get_folder_repo()
-        folders = await folder_repo.get_by_account(account_id)
-        target = next((f for f in folders if f.imap_name == request.target_folder), None)
+        target_id = request.target_folder_id
+        target_name = request.target_folder
 
-        if target is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Folder not found: {request.target_folder}",
+        if not target_id:
+            folder_repo = get_folder_repo()
+            folders = await folder_repo.get_by_account(account_id)
+            target = next(
+                (f for f in folders if f.imap_name == request.target_folder), None,
             )
+            if target is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Folder not found: {request.target_folder}",
+                )
+            target_id = target.id
+            target_name = target.imap_name
 
         async with db.session() as session:
             await session.execute(
                 update(Message).where(Message.id == message_id)
-                .values(folder_id=target.id)
+                .values(folder_id=target_id)
             )
 
         return MessageActionResponse(
             success=True,
             action=action,
             message_id=message_id,
-            message=f"Moved to {target.imap_name}",
+            message=f"Moved to {target_name or 'folder'}",
         )
 
     elif action in ("archive", "spam"):
