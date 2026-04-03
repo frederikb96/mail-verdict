@@ -2,7 +2,7 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, spam, sync, retry.
+Categories: ai, spam, retry, rules.
 """
 
 from __future__ import annotations
