@@ -9,7 +9,7 @@ on:
 jobs:
   python:
     name: Python lint + test
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-mail-verdict
     steps:
       - uses: actions/checkout@v4
 
@@ -33,7 +33,7 @@ jobs:
 
   ui:
     name: UI type check + build
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-mail-verdict
     steps:
       - uses: actions/checkout@v4
 
