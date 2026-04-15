@@ -106,7 +106,7 @@ services:
     restart: "no"
 
   qdrant:
-    image: docker.io/qdrant/qdrant:v1.16.3
+    image: docker.io/qdrant/qdrant:v1.17.1
     container_name: mv-qdrant-test
     ports:
       - "16334:6333"
