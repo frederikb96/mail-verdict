@@ -11,7 +11,7 @@ jobs:
     name: Python lint + test
     runs-on: arc-runner-mail-verdict
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-python@v5
         with:
@@ -35,7 +35,7 @@ jobs:
     name: UI type check + build
     runs-on: arc-runner-mail-verdict
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
