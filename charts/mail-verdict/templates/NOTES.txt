@@ -1,0 +1,48 @@
+MailVerdict has been deployed as {{ include "mail-verdict.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+{{- if not .Values.existingSecret }}
+{{- if not .Values.secret.create }}
+
+WARNING: secret.create is false and existingSecret is unset. The pod will
+fail to start until you either set secret.create=true with a databaseUrl,
+or point existingSecret at a Secret containing the keys named in
+existingSecretKeys.
+{{- end }}
+{{- end }}
+
+Check status:
+
+  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "mail-verdict.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://localhost:8080/api/health/live
+  curl http://localhost:8080/api/health
+
+{{- if .Values.ingress.enabled }}
+
+The web UI is exposed at:
+  http{{ if .Values.ingress.tls.enabled }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+
+Reachable through this Ingress means reachable to anyone who can resolve the
+host, unless something in front of it (a ForwardAuth middleware, network
+policy, or the API key itself) gates access -- MailVerdict has no login
+page of its own. See the chart README's auth model section before exposing
+this publicly.
+{{- else }}
+
+No Ingress is enabled (ingress.enabled=false). The Service is only
+reachable from inside the cluster; use port-forward above, or set
+ingress.enabled=true with a host once you have an ingress controller and
+have read the chart README's auth model section.
+{{- end }}
+
+{{- if .Values.apiIngress.enabled }}
+
+The programmatic API route (MCP clients, scripts presenting X-API-Key
+themselves) is exposed at:
+  http{{ if .Values.apiIngress.tls.enabled }}s{{ end }}://{{ .Values.apiIngress.host }}{{ .Values.apiIngress.path }}
+{{- end }}
+
+MailVerdict syncs no mail on its own -- it reads and writes PostIMAP's
+tables. Install PostIMAP (its own chart, oci://ghcr.io/frederikb96/charts/postimap)
+against the same PostgreSQL database, then add an account through the
+MailVerdict UI or API. See the chart README for the full three-step install.

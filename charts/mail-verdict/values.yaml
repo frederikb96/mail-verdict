@@ -1,0 +1,250 @@
+# Default values for mail-verdict.
+# This is a YAML-formatted file. Declare variables to be substituted into templates.
+
+# -- Number of pod replicas.
+# MailVerdict holds per-process in-memory state: the SSE EventRing (500
+# events/account, monotonic IDs, replayed by Last-Event-ID) and the
+# singleton PostgreSQL LISTEN/NOTIFY consumers that drive the spam pipeline
+# and rules engine both live in exactly one process. A second replica would
+# see a disjoint EventRing (breaking SSE replay for clients pinned to the
+# other pod) and would double-process every event on the shared LISTEN
+# channel. Leave this at 1. `strategy: Recreate` (fixed below, not
+# configurable) exists for the same reason: a rolling update briefly runs
+# old and new pods together, which this workload cannot tolerate.
+# values.schema.json pins this to the literal value 1, so
+# `--set replicaCount=N` for any other N fails validation.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/frederikb96/mail-verdict
+  pullPolicy: IfNotPresent
+  # -- Image tag. Defaults to the chart's appVersion when empty.
+  tag: ""
+
+# -- Pull secrets for the GHCR image, if the repository/tag is private.
+imagePullSecrets: []
+# - name: ghcr-pull-secret
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Create a ServiceAccount for the pod.
+  create: true
+  # -- Automount the ServiceAccount token. MailVerdict never talks to the
+  # Kubernetes API, so this can safely stay false if you set your own name.
+  automount: false
+  annotations: {}
+  # -- Name of the ServiceAccount to use. Generated from the fullname template if not set.
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  # -- Port the Service exposes and the port the app listens on
+  # (`config.server.port` in the image defaults). Change both together if
+  # you override `config.server.port`.
+  port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+    # No default CPU limit -- avoids throttling the FastAPI event loop,
+    # the PG LISTEN/NOTIFY consumers and the spam pipeline under load.
+    # cpu: 1000m
+
+livenessProbe:
+  # -- Process-liveness only: does not touch the database or PostIMAP's
+  # contract version, so it never restarts a healthy pod over a transient
+  # database outage.
+  httpGet:
+    path: /api/health/live
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  # -- Checks the database is reachable and PostIMAP's contract version
+  # matches what this image was built against. Deliberately does NOT
+  # depend on any mail account existing -- a fresh install with zero
+  # accounts configured is Ready as soon as the database check passes, so
+  # `helm install --wait` and a rollout both complete normally.
+  enabled: true
+  path: /api/health
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- Extra volumes to add to the pod (e.g. for extraVolumeMounts below).
+extraVolumes: []
+
+# -- Extra volume mounts on the mail-verdict container.
+extraVolumeMounts: []
+
+# -- Extra environment variables on the mail-verdict container, Kubernetes
+# `env` syntax. Use this for MAIL_VERDICT_SECTION_KEY overrides that you'd
+# rather not put in `config:` (see below), or anything else the app's env
+# var override mechanism supports.
+extraEnv: []
+# - name: MAIL_VERDICT_SERVER_LOG_LEVEL
+#   value: debug
+
+# -- Extra `envFrom` entries on the mail-verdict container.
+extraEnvFrom: []
+
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+  maxUnavailable: 1
+
+# -- Restricts egress traffic from the pod. Only useful with a CNI that
+# enforces NetworkPolicy (e.g. Cilium, Calico). MailVerdict only ever makes
+# outbound connections (to PostgreSQL and to the Anthropic API) and serves
+# inbound HTTP on `service.port` only, so this is a reasonable workload to
+# lock down.
+networkPolicy:
+  # -- When enabled with no egress rules configured below, the pod loses ALL
+  # outbound connectivity except DNS (empty `egress: []` under
+  # `policyTypes: [Egress]` means deny-all, not allow-all) -- it will not be
+  # able to reach PostgreSQL or the Anthropic API. Always set
+  # `networkPolicy.egress` to your PostgreSQL destination and to the public
+  # internet (for the Anthropic API) in the same values file where you flip
+  # this on.
+  enabled: false
+  # -- Allow DNS resolution (kube-dns/CoreDNS) -- almost always required
+  # alongside custom egress rules below.
+  allowDNS: true
+  # -- Egress rules, `NetworkPolicySpec.egress` syntax. Narrow this to your
+  # PostgreSQL destination and the Anthropic API.
+  egress: []
+  # - to:
+  #     - podSelector:
+  #         matchLabels:
+  #           cnpg.io/cluster: mail-postgres
+  #   ports:
+  #     - protocol: TCP
+  #       port: 5432
+  # - to:
+  #     - ipBlock:
+  #         cidr: 0.0.0.0/0
+  #   ports:
+  #     - protocol: TCP
+  #       port: 443
+
+# -- Application configuration, deep-merged as a sparse override on top of
+# the config/config.yaml defaults baked into the image (rendered to a
+# ConfigMap, mounted at configOverridePath). Keys here mirror
+# config/config.yaml exactly -- see that file in the repository for the full
+# set of available keys, defaults and comments. Only set what you want to
+# change; everything else falls back to the image's built-in defaults.
+#
+# Unlike PostIMAP's chart, this section has no required key: the image's
+# bundled config.yaml already resolves `server.api_key` from
+# `${MAIL_VERDICT_API_KEY}` and `database.url` from
+# `${MAIL_VERDICT_DATABASE_URL}` -- both wired from the Secret below, not
+# duplicated here. Set values here only to change something else, e.g.
+# `server.cors_origins` or `database.pool_size`.
+#
+# This is intentionally freeform: when new config sections are added to the
+# app, set them the same way -- no chart changes needed to use them.
+config: {}
+# server:
+#   log_level: INFO
+#   cors_origins: []
+# database:
+#   pool_size: 10
+#   max_overflow: 5
+
+# -- Path the config override ConfigMap is mounted at inside the container.
+# Must match the image's working directory layout.
+configOverridePath: /app/config-custom/config.override.yaml
+
+secret:
+  # -- Create a Secret from the values below. Set to false and use
+  # `existingSecret` instead for production / GitOps-managed secrets, so
+  # credentials never live in a values file or Helm release history.
+  create: false
+  # -- Full SQLAlchemy async database URL, credentials included, e.g.
+  # "postgresql+asyncpg://mailverdict:<password>@<host>:5432/postimap".
+  # Required -- there is no usable default for an external database.
+  databaseUrl: ""
+  # -- API key clients must present as the `X-API-Key` header on `/api/*`
+  # and `/mcp`. Required for anything reachable outside a trusted network --
+  # see the chart README's auth model section. Leaving it empty disables
+  # auth entirely (dev mode); do not do this on a public ingress.
+  apiKey: ""
+  # -- Anthropic API key for spam classification and rule enrichment.
+  # Optional to start the pod, but the spam pipeline and LLM-backed rule
+  # actions fail at call time without it.
+  anthropicApiKey: ""
+
+# -- Name of a pre-existing Secret to use instead of `secret.create`. Must
+# contain the keys named in `existingSecretKeys` below.
+existingSecret: ""
+
+existingSecretKeys:
+  databaseUrl: MAIL_VERDICT_DATABASE_URL
+  apiKey: MAIL_VERDICT_API_KEY
+  anthropicApiKey: ANTHROPIC_API_KEY
+
+ingress:
+  # -- Browser-facing ingress. Expected to sit behind a ForwardAuth (or
+  # equivalent) middleware that handles login and injects the `X-API-Key`
+  # header -- the app itself has no login page. See the chart README for a
+  # worked Traefik example. `annotations` is deliberately free-form: no
+  # identity provider is hard-coded here.
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls:
+    # -- Enable to request a Secret named `tlsSecretName` (or the
+    # ingress-controller default naming) covering `host`.
+    enabled: false
+    secretName: ""
+
+apiIngress:
+  # -- Optional second ingress for programmatic clients (MCP clients,
+  # scripts) that present `X-API-Key` themselves and should NOT sit behind
+  # the browser ForwardAuth middleware. Point this at the same or a
+  # different host/path than `ingress` -- whichever your ForwardAuth
+  # middleware setup does not intercept.
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  path: /
+  pathType: Prefix
+  tls:
+    enabled: false
+    secretName: ""
