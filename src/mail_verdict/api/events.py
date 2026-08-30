@@ -22,12 +22,17 @@ import logging
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 from mail_verdict.api.event_ring import EventRing
+from mail_verdict.database.models import Account
+
+if TYPE_CHECKING:
+    from mail_verdict.database.connection import DatabaseConnection
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +89,28 @@ async def push_verdict_event(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+
+async def broadcast_resync(db: DatabaseConnection, event_ring: EventRing) -> None:
+    """
+    Push a resync event to every account.
+
+    The postimap_events listener's own reconnect calls this once a
+    connection loss ends: any NOTIFY fired during the gap is gone for
+    good, so every currently connected client needs the same "invalidate
+    everything" signal a browser reconnecting with a stale Last-Event-ID
+    already gets from `_sse_generator`'s own gap-detection fallback --
+    this is what reaches the ones whose own SSE connection never dropped
+    at all, and would otherwise keep showing what they had before the gap.
+
+    Args:
+        db: Database connection to read the account list from
+        event_ring: Ring buffer to push the event into
+    """
+    async with db.session() as session:
+        account_ids = (await session.execute(select(Account.id))).scalars().all()
+    for account_id in account_ids:
+        await event_ring.add(account_id, "resync", {})
 
 
 def _format_sse(event_id: int, event_type: str, data: dict[str, Any]) -> str:

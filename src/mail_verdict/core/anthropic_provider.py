@@ -13,6 +13,16 @@ from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 
+# Only the classify stage uses this client, against pipeline_runs' lease
+# (120s by default -- see pipeline/runner.py and settings/defaults.py's
+# "pipeline" category). Half that lease leaves room for a heartbeat to
+# still land and for the row to be written back before the lease would
+# otherwise expire. The SDK's own retries are turned off in favour of the
+# app's single, already-jittered retry layer (core/structured_llm.py,
+# core/retry.py) -- two independent retry loops would only stack latency
+# on top of each other without adding safety.
+REQUEST_TIMEOUT_SECONDS = 60.0
+
 _client: AsyncAnthropic | None = None
 _client_key: str | None = None
 
@@ -33,7 +43,9 @@ def get_anthropic_client(api_key: str | None) -> AsyncAnthropic | None:
         _client_key = None
         return None
     if _client is None or api_key != _client_key:
-        _client = AsyncAnthropic(api_key=api_key)
+        _client = AsyncAnthropic(
+            api_key=api_key, timeout=REQUEST_TIMEOUT_SECONDS, max_retries=0,
+        )
         _client_key = api_key
     return _client
 

@@ -200,8 +200,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 {"id": event.id, "account_id": event.account_id},
             )
 
+    async def _on_postimap_reconnect() -> None:
+        from mail_verdict.api.events import broadcast_resync
+
+        await broadcast_resync(db, event_ring)
+
     _postimap_listener = PostimapListener(dsn)
     _postimap_listener.add_handler(_on_postimap_event)
+    _postimap_listener.add_reconnect_handler(_on_postimap_reconnect)
     await _postimap_listener.start()
     logger.info("PostIMAP event listener started")
 

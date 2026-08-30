@@ -98,5 +98,14 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "neighbor_hints_enabled": False,
         "neighbor_k": 5,
         "neighbor_min_similarity": 0.75,
+        # Retry backoff for a retryable provider error that is specific to
+        # one payload (a connection drop, a 5xx, a timeout) rather than a
+        # shared-resource throttle -- full jitter, see queue/backoff.py. A
+        # rate limit is never capped by this: that is provider-wide, not
+        # the item's fault, and release_untouched leaves it retryable
+        # forever, the same way an unconfigured key is.
+        "max_attempts": 5,
+        "base_delay_seconds": 2.0,
+        "max_delay_seconds": 60.0,
     },
 }

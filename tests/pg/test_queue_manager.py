@@ -9,11 +9,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import Table, text
 
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.queue.manager import QueueManager
 from mail_verdict.queue.supervisor import WorkerBody
 from mail_verdict.queue.work_queue import WorkQueue
@@ -107,6 +109,67 @@ class TestUnregisteredQueue:
         manager = QueueManager(migrated_db)
         with pytest.raises(KeyError):
             await manager.set_state("nope", state="paused")
+
+
+class TestResetCircuit:
+    @pytest.mark.asyncio
+    async def test_forces_a_suspended_breaker_closed(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """The operator's manual recovery path: right after a missing or
+        rejected credential is fixed, this closes the breaker immediately
+        rather than waiting out its own probe interval."""
+        name = f"queue-{uuid.uuid4().hex[:8]}"
+        circuit_name = f"provider-{uuid.uuid4().hex[:8]}"
+        manager = QueueManager(migrated_db)
+        manager.register(
+            name, throwaway_queue_table,
+            _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table)),
+            circuit_name=circuit_name,
+        )
+        breaker = CircuitBreaker(migrated_db, circuit_name)
+        await breaker.record_unavailable(
+            reason="no key configured", probe_interval=timedelta(minutes=5),
+        )
+        assert (await breaker.status()).state == CircuitState.SUSPENDED
+
+        summary = await manager.reset_circuit(name)
+
+        assert summary.circuit.state == CircuitState.CLOSED
+        assert (await breaker.status()).state == CircuitState.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_resets_the_breaker_the_queue_is_actually_registered_under(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """Resetting queue A must never touch queue B's breaker, even when
+        both happen to be suspended -- the reset is scoped by the queue's
+        own registered circuit_name, not by name alone."""
+        name_a = f"queue-{uuid.uuid4().hex[:8]}"
+        name_b = f"queue-{uuid.uuid4().hex[:8]}"
+        circuit_a = f"provider-{uuid.uuid4().hex[:8]}"
+        circuit_b = f"provider-{uuid.uuid4().hex[:8]}"
+        manager = QueueManager(migrated_db)
+        body = _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table))
+        manager.register(name_a, throwaway_queue_table, body, circuit_name=circuit_a)
+        manager.register(name_b, throwaway_queue_table, body, circuit_name=circuit_b)
+        for circuit_name in (circuit_a, circuit_b):
+            await CircuitBreaker(migrated_db, circuit_name).record_unavailable(
+                reason="no key configured", probe_interval=timedelta(minutes=5),
+            )
+
+        await manager.reset_circuit(name_a)
+
+        assert (await CircuitBreaker(migrated_db, circuit_a).status()).state == CircuitState.CLOSED
+        assert (
+            await CircuitBreaker(migrated_db, circuit_b).status()
+        ).state == CircuitState.SUSPENDED
+
+    @pytest.mark.asyncio
+    async def test_of_an_unknown_name_raises(self, migrated_db: DatabaseConnection) -> None:
+        manager = QueueManager(migrated_db)
+        with pytest.raises(KeyError):
+            await manager.reset_circuit("nope")
 
 
 class TestPersistedState:

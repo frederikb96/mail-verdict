@@ -717,6 +717,10 @@ class QueuePatchRequest(BaseModel):
     state: Literal["running", "paused"] | None = None
     concurrency: int | None = Field(default=None, ge=0)
     batch_size: int | None = Field(default=None, ge=1)
+    # Forces the queue's circuit breaker closed immediately, rather than
+    # waiting for its own probe schedule -- the manual recovery path right
+    # after a missing or rejected credential has just been fixed.
+    reset_circuit: bool = False
 
 
 # --- Semantic layer schemas ---

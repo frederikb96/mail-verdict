@@ -9,6 +9,7 @@ DDL on a PostIMAP-owned table -- this channel is the entire event surface.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable, Coroutine
@@ -24,6 +25,18 @@ CHANNEL = "postimap_events"
 KEEPALIVE_INTERVAL_S = 30
 RECONNECT_DELAY_S = 5
 RECONNECT_MAX_DELAY_S = 60
+
+# A bounded pool of dispatch workers draining a queue, rather than one
+# asyncio task per event: during a sync burst a NOTIFY channel can fire
+# thousands of events, and each handler call typically does a database
+# write, so unbounded concurrency there would starve the HTTP handlers
+# sharing the same connection pool (roughly fifteen connections). Bounding
+# it also means every event in flight is held by the queue itself until a
+# worker picks it up, rather than by a bare task object nothing else
+# references -- an unreferenced asyncio.Task is eligible for garbage
+# collection mid-flight, which would drop the event it was dispatching.
+DISPATCH_CONCURRENCY = 4
+DISPATCH_QUEUE_MAXSIZE = 10_000
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,7 @@ class PostimapEvent:
 
 
 EventHandler = Callable[[PostimapEvent], Coroutine[Any, Any, None]]
+ReconnectHandler = Callable[[], Coroutine[Any, Any, None]]
 
 
 class PostimapListener:
@@ -87,7 +101,10 @@ class PostimapListener:
         self._conn: asyncpg.Connection | None = None
         self._task: asyncio.Task[None] | None = None
         self._handlers: list[EventHandler] = []
+        self._reconnect_handlers: list[ReconnectHandler] = []
         self._running = False
+        self._queue: asyncio.Queue[PostimapEvent] = asyncio.Queue(maxsize=DISPATCH_QUEUE_MAXSIZE)
+        self._dispatch_tasks: list[asyncio.Task[None]] = []
 
     def add_handler(self, handler: EventHandler) -> None:
         """
@@ -98,6 +115,22 @@ class PostimapListener:
         """
         self._handlers.append(handler)
 
+    def add_reconnect_handler(self, handler: ReconnectHandler) -> None:
+        """
+        Register a callback run once a reconnect succeeds.
+
+        A reconnect loses any NOTIFY fired during the gap (see
+        _keepalive's docstring) -- this is where a caller broadcasts the
+        "invalidate everything" signal every currently connected client
+        needs, not only one whose own SSE connection happens to drop and
+        later replay a stale Last-Event-ID.
+
+        Args:
+            handler: Async callable taking no arguments, run once per
+                successful reconnect
+        """
+        self._reconnect_handlers.append(handler)
+
     async def start(self) -> None:
         """Start listening on postimap_events."""
         self._running = True
@@ -106,6 +139,10 @@ class PostimapListener:
         logger.info("PostIMAP event listener active", extra={"channel": CHANNEL})
 
         self._task = asyncio.create_task(self._keepalive(), name="postimap-listener-keepalive")
+        self._dispatch_tasks = [
+            asyncio.create_task(self._dispatch_loop(), name=f"postimap-listener-dispatch-{i}")
+            for i in range(DISPATCH_CONCURRENCY)
+        ]
 
     async def stop(self) -> None:
         """Stop listening and close the connection."""
@@ -117,6 +154,13 @@ class PostimapListener:
             except asyncio.CancelledError:
                 pass
             self._task = None
+
+        for dispatch_task in self._dispatch_tasks:
+            dispatch_task.cancel()
+        for dispatch_task in self._dispatch_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await dispatch_task
+        self._dispatch_tasks = []
 
         if self._conn:
             try:
@@ -134,7 +178,15 @@ class PostimapListener:
         channel: str,
         payload: str,
     ) -> None:
-        """Handle a raw NOTIFY callback -- parse and dispatch asynchronously."""
+        """Handle a raw NOTIFY callback -- parse and queue for dispatch.
+
+        A plain (non-async) callback, called synchronously by asyncpg, so
+        this can only enqueue -- it cannot await a dispatch worker picking
+        the event up. `put_nowait` is what keeps that non-blocking; the
+        queue's bound only bites under sustained overload far beyond any
+        realistic burst (see DISPATCH_QUEUE_MAXSIZE), and even then it logs
+        the drop rather than losing the event without a trace.
+        """
         try:
             raw = json.loads(payload)
             event = PostimapEvent.from_payload(raw)
@@ -142,8 +194,26 @@ class PostimapListener:
             logger.warning("Invalid postimap_events payload: %s", payload, exc_info=True)
             return
 
-        for handler in self._handlers:
-            asyncio.create_task(self._safe_dispatch(handler, event))
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning(
+                "postimap_events dispatch queue full, dropping event",
+                extra={"event_type": event.type, "event_id": event.id},
+            )
+
+    async def _dispatch_loop(self) -> None:
+        """One of DISPATCH_CONCURRENCY consumers draining the queue, each
+        handler run in turn for a given event -- bounding how many handler
+        calls (each typically a database write) are in flight at once,
+        however many events a burst enqueues."""
+        while True:
+            event = await self._queue.get()
+            try:
+                for handler in self._handlers:
+                    await self._safe_dispatch(handler, event)
+            finally:
+                self._queue.task_done()
 
     async def _safe_dispatch(self, handler: EventHandler, event: PostimapEvent) -> None:
         """Dispatch an event to a handler with error isolation."""
@@ -198,11 +268,22 @@ class PostimapListener:
                 self._conn = await asyncpg.connect(self._dsn)
                 await self._conn.add_listener(CHANNEL, self._on_notify)
                 logger.info("postimap_events listener reconnected")
+                await self._notify_reconnect_handlers()
                 return
             except Exception:
                 logger.exception("postimap_events reconnect failed, retrying in %ss", delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, RECONNECT_MAX_DELAY_S)
+
+    async def _notify_reconnect_handlers(self) -> None:
+        """Run every registered reconnect handler, isolating one's failure
+        from the rest -- the same error-isolation _safe_dispatch gives
+        ordinary event handlers."""
+        for handler in self._reconnect_handlers:
+            try:
+                await handler()
+            except Exception:
+                logger.exception("Error in postimap_events reconnect handler")
 
 
 def parse_dsn_from_sqlalchemy_url(url: str) -> str:
