@@ -17,6 +17,7 @@ and the spam/rules consumers that listener drives.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -202,9 +203,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await event_ring.add(account_uuid, "account.changed", {"id": event.id, "op": event.op})
 
         elif event.type == "outbox":
-            await event_ring.add(
-                account_uuid, "outbox.updated", {"id": event.id, "changed": list(event.changed)},
-            )
+            outbox_data = await _outbox_event_payload(db, event)
+            await event_ring.add(account_uuid, "outbox.updated", outbox_data)
 
     dsn = parse_dsn_from_sqlalchemy_url(config.database.url)
     _postimap_listener = PostimapListener(dsn)
@@ -271,6 +271,43 @@ async def _check_contract(db: Any) -> bool:
         extra={"contract_version": info.contract_version, "service_version": info.service_version},
     )
     return True
+
+
+async def _outbox_event_payload(db: Any, event: Any) -> dict[str, Any]:
+    """
+    Build the outbox.updated SSE payload, re-reading the row's current status/kind.
+
+    The raw NOTIFY only names which columns changed, never their new values
+    -- the UI's send/fail/dead toasts and the Sent-folder refresh all key
+    off the current status, so it's re-read here rather than forwarded raw.
+
+    Args:
+        db: The initialized DatabaseConnection
+        event: The parsed outbox PostimapEvent
+
+    Returns:
+        SSE payload with id and changed, plus status and kind when the row
+        still exists
+    """
+    from sqlalchemy import select
+
+    from mail_verdict.database.models import Outbox
+
+    data: dict[str, Any] = {"id": event.id, "changed": list(event.changed)}
+    try:
+        outbox_id = uuid.UUID(event.id)
+    except ValueError:
+        return data
+
+    async with db.session() as session:
+        result = await session.execute(
+            select(Outbox.status, Outbox.kind).where(Outbox.id == outbox_id)
+        )
+        row = result.one_or_none()
+    if row is not None:
+        data["status"] = row.status
+        data["kind"] = row.kind
+    return data
 
 
 def _build_fastapi() -> FastAPI:

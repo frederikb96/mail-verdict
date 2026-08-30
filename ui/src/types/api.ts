@@ -238,6 +238,8 @@ export type SSEEventType =
 
 export interface SSEEvent {
   event_type?: string;
+  /** The row's own id -- present on mail.*, verdict.issued (also as message_id) and outbox.updated. */
+  id?: string;
   account_id?: string;
   folder_id?: string;
   folder_name?: string;
@@ -248,6 +250,8 @@ export interface SSEEvent {
   is_spam?: boolean;
   source?: string;
   status?: OutboxStatus;
+  /** Outbox row kind, e.g. "send" or "draft". */
+  kind?: string;
   /** Fields that changed on a mail.updated event, e.g. ["imap_uid"] confirms a move. */
   changed?: string[];
   /** "sync" = PostIMAP-originated, "app" = echo of our own write. */
@@ -388,7 +392,7 @@ export interface SyncStatusResponse {
 // --- Outbox (send / draft) ---
 
 export type OutboxKind = "send" | "draft";
-export type OutboxStatus = "queued" | "sending" | "sent" | "failed" | "dead";
+export type OutboxStatus = "pending" | "processing" | "sent" | "failed" | "dead";
 
 export interface OutboxCreateRequest {
   account_id: string;

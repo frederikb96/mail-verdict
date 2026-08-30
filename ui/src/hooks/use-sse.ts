@@ -12,6 +12,7 @@ import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
+import { mailKeys } from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
 import type { OutboxStatus, SSEEvent } from "@/types/api";
 
@@ -19,8 +20,8 @@ const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 
 const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" | "warning" | "error" } | null> = {
-  queued: null,
-  sending: null,
+  pending: null,
+  processing: null,
   sent: { message: "Message sent", variant: "success" },
   failed: { message: "Sending failed, retrying", variant: "warning" },
   dead: {
@@ -107,10 +108,11 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
-          if (data.message_id) {
-            queryClient.invalidateQueries({
-              queryKey: ["mail", data.message_id],
-            });
+          // Message events carry the row's id as `id`, not `message_id`
+          // (that name is verdict.issued's own convention).
+          if (data.id) {
+            queryClient.invalidateQueries({ queryKey: ["mail", data.id] });
+            queryClient.invalidateQueries({ queryKey: mailKeys.thread(data.id) });
           }
           queryClient.invalidateQueries({ queryKey: ["mails"] });
           invalidateAllFolderCaches(queryClient);
