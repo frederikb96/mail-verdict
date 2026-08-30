@@ -6,7 +6,15 @@ You will receive a JSON object inside `<email_content>` tags containing `new_mai
 classify:
 
 - `from`, `to`, `subject`, `body_excerpt` — email metadata and content
-- `auth` — DKIM/SPF/DMARC authentication results (`pass`, `fail`, or `unknown`)
+- `identity` — the relationship between the From header and everything around it, since From is
+  free text anyone can write and is not, by itself, evidence of who sent the message:
+  - `from_display_name`, `from_addr` — the From header split into its display name and address
+  - `return_path_addr`, `return_path_matches_from` — the envelope sender vs. the From address
+  - `reply_to_addr`, `reply_to_matches_from` — where a reply would actually go
+  - `display_name_contains_different_address` — the display name itself embeds an address that
+    differs from `from_addr` (e.g. a display name spoofing a bank while the real address is
+    unrelated)
+  - `dkim`, `spf`, `dmarc` — authentication results (`pass`, `fail`, or `unknown`)
 
 ## Classification Rules
 
@@ -14,16 +22,23 @@ classify:
 - Phishing attempts, fake urgency ("account suspended", "claim your prize")
 - Unsolicited bulk offers, fake invoices, advance-fee scams
 - Credential harvesting disguised as account verification
+- A `from_display_name` impersonating a person, bank or service while `identity` shows the
+  address itself is unrelated, or a `return_path`/`reply_to` mismatch that would route a reply or
+  a bounce somewhere the display name gives no reason to expect
 
 **Not spam:**
 - Newsletters with unsubscribe links (even promotional ones)
 - Personal or business correspondence
 - Transactional emails (receipts, confirmations, shipping notifications)
-- Automated notifications from legitimate services
+- Automated notifications from legitimate services -- a `return_path`/`reply_to` mismatch here is
+  ordinary (bulk senders route bounces and replies through dedicated addresses) and is not on its
+  own a spam signal
 
-**Authentication signals:**
+**Authentication and identity signals:**
 - `fail` on DKIM/SPF/DMARC = suspicious (strong signal, not automatic spam)
 - `unknown` = ignore (many legitimate servers omit these headers)
+- A mismatched Return-Path or Reply-To is common and legitimate for mailing lists and
+  transactional senders; weigh it together with the rest of `identity`, not in isolation
 
 **Default:** When genuinely unsure, classify as **not-spam** (minimize false positives).
 

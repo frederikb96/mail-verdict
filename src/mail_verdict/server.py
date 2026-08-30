@@ -49,19 +49,22 @@ logger = logging.getLogger(__name__)
 
 _postimap_listener: PostimapListener | None = None
 _spam_processor: Any | None = None
-_rules_engine: Any | None = None
+_queue_manager: Any | None = None
+_pipeline_notifier: Any | None = None
+_pipeline_reconciler: Any | None = None
 _contract_ok: bool = False
 
 
 def get_spam_processor() -> Any | None:
-    """Get the global spam processor (for the feedback endpoint)."""
+    """Get the global spam feedback listener (for the feedback endpoint)."""
     return _spam_processor
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifespan context manager -- initializes all components via DI."""
-    global _postimap_listener, _spam_processor, _rules_engine, _contract_ok
+    global _postimap_listener, _spam_processor, _contract_ok
+    global _queue_manager, _pipeline_notifier, _pipeline_reconciler
 
     config = get_config()
 
@@ -91,64 +94,52 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_event_ring(event_ring)
     logger.info("EventRing initialized")
 
-    # The spam processor and rules engine are always constructed -- neither
-    # is gated on a setting at startup. Each consults current settings on
-    # every event it handles (VerdictPipeline re-checks spam.enabled per
-    # message, RulesEngine re-parses the rule list per event), so enabling
-    # spam detection or adding a first rule through the settings API takes
-    # effect on the next message rather than the next restart.
+    # The feedback listener is always constructed -- it is not gated on a
+    # setting at startup, since the pipeline itself (and its classify
+    # stage's own account_spam_enabled check) is what decides whether
+    # anything gets classified; the listener only ever reacts to a folder
+    # move, and a move can happen whether or not spam detection is on.
     from mail_verdict.database.repository import (
         AccountPrefsRepository,
         FolderRepository,
-        MessageRepository,
-        TagRepository,
         VerdictRepository,
     )
-    from mail_verdict.rules.engine import RulesEngine
-    from mail_verdict.rules.enrichment import EnrichmentRunner
-    from mail_verdict.rules.executor import ActionExecutor
-    from mail_verdict.spam.analyst import LiveSpamAnalyst
+    from mail_verdict.pipeline.enqueue import (
+        build_reconciliation_timer,
+        enqueue_live_arrival,
+        record_folder_watermark,
+    )
+    from mail_verdict.pipeline.runner import PipelineRunner
+    from mail_verdict.queue.manager import init_queue_manager
+    from mail_verdict.queue.notify import WorkQueueNotifier
     from mail_verdict.spam.feedback import SpamFeedbackHandler
-    from mail_verdict.spam.pipeline import VerdictPipeline
-    from mail_verdict.spam.processor import SpamEventProcessor
+    from mail_verdict.spam.processor import SpamFeedbackListener
 
     verdict_repo = VerdictRepository(db)
-    message_repo = MessageRepository(db)
     folder_repo = FolderRepository(db)
     account_prefs_repo = AccountPrefsRepository(db)
     feedback = SpamFeedbackHandler(verdict_repo)
-    analyst = LiveSpamAnalyst(settings_service, cred_repo)
+    _spam_processor = SpamFeedbackListener(feedback=feedback, folder_repo=folder_repo)
+    logger.info("Spam feedback listener initialized")
 
-    pipeline = VerdictPipeline(
-        settings_service=settings_service,
-        analyst=analyst,
-        verdict_repo=verdict_repo,
-        folder_repo=folder_repo,
-        account_prefs_repo=account_prefs_repo,
-        db=db,
-    )
-    _spam_processor = SpamEventProcessor(
-        pipeline=pipeline,
-        feedback=feedback,
-        message_repo=message_repo,
-        folder_repo=folder_repo,
-        db=db,
-    )
-    logger.info("Spam processor initialized")
+    dsn = parse_dsn_from_sqlalchemy_url(config.database.url)
+    _pipeline_notifier = WorkQueueNotifier(dsn)
+    await _pipeline_notifier.start()
 
-    tag_repo = TagRepository(db)
-    enrichment_runner = EnrichmentRunner(settings_service, cred_repo)
-    action_executor = ActionExecutor(tag_repo=tag_repo, folder_repo=folder_repo)
-    _rules_engine = RulesEngine(
-        settings_service=settings_service,
-        action_executor=action_executor,
-        enrichment_runner=enrichment_runner,
-        db=db,
+    _queue_manager = init_queue_manager(db)
+    pipeline_runner = PipelineRunner(
+        db, settings_service, cred_repo, account_prefs_repo, event_ring, _pipeline_notifier,
     )
-    logger.info("Rules engine initialized")
+    pipeline_runner.register(_queue_manager)
+    await _queue_manager.start()
+    logger.info("Pipeline runner registered and queue manager started")
+
+    _pipeline_reconciler = build_reconciliation_timer(db, settings_service)
+    await _pipeline_reconciler.start()
 
     async def _on_postimap_event(event: Any) -> None:
-        """Dispatch a parsed postimap_events payload to EventRing, spam, and rules."""
+        """Dispatch a parsed postimap_events payload to EventRing, the
+        pipeline's live-arrival enqueue, and the spam feedback listener."""
         import uuid as _uuid
 
         try:
@@ -162,24 +153,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             }
             if event.op == "insert":
                 await event_ring.add(account_uuid, "mail.new", sse_data)
-                if _spam_processor:
-                    await _spam_processor.handle_message_event(event)
-                if _rules_engine:
-                    await _rules_engine.handle_message_event(
-                        {"op": "insert", **sse_data},
-                    )
+                if event.origin == "sync":
+                    await enqueue_live_arrival(db, event)
             elif event.op == "update":
                 await event_ring.add(
                     account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},
                 )
                 if _spam_processor:
                     await _spam_processor.handle_message_event(event)
-                if _rules_engine:
-                    await _rules_engine.handle_message_event({"op": "update", **sse_data})
             elif event.op == "delete":
                 await event_ring.add(account_uuid, "mail.deleted", sse_data)
-                if _rules_engine:
-                    await _rules_engine.handle_message_event({"op": "delete", **sse_data})
 
         elif event.type == "folder":
             if event.op == "sync_complete":
@@ -187,6 +170,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     account_uuid, "folder.synced",
                     {"folder_id": event.folder_id, "backfill": event.backfill},
                 )
+                await record_folder_watermark(db, event)
             else:
                 await event_ring.add(account_uuid, "folder.changed", {"folder_id": event.folder_id})
 
@@ -197,7 +181,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             outbox_data = await _outbox_event_payload(db, event)
             await event_ring.add(account_uuid, "outbox.updated", outbox_data)
 
-    dsn = parse_dsn_from_sqlalchemy_url(config.database.url)
     _postimap_listener = PostimapListener(dsn)
     _postimap_listener.add_handler(_on_postimap_event)
     await _postimap_listener.start()
@@ -211,9 +194,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     if _postimap_listener:
         await _postimap_listener.stop()
+    if _pipeline_reconciler:
+        await _pipeline_reconciler.stop()
+    if _queue_manager:
+        await _queue_manager.stop()
+    if _pipeline_notifier:
+        await _pipeline_notifier.stop()
 
     _spam_processor = None
-    _rules_engine = None
+    _queue_manager = None
+    _pipeline_notifier = None
+    _pipeline_reconciler = None
     _contract_ok = False
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider

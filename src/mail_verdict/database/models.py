@@ -593,3 +593,95 @@ class CircuitBreakerState(Base):
         onupdate=_utcnow,
         server_default=func.now(),
     )
+
+
+class PipelineRun(Base):
+    """One message's journey through the pipeline -- also the queue row
+    claimed by queue/work_queue.py's generic engine, and the durable
+    record that the journey happened at all.
+
+    `dedup_key` is what makes "exactly one live run per message, ever"
+    hold: live mail always dedups to the literal string 'live', so a
+    second insert attempt for the same (account_id, msg_key) is absorbed
+    by `uq_pipeline_run` rather than producing a duplicate journey. A
+    sweep (not built by this revision) would dedup to its own id instead.
+    """
+
+    __tablename__ = "pipeline_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    sweep_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    dedup_key: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    apply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    skip_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    pipeline_rev: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    halted_at_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failed_stage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trace: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
+    model_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow,
+        onupdate=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "msg_key", "dedup_key", name="uq_pipeline_run"),
+        Index("idx_pipeline_run_claim", "priority", "next_attempt_at"),
+        Index("idx_pipeline_run_lease", "lease_expires_at"),
+        Index("idx_pipeline_run_failed", "account_id", "finished_at"),
+        Index("idx_pipeline_run_sweep", "sweep_id"),
+    )
+
+
+class PipelineRevision(Base):
+    """One revision of the pipeline definition -- append-only, current
+    definition is `max(revision)`. See pipeline/revisions.py.
+    """
+
+    __tablename__ = "pipeline_revisions"
+
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
+class PipelineFolderState(Base):
+    """MailVerdict's own watermark, per folder: when its first full sync
+    completed. `folders.initial_sync_done` is a boolean with no timestamp,
+    which is why this needs to be a column of our own -- reconciliation
+    has to tell "arrived while disconnected" (must be enqueued) from
+    "historical" (must never be), and only a timestamp can do that. See
+    pipeline/enqueue.py.
+    """
+
+    __tablename__ = "pipeline_folder_state"
+
+    folder_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    backfill_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )

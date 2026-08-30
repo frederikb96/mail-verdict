@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Save, Loader2, Bot, ShieldAlert, Repeat, FileCode, Sun, Moon, Monitor } from "lucide-react";
+import { Save, Loader2, Bot, ShieldAlert, Repeat, Sun, Moon, Monitor } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,11 +15,13 @@ import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
 import { UnifiedOrder } from "@/components/settings/unified-order";
 
+// "rules" is not a settings category any more -- a rule is a `match` stage
+// in the pipeline now, edited through the pipeline definition rather than
+// a raw settings JSON blob.
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
   { key: "spam", label: "Spam", icon: ShieldAlert },
   { key: "retry", label: "Retry", icon: Repeat },
-  { key: "rules", label: "Rules", icon: FileCode },
 ] as const;
 
 function SettingField({
