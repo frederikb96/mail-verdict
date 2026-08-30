@@ -716,6 +716,54 @@ class FolderRepository:
             )
             return result.scalar_one_or_none()
 
+    async def get_effective_special_use(self, folder_id: uuid.UUID) -> str | None:
+        """
+        Get a folder's effective special_use: folder_prefs override, or the raw value.
+
+        folder_prefs.special_use_override exists for servers that don't
+        advertise SPECIAL-USE -- reading Folder.special_use raw here would
+        make a folder that only has an override invisible to this check.
+
+        Args:
+            folder_id: Folder UUID
+
+        Returns:
+            Effective special_use role, or None if unset either way
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(func.coalesce(FolderPrefs.special_use_override, Folder.special_use))
+                .select_from(Folder)
+                .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+                .where(Folder.id == folder_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def resolve_special_folder(
+        self, account_id: uuid.UUID, role: str,
+    ) -> uuid.UUID | None:
+        """
+        Resolve a folder by its effective special_use (override or raw).
+
+        Args:
+            account_id: Account to look up
+            role: Folder role key (e.g., "archive", "junk", "trash", "inbox")
+
+        Returns:
+            Folder UUID or None if no folder has that effective role
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Folder.id)
+                .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+                .where(
+                    Folder.account_id == account_id,
+                    func.coalesce(FolderPrefs.special_use_override, Folder.special_use) == role,
+                )
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
+
 
 class AttachmentRepository:
     """Repository for Attachment read operations."""

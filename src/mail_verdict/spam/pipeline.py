@@ -30,6 +30,7 @@ from mail_verdict.spam.analyst import AnalysisContext, SpamAnalyst
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.database.repository import (
+        AccountPrefsRepository,
         FolderRepository,
         VerdictRepository,
     )
@@ -52,6 +53,7 @@ class VerdictPipeline:
         analyst: SpamAnalyst,
         verdict_repo: VerdictRepository,
         folder_repo: FolderRepository,
+        account_prefs_repo: AccountPrefsRepository,
         db: DatabaseConnection,
     ) -> None:
         """
@@ -62,12 +64,14 @@ class VerdictPipeline:
             analyst: LLM spam analyst
             verdict_repo: Verdict persistence
             folder_repo: Folder repository, for junk-folder resolution
+            account_prefs_repo: Account prefs, for the per-account spam_enabled gate
             db: Database connection for direct SQL updates
         """
         self._settings = settings_service
         self._analyst = analyst
         self._verdict_repo = verdict_repo
         self._folder_repo = folder_repo
+        self._account_prefs_repo = account_prefs_repo
         self._db = db
 
     async def process_message(self, msg: Message, folder: Folder) -> bool | None:
@@ -87,7 +91,12 @@ class VerdictPipeline:
         if not spam_settings.get("enabled", False):
             return None
 
-        effective_special_use = folder.special_use
+        account_prefs = await self._account_prefs_repo.get_by_account(msg.account_id)
+        if account_prefs is None or not account_prefs.spam_enabled:
+            logger.debug("Spam detection disabled for account %s, skipping", msg.account_id)
+            return None
+
+        effective_special_use = await self._folder_repo.get_effective_special_use(folder.id)
         if effective_special_use in _SKIP_FOLDER_SPECIAL_USE or msg.is_draft:
             logger.debug(
                 "Skipping spam check for %s folder", effective_special_use or folder.imap_name,
@@ -178,7 +187,7 @@ class VerdictPipeline:
 
     async def _resolve_junk_folder(self, account_id: uuid.UUID) -> uuid.UUID | None:
         """
-        Resolve the junk folder UUID for an account by special_use.
+        Resolve the junk folder UUID for an account by its effective special_use.
 
         Args:
             account_id: Account UUID
@@ -186,9 +195,7 @@ class VerdictPipeline:
         Returns:
             Junk folder UUID or None if not found
         """
-        folders = await self._folder_repo.get_by_account(account_id)
-        junk = next((f for f in folders if f.special_use == "junk"), None)
-        return junk.id if junk else None
+        return await self._folder_repo.resolve_special_folder(account_id, "junk")
 
 
 def _format_addr_list(addrs: Any) -> str | None:

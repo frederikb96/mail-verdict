@@ -89,8 +89,15 @@ class TestVerdictPipeline:
         settings_service: MagicMock | None = None,
         verdict_is_spam: bool = False,
         existing_ai_verdict: bool = False,
+        account_spam_enabled: bool | None = True,
     ) -> tuple[VerdictPipeline, dict[str, MagicMock]]:
-        """Create pipeline with mock dependencies, return (pipeline, mocks)."""
+        """
+        Create pipeline with mock dependencies, return (pipeline, mocks).
+
+        account_spam_enabled=None simulates no account_prefs row at all
+        (get_by_account returns None); the gate must fail closed on that,
+        the same as an explicit False.
+        """
         settings_service = settings_service or _make_settings_service()
 
         analyst = MagicMock()
@@ -107,6 +114,15 @@ class TestVerdictPipeline:
 
         folder_repo = MagicMock()
         folder_repo.get_by_account = AsyncMock(return_value=[])
+        # Overridden per-test (via mocks["folder_repo"].get_effective_special_use)
+        # to match whatever special_use the test's _make_folder() carries.
+        folder_repo.get_effective_special_use = AsyncMock(return_value=None)
+
+        account_prefs_repo = MagicMock()
+        prefs = None
+        if account_spam_enabled is not None:
+            prefs = MagicMock(spam_enabled=account_spam_enabled)
+        account_prefs_repo.get_by_account = AsyncMock(return_value=prefs)
 
         db = MagicMock()
 
@@ -115,10 +131,16 @@ class TestVerdictPipeline:
             analyst=analyst,
             verdict_repo=verdict_repo,
             folder_repo=folder_repo,
+            account_prefs_repo=account_prefs_repo,
             db=db,
         )
 
-        mocks = {"analyst": analyst, "verdict_repo": verdict_repo, "folder_repo": folder_repo}
+        mocks = {
+            "analyst": analyst,
+            "verdict_repo": verdict_repo,
+            "folder_repo": folder_repo,
+            "account_prefs_repo": account_prefs_repo,
+        }
         return pipeline, mocks
 
     @pytest.mark.asyncio
@@ -133,6 +155,7 @@ class TestVerdictPipeline:
     async def test_skip_sent_folder(self) -> None:
         """Returns None for sent folder."""
         pipeline, mocks = self._make_pipeline()
+        mocks["folder_repo"].get_effective_special_use.return_value = "sent"
         result = await pipeline.process_message(_make_message(), _make_folder("sent"))
         assert result is None
         mocks["analyst"].analyze.assert_not_awaited()
@@ -140,9 +163,23 @@ class TestVerdictPipeline:
     @pytest.mark.asyncio
     async def test_skip_drafts_folder(self) -> None:
         """Returns None for drafts folder."""
-        pipeline, _ = self._make_pipeline()
+        pipeline, mocks = self._make_pipeline()
+        mocks["folder_repo"].get_effective_special_use.return_value = "drafts"
         result = await pipeline.process_message(_make_message(), _make_folder("drafts"))
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_skip_folder_override_to_junk(self) -> None:
+        """
+        A folder whose raw special_use is unset but has a folder_prefs override
+        is still gated -- the pipeline must read the effective value, not
+        Folder.special_use directly.
+        """
+        pipeline, mocks = self._make_pipeline()
+        mocks["folder_repo"].get_effective_special_use.return_value = "junk"
+        result = await pipeline.process_message(_make_message(), _make_folder(None))
+        assert result is None
+        mocks["analyst"].analyze.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skip_draft_flag(self) -> None:
@@ -176,3 +213,23 @@ class TestVerdictPipeline:
             result = await pipeline.process_message(_make_message(), _make_folder())
             assert result is True
             mock_move.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_account_spam_disabled_returns_none(self) -> None:
+        """
+        The per-account toggle gates classification independently of the
+        global setting -- spam enabled globally must not classify an
+        account that has explicitly turned it off.
+        """
+        pipeline, mocks = self._make_pipeline(account_spam_enabled=False)
+        result = await pipeline.process_message(_make_message(), _make_folder())
+        assert result is None
+        mocks["analyst"].analyze.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_account_prefs_fails_closed(self) -> None:
+        """No account_prefs row at all must not be treated as opted in."""
+        pipeline, mocks = self._make_pipeline(account_spam_enabled=None)
+        result = await pipeline.process_message(_make_message(), _make_folder())
+        assert result is None
+        mocks["analyst"].analyze.assert_not_awaited()

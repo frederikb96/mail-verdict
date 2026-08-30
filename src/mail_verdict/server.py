@@ -93,6 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if spam_settings.get("enabled", False):
         from mail_verdict.core.retry import RetryConfig as RC
         from mail_verdict.database.repository import (
+            AccountPrefsRepository,
             FolderRepository,
             MessageRepository,
             VerdictRepository,
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         verdict_repo = VerdictRepository(db)
         message_repo = MessageRepository(db)
         folder_repo = FolderRepository(db)
+        account_prefs_repo = AccountPrefsRepository(db)
         feedback = SpamFeedbackHandler(verdict_repo)
 
         pipeline = VerdictPipeline(
@@ -113,6 +115,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             analyst=analyst,
             verdict_repo=verdict_repo,
             folder_repo=folder_repo,
+            account_prefs_repo=account_prefs_repo,
             db=db,
         )
         _spam_processor = SpamEventProcessor(

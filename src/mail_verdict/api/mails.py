@@ -55,7 +55,6 @@ from mail_verdict.core.sanitizer import sanitize_email_html
 from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import (
     Attachment,
-    Folder,
     ImageException,
     ImageExceptionType,
     Message,
@@ -648,7 +647,12 @@ async def _handle_spam_action(
 
 async def _resolve_special_folder(account_id: uuid.UUID, role: str) -> uuid.UUID | None:
     """
-    Resolve a special folder UUID by querying Folder.special_use directly.
+    Resolve a special folder UUID by its effective special_use.
+
+    folder_prefs.special_use_override exists for servers that don't
+    advertise SPECIAL-USE -- matching only the raw Folder.special_use (as
+    list_folders does not) means every trash/archive/spam action fails with
+    "no trash folder found" on exactly the servers the override is for.
 
     Args:
         account_id: Account to look up
@@ -657,14 +661,9 @@ async def _resolve_special_folder(account_id: uuid.UUID, role: str) -> uuid.UUID
     Returns:
         Folder UUID or None if not found
     """
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(
-            select(Folder.id).where(
-                Folder.account_id == account_id, Folder.special_use == role,
-            ).limit(1)
-        )
-        return result.scalar_one_or_none()
+    from mail_verdict.database.repository import FolderRepository
+
+    return await FolderRepository(get_db_connection()).resolve_special_folder(account_id, role)
 
 
 @account_router.post("/bulk-action", response_model=BulkActionResponse)
