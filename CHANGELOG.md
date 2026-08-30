@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-08-30
+
+Supersedes 2.0.0, which could not add an account at all on a deployment connected as the
+consumer role the chart prescribes.
+
 ### Breaking Changes
 
 - **`DELETE /folders/{id}` now requires a `confirm_message_count` query parameter** matching the
