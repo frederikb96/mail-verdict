@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`verdicts.msg_key`:** the durable identity a verdict is keyed on — the message's RFC
+  `Message-ID` header when present, otherwise a hash of its envelope. A message with no header
+  used to skip the never-reclassify gate entirely and be reclassified on every resync; the hash
+  fallback closes that. `verdicts.from_addr` is recorded alongside it and folded into the same
+  partial unique index, so a message forging another's `Message-ID` cannot inherit its verdict.
+- **`queue/` package:** a Postgres-native work-queue engine, parameterised by table rather than by
+  what it queues — claim with `FOR UPDATE SKIP LOCKED`, a lease reclaimed by an advisory-locked
+  reconciliation timer, heartbeat, full-jitter backoff, a persisted named circuit breaker
+  (`closed`/`open`/`suspended`, the last requiring an explicit probe to clear), a `NOTIFY`-based
+  wakeup with a poll fallback, and a supervisor that reconciles a live worker count without a
+  restart. `attempts` increments at claim rather than at failure, so a row that kills its worker
+  every time still exhausts its attempts instead of looping forever. Nothing is wired to a real
+  queue yet — `message_embeddings` and `pipeline_runs` are future work this is built to support
+  unchanged.
+- **`GET/PATCH /api/queues`:** lists and changes a registered queue's state (`running`/`paused`),
+  concurrency and batch size. A `PATCH` raising concurrency above what the database connection
+  pool can actually support is rejected with `400` rather than silently serialising workers.
+- **`queue_state` / `circuit_breakers` tables:** the persisted, restart-surviving half of the
+  queue engine's operator state and circuit breaker health.
+
 ### Changed
 
 - **PostIMAP pinned to 1.5.0**, which adds consumer-driven folder creation and deletion, durable sync notifications, per-folder IMAP push, a draft-replace column, and a per-folder backfill total that gives an initial sync a denominator. Insert grants are now column-level rather than table-level, so writing a PostIMAP-managed column is refused rather than silently accepted. The consumer contract version is unchanged, so every addition is additive.
@@ -14,9 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Verdict durability gate no longer skipped for headerless mail:** the partial unique index
+  moved from `(account_id, message_id_hdr)` to `(account_id, msg_key, coalesce(from_addr, ''))`.
 - **Contract-owned columns are no longer written.** `outbox.status`, `outbox.attempts` and `accounts.state` are managed by PostIMAP, but the ORM models carried Python-side defaults for them, which SQLAlchemy sends on every insert regardless of what the calling code specifies. The tables carry table-level insert grants, so those writes were accepted rather than refused, and only matched PostIMAP's own initial values by coincidence — a divergence would have left outbox rows the processor never claims, so mail would have stopped sending with nothing reporting an error.
 - **Account health:** an account in `error` that has completed a full sync before is shown as `Retrying` rather than as a failure, since PostIMAP retries it unboundedly and it recovers on its own. Only an account that has never once synced is presented as needing attention.
 - **Spam prompt:** removed the description of a `neighbors` input that is never sent, so the classifier is no longer instructed to weigh context it does not receive.
+
 
 ## [1.0.0] - 2026-08-30
 

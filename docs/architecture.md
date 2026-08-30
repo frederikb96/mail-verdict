@@ -112,10 +112,13 @@ Three gates prevent it:
   pipeline.
 - **Folder and account scope.** Only regular and inbox folders are classified, and only for
   accounts where the feature is enabled.
-- **A durable verdict record.** Verdicts are keyed by the account and the message's RFC
-  `Message-ID` header under a unique index. The header is stable across resyncs, so a folder that
-  is fully resynchronised — after a UIDVALIDITY change, say, where rows are recreated with new
-  identifiers — cannot trigger reclassification.
+- **A durable verdict record.** Verdicts are keyed by the account and a `msg_key` under a unique
+  index — the message's RFC `Message-ID` header when it has one, otherwise a hash of its envelope
+  (sender, subject, receipt time, size). Either form is stable across resyncs, so a folder that is
+  fully resynchronised — after a UIDVALIDITY change, say, where rows are recreated with new
+  identifiers — cannot trigger reclassification, including for the messages that have no header at
+  all. The index also constrains the sender: a message forging the `Message-ID` of one already
+  verdicted does not inherit that verdict, it gets its own.
 
 The third gate is what makes this correct rather than merely usual. Backfill suppression only
 applies to a folder's *first* sync, so events from a later resync are indistinguishable from new

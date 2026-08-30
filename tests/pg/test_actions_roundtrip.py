@@ -185,12 +185,12 @@ class TestVerdictDurabilityGate:
     """Tests for the partial unique index backing the never-reclassify gate."""
 
     @pytest.mark.asyncio
-    async def test_second_ai_verdict_for_same_header_is_rejected(
+    async def test_second_ai_verdict_for_same_key_is_rejected(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """A second source=ai verdict for the same (account_id, message_id_hdr) violates
-        the partial unique index -- the durability gate is enforced by the schema, not
-        merely by application code remembering to check first."""
+        """A second source=ai verdict for the same (account_id, msg_key, from_addr)
+        violates the partial unique index -- the durability gate is enforced by the
+        schema, not merely by application code remembering to check first."""
         account_id = uuid.uuid4()
         header = f"<{uuid.uuid4()}@example.com>"
 
@@ -198,7 +198,8 @@ class TestVerdictDurabilityGate:
             session.add(
                 Verdict(
                     mail_id=uuid.uuid4(), account_id=account_id,
-                    message_id_hdr=header, is_spam=False, source=VerdictSource.AI,
+                    message_id_hdr=header, msg_key=header, is_spam=False,
+                    source=VerdictSource.AI,
                 )
             )
 
@@ -207,12 +208,71 @@ class TestVerdictDurabilityGate:
                 session.add(
                     Verdict(
                         mail_id=uuid.uuid4(), account_id=account_id,
-                        message_id_hdr=header, is_spam=True, source=VerdictSource.AI,
+                        message_id_hdr=header, msg_key=header, is_spam=True,
+                        source=VerdictSource.AI,
                     )
                 )
 
     @pytest.mark.asyncio
-    async def test_user_feedback_verdict_for_same_header_is_allowed(
+    async def test_second_ai_verdict_with_no_from_addr_is_still_rejected(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Two AI verdicts sharing a msg_key both without a recorded from_addr still
+        conflict -- Postgres treats NULL as distinct from itself in a unique index,
+        which would otherwise silently exempt exactly the rows the from_addr column
+        exists to protect."""
+        account_id = uuid.uuid4()
+        header = f"<{uuid.uuid4()}@example.com>"
+
+        async with migrated_db.session() as session:
+            session.add(
+                Verdict(
+                    mail_id=uuid.uuid4(), account_id=account_id,
+                    message_id_hdr=header, msg_key=header, from_addr=None,
+                    is_spam=False, source=VerdictSource.AI,
+                )
+            )
+
+        with pytest.raises(IntegrityError):
+            async with migrated_db.session() as session:
+                session.add(
+                    Verdict(
+                        mail_id=uuid.uuid4(), account_id=account_id,
+                        message_id_hdr=header, msg_key=header, from_addr=None,
+                        is_spam=True, source=VerdictSource.AI,
+                    )
+                )
+
+    @pytest.mark.asyncio
+    async def test_same_key_different_sender_is_allowed(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A message forging the Message-ID of an already-verdicted one, but sent by a
+        different sender, is not silently treated as the same message -- it gets its
+        own verdict row instead of being swallowed by the durability gate."""
+        account_id = uuid.uuid4()
+        header = f"<{uuid.uuid4()}@example.com>"
+
+        async with migrated_db.session() as session:
+            session.add(
+                Verdict(
+                    mail_id=uuid.uuid4(), account_id=account_id,
+                    message_id_hdr=header, msg_key=header, from_addr="real@example.com",
+                    is_spam=False, source=VerdictSource.AI,
+                )
+            )
+
+        async with migrated_db.session() as session:
+            session.add(
+                Verdict(
+                    mail_id=uuid.uuid4(), account_id=account_id,
+                    message_id_hdr=header, msg_key=header, from_addr="forged@example.com",
+                    is_spam=True, source=VerdictSource.AI,
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_user_feedback_verdict_for_same_key_is_allowed(
         self, migrated_db: DatabaseConnection,
     ) -> None:
         """The unique index only constrains source=ai -- feedback can still be logged."""
@@ -223,7 +283,8 @@ class TestVerdictDurabilityGate:
             session.add(
                 Verdict(
                     mail_id=uuid.uuid4(), account_id=account_id,
-                    message_id_hdr=header, is_spam=False, source=VerdictSource.AI,
+                    message_id_hdr=header, msg_key=header, is_spam=False,
+                    source=VerdictSource.AI,
                 )
             )
 
@@ -231,7 +292,8 @@ class TestVerdictDurabilityGate:
             session.add(
                 Verdict(
                     mail_id=uuid.uuid4(), account_id=account_id,
-                    message_id_hdr=header, is_spam=True, source=VerdictSource.USER_FEEDBACK,
+                    message_id_hdr=header, msg_key=header, is_spam=True,
+                    source=VerdictSource.USER_FEEDBACK,
                 )
             )
 
