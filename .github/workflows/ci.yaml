@@ -17,6 +17,8 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       ui: ${{ steps.filter.outputs.ui }}
+      image: ${{ steps.filter.outputs.image }}
+      chart: ${{ steps.filter.outputs.chart }}
     steps:
       - uses: actions/checkout@v5
 
@@ -34,6 +36,15 @@ jobs:
               - '.github/workflows/ci.yaml'
             ui:
               - 'ui/**'
+              - '.github/workflows/ci.yaml'
+            image:
+              - 'docker/**'
+              - 'src/**'
+              - 'ui/**'
+              - 'pyproject.toml'
+              - '.github/workflows/ci.yaml'
+            chart:
+              - 'charts/**'
               - '.github/workflows/ci.yaml'
 
   lint:
@@ -125,9 +136,57 @@ jobs:
         working-directory: ui
         run: npm run build
 
+  image:
+    name: Container image builds
+    needs: detect
+    if: ${{ needs.detect.outputs.image == 'true' }}
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built but never pushed: this proves the release will not discover a
+      # broken Dockerfile after the tag has already been created.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: prod
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  chart:
+    name: Helm chart
+    needs: detect
+    if: ${{ needs.detect.outputs.chart == 'true' }}
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+
+      - name: Lint
+        run: helm lint charts/mail-verdict
+
+      - name: Render default and example values
+        run: |
+          set -o pipefail
+          helm template mail-verdict charts/mail-verdict > /dev/null
+          helm template mail-verdict charts/mail-verdict \
+            -f charts/mail-verdict/examples/values-production.yaml > /dev/null
+
+      - name: Reject an unsupported replica count
+        run: |
+          if helm template mail-verdict charts/mail-verdict --set replicaCount=3 > /dev/null 2>&1; then
+            echo "values.schema.json accepted replicaCount=3; the guard is not working"
+            exit 1
+          fi
+
   ci-ok:
     name: CI ok
-    needs: [detect, lint, unit, pg, ui]
+    needs: [detect, lint, unit, pg, ui, image, chart]
     if: ${{ !cancelled() }}
     runs-on: arc-runner-mail-verdict
     steps:
@@ -137,7 +196,9 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.unit.result }}" \
             "${{ needs.pg.result }}" \
-            "${{ needs.ui.result }}"; do
+            "${{ needs.ui.result }}" \
+            "${{ needs.image.result }}" \
+            "${{ needs.chart.result }}"; do
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
               echo "A required job did not succeed: $result"
               exit 1
