@@ -220,3 +220,46 @@ class TestAttributeQuotingCannotBypassBlocking:
         """The remote reference never survives into a live attribute."""
         out = sanitize_email_html(html)
         assert "evil.test" not in out.split("data-x-")[0]
+
+
+class TestContentCannotEscapeItsBox:
+    """A shadow root isolates styles but does not contain layout.
+
+    position:fixed resolves against the viewport, not the element it was
+    rendered into -- so a message could cover the entire application. Wrap
+    that in a link and the renderer's own click handling turns a click
+    anywhere into a navigation the sender chose.
+    """
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            "position:fixed", "position:absolute", "position:sticky",
+            "z-index:99999", "transform:translate(0,-100px)",
+            "top:0", "left:0", "inset:0",
+        ],
+    )
+    def test_escaping_declarations_are_dropped(self, declaration: str) -> None:
+        """Each is removed rather than inspected for a safe value."""
+        prop = declaration.split(":")[0]
+        out = sanitize_email_html(f'<div style="{declaration};color:red">x</div>')
+        assert prop not in out
+        assert "color:red" in out, "ordinary layout must survive"
+
+    def test_a_full_page_overlay_is_defused(self) -> None:
+        """The whole shape, not just one property of it."""
+        out = sanitize_email_html(
+            '<a href="http://evil.test/"><div style="position:fixed;top:0;left:0;'
+            'width:100vw;height:100vh;z-index:9">Click</div></a>'
+        )
+        assert "position" not in out
+        assert "z-index" not in out
+
+    def test_allowing_images_does_not_revive_them(self) -> None:
+        """The preserved original is the stripped one, so restoring is safe."""
+        from mail_verdict.core.image_sanitizer import restore_remote_images
+
+        out = sanitize_email_html(
+            '<div style="position:fixed;background:url(http://evil.test/p.gif)">x</div>'
+        )
+        assert "position" not in restore_remote_images(out)

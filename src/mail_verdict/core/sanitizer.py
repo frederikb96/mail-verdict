@@ -52,6 +52,13 @@ _CSS_URL_RE = re.compile(r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)", re.IGNOR
 
 _LOCAL_URL_PREFIXES = ("cid:", "data:", "about:", "#")
 
+# Positioning, stacking and transforms are how content leaves the box it
+# was rendered into. Nothing in an email needs them.
+_ESCAPING_PROPERTIES = frozenset({
+    "position", "z-index", "transform", "translate", "rotate", "scale",
+    "inset", "top", "right", "bottom", "left",
+})
+
 
 def _rewrite_src(match: re.Match[str]) -> str:
     """Replace src with data-x-src, preserving CID references."""
@@ -80,23 +87,52 @@ def _is_remote(url: str) -> bool:
     return not url.strip().lower().startswith(_LOCAL_URL_PREFIXES)
 
 
-def _rewrite_style(match: re.Match[str], quote: str) -> str:
-    """Neutralise remote url() in a style attribute, keeping the original.
+def _strip_escaping_declarations(style: str) -> str:
+    """Drop the declarations that let a message escape its own box.
 
-    The neutralised declaration stays in place rather than the whole
-    attribute being moved aside, so the element keeps its layout while its
-    remote fetch is dead. The untouched original goes to data-x-style, which
-    is what the image-policy layer restores from once a sender is allowed.
+    A shadow root isolates styles but does not create a containing block, so
+    position:fixed is resolved against the viewport and the message can cover
+    the whole application. Wrapped in a link, every click anywhere then
+    belongs to the sender. Stacking and transforms reach the same end by
+    other routes.
+
+    Message layout does not need any of them, so they are dropped rather
+    than inspected -- a value allowlist is a longer list to keep correct and
+    buys nothing here.
+    """
+    kept = []
+    for declaration in style.split(";"):
+        name = declaration.split(":", 1)[0].strip().lower()
+        if name in _ESCAPING_PROPERTIES:
+            continue
+        if declaration.strip():
+            kept.append(declaration.strip())
+    return "; ".join(kept)
+
+
+def _rewrite_style(match: re.Match[str], quote: str) -> str:
+    """Make one style attribute safe, keeping the original for restoration.
+
+    Two separate concerns. Declarations that let content escape its box are
+    dropped outright and never come back. A remote url() is only neutralised
+    -- the declaration stays in place so layout survives, and the original
+    goes to data-x-style, which the image-policy layer restores from once a
+    sender is allowed.
     """
     style = match.group(1)
-    if not any(_is_remote(url) for url in _CSS_URL_RE.findall(style)):
-        return match.group(0)
+    safe = _strip_escaping_declarations(style)
+    has_remote = any(_is_remote(url) for url in _CSS_URL_RE.findall(safe))
+
+    if not has_remote:
+        if safe == style:
+            return match.group(0)
+        return f"style={quote}{safe}{quote}"
 
     blocked = _CSS_URL_RE.sub(
         lambda m: m.group(0) if not _is_remote(m.group(1)) else "url(about:blank)",
-        style,
+        safe,
     )
-    return f"style={quote}{blocked}{quote} data-x-style={quote}{style}{quote}"
+    return f"style={quote}{blocked}{quote} data-x-style={quote}{safe}{quote}"
 
 
 def _rewrite_remote_images(html: str) -> str:
