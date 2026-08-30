@@ -21,6 +21,18 @@ security:
   # work as a fallback. Generate: python -c "import os; print(os.urandom(32).hex())"
   encryption_key: "${ENCRYPTION_KEY}"
 
+# Limits on an outgoing message's attachments. Both are enforced while the
+# upload is being read, because the cost being bounded is memory: every
+# attachment is held whole to be handed to PostIMAP.
+outbox:
+  # Largest single attachment. Most providers reject well below this.
+  max_attachment_bytes: 26214400
+  # Largest total across one message, and the cap that actually protects the
+  # process -- without it, many acceptable attachments still exhaust memory.
+  max_attachments_total_bytes: 52428800
+  # How many attachments one message may carry.
+  max_attachments: 20
+
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10

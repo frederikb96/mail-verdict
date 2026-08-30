@@ -102,9 +102,10 @@ authoritative list, not repeated here.
 
 Spam classification and rules share one mechanism — see
 ["The message pipeline"](architecture.md#the-message-pipeline). A rule is a `match` stage: a
-condition tree (the same vocabulary as the legacy rules engine — `subject_contains`,
-`sender_domain`, `has_attachment`, `verdict_is`, and more, combinable with `all`/`any`/`not`) plus
-the effects to apply when it matches.
+condition tree (`subject_contains`, `sender_domain`, `has_attachment`, `verdict_is` and more,
+combinable with `all`/`any`/`not`) plus the effects to apply when it matches. `GET
+/api/pipeline/stage-types` returns the full vocabulary as a JSON schema, so a client discovers it
+rather than working from this list.
 
 ```bash
 curl -X POST localhost:8080/api/pipeline/stages -H 'content-type: application/json' -d '{

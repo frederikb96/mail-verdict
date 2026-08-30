@@ -260,6 +260,20 @@ class DatabaseConfig(BaseModel):
         return value
 
 
+class OutboxConfig(BaseModel):
+    """Limits on an outgoing message's attachments.
+
+    Every attachment is held whole in memory to be handed to PostIMAP,
+    so the total and the count matter as much as the single-file size --
+    a per-file limit alone is satisfied by many files that together are
+    not.
+    """
+
+    max_attachment_bytes: int
+    max_attachments_total_bytes: int
+    max_attachments: int
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -275,6 +289,7 @@ class InfraConfig(BaseModel):
 
     server: ServerConfig
     security: SecurityConfig
+    outbox: OutboxConfig
     database: DatabaseConfig
 
 
@@ -303,6 +318,7 @@ def get_config() -> InfraConfig:
             _config_instance = InfraConfig(
                 server=ServerConfig(**(cfg.get("server") or {})),
                 security=SecurityConfig(**(cfg.get("security") or {})),
+                outbox=OutboxConfig(**(cfg.get("outbox") or {})),
                 database=DatabaseConfig(**database_cfg),
             )
         except ValidationError as exc:

@@ -46,7 +46,7 @@ this chart alongside it.
 
 MailVerdict holds per-process in-memory state: the SSE `EventRing` (500 events per account,
 monotonic IDs, replayed by `Last-Event-ID`) and the singleton PostgreSQL `LISTEN`/`NOTIFY`
-consumers that drive the spam pipeline and rules engine both live in exactly one process. A
+consumers that drive the message pipeline both live in exactly one process. A
 second replica would see a disjoint `EventRing` -- breaking SSE replay for any client pinned to
 the other pod by a load balancer -- and would double-process every event on the shared `LISTEN`
 channel, double-classifying mail and double-firing rules.

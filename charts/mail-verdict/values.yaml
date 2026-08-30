@@ -5,7 +5,7 @@
 # MailVerdict holds per-process in-memory state: the SSE EventRing (500
 # events/account, monotonic IDs, replayed by Last-Event-ID) and the
 # singleton PostgreSQL LISTEN/NOTIFY consumers that drive the spam pipeline
-# and rules engine both live in exactly one process. A second replica would
+# both live in exactly one process. A second replica would
 # see a disjoint EventRing (breaking SSE replay for clients pinned to the
 # other pod) and would double-process every event on the shared LISTEN
 # channel. Leave this at 1. `strategy: Recreate` (fixed below, not

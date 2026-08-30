@@ -27,6 +27,7 @@ from mail_verdict.api.schemas import (
     OutboxCreateRequest,
     OutboxResponse,
 )
+from mail_verdict.config import get_config
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import insert_outbox
@@ -35,9 +36,6 @@ from mail_verdict.postimap.contract import read_postimap_info, supports_draft_ed
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/outbox", tags=["outbox"])
-
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
-
 
 _AttachmentTuple = tuple[str, str | None, bytes]
 
@@ -65,15 +63,33 @@ async def _parse_request(
         except ValidationError as exc:
             raise RequestValidationError(exc.errors()) from exc
 
+        limits = get_config().outbox
+        uploads = [v for v in form.getlist("attachments") if isinstance(v, UploadFile)]
+        if len(uploads) > limits.max_attachments:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"{len(uploads)} attachments exceeds the limit of "
+                    f"{limits.max_attachments}"
+                ),
+            )
+
         attachments: list[tuple[str, str | None, bytes]] = []
-        for value in form.getlist("attachments"):
-            if not isinstance(value, UploadFile):
-                continue
+        total = 0
+        for value in uploads:
             content = await value.read()
-            if len(content) > _MAX_ATTACHMENT_BYTES:
+            if len(content) > limits.max_attachment_bytes:
                 raise HTTPException(
                     status_code=413,
                     detail=f"Attachment '{value.filename}' exceeds the size limit",
+                )
+            total += len(content)
+            # Checked as the total grows rather than at the end: the point is
+            # to stop reading, not to discover afterwards how much was read.
+            if total > limits.max_attachments_total_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Attachments exceed the total size limit for one message",
                 )
             attachments.append((value.filename or "attachment", value.content_type, content))
         return payload, attachments
