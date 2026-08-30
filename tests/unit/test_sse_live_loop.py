@@ -8,7 +8,6 @@ relative to a `yield`.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 
 import pytest
@@ -34,6 +33,24 @@ class _CountingRequest:
             return True
         self._remaining -= 1
         return False
+
+
+async def _drain_until(gen: object, needle: str, *, limit: int = 20) -> str:
+    """Pull from the generator until `needle` appears, returning everything read.
+
+    A keepalive is a legitimate yield, and whether one lands before the
+    event is a matter of timing the test does not control -- so treating
+    the very next yield as the event makes the test fail on correct
+    behaviour under load. The race this file exists to catch is set up
+    without any sleep at all; only the ordinary-delivery steps need this.
+    """
+    parts: list[str] = []
+    for _ in range(limit):
+        chunk = await gen.__anext__()  # type: ignore[attr-defined]
+        parts.append(chunk)
+        if needle in chunk:
+            return "".join(parts)
+    raise AssertionError(f"{needle!r} never arrived: {''.join(parts)!r}")
 
 
 class TestSSELiveLoopDoesNotDropEvents:
@@ -77,10 +94,8 @@ class TestSSELiveLoopDoesNotDropEvents:
 
         # Appended once the generator has resumed and is back waiting in
         # the live loop -- ordinary new-event delivery, not the race.
-        task = asyncio.create_task(gen.__anext__())
-        await asyncio.sleep(0.01)
         await ring.add(account_id, "mail.new", {"n": 4})
-        msg3 = await task
+        msg3 = await _drain_until(gen, '"n": 4')
 
         delivered = "".join([msg1, msg2, msg3])
         for n in (2, 3, 4):
@@ -113,10 +128,8 @@ class TestSSELiveLoopDoesNotDropEvents:
 
         collected: list[str] = []
         for n in (10, 11, 12, 13):
-            task = asyncio.create_task(gen.__anext__())
-            await asyncio.sleep(0.01)
             await ring.add(account_id, "mail.new", {"n": n})
-            collected.append(await task)
+            collected.append(await _drain_until(gen, f'"n": {n}'))
 
         delivered = "".join(collected)
         for n in (10, 11, 12, 13):

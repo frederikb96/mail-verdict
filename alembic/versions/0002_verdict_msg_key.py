@@ -43,6 +43,7 @@ def upgrade() -> None:
     op.alter_column("verdicts", "msg_key", nullable=False)
 
     op.drop_index("uq_verdict_ai_account_message_hdr", table_name="verdicts")
+    _drop_duplicate_ai_verdicts()
     op.execute(
         "CREATE UNIQUE INDEX uq_verdict_ai_account_msgkey_from "
         "ON verdicts (account_id, msg_key, coalesce(from_addr, '')) "
@@ -61,12 +62,18 @@ def _backfill_msg_key() -> None:
     """
     bind = op.get_bind()
 
+    # msg_key and from_addr are named in the UPDATE below, so they have to
+    # be declared here too -- a lightweight sa.table() carries only the
+    # columns it is given, and setting one it does not know refuses to
+    # compile rather than failing at the database.
     verdicts = sa.table(
         "verdicts",
         sa.column("id", sa.Uuid),
         sa.column("mail_id", sa.Uuid),
         sa.column("account_id", sa.Uuid),
         sa.column("message_id_hdr", sa.Text),
+        sa.column("msg_key", sa.Text),
+        sa.column("from_addr", sa.Text),
     )
     messages = sa.table(
         "messages",
@@ -114,6 +121,34 @@ def _backfill_msg_key() -> None:
             .where(verdicts.c.id == row.id)
             .values(msg_key=msg_key, from_addr=from_addr)
         )
+
+
+def _drop_duplicate_ai_verdicts() -> None:
+    """Keep the newest AI verdict per (account, msg_key, sender), drop the rest.
+
+    The index about to be built cannot tolerate duplicates, and a database
+    carrying the very bug this migration closes is certain to have them: a
+    message with no Message-ID header skipped the durability gate, so every
+    resync wrote another AI verdict for it, and the old partial index
+    excluded NULL headers so nothing refused them. Those rows all derive the
+    same msg_key from the same message, so they collide exactly.
+
+    The newest is the one to keep -- it is the classification the
+    application last arrived at, and it is what the interface has been
+    showing.
+    """
+    op.execute(
+        """
+        DELETE FROM verdicts v
+        USING verdicts newer
+        WHERE v.source = 'ai'
+          AND newer.source = 'ai'
+          AND v.account_id = newer.account_id
+          AND v.msg_key = newer.msg_key
+          AND coalesce(v.from_addr, '') = coalesce(newer.from_addr, '')
+          AND (v.created_at, v.id) < (newer.created_at, newer.id)
+        """
+    )
 
 
 def downgrade() -> None:

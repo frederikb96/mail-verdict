@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Upgrading a 1.0.0 database that had ever recorded a verdict failed outright.** Migration 0002's
+  backfill sets `msg_key` and `from_addr` through a lightweight table construct that did not declare
+  either column, so it refused to compile the moment there was a row to back-fill. Every test
+  migrated an empty database straight to head, where the backfill loop never runs — the one shape
+  in which a data migration cannot fail.
+- **The same upgrade then aborted on the unique index it builds.** Duplicate AI verdicts are not an
+  unlikely shape there: they are exactly what the 1.0.0 bug this migration closes was producing, so
+  a deployment that needs the migration is the one most likely to carry them. Duplicates are now
+  collapsed to the newest verdict per message and sender before the index is created.
+
 - **Adding an account was impossible on the deployment the chart documents.** `accounts.state_error`
   and `accounts.capabilities` are PostIMAP's to write and carry no grant for a consumer, but neither
   was marked server-managed — and a nullable column with no default of any kind is still named in an
