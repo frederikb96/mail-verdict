@@ -390,3 +390,69 @@ async def test_live_eligibility_respects_the_max_age_guard(migrated_db: Database
         )
         await session.commit()
     assert inserted is False
+
+
+@pytest.mark.asyncio
+async def test_the_upgrade_gives_an_already_synced_folder_a_watermark(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A folder that finished syncing before the watermark table existed.
+
+    The watermark is written from the single event PostIMAP fires when a
+    folder's first sync completes. A folder that completed before this table
+    existed never receives one -- and without it every message arriving there
+    is judged not live-eligible, so it is embedded and then silently never
+    classified. Nothing errors, which is what makes it dangerous.
+
+    A suite that only ever creates fresh folders cannot catch that, because a
+    fresh folder gets its event. So this reproduces the shape directly: a
+    synced folder with no watermark, and the upgrade's own statement.
+    """
+    account_id = uuid.uuid4()
+    folder_id = uuid.uuid4()
+
+    async with migrated_db.session() as session:
+        await session.execute(
+            text(
+                """
+                INSERT INTO accounts (id, name, imap_host, imap_user, imap_password)
+                VALUES (:a, :n, 'imap.example.test', 'someone', '\\x00'::bytea)
+                """
+            ),
+            {"a": account_id, "n": f"watermark-{account_id.hex[:8]}"},
+        )
+        await session.execute(
+            text(
+                """
+                INSERT INTO folders (id, account_id, imap_name, initial_sync_done)
+                VALUES (:f, :a, 'INBOX', true)
+                """
+            ),
+            {"f": folder_id, "a": account_id},
+        )
+
+        before = await session.scalar(
+            text("SELECT count(*) FROM pipeline_folder_state WHERE folder_id = :f"),
+            {"f": folder_id},
+        )
+        assert before == 0, "precondition: this folder has no watermark"
+
+        # The statement the upgrade runs.
+        await session.execute(
+            text(
+                """
+                INSERT INTO pipeline_folder_state (folder_id, account_id, backfill_completed_at)
+                SELECT f.id, f.account_id, now()
+                FROM folders f
+                WHERE f.initial_sync_done AND f.deleted_at IS NULL
+                ON CONFLICT (folder_id) DO NOTHING
+                """
+            )
+        )
+
+        after = await session.scalar(
+            text("SELECT count(*) FROM pipeline_folder_state WHERE folder_id = :f"),
+            {"f": folder_id},
+        )
+
+    assert after == 1, "the upgrade must cover a folder that synced before it"
