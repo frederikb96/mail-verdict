@@ -6,18 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  python:
-    name: Python lint + test
+  lint:
+    name: Lint + type check
     runs-on: arc-runner-mail-verdict
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v6
 
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
@@ -28,16 +32,49 @@ jobs:
       - name: Type check
         run: mypy src/
 
+  unit:
+    name: Unit tests
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
       - name: Unit tests
         run: pytest tests/unit/ -v --tb=short
+
+  pg:
+    name: Postgres + PostIMAP integration tests
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: pg-layer tests
+        run: pytest tests/pg/ -v --tb=short
 
   ui:
     name: UI type check + build
     runs-on: arc-runner-mail-verdict
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -54,3 +91,13 @@ jobs:
       - name: Build
         working-directory: ui
         run: npm run build
+
+  ci-ok:
+    name: CI ok
+    needs: [lint, unit, pg, ui]
+    if: ${{ !cancelled() }}
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - name: Fail if any dependency failed
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1
