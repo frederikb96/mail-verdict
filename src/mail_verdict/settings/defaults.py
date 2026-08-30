@@ -86,8 +86,13 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # (database/models.py) via its own dimensions parameter, so this
         # is never a setting -- changing the column width is a migration.
         "content_chars": 2000,
+        # How many missing-embedding candidates the backfill reconciler
+        # considers per sweep tick (embeddings/worker.py's _reconcile) --
+        # not a queue claim size. The worker itself always claims one row
+        # at a time; see the "embeddings" queue's concurrency instead
+        # (queue_state, changed through the queue API) for how many of
+        # those run in parallel.
         "batch_size": 64,
-        "concurrency": 2,
         # Neighbour hints in the classify stage's prompt: the k nearest
         # past messages carrying a human label (a user correction, or the
         # folder they currently sit in -- never the classifier's own past

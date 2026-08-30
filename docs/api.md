@@ -166,7 +166,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Verdicts | `/verdicts`, `/mails/{id}/verdict`, `/mails/{id}/feedback` | Spam verdict history and the user-correction feedback loop |
 | Pipeline | `/pipeline` | Read/replace the whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |
 | Pipeline runs | `/runs`, `/mails/{id}/runs` | Per-message pipeline execution history and trace — "why did this message get that treatment"; retry a failed run |
-| Queues | `/queues` | Every registered background queue's state (embedding, pipeline), live concurrency/batch-size control |
+| Queues | `/queues` | Every registered background queue's state (embedding, pipeline), live concurrency control |
 | Embeddings | `/embeddings` | Coverage status, on-demand backfill, semantic search (see above) |
 | Settings | `/settings` | Every runtime-configurable behaviour by category, plus the write-only provider-key extension on `ai` — see [Config and settings never overlap](../README.md#configuration) |
 | Image exceptions | `/accounts/{id}/image-exceptions` | Per-sender/per-domain allowlist for remote image loading |

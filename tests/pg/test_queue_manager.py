@@ -77,7 +77,7 @@ class TestConcurrencyValidation:
             _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table)),
         )
 
-        with pytest.raises(ValueError, match="exceeds"):
+        with pytest.raises(ValueError, match="exceeding"):
             await manager.set_state("test-queue", concurrency=migrated_db.pool_capacity + 1)
 
     @pytest.mark.asyncio
@@ -93,6 +93,100 @@ class TestConcurrencyValidation:
         summary = await manager.set_state("test-queue", concurrency=migrated_db.pool_capacity)
 
         assert summary.concurrency_target == migrated_db.pool_capacity
+
+    @pytest.mark.asyncio
+    async def test_rejects_a_reservation_that_leaves_no_room(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """reserved_for_requests shrinks the budget queues may fight over --
+        a queue alone still cannot claim connections held back for the API."""
+        manager = QueueManager(migrated_db, reserved_for_requests=2)
+        manager.register(
+            "test-queue", throwaway_queue_table,
+            _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table)),
+        )
+        budget = migrated_db.pool_capacity - 2
+
+        with pytest.raises(ValueError, match="exceeding"):
+            await manager.set_state("test-queue", concurrency=budget + 1)
+
+        summary = await manager.set_state("test-queue", concurrency=budget)
+        assert summary.concurrency_target == budget
+
+    @pytest.mark.asyncio
+    async def test_rejects_when_another_running_queue_already_claims_the_budget(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """Two queues, each individually within the pool's capacity, can
+        still jointly ask for more connections than the pool has -- the
+        combined total across every registered queue is what is checked,
+        not either queue's own request in isolation."""
+        manager = QueueManager(migrated_db)
+        body = _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table))
+        manager.register("queue-a", throwaway_queue_table, body)
+        manager.register("queue-b", throwaway_queue_table, body)
+        await manager.set_state("queue-a", state="running", concurrency=3)
+
+        with pytest.raises(ValueError, match="exceeding"):
+            await manager.set_state("queue-b", state="running", concurrency=3)
+
+        summary = await manager.set_state("queue-b", state="running", concurrency=2)
+        assert summary.concurrency_target == 2
+
+    @pytest.mark.asyncio
+    async def test_resuming_a_paused_queue_is_checked_even_without_a_concurrency_change(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """A bare state="running" with no concurrency argument still lets
+        the queue's already-persisted concurrency take effect -- that must
+        be checked against the budget too, not only a call that also
+        changes concurrency in the same request."""
+        manager = QueueManager(migrated_db)
+        body = _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table))
+        manager.register("queue-a", throwaway_queue_table, body)
+        manager.register("queue-b", throwaway_queue_table, body)
+        await manager.set_state("queue-a", state="paused")
+        await manager.set_state("queue-b", state="running", concurrency=5)
+        # Allowed while paused: a queue not currently running does not
+        # compete for the pool, whatever its stored concurrency says.
+        await manager.set_state("queue-a", concurrency=3)
+
+        with pytest.raises(ValueError, match="exceeding"):
+            await manager.set_state("queue-a", state="running")
+
+    @pytest.mark.asyncio
+    async def test_start_clamps_a_persisted_state_that_predates_the_check(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """A queue_state row written before this validation existed (or
+        edited directly) is read exactly as stored -- start() must not
+        apply it uncapped, or a restart silently recreates the pool
+        starvation the check exists to prevent."""
+        manager = QueueManager(migrated_db)
+        body = _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table))
+        manager.register("queue-a", throwaway_queue_table, body)
+        manager.register("queue-b", throwaway_queue_table, body)
+        async with migrated_db.session() as session:
+            for name in ("queue-a", "queue-b"):
+                await session.execute(
+                    text(
+                        "INSERT INTO queue_state (name, state, concurrency) "
+                        "VALUES (:name, 'running', :concurrency) "
+                        "ON CONFLICT (name) DO UPDATE SET "
+                        "state = EXCLUDED.state, concurrency = EXCLUDED.concurrency"
+                    ),
+                    {"name": name, "concurrency": migrated_db.pool_capacity},
+                )
+
+        try:
+            await manager.start()
+            summary_a = await manager.summary("queue-a")
+            summary_b = await manager.summary("queue-b")
+            assert summary_a.concurrency_target + summary_b.concurrency_target <= (
+                migrated_db.pool_capacity
+            )
+        finally:
+            await manager.stop(drain_timeout=2.0)
 
 
 class TestUnregisteredQueue:
@@ -211,7 +305,7 @@ class TestPersistedState:
 
         manager_one = QueueManager(migrated_db)
         manager_one.register(name, throwaway_queue_table, _draining_worker_body(work_queue))
-        await manager_one.set_state(name, state="paused", concurrency=3, batch_size=7)
+        await manager_one.set_state(name, state="paused", concurrency=3)
 
         manager_two = QueueManager(migrated_db)
         manager_two.register(name, throwaway_queue_table, _draining_worker_body(work_queue))
@@ -219,7 +313,6 @@ class TestPersistedState:
 
         assert row.state == "paused"
         assert row.concurrency == 3
-        assert row.batch_size == 7
 
 
 class TestPauseAndResume:

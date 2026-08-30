@@ -247,6 +247,7 @@ class DatabaseConfig(BaseModel):
     url: str
     pool_size: int
     max_overflow: int
+    reserved_for_requests: int
 
     @field_validator("url")
     @classmethod

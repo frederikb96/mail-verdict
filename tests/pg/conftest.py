@@ -65,7 +65,7 @@ async def init_database_for_url(database_url: str) -> DatabaseConnection:
     from mail_verdict.config.loader import DatabaseConfig
 
     return await init_database(
-        DatabaseConfig(url=database_url, pool_size=5, max_overflow=0)
+        DatabaseConfig(url=database_url, pool_size=5, max_overflow=0, reserved_for_requests=0)
     )
 
 
@@ -105,7 +105,9 @@ async def restricted_db(
         f"@{host}:{port}/{POSTGRES_DB}"
     )
 
-    restricted = DatabaseConnection(DatabaseConfig(url=restricted_url, pool_size=2, max_overflow=0))
+    restricted = DatabaseConnection(
+        DatabaseConfig(url=restricted_url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+    )
     await restricted.init()
     try:
         yield restricted

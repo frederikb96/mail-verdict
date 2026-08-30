@@ -124,6 +124,9 @@ def register_embeddings(
         if not settings.get("enabled", True):
             return
         model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+        # How many rows this sweep inserts, not how many the worker claims
+        # per iteration -- the worker always claims one row at a time (see
+        # _run_worker), independent of this setting.
         batch_size = int(settings.get("batch_size", 64))
         candidates, inserted = await embedding_repo.enqueue_missing_batch(
             model=model, batch_size=max(batch_size, 1) * 4,
@@ -158,11 +161,22 @@ async def _run_worker(
     provider circuit before every claim rather than only once at startup,
     so a circuit that opens mid-run stops this worker from claiming
     immediately instead of on its next restart.
+
+    Claims exactly one row per iteration, the same way pipeline/runner.py
+    does -- never a batch under one shared lease. `heartbeat_while` only
+    ever extends the lease of the row it currently wraps, so a batch claim
+    of N would leave every row but the one in flight sitting on its
+    original, un-renewed lease: the reconciliation timer reclaims those
+    without refunding the attempt claiming them already spent, and this
+    same worker -- there does not need to be a second one -- goes on to
+    re-claim and re-run whatever it already finished. Provider calls here
+    are billed per message regardless (embed_batch is always called with
+    one text), so a wider claim would only have bought fewer claim-query
+    round trips, at the cost of exactly this failure mode.
     """
     work_queue = queue_manager.work_queue(QUEUE_NAME)
 
     while not stop_event.is_set():
-        probing = False
         if not await circuit.is_available():
             status = await circuit.status()
             if status.state != CircuitState.SUSPENDED or not await circuit.try_probe(
@@ -170,39 +184,29 @@ async def _run_worker(
             ):
                 await asyncio.sleep(POLL_INTERVAL_SECONDS)
                 continue
-            # Won the right to probe: claim exactly one row below and let
-            # its real provider call be the probe. A success closes the
-            # breaker via record_success in _handle_one, the ordinary
-            # success path -- there is no separate probe call, and
-            # claiming only one keeps a bad key from being retried against
-            # a whole batch before that one call's outcome is known.
-            probing = True
+            # Won the right to probe: the one row claimed below is itself
+            # the probe call. A success closes the breaker via
+            # record_success in _handle_one, the ordinary success path --
+            # there is no separate probe call.
 
-        batch_size = 1 if probing else _current_batch_size(settings_service)
         claimed = await work_queue.claim_batch(
-            worker_id=worker_id, batch_size=batch_size, lease_seconds=LEASE_SECONDS,
+            worker_id=worker_id, batch_size=1, lease_seconds=LEASE_SECONDS,
         )
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             continue
 
-        for row in claimed:
-            if stop_event.is_set():
-                await work_queue.release_untouched(row["id"], worker_id=worker_id)
-                continue
-            async with heartbeat_while(
-                work_queue, row["id"], worker_id=worker_id, lease_seconds=LEASE_SECONDS,
-            ):
-                await _handle_one(
-                    row, worker_id, work_queue, embedding_repo, message_repo,
-                    cred_repo, settings_service, circuit,
-                )
-
-
-def _current_batch_size(settings_service: SettingsService) -> int:
-    """Read the claim batch size fresh -- a settings change takes effect
-    on the worker's next claim rather than the next restart."""
-    return max(int(settings_service.get("semantic").get("batch_size", 64)), 1)
+        row = claimed[0]
+        if stop_event.is_set():
+            await work_queue.release_untouched(row["id"], worker_id=worker_id)
+            continue
+        async with heartbeat_while(
+            work_queue, row["id"], worker_id=worker_id, lease_seconds=LEASE_SECONDS,
+        ):
+            await _handle_one(
+                row, worker_id, work_queue, embedding_repo, message_repo,
+                cred_repo, settings_service, circuit,
+            )
 
 
 async def _handle_one(
