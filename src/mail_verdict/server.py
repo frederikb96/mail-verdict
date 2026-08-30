@@ -4,11 +4,14 @@ MailVerdict ASGI Server.
 Single app serving:
 - /api/* — REST API (FastAPI routers)
 - /api/events — SSE real-time updates
-- /api/health — Health check
+- /api/health, /api/health/live — health/readiness checks
 - /mcp — MCP streamable-http endpoint (FastMCP)
 
 PostIMAP handles all IMAP sync. MailVerdict is a pure PostgreSQL application.
-PG LISTEN/NOTIFY drives real-time events (SSE, spam pipeline, rules engine).
+The FastAPI root is built first, MCP is mounted underneath it (inverted from
+a design where routes get inserted into the MCP app), and one lifespan
+composes every component: database, settings, the postimap event listener,
+and the spam/rules consumers that listener drives.
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ from typing import Any
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
-from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse
 from starlette.routing import Mount, Route
@@ -30,38 +32,31 @@ from starlette.types import ASGIApp
 
 from mail_verdict.config import MCP_TRANSPORT, get_config
 from mail_verdict.database import close_database, get_db_connection, init_database
-from mail_verdict.database.pg_listener import PgListener, parse_dsn_from_sqlalchemy_url
-from mail_verdict.semantic.store import SemanticStore
-from mail_verdict.semantic.worker import (
-    init_embedding_worker,
-    reset_embedding_worker,
+from mail_verdict.postimap.contract import (
+    ContractMismatchError,
+    assert_contract_version,
+    read_postimap_info,
 )
+from mail_verdict.postimap.listener import PostimapListener, parse_dsn_from_sqlalchemy_url
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 logger = logging.getLogger(__name__)
 
-_qdrant_client: Any | None = None
-_pg_listener: PgListener | None = None
+_postimap_listener: PostimapListener | None = None
 _spam_processor: Any | None = None
 _rules_engine: Any | None = None
-
-
-def _get_qdrant_client() -> Any:
-    """Get the Qdrant client singleton."""
-    if _qdrant_client is None:
-        raise RuntimeError("Server not initialized")
-    return _qdrant_client
+_contract_ok: bool = False
 
 
 def get_spam_processor() -> Any | None:
-    """Get the global spam processor (for feedback endpoint)."""
+    """Get the global spam processor (for the feedback endpoint)."""
     return _spam_processor
 
 
 @asynccontextmanager
-async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
-    """Lifespan context manager — initializes all components via DI."""
-    global _qdrant_client, _pg_listener, _spam_processor, _rules_engine
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Lifespan context manager -- initializes all components via DI."""
+    global _postimap_listener, _spam_processor, _rules_engine, _contract_ok
 
     config = get_config()
 
@@ -70,46 +65,21 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     setup_logging(config.server.log_level)
     logger.info("MailVerdict server starting")
 
-    # Initialize database
     await init_database(config.database)
     logger.info("Database initialized")
 
-    # Initialize settings from DB
     db = get_db_connection()
     settings_service = await init_settings_service(db)
     logger.info("Settings loaded from DB")
 
-    # Read settings snapshots
     ai_settings = settings_service.get("ai")
     spam_settings = settings_service.get("spam")
 
-    # Initialize OpenAI provider
-    from mail_verdict.core.openai_provider import init_openai_provider, reset_openai_provider
+    from mail_verdict.core.anthropic_provider import init_anthropic_provider
 
-    openai_provider = init_openai_provider(settings_service)
-    if openai_provider.get_client():
-        logger.info("OpenAI API key configured")
-    else:
-        logger.info("No OpenAI API key yet — set via Settings API")
+    anthropic_client = init_anthropic_provider()
+    logger.info("Anthropic API key configured" if anthropic_client else "No Anthropic API key set")
 
-    # Initialize Qdrant
-    from qdrant_client import AsyncQdrantClient
-
-    _qdrant_client = AsyncQdrantClient(
-        host=config.qdrant.host,
-        port=config.qdrant.port,
-    )
-    logger.info("Qdrant client created")
-
-    store = SemanticStore.init_instance(_qdrant_client, config.qdrant, ai_settings)
-    await store.ensure_collection()
-    logger.info("SemanticStore initialized")
-
-    worker = init_embedding_worker()
-    await worker.start()
-    logger.info("EmbeddingWorker started")
-
-    # Initialize EventRing for SSE
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.api.events import init_event_ring
 
@@ -117,7 +87,6 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     init_event_ring(event_ring)
     logger.info("EventRing initialized")
 
-    # Initialize spam processor (called by PG LISTEN on new messages)
     from mail_verdict.spam.processor import SpamEventProcessor
 
     if spam_settings.get("enabled", False):
@@ -127,23 +96,21 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
             MessageRepository,
             VerdictRepository,
         )
-        from mail_verdict.spam.analyst import OpenAISpamAnalyst
+        from mail_verdict.spam.analyst import AnthropicSpamAnalyst
         from mail_verdict.spam.feedback import SpamFeedbackHandler
         from mail_verdict.spam.pipeline import VerdictPipeline
 
         retry_config = RC.from_settings(settings_service.get("retry"))
-        analyst = OpenAISpamAnalyst(ai_settings, spam_settings, retry_config)
+        analyst = AnthropicSpamAnalyst(ai_settings, spam_settings, retry_config)
         verdict_repo = VerdictRepository(db)
         message_repo = MessageRepository(db)
         folder_repo = FolderRepository(db)
-        feedback = SpamFeedbackHandler(store, verdict_repo)
+        feedback = SpamFeedbackHandler(verdict_repo)
 
         pipeline = VerdictPipeline(
             settings_service=settings_service,
-            semantic_store=store,
             analyst=analyst,
             verdict_repo=verdict_repo,
-            message_repo=message_repo,
             folder_repo=folder_repo,
             db=db,
         )
@@ -158,7 +125,6 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("Spam detection disabled")
 
-    # Initialize rules engine (called by PG LISTEN on new messages)
     rules_data = settings_service.get("rules") if settings_service.has_category("rules") else {}
     rules_list = rules_data.get("rules", []) if isinstance(rules_data, dict) else []
 
@@ -171,11 +137,10 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
 
         tag_repo = TagRepository(db)
         rules_folder_repo = FR(db)
-        enrichment_runner = EnrichmentRunner(
-            ai_provider=ai_settings.get("provider", "openai"),
-            ai_model=ai_settings.get("model", "gpt-5-mini"),
-            reasoning_effort=ai_settings.get("reasoning_effort"),
+        enrichment_model = str(
+            ai_settings.get("enrichment_model") or ai_settings.get("model") or "claude-haiku-4-5",
         )
+        enrichment_runner = EnrichmentRunner(ai_model=enrichment_model)
         action_executor = ActionExecutor(
             tag_repo=tag_repo,
             folder_repo=rules_folder_repo,
@@ -190,170 +155,201 @@ async def lifespan(app: Starlette | FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("No rules configured")
 
-    # Start PG LISTEN dispatcher (replaces SyncEngine + OutboundProcessor)
-    async def _on_pg_event(event: dict[str, Any]) -> None:
-        """Dispatch PG NOTIFY events to EventRing, spam, and rules."""
+    async def _on_postimap_event(event: Any) -> None:
+        """Dispatch a parsed postimap_events payload to EventRing, spam, and rules."""
         import uuid as _uuid
 
-        channel = event.get("_channel", "")
-        op = event.get("op", "")
+        try:
+            account_uuid = _uuid.UUID(event.account_id)
+        except ValueError:
+            return
 
-        if channel == "mv_messages":
-            account_id_str = event.get("account_id", "")
-            msg_id = event.get("id", "")
-            folder_id = event.get("folder_id", "")
-
-            try:
-                account_uuid = _uuid.UUID(account_id_str)
-            except (ValueError, AttributeError):
-                return
-
-            if op == "insert":
-                await event_ring.add(account_uuid, "mail.new", {
-                    "id": msg_id, "account_id": account_id_str, "folder_id": folder_id,
-                })
+        if event.type == "message":
+            sse_data = {
+                "id": event.id, "account_id": event.account_id, "folder_id": event.folder_id,
+            }
+            if event.op == "insert":
+                await event_ring.add(account_uuid, "mail.new", sse_data)
                 if _spam_processor:
                     await _spam_processor.handle_message_event(event)
                 if _rules_engine:
-                    await _rules_engine.handle_message_event(event)
-            elif op == "update":
-                await event_ring.add(account_uuid, "mail.updated", {
-                    "id": msg_id, "account_id": account_id_str, "folder_id": folder_id,
-                    "old_folder_id": event.get("old_folder_id"),
-                    "is_seen": event.get("is_seen"),
-                    "is_flagged": event.get("is_flagged"),
-                })
-            elif op == "delete":
-                await event_ring.add(account_uuid, "mail.deleted", {
-                    "id": msg_id, "account_id": account_id_str, "folder_id": folder_id,
-                })
+                    await _rules_engine.handle_message_event(
+                        {"op": "insert", **sse_data},
+                    )
+            elif event.op == "update":
+                await event_ring.add(
+                    account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},
+                )
+                if _spam_processor:
+                    await _spam_processor.handle_message_event(event)
+                if _rules_engine:
+                    await _rules_engine.handle_message_event({"op": "update", **sse_data})
+            elif event.op == "delete":
+                await event_ring.add(account_uuid, "mail.deleted", sse_data)
+                if _rules_engine:
+                    await _rules_engine.handle_message_event({"op": "delete", **sse_data})
 
-        elif channel == "account_changes":
-            account_id_str = event.get("id", "")
-            try:
-                account_uuid = _uuid.UUID(account_id_str)
-            except (ValueError, AttributeError):
-                return
-            await event_ring.add(account_uuid, "account.changed", {
-                "id": account_id_str,
-                "op": event.get("op", ""),
-            })
+        elif event.type == "folder":
+            if event.op == "sync_complete":
+                await event_ring.add(
+                    account_uuid, "folder.synced",
+                    {"folder_id": event.folder_id, "backfill": event.backfill},
+                )
+            else:
+                await event_ring.add(account_uuid, "folder.changed", {"folder_id": event.folder_id})
+
+        elif event.type == "account":
+            await event_ring.add(account_uuid, "account.changed", {"id": event.id, "op": event.op})
+
+        elif event.type == "outbox":
+            await event_ring.add(
+                account_uuid, "outbox.updated", {"id": event.id, "changed": list(event.changed)},
+            )
 
     dsn = parse_dsn_from_sqlalchemy_url(config.database.url)
-    _pg_listener = PgListener(dsn)
-    _pg_listener.add_handler(_on_pg_event)
-    await _pg_listener.start()
-    logger.info("PG LISTEN dispatcher started")
+    _postimap_listener = PostimapListener(dsn)
+    _postimap_listener.add_handler(_on_postimap_event)
+    await _postimap_listener.start()
+    logger.info("PostIMAP event listener started")
+
+    _contract_ok = await _check_contract(db)
 
     yield
 
-    # Cleanup (reverse order)
     logger.info("MailVerdict server shutting down")
 
-    if _pg_listener:
-        await _pg_listener.stop()
-        logger.info("PG LISTEN stopped")
+    if _postimap_listener:
+        await _postimap_listener.stop()
 
     _spam_processor = None
     _rules_engine = None
+    _contract_ok = False
 
-    try:
-        from mail_verdict.semantic.worker import get_embedding_worker
+    from mail_verdict.core.anthropic_provider import reset_anthropic_provider
 
-        w = get_embedding_worker()
-        await w.stop()
-        logger.info("EmbeddingWorker stopped")
-    except RuntimeError:
-        pass
-    reset_embedding_worker()
-
-    SemanticStore.reset_instance()
-
-    if _qdrant_client:
-        await _qdrant_client.close()
-        logger.info("Qdrant client closed")
-
-    reset_openai_provider()
+    reset_anthropic_provider()
     reset_settings_service()
     await close_database()
     logger.info("Database connection closed")
 
-    _qdrant_client = None
-    _pg_listener = None
+    _postimap_listener = None
+
+
+async def _check_contract(db: Any) -> bool:
+    """
+    Assert PostIMAP's contract_version at startup.
+
+    A version mismatch is fatal (raises); a missing postimap_info row
+    (PostIMAP hasn't finished its own migrations yet) is not fatal here --
+    readiness just stays false until it appears, retried by the probe.
+
+    Args:
+        db: The initialized DatabaseConnection
+
+    Returns:
+        True if the contract version matches
+    """
+    try:
+        async with db.session() as session:
+            info = await read_postimap_info(session)
+    except Exception:
+        logger.warning("Could not read postimap_info yet", exc_info=True)
+        return False
+
+    if info is None:
+        logger.warning("postimap_info has no row yet -- PostIMAP has not migrated")
+        return False
+
+    try:
+        assert_contract_version(info)
+    except ContractMismatchError:
+        logger.exception("PostIMAP contract version mismatch")
+        raise
+
+    logger.info(
+        "PostIMAP contract version confirmed",
+        extra={"contract_version": info.contract_version, "service_version": info.service_version},
+    )
+    return True
 
 
 def _build_fastapi() -> FastAPI:
-    """Build the FastAPI sub-app with all REST routers and health endpoint."""
+    """Build the FastAPI root app: MCP mount, API routers, SSE route, health."""
     from mail_verdict.api.auth import require_auth
+    from mail_verdict.api.mcp_tools import mcp as mcp_server
 
-    fastapi_app = FastAPI(
-        title="MailVerdict",
-        version="2.0.0",
-        dependencies=[Depends(require_auth)],
+    # FastMCP's session manager runs its own lifespan; mounting it under a
+    # parent app does not invoke that lifespan automatically, so the
+    # combined lifespan below wraps our own init/teardown inside it.
+    mcp_app = mcp_server.http_app(path="/", transport=MCP_TRANSPORT)  # type: ignore[arg-type]
+
+    @asynccontextmanager
+    async def combined_lifespan(app: FastAPI) -> AsyncIterator[None]:
+        async with mcp_app.lifespan(app):
+            async with lifespan(app):
+                yield
+
+    # dependencies=[Depends(require_auth)] must live on api_router below, not
+    # here: a Mount is an ASGI boundary, and dependencies declared on this
+    # outer app never run for a mounted sub-app's own routes.
+    app = FastAPI(title="MailVerdict", lifespan=combined_lifespan)
+
+    config = get_config()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config.server.cors_origins,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["*"],
     )
+
+    app.mount("/mcp", mcp_app)
 
     from mail_verdict.api.routes import all_routers
 
+    # require_auth is attached per-router (not at the FastAPI(dependencies=)
+    # level) so /health and /health/live can stay unauthenticated: FastAPI
+    # app-level dependencies run for every route unconditionally and cannot
+    # be opted out of per-route, only scoped at inclusion time like this.
+    api_router = FastAPI()
     for router in all_routers:
-        fastapi_app.include_router(router)
+        api_router.include_router(router, dependencies=[Depends(require_auth)])
 
-    @fastapi_app.get("/health", dependencies=[])
+    @api_router.get("/health/live")
+    async def health_live() -> JSONResponse:
+        """Liveness: process is up. Never touches the database."""
+        return JSONResponse(status_code=200, content={"status": "alive"})
+
+    @api_router.get("/health")
     async def health() -> JSONResponse:
-        """Health check endpoint."""
-        dependencies: dict[str, str] = {}
-
+        """Readiness: database reachable and PostIMAP contract version confirmed."""
         try:
             db = get_db_connection()
             db_ok = await db.health_check()
-            dependencies["postgres"] = "ok" if db_ok else "error: health check failed"
-        except Exception as exc:
-            dependencies["postgres"] = f"error: {exc}"
+        except RuntimeError:
+            db_ok = False
 
-        try:
-            client = _get_qdrant_client()
-            await client.get_collections()
-            dependencies["qdrant"] = "ok"
-        except Exception as exc:
-            dependencies["qdrant"] = f"error: {exc}"
-
-        dependencies["postimap"] = "managed externally"
-
-        all_ok = all(v == "ok" for v in dependencies.values() if v != "managed externally")
-
+        ready = db_ok and _contract_ok
         return JSONResponse(
-            status_code=200 if all_ok else 503,
+            status_code=200 if ready else 503,
             content={
-                "status": "healthy" if all_ok else "degraded",
-                "dependencies": dependencies,
+                "status": "ready" if ready else "not_ready",
+                "database": "ok" if db_ok else "error",
+                "postimap_contract": "ok" if _contract_ok else "not confirmed",
             },
         )
 
-    return fastapi_app
+    app.mount("/api", api_router)
+
+    from mail_verdict.api.events import sse_endpoint
+
+    app.router.routes.append(Route("/api/events", sse_endpoint))
+
+    return app
 
 
 def create_app() -> ASGIApp:
     """Create the MailVerdict ASGI application."""
-    config = get_config()
-    fastapi_app = _build_fastapi()
-
-    from mail_verdict.api.events import sse_endpoint
-    from mail_verdict.api.mcp_tools import mcp as mcp_server
-
-    composed_app = mcp_server.http_app(
-        path="/mcp",
-        transport=MCP_TRANSPORT,  # type: ignore[arg-type]
-    )
-
-    composed_app.add_middleware(
-        CORSMiddleware,
-        allow_origins=config.server.cors_origins,
-        allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["*"],
-    )
-
-    composed_app.routes.insert(0, Mount("/api", app=fastapi_app, name="fastapi"))
-    composed_app.routes.insert(0, Route("/api/events", sse_endpoint))
-    composed_app.router.lifespan_context = lifespan  # type: ignore[attr-defined]
+    app = _build_fastapi()
 
     ui_build_dir = Path(__file__).parent.parent.parent / "ui" / "build"
     if not ui_build_dir.exists():
@@ -362,7 +358,7 @@ def create_app() -> ASGIApp:
     if ui_build_dir.exists():
         next_dir = ui_build_dir / "_next"
         if next_dir.exists():
-            composed_app.routes.append(
+            app.router.routes.append(
                 Mount("/_next", app=StaticFiles(directory=str(next_dir)), name="next-assets")
             )
 
@@ -378,7 +374,6 @@ def create_app() -> ASGIApp:
                     and exact_file.resolve().is_relative_to(ui_build_dir.resolve())
                 ):
                     return FileResponse(str(exact_file))
-            if path:
                 page_html = ui_build_dir / f"{path}.html"
                 if page_html.exists():
                     return FileResponse(str(page_html))
@@ -387,8 +382,8 @@ def create_app() -> ASGIApp:
                 return FileResponse(str(index))
             return JSONResponse(status_code=404, content={"detail": "Not found"})
 
-        composed_app.routes.append(Route("/{path:path}", spa_fallback))
+        app.router.routes.append(Route("/{path:path}", spa_fallback))
         logger.info("Static UI served from %s", ui_build_dir)
 
     logger.info("MCP enabled at /mcp (transport=%s)", MCP_TRANSPORT)
-    return composed_app
+    return app
