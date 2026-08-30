@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import Table, select, text
 
@@ -53,6 +53,7 @@ from mail_verdict.pipeline.contracts import (
 )
 from mail_verdict.pipeline.effects import AppliedEffect, apply_effects
 from mail_verdict.pipeline.message_view import MessageView, load_message_view
+from mail_verdict.pipeline.neighbors import NeighborService
 from mail_verdict.pipeline.registry import build_stage
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
 from mail_verdict.queue.backoff import compute_backoff
@@ -120,6 +121,99 @@ class PipelineRunner:
     def register(self, manager: QueueManager) -> WorkQueue:
         """Register the `pipeline` queue with the shared QueueManager."""
         return manager.register(QUEUE_NAME, self._table, self._worker_body)
+
+    async def dry_run(
+        self, *, account_id: uuid.UUID, message_id: uuid.UUID,
+        origin: Literal["live", "historical"] = "live",
+    ) -> _RunResult:
+        """
+        Execute the current pipeline definition against one message
+        without applying anything or touching pipeline_runs -- the
+        POST /api/pipeline/test endpoint.
+
+        A synthetic row, never persisted: apply is forced False regardless
+        of what a caller passes, since a dry run that could write would
+        not be one. msg_key is left blank -- _load_view only falls back to
+        it when message_id fails to resolve, and a blank key simply
+        resolves to nothing rather than to some other message.
+
+        Args:
+            account_id: Account the message belongs to
+            message_id: The message's current messages.id
+            origin: 'live' or 'historical' -- which stages are eligible
+
+        Returns:
+            The same _RunResult a real run produces, trace included
+        """
+        row = {
+            "id": uuid.uuid4(), "account_id": account_id, "message_id": message_id,
+            "msg_key": "", "origin": origin, "apply": False,
+        }
+        return await self._execute_run(row)
+
+    async def dry_run_stage(
+        self, *, account_id: uuid.UUID, message_id: uuid.UUID,
+        stage_def: StageDefinition, origin: Literal["live", "historical"] = "live",
+    ) -> dict[str, Any]:
+        """
+        Execute one stage definition -- not necessarily one already saved
+        in a revision -- against one message, without applying anything.
+        POST /api/pipeline/stages/{id}/test, and also what a client
+        validates a not-yet-saved stage edit against before writing it.
+
+        Unlike dry_run(), this never reads the current pipeline
+        definition: the stage under test runs alone, seeing the same
+        verdict/history/neighbours a real run would load, but no facts
+        from any other stage (there are none, since nothing ran before
+        it).
+
+        Returns:
+            One trace entry, in the same shape pipeline_runs.trace stores
+        """
+        view = await self._load_view(
+            {"message_id": message_id, "account_id": account_id, "msg_key": ""},
+        )
+        if view is None:
+            return {
+                "stage_id": stage_def.stage_id, "type": stage_def.type, "matched": False,
+                "detail": "skipped: message gone", "halt": False, "effects": [], "applied": [],
+                "usage": None,
+            }
+
+        settings_snapshot = self._settings.get_all()
+        retry_config = RetryConfig.from_settings(settings_snapshot.get("retry", {}))
+        account_prefs = await self._account_prefs_repo.get_by_account(account_id)
+
+        ctx = RunContext(
+            run_id=uuid.uuid4(), account_id=account_id, origin=origin, apply=False,
+            settings=settings_snapshot, trace=(), facts={},
+            verdict=await current_verdict_for_mail(self._db, view.message_id),
+            history=await history_for_msg_key(
+                self._db, account_id=account_id, msg_key=view.msg_key, from_addr=view.from_addr,
+            ),
+            folders=FolderResolver(self._db, account_id),
+            neighbors=NeighborService(self._db, account_id),
+            models=ModelGateway(self._db, self._cred_repo, retry_config),
+            log=BoundLog(logger, run_id="dry-run-stage"),
+            account_spam_enabled=bool(account_prefs and account_prefs.spam_enabled),
+        )
+
+        stage = build_stage(stage_def)
+        if origin not in type(stage).runs_on:
+            return _trace_entry(stage_def, StageOutcome(
+                matched=False, detail=f"skipped: does not run on {origin} mail",
+            ))
+        if stage_def.accounts is not None and account_id not in stage_def.accounts:
+            return _trace_entry(
+                stage_def, StageOutcome(matched=False, detail="skipped: out of account scope"),
+            )
+
+        outcome = await stage.execute(view, ctx)
+        _, applied = await apply_effects(
+            self._db, view, outcome.effects, apply=False,
+            folders=ctx.folders, event_ring=None, stage_id=stage_def.stage_id,
+        )
+        return _trace_entry(stage_def, outcome, applied=applied)
 
     def _pipeline_settings(self) -> dict[str, Any]:
         return self._settings.get("pipeline") if self._settings.has_category("pipeline") else {}
@@ -204,6 +298,7 @@ class PipelineRunner:
                 self._db, account_id=account_id, msg_key=view.msg_key, from_addr=view.from_addr,
             ),
             folders=FolderResolver(self._db, account_id),
+            neighbors=NeighborService(self._db, account_id),
             models=ModelGateway(self._db, self._cred_repo, retry_config),
             log=BoundLog(logger, run_id=str(run_id)),
             account_spam_enabled=bool(account_prefs and account_prefs.spam_enabled),

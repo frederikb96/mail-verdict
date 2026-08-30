@@ -22,6 +22,7 @@ from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.search import semantic_search
 from mail_verdict.embeddings.worker import _handle_one
 from mail_verdict.queue.work_queue import WorkQueue
+from mail_verdict.settings.service import SettingsService
 
 _imap_uid_counter = itertools.count(1)
 
@@ -345,9 +346,12 @@ async def test_write_result_is_guarded_against_a_lost_claim(
             {"id": item_id},
         )
 
+    settings_service = SettingsService(migrated_db)
+    await settings_service.load()
     wrote = await repo.write_result(
         item_id, worker_id="worker-a", embedding=[0.1] * EMBEDDING_DIMENSIONS,
         model=model, content_level="full", source_hash="abc",
+        settings_service=settings_service,
     )
     assert wrote is False
 
@@ -397,6 +401,9 @@ async def test_worker_embeds_a_truncated_message_as_envelope_only(
     class _FakeSettings:
         def get(self, category: str) -> dict[str, object]:
             return {"content_chars": 2000, "provider": "fake"}
+
+        def has_category(self, category: str) -> bool:
+            return False
 
     provider_calls: list[str] = []
 

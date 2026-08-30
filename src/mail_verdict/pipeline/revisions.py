@@ -71,6 +71,19 @@ class PipelineRevisionRepository:
             return None
         return _parse_document(row.revision, row.document)
 
+    async def get(self, revision: int) -> PipelineDefinition | None:
+        """One specific revision's document, or None if it does not
+        exist -- the source a restore reads from."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                text("SELECT revision, document FROM pipeline_revisions WHERE revision = :r"),
+                {"r": revision},
+            )
+            row = result.one_or_none()
+        if row is None:
+            return None
+        return _parse_document(row.revision, row.document)
+
     async def append(self, document: dict[str, Any], *, note: str | None = None) -> int:
         """
         Append a new revision, returning its revision number.

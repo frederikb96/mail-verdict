@@ -129,6 +129,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   zero and rises. New `semantic` settings category: `provider`, `model`, `content_chars`,
   `batch_size`, `concurrency`. Registers as the `embeddings` named queue, so start/stop/concurrency
   go through the existing `GET/PATCH /api/queues/embeddings`.
+- **Embedding strictly precedes the pipeline.** `pipeline/enqueue.py`'s live-arrival handler now
+  enqueues a `message_embeddings` row, never a `pipeline_runs` row directly; only that embedding
+  reaching a terminal state — `done` *or* `failed` — opens the pipeline queue for it, in the same
+  transaction as the write that moved it there (`EmbeddingRepository.write_result` /
+  `.fail`, via `pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). A message whose embedding
+  can never succeed is not stranded: reaching `failed` opens the gate exactly as `done` does, so it
+  is still classified, just with no neighbour hints — the classify stage's trace says so.
+  Reconciliation's gap-recovery pass now requires the same terminal embedding before enqueuing a
+  run, so a listener reconnect cannot bypass the gate either.
+- **Neighbour hints for `classify`, off by default** (`settings.semantic.neighbor_hints_enabled`,
+  `neighbor_k`, `neighbor_min_similarity`). `pipeline/neighbors.py`'s `NeighborService` finds the
+  k nearest past messages carrying a *human* label — an explicit user correction
+  (`verdicts.source = 'user_feedback'`), or the folder a message currently sits in — and excludes
+  every AI/rule verdict from the pool outright, so the classifier's own past verdicts can never
+  become evidence for the next one (a wrong first verdict would otherwise compound: every
+  near-identical future message sees a spam neighbour, agrees, and becomes another spam neighbour,
+  which reads as consistency rather than the loop it is). Junk-folder membership and inbox
+  membership are treated asymmetrically — Junk is strong spam evidence, sitting in the inbox is
+  weak not-spam evidence, since a message may simply not have been dealt with yet — both stated
+  explicitly in the prompt rather than collapsed into one label. No near-duplicate short-circuit:
+  a close match is always still a hint, never a reason to skip the model call.
+- **The pipeline configuration API**, `api/pipeline.py` — read/replace the whole definition
+  (`GET`/`PUT /api/pipeline`, `PUT` carrying an optional `base_revision` for optimistic
+  concurrency, `409` on a stale one), per-stage `POST`/`PATCH`/`DELETE /api/pipeline/stages` and
+  `POST /api/pipeline/stages/reorder`, `GET /api/pipeline/stage-types` (each registered type's
+  JSON schema, generated from the same Pydantic model `registry.build_stage` validates against, so
+  it cannot drift from what a write actually accepts), `GET/POST /api/pipeline/revisions` history
+  and restore, `GET /api/pipeline/health` (per-stage folder resolution against every account it
+  applies to), and `POST /api/pipeline/test` / `POST /api/pipeline/stages/:id/test` — a dry run of
+  the whole pipeline or one stage against an existing message, applying nothing. Validation is
+  split on purpose: an unknown stage type, unknown effect, unknown condition type or duplicate
+  stage name can never become valid later and are rejected outright (`400`, every problem
+  collected at once); a folder reference that does not currently resolve is *accepted*, since
+  folders appear asynchronously as PostIMAP discovers them — it is reported as a warning on every
+  document response and stays queryable afterwards through the health endpoint.
 ### Changed
 
 - `RetryConfig.delay_for_attempt` uses full jitter (a uniform draw over `[0, cap]`) instead of a fixed exponential value; default `retry` settings changed to 5 attempts, 1s base, 20s cap
@@ -173,6 +208,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`body_contains` used to never match an HTML-only message.** The old rule context only
   populated `body_text`; `MessageView` strips `body_html` to text with `nh3` when `body_text` is
   NULL, so a `match` stage's conditions see the same body a newsletter's recipient does.
+- **A stage that fails to *construct* — a `match` stage's config naming an unknown effect kind,
+  most notably — used to raise an unhandled exception out of `registry.build_stage` instead of
+  `StageMisconfigured`.** The pipeline runner has no handler for that, so it fell into the generic
+  retry path and was retried up to `max_attempts` times before failing, exactly the noisy,
+  hides-the-real-problem behaviour `StageMisconfigured` exists to avoid. `build_stage` now wraps
+  construction in the same try/except as config validation.
 
 ## [1.0.0] - 2026-08-30
 

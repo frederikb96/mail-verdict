@@ -6,11 +6,15 @@ invariants the design calls load-bearing -- never classify twice,
 `classify` never runs on historical mail, and a guarded effect against a
 message that vanished mid-run leaves nothing applied.
 
-`migrated_db` already carries the first pipeline revision: alembic
-migration 0006 builds it from `settings.rules`/`settings.spam`'s defaults
-(empty rules, spam enabled, auto-move-to-junk with auto-mark-read), so the
-default definition under test here is exactly what a fresh deployment
-gets, not a fixture-only stand-in.
+`migrated_db` carries the first pipeline revision from alembic migration
+0006, built from `settings.rules`/`settings.spam`'s defaults (empty
+rules, spam enabled, auto-move-to-junk with auto-mark-read) -- exactly
+what a fresh deployment gets. pipeline_revisions is append-only and
+shared with every other pg test in this session, though, so `_make_runner`
+appends a fresh copy of that same definition rather than trusting
+whatever the current (max-revision) definition happens to be by the time
+this file runs -- the pipeline configuration API's own tests write several
+other definitions to this same table.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.repository import AccountPrefsRepository, VerdictRepository
+from mail_verdict.pipeline.revisions import PipelineRevisionRepository, build_migrated_definition
 from mail_verdict.pipeline.runner import PipelineRunner
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
@@ -90,7 +95,17 @@ async def _seed_message(
 
 async def _make_runner(db: DatabaseConnection) -> PipelineRunner:
     """A PipelineRunner wired against fake classification -- no network
-    call, no real API key, deterministic on the seeded subject/body."""
+    call, no real API key, deterministic on the seeded subject/body.
+
+    Appends a fresh copy of the default classify + move-spam definition
+    as the current revision before returning -- see the module docstring
+    for why this cannot simply trust migrated_db's existing state."""
+    document = build_migrated_definition(
+        raw_rules=[],
+        spam_settings={"enabled": True, "auto_move_to_junk": True, "auto_mark_read": True},
+    )
+    await PipelineRevisionRepository(db).append(document, note="test baseline")
+
     settings_service = SettingsService(db)
     await settings_service.load()
     await settings_service.update("ai", {"provider": "fake"})

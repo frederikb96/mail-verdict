@@ -82,6 +82,8 @@ class ConditionEvaluator:
         "verdict_is": "_eval_verdict_is",
     }
 
+    KNOWN_TYPES: frozenset[str] = frozenset(_EVALUATORS)
+
     def evaluate(self, condition: dict[str, Any], ctx: MailContext) -> bool:
         """
         Evaluate a single condition against mail context.
@@ -186,6 +188,13 @@ class ConditionEvaluator:
         if ctx.verdict_is_spam is None:
             return False
         return ctx.verdict_is_spam == (value == "spam")
+
+
+# The closed vocabulary a condition leaf key must belong to -- exposed at
+# module level so a document's `when` tree can be validated statically at
+# write time (pipeline/document_validation.py), without constructing an
+# evaluator or a MailContext just to ask what it knows.
+KNOWN_CONDITION_TYPES: frozenset[str] = ConditionEvaluator.KNOWN_TYPES
 
 
 def evaluate_condition(

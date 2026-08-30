@@ -16,6 +16,14 @@ classify:
     unrelated)
   - `dkim`, `spf`, `dmarc` — authentication results (`pass`, `fail`, or `unknown`)
 
+You may also receive `similar_past_mail`, a list of past messages found to be semantically
+similar to this one, each with `similarity` (0 to 1), the verdict it carries, and `evidence`
+explaining where that verdict came from. Treat it as supporting context, never as ground truth to
+copy: weigh a low-similarity entry less than a high one, and weigh a filed-in-Junk verdict more
+heavily than a currently-in-inbox one, since sitting in the inbox is weak evidence at best (a
+message not yet dealt with looks identical to one nobody minds). If it disagrees with what the
+email itself shows, trust the email.
+
 ## Classification Rules
 
 **Spam:**

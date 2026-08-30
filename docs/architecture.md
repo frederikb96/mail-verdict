@@ -128,6 +128,22 @@ Two built-in stage types today: `match` (a rule, generalised — the same condit
 effect and nothing else — it does not move mail). "Spam moves to Junk" is an ordinary `match`
 stage composed on top of `classify`'s output, not a side effect hidden inside the classifier.
 
+`api/pipeline.py` is how the definition is edited — inserting into `pipeline_revisions` by hand is
+not the intended path. `GET`/`PUT /api/pipeline` read and replace the whole document (`PUT`
+optionally carrying `base_revision` for optimistic concurrency, so an agent and the UI editing at
+once get a `409` rather than one silently clobbering the other), `POST`/`PATCH`/`DELETE
+/api/pipeline/stages` and `.../reorder` operate on one stage at a time, and `GET
+/api/pipeline/stage-types` returns each registered type's JSON schema — generated from the same
+Pydantic model `pipeline/registry.py` validates a write against, so it cannot drift from what
+actually gets accepted. Validation itself splits in two: an unknown stage type, unknown effect,
+unknown condition type or duplicate stage name can never become valid later and are rejected
+outright; an unresolved folder reference is accepted, since folders appear asynchronously as
+PostIMAP discovers them, and is reported instead as a warning on every document response and
+through `GET /api/pipeline/health`. `POST /api/pipeline/test` (and `.../stages/:id/test`) dry-run
+the definition, or one stage of it, against an existing message with nothing applied — the same
+path `pipeline/runner.py`'s `dry_run`/`dry_run_stage` expose for that purpose alone, never
+registered with the queue manager.
+
 A stage that cannot do its job raises rather than returning a success flag — a `Move` effect
 whose target folder does not resolve is exactly the kind of failure a success-flag result type
 would let slip through as reported success on a write that did nothing. The exception type tells
@@ -137,15 +153,27 @@ refunding the attempt), or fail the run permanently with the offending stage nam
 
 ### Triggered by arrival only
 
-A live run is enqueued on `message`/`insert` with `origin = "sync"` and nothing else — never on
-an update. A stage reacting to a folder-move update could loop on its own writes: PostIMAP's
-`origin` field distinguishes its own sync writes from this application's, but not the pipeline's
-own write from a user's a moment later, so a move-triggered stage acting on a message its own
-move-to-junk effect just relocated is one edit away from acting on itself again. A folder move is
-handled by a separate, stateless listener instead (`spam/feedback.py`): it records a correction
-only when the move contradicts the message's *current* verdict, which is something the classifier
-can never do to what it just wrote, and excludes moving spam to Trash — deleting mail already
-agreed to be spam is the ordinary use of a junk folder, not a correction.
+A live message is embedded before it ever reaches the pipeline. `message`/`insert` with
+`origin = "sync"` enqueues a `message_embeddings` row, not a `pipeline_runs` row — the pipeline
+row is only inserted once that embedding reaches a terminal state, `done` or `failed`, in the same
+transaction as the write that reaches it (`embeddings/repository.py`, calling
+`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). Both the embedding call and the
+classify call hit the same provider, so gating on the first costs no real availability — if the
+provider is down, nothing downstream was going to be classified either — and it buys the
+invariant that everything in the pipeline queue has a vector, which is what neighbour hints below
+depend on. A message whose embedding permanently fails is not stranded: reaching `failed` opens
+the gate exactly as `done` does, just with no neighbour hints available, which the classify stage
+records in its own trace. Reconciliation's gap-recovery pass (a listener reconnect) respects the
+same gate, so it cannot enqueue a run ahead of a still-pending embedding.
+
+Never on an update, either way. A stage reacting to a folder-move update could loop on its own
+writes: PostIMAP's `origin` field distinguishes its own sync writes from this application's, but
+not the pipeline's own write from a user's a moment later, so a move-triggered stage acting on a
+message its own move-to-junk effect just relocated is one edit away from acting on itself again. A
+folder move is handled by a separate, stateless listener instead (`spam/feedback.py`): it records
+a correction only when the move contradicts the message's *current* verdict, which is something
+the classifier can never do to what it just wrote, and excludes moving spam to Trash — deleting
+mail already agreed to be spam is the ordinary use of a junk folder, not a correction.
 
 ### Never classifying the same message twice
 
@@ -198,6 +226,24 @@ messages by cosine distance, joined back to `messages` at read time — never a 
 anything that changes, matching the no-foreign-key posture above. It complements full-text search
 rather than replacing it: literal search wins on a known sender or an exact phrase, semantic search
 wins on a half-remembered topic with none of the same words.
+
+### Neighbour hints, and why the classifier's own verdicts never feed them
+
+Mail is repetitive — the same sender, the same template, month after month — so a new message's
+nearest neighbours are dominated by near-identical past mail. If the classifier's own verdicts
+were part of that neighbour pool, a wrong first verdict for a sender would become permanent: every
+later near-identical message would see that verdict as a neighbour, agree with it, and become
+another neighbour agreeing with it — indistinguishable, from the outside, from the model actually
+being right. `pipeline/neighbors.py`'s `NeighborService` closes this by construction: its pool is
+exactly two kinds of *human*-originated evidence — an explicit user correction
+(`verdicts.source = 'user_feedback'`), or the folder a message currently sits in — and never a
+`source = 'ai'` or `'rule'` row. Folder placement is asymmetric evidence rather than a second kind
+of verdict: Junk membership is a strong spam signal, but sitting in the inbox is weak evidence of
+not-spam (the message may simply not have been dealt with yet), and the prompt states both
+directions explicitly rather than collapsing them into one label. Off by default
+(`settings.semantic.neighbor_hints_enabled`), so its effect on accuracy can be measured before it
+is ever the default; there is no near-duplicate short-circuit, since even a very close match stays
+a hint for the model to weigh, never a reason to skip classifying.
 
 ## Sending mail
 
