@@ -11,8 +11,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect:
+    name: Detect changed paths
+    runs-on: arc-runner-mail-verdict
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      ui: ${{ steps.filter.outputs.ui }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'alembic/**'
+              - 'alembic.ini'
+              - 'config/**'
+              - '.github/workflows/ci.yaml'
+            ui:
+              - 'ui/**'
+              - '.github/workflows/ci.yaml'
+
   lint:
     name: Lint + type check
+    needs: detect
+    if: ${{ needs.detect.outputs.python == 'true' }}
     runs-on: arc-runner-mail-verdict
     steps:
       - uses: actions/checkout@v5
@@ -34,6 +61,8 @@ jobs:
 
   unit:
     name: Unit tests
+    needs: detect
+    if: ${{ needs.detect.outputs.python == 'true' }}
     runs-on: arc-runner-mail-verdict
     steps:
       - uses: actions/checkout@v5
@@ -52,6 +81,8 @@ jobs:
 
   pg:
     name: Postgres + PostIMAP integration tests
+    needs: detect
+    if: ${{ needs.detect.outputs.python == 'true' }}
     runs-on: arc-runner-mail-verdict
     steps:
       - uses: actions/checkout@v5
@@ -70,6 +101,8 @@ jobs:
 
   ui:
     name: UI type check + build
+    needs: detect
+    if: ${{ needs.detect.outputs.ui == 'true' }}
     runs-on: arc-runner-mail-verdict
     steps:
       - uses: actions/checkout@v5
@@ -94,10 +127,19 @@ jobs:
 
   ci-ok:
     name: CI ok
-    needs: [lint, unit, pg, ui]
+    needs: [detect, lint, unit, pg, ui]
     if: ${{ !cancelled() }}
     runs-on: arc-runner-mail-verdict
     steps:
-      - name: Fail if any dependency failed
-        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
-        run: exit 1
+      - name: Fail if any required job failed
+        run: |
+          for result in \
+            "${{ needs.lint.result }}" \
+            "${{ needs.unit.result }}" \
+            "${{ needs.pg.result }}" \
+            "${{ needs.ui.result }}"; do
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              echo "A required job did not succeed: $result"
+              exit 1
+            fi
+          done
