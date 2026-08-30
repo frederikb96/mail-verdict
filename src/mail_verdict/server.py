@@ -338,11 +338,14 @@ def _build_fastapi() -> FastAPI:
             },
         )
 
-    app.mount("/api", api_router)
-
     from mail_verdict.api.events import sse_endpoint
 
+    # Registered before the /api mount, because Starlette matches routes in
+    # order and a Mount claims every path beneath it: appended afterwards,
+    # this route is unreachable and the endpoint answers 404.
     app.router.routes.append(Route("/api/events", sse_endpoint))
+
+    app.mount("/api", api_router)
 
     return app
 
