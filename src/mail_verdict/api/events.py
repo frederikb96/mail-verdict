@@ -160,42 +160,14 @@ async def _sse_generator(
         event_ring.unregister_waiter(waiter, account_id)
 
 
-def _validate_api_key(request: Request) -> bool:
-    """
-    Validate API key from X-API-Key header or query parameter.
-
-    Mirrors the FastAPI require_auth dependency but works with raw Starlette
-    requests (SSE route bypasses FastAPI middleware stack).
-
-    Args:
-        request: Starlette request
-
-    Returns:
-        True if auth passes (key valid or auth disabled)
-    """
-    from mail_verdict.api.auth import is_valid_api_key
-
-    api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    return is_valid_api_key(api_key)
-
-
 async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
     """
     SSE endpoint handler.
-
-    Validates API key before streaming (this route bypasses FastAPI's
-    dependency injection since it's mounted as a raw Starlette Route).
 
     Supports ?account_id=<uuid> for per-account filtering.
     Supports Last-Event-ID header (auto-reconnect) and ?last_event_id query
     parameter (manual reconnect) for replay.
     """
-    if not _validate_api_key(request):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Invalid or missing API key"},
-        )
-
     if _event_ring is None:
         return StreamingResponse(
             iter([": server not ready\n\n"]),

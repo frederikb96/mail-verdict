@@ -1,23 +1,35 @@
 """
 Per-rule AI enrichment via LLM classification.
 
-Custom prompt + tag list -> LLM -> validated tag output. Uses the same
-Anthropic client and model setting as the spam analyst.
+Custom prompt + tag list -> LLM -> validated tag output. Reads the ai/retry
+settings fresh on every run(), through the same provider dispatch and
+schema enforcement the spam analyst uses, so a provider or model switch
+takes effect on the next rule evaluation with no restart.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mail_verdict.core.prompts import render_prompt
+from mail_verdict.core.retry import RetryConfig
+from mail_verdict.core.structured_llm import (
+    call_anthropic_structured,
+    call_openai_structured,
+    resolve_client,
+)
 from mail_verdict.rules.conditions import MailContext
+
+if TYPE_CHECKING:
+    from mail_verdict.settings.credentials import ProviderCredentialRepository
+    from mail_verdict.settings.service import SettingsService
 
 logger = logging.getLogger(__name__)
 
 MAX_ENRICHMENT_CONTENT_LENGTH = 5_000
+MAX_REASONING_LENGTH = 200
 
 
 @dataclass
@@ -39,33 +51,64 @@ class EnrichmentConfig:
     tags: list[str] = field(default_factory=list)
 
 
+def _build_schema(allowed_tags: list[str]) -> dict[str, Any]:
+    """Build a strict JSON schema constraining tags to the rule's allowed list."""
+    return {
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string", "enum": allowed_tags},
+            },
+            "reasoning": {"type": "string", "maxLength": MAX_REASONING_LENGTH},
+        },
+        "required": ["tags", "reasoning"],
+        "additionalProperties": False,
+    }
+
+
+def _validate_enrichment_shape(data: dict[str, Any]) -> None:
+    """
+    Validate a parsed enrichment response.
+
+    Args:
+        data: Parsed JSON response
+
+    Raises:
+        ValueError: If tags or reasoning is missing or malformed
+    """
+    tags = data.get("tags")
+    if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+        raise ValueError("'tags' must be a list of strings")
+    if not isinstance(data.get("reasoning"), str):
+        raise ValueError("Missing 'reasoning' in response")
+
+
 class EnrichmentRunner:
     """
     Runs AI enrichment for a single rule's config.
 
-    Builds prompt from rule config + mail context, calls LLM,
-    validates output against allowed tag list.
+    Builds prompt from rule config + mail context, calls the currently
+    configured provider under a strict tag schema, validates output
+    against the rule's allowed tag list.
     """
 
     def __init__(
         self,
-        ai_model: str,
-        max_tokens: int = 256,
-        max_retries: int = 2,
+        settings_service: SettingsService,
+        cred_repo: ProviderCredentialRepository,
         excerpt_length: int = 500,
     ) -> None:
         """
         Initialize enrichment runner.
 
         Args:
-            ai_model: Anthropic model identifier from settings
-            max_tokens: Max tokens in the LLM response
-            max_retries: Retries on malformed LLM output
+            settings_service: Application settings service
+            cred_repo: Provider API key repository
             excerpt_length: Max chars of body to include in prompt
         """
-        self._model = ai_model
-        self._max_tokens = max_tokens
-        self._max_retries = max_retries
+        self._settings = settings_service
+        self._cred_repo = cred_repo
         self._excerpt_length = excerpt_length
 
     async def run(
@@ -102,127 +145,46 @@ class EnrichmentRunner:
             body_excerpt=body_excerpt,
         )
 
-        for attempt in range(self._max_retries + 1):
-            try:
-                raw_response = await self._call_llm(system_prompt, user_prompt)
-                result = self._parse_and_validate(raw_response, config.tags)
-                return result
-            except (json.JSONDecodeError, KeyError, ValueError) as exc:
-                if attempt < self._max_retries:
-                    logger.warning(
-                        "Enrichment LLM returned malformed output, retrying",
-                        extra={"attempt": attempt + 1, "error": str(exc)},
-                    )
-                    continue
-                logger.error(
-                    "Enrichment failed after retries",
-                    extra={"error": str(exc)},
-                )
-                return EnrichmentResult(
-                    success=False,
-                    error=f"Malformed LLM output: {exc}",
-                )
-            except Exception as exc:
-                logger.error(
-                    "Enrichment LLM call failed",
-                    extra={"error": str(exc)},
-                )
-                return EnrichmentResult(
-                    success=False,
-                    error=str(exc),
-                )
+        try:
+            data = await self._call_provider(system_prompt, user_prompt, config.tags)
+        except Exception as exc:
+            logger.error("Enrichment LLM call failed", extra={"error": str(exc)})
+            return EnrichmentResult(success=False, error=str(exc))
 
-        return EnrichmentResult(success=False, error="Max retries exceeded")
+        return EnrichmentResult(
+            tags=list(data["tags"]), reasoning=str(data["reasoning"]), success=True,
+        )
 
-    async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """
-        Call the LLM API and return raw response text.
-
-        Args:
-            system_prompt: System message for the LLM
-            user_prompt: User message with email context
-
-        Returns:
-            Raw response text from the LLM
-        """
-        from mail_verdict.core.anthropic_provider import get_anthropic_client
-
-        client = get_anthropic_client()
-        if client is None:
-            raise RuntimeError("No Anthropic API key configured")
+    async def _call_provider(
+        self, system_prompt: str, user_prompt: str, allowed_tags: list[str],
+    ) -> dict[str, Any]:
+        """Dispatch to the currently configured provider under a strict tag schema."""
+        ai_settings = self._settings.get("ai")
+        provider = str(ai_settings.get("provider", "openai")).lower()
+        retry_config = RetryConfig.from_settings(self._settings.get("retry"))
+        client = await resolve_client(provider, self._cred_repo)
+        model = str(ai_settings.get("enrichment_model") or ai_settings.get("model", ""))
+        effort = ai_settings.get("reasoning_effort") or None
+        max_tokens = 256
+        schema = _build_schema(allowed_tags)
 
         logger.debug(
             "Enrichment prompt",
             extra={
-                "system_prompt": system_prompt,
-                "user_prompt": user_prompt,
-                "model": self._model,
+                "provider": provider, "model": model,
+                "system_prompt": system_prompt, "user_prompt": user_prompt,
             },
         )
 
-        response = await client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-
-        content = "".join(block.text for block in response.content if block.type == "text")
-        if not content:
-            raise ValueError("LLM returned empty response")
-        return content
-
-    def _parse_and_validate(
-        self,
-        raw: str,
-        allowed_tags: list[str],
-    ) -> EnrichmentResult:
-        """
-        Parse LLM JSON output and validate tags against allowed list.
-
-        Args:
-            raw: Raw LLM response string
-            allowed_tags: Tags allowed for this rule
-
-        Returns:
-            Validated EnrichmentResult
-
-        Raises:
-            json.JSONDecodeError: If output is not valid JSON
-            KeyError: If required keys are missing
-            ValueError: If tags contain invalid values
-        """
-        # Strip markdown fences if present
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            lines = cleaned.split("\n")
-            lines = [ln for ln in lines if not ln.strip().startswith("```")]
-            cleaned = "\n".join(lines)
-
-        data: dict[str, Any] = json.loads(cleaned)
-
-        if "tags" not in data:
-            raise KeyError("Missing 'tags' key in LLM response")
-
-        raw_tags: list[str] = data["tags"]
-        if not isinstance(raw_tags, list):
-            raise ValueError(f"Expected list for 'tags', got {type(raw_tags)}")
-
-        allowed_lower = {t.lower(): t for t in allowed_tags}
-        validated_tags: list[str] = []
-        for tag in raw_tags:
-            tag_lower = tag.lower()
-            if tag_lower in allowed_lower:
-                validated_tags.append(allowed_lower[tag_lower])
-            else:
-                logger.warning(
-                    "Enrichment returned tag not in allowed list",
-                    extra={"tag": tag, "allowed": allowed_tags},
-                )
-
-        reasoning = data.get("reasoning", "")
-        return EnrichmentResult(
-            tags=validated_tags,
-            reasoning=str(reasoning),
-            success=True,
-        )
+        if provider == "anthropic":
+            return await call_anthropic_structured(
+                client, model, effort, max_tokens, system_prompt, user_prompt, schema,
+                retry_config, validate=_validate_enrichment_shape,
+            )
+        if provider == "openai":
+            return await call_openai_structured(
+                client, model, effort, max_tokens, "enrichment_tags",
+                system_prompt, user_prompt, schema,
+                retry_config, validate=_validate_enrichment_shape,
+            )
+        raise ValueError(f"Unknown ai.provider {provider!r}")

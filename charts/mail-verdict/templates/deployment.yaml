@@ -55,26 +55,34 @@ spec:
             - name: MAIL_VERDICT_CONFIG_OVERRIDE_PATH
               value: {{ .Values.configOverridePath | quote }}
             # Names match the `${VAR}` placeholders the image's bundled
-            # config/config.yaml already resolves `server.api_key` and
-            # `database.url` from -- no config: override needed for these.
+            # config/config.yaml already resolves `database.url` and
+            # `security.encryption_key` from -- no config: override needed
+            # for these.
             - name: MAIL_VERDICT_DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: {{ include "mail-verdict.secretName" . }}
                   key: {{ .Values.existingSecretKeys.databaseUrl }}
-            - name: MAIL_VERDICT_API_KEY
+            - name: ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "mail-verdict.secretName" . }}
-                  key: {{ .Values.existingSecretKeys.apiKey }}
+                  key: {{ .Values.existingSecretKeys.encryptionKey }}
                   optional: true
-            # Read directly by the Anthropic SDK, not resolved through
-            # config.yaml -- see the chart README's auth/config model section.
+            # Provider keys are read as an env-var fallback -- see the
+            # chart README's secrets section. Prefer setting them through
+            # the running application's Settings API instead.
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "mail-verdict.secretName" . }}
                   key: {{ .Values.existingSecretKeys.anthropicApiKey }}
+                  optional: true
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "mail-verdict.secretName" . }}
+                  key: {{ .Values.existingSecretKeys.openaiApiKey }}
                   optional: true
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

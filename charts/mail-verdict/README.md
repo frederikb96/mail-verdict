@@ -61,7 +61,6 @@ helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict \
   --namespace mail --create-namespace \
   --set secret.create=true \
   --set secret.databaseUrl=postgresql+asyncpg://mailverdict:<password>@<host>:5432/postimap \
-  --set secret.apiKey=<generated-key> \
   --set secret.anthropicApiKey=<key>
 ```
 
@@ -90,9 +89,9 @@ This is deliberately freeform. When the app gains new configuration sections in 
 them the same way -- no chart changes needed to use them.
 
 Unlike a chart where the database host has no usable default, `config:` has **no required key**
-here: the image's bundled `config.yaml` already resolves `server.api_key` from
-`${MAIL_VERDICT_API_KEY}` and `database.url` from `${MAIL_VERDICT_DATABASE_URL}` -- both wired
-from the Secret below, never duplicated in the ConfigMap.
+here: the image's bundled `config.yaml` already resolves `database.url` from
+`${MAIL_VERDICT_DATABASE_URL}` and `security.encryption_key` from `${ENCRYPTION_KEY}` -- both
+wired from the Secret below, never duplicated in the ConfigMap.
 
 Anything the config loader doesn't cover directly -- or that you'd rather set as a
 `MAIL_VERDICT_SECTION_KEY` environment variable override instead of YAML -- goes through
@@ -100,28 +99,29 @@ Anything the config loader doesn't cover directly -- or that you'd rather set as
 
 ### Secrets
 
-Three values, one Secret:
+Four values, one Secret:
 
 | Key (`existingSecretKeys.*`) | Env var | Required | Purpose |
 |---|---|---|---|
 | `databaseUrl` | `MAIL_VERDICT_DATABASE_URL` | yes | Full SQLAlchemy async URL, credentials included: `postgresql+asyncpg://mailverdict:<password>@<host>:5432/postimap`. No usable default -- the pod won't start without it. |
-| `apiKey` | `MAIL_VERDICT_API_KEY` | no | The value clients must send as `X-API-Key`. Empty disables auth entirely (dev mode) -- see [Auth model](#auth-model) before leaving this unset on anything reachable outside a trusted network. |
-| `anthropicApiKey` | `ANTHROPIC_API_KEY` | no | Read directly by the Anthropic SDK, not through `config.yaml`. The pod starts without it; the spam pipeline and LLM-backed rule actions fail at call time without it. |
+| `anthropicApiKey` | `ANTHROPIC_API_KEY` | no | Env-var fallback for the Anthropic provider key. Prefer setting it through the running application's Settings API instead (stored encrypted, no restart needed) -- see [Access](#access). |
+| `openaiApiKey` | `OPENAI_API_KEY` | no | Same purpose as `anthropicApiKey`, for the OpenAI provider. |
+| `encryptionKey` | `ENCRYPTION_KEY` | no | Encrypts provider keys stored via the Settings API. Without it, provider keys can only come from the two env vars above. Also usable as PostIMAP's own credential-at-rest key -- one key across the deployment. |
 
-- `secret.create: true` with `secret.databaseUrl` / `secret.apiKey` / `secret.anthropicApiKey` set
-  -- the chart creates the Secret. Convenient for testing; the values end up in Helm release
-  history and (if you commit the values file) in git, so avoid this for anything real.
+- `secret.create: true` with the `secret.*` values set -- the chart creates the Secret. Convenient
+  for testing; the values end up in Helm release history and (if you commit the values file) in
+  git, so avoid this for anything real.
 - `existingSecret: <name>` -- reference a Secret you manage yourself (sealed-secrets,
   external-secrets, manually `kubectl create secret`, ...), with key names configurable via
   `existingSecretKeys`. Takes precedence over `secret.create`.
 
-### Auth model
+### Access
 
-MailVerdict has no login page of its own -- it checks a single `X-API-Key` header (constant-time
-comparison) on `/api/*` and `/mcp`, and nothing else. There is exactly one mechanism, deliberately:
-put whatever authentication a browser needs (OIDC, basic auth, an internal SSO) in front of it at
-the ingress, and have that layer inject the header. No identity provider is hard-coded into this
-chart -- `ingress.annotations` is free-form.
+MailVerdict has no login page and no auth mechanism of its own -- it checks nothing on `/api/*` or
+`/mcp`. The deployment model is an authenticating proxy in front of it: put whatever
+authentication a browser needs (OIDC, basic auth, an internal SSO) at the ingress, so people never
+handle application credentials directly. No identity provider is hard-coded into this chart --
+`ingress.annotations` is free-form.
 
 A worked Traefik example, assuming [traefik/traefik](https://github.com/traefik/traefik-helm-chart)
 with the CRD provider and some ForwardAuth-capable service already running at
@@ -138,42 +138,21 @@ spec:
     address: https://auth.example.com/verify
     authResponseHeaders:
       - X-Forwarded-User
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: mailverdict-inject-api-key
-  namespace: mail
-spec:
-  headers:
-    customRequestHeaders:
-      X-API-Key: the-same-value-as-secret.apiKey
 ```
 
-Chain both on the Ingress with the standard Traefik annotation, in order (auth first, then
-inject):
+Attach it on the Ingress with the standard Traefik annotation:
 
 ```yaml
 ingress:
   annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: >-
-      mail-mailverdict-forwardauth@kubernetescrd,mail-mailverdict-inject-api-key@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: mail-mailverdict-forwardauth@kubernetescrd
 ```
 
-The `customRequestHeaders` value above is itself a plaintext secret sitting in a `Middleware`
-object -- treat that CRD the same way you'd treat any other place holding the API key (restrict
-RBAC read access to it, or generate it from a SealedSecret / external-secrets source rather than
-committing it in plain YAML).
-
-`apiIngress` is a second, independent Ingress for callers that authenticate themselves --
-MCP clients, scripts -- and should not go through the ForwardAuth middleware at all, since they
-already send `X-API-Key` directly. Route it at a path or host your ForwardAuth Middleware doesn't
-match (a separate `IngressRoute` path exclusion, or simply a different subdomain).
-
-Nothing in the application enforces this split; if your ingress setup makes ForwardAuth awkward
-for some reason, plain API-key auth without any ForwardAuth layer works too -- disable `ingress`
-and use only `apiIngress`, or drop the ForwardAuth middleware annotation from `ingress` and let
-browsers send the key some other way you control.
+`apiIngress` is a second, independent Ingress for programmatic clients (MCP clients, scripts) that
+can't do an interactive browser login flow. Route it at a host/path the ForwardAuth middleware
+above doesn't intercept, and put whatever mechanism suits a machine client in front of it instead
+-- mTLS, a static bearer token verified by a different ForwardAuth service, an IP allowlist.
+Entirely a proxy-level decision; the application enforces nothing itself either way.
 
 ### Readiness probe
 
@@ -220,13 +199,13 @@ transient database outage doesn't cause a restart loop on top of the outage.
 | `config` | `{}` | Sparse override merged onto the image's `config/config.yaml`. See [Configuration model](#configuration-model). |
 | `configOverridePath` | `/app/config-custom/config.override.yaml` | Mount path for the rendered override; matches the image's working directory. |
 | `secret.create` | `false` | See [Secrets](#secrets). |
-| `secret.databaseUrl` / `secret.apiKey` / `secret.anthropicApiKey` | `""` | |
+| `secret.databaseUrl` / `secret.anthropicApiKey` / `secret.openaiApiKey` / `secret.encryptionKey` | `""` | |
 | `existingSecret` | `""` | Takes precedence over `secret.create`. |
-| `existingSecretKeys.databaseUrl` / `.apiKey` / `.anthropicApiKey` | `MAIL_VERDICT_DATABASE_URL` / `MAIL_VERDICT_API_KEY` / `ANTHROPIC_API_KEY` | Key names to read from `existingSecret`. |
-| `ingress.enabled` | `false` | Browser-facing route. See [Auth model](#auth-model). |
+| `existingSecretKeys.databaseUrl` / `.anthropicApiKey` / `.openaiApiKey` / `.encryptionKey` | `MAIL_VERDICT_DATABASE_URL` / `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `ENCRYPTION_KEY` | Key names to read from `existingSecret`. |
+| `ingress.enabled` | `false` | Browser-facing route. See [Access](#access). |
 | `ingress.className` / `.annotations` / `.host` / `.path` / `.pathType` | `""` / `{}` / `""` / `/` / `Prefix` | |
 | `ingress.tls.enabled` / `.secretName` | `false` / `""` | |
-| `apiIngress.*` | same shape as `ingress.*`, all disabled/empty by default | Programmatic route, not behind ForwardAuth. See [Auth model](#auth-model). |
+| `apiIngress.*` | same shape as `ingress.*`, all disabled/empty by default | Programmatic route, not behind the browser ForwardAuth flow. See [Access](#access). |
 
 ## Development
 

@@ -124,9 +124,10 @@ def _resolve_placeholders(value: Any) -> Any:
     if isinstance(value, str):
         def _sub(match: re.Match[str]) -> str:
             # Unset env vars resolve to "" rather than raising -- some
-            # placeholders (server.api_key) are legitimately optional, and
-            # emptiness is validated per-field where it actually matters
-            # (DatabaseConfig.url) rather than blanket-enforced here.
+            # placeholders (security.encryption_key) are legitimately
+            # optional, and emptiness is validated per-field where it
+            # actually matters (DatabaseConfig.url) rather than
+            # blanket-enforced here.
             return os.environ.get(match.group(1), "")
 
         return _PLACEHOLDER_RE.sub(_sub, value)
@@ -228,10 +229,16 @@ class ServerConfig(BaseModel):
     port: int
     log_level: str
     cors_origins: list[str] = Field(default_factory=list)
-    # Empty string (unresolved ${MAIL_VERDICT_API_KEY}) means auth is
-    # disabled -- dev mode. This is the one config value allowed to be
-    # legitimately blank; everything else fails fast on a missing key.
-    api_key: str = ""
+
+
+class SecurityConfig(BaseModel):
+    """Encryption key for provider API keys stored in the database."""
+
+    # Empty string (unresolved ${ENCRYPTION_KEY}) means the settings API
+    # cannot store a provider key -- an environment variable is still
+    # accepted as a fallback. Legitimately blank for a deployment that
+    # prefers env-var-only provider keys, unlike database.url below.
+    encryption_key: str = ""
 
 
 class DatabaseConfig(BaseModel):
@@ -267,6 +274,7 @@ class InfraConfig(BaseModel):
     """
 
     server: ServerConfig
+    security: SecurityConfig
     database: DatabaseConfig
 
 
@@ -294,6 +302,7 @@ def get_config() -> InfraConfig:
         try:
             _config_instance = InfraConfig(
                 server=ServerConfig(**(cfg.get("server") or {})),
+                security=SecurityConfig(**(cfg.get("security") or {})),
                 database=DatabaseConfig(**database_cfg),
             )
         except ValidationError as exc:

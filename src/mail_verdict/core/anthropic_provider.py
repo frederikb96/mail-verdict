@@ -1,53 +1,45 @@
 """
-Anthropic client singleton.
+Anthropic client cache.
 
-Mirrors the shape of the settings-driven provider pattern this project
-already uses: a lazily-created client, reset between requests/tests, backed
-by ANTHROPIC_API_KEY from the environment (never stored in settings --
-secrets don't live in Postgres).
+Holds one lazily-built AsyncAnthropic client, rebuilt only when the caller
+hands in a different API key than the one it was built with. Callers
+resolve the key fresh on every use (see settings/credentials.py) so a
+rotated key takes effect on the next call rather than the next restart;
+this module exists only to avoid rebuilding the underlying HTTP client on
+every single message when the key hasn't changed.
 """
 
 from __future__ import annotations
 
-import os
-
 from anthropic import AsyncAnthropic
 
 _client: AsyncAnthropic | None = None
-_client_initialized = False
+_client_key: str | None = None
 
 
-def init_anthropic_provider() -> AsyncAnthropic | None:
+def get_anthropic_client(api_key: str | None) -> AsyncAnthropic | None:
     """
-    Create the global Anthropic client if ANTHROPIC_API_KEY is set.
+    Get a client for the given API key, rebuilding only if the key changed.
+
+    Args:
+        api_key: The resolved Anthropic API key, or None if none is configured
 
     Returns:
-        The client, or None if no API key is configured
+        A client, or None if api_key is falsy
     """
-    global _client, _client_initialized
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        _client = AsyncAnthropic()
-    else:
+    global _client, _client_key
+    if not api_key:
         _client = None
-    _client_initialized = True
-    return _client
-
-
-def get_anthropic_client() -> AsyncAnthropic | None:
-    """
-    Get the global Anthropic client, initializing it on first call.
-
-    Returns:
-        The client, or None if no API key is configured
-    """
-    global _client_initialized
-    if not _client_initialized:
-        init_anthropic_provider()
+        _client_key = None
+        return None
+    if _client is None or api_key != _client_key:
+        _client = AsyncAnthropic(api_key=api_key)
+        _client_key = api_key
     return _client
 
 
 def reset_anthropic_provider() -> None:
-    """Reset the cached client. Useful for testing."""
-    global _client, _client_initialized
+    """Reset the cached client. Useful for testing and shutdown."""
+    global _client, _client_key
     _client = None
-    _client_initialized = False
+    _client_key = None

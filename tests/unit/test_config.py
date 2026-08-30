@@ -104,12 +104,13 @@ class TestResolvePlaceholders:
     def test_unset_var_resolves_to_empty_string(self) -> None:
         """An unset env var resolves to '' rather than raising.
 
-        server.api_key relies on exactly this: an unconfigured
-        MAIL_VERDICT_API_KEY means auth is disabled, not a startup crash.
+        security.encryption_key relies on exactly this: an unconfigured
+        ENCRYPTION_KEY disables storing provider keys via the settings API,
+        not a startup crash.
         """
         os.environ.pop("MV_TEST_DEFINITELY_UNSET", None)
-        result = _resolve_placeholders({"api_key": "${MV_TEST_DEFINITELY_UNSET}"})
-        assert result == {"api_key": ""}
+        result = _resolve_placeholders({"encryption_key": "${MV_TEST_DEFINITELY_UNSET}"})
+        assert result == {"encryption_key": ""}
 
     def test_recurses_into_nested_structures(self) -> None:
         """Placeholders are resolved inside nested dicts and lists."""
@@ -166,9 +167,9 @@ class TestGetConfig:
         with pytest.raises(ConfigError, match="database.url"):
             get_config()
 
-    def test_empty_api_key_is_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An empty api_key is accepted -- it means auth is disabled, not invalid config."""
-        cfg_dict = make_config(server={"api_key": ""})
+    def test_empty_encryption_key_is_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An empty encryption_key is accepted -- stored provider keys are just unavailable."""
+        cfg_dict = make_config(security={"encryption_key": ""})
         monkeypatch.setattr(loader, "_CONFIG", cfg_dict)
         config = get_config()
-        assert config.server.api_key == ""
+        assert config.security.encryption_key == ""

@@ -6,6 +6,7 @@ Replaces 6 copy-paste retry extraction patterns across the codebase.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,9 +48,14 @@ class RetryConfig:
 
     def delay_for_attempt(self, attempt: int) -> float:
         """
-        Calculate exponential backoff delay for a retry attempt.
+        Calculate a full-jitter exponential backoff delay for a retry attempt.
+
+        Full jitter (a uniform draw over [0, cap], not a fixed backoff plus
+        noise) is what keeps many workers retrying the same provider at once
+        from re-synchronizing on the next attempt.
 
         Args:
             attempt: Zero-indexed attempt number
         """
-        return min(self.base_delay * (self.exp_base ** attempt), self.max_delay)
+        cap = min(self.max_delay, self.base_delay * (self.exp_base ** attempt))
+        return random.uniform(0, cap)

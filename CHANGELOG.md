@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Application-level auth removed entirely:** `MAIL_VERDICT_API_KEY`, `require_auth`, `ApiKeyASGIMiddleware` and every `X-API-Key` check are gone from `/api/*`, `/mcp` and the SSE endpoint. The deployment model is an authenticating proxy in front of the application; the chart's `secret.apiKey` / `existingSecretKeys.apiKey` values are gone with it
+- **Settings genuinely take effect at runtime:** the spam processor and rules engine are now constructed unconditionally at startup and consult current settings on every event, instead of only existing when spam was enabled or a rule list was non-empty at process start. Enabling spam, adding a first rule, or switching AI provider/model/reasoning effort through the settings API changes behaviour on the next message, not the next restart
+- **Default AI provider is now OpenAI**, default model `gpt-5.4-nano`, default `reasoning_effort` `none`. Anthropic remains fully supported via `ai.provider: "anthropic"`
+- **Provider API keys move into the database, encrypted:** settable and reportable as present (with a last-four hint) through `PUT /api/settings/ai`'s `anthropic_api_key` / `openai_api_key` fields, never returned by any read. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars remain a fallback. Requires `security.encryption_key` (`ENCRYPTION_KEY`, AES-256-GCM, 64 hex chars) — the same key format and, optionally, the same value PostIMAP uses for its own credential encryption
+- **Config shrunk to infrastructure only:** `server.api_key` is gone; `security.encryption_key` is the only addition
+- **Spam classification uses a strict JSON schema** (Anthropic's `output_config.format`, OpenAI's `text.format` with `strict: true`) instead of a loosely-requested JSON object, and every verdict now carries a one-sentence `reasoning` alongside the classification
 ### Added
 
+- **OpenAI as a first-class `SpamAnalyst` provider**, selected the same way as `anthropic`/`fake` via `ai.provider`
+- **`ai.reasoning_effort` setting**, validated against the selected provider's supported levels at write time rather than failing on the next inbound message
+- **`core/structured_llm.py`:** the one place a classification or enrichment request leaves the process — provider client resolution, strict-schema dispatch, and full-jitter exponential backoff (1s base, 20s cap, 5 attempts) shared by the spam analyst and rule enrichment
+- **`core/errors.ProviderUnavailableError`:** a narrow exception for "no API key configured", so callers degrade on exactly that instead of a bare except swallowing a real request bug
+- **`core/encryption.py` / `settings/credentials.py`:** AES-256-GCM provider key storage, decrypted fresh on every call rather than cached, so rotating a key or setting `ENCRYPTION_KEY` for the first time takes effect on the next call
 - **`verdicts.msg_key`:** the durable identity a verdict is keyed on — the message's RFC
   `Message-ID` header when present, otherwise a hash of its envelope. A message with no header
   used to skip the never-reclassify gate entirely and be reclassified on every resync; the hash
@@ -28,12 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   pool can actually support is rejected with `400` rather than silently serialising workers.
 - **`queue_state` / `circuit_breakers` tables:** the persisted, restart-surviving half of the
   queue engine's operator state and circuit breaker health.
-
 ### Changed
 
+- Rule enrichment (`rules/enrichment.py`) now goes through the same provider dispatch and strict schema as spam classification, instead of being hardcoded to a captured-at-startup Anthropic model
+- `RulesEngine` re-parses the rule list from settings on every event instead of once at construction
+- `RetryConfig.delay_for_attempt` uses full jitter (a uniform draw over `[0, cap]`) instead of a fixed exponential value; default `retry` settings changed to 5 attempts, 1s base, 20s cap
 - **PostIMAP pinned to 1.5.0**, which adds consumer-driven folder creation and deletion, durable sync notifications, per-folder IMAP push, a draft-replace column, and a per-folder backfill total that gives an initial sync a denominator. Insert grants are now column-level rather than table-level, so writing a PostIMAP-managed column is refused rather than silently accepted. The consumer contract version is unchanged, so every addition is additive.
 - **PostgreSQL image now ships pgvector** (`pgvector/pgvector:pg18`), in both compose files and the test container. The stock image carries no `vector` extension, and pgvector is not a trusted extension so it cannot be added by an unprivileged role at runtime. Same major version and data directory as before, so an existing volume mounts unchanged. Deployments supplying their own PostgreSQL must provide the extension; on Kubernetes that means a vector-enabled image.
-
 ### Fixed
 
 - **Verdict durability gate no longer skipped for headerless mail:** the partial unique index
@@ -41,7 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Contract-owned columns are no longer written.** `outbox.status`, `outbox.attempts` and `accounts.state` are managed by PostIMAP, but the ORM models carried Python-side defaults for them, which SQLAlchemy sends on every insert regardless of what the calling code specifies. The tables carry table-level insert grants, so those writes were accepted rather than refused, and only matched PostIMAP's own initial values by coincidence — a divergence would have left outbox rows the processor never claims, so mail would have stopped sending with nothing reporting an error.
 - **Account health:** an account in `error` that has completed a full sync before is shown as `Retrying` rather than as a failure, since PostIMAP retries it unboundedly and it recovers on its own. Only an account that has never once synced is presented as needing attention.
 - **Spam prompt:** removed the description of a `neighbors` input that is never sent, so the classifier is no longer instructed to weigh context it does not receive.
-
 
 ## [1.0.0] - 2026-08-30
 

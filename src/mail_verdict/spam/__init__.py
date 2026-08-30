@@ -1,8 +1,8 @@
 """MailVerdict spam detection module."""
 
 from mail_verdict.spam.analyst import (
-    AnthropicSpamAnalyst,
     FakeSpamAnalyst,
+    LiveSpamAnalyst,
     SpamAnalyst,
     SpamVerdict,
 )
@@ -12,8 +12,8 @@ from mail_verdict.spam.pipeline import VerdictPipeline
 from mail_verdict.spam.processor import SpamEventProcessor
 
 __all__ = [
-    "AnthropicSpamAnalyst",
     "FakeSpamAnalyst",
+    "LiveSpamAnalyst",
     "SpamAnalyst",
     "SpamEventProcessor",
     "SpamFeedbackHandler",

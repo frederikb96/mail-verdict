@@ -1,8 +1,9 @@
 # MailVerdict Infrastructure Configuration
 #
 # This file contains ONLY infrastructure settings (file-based, requires a
-# restart to take effect). Application settings (AI, spam, rules, retry)
-# live in the database and are managed via the Settings API.
+# restart to take effect). Application settings (AI, spam, rules, retry) --
+# including provider API keys -- live in the database and are managed via
+# the Settings API.
 #
 # Override: config-custom/config.override.yaml (sparse, only changed values)
 # or MAIL_VERDICT_<SECTION>_<KEY> environment variables.
@@ -12,7 +13,13 @@ server:
   port: 8080
   log_level: INFO
   cors_origins: []            # same-origin serving by default; empty disables CORS
-  api_key: "${MAIL_VERDICT_API_KEY}"   # empty (unset env var) disables auth -- dev mode
+
+security:
+  # AES-256-GCM key (64 hex characters / 32 bytes) encrypting provider API
+  # keys stored via the Settings API. Empty disables storing a key that
+  # way -- ANTHROPIC_API_KEY / OPENAI_API_KEY environment variables still
+  # work as a fallback. Generate: python -c "import os; print(os.urandom(32).hex())"
+  encryption_key: "${ENCRYPTION_KEY}"
 
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"

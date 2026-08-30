@@ -47,9 +47,9 @@ dominate the run otherwise.
 | `unit` | Pure logic: rules, config loading, sanitizers, prompt rendering, cursors | Nothing |
 | `pg` | Migrations alongside PostIMAP's schema, the contract version gate, the notification listener, and every write the contract permits | PostgreSQL, PostIMAP |
 | `e2e` | Whole flows with the application running in-process: accounts, mail actions, sending, spam, rules, search | The above plus Dovecot and Mailpit |
-| `llm` | Classification against the real model | An `ANTHROPIC_API_KEY`. Excluded from CI; run it deliberately |
+| `llm` | Classification against the real model, both providers | `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Excluded from CI (`pytest tests/unit/ -m "not llm"`); run it deliberately |
 
-The `llm` layer asserts its key is present and fails loudly without one.
+The `llm` layer asserts its keys are present and fails loudly without them.
 
 ## Running the application
 
