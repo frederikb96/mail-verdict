@@ -52,6 +52,8 @@ spec:
               containerPort: {{ include "mail-verdict.appPort" . }}
               protocol: TCP
           env:
+            - name: MAIL_VERDICT_CONFIG_OVERRIDE_PATH
+              value: {{ .Values.configOverridePath | quote }}
             # Names match the `${VAR}` placeholders the image's bundled
             # config/config.yaml already resolves `server.api_key` and
             # `database.url` from -- no config: override needed for these.

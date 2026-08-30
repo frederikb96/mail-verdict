@@ -188,8 +188,8 @@
       "additionalProperties": true
     },
     "configOverridePath": {
-      "const": "/app/config-custom/config.override.yaml",
-      "description": "Fixed: the application reads this exact path and has no setting to relocate it."
+      "type": "string",
+      "minLength": 1
     },
     "secret": {
       "type": "object",

@@ -184,10 +184,8 @@ config: {}
 #   max_overflow: 5
 
 # -- Path the config override ConfigMap is mounted at inside the container.
-# Fixed, and pinned in values.schema.json: the application reads this exact
-# path and has no setting to relocate it, so a different value here would
-# mount the ConfigMap somewhere nothing reads and the override would be
-# silently ignored.
+# Passed to the application as MAIL_VERDICT_CONFIG_OVERRIDE_PATH, so the mount
+# and the path the application reads cannot drift apart.
 configOverridePath: /app/config-custom/config.override.yaml
 
 secret:
