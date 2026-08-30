@@ -194,3 +194,29 @@ class TestCssRemoteContent:
         out = sanitize_email_html('<div style="color:blue">x</div>')
         assert "color:blue" in out
         assert "data-x-style" not in out
+
+
+class TestAttributeQuotingCannotBypassBlocking:
+    """A sender writes the HTML, so they choose the quoting.
+
+    Matching attributes in the raw message means matching every shape a
+    sender might produce, and an unquoted attribute slips a pattern written
+    for quoted ones -- silently, because the rewrite simply does not fire
+    and nothing downstream can tell. Sanitizing first normalises every
+    attribute to one form, so there is one shape to match.
+    """
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            '<div style=background-image:url(http://evil.test/t.png)>x</div>',
+            '<div style="background-image:url(http://evil.test/t.png)">x</div>',
+            "<div style='background:url(http://evil.test/t.png)'>x</div>",
+            "<img src=http://evil.test/p.gif>",
+            '<img src="http://evil.test/p.gif">',
+        ],
+    )
+    def test_however_it_is_quoted_it_is_blocked(self, html: str) -> None:
+        """The remote reference never survives into a live attribute."""
+        out = sanitize_email_html(html)
+        assert "evil.test" not in out.split("data-x-")[0]

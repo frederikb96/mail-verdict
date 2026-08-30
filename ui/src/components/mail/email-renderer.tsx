@@ -81,10 +81,28 @@ function stripRemoteImages(html: string): {
   return { html: stripped, hadRemoteImages };
 }
 
-/** Linkify URLs in plain text. */
-function linkifyText(text: string): string {
-  const urlPattern = /(https?:\/\/[^\s<]+)/g;
-  return text.replace(
+/** Escape every character that can change the meaning of markup.
+ *
+ * Quotes matter as much as angle brackets here: the linkifier below places a
+ * matched URL inside an href attribute, so an unescaped quote closes that
+ * attribute and everything after it is parsed as further attributes -- which
+ * is an event handler if the sender wants one.
+ */
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Linkify URLs in already-escaped plain text. */
+export function linkifyText(escaped: string): string {
+  // Stops at a quote entity as well as whitespace, so a URL cannot swallow
+  // the boundary of the attribute it is about to be placed in.
+  const urlPattern = /(https?:\/\/(?:(?!&quot;|&#39;|&lt;|&gt;)[^\s<>"'])+)/g;
+  return escaped.replace(
     urlPattern,
     '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>',
   );
@@ -151,11 +169,19 @@ export function EmailRenderer({
       content = processedHtml;
     } else if (plainText) {
       // Render plain text with preserved whitespace and linkified URLs
-      const escaped = plainText
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
-      content = `<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${linkifyText(escaped)}</pre>`;
+      // Sanitized like the HTML path rather than trusted for being "just
+      // text": everything here is still assigned through innerHTML, so an
+      // escaping mistake in the linkifier would be an injection rather than
+      // a rendering glitch.
+      const linked = linkifyText(escapeHtml(plainText));
+      content = DOMPurify.sanitize(
+        `<pre style="white-space: pre-wrap; font-family: inherit; margin: 0;">${linked}</pre>`,
+        {
+          ALLOW_UNKNOWN_PROTOCOLS: false,
+          ALLOWED_TAGS: ["pre", "a", "br"],
+          ALLOWED_ATTR: ["href", "target", "rel", "style"],
+        },
+      );
     } else {
       content = '<p style="color: #71717a; font-style: italic;">No content available</p>';
     }

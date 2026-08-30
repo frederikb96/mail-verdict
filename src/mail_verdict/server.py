@@ -420,14 +420,24 @@ def create_app() -> ASGIApp:
             if path.startswith("api/") or path.startswith("mcp"):
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
             if path:
+                # Both candidates get the same containment check. A request
+                # path is attacker-controlled, and appending a suffix to it
+                # does not make it safe -- ".." still climbs, it just lands
+                # on a different file.
+                root = ui_build_dir.resolve()
+
+                def _within(candidate: Path) -> bool:
+                    """Whether a candidate resolves inside the build directory."""
+                    try:
+                        return candidate.resolve().is_relative_to(root)
+                    except OSError:
+                        return False
+
                 exact_file = ui_build_dir / path
-                if (
-                    exact_file.is_file()
-                    and exact_file.resolve().is_relative_to(ui_build_dir.resolve())
-                ):
+                if exact_file.is_file() and _within(exact_file):
                     return FileResponse(str(exact_file))
                 page_html = ui_build_dir / f"{path}.html"
-                if page_html.exists():
+                if page_html.is_file() and _within(page_html):
                     return FileResponse(str(page_html))
             index = ui_build_dir / "index.html"
             if index.exists():

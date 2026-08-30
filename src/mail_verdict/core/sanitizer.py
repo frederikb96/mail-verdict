@@ -22,9 +22,16 @@ ALLOWED_TAGS = {
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
     "img": {"src", "data-x-src", "alt", "width", "height", "title"},
-    "td": {"colspan", "rowspan", "align", "valign", "width", "data-x-bg"},
-    "th": {"colspan", "rowspan", "align", "valign", "width"},
-    "table": {"border", "cellpadding", "cellspacing", "width", "align"},
+    # background is allowed through the sanitizer only so the rewrite below
+    # can turn it into data-x-bg. Stripping it outright would block the
+    # remote fetch too, but would also lose it permanently -- an allowlisted
+    # sender could never get their background back.
+    "td": {"colspan", "rowspan", "align", "valign", "width", "background", "data-x-bg"},
+    "th": {"colspan", "rowspan", "align", "valign", "width", "background", "data-x-bg"},
+    "table": {
+        "border", "cellpadding", "cellspacing", "width", "align",
+        "background", "data-x-bg",
+    },
     "font": {"color", "size", "face"},
     "div": {"align"},
     "p": {"align"},
@@ -126,11 +133,17 @@ def sanitize_email_html(html: str) -> str:
     Returns:
         Sanitized HTML safe for rendering in Shadow DOM
     """
-    html = _rewrite_remote_images(html)
-    return nh3.clean(
+    # Sanitize FIRST, then rewrite. Matching attributes in raw email HTML
+    # means matching however the sender chose to write them, and an
+    # unquoted attribute slips a pattern that expects quotes -- which is a
+    # silent hole, since the rewrite simply does not fire. nh3 normalises
+    # every attribute to a quoted form, so rewriting its output matches
+    # one shape rather than every shape a sender might produce.
+    cleaned = nh3.clean(
         html,
         tags=ALLOWED_TAGS,
         attributes=ALLOWED_ATTRIBUTES,
         link_rel="noopener noreferrer",
         url_schemes={"http", "https", "mailto", "cid"},
     )
+    return _rewrite_remote_images(cleaned)

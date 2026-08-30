@@ -78,7 +78,14 @@ async def _parse_request(
             attachments.append((value.filename or "attachment", value.content_type, content))
         return payload, attachments
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        # A body that is not JSON at all is still the client's mistake, and
+        # json() raises before any field is looked at -- so it needs its own
+        # answer rather than falling through to the generic handler.
+        raise HTTPException(status_code=400, detail=f"Body is not valid JSON: {exc}") from exc
+
     try:
         return OutboxCreateRequest.model_validate(body), []
     except ValidationError as exc:
