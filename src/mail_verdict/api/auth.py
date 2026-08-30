@@ -40,7 +40,7 @@ def is_valid_api_key(api_key: str | None) -> bool:
     expected = os.environ.get("MAIL_VERDICT_API_KEY")
     if not expected:
         return True
-    return bool(api_key) and secrets.compare_digest(api_key, expected)
+    return api_key is not None and secrets.compare_digest(api_key, expected)
 
 
 async def require_auth(
@@ -77,7 +77,9 @@ class ApiKeyASGIMiddleware:
         request = Request(scope, receive=receive)
         api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
         if not is_valid_api_key(api_key):
-            response = JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
+            response = JSONResponse(
+                status_code=401, content={"detail": "Invalid or missing API key"},
+            )
             await response(scope, receive, send)
             return
 
