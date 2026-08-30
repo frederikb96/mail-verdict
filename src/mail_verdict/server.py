@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 _postimap_listener: PostimapListener | None = None
 _spam_processor: Any | None = None
 _queue_manager: Any | None = None
+_embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _contract_ok: bool = False
@@ -65,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifespan context manager -- initializes all components via DI."""
     global _postimap_listener, _spam_processor, _contract_ok
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
+    global _embedding_components
 
     config = get_config()
 
@@ -104,6 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         FolderRepository,
         VerdictRepository,
     )
+    from mail_verdict.embeddings.worker import register_embeddings
     from mail_verdict.pipeline.enqueue import (
         build_reconciliation_timer,
         enqueue_live_arrival,
@@ -131,8 +134,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         db, settings_service, cred_repo, account_prefs_repo, event_ring, _pipeline_notifier,
     )
     pipeline_runner.register(_queue_manager)
+
+    # Registered before the manager starts, so its worker supervisor comes up
+    # with the rest. Embedding is upstream of the pipeline: a message is
+    # encoded first and only then becomes eligible for a run, so both queues
+    # have to be running for anything to move.
+    _embedding_components = register_embeddings(
+        _queue_manager, db, cred_repo, settings_service,
+    )
+
     await _queue_manager.start()
-    logger.info("Pipeline runner registered and queue manager started")
+    await _embedding_components.start()
+    logger.info("Pipeline and embedding queues registered and started")
 
     _pipeline_reconciler = build_reconciliation_timer(db, settings_service)
     await _pipeline_reconciler.start()
@@ -196,6 +209,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _postimap_listener.stop()
     if _pipeline_reconciler:
         await _pipeline_reconciler.stop()
+    if _embedding_components:
+        await _embedding_components.stop()
     if _queue_manager:
         await _queue_manager.stop()
     if _pipeline_notifier:
@@ -203,6 +218,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _spam_processor = None
     _queue_manager = None
+    _embedding_components = None
     _pipeline_notifier = None
     _pipeline_reconciler = None
     _contract_ok = False
