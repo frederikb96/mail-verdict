@@ -153,7 +153,10 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    result = await service.update(category, data)
+    try:
+        result = await service.update(category, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if category == "ai":
         result = await _with_ai_credential_status(result)
     return result
@@ -179,6 +182,9 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         data["ai"] = ai_data
 
     service = get_settings_service()
-    result = await service.bulk_import(data)
+    try:
+        result = await service.bulk_import(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     result["ai"] = await _with_ai_credential_status(result["ai"])
     return result

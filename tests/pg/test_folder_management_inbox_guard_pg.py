@@ -149,9 +149,12 @@ class TestInboxGuard:
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         """Control case: an Archive folder is not INBOX by any measure and
-        must reach the real delete, not be rejected by this guard."""
+        must reach the real delete, not be rejected by this guard --
+        confirm_message_count=0 clears the separate delete-confirmation
+        requirement, since this folder was seeded with no messages."""
         folder_id = client.portal.call(_seed_ordinary_folder, migrated_db)
         target = "mail_verdict.api.folder_management.get_db_connection"
         with patch(target, return_value=migrated_db):
-            resp = client.delete(f"/folders/{folder_id}")
+            resp = client.delete(f"/folders/{folder_id}?confirm_message_count=0")
         assert resp.status_code != 400
+        assert resp.status_code == 204

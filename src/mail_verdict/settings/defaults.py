@@ -2,13 +2,20 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, spam, retry, pipeline, semantic.
+Categories: ai, retry, pipeline, semantic.
 
 "rules" is not one of them: a rule is a `match` stage in the pipeline
 now (see pipeline/stages/match.py), and `settings.rules` -- if a pre-
 existing deployment still has one -- is read exactly once, by the
 migration that builds the first pipeline revision from it (see
 alembic/versions/0006_pipeline.py), never at runtime after that.
+
+"spam" is not one of them either, for the same reason: whether spam
+detection runs at all is account_prefs.spam_enabled (a per-account
+preference, PATCH /api/accounts/{id}), and auto-move/auto-mark-read are
+pipeline stages an account's own pipeline document configures --
+GET/PUT /api/settings/spam would read and write a category nothing
+outside that same migration ever looks at again.
 
 """
 
@@ -22,7 +29,6 @@ class SettingCategory(str, enum.Enum):
     """Valid setting categories."""
 
     AI = "ai"
-    SPAM = "spam"
     RETRY = "retry"
     PIPELINE = "pipeline"
     SEMANTIC = "semantic"
@@ -41,14 +47,7 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # tokens at higher effort either, so measure before assuming a
         # higher setting changes anything for a given model.
         "reasoning_effort": "none",
-        "enrichment_model": "gpt-5.4-nano",
         "max_tokens": 1024,
-    },
-    SettingCategory.SPAM: {
-        "enabled": True,
-        "excerpt_length": 300,
-        "auto_move_to_junk": True,
-        "auto_mark_read": True,
     },
     SettingCategory.RETRY: {
         "max_retries": 5,
@@ -57,7 +56,6 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "exponential_base": 2.0,
     },
     SettingCategory.PIPELINE: {
-        "enabled": True,
         # Worker claim/lease mechanics -- see queue/work_queue.py.
         "lease_seconds": 120,
         "poll_interval_seconds": 2.0,
@@ -82,12 +80,15 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # without a key.
         "provider": "openai",
         "model": "text-embedding-3-small",
+        # Gates the periodic reconciler that enqueues missing embeddings
+        # (embeddings/worker.py) -- search and the manual backfill endpoint
+        # still work with this off, they just find nothing new to fill.
+        "enabled": True,
         # Every model is asked to truncate to EMBEDDING_DIMENSIONS
         # (database/models.py) via its own dimensions parameter, so this
         # is never a setting -- changing the column width is a migration.
         "content_chars": 2000,
         "batch_size": 64,
-        "concurrency": 2,
         # Neighbour hints in the classify stage's prompt: the k nearest
         # past messages carrying a human label (a user correction, or the
         # folder they currently sit in -- never the classifier's own past

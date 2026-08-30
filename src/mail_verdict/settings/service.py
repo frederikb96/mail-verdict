@@ -128,15 +128,29 @@ class SettingsService:
         """
         Bulk import settings (merge semantics per category).
 
+        Type-validates each category the same way update() does -- without
+        this, an import accepts a value update() would reject (a string
+        where a number belongs, say) and the mistake surfaces much later,
+        inside whatever worker first reads it.
+
         Args:
             settings: Dict mapping category to partial settings data
 
         Returns:
             All updated settings
+
+        Raises:
+            ValueError: If any category's data has a wrongly-typed value
         """
-        for category, data in settings.items():
-            if category in {cat.value for cat in SettingCategory}:
-                await self._repo.upsert_category(category, data)
+        importable = {
+            category: data
+            for category, data in settings.items()
+            if category in {cat.value for cat in SettingCategory}
+        }
+        for category, data in importable.items():
+            self._validate_types(category, data)
+        for category, data in importable.items():
+            await self._repo.upsert_category(category, data)
         await self.load()
         return self.get_all()
 

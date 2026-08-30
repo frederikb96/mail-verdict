@@ -162,6 +162,21 @@ class TestUpdateSettings:
         resp = client.put("/settings/ai", json={"data": {"provider": "not-a-real-provider"}})
         assert resp.status_code == 400
 
+    def test_wrongly_typed_value_on_a_non_ai_category_is_a_400(self, client: TestClient) -> None:
+        """
+        The ai category's own validate_ai_settings() is caught explicitly,
+        but every other category's type check (SettingsService._validate_types,
+        raised from inside service.update()) needs the same 400, not an
+        unhandled 500 for a mistake this obviously the caller's.
+        """
+        from mail_verdict.api import settings_api as settings_api_module
+
+        service = settings_api_module.get_settings_service()
+        service.update.side_effect = ValueError("Setting 'retry.max_retries' expects int")
+
+        resp = client.put("/settings/retry", json={"data": {"max_retries": "banana"}})
+        assert resp.status_code == 400
+
     def test_round_tripping_a_get_response_never_reaches_the_settings_store(
         self, client: TestClient,
     ) -> None:
@@ -197,10 +212,26 @@ class TestImportSettings:
         resp = client.post("/settings/import", json={
             "data": {
                 "ai": {"model": "imported-model"},
-                "spam": {"enabled": False},
+                "retry": {"max_retries": 3},
             },
         })
         assert resp.status_code == 200
+
+    def test_import_rejects_a_wrongly_typed_value(self, client: TestClient) -> None:
+        """
+        A ValueError raised by the settings service's own type validation
+        (real behaviour covered in test_settings_service.py) must surface
+        through this endpoint as a 400, not an unhandled 500.
+        """
+        from mail_verdict.api import settings_api as settings_api_module
+
+        service = settings_api_module.get_settings_service()
+        service.bulk_import.side_effect = ValueError("Setting 'retry.max_retries' expects int")
+
+        resp = client.post("/settings/import", json={
+            "data": {"retry": {"max_retries": "banana"}},
+        })
+        assert resp.status_code == 400
 
     def test_import_invalid_category_returns_400(self, client: TestClient) -> None:
         """POST /api/settings/import rejects invalid categories."""

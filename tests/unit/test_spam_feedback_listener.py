@@ -114,3 +114,14 @@ async def test_move_with_no_old_folder_id_is_not_a_junk_exit() -> None:
     await listener.handle_message_event(event)
 
     feedback.handle_folder_move_out_of_junk.assert_not_awaited()
+
+
+def test_feedback_handler_is_reachable_without_a_private_attribute() -> None:
+    """
+    A caller outside this listener's own event path (the API's explicit
+    spam/not_spam actions) reaches the same SpamFeedbackHandler this
+    listener uses through a public property -- not by naming its private
+    `_feedback` attribute.
+    """
+    listener, feedback, _ = _make_listener()
+    assert listener.feedback is feedback

@@ -48,6 +48,17 @@ class SpamFeedbackListener:
         self._feedback = feedback
         self._folder_repo = folder_repo
 
+    @property
+    def feedback(self) -> SpamFeedbackHandler:
+        """
+        The contradiction-gated feedback handler.
+
+        Exposed for a caller outside this listener's own postimap_events
+        path -- the API's explicit spam/not_spam actions record feedback
+        the same way an automatic folder-move contradiction does.
+        """
+        return self._feedback
+
     async def handle_message_event(self, event: PostimapEvent) -> None:
         """
         Handle a message event from postimap_events -- only a folder-move
