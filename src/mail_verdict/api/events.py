@@ -17,8 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import secrets
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -175,13 +173,10 @@ def _validate_api_key(request: Request) -> bool:
     Returns:
         True if auth passes (key valid or auth disabled)
     """
-    expected = os.environ.get("MAIL_VERDICT_API_KEY")
-    if not expected:
-        return True
+    from mail_verdict.api.auth import is_valid_api_key
+
     api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    if not api_key:
-        return False
-    return secrets.compare_digest(api_key, expected)
+    return is_valid_api_key(api_key)
 
 
 async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:

@@ -275,7 +275,7 @@ async def _check_contract(db: Any) -> bool:
 
 def _build_fastapi() -> FastAPI:
     """Build the FastAPI root app: MCP mount, API routers, SSE route, health."""
-    from mail_verdict.api.auth import require_auth
+    from mail_verdict.api.auth import ApiKeyASGIMiddleware, require_auth
     from mail_verdict.api.mcp_tools import mcp as mcp_server
 
     # FastMCP's session manager runs its own lifespan; mounting it under a
@@ -291,7 +291,8 @@ def _build_fastapi() -> FastAPI:
 
     # dependencies=[Depends(require_auth)] must live on api_router below, not
     # here: a Mount is an ASGI boundary, and dependencies declared on this
-    # outer app never run for a mounted sub-app's own routes.
+    # outer app never run for a mounted sub-app's own routes. The same trap
+    # applies to /mcp, so it is wrapped in ApiKeyASGIMiddleware instead.
     app = FastAPI(title="MailVerdict", lifespan=combined_lifespan)
 
     config = get_config()
@@ -302,7 +303,7 @@ def _build_fastapi() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.mount("/mcp", mcp_app)
+    app.mount("/mcp", ApiKeyASGIMiddleware(mcp_app))
 
     from mail_verdict.api.routes import all_routers
 
