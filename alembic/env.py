@@ -1,9 +1,10 @@
 """
 Alembic migration environment configuration.
 
-Only manages MailVerdict-owned tables. PostIMAP-owned tables
-(accounts, folders, messages, attachments, sync_queue, sync_state, sync_audit)
-are created by PostIMAP's Kysely migrations and excluded here.
+Only manages MailVerdict-owned tables. PostIMAP-owned tables are created by
+PostIMAP's own migrations and excluded here regardless of whether PostIMAP
+has migrated yet -- owned tables carry no foreign key onto any of them, so
+migration order between the two services never matters.
 """
 
 import asyncio
@@ -32,6 +33,7 @@ target_metadata = Base.metadata
 POSTIMAP_TABLES = frozenset({
     "accounts", "folders", "messages", "attachments",
     "sync_queue", "sync_state", "sync_audit",
+    "outbox", "outbox_attachments", "postimap_info",
 })
 
 

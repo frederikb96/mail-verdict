@@ -121,8 +121,7 @@ class AccountPrefsRepository:
 
         Args:
             account_id: Account UUID
-            **kwargs: Fields to update (emoji, spam_enabled,
-                      embedding_lookback_days, folder_mapping, folder_order)
+            **kwargs: Fields to update (emoji, spam_enabled, folder_order)
 
         Returns:
             Updated AccountPrefs
@@ -211,7 +210,7 @@ class FolderPrefsRepository:
         Args:
             folder_id: Folder UUID
             **kwargs: Fields to update (unified_name, is_visible,
-                      subscribed, display_name)
+                      display_name, special_use_override)
 
         Returns:
             Updated FolderPrefs
@@ -317,7 +316,7 @@ class MessageRepository:
         """
         Get messages in a folder, newest first.
 
-        Excludes soft-deleted messages (deleted_at IS NOT NULL).
+        Excludes expunged messages (expunged_at IS NOT NULL).
 
         Args:
             folder_id: Folder to list
@@ -332,7 +331,7 @@ class MessageRepository:
                 select(Message)
                 .where(
                     Message.folder_id == folder_id,
-                    Message.deleted_at.is_(None),
+                    Message.expunged_at.is_(None),
                 )
                 .order_by(desc(Message.received_at))
                 .limit(limit)
@@ -413,8 +412,12 @@ class MessageRepository:
         Returns:
             Messages ranked by relevance
         """
+        # 'simple' matches the config PostIMAP's search_vector generated
+        # column is built with (see the search_vector column docstring in
+        # database/models.py); an 'english' query config would silently
+        # under-match against a 'simple' index config.
         async with self._db.session() as session:
-            ts_query = func.plainto_tsquery("english", query)
+            ts_query = func.websearch_to_tsquery("simple", query)
 
             if fuzzy:
                 # Combined: tsvector rank + trigram similarity
@@ -424,7 +427,7 @@ class MessageRepository:
                     select(Message)
                     .where(
                         Message.account_id == account_id,
-                        Message.deleted_at.is_(None),
+                        Message.expunged_at.is_(None),
                         (Message.search_vector.op("@@")(ts_query))
                         | (func.similarity(Message.subject, query) >= similarity_threshold)
                         | (func.similarity(Message.body_text, query) >= similarity_threshold),
@@ -438,7 +441,7 @@ class MessageRepository:
                     select(Message)
                     .where(
                         Message.account_id == account_id,
-                        Message.deleted_at.is_(None),
+                        Message.expunged_at.is_(None),
                         Message.search_vector.op("@@")(ts_query),
                     )
                     .order_by(desc(rank))
@@ -464,34 +467,39 @@ class VerdictRepository:
     async def create_verdict(
         self,
         mail_id: uuid.UUID,
+        account_id: uuid.UUID,
         is_spam: bool,
         source: VerdictSource,
         *,
+        message_id_hdr: str | None = None,
         model_used: str | None = None,
         reasoning: str | None = None,
-        neighbor_ids: list[str] | None = None,
     ) -> Verdict:
         """
         Create a new verdict for a message.
 
         Args:
-            mail_id: Message this verdict applies to (FK column is still mail_id)
+            mail_id: Message this verdict applies to
+            account_id: Account the message belongs to
             is_spam: Spam classification result
             source: How this verdict was produced
+            message_id_hdr: RFC Message-ID header, copied at verdict time --
+                the durability gate for source=ai keys on this, not on
+                mail_id, since it must survive retention purge and resync
             model_used: AI model identifier
             reasoning: Explanation text
-            neighbor_ids: Vector search neighbor IDs used for context
 
         Returns:
             Created Verdict
         """
         verdict = Verdict(
             mail_id=mail_id,
+            account_id=account_id,
+            message_id_hdr=message_id_hdr,
             is_spam=is_spam,
             source=source,
             model_used=model_used,
             reasoning=reasoning,
-            neighbor_ids=neighbor_ids,
         )
         async with self._db.session() as session:
             session.add(verdict)
@@ -504,7 +512,7 @@ class VerdictRepository:
         Get the most recent verdict for a message.
 
         Args:
-            mail_id: Message UUID (FK column name)
+            mail_id: Message UUID
 
         Returns:
             Latest Verdict or None
@@ -517,6 +525,39 @@ class VerdictRepository:
                 .limit(1)
             )
             return result.scalar_one_or_none()
+
+    async def has_ai_verdict_for_header(
+        self,
+        account_id: uuid.UUID,
+        message_id_hdr: str,
+    ) -> bool:
+        """
+        Check whether an AI verdict already exists for this message header.
+
+        Backs the spam pipeline's durability gate: a message that already
+        has an AI verdict for its (account_id, message_id_hdr) is never
+        reclassified, even after retention purge or a UIDVALIDITY resync
+        reassigns it a new mail_id.
+
+        Args:
+            account_id: Account scope
+            message_id_hdr: RFC Message-ID header value (with angle brackets,
+                matching what PostIMAP stores)
+
+        Returns:
+            True if a source=ai verdict already exists for this header
+        """
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(Verdict.id)
+                .where(
+                    Verdict.account_id == account_id,
+                    Verdict.message_id_hdr == message_id_hdr,
+                    Verdict.source == VerdictSource.AI,
+                )
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
 
     async def get_stats(
         self,
