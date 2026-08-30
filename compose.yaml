@@ -60,7 +60,7 @@ services:
       retries: 5
       start_period: 10s
     volumes:
-      - mv-pgdata:/var/lib/postgresql/data:Z
+      - mv-pgdata:/var/lib/postgresql:Z
     restart: unless-stopped
 
 volumes:

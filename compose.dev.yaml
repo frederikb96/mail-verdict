@@ -20,7 +20,6 @@ services:
       MAIL_VERDICT_DATABASE_URL: "postgresql+asyncpg://devuser:${POSTGRES_PASSWORD}@postgres:5432/mail_verdict_dev"
       MAIL_VERDICT_API_KEY: "${MAIL_VERDICT_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-    userns_mode: keep-id
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,7 +74,7 @@ services:
       retries: 10
       start_period: 5s
     volumes:
-      - /tmp/mv-dev-pgdata:/var/lib/postgresql/data:Z
+      - /tmp/mv-dev-pgdata:/var/lib/postgresql:Z
     restart: "no"
 
   # Throwaway mail world for local dev: any username authenticates with
