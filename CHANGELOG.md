@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **A message could cover the entire application and steal every click on it.** The server-side
+  sanitizer tried to strip `position`, `z-index`, `transform` and similar CSS declarations by
+  matching the property name with a plain string split, which is not how CSS is actually parsed —
+  a comment between the name and the colon (`top/**/:0`) or a hex escape inside the name
+  (`p\6fsition:fixed`) both parse as an ordinary declaration in every browser and both slipped
+  through untouched. Wrapped in a link, a message using either trick covered the whole viewport at
+  the top stacking layer and turned a click anywhere in the sidebar into a navigation the sender
+  chose. The same class of bypass also let a CSS `url()` reach the network for tracking purposes
+  despite remote-image blocking being on, via the identical comment/escape trick hiding the
+  function name. CSS declarations and `url()` references are now identified by parsing the value
+  with a real CSS tokenizer instead of matching text, and a vendor-prefixed property such as
+  `-webkit-transform` is now caught under the name it is a variant of. Independently of the parser
+  fix, the email pane's shadow host now establishes CSS containment (`contain: layout paint`), so
+  any future declaration that slips past the sanitizer is still confined to the message's own box
+  rather than the viewport.
+- **No response carried a Content-Security-Policy, `X-Frame-Options`, or any other hardening
+  header**, so the application could be framed by any site (it has no login of its own by design)
+  and had no defense-in-depth against a sanitizer bypass reaching script execution. Every response
+  now carries a CSP (`frame-ancestors 'none'`, a strict `script-src` built from the exact inline
+  scripts the current UI build ships, and an intentionally permissive `img-src`/`style-src` for
+  legitimate remote images and message styling), plus `X-Content-Type-Options`,
+  `X-Frame-Options`, `Referrer-Policy`, `Cross-Origin-Opener-Policy`, `Permissions-Policy` and
+  `Strict-Transport-Security`.
+
 ### Fixed
 
 - **`setup_logging` cleared every handler on the root logger, including ones it did not install.**

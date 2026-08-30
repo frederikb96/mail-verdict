@@ -263,3 +263,52 @@ class TestContentCannotEscapeItsBox:
             '<div style="position:fixed;background:url(http://evil.test/p.gif)">x</div>'
         )
         assert "position" not in restore_remote_images(out)
+
+
+class TestCssParsingCannotBeSyntaxedAround:
+    """Matching a property name with `declaration.split(":", 1)[0]` is not
+    how CSS is parsed, so it is not how CSS has to be written either.
+
+    A comment between the name and the colon, or a hex escape inside the
+    name, both parse as an ordinary declaration in every browser and both
+    slipped past a string-split check untouched -- proven against a real
+    shadow root in Chrome: the message covered the full viewport at
+    z-index 2147483647 and took every click in the application.
+    """
+
+    def test_a_css_comment_cannot_hide_the_property_name(self) -> None:
+        """top/**/:0 is `top:0` to a browser, and must be to the sanitizer too."""
+        out = sanitize_email_html('<div style="top/**/:0;color:red">x</div>')
+        assert "top" not in out
+        assert "color:red" in out
+
+    def test_a_hex_escape_cannot_hide_the_property_name(self) -> None:
+        r"""p\6fsition is `position` to a browser -- \6f is the escape for 'o'."""
+        out = sanitize_email_html('<div style="p\\6fsition:fixed;color:red">x</div>')
+        assert "fixed" not in out
+        assert "color:red" in out
+
+    def test_the_full_proven_overlay_payload_is_defused(self) -> None:
+        """The exact combination that took every click over a real shadow root."""
+        out = sanitize_email_html(
+            '<a href="https://attacker.example/phish" rel="noopener noreferrer">'
+            '<div style="p\\6fsition:fixed; top/**/:0; left/**/:0; width:100vw; '
+            'height:100vh; z-index/**/:2147483647; background:#ffffff">'
+            "<h1>Click</h1></div></a>"
+        )
+        assert "fixed" not in out
+        assert "z-index" not in out
+        assert "2147483647" not in out
+
+    def test_a_vendor_prefixed_transform_is_caught_under_its_bare_name(self) -> None:
+        """A browser honours -webkit-transform exactly like transform."""
+        out = sanitize_email_html(
+            '<div style="-webkit-transform:translate(0,-9999px);color:red">x</div>'
+        )
+        assert "transform" not in out
+        assert "color:red" in out
+
+    def test_an_escaped_url_function_name_cannot_hide_a_tracking_pixel(self) -> None:
+        r"""ur\6c( is `url(` to a browser -- the same escape, not the same target."""
+        out = sanitize_email_html('<div style="background:ur\\6c(https://evil.test/p.gif)">x</div>')
+        assert "evil.test" not in out.split("data-x-")[0]

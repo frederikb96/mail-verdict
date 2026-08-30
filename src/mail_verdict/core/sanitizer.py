@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 
 import nh3
+import tinycss2
+from tinycss2.ast import Declaration, Node
 
 ALLOWED_TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div",
@@ -48,16 +50,25 @@ _BG_RE = re.compile(r'\bbackground\s*=\s*"([^"]*)"', re.IGNORECASE)
 # names is what keeps this from being a list that a new property defeats.
 _STYLE_RE = re.compile(r'\bstyle\s*=\s*"([^"]*)"', re.IGNORECASE)
 _STYLE_SINGLE_RE = re.compile(r"\bstyle\s*=\s*'([^']*)'", re.IGNORECASE)
-_CSS_URL_RE = re.compile(r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)", re.IGNORECASE)
 
 _LOCAL_URL_PREFIXES = ("cid:", "data:", "about:", "#")
 
-# Positioning, stacking and transforms are how content leaves the box it
-# was rendered into. Nothing in an email needs them.
+# Positioning, stacking and transforms are how content leaves the box it was
+# rendered into. Nothing in an email needs them. Compared against a name
+# tinycss2 has already parsed, so a vendor variant such as -webkit-transform
+# is caught under the unprefixed name it is a variant of (see
+# _canonical_property_name below) rather than needing its own entry.
 _ESCAPING_PROPERTIES = frozenset({
-    "position", "z-index", "transform", "translate", "rotate", "scale",
-    "inset", "top", "right", "bottom", "left",
+    "position", "z-index",
+    "top", "right", "bottom", "left",
+    "inset", "inset-block", "inset-block-start", "inset-block-end",
+    "inset-inline", "inset-inline-start", "inset-inline-end",
+    "transform", "transform-origin", "transform-style", "transform-box",
+    "translate", "rotate", "scale",
+    "perspective", "perspective-origin",
 })
+
+_VENDOR_PREFIX_RE = re.compile(r"^-[a-z]+-")
 
 
 def _rewrite_src(match: re.Match[str]) -> str:
@@ -87,8 +98,18 @@ def _is_remote(url: str) -> bool:
     return not url.strip().lower().startswith(_LOCAL_URL_PREFIXES)
 
 
-def _strip_escaping_declarations(style: str) -> str:
-    """Drop the declarations that let a message escape its own box.
+def _canonical_property_name(name: str) -> str:
+    """Fold a vendor-prefixed property onto the unprefixed name it varies.
+
+    ``-webkit-transform`` is enforced exactly like ``transform`` -- browsers
+    honour the prefixed form, so a check keyed on the bare name alone misses
+    it.
+    """
+    return _VENDOR_PREFIX_RE.sub("", name)
+
+
+def _parsed_declarations(style: str) -> list[Declaration]:
+    """Parse a style value, dropping the declarations that escape the box.
 
     A shadow root isolates styles but does not create a containing block, so
     position:fixed is resolved against the viewport and the message can cover
@@ -96,18 +117,86 @@ def _strip_escaping_declarations(style: str) -> str:
     belongs to the sender. Stacking and transforms reach the same end by
     other routes.
 
-    Message layout does not need any of them, so they are dropped rather
-    than inspected -- a value allowlist is a longer list to keep correct and
-    buys nothing here.
+    An earlier version matched the property name with
+    ``declaration.split(":", 1)[0].strip().lower()``, which is not how CSS is
+    actually written: a comment between the name and the colon
+    (``top/**/:0``) or a hex escape inside the name (``p\\6fsition:fixed``)
+    both parse as ordinary declarations in every browser, and both slip
+    straight past a string split untouched. tinycss2 is the same class of
+    tokenizer a browser uses, so it resolves comments and escapes before a
+    name is ever compared -- closing the class of bug rather than this one
+    instance of it.
+
+    Message layout does not need any of the escaping declarations, so they
+    are dropped rather than inspected -- a value allowlist is a longer list
+    to keep correct and buys nothing here. Anything that fails to parse as
+    an ordinary declaration carries no layout value an email needs either,
+    and is dropped along with it.
     """
     kept = []
-    for declaration in style.split(";"):
-        name = declaration.split(":", 1)[0].strip().lower()
-        if name in _ESCAPING_PROPERTIES:
+    for node in tinycss2.parse_declaration_list(
+        style, skip_comments=True, skip_whitespace=True
+    ):
+        if node.type != "declaration":
             continue
-        if declaration.strip():
-            kept.append(declaration.strip())
-    return "; ".join(kept)
+        if _canonical_property_name(node.lower_name) in _ESCAPING_PROPERTIES:
+            continue
+        kept.append(node)
+    return kept
+
+
+def _serialize_declarations(declarations: list[Declaration]) -> str:
+    """Render parsed declarations back into a style attribute value."""
+    parts = []
+    for decl in declarations:
+        value = tinycss2.serialize(decl.value).strip()
+        important = " !important" if decl.important else ""
+        parts.append(f"{decl.lower_name}:{value}{important}")
+    return "; ".join(parts)
+
+
+def _find_remote_url(nodes: list[Node]) -> bool:
+    """Whether a url() reaching the network appears anywhere in this value.
+
+    Walks the parsed token tree -- including inside a nested function such
+    as image-set() -- rather than matching ``url(`` as literal text, so a
+    reference hidden behind a comment or an escaped function name
+    (``ur\\6c(...)``) is found exactly like an ordinary one; the tokenizer
+    has already resolved both by this point.
+    """
+    for node in nodes:
+        if node.type == "url":
+            if _is_remote(node.value):
+                return True
+        elif node.type == "function":
+            if node.lower_name == "url" and any(
+                arg.type == "string" and _is_remote(arg.value) for arg in node.arguments
+            ):
+                return True
+            if _find_remote_url(node.arguments):
+                return True
+        elif node.type in ("() block", "[] block", "{} block"):
+            if _find_remote_url(node.content):
+                return True
+    return False
+
+
+def _neutralize_remote_urls(nodes: list[Node]) -> None:
+    """Replace every url() reaching the network with url(about:blank), in place."""
+    for node in nodes:
+        if node.type == "url":
+            if _is_remote(node.value):
+                node.value = "about:blank"
+                node.representation = "url(about:blank)"
+        elif node.type == "function":
+            if node.lower_name == "url":
+                for arg in node.arguments:
+                    if arg.type == "string" and _is_remote(arg.value):
+                        arg.value = "about:blank"
+                        arg.representation = '"about:blank"'
+            _neutralize_remote_urls(node.arguments)
+        elif node.type in ("() block", "[] block", "{} block"):
+            _neutralize_remote_urls(node.content)
 
 
 def _rewrite_style(match: re.Match[str], quote: str) -> str:
@@ -120,19 +209,28 @@ def _rewrite_style(match: re.Match[str], quote: str) -> str:
     sender is allowed.
     """
     style = match.group(1)
-    safe = _strip_escaping_declarations(style)
-    has_remote = any(_is_remote(url) for url in _CSS_URL_RE.findall(safe))
+    declarations = _parsed_declarations(style)
+    preserved = _serialize_declarations(declarations)
+    has_remote = any(_find_remote_url(decl.value) for decl in declarations)
 
     if not has_remote:
-        if safe == style:
+        if preserved == style:
             return match.group(0)
-        return f"style={quote}{safe}{quote}"
+        return f"style={quote}{preserved}{quote}"
 
-    blocked = _CSS_URL_RE.sub(
-        lambda m: m.group(0) if not _is_remote(m.group(1)) else "url(about:blank)",
-        safe,
-    )
-    return f"style={quote}{blocked}{quote} data-x-style={quote}{safe}{quote}"
+    # Re-parsed from the already-cleaned text so the mutation below leaves
+    # `declarations` -- and the `preserved` string built from it -- alone.
+    blocked_declarations = [
+        node
+        for node in tinycss2.parse_declaration_list(
+            preserved, skip_comments=True, skip_whitespace=True
+        )
+        if node.type == "declaration"
+    ]
+    for decl in blocked_declarations:
+        _neutralize_remote_urls(decl.value)
+    blocked = _serialize_declarations(blocked_declarations)
+    return f"style={quote}{blocked}{quote} data-x-style={quote}{preserved}{quote}"
 
 
 def _rewrite_remote_images(html: str) -> str:
