@@ -32,6 +32,11 @@ MIN_FOLDER_CRUD_SERVICE_VERSION = (1, 3, 0)
 # PostIMAP service version onward.
 MIN_DRAFT_EDIT_SERVICE_VERSION = (1, 4, 0)
 
+# sync_notifications -- the durable, acknowledgeable record of a write that
+# never reached the server -- exists, and is granted, from this PostIMAP
+# service version onward. Shipped in the same release as folder CRUD.
+MIN_SYNC_NOTIFICATIONS_SERVICE_VERSION = (1, 3, 0)
+
 
 class ContractMismatchError(Exception):
     """Raised when the running PostIMAP's contract_version does not match."""
@@ -146,3 +151,19 @@ def supports_draft_edit(info: PostimapVersionInfo) -> bool:
         True if service_version >= MIN_DRAFT_EDIT_SERVICE_VERSION
     """
     return _parse_service_version(info.service_version) >= MIN_DRAFT_EDIT_SERVICE_VERSION
+
+
+def supports_sync_notifications(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP has the sync_notifications table and grants.
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_SYNC_NOTIFICATIONS_SERVICE_VERSION
+    """
+    return (
+        _parse_service_version(info.service_version)
+        >= MIN_SYNC_NOTIFICATIONS_SERVICE_VERSION
+    )

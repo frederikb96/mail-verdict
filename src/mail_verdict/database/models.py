@@ -2,7 +2,7 @@
 SQLAlchemy ORM models for MailVerdict database.
 
 PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
-  outbox, outbox_attachments, postimap_info
+  outbox, outbox_attachments, postimap_info, sync_notifications
   (created by PostIMAP's own migrations; mapped here as a projection of the
   consumer contract -- see postimap/contract.py for the version this
   projection is built against)
@@ -422,6 +422,44 @@ class PostimapInfo(Base):
     service_version: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
+class SyncNotification(Base):
+    """Durable record of a write that never reached the server -- PostIMAP-owned table.
+
+    One row per operation that gives up permanently, never per retry --
+    including a send that never left. acknowledged_at is the only column a
+    consumer writes; everything else is PostIMAP's account of what it
+    attempted and why it gave up. reverted_at is set once PostIMAP has
+    re-read the affected row from the server and put the mirror right for
+    that one operation; NULL does not mean "in progress" -- it can also mean
+    there was nothing to revert (a failed folder create or delete).
+    """
+
+    __tablename__ = "sync_notifications"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_notifications_unacknowledged", "account_id", created_at.desc(),
+            postgresql_where=acknowledged_at.is_(None),
+        ),
     )
 
 

@@ -194,6 +194,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             outbox_data = await _outbox_event_payload(db, event)
             await event_ring.add(account_uuid, "outbox.updated", outbox_data)
 
+        elif event.type == "notification":
+            await event_ring.add(
+                account_uuid, "notification.new",
+                {"id": event.id, "account_id": event.account_id},
+            )
+
     _postimap_listener = PostimapListener(dsn)
     _postimap_listener.add_handler(_on_postimap_event)
     await _postimap_listener.start()

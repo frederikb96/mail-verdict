@@ -40,6 +40,35 @@ function quoteBody(source: MessageDetail): string {
   return `\n\nOn ${date}, ${sender} wrote:\n${quoted}`;
 }
 
+export interface ForwardDraft {
+  subject: string;
+  bodyText: string;
+}
+
+/**
+ * Build the prefilled subject and body for a forward.
+ *
+ * Deliberately carries no In-Reply-To/References: a forward goes to
+ * someone new, not into the sender's own conversation, so it starts a
+ * thread of its own rather than joining theirs.
+ */
+export function buildForward(source: MessageDetail): ForwardDraft {
+  const base = source.subject ?? "(no subject)";
+  const subject = /^fwd?:/i.test(base) ? base : `Fwd: ${base}`;
+
+  const header = [
+    `From: ${source.from_addr ?? "unknown"}`,
+    `Date: ${formatFullDate(source.received_at)}`,
+    `Subject: ${source.subject ?? "(no subject)"}`,
+    `To: ${(source.to_addrs ?? []).join(", ")}`,
+  ].join("\n");
+
+  return {
+    subject,
+    bodyText: `\n\n---------- Forwarded message ----------\n${header}\n\n${source.body_text ?? ""}`,
+  };
+}
+
 /** Build the prefilled recipients, subject and threading headers for a reply. */
 export function buildReply(
   source: MessageDetail,

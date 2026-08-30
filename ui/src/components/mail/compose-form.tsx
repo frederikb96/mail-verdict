@@ -25,6 +25,8 @@ interface ComposeFormProps {
    * insert with this set, so PostIMAP replaces the draft in place instead
    * of leaving it behind as a duplicate. */
   replacesMessageId?: string;
+  /** Pre-attached files, e.g. a forward carrying the original's attachments. */
+  initialAttachments?: File[];
   /** Inline reply box styling instead of a standalone dialog form. */
   compact?: boolean;
   onDone: () => void;
@@ -41,6 +43,7 @@ export function ComposeForm({
   inReplyTo,
   references,
   replacesMessageId,
+  initialAttachments = [],
   compact = false,
   onDone,
 }: ComposeFormProps) {
@@ -50,7 +53,7 @@ export function ComposeForm({
   const [showCcBcc, setShowCcBcc] = useState(defaultCc.length > 0 || defaultBcc.length > 0);
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachments, setAttachments] = useState<File[]>(initialAttachments);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const createOutbox = useCreateOutbox();

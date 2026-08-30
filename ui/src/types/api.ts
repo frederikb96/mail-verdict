@@ -244,6 +244,7 @@ export type SSEEventType =
   | "account.changed"
   | "outbox.updated"
   | "verdict.issued"
+  | "notification.new"
   | "resync";
 
 export interface SSEEvent {
@@ -440,4 +441,24 @@ export interface OutboxResponse {
   attachments: OutboxAttachmentSummary[];
   created_at: string;
   updated_at: string;
+}
+
+// --- Notification centre ---
+
+export interface NotificationResponse {
+  id: number;
+  account_id: string;
+  action: string;
+  message_id: string | null;
+  folder_id: string | null;
+  outbox_id: string | null;
+  error: string | null;
+  detail: Record<string, unknown> | null;
+  acknowledged_at: string | null;
+  reverted_at: string | null;
+  created_at: string;
+}
+
+export interface NotificationCountResponse {
+  unacknowledged: number;
 }

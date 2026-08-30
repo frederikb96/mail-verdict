@@ -44,6 +44,7 @@ import {
 import { DroppableFolder } from "@/components/sidebar/droppable-folder";
 import { FolderManageDialog } from "@/components/sidebar/folder-manage-dialog";
 import { ComposeDialog } from "@/components/mail/compose-dialog";
+import { NotificationBell } from "@/components/layout/notification-bell";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
@@ -188,7 +189,7 @@ export function AppSidebar() {
     <Sidebar collapsible="icon">
       <SidebarHeader>
         <SidebarMenu>
-          <SidebarMenuItem>
+          <SidebarMenuItem className="flex items-center gap-1">
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -253,6 +254,9 @@ export function AppSidebar() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            {!isUnified && selectedAccountId && (
+              <NotificationBell accountId={selectedAccountId} />
+            )}
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>

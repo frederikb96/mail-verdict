@@ -4,6 +4,7 @@ import { useState } from "react";
 import { FolderPlus, Loader2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -156,43 +157,18 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
         </DialogContent>
       </Dialog>
 
-      <Dialog
+      <ConfirmDialog
         open={pendingDelete !== null}
         onOpenChange={(next) => !next && setPendingDelete(null)}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              Delete &ldquo;{pendingDelete?.display_name || pendingDelete?.imap_name}&rdquo;?
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This destroys{" "}
-            <strong>
-              {pendingDelete?.total_count ?? 0} message
-              {pendingDelete?.total_count === 1 ? "" : "s"}
-            </strong>{" "}
-            on the mail server. It cannot be undone.
-          </p>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setPendingDelete(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteFolder.isPending}
-              onClick={() => pendingDelete && handleDelete(pendingDelete)}
-            >
-              {deleteFolder.isPending ? (
-                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-              ) : (
-                <Trash2 className="mr-1 h-3 w-3" />
-              )}
-              Delete permanently
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+        title={`Delete "${pendingDelete?.display_name || pendingDelete?.imap_name}"?`}
+        description={
+          `This destroys ${pendingDelete?.total_count ?? 0} message` +
+          `${pendingDelete?.total_count === 1 ? "" : "s"} on the mail server. ` +
+          "It cannot be undone."
+        }
+        isConfirming={deleteFolder.isPending}
+        onConfirm={() => pendingDelete && handleDelete(pendingDelete)}
+      />
     </>
   );
 }

@@ -142,6 +142,13 @@ export function useSSE(accountId?: string) {
         }
       });
 
+      // A write PostIMAP gave up on permanently -- refresh the notification
+      // centre's unread count and list.
+      source.addEventListener("notification.new", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      });
+
       // Account state events
       source.addEventListener("account.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
