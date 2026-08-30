@@ -107,12 +107,9 @@ class TestQueueBehaviour:
         never an unhandled exception that would take the callback (and
         thus every other channel listener on the same connection) down.
 
-        Attaches a handler directly to the module's own logger rather than
-        using caplog's root-logger capture: setup_logging() (run by any
-        pg/e2e test that boots the real app) clears every handler on the
-        root logger for the rest of the session, which silently breaks
-        caplog for whatever test happens to run after -- this stays
-        correct regardless of test order.
+        Captures on the module's own logger rather than through the root,
+        so the assertion holds whatever else in the process has
+        reconfigured logging by the time this runs.
         """
         records: list[logging.LogRecord] = []
         module_logger = logging.getLogger("mail_verdict.postimap.listener")

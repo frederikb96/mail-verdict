@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`setup_logging` cleared every handler on the root logger, including ones it did not install.**
+  In a test session that takes pytest's own log capture with it, permanently, for every test that
+  runs after the first one to boot the application — so an assertion on a log line silently stops
+  asserting anything. It now replaces only the handler it installed itself.
+
+
 ## [2.0.0] - 2026-08-30
 
 ### Breaking Changes

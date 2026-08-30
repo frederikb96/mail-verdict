@@ -93,6 +93,15 @@ _NOISY_LOGGERS = (
 )
 
 
+class _JSONStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
+    """The root handler `setup_logging` installs.
+
+    A distinct type so a second call replaces the handler it installed
+    before without touching one anything else attached to the root
+    logger.
+    """
+
+
 def setup_logging(level: str) -> None:
     """
     Configure root logger with JSON formatter and redirect library loggers.
@@ -106,9 +115,10 @@ def setup_logging(level: str) -> None:
 
     root = logging.getLogger()
     root.setLevel(numeric_level)
-    root.handlers.clear()
+    for existing in [h for h in root.handlers if isinstance(h, _JSONStreamHandler)]:
+        root.removeHandler(existing)
 
-    handler = logging.StreamHandler(sys.stdout)
+    handler = _JSONStreamHandler(sys.stdout)
     handler.setFormatter(JSONFormatter())
     root.addHandler(handler)
 
