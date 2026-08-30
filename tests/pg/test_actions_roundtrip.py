@@ -17,21 +17,28 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Account, Message, Verdict, VerdictSource
+from mail_verdict.database.models import Account, Folder, Message, Outbox, Verdict, VerdictSource
 from mail_verdict.postimap.actions import (
     create_account,
+    create_folder,
     delete_account,
+    delete_folder,
     expunge,
     force_reconnect,
     format_credential,
+    insert_outbox,
     move_message,
     set_flags,
 )
 from mail_verdict.postimap.contract import (
     MIN_ACCOUNT_DELETE_SERVICE_VERSION,
+    MIN_DRAFT_EDIT_SERVICE_VERSION,
+    MIN_FOLDER_CRUD_SERVICE_VERSION,
     PostimapVersionInfo,
     read_postimap_info,
     supports_account_delete,
+    supports_draft_edit,
+    supports_folder_crud,
 )
 
 
@@ -241,7 +248,7 @@ class TestSupportsAccountDelete:
 
     @pytest.mark.asyncio
     async def test_live_postimap_supports_delete(self, migrated_db: DatabaseConnection) -> None:
-        """The pinned test image (1.0.1) is exactly the version the grant landed in."""
+        """The pinned test image is well past the version the grant landed in."""
         async with migrated_db.session() as session:
             info = await read_postimap_info(session)
 
@@ -337,3 +344,183 @@ class TestForceReconnect:
 
         assert row.is_active is True
         assert row.updated_at > before_updated_at
+
+
+class TestSupportsFolderCrud:
+    """Tests against the real PostIMAP instance's reported service_version."""
+
+    @pytest.mark.asyncio
+    async def test_live_postimap_supports_folder_crud(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The pinned test image is well past the version the grant landed in."""
+        async with migrated_db.session() as session:
+            info = await read_postimap_info(session)
+
+        assert info is not None
+        assert supports_folder_crud(info)
+
+    def test_version_below_threshold_is_unsupported(self) -> None:
+        older = PostimapVersionInfo(contract_version=1, service_version="1.2.0")
+        assert not supports_folder_crud(older)
+
+    def test_version_at_threshold_is_supported(self) -> None:
+        exact = PostimapVersionInfo(
+            contract_version=1,
+            service_version=".".join(str(p) for p in MIN_FOLDER_CRUD_SERVICE_VERSION),
+        )
+        assert supports_folder_crud(exact)
+
+
+class TestSupportsDraftEdit:
+    """Tests against the real PostIMAP instance's reported service_version."""
+
+    @pytest.mark.asyncio
+    async def test_live_postimap_supports_draft_edit(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The pinned test image is exactly the version the grant landed in."""
+        async with migrated_db.session() as session:
+            info = await read_postimap_info(session)
+
+        assert info is not None
+        assert supports_draft_edit(info)
+
+    def test_version_below_threshold_is_unsupported(self) -> None:
+        older = PostimapVersionInfo(contract_version=1, service_version="1.3.0")
+        assert not supports_draft_edit(older)
+
+    def test_version_at_threshold_is_supported(self) -> None:
+        exact = PostimapVersionInfo(
+            contract_version=1,
+            service_version=".".join(str(p) for p in MIN_DRAFT_EDIT_SERVICE_VERSION),
+        )
+        assert supports_draft_edit(exact)
+
+
+class TestCreateFolder:
+    """Tests for postimap/actions.create_folder against a real folders table."""
+
+    @pytest.mark.asyncio
+    async def test_inserted_row_carries_the_given_imap_name(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            folder_id = await create_folder(
+                session, account_id=account_id, imap_name="Archive/2026",
+            )
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Folder).where(Folder.id == folder_id))
+            row = result.scalar_one()
+
+        assert row.account_id == account_id
+        assert row.imap_name == "Archive/2026"
+        assert row.deleted_at is None
+
+    @pytest.mark.asyncio
+    async def test_two_live_folders_with_the_same_name_are_rejected(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Only one *live* folder per (account_id, imap_name) -- PostIMAP's
+        own partial unique index, not application logic. The contract's
+        "creating a name that already exists succeeds" is about the row
+        not yet existing locally while the mailbox already does on the
+        server; it does not mean Postgres accepts a literal duplicate row."""
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            await create_folder(session, account_id=account_id, imap_name="Archive")
+            await session.commit()
+
+        with pytest.raises(IntegrityError):
+            async with migrated_db.session() as session:
+                await create_folder(session, account_id=account_id, imap_name="Archive")
+                await session.commit()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_folders_name_can_be_reused(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The unique index is partial on deleted_at IS NULL -- once a
+        folder is tombstoned, its name is free again."""
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            first_id = await create_folder(session, account_id=account_id, imap_name="Archive")
+            await delete_folder(session, first_id)
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            second_id = await create_folder(session, account_id=account_id, imap_name="Archive")
+            await session.commit()
+
+        assert second_id != first_id
+
+
+class TestDeleteFolder:
+    """Tests for postimap/actions.delete_folder against a real folders table."""
+
+    @pytest.mark.asyncio
+    async def test_sets_deleted_at_without_removing_the_row(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            folder_id = await create_folder(session, account_id=account_id, imap_name="Archive")
+            await session.commit()
+
+            await delete_folder(session, folder_id)
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Folder).where(Folder.id == folder_id))
+            row = result.scalar_one()
+
+        assert row.deleted_at is not None
+
+
+class TestInsertOutboxReplacesMessageId:
+    """Tests for insert_outbox's replaces_message_id column against a real outbox table."""
+
+    @pytest.mark.asyncio
+    async def test_replaces_message_id_lands_on_the_row(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, message_id = await _seed_account_folder_message(session)
+            outbox = await insert_outbox(
+                session, account_id=account_id, kind="draft",
+                to_addrs=["them@example.com"], subject="Edited draft",
+                body_text="Now finished.", replaces_message_id=message_id,
+            )
+            await session.commit()
+            outbox_id = outbox.id
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Outbox).where(Outbox.id == outbox_id))
+            row = result.scalar_one()
+
+        assert row.replaces_message_id == message_id
+
+    @pytest.mark.asyncio
+    async def test_omitted_replaces_message_id_stays_null(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """An ordinary send/draft, unrelated to editing anything, must not
+        pick up a stray value on this column."""
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            outbox = await insert_outbox(
+                session, account_id=account_id, kind="send",
+                to_addrs=["them@example.com"], subject="Ordinary send",
+                body_text="Nothing to do with a draft.",
+            )
+            await session.commit()
+            outbox_id = outbox.id
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Outbox).where(Outbox.id == outbox_id))
+            row = result.scalar_one()
+
+        assert row.replaces_message_id is None

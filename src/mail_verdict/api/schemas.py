@@ -369,6 +369,18 @@ class FolderPrefsUpdate(BaseModel):
     special_use_override: str | None = None
 
 
+class FolderCreateRequest(BaseModel):
+    """Request to create a folder.
+
+    IMAP has no parent concept -- parent_id, when given, names an existing
+    folder of the same account and the full path is built by joining onto
+    it with the account's separator; omitted, name is created top-level.
+    """
+
+    name: str
+    parent_id: uuid.UUID | None = None
+
+
 # --- Verdict schemas ---
 
 
@@ -598,6 +610,12 @@ class OutboxCreateRequest(BaseModel):
     body_html: str | None = None
     in_reply_to: str | None = None
     references: list[str] | None = None
+    replaces_message_id: uuid.UUID | None = Field(
+        default=None,
+        description="The messages.id of a draft this row replaces -- editing "
+        "or sending a draft leaves no duplicate behind. Requires PostIMAP "
+        "service_version >= 1.4.0.",
+    )
 
 
 class OutboxAttachmentSummary(BaseModel):

@@ -16,31 +16,38 @@ interface ComposeFormProps {
   accountId: string;
   defaultTo?: string[];
   defaultCc?: string[];
+  defaultBcc?: string[];
   defaultSubject?: string;
   defaultBody?: string;
   inReplyTo?: string;
   references?: string[];
+  /** The messages.id of a draft being edited or sent from -- both buttons
+   * insert with this set, so PostIMAP replaces the draft in place instead
+   * of leaving it behind as a duplicate. */
+  replacesMessageId?: string;
   /** Inline reply box styling instead of a standalone dialog form. */
   compact?: boolean;
   onDone: () => void;
 }
 
-/** Shared body for the new-mail dialog and the inline reply box. */
+/** Shared body for the new-mail dialog, the inline reply box, and the draft editor. */
 export function ComposeForm({
   accountId,
   defaultTo = [],
   defaultCc = [],
+  defaultBcc = [],
   defaultSubject = "",
   defaultBody = "",
   inReplyTo,
   references,
+  replacesMessageId,
   compact = false,
   onDone,
 }: ComposeFormProps) {
   const [to, setTo] = useState(defaultTo.join(", "));
   const [cc, setCc] = useState(defaultCc.join(", "));
-  const [bcc, setBcc] = useState("");
-  const [showCcBcc, setShowCcBcc] = useState(defaultCc.length > 0);
+  const [bcc, setBcc] = useState(defaultBcc.join(", "));
+  const [showCcBcc, setShowCcBcc] = useState(defaultCc.length > 0 || defaultBcc.length > 0);
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -59,6 +66,7 @@ export function ComposeForm({
     body_text: body,
     in_reply_to: inReplyTo,
     references,
+    replaces_message_id: replacesMessageId,
   });
 
   const submit = (kind: "send" | "draft") => {

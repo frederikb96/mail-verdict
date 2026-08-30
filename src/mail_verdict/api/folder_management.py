@@ -4,9 +4,14 @@ Folder management API endpoints.
 GET/PUT /accounts/{account_id}/folder-order — custom folder display order
 PATCH /folders/{folder_id}/prefs — the one write surface a folder has:
   visibility, display name, unified name, special-use override
+POST /accounts/{account_id}/folders — create a folder (requires PostIMAP >= 1.3.0)
+DELETE /folders/{folder_id} — delete a folder and every message in it on the
+  server, irreversibly (requires PostIMAP >= 1.3.0)
 
-IDLE endpoints removed -- PostIMAP handles IMAP IDLE. Folder create/rename/
-delete is a documented PostIMAP non-goal; there is no such surface here.
+IDLE endpoints removed -- PostIMAP handles IMAP IDLE. Renaming and
+re-nesting a folder is a documented PostIMAP non-goal and stays out here
+too: IMAP RENAME also renames every child folder, which no single-row
+UPDATE can express.
 """
 
 from __future__ import annotations
@@ -17,9 +22,12 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import case, select
 from sqlalchemy import func as sa_func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.deps import get_account_prefs_repo, get_folder_prefs_repo
 from mail_verdict.api.schemas import (
+    FolderCreateRequest,
     FolderOrderItem,
     FolderOrderResponse,
     FolderOrderUpdate,
@@ -28,11 +36,19 @@ from mail_verdict.api.schemas import (
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, FolderPrefs, Message
+from mail_verdict.postimap.actions import create_folder as postimap_create_folder
+from mail_verdict.postimap.actions import delete_folder as postimap_delete_folder
+from mail_verdict.postimap.contract import read_postimap_info, supports_folder_crud
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/accounts/{account_id}", tags=["folder-management"])
 folder_prefs_router = APIRouter(prefix="/folders/{folder_id}", tags=["folder-management"])
+
+_FOLDER_CRUD_UNSUPPORTED_DETAIL = (
+    "Folder creation and deletion require PostIMAP service_version >= 1.3.0; "
+    "the running instance reports {version}."
+)
 
 
 async def _get_account_or_404(account_id: uuid.UUID) -> Account:
@@ -140,6 +156,173 @@ async def update_folder_order(
     return await get_folder_order(account_id)
 
 
+async def _fetch_folder_response(
+    session: AsyncSession, folder_id: uuid.UUID,
+) -> FolderResponse | None:
+    """Re-select one folder with its prefs and live message counts."""
+    stmt = (
+        select(
+            Folder,
+            FolderPrefs,
+            sa_func.count(Message.id).label("total_count"),
+            sa_func.count(
+                case((Message.is_seen.is_(False), Message.id))
+            ).label("unread_count"),
+        )
+        .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+        .outerjoin(
+            Message,
+            (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
+        )
+        .where(Folder.id == folder_id)
+        .group_by(Folder.id, FolderPrefs.folder_id)
+    )
+    result = await session.execute(stmt)
+    row = result.one_or_none()
+    if row is None:
+        return None
+
+    f, fp, total, unread = row
+    return FolderResponse(
+        id=f.id,
+        account_id=f.account_id,
+        imap_name=f.imap_name,
+        display_name=f.display_name or (fp.display_name if fp else None),
+        special_use=(fp.special_use_override if fp else None) or f.special_use,
+        mailbox_id=f.mailbox_id,
+        initial_sync_done=f.initial_sync_done,
+        last_synced_at=f.last_synced_at,
+        sync_error=f.sync_error,
+        created_at=f.created_at,
+        unified_name=fp.unified_name if fp else None,
+        is_visible=fp.is_visible if fp else True,
+        total_count=total,
+        unread_count=unread,
+    )
+
+
+async def _require_folder_crud_support(session: AsyncSession) -> None:
+    """Raise 501 unless the running PostIMAP grants folder creation/deletion."""
+    info = await read_postimap_info(session)
+    if info is None or not supports_folder_crud(info):
+        raise HTTPException(
+            status_code=501,
+            detail=_FOLDER_CRUD_UNSUPPORTED_DETAIL.format(
+                version=info.service_version if info else "unknown",
+            ),
+        )
+
+
+# --- Folder creation and deletion ---
+
+
+@router.post("/folders", response_model=FolderResponse, status_code=201)
+async def create_folder(
+    account_id: uuid.UUID,
+    request: FolderCreateRequest,
+) -> FolderResponse:
+    """
+    Create a folder.
+
+    IMAP has no parent concept, so parent_id (when given) is resolved to
+    its imap_name and the new folder's full path is built by joining onto
+    it with the account's own separator. Requires PostIMAP >= 1.3.0.
+
+    A folder that already exists on the server but not yet in this mirror
+    (because it was just created outside this app, say) is created here
+    without error -- PostIMAP's own CREATE against an existing mailbox is a
+    no-op success. A path that is already a *live* folder in this mirror
+    is rejected with 409: PostIMAP's own unique index allows only one
+    live row per (account_id, imap_name).
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        await _require_folder_crud_support(session)
+
+        account_result = await session.execute(select(Account).where(Account.id == account_id))
+        if account_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        if request.parent_id is not None:
+            parent_result = await session.execute(
+                select(Folder).where(
+                    Folder.id == request.parent_id,
+                    Folder.account_id == account_id,
+                    Folder.deleted_at.is_(None),
+                )
+            )
+            parent = parent_result.scalar_one_or_none()
+            if parent is None:
+                raise HTTPException(status_code=404, detail="Parent folder not found")
+
+            separator = parent.separator
+            if separator is None:
+                sep_result = await session.execute(
+                    select(Folder.separator)
+                    .where(Folder.account_id == account_id, Folder.separator.is_not(None))
+                    .limit(1)
+                )
+                separator = sep_result.scalar_one_or_none()
+            if separator is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "This account has not completed a sync yet, so its "
+                        "folder hierarchy separator is unknown. Try again "
+                        "once at least one folder has synced."
+                    ),
+                )
+            imap_name = f"{parent.imap_name}{separator}{request.name}"
+        else:
+            imap_name = request.name
+
+        try:
+            folder_id = await postimap_create_folder(
+                session, account_id=account_id, imap_name=imap_name,
+            )
+            await session.commit()
+        except IntegrityError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail=f"A folder named {imap_name!r} already exists on this account",
+            ) from exc
+
+        response = await _fetch_folder_response(session, folder_id)
+        if response is None:
+            # Cannot happen: folder_id names the row this same session just
+            # inserted and committed.
+            raise HTTPException(status_code=500, detail="Folder created but could not be read back")
+        return response
+
+
+@folder_prefs_router.delete("", status_code=204)
+async def delete_folder(folder_id: uuid.UUID) -> None:
+    """
+    Delete a folder -- destroys every message in it on the mail server,
+    irreversibly. There is no undo, and clearing this back out afterwards
+    does not recreate the folder. Requires PostIMAP >= 1.3.0.
+
+    Deleting INBOX (or any folder the server otherwise refuses) is rejected
+    up front rather than accepted and silently dead-lettered later.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        await _require_folder_crud_support(session)
+
+        folder_result = await session.execute(
+            select(Folder).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
+        )
+        folder = folder_result.scalar_one_or_none()
+        if folder is None:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        if (folder.special_use or "").lower() == "inbox":
+            raise HTTPException(status_code=400, detail="INBOX cannot be deleted")
+
+        await postimap_delete_folder(session, folder_id)
+        await session.commit()
+
+
 # --- Folder preferences ---
 
 
@@ -163,43 +346,8 @@ async def update_folder_prefs(
 
     db = get_db_connection()
     async with db.session() as session:
-        stmt = (
-            select(
-                Folder,
-                FolderPrefs,
-                sa_func.count(Message.id).label("total_count"),
-                sa_func.count(
-                    case((Message.is_seen.is_(False), Message.id))
-                ).label("unread_count"),
-            )
-            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
-            .outerjoin(
-                Message,
-                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
-            )
-            .where(Folder.id == folder_id)
-            .group_by(Folder.id, FolderPrefs.folder_id)
-        )
-        result = await session.execute(stmt)
-        row = result.one_or_none()
+        response = await _fetch_folder_response(session, folder_id)
 
-    if row is None:
+    if response is None:
         raise HTTPException(status_code=404, detail="Folder not found")
-
-    f, fp, total, unread = row
-    return FolderResponse(
-        id=f.id,
-        account_id=f.account_id,
-        imap_name=f.imap_name,
-        display_name=f.display_name or (fp.display_name if fp else None),
-        special_use=(fp.special_use_override if fp else None) or f.special_use,
-        mailbox_id=f.mailbox_id,
-        initial_sync_done=f.initial_sync_done,
-        last_synced_at=f.last_synced_at,
-        sync_error=f.sync_error,
-        created_at=f.created_at,
-        unified_name=fp.unified_name if fp else None,
-        is_visible=fp.is_visible if fp else True,
-        total_count=total,
-        unread_count=unread,
-    )
+    return response

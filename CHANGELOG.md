@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Folder creation and deletion.** `POST /api/accounts/:id/folders` creates a folder, joining onto
+  a `parent_id`'s path with the account's own separator when given (IMAP has no parent concept);
+  `DELETE /api/folders/:id` deletes one, refused outright for INBOX rather than dead-lettered
+  later. Both require PostIMAP service_version >= 1.3.0, checked at request time the same way
+  account deletion checks for >= 1.0.1. A small "Manage folders" dialog in the sidebar is the UI:
+  create by name (optionally nested under an existing folder), delete with an explicit
+  confirmation naming how many messages the deletion destroys on the mail server
+- **Reopening and editing a draft.** Clicking a draft now opens it in the composer instead of the
+  reading pane, with recipients, subject, body and reply threading restored. Saving or sending
+  inserts a new outbox row naming the draft's `messages.id` via `replaces_message_id`, so PostIMAP
+  appends the replacement and removes the superseded draft as one operation rather than an
+  expunge-then-create with no ordering between them -- sending a reopened draft leaves no draft
+  copy behind either. Requires PostIMAP service_version >= 1.4.0
+
+### Fixed
+
+- `Outbox.status` and `Outbox.attempts` carried Python-side ORM defaults sent explicitly on every
+  INSERT, even though neither column has an INSERT grant under the restricted `postimap_app` role
+  -- every other pg-layer test connects as the database owner, where the extra columns are simply
+  accepted, so the failure was invisible outside a deployment actually running under the granted
+  role. `Folder.id`/`total_count`/`unread_count`/`initial_sync_done` carried the same latent defect,
+  unexercised until this release's own folder-insert path. All five now use
+  `server_default=FetchedValue()`, the pattern `Outbox.next_retry_at` already used
+
 ## [1.0.0] - 2026-08-30
 
 ### Breaking Changes

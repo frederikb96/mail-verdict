@@ -178,6 +178,16 @@ export interface FolderPrefsUpdate {
   special_use_override?: string | null;
 }
 
+/**
+ * IMAP has no parent concept -- parent_id, when given, names an existing
+ * folder of the same account and the full path is built server-side by
+ * joining onto it with the account's separator.
+ */
+export interface FolderCreateRequest {
+  name: string;
+  parent_id?: string;
+}
+
 export interface VerdictResponse {
   id: string;
   message_id: string;
@@ -405,6 +415,9 @@ export interface OutboxCreateRequest {
   body_html?: string;
   in_reply_to?: string;
   references?: string[];
+  /** The messages.id of a draft this row replaces -- editing or sending a
+   * draft leaves no duplicate behind. Requires PostIMAP >= 1.4.0. */
+  replaces_message_id?: string;
 }
 
 export interface OutboxAttachmentSummary {
