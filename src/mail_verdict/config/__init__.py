@@ -5,9 +5,7 @@ from mail_verdict.config.loader import (
     ConfigError,
     DatabaseConfig,
     InfraConfig,
-    QdrantConfig,
     ServerConfig,
-    _deep_merge,
     get_config,
     reset_config,
 )
@@ -17,9 +15,7 @@ __all__ = [
     "DatabaseConfig",
     "InfraConfig",
     "MCP_TRANSPORT",
-    "QdrantConfig",
     "ServerConfig",
-    "_deep_merge",
     "get_config",
     "reset_config",
 ]

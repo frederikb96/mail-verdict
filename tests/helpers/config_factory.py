@@ -28,10 +28,7 @@ _TEST_DEFAULTS: dict[str, Any] = {
     "server": {
         "port": 18080,
         "cors_origins": ["http://localhost:5173"],
-    },
-    "qdrant": {
-        "host": "localhost",
-        "port": 16334,
+        "api_key": "",
     },
 }
 
