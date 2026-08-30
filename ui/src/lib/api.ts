@@ -148,9 +148,16 @@ export const api = {
         body: JSON.stringify(data),
       });
     },
-    /** Destroys every message in the folder on the mail server. Irreversible. */
-    delete(folderId: string): Promise<void> {
-      return request(`/folders/${folderId}`, { method: "DELETE" });
+    /**
+     * Destroys every message in the folder on the mail server. Irreversible.
+     *
+     * messageCount has to match what the server currently counts in the
+     * folder, so the caller can only delete a folder whose contents it has
+     * actually seen -- a mismatch comes back as a 409 naming the real count.
+     */
+    delete(folderId: string, messageCount: number): Promise<void> {
+      const query = `?confirm_message_count=${messageCount}`;
+      return request(`/folders/${folderId}${query}`, { method: "DELETE" });
     },
   },
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, cast
 
-from sqlalchemy import delete, insert, text, update
+from sqlalchemy import any_, delete, insert, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
@@ -303,8 +303,11 @@ async def set_flags_bulk(
     """
     Update one or more IMAP-mapped flags on many messages at once.
 
-    Same contract columns as set_flags(), batched into a single UPDATE via
-    an IN clause -- the shape PostIMAP's trigger sees per row is identical.
+    Same contract columns as set_flags(), batched into a single UPDATE
+    matched with `= ANY(:ids)` rather than an `IN (...)` list -- an IN
+    clause binds one parameter per id, and asyncpg refuses a statement
+    over 32767 parameters; ANY binds the whole id list as a single array
+    parameter, so this scales to any folder size.
 
     Args:
         session: Active AsyncSession (caller commits)
@@ -319,7 +322,7 @@ async def set_flags_bulk(
     if not flags or not message_ids:
         return 0
     result = await session.execute(
-        update(Message).where(Message.id.in_(message_ids)).values(**flags)
+        update(Message).where(Message.id == any_(message_ids)).values(**flags)  # type: ignore[arg-type]
     )
     return result.rowcount or 0  # type: ignore[attr-defined]
 
@@ -333,7 +336,8 @@ async def move_message_bulk(
     Move many messages to a different folder at once.
 
     Same optimistic folder_id + imap_uid=NULL shape as move_message(),
-    batched into a single UPDATE.
+    batched into a single UPDATE matched with `= ANY(:ids)` -- see
+    set_flags_bulk() for why this is not an IN (...) list.
 
     Args:
         session: Active AsyncSession (caller commits)
@@ -348,7 +352,7 @@ async def move_message_bulk(
         return 0
     result = await session.execute(
         update(Message)
-        .where(Message.id.in_(message_ids))
+        .where(Message.id == any_(message_ids))  # type: ignore[arg-type]
         .values(folder_id=target_folder_id, imap_uid=None)
     )
     return result.rowcount or 0  # type: ignore[attr-defined]
@@ -356,7 +360,8 @@ async def move_message_bulk(
 
 async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> int:
     """
-    Permanently remove many messages at once -- see expunge().
+    Permanently remove many messages at once -- see expunge() and
+    set_flags_bulk() for the ANY-array batching.
 
     Args:
         session: Active AsyncSession (caller commits)
@@ -369,7 +374,7 @@ async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> i
     if not message_ids:
         return 0
     result = await session.execute(
-        update(Message).where(Message.id.in_(message_ids)).values(expunged_at=text("now()"))
+        update(Message).where(Message.id == any_(message_ids)).values(expunged_at=text("now()"))  # type: ignore[arg-type]
     )
     return result.rowcount or 0  # type: ignore[attr-defined]
 

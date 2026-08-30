@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import case, select
 from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
@@ -302,7 +302,17 @@ async def create_folder(
 
 
 @folder_prefs_router.delete("", status_code=204)
-async def delete_folder(folder_id: uuid.UUID) -> None:
+async def delete_folder(
+    folder_id: uuid.UUID,
+    confirm_message_count: int | None = Query(
+        default=None,
+        description=(
+            "Required to actually delete. Omit it (or get it wrong) and the "
+            "request fails with a 409 naming the folder's current message "
+            "count; repeat the call with that number to confirm."
+        ),
+    ),
+) -> None:
     """
     Delete a folder -- destroys every message in it on the mail server,
     irreversibly. There is no undo, and clearing this back out afterwards
@@ -310,6 +320,14 @@ async def delete_folder(folder_id: uuid.UUID) -> None:
 
     Deleting INBOX (or any folder the server otherwise refuses) is rejected
     up front rather than accepted and silently dead-lettered later.
+
+    There is no UI confirmation dialog at this layer -- an API or MCP
+    client would otherwise destroy a folder's mail on the first call with
+    nothing standing in the way. confirm_message_count is that dialog's
+    REST equivalent: a first call without it (or with a stale count)
+    reports what deleting this folder would actually destroy instead of
+    doing it, and the caller repeats the call naming that count once it
+    has been seen.
     """
     db = get_db_connection()
     async with db.session() as session:
@@ -333,6 +351,21 @@ async def delete_folder(folder_id: uuid.UUID) -> None:
         effective_special_use = (special_use_override or folder.special_use or "").lower()
         if effective_special_use == "inbox" or folder.imap_name.upper() == "INBOX":
             raise HTTPException(status_code=400, detail="INBOX cannot be deleted")
+
+        message_count = await session.scalar(
+            select(sa_func.count(Message.id)).where(
+                Message.folder_id == folder_id, Message.expunged_at.is_(None),
+            )
+        )
+        if confirm_message_count != message_count:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This folder holds {message_count} message(s), all destroyed "
+                    "on the mail server irreversibly if deleted. Repeat the request "
+                    f"with ?confirm_message_count={message_count} to proceed."
+                ),
+            )
 
         await postimap_delete_folder(session, folder_id)
         await session.commit()

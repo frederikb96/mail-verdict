@@ -39,6 +39,48 @@ router = APIRouter(prefix="/outbox", tags=["outbox"])
 
 _AttachmentTuple = tuple[str, str | None, bytes]
 
+# Read size for the chunked cap in _read_capped_attachment -- arbitrary,
+# just small enough that an oversized upload is caught within a few reads
+# rather than after the whole thing is buffered.
+_ATTACHMENT_READ_CHUNK_BYTES = 1024 * 1024
+
+
+async def _read_capped_attachment(value: UploadFile, max_bytes: int) -> bytes:
+    """
+    Read one upload, aborting as soon as it exceeds max_bytes.
+
+    config/config.yaml documents this limit as enforced while the upload
+    is being read, because the cost being bounded is memory -- a plain
+    `await value.read()` followed by a length check buffers the entire
+    file first, which bounds nothing for an attachment larger than the
+    limit. Reading in chunks and stopping the moment the running total
+    crosses max_bytes keeps that promise.
+
+    Args:
+        value: The uploaded file to read
+        max_bytes: The per-attachment size limit (outbox.max_attachment_bytes)
+
+    Returns:
+        The attachment's bytes
+
+    Raises:
+        HTTPException: 413 if the upload exceeds max_bytes
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await value.read(_ATTACHMENT_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Attachment '{value.filename}' exceeds the size limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 async def _parse_request(
     request: Request,
@@ -77,12 +119,7 @@ async def _parse_request(
         attachments: list[tuple[str, str | None, bytes]] = []
         total = 0
         for value in uploads:
-            content = await value.read()
-            if len(content) > limits.max_attachment_bytes:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"Attachment '{value.filename}' exceeds the size limit",
-                )
+            content = await _read_capped_attachment(value, limits.max_attachment_bytes)
             total += len(content)
             # Checked as the total grows rather than at the end: the point is
             # to stop reading, not to discover afterwards how much was read.

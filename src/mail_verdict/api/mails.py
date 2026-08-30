@@ -23,7 +23,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import case, desc, func, or_, select
+from sqlalchemy import all_, any_, case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, defer
 
@@ -701,8 +701,8 @@ async def _handle_spam_action(
         from mail_verdict.server import get_spam_processor
 
         processor = get_spam_processor()
-        if processor is not None and processor._feedback is not None:
-            await processor._feedback.handle_moved_from_spam(message_id, account_id)
+        if processor is not None:
+            await processor.feedback.handle_moved_from_spam(message_id, account_id)
 
     action = "spam" if is_spam else "not_spam"
     return MessageActionResponse(
@@ -825,9 +825,9 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
                 from mail_verdict.server import get_spam_processor
 
                 processor = get_spam_processor()
-                if processor is not None and processor._feedback is not None:
+                if processor is not None:
                     for mid in message_ids:
-                        await processor._feedback.handle_moved_from_spam(mid, account_id)
+                        await processor.feedback.handle_moved_from_spam(mid, account_id)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
@@ -849,12 +849,18 @@ async def _resolve_explicit_ids(
     account, or one already expunged. An id that fails either check is
     silently dropped rather than acted on; affected_count then reflects
     the resolved subset, not the length of what was asked for.
+
+    Matched with `= ANY(:ids)` rather than `IN (...)`: an IN clause binds
+    one parameter per id, and asyncpg refuses a statement over 32767
+    parameters -- exactly what a large "select all in this folder" client
+    can send. ANY binds the whole list as a single array parameter.
     """
     if not ids:
         return []
     result = await session.execute(
         select(Message.id).where(
-            Message.id.in_(ids), Message.account_id == account_id, Message.expunged_at.is_(None),
+            Message.id == any_(ids), Message.account_id == account_id,  # type: ignore[arg-type]
+            Message.expunged_at.is_(None),
         )
     )
     return list(result.scalars().all())
@@ -863,7 +869,12 @@ async def _resolve_explicit_ids(
 async def _resolve_scope_ids(
     session: AsyncSession, account_id: uuid.UUID, scope: BulkActionScope,
 ) -> list[uuid.UUID]:
-    """Resolve a bulk-action scope descriptor to a concrete list of message ids."""
+    """
+    Resolve a bulk-action scope descriptor to a concrete list of message ids.
+
+    exclude_ids is matched with `!= ALL(:ids)` rather than `NOT IN (...)`
+    for the same reason as _resolve_explicit_ids's `= ANY(:ids)`.
+    """
     stmt = select(Message.id).where(
         Message.account_id == account_id,
         Message.folder_id == scope.folder_id,
@@ -872,6 +883,6 @@ async def _resolve_scope_ids(
     if scope.filter == "unread":
         stmt = stmt.where(Message.is_seen.is_(False))
     if scope.exclude_ids:
-        stmt = stmt.where(Message.id.notin_(scope.exclude_ids))
+        stmt = stmt.where(Message.id != all_(scope.exclude_ids))  # type: ignore[arg-type]
     result = await session.execute(stmt)
     return list(result.scalars().all())

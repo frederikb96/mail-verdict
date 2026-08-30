@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`DELETE /folders/{id}` now requires a `confirm_message_count` query parameter** matching the
+  folder's current message count. Deleting a folder destroys every message in it on the mail
+  server, irreversibly, and the browser UI's own confirmation dialog was never a REST-layer
+  guarantee — an API or MCP client got none. A call without the parameter (or with a stale count)
+  is now a `409` naming the folder's actual message count instead of deleting outright; repeat the
+  call with that number to confirm
+- **The `spam` settings category is gone.** `GET`/`PUT /api/settings/spam` now `400`. Nothing
+  outside the one-time `0006_pipeline` migration ever read it: whether spam detection runs is
+  `account_prefs.spam_enabled` (`PATCH /api/accounts/{id}`), and auto-move-to-junk /
+  auto-mark-read are an ordinary pipeline `match` stage an account's own pipeline document
+  configures
+- **`pipeline.enabled` and `ai.enrichment_model` settings are gone** — neither had a reader; the
+  pipeline document's own `enabled` field is the one that gates the runner
+
 ### Security
 
 - **A message could cover the entire application and steal every click on it.** The server-side
@@ -66,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`?account_id=` on the live-update stream matched nothing when the UUID was not lowercase.**
   The stream silently fell back to sending nothing but keepalives for that connection, with no
   error surfaced anywhere.
+- **A bulk action over roughly 32,700+ messages (`POST .../messages/bulk-action`, by id list or by
+  a whole-folder scope) returned a `500`.** Every batched write matched ids with an `IN (...)`
+  list, which asyncpg refuses past 32767 bind parameters — exactly what "select all in this
+  folder" or a large explicit id list sends on an ordinary long-lived mailbox. Matched with
+  `= ANY(...)` (one array parameter regardless of list size) instead
+- **`semantic.enabled`** (read by the embedding backfill reconciler) **had no entry in
+  `SETTING_DEFAULTS`**, so it fell back to a value hardcoded in `embeddings/worker.py` and never
+  appeared in `GET /api/settings/semantic`. It now has a proper default and is reported like every
+  other setting. `semantic.concurrency` is gone instead — it had no reader
+- **`POST /api/settings/import` skipped the type validation `PUT /api/settings/{category}` applies,**
+  so `retry.max_retries: "banana"` was accepted and stored, surfacing only much later inside
+  whatever worker first read it. Both endpoints now validate the same way and answer a type
+  mismatch with a `400`; an import spanning multiple categories is all-or-nothing, rather than
+  writing the categories before the bad one
+- **An outbox attachment over `outbox.max_attachment_bytes` was read into memory whole before its
+  size was checked,** despite the config file documenting the limit as enforced while the upload
+  is being read. The read is now chunked and aborts as soon as the running total crosses the
+  limit, which is what actually bounds memory for an oversized upload
+
 - **`setup_logging` cleared every handler on the root logger, including ones it did not install.**
   In a test session that takes pytest's own log capture with it, permanently, for every test that
   runs after the first one to boot the application — so an assertion on a log line silently stops

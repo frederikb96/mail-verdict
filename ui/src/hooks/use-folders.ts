@@ -42,7 +42,8 @@ export function useCreateFolder() {
 export function useDeleteFolder() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (folderId: string) => api.folders.delete(folderId),
+    mutationFn: ({ folderId, messageCount }: { folderId: string; messageCount: number }) =>
+      api.folders.delete(folderId, messageCount),
     onSuccess: () => invalidateAllFolderCaches(qc),
   });
 }

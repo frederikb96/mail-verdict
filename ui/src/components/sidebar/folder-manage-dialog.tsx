@@ -68,7 +68,7 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
   };
 
   const handleDelete = (folder: FolderResponse) => {
-    deleteFolder.mutate(folder.id, {
+    deleteFolder.mutate({ folderId: folder.id, messageCount: folder.total_count }, {
       onSuccess: () => {
         pushToast(`Folder "${folder.display_name || folder.imap_name}" deleted`, "success");
         setPendingDelete(null);

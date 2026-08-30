@@ -117,15 +117,14 @@ def _parsed_declarations(style: str) -> list[Declaration]:
     belongs to the sender. Stacking and transforms reach the same end by
     other routes.
 
-    An earlier version matched the property name with
-    ``declaration.split(":", 1)[0].strip().lower()``, which is not how CSS is
-    actually written: a comment between the name and the colon
-    (``top/**/:0``) or a hex escape inside the name (``p\\6fsition:fixed``)
-    both parse as ordinary declarations in every browser, and both slip
-    straight past a string split untouched. tinycss2 is the same class of
-    tokenizer a browser uses, so it resolves comments and escapes before a
-    name is ever compared -- closing the class of bug rather than this one
-    instance of it.
+    The property name is compared only after a real CSS tokenizer has
+    resolved it. Splitting the text on ``:`` is not how CSS is written: a
+    comment between the name and the colon (``top/**/:0``) or a hex escape
+    inside the name (``p\\6fsition:fixed``) both parse as ordinary
+    declarations in every browser and slip straight past a string
+    comparison. tinycss2 is the same class of tokenizer a browser uses, so
+    comments and escapes are resolved before any name is compared, which
+    closes the class rather than the instance.
 
     Message layout does not need any of the escaping declarations, so they
     are dropped rather than inspected -- a value allowlist is a longer list

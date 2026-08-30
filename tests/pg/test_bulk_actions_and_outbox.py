@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.api.mails import BulkActionScope, _resolve_scope_ids
+from mail_verdict.api.mails import BulkActionScope, _resolve_explicit_ids, _resolve_scope_ids
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import (
@@ -20,6 +20,12 @@ from mail_verdict.postimap.actions import (
     move_message_bulk,
     set_flags_bulk,
 )
+
+# asyncpg refuses a statement with more than 32767 bind parameters -- an
+# IN (...) list binds one per element, so anything padded past this count
+# proves the fix (ANY(:array), one bind parameter total) rather than
+# merely exercising a large-but-still-safe list.
+_BEYOND_ASYNCPG_PARAM_LIMIT = 40000
 
 
 async def _seed_account_two_folders(
@@ -160,6 +166,120 @@ class TestBulkWriteHelpers:
         async with migrated_db.session() as session:
             result = await session.execute(select(Message.expunged_at).where(Message.id.in_(ids)))
             assert all(expunged_at is not None for (expunged_at,) in result.all())
+
+
+class TestBulkHelpersBeyondAsyncpgParamLimit:
+    """
+    An id list past asyncpg's 32767-bind-parameter cap must not turn a
+    bulk action into a 500 -- the shape a large folder's "select all"
+    scope, or a large explicit id list, actually sends.
+    """
+
+    @pytest.mark.asyncio
+    async def test_set_flags_bulk_handles_a_huge_id_list(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Real ids padded past the param limit with ids that don't exist."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            real_ids = await _seed_messages(session, account_id, inbox_id, 3)
+            await session.commit()
+
+        padded = [*real_ids, *(uuid.uuid4() for _ in range(_BEYOND_ASYNCPG_PARAM_LIMIT))]
+
+        async with migrated_db.session() as session:
+            affected = await set_flags_bulk(session, padded, is_seen=True)
+            await session.commit()
+
+        assert affected == len(real_ids)
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Message.is_seen).where(Message.id.in_(real_ids)))
+            assert all(seen for (seen,) in result.all())
+
+    @pytest.mark.asyncio
+    async def test_move_message_bulk_handles_a_huge_id_list(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Same padded-list shape, exercised against the move helper."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+            real_ids = await _seed_messages(session, account_id, inbox_id, 3)
+            await session.commit()
+
+        padded = [*real_ids, *(uuid.uuid4() for _ in range(_BEYOND_ASYNCPG_PARAM_LIMIT))]
+
+        async with migrated_db.session() as session:
+            affected = await move_message_bulk(session, padded, junk_id)
+            await session.commit()
+
+        assert affected == len(real_ids)
+        async with migrated_db.session() as session:
+            result = await session.execute(
+                select(Message.folder_id).where(Message.id.in_(real_ids))
+            )
+            assert all(folder_id == junk_id for (folder_id,) in result.all())
+
+    @pytest.mark.asyncio
+    async def test_expunge_bulk_handles_a_huge_id_list(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Same padded-list shape, exercised against the expunge helper."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            real_ids = await _seed_messages(session, account_id, inbox_id, 3)
+            await session.commit()
+
+        padded = [*real_ids, *(uuid.uuid4() for _ in range(_BEYOND_ASYNCPG_PARAM_LIMIT))]
+
+        async with migrated_db.session() as session:
+            affected = await expunge_bulk(session, padded)
+            await session.commit()
+
+        assert affected == len(real_ids)
+
+    @pytest.mark.asyncio
+    async def test_resolve_explicit_ids_handles_a_huge_id_list(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """
+        The API layer's own account/existence-narrowing query, given a
+        client-supplied id list past the param limit -- the exact shape a
+        "select all 40000 in this folder, then bulk-trash" client sends
+        via BulkActionRequest.ids rather than .scope.
+        """
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            real_ids = await _seed_messages(session, account_id, inbox_id, 3)
+            await session.commit()
+
+        padded = [*real_ids, *(uuid.uuid4() for _ in range(_BEYOND_ASYNCPG_PARAM_LIMIT))]
+
+        async with migrated_db.session() as session:
+            resolved = await _resolve_explicit_ids(session, account_id, padded)
+
+        assert set(resolved) == set(real_ids)
+
+    @pytest.mark.asyncio
+    async def test_resolve_scope_ids_handles_a_huge_exclude_list(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """exclude_ids padded past the param limit still excludes the real id."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            ids = await _seed_messages(session, account_id, inbox_id, 3)
+            await session.commit()
+
+        excluded = ids[0]
+        padded_exclude = [excluded, *(uuid.uuid4() for _ in range(_BEYOND_ASYNCPG_PARAM_LIMIT))]
+
+        async with migrated_db.session() as session:
+            resolved = await _resolve_scope_ids(
+                session, account_id,
+                BulkActionScope(folder_id=inbox_id, exclude_ids=padded_exclude),
+            )
+
+        assert excluded not in resolved
+        assert set(resolved) == set(ids) - {excluded}
 
 
 class TestBulkActionScopeResolution:

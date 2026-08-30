@@ -33,19 +33,18 @@ class TestDefaults:
             assert cat in SETTING_DEFAULTS or cat.value in SETTING_DEFAULTS
 
     def test_ai_defaults(self) -> None:
-        """AI defaults include the provider, model, effort, and enrichment model settings."""
+        """AI defaults include the provider, model and effort settings."""
         ai = SETTING_DEFAULTS[SettingCategory.AI]
         assert "provider" in ai
         assert "model" in ai
         assert "reasoning_effort" in ai
-        assert "enrichment_model" in ai
         assert "max_tokens" in ai
 
-    def test_spam_defaults(self) -> None:
-        """Spam defaults include enabled and excerpt_length."""
-        spam = SETTING_DEFAULTS[SettingCategory.SPAM]
-        assert "enabled" in spam
-        assert "excerpt_length" in spam
+    def test_semantic_enabled_has_a_default(self) -> None:
+        """semantic.enabled is read at runtime (embeddings/worker.py) and must
+        have a default here -- there is nowhere else for one to live."""
+        semantic = SETTING_DEFAULTS[SettingCategory.SEMANTIC]
+        assert "enabled" in semantic
 
     def test_retry_defaults(self) -> None:
         """Retry defaults include max_retries and backoff params."""
@@ -137,6 +136,38 @@ class TestSettingsServiceUpdate:
         await service.load()
         await service.bulk_import({
             "ai": {"model": "bulk-model"},
-            "spam": {"enabled": False},
+            "retry": {"max_retries": 3},
         })
         assert service._repo.upsert_category.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_import_rejects_a_wrongly_typed_value(self) -> None:
+        """
+        bulk_import() must reject a value update() would reject too --
+        otherwise a type mistake is silently stored and surfaces later
+        wherever a worker first reads it, instead of at write time.
+        """
+        service = _make_service()
+        await service.load()
+
+        with pytest.raises(ValueError, match="retry.max_retries"):
+            await service.bulk_import({"retry": {"max_retries": "banana"}})
+
+        service._repo.upsert_category.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bulk_import_writes_nothing_if_any_category_is_invalid(self) -> None:
+        """
+        A multi-category import is all-or-nothing: one bad value must not
+        leave an earlier, valid category in the import half-applied.
+        """
+        service = _make_service()
+        await service.load()
+
+        with pytest.raises(ValueError):
+            await service.bulk_import({
+                "ai": {"model": "bulk-model"},
+                "retry": {"max_retries": "banana"},
+            })
+
+        service._repo.upsert_category.assert_not_awaited()

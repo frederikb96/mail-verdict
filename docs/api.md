@@ -94,8 +94,8 @@ curl localhost:8080/api/settings/ai
 #     "openai_api_key_hint": "...ab12"}
 ```
 
-An empty string clears a stored key. `config/config.yaml` documents every other setting category
-(`ai`, `spam`, `retry`, `pipeline`, `semantic`) and its default with a comment — that file is the
+An empty string clears a stored key. `settings/defaults.py` documents every other setting category
+(`ai`, `retry`, `pipeline`, `semantic`) and its default with a comment — that file is the
 authoritative list, not repeated here.
 
 ### Edit the pipeline: write a rule as a stage
@@ -159,7 +159,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Group | Prefix | What it's for |
 |---|---|---|
 | Accounts | `/accounts` | Create, update, delete, list; folder listing; sync status and manual sync trigger |
-| Folders | `/accounts/{id}/folders`, `/folders/{id}` | Create and delete a folder, folder display prefs, custom ordering — see [known limitations](../README.md#known-limitations-deliberately) for what folder management deliberately does not do |
+| Folders | `/accounts/{id}/folders`, `/folders/{id}` | Create and delete a folder, folder display prefs, custom ordering — see [known limitations](../README.md#known-limitations-deliberately) for what folder management deliberately does not do. Deletion is irreversible and destroys every message in the folder on the server, so `DELETE /folders/{id}` requires a `confirm_message_count` query parameter matching the folder's current message count; a call without it (or with a stale count) is a `409` naming the actual count rather than a deletion |
 | Messages | `/accounts/{id}/messages`, `/messages/{id}` | Cursor-paginated list (optionally threaded), detail, thread, attachment streaming, `.eml` download, single and bulk actions |
 | Outbox | `/outbox` | Send, save or edit a draft (JSON or multipart with attachments); list outbox rows for send/draft status |
 | Search | `/search`, `/embeddings/search` | Full-text and semantic search, respectively |

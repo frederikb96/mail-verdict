@@ -102,10 +102,10 @@ async def submit_feedback(
     from mail_verdict.server import get_spam_processor
 
     processor = get_spam_processor()
-    if processor is None or processor._feedback is None:
+    if processor is None:
         raise HTTPException(status_code=503, detail="Spam feedback handler not available")
 
-    feedback = processor._feedback
+    feedback = processor.feedback
     if request.is_spam:
         ok = await feedback.handle_moved_to_spam(mail_id, account_id)
     else:

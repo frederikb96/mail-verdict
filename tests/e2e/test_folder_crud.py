@@ -146,7 +146,15 @@ class TestFolderDeletion:
 
         wait_for(_move_confirmed, description="Message move into ToDelete confirmed by IMAP")
 
-        delete_resp = app_client.delete(f"/api/folders/{target['id']}")
+        # An unconfirmed DELETE reports the count rather than deleting --
+        # the caller is expected to read it and repeat the call.
+        unconfirmed = app_client.delete(f"/api/folders/{target['id']}")
+        assert unconfirmed.status_code == 409, unconfirmed.text
+        assert "1" in unconfirmed.json()["detail"]
+
+        delete_resp = app_client.delete(
+            f"/api/folders/{target['id']}", params={"confirm_message_count": 1},
+        )
         assert delete_resp.status_code == 204, delete_resp.text
 
         def _folder_emptied() -> bool | None:
@@ -239,7 +247,9 @@ class TestFolderDeletion:
         ordered = app_client.get(f"/api/accounts/{account_id}/folder-order").json()
         assert any(f["imap_name"] == "Ephemeral" for f in ordered["folders"])
 
-        deleted = app_client.delete(f"/api/folders/{folder_id}")
+        deleted = app_client.delete(
+            f"/api/folders/{folder_id}", params={"confirm_message_count": 0},
+        )
         assert deleted.status_code == 204, deleted.text
 
         def _gone_everywhere() -> bool | None:
