@@ -56,6 +56,16 @@ class DatabaseConnection:
             raise RuntimeError("Database not initialized. Call init() first.")
         return self._session_factory
 
+    @property
+    def pool_capacity(self) -> int:
+        """Maximum sessions this connection can hand out at once.
+
+        `pool_size + max_overflow` -- the real ceiling on how many workers
+        can hold a session concurrently, independent of whatever a caller
+        asks a queue's concurrency setting to be.
+        """
+        return self._config.pool_size + self._config.max_overflow
+
     async def init(self) -> None:
         """Initialize the database engine and session factory."""
         self._engine = create_async_engine(

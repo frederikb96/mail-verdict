@@ -628,3 +628,42 @@ class OutboxResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --- Queue schemas ---
+
+
+class CircuitStatusResponse(BaseModel):
+    """A circuit breaker's current health."""
+
+    state: str
+    reason: str | None = None
+    since: datetime | None = None
+    retry_after: datetime | None = None
+
+
+class QueueConcurrency(BaseModel):
+    """A queue's worker count: what it's set to, what's actually running, and the ceiling."""
+
+    target: int
+    actual: int
+    max_allowed: int
+
+
+class QueueResponse(BaseModel):
+    """One named queue's full state."""
+
+    name: str
+    state: str
+    concurrency: QueueConcurrency
+    batch_size: int
+    depth: dict[str, int]
+    circuit: CircuitStatusResponse
+
+
+class QueuePatchRequest(BaseModel):
+    """Fields to change on a queue; omitted fields are left as-is."""
+
+    state: Literal["running", "paused"] | None = None
+    concurrency: int | None = Field(default=None, ge=0)
+    batch_size: int | None = Field(default=None, ge=1)

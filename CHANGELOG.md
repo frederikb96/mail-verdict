@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`verdicts.msg_key`:** the durable identity a verdict is keyed on — the message's RFC
+  `Message-ID` header when present, otherwise a hash of its envelope. A message with no header
+  used to skip the never-reclassify gate entirely and be reclassified on every resync; the hash
+  fallback closes that. `verdicts.from_addr` is recorded alongside it and folded into the same
+  partial unique index, so a message forging another's `Message-ID` cannot inherit its verdict.
+- **`queue/` package:** a Postgres-native work-queue engine, parameterised by table rather than by
+  what it queues — claim with `FOR UPDATE SKIP LOCKED`, a lease reclaimed by an advisory-locked
+  reconciliation timer, heartbeat, full-jitter backoff, a persisted named circuit breaker
+  (`closed`/`open`/`suspended`, the last requiring an explicit probe to clear), a `NOTIFY`-based
+  wakeup with a poll fallback, and a supervisor that reconciles a live worker count without a
+  restart. `attempts` increments at claim rather than at failure, so a row that kills its worker
+  every time still exhausts its attempts instead of looping forever. Nothing is wired to a real
+  queue yet — `message_embeddings` and `pipeline_runs` are future work this is built to support
+  unchanged.
+- **`GET/PATCH /api/queues`:** lists and changes a registered queue's state (`running`/`paused`),
+  concurrency and batch size. A `PATCH` raising concurrency above what the database connection
+  pool can actually support is rejected with `400` rather than silently serialising workers.
+- **`queue_state` / `circuit_breakers` tables:** the persisted, restart-surviving half of the
+  queue engine's operator state and circuit breaker health.
+
+### Fixed
+
+- **Verdict durability gate no longer skipped for headerless mail:** the partial unique index
+  moved from `(account_id, message_id_hdr)` to `(account_id, msg_key, coalesce(from_addr, ''))`.
+
 ## [1.0.0] - 2026-08-30
 
 ### Breaking Changes

@@ -103,6 +103,7 @@ async def test_verdict_row_has_no_foreign_key_onto_messages(
             mail_id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             message_id_hdr="<never-existed@example.com>",
+            msg_key="<never-existed@example.com>",
             is_spam=True,
             source=VerdictSource.AI,
         )

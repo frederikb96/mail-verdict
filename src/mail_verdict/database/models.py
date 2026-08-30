@@ -8,7 +8,7 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
   projection is built against)
 
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
-  account_prefs, folder_prefs
+  account_prefs, folder_prefs, queue_state, circuit_breakers
   (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
@@ -410,12 +410,16 @@ class Setting(Base):
 class Verdict(Base):
     """Spam/ham verdict for an email.
 
-    The partial unique index on (account_id, message_id_hdr) for AI verdicts
-    is the never-reclassify gate: it survives PostIMAP's retention purge
-    (which deletes the message row but not this one) and a UIDVALIDITY
-    resync (which assigns a new message UUID but keeps the same header).
-    "Current verdict" for a mail_id is the latest row by created_at --
-    user_feedback inserts additional rows rather than overwriting.
+    msg_key is the durable identity (see database/msg_key.py): the
+    Message-ID header when present, otherwise a content hash. The partial
+    unique index on (account_id, msg_key, coalesce(from_addr, '')) for AI
+    verdicts is the never-reclassify gate: it survives PostIMAP's retention
+    purge (which deletes the message row but not this one) and a
+    UIDVALIDITY resync (which assigns a new message UUID but keeps the same
+    key). from_addr is included so that a message forging the Message-ID of
+    one already verdicted cannot bypass classification. "Current verdict"
+    for a mail_id is the latest row by created_at -- user_feedback inserts
+    additional rows rather than overwriting.
     """
 
     __tablename__ = "verdicts"
@@ -424,6 +428,8 @@ class Verdict(Base):
     mail_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     message_id_hdr: Mapped[str | None] = mapped_column(Text, nullable=True)
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    from_addr: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_spam: Mapped[bool] = mapped_column(Boolean, nullable=False)
     model_used: Mapped[str | None] = mapped_column(String(255), nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -481,4 +487,52 @@ class ImageException(Base):
             "account_id", "exception_type", "value", name="uq_image_exception",
         ),
         Index("idx_image_exception_account", "account_id"),
+    )
+
+
+class QueueState(Base):
+    """Operator-controlled lifecycle for one named work queue (queue/manager.py).
+
+    Concurrency and pause/resume are changed through the queue API and take
+    effect on the running supervisor immediately; this row is what makes
+    that survive a restart rather than resetting to a hardcoded default.
+    Domain-agnostic on purpose -- see queue/work_queue.py's module
+    docstring for why this table has no knowledge of what it queues.
+    """
+
+    __tablename__ = "queue_state"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="running")
+    concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+
+class CircuitBreakerState(Base):
+    """Named health gate (queue/circuit.py), independent of any one queue --
+    a provider's circuit breaker can be shared across every queue that
+    calls it, which is the whole point of keying it by an arbitrary name
+    rather than by queue.
+    """
+
+    __tablename__ = "circuit_breakers"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="closed")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
     )

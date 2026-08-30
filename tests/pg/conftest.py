@@ -6,10 +6,21 @@ conftest's pytest_collection_modifyitems.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Integer,
+    MetaData,
+    SmallInteger,
+    Table,
+    Text,
+    Uuid,
+    text,
+)
 from sqlalchemy.exc import ProgrammingError
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
@@ -100,3 +111,48 @@ async def restricted_db(
         yield restricted
     finally:
         await restricted.close()
+
+
+def _queue_table_columns(table_name: str) -> Table:
+    """The column shape queue.work_queue.WorkQueue requires, plus one
+    domain-shaped column (payload) for a test to tell rows apart -- exactly
+    the "throwaway table" the generic queue engine is meant to run against
+    without knowing what it queues."""
+    return Table(
+        table_name,
+        MetaData(),
+        Column("id", Uuid, primary_key=True, server_default=text("gen_random_uuid()")),
+        Column("status", Text, nullable=False, server_default="pending"),
+        Column("priority", SmallInteger, nullable=False, server_default="100"),
+        Column(
+            "next_attempt_at", DateTime(timezone=True),
+            nullable=False, server_default=text("now()"),
+        ),
+        Column(
+            "created_at", DateTime(timezone=True),
+            nullable=False, server_default=text("now()"),
+        ),
+        Column("claimed_by", Text, nullable=True),
+        Column("claimed_at", DateTime(timezone=True), nullable=True),
+        Column("lease_expires_at", DateTime(timezone=True), nullable=True),
+        Column("attempts", Integer, nullable=False, server_default="0"),
+        Column("last_error", Text, nullable=True),
+        Column("payload", Text, nullable=True),
+    )
+
+
+@pytest_asyncio.fixture()
+async def throwaway_queue_table(migrated_db: DatabaseConnection) -> AsyncIterator[Table]:
+    """
+    A freshly created, uniquely named table matching the shape WorkQueue
+    requires -- created and dropped per test so queue mechanics tests never
+    need a real message_embeddings or pipeline_runs table to exist.
+    """
+    table = _queue_table_columns(f"throwaway_queue_{uuid.uuid4().hex[:12]}")
+    async with migrated_db.engine.begin() as conn:
+        await conn.run_sync(table.metadata.create_all)
+    try:
+        yield table
+    finally:
+        async with migrated_db.engine.begin() as conn:
+            await conn.run_sync(table.metadata.drop_all)

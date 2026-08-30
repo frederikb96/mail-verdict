@@ -26,6 +26,7 @@ from mail_verdict.database.models import (
     Verdict,
     VerdictSource,
 )
+from mail_verdict.database.msg_key import compute_msg_key
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -531,6 +532,10 @@ class VerdictRepository:
         """
         Create a new verdict for a message.
 
+        msg_key and from_addr are derived here from the message row rather
+        than accepted as parameters, so every call site gets the durability
+        gate correctly populated without having to know how it's computed.
+
         Args:
             mail_id: Message this verdict applies to
             account_id: Account the message belongs to
@@ -545,16 +550,46 @@ class VerdictRepository:
         Returns:
             Created Verdict
         """
-        verdict = Verdict(
-            mail_id=mail_id,
-            account_id=account_id,
-            message_id_hdr=message_id_hdr,
-            is_spam=is_spam,
-            source=source,
-            model_used=model_used,
-            reasoning=reasoning,
-        )
         async with self._db.session() as session:
+            result = await session.execute(
+                select(
+                    Message.message_id,
+                    Message.from_addr,
+                    Message.subject,
+                    Message.received_at,
+                    Message.size_bytes,
+                ).where(Message.id == mail_id)
+            )
+            row = result.one_or_none()
+
+            if row is None:
+                # The message is already gone (expunged and purged) by the
+                # time a verdict is recorded for it -- keep the key stable
+                # rather than losing the row to a NOT NULL violation.
+                msg_key = message_id_hdr or f"legacy:{mail_id}"
+                from_addr = None
+            else:
+                msg_key = compute_msg_key(
+                    account_id=account_id,
+                    message_id_hdr=message_id_hdr or row.message_id,
+                    from_addr=row.from_addr,
+                    subject=row.subject,
+                    received_at=row.received_at,
+                    size_bytes=row.size_bytes,
+                )
+                from_addr = row.from_addr
+
+            verdict = Verdict(
+                mail_id=mail_id,
+                account_id=account_id,
+                message_id_hdr=message_id_hdr,
+                msg_key=msg_key,
+                from_addr=from_addr,
+                is_spam=is_spam,
+                source=source,
+                model_used=model_used,
+                reasoning=reasoning,
+            )
             session.add(verdict)
             await session.flush()
             await session.refresh(verdict)
