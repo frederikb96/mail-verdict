@@ -3,13 +3,12 @@ Spam feedback listener.
 
 Routes postimap_events message updates that moved a message to or from
 the junk folder into SpamFeedbackHandler's contradiction check. New-mail
-classification is no longer this module's concern -- that is
-pipeline/enqueue.py's live arrival trigger and pipeline/runner.py's
-classify stage; this listener only ever reacts to a folder move, never to
-arrival, which is what keeps it from ever looping on the pipeline's own
-writes (a move-spam effect's Move fires exactly this same update event,
-and the contradiction check in spam/feedback.py is what makes that a
-no-op rather than a spurious correction).
+classification is pipeline/enqueue.py's live arrival trigger and
+pipeline/runner.py's classify stage; this listener only ever reacts to a
+folder move, never to arrival, which is what keeps it from ever looping
+on the pipeline's own writes (a move-spam effect's Move fires exactly
+this same update event, and the contradiction check in spam/feedback.py
+is what makes that a no-op rather than a spurious correction).
 
 The "moved out of junk" signal only fires for a move made inside this
 application. A move made in another mail client (Thunderbird, webmail) is

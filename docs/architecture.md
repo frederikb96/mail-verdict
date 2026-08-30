@@ -105,11 +105,11 @@ The cost is that joins are explicit and orphaned rows need occasional cleanup. B
 
 ## The message pipeline
 
-Spam classification and rules used to be two separate systems. They are one: a message passes
-through an ordered list of *stages*, each returning declarative *effects* for the runner to
-apply, and spam classification is simply the `classify` stage. Processing is sequential per
-message, parallel across messages — `pipeline_runs` is a work queue (`queue/`), claimed by an
-asyncio worker pool inside the same process.
+Spam classification and rules are one system: a message passes through an ordered list of
+*stages*, each returning declarative *effects* for the runner to apply, and spam classification
+is simply the `classify` stage. Processing is sequential per message, parallel across messages —
+`pipeline_runs` is a work queue (`queue/`), claimed by an asyncio worker pool inside the same
+process.
 
 A stage never writes SQL and never calls an action directly:
 
@@ -128,23 +128,24 @@ Two built-in stage types today: `match` (a rule, generalised — the same condit
 effect and nothing else — it does not move mail). "Spam moves to Junk" is an ordinary `match`
 stage composed on top of `classify`'s output, not a side effect hidden inside the classifier.
 
-A stage that cannot do its job raises rather than returning a success flag — `move_message`
-resolving nowhere and the caller reporting success anyway was a real bug in the old rules
-executor, and a result type with a success field reproduces that class of bug forever. The
-exception type tells the runner whether to retry with backoff, suspend the queue (a provider
-outage or a rejected key, refunding the attempt), or fail the run permanently with the offending
-stage named in `pipeline_runs.failed_stage`.
+A stage that cannot do its job raises rather than returning a success flag — a `Move` effect
+whose target folder does not resolve is exactly the kind of failure a success-flag result type
+would let slip through as reported success on a write that did nothing. The exception type tells
+the runner whether to retry with backoff, suspend the queue (a provider outage or a rejected key,
+refunding the attempt), or fail the run permanently with the offending stage named in
+`pipeline_runs.failed_stage`.
 
 ### Triggered by arrival only
 
 A live run is enqueued on `message`/`insert` with `origin = "sync"` and nothing else — never on
-an update. The old rules engine mapped every update to a "moved" trigger, including the update
-its own move-to-junk action had just made, since PostIMAP's `origin` field distinguishes its own
-sync writes from this application's, not the classifier's write from a user's a moment later. A
-folder move is handled by a separate, stateless listener instead (`spam/feedback.py`): it records
-a correction only when the move contradicts the message's *current* verdict, which is something
-the classifier can never do to what it just wrote, and excludes moving spam to Trash — deleting
-mail already agreed to be spam is the ordinary use of a junk folder, not a correction.
+an update. A stage reacting to a folder-move update could loop on its own writes: PostIMAP's
+`origin` field distinguishes its own sync writes from this application's, but not the pipeline's
+own write from a user's a moment later, so a move-triggered stage acting on a message its own
+move-to-junk effect just relocated is one edit away from acting on itself again. A folder move is
+handled by a separate, stateless listener instead (`spam/feedback.py`): it records a correction
+only when the move contradicts the message's *current* verdict, which is something the classifier
+can never do to what it just wrote, and excludes moving spam to Trash — deleting mail already
+agreed to be spam is the ordinary use of a junk folder, not a correction.
 
 ### Never classifying the same message twice
 

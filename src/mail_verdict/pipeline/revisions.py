@@ -28,11 +28,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Retired trigger vocabulary from the old rules engine. Only mail.received
-# rules survive migration into a stage -- the pipeline is enqueued on
-# arrival only (see pipeline/enqueue.py), so a rule that used to react to
-# a move or a delete has nothing left to trigger it, and reacting to a
-# move belongs to the stateless feedback listener in spam/feedback.py,
+# Only mail.received rules migrate into a stage -- the pipeline is
+# enqueued on arrival only (see pipeline/enqueue.py), so a rule keyed to
+# a move or a delete trigger has nothing left to fire it, and reacting to
+# a move belongs to the stateless feedback listener in spam/feedback.py,
 # never to a stage that could loop on its own writes.
 _MIGRATABLE_TRIGGER = "mail.received"
 

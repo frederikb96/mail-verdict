@@ -4,12 +4,13 @@ watermark and reconciliation that cover the gap a listener reconnect
 leaves behind.
 
 The pipeline is triggered by arrival only: `message`/`insert` with
-`origin = "sync"`, and nothing else. This is deliberately narrower than
-the old rules engine, which mapped every `message`/`update` to a
-`mail.moved` trigger -- including the update the pipeline's own Move
-effect just made, with nothing able to tell that write from a user's. A
-stage reacting to a move is a loop one edit away; reacting to arrival only
-removes the possibility rather than guarding against it.
+`origin = "sync"`, and nothing else -- never a `message`/`update`. A
+stage reacting to a folder-move update would also see the update its own
+Move effect just made, since `origin` distinguishes PostIMAP's writes
+from this application's, not the pipeline's own write from a user's a
+moment later; a stage that reacted to moves would be one edit away from
+looping on itself. Reacting to arrival only removes the possibility
+rather than guarding against it.
 
 Reconciliation exists because a listener reconnect loses any NOTIFY fired
 during the gap (postimap/listener.py's own docstring says so). A
