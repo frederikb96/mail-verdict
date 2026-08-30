@@ -41,6 +41,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   pool can actually support is rejected with `400` rather than silently serialising workers.
 - **`queue_state` / `circuit_breakers` tables:** the persisted, restart-surviving half of the
   queue engine's operator state and circuit breaker health.
+- **Folder creation and deletion.** `POST /api/accounts/:id/folders` creates a folder, joining onto
+  a `parent_id`'s path with the account's own separator when given (IMAP has no parent concept);
+  `DELETE /api/folders/:id` deletes one, refused outright for INBOX rather than dead-lettered
+  later. Both require PostIMAP service_version >= 1.3.0, checked at request time the same way
+  account deletion checks for >= 1.0.1. A small "Manage folders" dialog in the sidebar is the UI:
+  create by name (optionally nested under an existing folder), delete with an explicit
+  confirmation naming how many messages the deletion destroys on the mail server
+- **Reopening and editing a draft.** Clicking a draft now opens it in the composer instead of the
+  reading pane, with recipients, subject, body and reply threading restored. Saving or sending
+  inserts a new outbox row naming the draft's `messages.id` via `replaces_message_id`, so PostIMAP
+  appends the replacement and removes the superseded draft as one operation rather than an
+  expunge-then-create with no ordering between them -- sending a reopened draft leaves no draft
+  copy behind either. Requires PostIMAP service_version >= 1.4.0
 ### Changed
 
 - Rule enrichment (`rules/enrichment.py`) now goes through the same provider dispatch and strict schema as spam classification, instead of being hardcoded to a captured-at-startup Anthropic model
@@ -55,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Contract-owned columns are no longer written.** `outbox.status`, `outbox.attempts` and `accounts.state` are managed by PostIMAP, but the ORM models carried Python-side defaults for them, which SQLAlchemy sends on every insert regardless of what the calling code specifies. The tables carry table-level insert grants, so those writes were accepted rather than refused, and only matched PostIMAP's own initial values by coincidence — a divergence would have left outbox rows the processor never claims, so mail would have stopped sending with nothing reporting an error.
 - **Account health:** an account in `error` that has completed a full sync before is shown as `Retrying` rather than as a failure, since PostIMAP retries it unboundedly and it recovers on its own. Only an account that has never once synced is presented as needing attention.
 - **Spam prompt:** removed the description of a `neighbors` input that is never sent, so the classifier is no longer instructed to weigh context it does not receive.
+- `Outbox.status` and `Outbox.attempts` carried Python-side ORM defaults sent explicitly on every
+  INSERT, even though neither column has an INSERT grant under the restricted `postimap_app` role
+  -- every other pg-layer test connects as the database owner, where the extra columns are simply
+  accepted, so the failure was invisible outside a deployment actually running under the granted
+  role. `Folder.id`/`total_count`/`unread_count`/`initial_sync_done` carried the same latent defect,
+  unexercised until this release's own folder-insert path. All five now use
+  `server_default=FetchedValue()`, the pattern `Outbox.next_retry_at` already used
 
 ## [1.0.0] - 2026-08-30
 

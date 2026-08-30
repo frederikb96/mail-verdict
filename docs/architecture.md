@@ -135,6 +135,21 @@ The appended copy returns through the normal inbound sync, which means a sent me
 Sent on the next sync of that folder rather than instantly. The interface therefore reflects the
 outbox row's status — which *is* evented — instead of waiting for the message to come back.
 
+Editing a saved draft, or sending one, is the same insert with `replaces_message_id` set to the
+draft's `messages.id`. PostIMAP appends the replacement first and only then removes the message it
+names, so the two briefly coexist in Drafts; the composer renders from its own state rather than
+by re-reading the mailbox, which is what makes that gap invisible.
+
+## Folders
+
+Creating a folder is an insert; IMAP has no parent concept, so the full path is built by joining
+onto a parent folder's name with the account's own separator before the insert happens. Deleting
+one sets `deleted_at`, which destroys every message in it on the server, irreversibly — refused
+outright for INBOX rather than accepted and dead-lettered later. Both require a PostIMAP version
+new enough to grant them, checked the same way account deletion is: a service-version comparison
+at the call site, not the contract version, since granting a permission breaks nothing a consumer
+already does.
+
 ## Threading
 
 Conversations are grouped by a thread identifier that PostIMAP resolves from the `References` and

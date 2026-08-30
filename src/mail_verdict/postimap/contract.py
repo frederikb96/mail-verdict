@@ -23,6 +23,15 @@ SUPPORTED_CONTRACT_VERSION = 1
 # already does. Gate the capability on service_version, not contract_version.
 MIN_ACCOUNT_DELETE_SERVICE_VERSION = (1, 0, 1)
 
+# Folder creation (INSERT INTO folders) and deletion (UPDATE folders SET
+# deleted_at) are granted from this PostIMAP service version onward.
+MIN_FOLDER_CRUD_SERVICE_VERSION = (1, 3, 0)
+
+# outbox.replaces_message_id -- editing or sending a draft without leaving a
+# duplicate behind -- is granted, and the column exists at all, from this
+# PostIMAP service version onward.
+MIN_DRAFT_EDIT_SERVICE_VERSION = (1, 4, 0)
+
 
 class ContractMismatchError(Exception):
     """Raised when the running PostIMAP's contract_version does not match."""
@@ -111,3 +120,29 @@ def supports_account_delete(info: PostimapVersionInfo) -> bool:
         True if service_version >= MIN_ACCOUNT_DELETE_SERVICE_VERSION
     """
     return _parse_service_version(info.service_version) >= MIN_ACCOUNT_DELETE_SERVICE_VERSION
+
+
+def supports_folder_crud(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP grants folder creation and deletion.
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_FOLDER_CRUD_SERVICE_VERSION
+    """
+    return _parse_service_version(info.service_version) >= MIN_FOLDER_CRUD_SERVICE_VERSION
+
+
+def supports_draft_edit(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP has outbox.replaces_message_id.
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_DRAFT_EDIT_SERVICE_VERSION
+    """
+    return _parse_service_version(info.service_version) >= MIN_DRAFT_EDIT_SERVICE_VERSION

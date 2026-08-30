@@ -11,6 +11,7 @@ import type {
   BulkActionRequest,
   BulkActionResponse,
   FeedbackResponse,
+  FolderCreateRequest,
   FolderOrderResponse,
   FolderPrefsUpdate,
   FolderResponse,
@@ -123,6 +124,19 @@ export const api = {
         method: "PATCH",
         body: JSON.stringify(data),
       });
+    },
+    create(
+      accountId: string,
+      data: FolderCreateRequest,
+    ): Promise<FolderResponse> {
+      return request(`/accounts/${accountId}/folders`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    /** Destroys every message in the folder on the mail server. Irreversible. */
+    delete(folderId: string): Promise<void> {
+      return request(`/folders/${folderId}`, { method: "DELETE" });
     },
   },
 

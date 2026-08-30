@@ -19,8 +19,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Message
-from mail_verdict.postimap.actions import set_flags
+from mail_verdict.database.models import Folder, Message, Outbox
+from mail_verdict.postimap.actions import create_folder, delete_folder, insert_outbox, set_flags
 
 
 async def _seed_account_folder_message(
@@ -142,3 +142,105 @@ async def test_insert_into_messages_is_denied(
             await session.commit()
 
     assert "permission denied" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_create_folder_succeeds_under_the_restricted_grant(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """create_folder's Core INSERT names only account_id/imap_name -- exactly
+    what postimap_app is granted -- and reads id back via RETURNING rather
+    than sending a client-side one on the INSERT itself."""
+    async with migrated_db.session() as session:
+        account_id, _folder_id, _message_id = await _seed_account_folder_message(session)
+        await session.commit()
+
+    async with restricted_db.session() as session:
+        new_folder_id = await create_folder(
+            session, account_id=account_id, imap_name="Archive/2026",
+        )
+        await session.commit()
+
+    async with migrated_db.session() as session:
+        result = await session.execute(
+            select(Folder.imap_name).where(Folder.id == new_folder_id)
+        )
+        assert result.scalar_one() == "Archive/2026"
+
+
+@pytest.mark.asyncio
+async def test_inserting_a_folder_id_directly_is_denied(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """id carries no INSERT grant on folders -- naming it explicitly, the way
+    an ORM-constructed row with a client-side default would, is refused
+    rather than silently accepted."""
+    async with migrated_db.session() as session:
+        account_id, _folder_id, _message_id = await _seed_account_folder_message(session)
+        await session.commit()
+
+    with pytest.raises(DBAPIError) as exc_info:
+        async with restricted_db.session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO folders (id, account_id, imap_name) "
+                    "VALUES (:id, :account_id, 'Denied')"
+                ),
+                {"id": uuid.uuid4(), "account_id": account_id},
+            )
+            await session.commit()
+
+    assert "permission denied" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_delete_folder_succeeds_under_the_restricted_grant(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """delete_folder writes only deleted_at -- the one UPDATE grant on folders."""
+    async with migrated_db.session() as session:
+        account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+        folder_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, special_use) "
+                "VALUES (:id, :account_id, 'Archive', NULL)"
+            ),
+            {"id": folder_id, "account_id": account_id},
+        )
+        await session.commit()
+
+    async with restricted_db.session() as session:
+        await delete_folder(session, folder_id)
+        await session.commit()
+
+    async with migrated_db.session() as session:
+        result = await session.execute(select(Folder.deleted_at).where(Folder.id == folder_id))
+        assert result.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_insert_outbox_with_replaces_message_id_succeeds_under_the_restricted_grant(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """replaces_message_id is on outbox's column-level INSERT grant -- a draft
+    edit must be writable through the real restricted role, not just the
+    Postgres owner connection every other pg test uses."""
+    async with migrated_db.session() as session:
+        account_id, _inbox_id, message_id = await _seed_account_folder_message(session)
+        await session.commit()
+
+    async with restricted_db.session() as session:
+        outbox = await insert_outbox(
+            session, account_id=account_id, kind="draft",
+            to_addrs=["them@example.com"], subject="Edited draft",
+            body_text="Now finished.", replaces_message_id=message_id,
+        )
+        await session.commit()
+        outbox_id = outbox.id
+
+    async with migrated_db.session() as session:
+        result = await session.execute(
+            select(Outbox.replaces_message_id).where(Outbox.id == outbox_id)
+        )
+        assert result.scalar_one() == message_id

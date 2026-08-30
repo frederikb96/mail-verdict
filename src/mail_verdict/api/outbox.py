@@ -6,6 +6,8 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   grant on messages -- see postimap/actions.py). JSON when there are no
   attachments, multipart/form-data (a "data" field holding the same JSON
   body, plus repeated "attachments" file fields) when there are.
+  replaces_message_id edits or sends an existing draft in place, leaving
+  no duplicate behind (requires PostIMAP >= 1.4.0).
 GET /api/outbox — list outbox rows, for the outbox/status view
 """
 
@@ -26,6 +28,7 @@ from mail_verdict.api.schemas import (
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import insert_outbox
+from mail_verdict.postimap.contract import read_postimap_info, supports_draft_edit
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,18 @@ async def create_outbox(request: Request) -> OutboxResponse:
 
     db = get_db_connection()
     async with db.session() as session:
+        if payload.replaces_message_id is not None:
+            info = await read_postimap_info(session)
+            if info is None or not supports_draft_edit(info):
+                raise HTTPException(
+                    status_code=501,
+                    detail=(
+                        "Editing or sending a draft in place requires PostIMAP "
+                        f"service_version >= 1.4.0; the running instance reports "
+                        f"{info.service_version if info else 'unknown'}."
+                    ),
+                )
+
         outbox = await insert_outbox(
             session,
             account_id=payload.account_id,
@@ -94,6 +109,7 @@ async def create_outbox(request: Request) -> OutboxResponse:
             body_html=payload.body_html,
             in_reply_to=payload.in_reply_to,
             references=payload.references,
+            replaces_message_id=payload.replaces_message_id,
             attachments=attachments,
         )
         att_result = await session.execute(

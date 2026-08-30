@@ -217,3 +217,114 @@ class TestComposeFlow:
         )
 
         assert reply["thread_id"] == original_thread_id
+
+
+def _wait_for_message_gone_from_folder(
+    app_client: TestClient, account_id: str, folder_id: str, subject: str, timeout_s: float = 60.0,
+) -> None:
+    """Poll a folder's message list until none with the given subject remain."""
+    def _check() -> bool | None:
+        messages = app_client.get(
+            f"/api/accounts/{account_id}/messages", params={"folder_id": folder_id},
+        ).json()["messages"]
+        return True if not any(m["subject"] == subject for m in messages) else None
+
+    wait_for(
+        _check, timeout_s=timeout_s,
+        description=f"Message {subject!r} removed from folder",
+    )
+
+
+class TestDraftEditing:
+    """Editing and sending a draft in place via outbox.replaces_message_id."""
+
+    def test_editing_a_draft_leaves_no_duplicate_behind(
+        self, app_client: TestClient, composing_account: dict[str, Any],
+    ) -> None:
+        original_subject = f"Draft edit test {uuid.uuid4()}"
+        first = app_client.post(
+            "/api/outbox",
+            json={
+                "account_id": composing_account["id"], "kind": "draft",
+                "to": ["recipient@example.com"], "subject": original_subject,
+                "body_text": "First version.",
+            },
+        )
+        assert first.status_code == 201, first.text
+        _wait_for_outbox_sent(app_client, composing_account["id"], first.json()["id"])
+
+        _trigger_sync(app_client, composing_account["id"])
+        drafts_folder = wait_for_folder(app_client, str(composing_account["id"]), "Drafts")
+        original_message = _wait_for_message_in_folder(
+            app_client, composing_account["id"], drafts_folder["id"], original_subject,
+        )
+        original_detail = app_client.get(f"/api/messages/{original_message['id']}").json()
+        assert original_detail["is_draft"] is True
+
+        edited_subject = f"Draft edit test (edited) {uuid.uuid4()}"
+        second = app_client.post(
+            "/api/outbox",
+            json={
+                "account_id": composing_account["id"], "kind": "draft",
+                "to": ["recipient@example.com"], "subject": edited_subject,
+                "body_text": "Now finished.",
+                "replaces_message_id": original_message["id"],
+            },
+        )
+        assert second.status_code == 201, second.text
+        _wait_for_outbox_sent(app_client, composing_account["id"], second.json()["id"])
+
+        _trigger_sync(app_client, composing_account["id"])
+        _wait_for_message_in_folder(
+            app_client, composing_account["id"], drafts_folder["id"], edited_subject,
+        )
+        _wait_for_message_gone_from_folder(
+            app_client, composing_account["id"], drafts_folder["id"], original_subject,
+        )
+
+    def test_sending_a_draft_leaves_no_draft_behind(
+        self, app_client: TestClient, composing_account: dict[str, Any], mailpit_http_url: str,
+    ) -> None:
+        draft_subject = f"Draft to send {uuid.uuid4()}"
+        draft_resp = app_client.post(
+            "/api/outbox",
+            json={
+                "account_id": composing_account["id"], "kind": "draft",
+                "to": ["recipient@example.com"], "subject": draft_subject,
+                "body_text": "Still a draft.",
+            },
+        )
+        assert draft_resp.status_code == 201, draft_resp.text
+        _wait_for_outbox_sent(app_client, composing_account["id"], draft_resp.json()["id"])
+
+        _trigger_sync(app_client, composing_account["id"])
+        drafts_folder = wait_for_folder(app_client, str(composing_account["id"]), "Drafts")
+        draft_message = _wait_for_message_in_folder(
+            app_client, composing_account["id"], drafts_folder["id"], draft_subject,
+        )
+
+        sent_subject = f"Sent from a draft {uuid.uuid4()}"
+        send_resp = app_client.post(
+            "/api/outbox",
+            json={
+                "account_id": composing_account["id"], "kind": "send",
+                "to": ["recipient@example.com"], "subject": sent_subject,
+                "body_text": "Finished and sent.",
+                "replaces_message_id": draft_message["id"],
+            },
+        )
+        assert send_resp.status_code == 201, send_resp.text
+        send_outbox_id = send_resp.json()["id"]
+        outbox_row = _wait_for_outbox_sent(app_client, composing_account["id"], send_outbox_id)
+        assert outbox_row["error"] is None
+
+        wait_for_mailpit_message(mailpit_http_url, sent_subject)
+
+        _trigger_sync(app_client, composing_account["id"])
+        sent_folder = wait_for_folder(app_client, str(composing_account["id"]), "Sent")
+        _wait_for_message_in_folder(
+            app_client, composing_account["id"], sent_folder["id"], sent_subject,
+        )
+        _wait_for_message_gone_from_folder(
+            app_client, composing_account["id"], drafts_folder["id"], draft_subject,
+        )

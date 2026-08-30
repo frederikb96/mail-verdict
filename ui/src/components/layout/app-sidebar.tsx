@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/sidebar";
 
 import { DroppableFolder } from "@/components/sidebar/droppable-folder";
+import { FolderManageDialog } from "@/components/sidebar/folder-manage-dialog";
 import { ComposeDialog } from "@/components/mail/compose-dialog";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
@@ -267,8 +268,11 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>
-          <SidebarGroupLabel>
-            {isUnified ? "Unified Folders" : "Folders"}
+          <SidebarGroupLabel className="flex items-center justify-between gap-2 pr-1">
+            <span>{isUnified ? "Unified Folders" : "Folders"}</span>
+            {!isUnified && selectedAccountId && (
+              <FolderManageDialog accountId={selectedAccountId} />
+            )}
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>

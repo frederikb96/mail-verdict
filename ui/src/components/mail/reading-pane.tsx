@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
   Mail,
   Paperclip,
@@ -28,6 +28,7 @@ import { EmailRenderer } from "@/components/mail/email-renderer";
 import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
 import { ReplyBox } from "@/components/mail/reply-box";
+import { DraftEditor } from "@/components/mail/draft-editor";
 import { api } from "@/lib/api";
 import { useMailAction, useThread } from "@/hooks/use-mails";
 import { useAccount } from "@/hooks/use-accounts";
@@ -263,6 +264,7 @@ function ThreadMessage({
 
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
+  const setSelectedMailId = useSetAtom(selectedMailIdAtom);
   const { data: thread, isLoading } = useThread(mailId);
   const mailAction = useMailAction();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
@@ -273,6 +275,7 @@ export function ReadingPane() {
   const primary =
     messages.find((m) => m.id === mailId) ?? messages[messages.length - 1] ?? null;
   const account = useAccount(primary?.account_id ?? null);
+  const isDraft = primary?.is_draft ?? false;
 
   // Reset expansion state per opened mail: last message expanded, plus
   // whichever message the user actually clicked in the list.
@@ -286,9 +289,10 @@ export function ReadingPane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mailId, messages.length > 0 ? messages[0].id : null]);
 
-  // Auto mark-as-read the specific message the user opened.
+  // Auto mark-as-read the specific message the user opened -- skipped for a
+  // draft, which is about to be edited or replaced rather than read.
   useEffect(() => {
-    if (primary && !primary.is_seen && primary.id !== autoReadRef.current) {
+    if (primary && !isDraft && !primary.is_seen && primary.id !== autoReadRef.current) {
       autoReadRef.current = primary.id;
       mailAction.mutate({
         mailId: primary.id,
@@ -297,7 +301,7 @@ export function ReadingPane() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primary?.id, primary?.is_seen]);
+  }, [primary?.id, primary?.is_seen, isDraft]);
 
   const toggle = (id: string) => {
     setExpandedIds((prev) => {
@@ -336,6 +340,10 @@ export function ReadingPane() {
         <p className="text-sm">Message not found</p>
       </div>
     );
+  }
+
+  if (isDraft) {
+    return <DraftEditor mail={primary} onDone={() => setSelectedMailId(null)} />;
   }
 
   return (

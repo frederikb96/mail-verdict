@@ -15,8 +15,10 @@ mirror, which is what keeps it simple.
 ## What it does
 
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
-  list that stays smooth on large mailboxes, and unified views across accounts.
+  list that stays smooth on large mailboxes, and unified views across accounts. Folders can be
+  created and deleted (renaming and re-nesting are an IMAP limitation, not implemented).
 - **Compose** — send, reply, reply-all and drafts, with attachments. Replies thread correctly.
+  Reopening a draft continues editing it in place, and sending one leaves no draft behind.
 - **Actions** — read/unread, flag, archive, trash, permanent delete, keywords, drag-and-drop moves,
   and bulk actions over a selection or a whole folder.
 - **Spam verdicts** — each new message is classified by a language model, with the reasoning

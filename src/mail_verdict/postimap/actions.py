@@ -9,13 +9,13 @@ Callers (api/, rules/, spam/) never construct this SQL themselves.
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, text, update
+from sqlalchemy import delete, insert, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Account, Message, Outbox, OutboxAttachment
+from mail_verdict.database.models import Account, Folder, Message, Outbox, OutboxAttachment
 
 _CREDENTIAL_FORMAT_PLAINTEXT = b"\x00"
 
@@ -328,6 +328,64 @@ async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> N
     )
 
 
+async def create_folder(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    imap_name: str,
+) -> uuid.UUID:
+    """
+    Insert a folder row -- enqueues an IMAP CREATE.
+
+    IMAP has no parent-folder concept, so imap_name must already be the
+    full separator-joined path; building it from a parent folder plus a
+    separator read off an existing row of the account is the caller's job
+    (see the contract's "Creating a folder" worked example).
+
+    id carries no INSERT grant on folders, so this issues a Core INSERT
+    naming only account_id/imap_name and reads the database-generated id
+    back via RETURNING, rather than letting an ORM-constructed row send a
+    client-side id the grant would reject.
+
+    Available from PostIMAP service_version 1.3.0 onward -- gate the call
+    site on postimap.contract.supports_folder_crud() first.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        account_id: Account the folder belongs to
+        imap_name: Full IMAP mailbox path, separator-joined
+
+    Returns:
+        The database-generated id of the new folder row
+    """
+    result = await session.execute(
+        insert(Folder).values(account_id=account_id, imap_name=imap_name).returning(Folder.id)
+    )
+    return cast(uuid.UUID, result.scalar_one())
+
+
+async def delete_folder(session: AsyncSession, folder_id: uuid.UUID) -> None:
+    """
+    Delete a folder -- enqueues an IMAP DELETE.
+
+    This destroys every message in the folder on the mail server,
+    irreversibly; there is no undo. A delete the server refuses (deleting
+    INBOX, for example) leaves the folder and its messages untouched and
+    surfaces as a sync_error event rather than as a synchronous failure of
+    this statement.
+
+    Available from PostIMAP service_version 1.3.0 onward -- gate the call
+    site on postimap.contract.supports_folder_crud() first.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        folder_id: Folder to delete
+    """
+    await session.execute(
+        update(Folder).where(Folder.id == folder_id).values(deleted_at=text("now()"))
+    )
+
+
 async def insert_outbox(
     session: AsyncSession,
     *,
@@ -342,6 +400,7 @@ async def insert_outbox(
     from_addr: str | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
+    replaces_message_id: uuid.UUID | None = None,
     attachments: list[tuple[str, str | None, bytes]] | None = None,
 ) -> Outbox:
     """
@@ -366,6 +425,13 @@ async def insert_outbox(
         from_addr: Sender address override; falls back to accounts.imap_user
         in_reply_to: The replied-to message's Message-ID header value
         references: Full References chain for threading
+        replaces_message_id: The messages.id of the draft this row
+            replaces. PostIMAP appends the replacement first and only then
+            removes the named message, so editing a draft -- or sending
+            one -- costs one insert instead of an expunge-then-insert with
+            no ordering between them. Available from PostIMAP
+            service_version 1.4.0 onward; gate the call site on
+            postimap.contract.supports_draft_edit() first.
         attachments: (filename, content_type, data) tuples, inserted into
             outbox_attachments before the row is picked up
 
@@ -384,6 +450,7 @@ async def insert_outbox(
         body_html=body_html,
         in_reply_to=in_reply_to,
         msg_references=references,
+        replaces_message_id=replaces_message_id,
     )
     session.add(outbox)
     await session.flush()

@@ -133,15 +133,23 @@ class Account(Base):
 
 
 class Folder(Base):
-    """IMAP folder -- PostIMAP-owned table, read-only from MailVerdict.
+    """IMAP folder -- PostIMAP-owned table.
 
-    Folder create/rename/delete from PG is a documented PostIMAP non-goal;
-    there is no consumer write surface on this table at all.
+    account_id and imap_name are insert-only (see postimap/actions.py's
+    create_folder() -- id carries no INSERT grant on this table, so that
+    helper issues a Core INSERT naming only the granted columns and reads
+    the id back via RETURNING rather than letting an ORM-constructed row
+    send its own client-side id). deleted_at is the one UPDATE surface,
+    for deletion. Everything else is PostIMAP's own sync bookkeeping.
     """
 
     __tablename__ = "folders"
 
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # id/total_count/unread_count/initial_sync_done carry no INSERT grant on
+    # this table -- server_default=FetchedValue() keeps a value here for
+    # ORM convenience without ever sending it explicitly, the same guard
+    # next_retry_at uses below on Outbox.
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, server_default=FetchedValue())
     account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     imap_name: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -151,8 +159,12 @@ class Folder(Base):
     uidvalidity: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     uidnext: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     highestmodseq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    total_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    unread_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=FetchedValue(),
+    )
+    unread_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=FetchedValue(),
+    )
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
@@ -160,7 +172,9 @@ class Folder(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
-    initial_sync_done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    initial_sync_done: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
@@ -290,10 +304,11 @@ class Outbox(Base):
     """Send/draft composition queue -- PostIMAP-owned table.
 
     account_id/kind/from_addr/to_addrs/cc_addrs/bcc_addrs/subject/body_text/
-    body_html/in_reply_to/references/max_attempts are insert-only from the
-    consumer side; everything else (status, error, attempts, sent_message_id,
-    sent_at) is PostIMAP-managed. See postimap/actions.py for the insert
-    helper and the contract's outbox worked examples.
+    body_html/in_reply_to/references/max_attempts/replaces_message_id are
+    insert-only from the consumer side; everything else (status, error,
+    attempts, sent_message_id, sent_at) is PostIMAP-managed. See
+    postimap/actions.py for the insert helper and the contract's outbox
+    worked examples.
     """
 
     __tablename__ = "outbox"
@@ -312,6 +327,11 @@ class Outbox(Base):
     msg_references: Mapped[list[str] | None] = mapped_column(
         "references", ARRAY(Text), nullable=True,
     )
+    # The message this row supersedes -- see postimap/actions.py's
+    # insert_outbox(). References messages(id) with ON DELETE SET NULL on
+    # PostIMAP's side; this projection carries no FK of its own, consistent
+    # with every other column here.
+    replaces_message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     # server_default=FetchedValue() tells SQLAlchemy this column is entirely
     # PostIMAP-managed: never send it explicitly on INSERT (the real column
     # is NOT NULL with its own server-side default) and never try to fetch
