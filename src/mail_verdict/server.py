@@ -322,12 +322,22 @@ def _build_fastapi() -> FastAPI:
 
     @api_router.get("/health")
     async def health() -> JSONResponse:
-        """Readiness: database reachable and PostIMAP contract version confirmed."""
+        """
+        Readiness: database reachable and PostIMAP contract version confirmed.
+
+        Re-checks the contract whenever it isn't confirmed yet, so a pod that
+        started before PostIMAP finished its own migrations becomes ready as
+        soon as the contract row appears, instead of staying unready forever.
+        """
+        global _contract_ok
         try:
             db = get_db_connection()
             db_ok = await db.health_check()
         except RuntimeError:
             db_ok = False
+
+        if db_ok and not _contract_ok:
+            _contract_ok = await _check_contract(db)
 
         ready = db_ok and _contract_ok
         return JSONResponse(
