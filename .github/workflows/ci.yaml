@@ -110,6 +110,25 @@ jobs:
       - name: pg-layer tests
         run: pytest tests/pg/ -v --tb=short
 
+  e2e:
+    name: End-to-end tests
+    needs: detect
+    if: ${{ needs.detect.outputs.python == 'true' }}
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]"
+
+      - name: e2e tests
+        run: pytest tests/e2e/ -v --tb=short
   ui:
     name: UI type check + build
     needs: detect
@@ -186,7 +205,7 @@ jobs:
 
   ci-ok:
     name: CI ok
-    needs: [detect, lint, unit, pg, ui, image, chart]
+    needs: [detect, lint, unit, pg, e2e, ui, image, chart]
     if: ${{ !cancelled() }}
     runs-on: arc-runner-mail-verdict
     steps:
@@ -196,6 +215,7 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.unit.result }}" \
             "${{ needs.pg.result }}" \
+            "${{ needs.e2e.result }}" \
             "${{ needs.ui.result }}" \
             "${{ needs.image.result }}" \
             "${{ needs.chart.result }}"; do
