@@ -107,6 +107,11 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
 
+      # Pull up front so a transient registry failure is an obvious retried
+      # step, not an image-inspect 404 in the middle of a test run.
+      - name: Pull test images
+        run: python scripts/pull_test_images.py
+
       - name: pg-layer tests
         run: pytest tests/pg/ -v --tb=short
 
@@ -126,6 +131,11 @@ jobs:
 
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
+
+      # Pull up front so a transient registry failure is an obvious retried
+      # step, not an image-inspect 404 in the middle of a test run.
+      - name: Pull test images
+        run: python scripts/pull_test_images.py
 
       - name: e2e tests
         run: pytest tests/e2e/ -v --tb=short
