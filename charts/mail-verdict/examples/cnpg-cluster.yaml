@@ -15,6 +15,15 @@
 # it as a NOLOGIN, grants-only role the first time PostIMAP starts against
 # this database (see PostIMAP's consumer-contract.md). Run the GRANT below
 # only after that has happened -- see the ordering note at the bottom.
+# MailVerdict's semantic search needs the `vector` extension, which is not
+# a trusted extension -- an unprivileged role cannot install it, and the
+# stock CNPG PostgreSQL image does not ship it at all. CloudNativePG's own
+# docs describe mounting a pgvector extension image via
+# `spec.postgresql.extensions` (https://cloudnative-pg.io/docs/devel/imagevolume_extensions/);
+# check the current image reference and CNPG operator version required
+# before relying on this example verbatim. Without it, MailVerdict's own
+# migration fails at startup with an actionable message rather than
+# silently running without semantic search.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
@@ -66,11 +75,15 @@ stringData:
 #
 #   GRANT CONNECT ON DATABASE postimap TO mailverdict;
 #   GRANT USAGE ON SCHEMA public TO mailverdict;
-#   -- MailVerdict's own Alembic migration creates account_prefs,
-#   -- folder_prefs, settings, verdicts, mail_tags, image_exceptions in this
-#   -- schema; CREATE is what lets that migration run.
+#   -- MailVerdict's own Alembic migrations create its owned tables in
+#   -- this schema; CREATE is what lets those migrations run.
 #   GRANT CREATE ON SCHEMA public TO mailverdict;
 #   -- The contract grant: read/write on exactly the PostIMAP-owned columns
 #   -- documented in docs/consumer-contract.md, enforced by PostgreSQL, not
 #   -- by application code.
 #   GRANT postimap_app TO mailverdict;
+#
+# Also once, as a superuser, if the extension image above is mounted but the
+# extension itself is not yet created in this database:
+#
+#   CREATE EXTENSION IF NOT EXISTS vector;

@@ -31,9 +31,11 @@ create the database or install PostIMAP for you:
    migrations run automatically on first start and create the `postimap_app` role that step 1's
    `GRANT` needs to already exist -- so run that `GRANT` after PostIMAP is up, not before.
 3. **This chart**, pointed at the same database with MailVerdict's own role. Its own Alembic
-   migrations run automatically on first start and create MailVerdict's owned tables
-   (`account_prefs`, `folder_prefs`, `settings`, `verdicts`, `mail_tags`, `image_exceptions`) --
-   there's no separate migration Job or Helm hook.
+   migrations run automatically on first start and create MailVerdict's owned tables -- there's no
+   separate migration Job or Helm hook. One of those migrations requires the `vector` extension
+   (semantic search); see [`examples/cnpg-cluster.yaml`](examples/cnpg-cluster.yaml) for how to get
+   it onto a CNPG-managed database, since it is not a trusted extension and the stock PostgreSQL
+   image does not ship it.
 
 **PostIMAP is not a subchart.** It has its own release cadence, its own values surface, and its
 own chart; bundling it here would duplicate both and drift out of sync. See

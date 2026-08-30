@@ -8,7 +8,7 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
   projection is built against)
 
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
-  account_prefs, folder_prefs, queue_state, circuit_breakers
+  account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings
   (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
@@ -25,6 +25,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -64,6 +65,13 @@ def _value_enum(enum_cls: type[enum.Enum]) -> Enum:
     """
     return Enum(enum_cls, native_enum=False, values_callable=lambda cls: [e.value for e in cls])
 
+
+# pgvector's HNSW index cannot be built above 2000 dimensions for the
+# `vector` type. 1536 is text-embedding-3-small's native size; every
+# embedding provider is asked to truncate to this via its API's own
+# dimensions parameter, so the column never has to know which model
+# produced a given row's vector -- see message_embeddings.model for that.
+EMBEDDING_DIMENSIONS = 1536
 
 # --- Enums ---
 
@@ -592,4 +600,62 @@ class CircuitBreakerState(Base):
         default=_utcnow,
         onupdate=_utcnow,
         server_default=func.now(),
+    )
+
+
+class MessageEmbedding(Base):
+    """One vector per (account_id, msg_key, model) -- the semantic search
+    corpus and, via its status/attempts/lease columns, the work queue that
+    fills it (queue/work_queue.py).
+
+    Keyed on msg_key rather than message_id: a UIDVALIDITY resync replaces
+    every messages.id in a folder, which would silently orphan a row keyed
+    on it. message_id is kept only as a join hint, re-resolved at read
+    time. model is part of the identity rather than a separate "current
+    model" column, so a re-encode after a model change is an ordinary
+    insert under a new key rather than an update racing the old rows --
+    coverage for the new model starts at zero and rises, it never mixes
+    two vector spaces under one key.
+    """
+
+    __tablename__ = "message_embeddings"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    content_level: Mapped[str] = mapped_column(Text, nullable=False, default="full")
+    source_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=True,
+    )
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id", "msg_key", "model", name="uq_message_embeddings_account_msgkey_model",
+        ),
+        Index("ix_message_embeddings_account", "account_id", "model"),
     )

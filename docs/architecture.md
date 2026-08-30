@@ -124,6 +124,30 @@ The third gate is what makes this correct rather than merely usual. Backfill sup
 applies to a folder's *first* sync, so events from a later resync are indistinguishable from new
 mail. The verdict record is what tells them apart.
 
+## The semantic layer
+
+`message_embeddings` (`embeddings/`) holds one pgvector row per message — subject, sender and the
+first `content_chars` of the body, HTML-stripped when there is no plain-text body, envelope-only
+when PostIMAP never fetched a body at all. It is keyed on the same `(account_id, msg_key)` identity
+as `verdicts`, for the same reason: `messages.id` does not survive a UIDVALIDITY resync, and a
+vector keyed on it would be silently orphaned.
+
+The table is also its own work queue — `status`/`attempts`/`claimed_by`/`lease_expires_at` are the
+generic engine in `queue/` (see its own module docstrings), parameterised by table rather than by
+what it queues. Filling it is a backfill sweep: a self-advancing set-difference batch —
+"messages missing a current-model embedding, `LIMIT n`" — run repeatedly rather than a cursor walk.
+Inserting a row makes the message stop matching, so the query needs no persisted position, resumes
+correctly after a crash, and is immune to a resync recreating message ids underneath it. `model` is
+part of a row's identity, not a separate column to keep in sync — changing it in the `semantic`
+settings category makes coverage for the new model start at zero rather than mixing two vector
+spaces in one index; old rows are kept, not deleted, until the new coverage completes.
+
+Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and orders
+messages by cosine distance, joined back to `messages` at read time — never a denormalised copy of
+anything that changes, matching the no-foreign-key posture above. It complements full-text search
+rather than replacing it: literal search wins on a known sender or an exact phrase, semantic search
+wins on a half-remembered topic with none of the same words.
+
 ## Sending mail
 
 MailVerdict does not open an SMTP connection. Sending is an insert into an outbox table with

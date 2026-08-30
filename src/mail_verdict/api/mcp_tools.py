@@ -4,7 +4,8 @@ MCP server tools for MailVerdict.
 Reads from Postgres, writes through postimap/actions.py -- never touches
 IMAP/SMTP directly. Tools: search_mail, list_mails, get_mail, get_thread,
 list_folders, list_accounts, move_mail, mark_mail, tag_mail, get_verdict,
-submit_spam_feedback, send_mail, draft_mail, get_stats.
+submit_spam_feedback, send_mail, draft_mail, get_stats,
+semantic_search_mail, get_semantic_status.
 """
 
 from __future__ import annotations
@@ -665,3 +666,92 @@ async def get_stats(account_id: str | None = None) -> dict[str, Any]:
 
     totals["accuracy"] = sum(accuracy_values) / len(accuracy_values) if accuracy_values else 1.0
     return totals
+
+
+@mcp.tool(
+    name="semantic_search_mail",
+    annotations={
+        "title": "Semantic Search Mail",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def semantic_search_mail(
+    query: str,
+    account_id: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """
+    Find mail by meaning rather than exact words -- "that email about the
+    conference I said I might attend" finds it even with none of those
+    words in the message. Complements search_mail: use search_mail for a
+    known sender or an exact phrase, this for a half-remembered topic.
+
+    Args:
+        query: What to search for, in plain language
+        account_id: Optional account UUID to scope the search to one account
+        limit: Max results, 1-100 (default 20)
+
+    Returns:
+        List of message summaries with a similarity score (0-1, higher is
+        closer), ranked nearest first. Only messages already encoded with
+        the currently configured model are searched -- see get_semantic_status
+        for coverage.
+    """
+    from mail_verdict.embeddings.provider import (
+        DEFAULT_EMBEDDING_MODEL,
+        resolve_embedding_provider,
+    )
+    from mail_verdict.embeddings.search import semantic_search
+    from mail_verdict.settings.credentials import get_provider_credential_repo
+    from mail_verdict.settings.service import get_settings_service
+
+    settings = get_settings_service().get("semantic")
+    model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    provider = resolve_embedding_provider(
+        str(settings.get("provider", "openai")), get_provider_credential_repo(),
+    )
+    vectors = await provider.embed_batch([query], model=model)
+
+    aid = uuid.UUID(account_id) if account_id else None
+    hits = await semantic_search(
+        get_db_connection(), query_vector=vectors[0], model=model, account_id=aid, k=limit,
+    )
+    return [{**_message_summary(hit.message), "similarity": hit.similarity} for hit in hits]
+
+
+@mcp.tool(
+    name="get_semantic_status",
+    annotations={
+        "title": "Get Semantic Search Coverage",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_semantic_status(account_id: str | None = None) -> dict[str, Any]:
+    """
+    Coverage of the semantic search index -- how much of the mailbox has a
+    vector under the currently configured model.
+
+    Args:
+        account_id: Optional account UUID to scope to one account
+
+    Returns:
+        model, in_scope, encoded, pending, failed, coverage (0-1)
+    """
+    from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
+    from mail_verdict.embeddings.repository import EmbeddingRepository
+    from mail_verdict.settings.service import get_settings_service
+
+    settings = get_settings_service().get("semantic")
+    model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    aid = uuid.UUID(account_id) if account_id else None
+    status = await EmbeddingRepository(get_db_connection()).status(model=model, account_id=aid)
+    return {
+        "model": status.model, "in_scope": status.in_scope, "encoded": status.encoded,
+        "pending": status.pending, "failed": status.failed, "coverage": status.coverage,
+    }

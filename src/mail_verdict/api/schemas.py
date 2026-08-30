@@ -685,3 +685,36 @@ class QueuePatchRequest(BaseModel):
     state: Literal["running", "paused"] | None = None
     concurrency: int | None = Field(default=None, ge=0)
     batch_size: int | None = Field(default=None, ge=1)
+
+
+# --- Semantic layer schemas ---
+
+
+class EmbeddingStatusResponse(BaseModel):
+    """Coverage snapshot for one embedding model."""
+
+    model: str
+    in_scope: int
+    encoded: int
+    pending: int
+    failed: int
+    coverage: float
+
+
+class SemanticSearchResult(BaseModel):
+    """One semantic search hit: the message and how close it was."""
+
+    message_id: uuid.UUID
+    account_id: uuid.UUID
+    subject: str | None = None
+    from_addr: str | None = None
+    received_at: datetime | None = None
+    similarity: float
+
+
+class SemanticSearchResponse(BaseModel):
+    """Semantic search results wrapper."""
+
+    results: list[SemanticSearchResult]
+    query: str
+    model: str

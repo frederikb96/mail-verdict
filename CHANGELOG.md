@@ -33,9 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`closed`/`open`/`suspended`, the last requiring an explicit probe to clear), a `NOTIFY`-based
   wakeup with a poll fallback, and a supervisor that reconciles a live worker count without a
   restart. `attempts` increments at claim rather than at failure, so a row that kills its worker
-  every time still exhausts its attempts instead of looping forever. Nothing is wired to a real
-  queue yet — `message_embeddings` and `pipeline_runs` are future work this is built to support
-  unchanged.
+  every time still exhausts its attempts instead of looping forever. `message_embeddings` is the
+  first queue built on it; `pipeline_runs` is future work this is built to support unchanged.
 - **`GET/PATCH /api/queues`:** lists and changes a registered queue's state (`running`/`paused`),
   concurrency and batch size. A `PATCH` raising concurrency above what the database connection
   pool can actually support is rejected with `400` rather than silently serialising workers.
@@ -54,6 +53,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   appends the replacement and removes the superseded draft as one operation rather than an
   expunge-then-create with no ordering between them -- sending a reopened draft leaves no draft
   copy behind either. Requires PostIMAP service_version >= 1.4.0
+- **Semantic search.** Every message gets a `text-embedding-3-small` vector (subject, sender and
+  the first 2000 characters of the body, HTML-stripped when there is no plain-text body; envelope
+  only when the body was never fetched at all), stored in `message_embeddings` and indexed with
+  pgvector's HNSW. `GET /api/embeddings/search` and the MCP tool `semantic_search_mail` find
+  messages by meaning rather than exact words, alongside the existing full-text search rather than
+  replacing it. `message_embeddings` is a queue in its own right (`queue/`): a backfill sweep is a
+  self-advancing set-difference batch rather than a cursor, so it is resumable with no state and
+  immune to a UIDVALIDITY resync recreating every message's id — an embedding row is keyed on the
+  same durable `(account_id, msg_key)` identity as `verdicts`, joined back to `messages` at read
+  time. `GET /api/embeddings/status` (and the MCP tool `get_semantic_status`) report coverage —
+  encoded/pending/failed against the currently configured model — so a partial corpus is visible
+  rather than inferred from search quietly returning less than expected. A model change is an
+  ordinary re-embed, not a migration: old vectors are kept, coverage for the new model starts at
+  zero and rises. New `semantic` settings category: `provider`, `model`, `content_chars`,
+  `batch_size`, `concurrency`. Registers as the `embeddings` named queue, so start/stop/concurrency
+  go through the existing `GET/PATCH /api/queues/embeddings`.
 ### Changed
 
 - Rule enrichment (`rules/enrichment.py`) now goes through the same provider dispatch and strict schema as spam classification, instead of being hardcoded to a captured-at-startup Anthropic model

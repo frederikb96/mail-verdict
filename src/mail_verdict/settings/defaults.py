@@ -2,7 +2,7 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, spam, retry, rules.
+Categories: ai, spam, retry, rules, semantic.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ class SettingCategory(str, enum.Enum):
     SPAM = "spam"
     RETRY = "retry"
     RULES = "rules"
+    SEMANTIC = "semantic"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -50,5 +51,19 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     },
     SettingCategory.RULES: {
         "rules": [],
+    },
+    SettingCategory.SEMANTIC: {
+        # "openai" is the only real provider -- Anthropic has no embedding
+        # model of its own to select here, unlike ai.provider. "fake"
+        # produces deterministic hash-derived vectors for local use
+        # without a key.
+        "provider": "openai",
+        "model": "text-embedding-3-small",
+        # Every model is asked to truncate to EMBEDDING_DIMENSIONS
+        # (database/models.py) via its own dimensions parameter, so this
+        # is never a setting -- changing the column width is a migration.
+        "content_chars": 2000,
+        "batch_size": 64,
+        "concurrency": 2,
     },
 }
