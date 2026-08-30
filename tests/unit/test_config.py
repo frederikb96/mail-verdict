@@ -1,4 +1,4 @@
-"""Tests for config loading, env overrides, singleton reset."""
+"""Tests for config loading: deep merge, env overrides, placeholders, fail-fast."""
 
 from __future__ import annotations
 
@@ -12,26 +12,13 @@ import mail_verdict.config.loader as loader
 from mail_verdict.config.loader import (
     ConfigError,
     InfraConfig,
+    _apply_env_overrides,
     _deep_merge,
-    _get_env_override,
-    _require,
+    _resolve_placeholders,
     get_config,
     reset_config,
 )
 from tests.helpers.config_factory import make_config
-
-
-class TestRequire:
-    """Tests for _require helper."""
-
-    def test_returns_value_when_present(self) -> None:
-        """Existing key returns its value."""
-        assert _require({"port": 8080}, "port", "server.port") == 8080
-
-    def test_raises_on_missing_key(self) -> None:
-        """Missing key raises ConfigError with path."""
-        with pytest.raises(ConfigError, match="server.port"):
-            _require({}, "port", "server.port")
 
 
 class TestDeepMerge:
@@ -44,7 +31,7 @@ class TestDeepMerge:
         assert base == {"a": 1, "b": 3}
 
     def test_nested_merge(self) -> None:
-        """Nested dicts are merged recursively."""
+        """Nested dicts are merged recursively, sibling keys survive."""
         base: dict[str, Any] = {"server": {"host": "0.0.0.0", "port": 8080}}
         _deep_merge(base, {"server": {"port": 9090}})
         assert base["server"]["host"] == "0.0.0.0"
@@ -58,60 +45,86 @@ class TestDeepMerge:
 
 
 class TestEnvOverride:
-    """Tests for environment variable overrides."""
+    """Tests for MAIL_VERDICT_<SECTION>_<KEY> environment overrides."""
 
     def test_string_override(self) -> None:
         """String values are overridden from env."""
         config: dict[str, Any] = {"host": "0.0.0.0"}
         with patch.dict(os.environ, {"TEST_HOST": "127.0.0.1"}):
-            _get_env_override("TEST", config)
+            _apply_env_overrides("TEST", config)
         assert config["host"] == "127.0.0.1"
 
     def test_int_override(self) -> None:
         """Integer values are cast from env string."""
         config: dict[str, Any] = {"port": 8080}
         with patch.dict(os.environ, {"TEST_PORT": "9090"}):
-            _get_env_override("TEST", config)
+            _apply_env_overrides("TEST", config)
         assert config["port"] == 9090
 
     def test_bool_override(self) -> None:
         """Boolean values are parsed from env string."""
         config: dict[str, Any] = {"enabled": False}
         with patch.dict(os.environ, {"TEST_ENABLED": "true"}):
-            _get_env_override("TEST", config)
+            _apply_env_overrides("TEST", config)
         assert config["enabled"] is True
 
-    def test_float_override(self) -> None:
-        """Float values are cast from env string."""
-        config: dict[str, Any] = {"delay": 1.0}
-        with patch.dict(os.environ, {"TEST_DELAY": "2.5"}):
-            _get_env_override("TEST", config)
-        assert config["delay"] == 2.5
+    def test_arbitrary_depth_override(self) -> None:
+        """Env override reaches keys nested more than one level deep."""
+        config: dict[str, Any] = {"server": {"database": {"pool": {"size": 5}}}}
+        with patch.dict(os.environ, {"TEST_SERVER_DATABASE_POOL_SIZE": "20"}):
+            _apply_env_overrides("TEST", config)
+        assert config["server"]["database"]["pool"]["size"] == 20
 
-    def test_nested_override(self) -> None:
-        """Nested dict keys are prefixed correctly."""
-        config: dict[str, Any] = {"server": {"port": 8080}}
-        with patch.dict(os.environ, {"TEST_SERVER_PORT": "9090"}):
-            _get_env_override("TEST", config)
-        assert config["server"]["port"] == 9090
+    def test_list_override_is_comma_split(self) -> None:
+        """A list value (e.g. cors_origins) is overridden as a comma-split string."""
+        config: dict[str, Any] = {"items": ["a", "b"]}
+        with patch.dict(os.environ, {"TEST_ITEMS": "x, y, z"}):
+            _apply_env_overrides("TEST", config)
+        assert config["items"] == ["x", "y", "z"]
 
-    def test_list_skipped(self) -> None:
-        """List values cannot be overridden via env vars."""
-        config: dict[str, Any] = {"items": [1, 2, 3]}
-        with patch.dict(os.environ, {"TEST_ITEMS": "4,5,6"}):
-            _get_env_override("TEST", config)
-        assert config["items"] == [1, 2, 3]
-
-    def test_invalid_int_ignored(self) -> None:
-        """Invalid int env value leaves original unchanged."""
+    def test_invalid_int_raises(self) -> None:
+        """An unparseable int override raises rather than silently ignoring it."""
         config: dict[str, Any] = {"port": 8080}
-        with patch.dict(os.environ, {"TEST_PORT": "not_a_number"}):
-            _get_env_override("TEST", config)
-        assert config["port"] == 8080
+        with (
+            patch.dict(os.environ, {"TEST_PORT": "not_a_number"}),
+            pytest.raises(ConfigError, match="TEST_PORT"),
+        ):
+            _apply_env_overrides("TEST", config)
+
+
+class TestResolvePlaceholders:
+    """Tests for ${VAR} placeholder resolution."""
+
+    def test_resolves_from_environment(self) -> None:
+        """A ${VAR} placeholder is substituted with the env value."""
+        with patch.dict(os.environ, {"MY_SECRET": "hunter2"}):
+            result = _resolve_placeholders({"password": "${MY_SECRET}"})
+        assert result == {"password": "hunter2"}
+
+    def test_unset_var_resolves_to_empty_string(self) -> None:
+        """An unset env var resolves to '' rather than raising.
+
+        server.api_key relies on exactly this: an unconfigured
+        MAIL_VERDICT_API_KEY means auth is disabled, not a startup crash.
+        """
+        os.environ.pop("MV_TEST_DEFINITELY_UNSET", None)
+        result = _resolve_placeholders({"api_key": "${MV_TEST_DEFINITELY_UNSET}"})
+        assert result == {"api_key": ""}
+
+    def test_recurses_into_nested_structures(self) -> None:
+        """Placeholders are resolved inside nested dicts and lists."""
+        with patch.dict(os.environ, {"HOST": "db.internal"}):
+            result = _resolve_placeholders(
+                {"database": {"url": "postgresql://${HOST}/mv"}, "list": ["${HOST}"]}
+            )
+        assert result == {
+            "database": {"url": "postgresql://db.internal/mv"},
+            "list": ["db.internal"],
+        }
 
 
 class TestGetConfig:
-    """Tests for singleton config loading."""
+    """Tests for singleton config loading and validation."""
 
     def test_loads_from_yaml(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Config loads from real config.yaml with test overrides."""
@@ -139,11 +152,23 @@ class TestGetConfig:
         assert loader._CONFIG == {}
 
     def test_missing_required_section_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Missing top-level section raises ConfigError."""
+        """Missing top-level section raises ConfigError, not a default fallback."""
         cfg_dict = make_config()
         del cfg_dict["server"]
         monkeypatch.setattr(loader, "_CONFIG", cfg_dict)
-        with pytest.raises(ConfigError, match="server"):
+        with pytest.raises(ConfigError):
             get_config()
 
+    def test_empty_database_url_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An empty database.url fails fast rather than connecting to nothing."""
+        cfg_dict = make_config(database={"url": "", "pool_size": 1, "max_overflow": 0})
+        monkeypatch.setattr(loader, "_CONFIG", cfg_dict)
+        with pytest.raises(ConfigError, match="database.url"):
+            get_config()
 
+    def test_empty_api_key_is_valid(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An empty api_key is accepted -- it means auth is disabled, not invalid config."""
+        cfg_dict = make_config(server={"api_key": ""})
+        monkeypatch.setattr(loader, "_CONFIG", cfg_dict)
+        config = get_config()
+        assert config.server.api_key == ""

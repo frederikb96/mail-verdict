@@ -1,8 +1,8 @@
 """
 Per-rule AI enrichment via LLM classification.
 
-Custom prompt + tag list -> LLM -> validated tag output.
-Uses the project's existing AI config (OpenAI-compatible).
+Custom prompt + tag list -> LLM -> validated tag output. Uses the same
+Anthropic client and model setting as the spam analyst.
 """
 
 from __future__ import annotations
@@ -49,27 +49,24 @@ class EnrichmentRunner:
 
     def __init__(
         self,
-        ai_provider: str,
         ai_model: str,
+        max_tokens: int = 256,
         max_retries: int = 2,
         excerpt_length: int = 500,
-        reasoning_effort: str | None = None,
     ) -> None:
         """
         Initialize enrichment runner.
 
         Args:
-            ai_provider: AI provider name (e.g. "openai")
-            ai_model: Model identifier from config
+            ai_model: Anthropic model identifier from settings
+            max_tokens: Max tokens in the LLM response
             max_retries: Retries on malformed LLM output
             excerpt_length: Max chars of body to include in prompt
-            reasoning_effort: OpenAI reasoning effort level (minimal/low/medium/high)
         """
-        self._provider = ai_provider
         self._model = ai_model
+        self._max_tokens = max_tokens
         self._max_retries = max_retries
         self._excerpt_length = excerpt_length
-        self._reasoning_effort = reasoning_effort
 
     async def run(
         self,
@@ -148,11 +145,11 @@ class EnrichmentRunner:
         Returns:
             Raw response text from the LLM
         """
-        from mail_verdict.core.openai_provider import get_openai_client
+        from mail_verdict.core.anthropic_provider import get_anthropic_client
 
-        client = get_openai_client()
+        client = get_anthropic_client()
         if client is None:
-            raise RuntimeError("No OpenAI API key configured")
+            raise RuntimeError("No Anthropic API key configured")
 
         logger.debug(
             "Enrichment prompt",
@@ -163,23 +160,17 @@ class EnrichmentRunner:
             },
         )
 
-        create_kwargs: dict[str, Any] = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": 256,
-        }
-        if self._reasoning_effort:
-            create_kwargs["reasoning"] = {"effort": self._reasoning_effort}
+        response = await client.messages.create(
+            model=self._model,
+            max_tokens=self._max_tokens,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
 
-        response = await client.chat.completions.create(**create_kwargs)
-
-        content = response.choices[0].message.content
-        if content is None:
+        content = "".join(block.text for block in response.content if block.type == "text")
+        if not content:
             raise ValueError("LLM returned empty response")
-        return str(content)
+        return content
 
     def _parse_and_validate(
         self,

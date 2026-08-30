@@ -8,7 +8,7 @@ services:
       target: dev
     container_name: mv-app-dev
     ports:
-      - "18081:8080"
+      - "18080:8080"
     volumes:
       - ./src:/app/src:Z
       - ./config:/app/config:ro,Z
@@ -18,18 +18,17 @@ services:
       - ./ui/build:/app/ui/build:ro,Z
     environment:
       MAIL_VERDICT_DATABASE_URL: "postgresql+asyncpg://devuser:${POSTGRES_PASSWORD}@postgres:5432/mail_verdict_dev"
-      MAIL_VERDICT_QDRANT_HOST: "qdrant"
-      MAIL_VERDICT_QDRANT_PORT: "6333"
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      MAIL_VERDICT_ENCRYPTION_KEY: "${MAIL_VERDICT_ENCRYPTION_KEY}"
-    userns_mode: keep-id
+      MAIL_VERDICT_API_KEY: "${MAIL_VERDICT_API_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
     depends_on:
       postgres:
         condition: service_healthy
-      qdrant:
-        condition: service_healthy
       postimap:
         condition: service_healthy
+      dovecot:
+        condition: service_started
+      mailpit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/api/health"]
       interval: 10s
@@ -39,14 +38,18 @@ services:
     restart: "no"
 
   postimap:
-    image: ghcr.io/frederikb96/postimap:0.2.1
+    image: ghcr.io/frederikb96/postimap:1.1.0
     container_name: mv-postimap-dev
     environment:
       POSTIMAP_DATABASE_HOST: postgres
       POSTIMAP_DATABASE_PORT: "5432"
       POSTIMAP_DATABASE_NAME: mail_verdict_dev
       POSTIMAP_DATABASE_USER: devuser
+      # The dev mail server presents a self-signed certificate. Production
+      # must never set this -- it is why compose.yaml has no equivalent.
+      POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED: "false"
       DB_PASSWORD: "${POSTGRES_PASSWORD}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,7 +62,7 @@ services:
     restart: "no"
 
   postgres:
-    image: docker.io/postgres:16-alpine
+    image: docker.io/postgres:18-alpine
     container_name: mv-postgres-dev
     ports:
       - "15433:5432"
@@ -74,22 +77,32 @@ services:
       retries: 10
       start_period: 5s
     volumes:
-      - /tmp/mv-dev-pgdata:/var/lib/postgresql/data:Z
+      - /tmp/mv-dev-pgdata:/var/lib/postgresql:Z
     restart: "no"
 
-  qdrant:
-    image: docker.io/qdrant/qdrant:v1.16.3
-    container_name: mv-qdrant-dev
+  # Throwaway mail world for local dev: any username authenticates with
+  # MAIL_PASSWORD, its mailbox is created on first login -- there is no
+  # account provisioning step. LMTP speaks implicit TLS, matching what
+  # scripts/seed_dev.py expects on its default port.
+  dovecot:
+    image: docker.io/dovecot/dovecot:2.4.5
+    container_name: mv-dovecot-dev
     ports:
-      - "16335:6333"
+      - "14143:31143"  # IMAP, for poking at the mailbox directly if needed
+      - "24024:31024"  # LMTP (implicit TLS) -- scripts/seed_dev.py's default
     environment:
-      QDRANT__LOG_LEVEL: WARN
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-    volumes:
-      - /tmp/mv-dev-qdrant:/qdrant/storage:Z
+      USER_PASSWORD: "${MAIL_PASSWORD}"
+    restart: "no"
+
+  # SMTP sink for the outbox: accepts any AUTH so an account's
+  # smtp_user/smtp_password round-trips through a real exchange, and its
+  # own interface shows every message the application actually sent.
+  mailpit:
+    image: docker.io/axllent/mailpit:v1.28.3
+    container_name: mv-mailpit-dev
+    ports:
+      - "18025:8025"  # web UI
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
     restart: "no"

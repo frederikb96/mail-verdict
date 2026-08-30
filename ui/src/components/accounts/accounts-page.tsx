@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useAtomValue } from "jotai";
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
+  type LucideIcon,
   Plus,
   Server,
   CheckCircle2,
@@ -11,14 +11,14 @@ import {
   RefreshCw,
   Trash2,
   Pencil,
-  Plug,
   Loader2,
   ChevronDown,
-  FolderInput,
   GripVertical,
-  Radio,
   ImageOff,
   Layers,
+  Clock,
+  Zap,
+  AlertCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -36,9 +36,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
-import { FolderAssignment } from "@/components/settings/folder-assignment";
 import { FolderOrder } from "@/components/settings/folder-order";
-import { IdleConfig } from "@/components/settings/idle-config";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
 import {
   EmojiPicker,
@@ -49,61 +47,20 @@ import {
   useAccounts,
   useCreateAccount,
   useDeleteAccount,
-  useTestConnection,
   useUpdateAccount,
 } from "@/hooks/use-accounts";
-import { useTriggerSync, useCancelSync } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
-import { syncStatesAtom } from "@/lib/atoms";
-import type { AccountCreateRequest, AccountResponse } from "@/types/api";
-
-function SyncProgressBar({
-  accountId,
-}: {
-  accountId: string;
-}) {
-  const syncStates = useAtomValue(syncStatesAtom);
-  const state = syncStates[accountId];
-
-  if (!state) return null;
-
-  const progress =
-    state.synced && state.total_messages
-      ? Math.round((state.synced / state.total_messages) * 100)
-      : 0;
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>
-          {state.current_folder ?? state.status}
-          {state.folder_index !== undefined &&
-            state.folder_total !== undefined &&
-            ` (${state.folder_index}/${state.folder_total})`}
-        </span>
-        {state.synced !== undefined && state.total_messages !== undefined && (
-          <span>
-            {Math.min(state.synced, state.total_messages)}/{state.total_messages}
-          </span>
-        )}
-      </div>
-      <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-        <div
-          className="h-full rounded-full bg-primary transition-all duration-300"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      {state.error_message && (
-        <div className="text-xs text-destructive">{state.error_message}</div>
-      )}
-    </div>
-  );
-}
+import { useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
+import type {
+  AccountCreateRequest,
+  AccountResponse,
+  AccountUpdateRequest,
+} from "@/types/api";
 
 const STATE_BADGES: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
   created: { variant: "outline", label: "Created" },
   syncing: { variant: "default", label: "Syncing" },
-  seeding: { variant: "default", label: "Seeding" },
+  disabled: { variant: "outline", label: "Disabled" },
   active: { variant: "secondary", label: "Active" },
   error: { variant: "destructive", label: "Error" },
 };
@@ -115,7 +72,7 @@ function SectionTrigger({
   icon: Icon,
   label,
 }: {
-  icon: typeof FolderInput;
+  icon: LucideIcon;
   label: string;
 }) {
   return (
@@ -135,21 +92,16 @@ function AccountCard({
   onEdit: (account: AccountResponse) => void;
 }) {
   const deleteAccount = useDeleteAccount();
-  const testConnection = useTestConnection();
   const updateAccount = useUpdateAccount();
-  const triggerSync = useTriggerSync();
-  const cancelSync = useCancelSync();
   const updateEmoji = useUpdateAccountEmoji();
-  const syncStates = useAtomValue(syncStatesAtom);
-  const syncState = syncStates[account.id];
+  const { data: syncStatus } = useSyncStatus(account.id);
+  const triggerSync = useTriggerSync();
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const badgeInfo = STATE_BADGES[account.state] ?? {
     variant: "outline" as const,
     label: account.state,
   };
-
-  const canSync = syncState?.can_sync ?? true;
-  const canCancel = syncState?.can_cancel ?? false;
 
   return (
     <Card>
@@ -207,40 +159,46 @@ function AccountCard({
           </div>
         </div>
 
-        <SyncProgressBar accountId={account.id} />
+        {/* Sync status */}
+        {syncStatus && (
+          <div className="rounded-md border p-2 text-xs text-muted-foreground">
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1">
+                <Zap className="h-3 w-3" />
+                {syncStatus.sync_tier ?? "pending"}
+              </span>
+              <span className="flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {syncStatus.last_incr_sync
+                  ? new Date(syncStatus.last_incr_sync).toLocaleTimeString()
+                  : "never"}
+              </span>
+            </div>
+            {syncStatus.error_count > 0 && (
+              <div className="mt-1 flex items-center gap-1 text-destructive">
+                <AlertCircle className="h-3 w-3" />
+                {syncStatus.error_count} errors — {syncStatus.last_error}
+              </div>
+            )}
+            <div className="mt-1 text-[10px] opacity-70">
+              Real-time sync via IMAP IDLE &bull; Periodic fallback every 60s
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-wrap gap-2">
-          {canSync && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => triggerSync.mutate(account.id)}
-            >
-              <RefreshCw className="mr-1 h-3 w-3" />
-              Sync
-            </Button>
-          )}
-          {canCancel && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => cancelSync.mutate(account.id)}
-            >
-              Cancel
-            </Button>
-          )}
           <Button
             variant="outline"
             size="sm"
-            onClick={() => testConnection.mutate(account.id)}
-            disabled={testConnection.isPending}
+            onClick={() => triggerSync.mutate(account.id)}
+            disabled={triggerSync.isPending}
           >
-            {testConnection.isPending ? (
+            {triggerSync.isPending ? (
               <Loader2 className="mr-1 h-3 w-3 animate-spin" />
             ) : (
-              <Plug className="mr-1 h-3 w-3" />
+              <RefreshCw className="mr-1 h-3 w-3" />
             )}
-            Test
+            Sync
           </Button>
           <Button
             variant="ghost"
@@ -254,53 +212,61 @@ function AccountCard({
             variant="ghost"
             size="sm"
             className="text-destructive"
-            onClick={() => {
-              if (confirm(`Delete account "${account.name}"?`)) {
-                deleteAccount.mutate(account.id);
-              }
-            }}
+            onClick={() => setConfirmDelete(true)}
           >
             <Trash2 className="mr-1 h-3 w-3" />
             Delete
           </Button>
         </div>
 
-        {testConnection.isSuccess && (
-          <div className="text-sm text-green-600 dark:text-green-400">
-            Connection successful
+        {account.state === "error" && account.state_error && (
+          <div className="flex items-center gap-1 text-sm text-destructive">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            {account.state_error}
           </div>
         )}
-        {testConnection.isError && (
-          <div className="text-sm text-destructive">
-            Connection failed: {(testConnection.error as Error).message}
-          </div>
-        )}
+
+        <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete &ldquo;{account.name}&rdquo;?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              This removes the account and its entire locally mirrored mailbox.
+              It cannot be undone. Nothing is touched on the mail server itself
+              — re-adding the account re-syncs everything from scratch.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={deleteAccount.isPending}
+                onClick={() =>
+                  deleteAccount.mutate(account.id, {
+                    onSuccess: () => setConfirmDelete(false),
+                  })
+                }
+              >
+                {deleteAccount.isPending ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-1 h-3 w-3" />
+                )}
+                Delete permanently
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Per-account settings sections */}
         <div className="mt-2 flex flex-col gap-1 border-t pt-3">
-          <Collapsible.Root>
-            <SectionTrigger icon={FolderInput} label="Folder Assignment" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <FolderAssignment accountId={account.id} />
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
-
           <Collapsible.Root>
             <SectionTrigger icon={GripVertical} label="Folder Order & Visibility" />
             <Collapsible.Panel className="overflow-hidden">
               <div className="px-1 pt-2">
                 <FolderOrder accountId={account.id} />
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
-
-          <Collapsible.Root>
-            <SectionTrigger icon={Radio} label="IMAP IDLE" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <IdleConfig accountId={account.id} />
               </div>
             </Collapsible.Panel>
           </Collapsible.Root>
@@ -342,27 +308,44 @@ function AccountForm({
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
-    const data: AccountCreateRequest = {
-      name: form.get("name") as string,
-      imap_host: form.get("imap_host") as string,
-      imap_port: Number(form.get("imap_port")),
-      imap_user: form.get("imap_user") as string,
-      imap_password: (form.get("imap_password") as string) || undefined,
-      smtp_host: (form.get("smtp_host") as string) || undefined,
-      smtp_port: form.get("smtp_port")
-        ? Number(form.get("smtp_port"))
-        : undefined,
-      smtp_user: (form.get("smtp_user") as string) || undefined,
-      smtp_password: (form.get("smtp_password") as string) || undefined,
-      spam_enabled: form.get("spam_enabled") === "on",
-    };
+    const name = form.get("name") as string;
+    const imap_password = (form.get("imap_password") as string) || undefined;
+    const smtp_host = (form.get("smtp_host") as string) || undefined;
+    const smtp_port = form.get("smtp_port")
+      ? Number(form.get("smtp_port"))
+      : undefined;
+    const smtp_user = (form.get("smtp_user") as string) || undefined;
+    const smtp_password = (form.get("smtp_password") as string) || undefined;
+    const spam_enabled = form.get("spam_enabled") === "on";
 
     if (isEditing) {
+      // imap_host/imap_port/imap_user are insert-only -- not part of this payload.
+      const data: AccountUpdateRequest = {
+        name,
+        imap_password,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        spam_enabled,
+      };
       updateAccount.mutate(
         { id: account.id, data },
         { onSuccess: onClose },
       );
     } else {
+      const data: AccountCreateRequest = {
+        name,
+        imap_host: form.get("imap_host") as string,
+        imap_port: Number(form.get("imap_port")),
+        imap_user: form.get("imap_user") as string,
+        imap_password,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        spam_enabled,
+      };
       createAccount.mutate(data, { onSuccess: onClose });
     }
   };
@@ -380,13 +363,20 @@ function AccountForm({
             placeholder="My Email"
           />
         </div>
+        {isEditing && (
+          <p className="text-xs text-muted-foreground">
+            IMAP host, port and user can&apos;t be changed on an existing
+            account — delete and re-add it to connect to a different server.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">
             <Label htmlFor="imap_host">IMAP Host</Label>
             <Input
               id="imap_host"
               name="imap_host"
-              required
+              required={!isEditing}
+              disabled={isEditing}
               defaultValue={account?.imap_host}
               placeholder="imap.example.com"
             />
@@ -397,7 +387,8 @@ function AccountForm({
               id="imap_port"
               name="imap_port"
               type="number"
-              required
+              required={!isEditing}
+              disabled={isEditing}
               defaultValue={account?.imap_port ?? 993}
             />
           </div>
@@ -408,7 +399,8 @@ function AccountForm({
             <Input
               id="imap_user"
               name="imap_user"
-              required
+              required={!isEditing}
+              disabled={isEditing}
               defaultValue={account?.imap_user}
               placeholder="user@example.com"
             />

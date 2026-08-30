@@ -1,0 +1,30 @@
+# Companion values for installing PostIMAP's own chart
+# (oci://ghcr.io/frederikb96/charts/postimap) against the same database
+# cnpg-cluster.yaml in this directory creates, so MailVerdict has a mailbox
+# to read from. PostIMAP is not a subchart of mail-verdict -- install it
+# separately, before mail-verdict itself:
+#
+#   helm install postimap oci://ghcr.io/frederikb96/charts/postimap \
+#     --version 1.1.0 \
+#     --namespace mail --create-namespace \
+#     -f postimap-values.yaml
+#
+# 1.1.0 is the minimum. It carries the previous folder on a move event, which
+# is how MailVerdict learns that a message dragged out of Junk was not spam;
+# it also lets a consumer delete an account, and encrypts stored mail
+# credentials at rest.
+
+config:
+  database:
+    host: mail-postgres-rw.mail.svc
+    port: 5432
+    name: postimap
+    user: postimap
+
+# CloudNativePG's initdb bootstrap creates this Secret with `username` /
+# `password` keys (see cnpg-cluster.yaml) -- point existingSecretKeys.dbPassword
+# at its `password` key instead of creating a separate one.
+existingSecret: postimap-db-owner-credentials
+existingSecretKeys:
+  dbPassword: password
+  encryptionKey: ENCRYPTION_KEY

@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, Archive, Ban, Trash2, MailOpen, Mail as MailIcon } from "lucide-react";
+import { Star, Archive, Ban, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   extractSenderName,
@@ -8,8 +8,14 @@ import {
   getInitials,
 } from "@/lib/format";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import type { MessageSummary } from "@/types/api";
+import type { MessageActionType, MessageSummary } from "@/types/api";
+
+type RowAction = Extract<
+  MessageActionType,
+  "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
+>;
 
 interface MailListItemProps {
   mail: MessageSummary;
@@ -19,10 +25,7 @@ interface MailListItemProps {
   selectionMode: boolean;
   onSelect: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
-  onAction?: (
-    mailId: string,
-    action: "flag" | "unflag" | "archive" | "spam" | "delete" | "mark_read" | "mark_unread",
-  ) => void;
+  onAction?: (mailId: string, action: RowAction) => void;
 }
 
 export function MailListItem({
@@ -49,6 +52,7 @@ export function MailListItem({
             : "hover:bg-accent/50",
         !mail.is_seen && !isSelected && !isChecked && "bg-accent/20",
         isFocused && "ring-2 ring-inset ring-ring",
+        mail.pending_sync && "opacity-60",
       )}
       onClick={() => onSelect(mail.id)}
     >
@@ -96,12 +100,20 @@ export function MailListItem({
           >
             {senderName}
           </span>
+          {mail.pending_sync && (
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+          )}
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {formatRelativeDate(mail.received_at)}
           </span>
         </div>
-        <div className="truncate text-sm text-muted-foreground">
-          {mail.subject ?? "(no subject)"}
+        <div className="flex items-center gap-1.5 truncate text-sm text-muted-foreground">
+          <span className="truncate">{mail.subject ?? "(no subject)"}</span>
+          {mail.thread_count && mail.thread_count > 1 && (
+            <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
+              {mail.thread_count}
+            </Badge>
+          )}
         </div>
         {mail.snippet && (
           <div className="line-clamp-1 text-xs text-muted-foreground">
@@ -138,10 +150,7 @@ export function MailListItem({
           className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(
-              mail.id,
-              mail.is_flagged ? "unflag" : "flag",
-            );
+            onAction?.(mail.id, mail.is_flagged ? "unflag" : "flag");
           }}
           title={mail.is_flagged ? "Unflag" : "Star"}
         >
@@ -178,9 +187,9 @@ export function MailListItem({
           className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, "delete");
+            onAction?.(mail.id, "trash");
           }}
-          title="Delete"
+          title="Move to trash"
         >
           <Trash2 className="h-4 w-4 text-muted-foreground" />
         </button>

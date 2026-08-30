@@ -2,7 +2,7 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, spam, sync, retry.
+Categories: ai, spam, retry, rules.
 """
 
 from __future__ import annotations
@@ -16,31 +16,24 @@ class SettingCategory(str, enum.Enum):
 
     AI = "ai"
     SPAM = "spam"
-    SYNC = "sync"
     RETRY = "retry"
     RULES = "rules"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     SettingCategory.AI: {
-        "provider": "openai",
-        "model": "gpt-5-mini",
-        "embedding_model": "text-embedding-3-large",
-        "embedding_dimensions": 3072,
-        "api_key": "",
-        "reasoning_effort": "medium",
+        # "anthropic" calls the real model and needs ANTHROPIC_API_KEY.
+        # "fake" classifies on keywords alone, for local use without a key.
+        "provider": "anthropic",
+        "model": "claude-haiku-4-5",
+        "enrichment_model": "claude-haiku-4-5",
+        "max_tokens": 1024,
     },
     SettingCategory.SPAM: {
         "enabled": True,
         "excerpt_length": 300,
-        "neighbor_count": 3,
+        "auto_move_to_junk": True,
         "auto_mark_read": True,
-    },
-    SettingCategory.SYNC: {
-        "enabled": True,
-        "poll_interval_seconds": 300,
-        "idle_enabled": True,
-        "idle_restart_seconds": 1500,
     },
     SettingCategory.RETRY: {
         "max_retries": 3,

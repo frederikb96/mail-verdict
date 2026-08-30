@@ -38,14 +38,13 @@ export function useToggleFolderVisibility() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({
-      accountId,
       folderId,
       isVisible,
     }: {
       accountId: string;
       folderId: string;
       isVisible: boolean;
-    }) => api.folderManagement.toggleVisibility(accountId, folderId, isVisible),
+    }) => api.folders.updatePrefs(folderId, { is_visible: isVisible }),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
         queryKey: folderOrderKeys.get(variables.accountId),

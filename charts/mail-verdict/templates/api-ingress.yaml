@@ -1,0 +1,33 @@
+{{- if .Values.apiIngress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "mail-verdict.fullname" . }}-api
+  labels:
+    {{- include "mail-verdict.labels" . | nindent 4 }}
+  {{- with .Values.apiIngress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.apiIngress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.apiIngress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.apiIngress.host | quote }}
+      secretName: {{ .Values.apiIngress.tls.secretName | default (printf "%s-api-tls" (include "mail-verdict.fullname" .)) }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.apiIngress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.apiIngress.path }}
+            pathType: {{ .Values.apiIngress.pathType }}
+            backend:
+              service:
+                name: {{ include "mail-verdict.fullname" . }}
+                port:
+                  name: http
+{{- end }}

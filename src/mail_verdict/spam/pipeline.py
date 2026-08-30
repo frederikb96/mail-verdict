@@ -1,17 +1,20 @@
 """
-Verdict Pipeline: orchestrates the full spam detection flow.
+Verdict Pipeline: orchestrates the spam detection flow for one message.
 
 Steps:
-1. Check folder type (skip sent/drafts/trash)
-2. Extract excerpt from mail
-3. Embed mail via SemanticStore
-4. Find neighbors via SemanticStore.search
-5. Assemble context (mail + neighbors + auth signals)
-6. Call SpamAnalyst
-7. Store verdict in Postgres
-8. If spam: move to spam folder + mark read
-9. Update Qdrant payload with verdict tag
-10. Emit event if spam
+1. Gate on folder type (skip sent/drafts/trash/junk/archive), draft flag,
+   and per-account spam_enabled
+2. Durability gate: skip if a verdict already exists for this message's
+   (account_id, message_id_hdr) -- never reclassify, even across retention
+   purge or a UIDVALIDITY resync
+3. Extract an excerpt from the message
+4. Call SpamAnalyst
+5. Store the verdict in Postgres
+6. If spam: move to the account's junk folder (+ optionally mark read)
+
+The verdict is purely content-based, drawn from a short excerpt of the
+message plus its envelope and auth signals -- no embeddings or vector
+search involved.
 """
 
 from __future__ import annotations
@@ -20,272 +23,171 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, update
-
-from mail_verdict.core.jsonb import parse_jsonb
-from mail_verdict.database.models import (
-    AccountPrefs,
-    Folder,
-    Message,
-    VerdictSource,
-)
-from mail_verdict.spam.analyst import AnalysisContext, NeighborContext, SpamAnalyst
+from mail_verdict.database.models import Folder, Message, VerdictSource
+from mail_verdict.postimap.actions import move_message
+from mail_verdict.spam.analyst import AnalysisContext, SpamAnalyst
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.database.repository import (
+        AccountPrefsRepository,
         FolderRepository,
-        MessageRepository,
         VerdictRepository,
     )
-    from mail_verdict.semantic.store import SemanticStore
     from mail_verdict.settings.service import SettingsService
 
 logger = logging.getLogger(__name__)
 
-_SKIP_FOLDER_TYPES = {"sent", "drafts", "trash"}
+# Special-use folders where an AI verdict would be meaningless or wasteful:
+# mail already left the inbox (sent/archived), never arrived as inbound mail
+# (drafts), or is already classified (junk).
+_SKIP_FOLDER_SPECIAL_USE = {"sent", "drafts", "trash", "junk", "archive"}
 
 
 class VerdictPipeline:
-    """
-    Orchestrates spam detection for incoming messages.
-
-    Integrates SemanticStore, SpamAnalyst, VerdictRepository,
-    and direct DB updates into a cohesive flow.
-    """
+    """Orchestrates spam detection for incoming messages."""
 
     def __init__(
         self,
         settings_service: SettingsService,
-        semantic_store: SemanticStore,
         analyst: SpamAnalyst,
         verdict_repo: VerdictRepository,
-        message_repo: MessageRepository,
-        folder_repo: FolderRepository | None = None,
-        db: DatabaseConnection | None = None,
+        folder_repo: FolderRepository,
+        account_prefs_repo: AccountPrefsRepository,
+        db: DatabaseConnection,
     ) -> None:
         """
         Initialize the verdict pipeline.
 
         Args:
             settings_service: Application settings service
-            semantic_store: Vector store for embeddings and search
             analyst: LLM spam analyst
             verdict_repo: Verdict persistence
-            message_repo: Message persistence (for lookups)
-            folder_repo: Folder repository for spam folder lookup
+            folder_repo: Folder repository, for junk-folder resolution
+            account_prefs_repo: Account prefs, for the per-account spam_enabled gate
             db: Database connection for direct SQL updates
         """
         self._settings = settings_service
-        self._store = semantic_store
         self._analyst = analyst
         self._verdict_repo = verdict_repo
-        self._message_repo = message_repo
         self._folder_repo = folder_repo
+        self._account_prefs_repo = account_prefs_repo
         self._db = db
 
-    async def process_message(
-        self,
-        msg: Message,
-        folder: Folder,
-    ) -> bool | None:
+    async def process_message(self, msg: Message, folder: Folder) -> bool | None:
         """
-        Run the full spam verdict pipeline for a single message.
+        Run the verdict pipeline for a single message.
 
-        Returns None if processing was skipped (disabled, wrong folder type).
-        Returns True if message was classified as spam, False if not-spam.
-        Errors are logged but never raised (don't block sync).
+        Returns None if processing was skipped (disabled, wrong folder,
+        already classified). Returns True if classified spam, False if not.
+        Errors are logged but never raised -- a pipeline failure must never
+        block the caller (sync/rules dispatch).
 
         Args:
             msg: Message ORM object with full content
-            folder: Folder the message resides in
+            folder: Folder the message currently resides in
         """
         spam_settings = self._settings.get("spam")
         if not spam_settings.get("enabled", False):
             return None
 
-        if folder.special_use in _SKIP_FOLDER_TYPES:
+        account_prefs = await self._account_prefs_repo.get_by_account(msg.account_id)
+        if account_prefs is None or not account_prefs.spam_enabled:
+            logger.debug("Spam detection disabled for account %s, skipping", msg.account_id)
+            return None
+
+        effective_special_use = await self._folder_repo.get_effective_special_use(folder.id)
+        if effective_special_use in _SKIP_FOLDER_SPECIAL_USE or msg.is_draft:
             logger.debug(
-                "Skipping spam check for %s folder",
-                folder.special_use or folder.imap_name,
+                "Skipping spam check for %s folder", effective_special_use or folder.imap_name,
             )
             return None
 
         msg_id_str = str(msg.id)
-        account_id_str = str(msg.account_id)
+
+        if msg.message_id and await self._verdict_repo.has_ai_verdict_for_header(
+            msg.account_id, msg.message_id,
+        ):
+            logger.debug("Message %s already has an AI verdict, skipping", msg_id_str[:8])
+            return None
+
         excerpt_length = int(spam_settings.get("excerpt_length", 300))
-        neighbor_count = int(spam_settings.get("neighbor_count", 3))
+        auto_move_to_junk = bool(spam_settings.get("auto_move_to_junk", True))
         auto_mark_read = bool(spam_settings.get("auto_mark_read", True))
 
         try:
-            # Step 1: Build embedding text and embed
-            from mail_verdict.semantic.store import SemanticStore as SS
-
-            embedding_text = SS.build_embedding_text(
-                from_addr=msg.from_addr,
-                subject=msg.subject,
-                body_text=msg.body_text,
-                excerpt_length=excerpt_length,
-            )
-
-            if not embedding_text.strip():
-                logger.debug("Empty embedding text for message %s, skipping", msg_id_str[:8])
-                return None
-
-            # Extract sender domain
-            from_domain: str | None = None
-            if msg.from_addr and "@" in msg.from_addr:
-                from_domain = msg.from_addr.rsplit("@", 1)[-1].lower().strip(">")
-
-            # Step 2: Embed the message
-            embed_ok = await self._store.upsert(
-                mail_id=msg_id_str,
-                text=embedding_text,
-                account_id=account_id_str,
-                folder=folder.imap_name,
-                from_domain=from_domain,
-                received_at=msg.received_at,
-            )
-
-            if not embed_ok:
-                logger.warning("Failed to embed message %s, skipping spam check", msg_id_str[:8])
-                return None
-
-            # Step 3: Find neighbors
-            neighbors = await self._store.search(
-                query_text=embedding_text,
-                limit=neighbor_count,
-                account_id=account_id_str,
-                exclude_ids=[msg_id_str],
-            )
-
-            # Step 4: Build analysis context
-            neighbor_contexts = [
-                NeighborContext(
-                    mail_id=n.mail_id,
-                    tag=n.payload.get("is_spam"),
-                    excerpt=self._get_neighbor_excerpt(n.payload),
-                )
-                for n in neighbors
-            ]
-
-            # Build to_addrs display string (handles flat list + legacy dict)
-            to_display: str | None = None
-            if msg.to_addrs:
-                addrs = parse_jsonb(msg.to_addrs)
-                if isinstance(addrs, dict):
-                    addrs = addrs.get("addrs", [])
-                if isinstance(addrs, list):
-                    to_display = ", ".join(str(a) for a in addrs[:5])
-
+            to_display = _format_addr_list(msg.to_addrs)
             body_excerpt = (msg.body_text or "")[:excerpt_length]
+            if msg.is_truncated:
+                body_excerpt = (
+                    f"{body_excerpt}\n[message body was too large to fetch; "
+                    f"classified on envelope only]"
+                )
 
-            # Extract auth signals from raw_headers if available
-            parsed_headers = parse_jsonb(msg.raw_headers)
-            headers_dict = parsed_headers if isinstance(parsed_headers, dict) else None
-            dkim_pass = _extract_auth_signal(headers_dict, "dkim")
-            spf_pass = _extract_auth_signal(headers_dict, "spf")
-            dmarc_pass = _extract_auth_signal(headers_dict, "dmarc")
-
+            headers_dict = msg.raw_headers if isinstance(msg.raw_headers, dict) else None
             context = AnalysisContext(
                 mail_id=msg_id_str,
                 from_addr=msg.from_addr,
                 to_addrs=to_display,
                 subject=msg.subject,
                 body_excerpt=body_excerpt,
-                dkim_pass=dkim_pass,
-                spf_pass=spf_pass,
-                dmarc_pass=dmarc_pass,
-                neighbors=neighbor_contexts,
+                dkim_pass=_extract_auth_signal(headers_dict, "dkim"),
+                spf_pass=_extract_auth_signal(headers_dict, "spf"),
+                dmarc_pass=_extract_auth_signal(headers_dict, "dmarc"),
             )
 
-            # Step 5: Call spam analyst
             verdict = await self._analyst.analyze(context)
 
-            # Step 6: Store verdict in Postgres
-            neighbor_id_list = [n.mail_id for n in neighbors]
             await self._verdict_repo.create_verdict(
                 mail_id=msg.id,
+                account_id=msg.account_id,
                 is_spam=verdict.is_spam,
                 source=VerdictSource.AI,
-                model_used=self._settings.get("ai").get("model", "gpt-5-mini"),
-                reasoning=None,
-                neighbor_ids=neighbor_id_list if neighbor_id_list else None,
+                message_id_hdr=msg.message_id,
+                model_used=self._settings.get("ai").get("model"),
             )
 
-            # Step 7: Update Qdrant payload with verdict tag (no re-embedding)
-            await self._store.update_payload(
-                mail_id=msg_id_str,
-                payload={"is_spam": str(verdict.is_spam).lower()},
-            )
-
-            # Step 8: If spam, move to spam folder via direct SQL UPDATE
-            if verdict.is_spam:
-                await self._move_to_spam(
-                    msg=msg,
-                    source_folder=folder,
-                    auto_mark_read=auto_mark_read,
-                )
+            if verdict.is_spam and auto_move_to_junk:
+                await self._move_to_junk(msg, folder, auto_mark_read)
 
             logger.info(
                 "Verdict pipeline complete",
                 extra={
                     "message_id": msg_id_str[:8],
                     "verdict": "spam" if verdict.is_spam else "not-spam",
-                    "neighbors": len(neighbors),
                 },
             )
-
             return verdict.is_spam
 
         except Exception:
-            logger.exception(
-                "Verdict pipeline failed for message %s",
-                msg_id_str[:8],
-            )
+            logger.exception("Verdict pipeline failed for message %s", msg_id_str[:8])
             return None
 
-    async def _move_to_spam(
-        self,
-        msg: Message,
-        source_folder: Folder,
-        auto_mark_read: bool,
+    async def _move_to_junk(
+        self, msg: Message, source_folder: Folder, auto_mark_read: bool,
     ) -> None:
         """
-        Move a spam-classified message to the junk folder via direct SQL UPDATE.
-
-        PostIMAP's PG triggers handle outbound IMAP propagation automatically.
+        Move a spam-classified message to the account's junk folder.
 
         Args:
             msg: Message ORM object
             source_folder: Current folder
             auto_mark_read: Whether to mark the message as seen
         """
-        spam_folder_id = await self._resolve_junk_folder(msg.account_id)
-        if not spam_folder_id or spam_folder_id == source_folder.id:
+        junk_folder_id = await self._resolve_junk_folder(msg.account_id)
+        if not junk_folder_id or junk_folder_id == source_folder.id:
             return
-
-        if not self._db:
-            logger.warning("No DB connection for spam move, skipping")
-            return
-
-        update_values: dict[str, Any] = {"folder_id": spam_folder_id}
-        if auto_mark_read:
-            update_values["is_seen"] = True
 
         async with self._db.session() as session:
-            await session.execute(
-                update(Message)
-                .where(Message.id == msg.id)
-                .values(**update_values)
-            )
+            await move_message(session, msg.id, junk_folder_id)
+            if auto_mark_read:
+                from mail_verdict.postimap.actions import set_flags
+
+                await set_flags(session, msg.id, is_seen=True)
 
     async def _resolve_junk_folder(self, account_id: uuid.UUID) -> uuid.UUID | None:
         """
-        Resolve the junk/spam folder UUID for an account.
-
-        Checks AccountPrefs.folder_mapping first, falls back to
-        Folder.special_use == 'junk'.
+        Resolve the junk folder UUID for an account by its effective special_use.
 
         Args:
             account_id: Account UUID
@@ -293,62 +195,25 @@ class VerdictPipeline:
         Returns:
             Junk folder UUID or None if not found
         """
-        if not self._db:
-            return None
-
-        async with self._db.session() as session:
-            # Try AccountPrefs folder_mapping first
-            result = await session.execute(
-                select(AccountPrefs.folder_mapping)
-                .where(AccountPrefs.account_id == account_id)
-            )
-            mapping = result.scalar_one_or_none()
-            if mapping and "junk" in mapping:
-                folder_id_str = mapping["junk"]
-                if folder_id_str:
-                    try:
-                        return uuid.UUID(folder_id_str)
-                    except (ValueError, TypeError):
-                        pass
-
-            # Fall back to special_use detection
-            result = await session.execute(
-                select(Folder.id)
-                .where(
-                    Folder.account_id == account_id,
-                    Folder.special_use == "junk",
-                )
-                .limit(1)
-            )
-            return result.scalar_one_or_none()
-
-    def _get_neighbor_excerpt(self, payload: dict[str, Any]) -> str:
-        """
-        Extract a readable excerpt from a neighbor's Qdrant payload.
-
-        Args:
-            payload: Qdrant point payload
-        """
-        parts: list[str] = []
-        if "from_domain" in payload:
-            parts.append(f"from: {payload['from_domain']}")
-        if "folder" in payload:
-            parts.append(f"folder: {payload['folder']}")
-        return " | ".join(parts) if parts else "(no details)"
+        return await self._folder_repo.resolve_special_folder(account_id, "junk")
 
 
-def _extract_auth_signal(
-    raw_headers: dict[str, Any] | None,
-    protocol: str,
-) -> bool | None:
+def _format_addr_list(addrs: Any) -> str | None:
+    """Render a jsonb address list as a short display string."""
+    if isinstance(addrs, list) and addrs:
+        return ", ".join(str(a) for a in addrs[:5])
+    return None
+
+
+def _extract_auth_signal(raw_headers: dict[str, Any] | None, protocol: str) -> bool | None:
     """
     Extract an authentication signal from raw headers.
 
-    Looks for Authentication-Results header and checks for pass/fail
+    Looks for an Authentication-Results header and checks for pass/fail
     for the given protocol (dkim, spf, dmarc).
 
     Args:
-        raw_headers: Raw message headers JSONB
+        raw_headers: Raw message headers jsonb
         protocol: Protocol name to check (dkim, spf, dmarc)
 
     Returns:

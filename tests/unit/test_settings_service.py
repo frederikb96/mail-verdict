@@ -33,11 +33,11 @@ class TestDefaults:
             assert cat in SETTING_DEFAULTS or cat.value in SETTING_DEFAULTS
 
     def test_ai_defaults(self) -> None:
-        """AI defaults include model and embedding config."""
+        """AI defaults include the model and enrichment model settings."""
         ai = SETTING_DEFAULTS[SettingCategory.AI]
         assert "model" in ai
-        assert "embedding_model" in ai
-        assert "embedding_dimensions" in ai
+        assert "enrichment_model" in ai
+        assert "max_tokens" in ai
 
     def test_spam_defaults(self) -> None:
         """Spam defaults include enabled and excerpt_length."""
@@ -71,7 +71,7 @@ class TestSettingsServiceLoad:
         await service.load()
         ai = service.get("ai")
         assert ai["model"] == "custom-model"
-        assert ai["embedding_model"] == SETTING_DEFAULTS[SettingCategory.AI]["embedding_model"]
+        assert ai["max_tokens"] == SETTING_DEFAULTS[SettingCategory.AI]["max_tokens"]
 
     @pytest.mark.asyncio
     async def test_get_unknown_category_returns_empty(self) -> None:

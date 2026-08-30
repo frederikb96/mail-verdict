@@ -1,0 +1,93 @@
+# Example values for a production install against the shared CloudNativePG
+# cluster (see cnpg-cluster.yaml in this directory), using a pre-existing
+# Secret rather than chart-managed credentials, a private GHCR pull secret,
+# an Ingress behind Traefik ForwardAuth, and a second Ingress for
+# programmatic clients.
+#
+#   helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict \
+#     --namespace mail --create-namespace \
+#     -f values-production.yaml
+
+image:
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ghcr-pull-secret
+
+config:
+  server:
+    log_level: WARNING
+    cors_origins: []
+  database:
+    pool_size: 10
+    max_overflow: 5
+
+# The `mailverdict-db-credentials` Secret (see cnpg-cluster.yaml) holds only
+# `username`/`password` -- assemble the full connection URL, plus the two
+# API keys, into a Secret of your own with `existingSecretKeys.databaseUrl`
+# pointing at it (sealed-secrets, external-secrets, or `kubectl create
+# secret generic` -- anything that keeps it out of this file and out of
+# Helm release history).
+existingSecret: mail-verdict-secrets
+existingSecretKeys:
+  databaseUrl: DATABASE_URL
+  apiKey: API_KEY
+  anthropicApiKey: ANTHROPIC_API_KEY
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 384Mi
+  limits:
+    memory: 1Gi
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+networkPolicy:
+  enabled: true
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: mail-postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+# Browser-facing route, behind Traefik ForwardAuth. The middleware
+# authenticates the browser session (OIDC, basic auth, whatever your IdP
+# is -- not this chart's concern) and injects X-API-Key via
+# headers.customRequestHeaders so MailVerdict itself never sees a login.
+# See the chart README for the full Middleware/IngressRoute example this
+# annotation set assumes.
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: mail-mailverdict-forwardauth@kubernetescrd
+  host: mail.example.com
+  path: /
+  tls:
+    enabled: true
+    secretName: mail-verdict-tls
+
+# Programmatic route (MCP clients, scripts) -- same host, a path Traefik
+# routes around the ForwardAuth middleware above; callers present
+# X-API-Key themselves.
+apiIngress:
+  enabled: true
+  className: traefik
+  annotations: {}
+  host: mail.example.com
+  path: /mcp
+  tls:
+    enabled: true
+    secretName: mail-verdict-tls

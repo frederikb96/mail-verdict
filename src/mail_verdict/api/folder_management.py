@@ -1,8 +1,12 @@
 """
 Folder management API endpoints.
 
-Folder ordering, visibility, and auto-detect per account.
-IDLE endpoints removed -- PostIMAP handles IMAP IDLE.
+GET/PUT /accounts/{account_id}/folder-order — custom folder display order
+PATCH /folders/{folder_id}/prefs — the one write surface a folder has:
+  visibility, display name, unified name, special-use override
+
+IDLE endpoints removed -- PostIMAP handles IMAP IDLE. Folder create/rename/
+delete is a documented PostIMAP non-goal; there is no such surface here.
 """
 
 from __future__ import annotations
@@ -19,8 +23,8 @@ from mail_verdict.api.schemas import (
     FolderOrderItem,
     FolderOrderResponse,
     FolderOrderUpdate,
-    FolderVisibilityResponse,
-    FolderVisibilityUpdate,
+    FolderPrefsUpdate,
+    FolderResponse,
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, FolderPrefs, Message
@@ -28,6 +32,7 @@ from mail_verdict.database.models import Account, Folder, FolderPrefs, Message
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/accounts/{account_id}", tags=["folder-management"])
+folder_prefs_router = APIRouter(prefix="/folders/{folder_id}", tags=["folder-management"])
 
 
 async def _get_account_or_404(account_id: uuid.UUID) -> Account:
@@ -59,7 +64,7 @@ async def _get_folders_with_counts(
             .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(
                 Message,
-                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
+                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
             .where(Folder.account_id == account_id)
             .group_by(Folder.id, FolderPrefs.folder_id)
@@ -68,7 +73,7 @@ async def _get_folders_with_counts(
         return list(result.all())  # type: ignore[arg-type]
 
 
-# --- Folder Ordering + Visibility ---
+# --- Folder Ordering ---
 
 
 @router.get("/folder-order", response_model=FolderOrderResponse)
@@ -135,63 +140,66 @@ async def update_folder_order(
     return await get_folder_order(account_id)
 
 
-@router.patch(
-    "/folders/{folder_id}/visibility",
-    response_model=FolderVisibilityResponse,
-)
-async def toggle_folder_visibility(
-    account_id: uuid.UUID,
+# --- Folder preferences ---
+
+
+@folder_prefs_router.patch("/prefs", response_model=FolderResponse)
+async def update_folder_prefs(
     folder_id: uuid.UUID,
-    request: FolderVisibilityUpdate,
-) -> FolderVisibilityResponse:
-    """Toggle visibility for a folder (stored in FolderPrefs)."""
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(
-            select(Folder).where(
-                Folder.id == folder_id,
-                Folder.account_id == account_id,
-            )
-        )
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
+    request: FolderPrefsUpdate,
+) -> FolderResponse:
+    """
+    Partially update a folder's MailVerdict preferences.
+
+    The one write surface for a folder's preferences: visibility, display
+    name, unified name, and special-use override.
+    """
+    values = request.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=400, detail="No fields to update")
 
     prefs_repo = get_folder_prefs_repo()
-    await prefs_repo.update(folder_id, is_visible=request.is_visible)
-
-    return FolderVisibilityResponse(
-        folder_id=folder_id,
-        is_visible=request.is_visible,
-    )
-
-
-# --- Folder Assignment (auto-detect) ---
-
-
-@router.post("/folder-mapping/auto-detect")
-async def auto_detect_folder_mapping(
-    account_id: uuid.UUID,
-) -> dict[str, str | None]:
-    """Auto-detect folder mapping from PostIMAP's Folder.special_use column."""
-    await _get_account_or_404(account_id)
+    await prefs_repo.update(folder_id, **values)
 
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(
-            select(Folder).where(Folder.account_id == account_id)
+        stmt = (
+            select(
+                Folder,
+                FolderPrefs,
+                sa_func.count(Message.id).label("total_count"),
+                sa_func.count(
+                    case((Message.is_seen.is_(False), Message.id))
+                ).label("unread_count"),
+            )
+            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+            .outerjoin(
+                Message,
+                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
+            )
+            .where(Folder.id == folder_id)
+            .group_by(Folder.id, FolderPrefs.folder_id)
         )
-        folders = list(result.scalars().all())
+        result = await session.execute(stmt)
+        row = result.one_or_none()
 
-    mapping: dict[str, str | None] = {
-        "inbox": None,
-        "sent": None,
-        "drafts": None,
-        "trash": None,
-        "junk": None,
-        "archive": None,
-    }
-    for f in folders:
-        if f.special_use and f.special_use in mapping:
-            mapping[f.special_use] = f.imap_name
+    if row is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
 
-    return mapping
+    f, fp, total, unread = row
+    return FolderResponse(
+        id=f.id,
+        account_id=f.account_id,
+        imap_name=f.imap_name,
+        display_name=f.display_name or (fp.display_name if fp else None),
+        special_use=(fp.special_use_override if fp else None) or f.special_use,
+        mailbox_id=f.mailbox_id,
+        initial_sync_done=f.initial_sync_done,
+        last_synced_at=f.last_synced_at,
+        sync_error=f.sync_error,
+        created_at=f.created_at,
+        unified_name=fp.unified_name if fp else None,
+        is_visible=fp.is_visible if fp else True,
+        total_count=total,
+        unread_count=unread,
+    )

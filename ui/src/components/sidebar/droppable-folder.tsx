@@ -3,21 +3,28 @@
 import { useDroppable } from "@dnd-kit/core";
 import { cn } from "@/lib/utils";
 
+interface FolderMapping {
+  account_id: string;
+  folder_id: string;
+}
+
 interface DroppableFolderProps {
   folderId: string;
+  folderMapping?: FolderMapping[];
   children: React.ReactNode;
 }
 
 /**
  * Droppable wrapper for a sidebar folder item.
- * Highlights when a valid mail drag hovers over it.
+ * Supports both single-account folders and unified folders with per-account mapping.
  */
-export function DroppableFolder({ folderId, children }: DroppableFolderProps) {
+export function DroppableFolder({ folderId, folderMapping, children }: DroppableFolderProps) {
   const { isOver, setNodeRef } = useDroppable({
     id: `folder-${folderId}`,
     data: {
       type: "folder",
       folderId,
+      folderMapping,
     },
   });
 

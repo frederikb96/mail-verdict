@@ -1,89 +1,43 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  Save,
-  Loader2,
-  Bot,
-  ShieldAlert,
-  RefreshCw,
-  Repeat,
-  FileCode,
-  Sun,
-  Moon,
-  Monitor,
-  Info,
-  Lock,
-} from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { Save, Loader2, Bot, ShieldAlert, Repeat, FileCode, Sun, Moon, Monitor } from "lucide-react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 
 import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
 import { UnifiedOrder } from "@/components/settings/unified-order";
-import { api } from "@/lib/api";
-import type { StatsResponse } from "@/types/api";
 
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
   { key: "spam", label: "Spam", icon: ShieldAlert },
-  { key: "sync", label: "Sync", icon: RefreshCw },
   { key: "retry", label: "Retry", icon: Repeat },
   { key: "rules", label: "Rules", icon: FileCode },
 ] as const;
-
-/** Fields hidden from the generic renderer (handled by custom AI settings). */
-const AI_CUSTOM_FIELDS = new Set([
-  "provider",
-  "reasoning_effort",
-  "embedding_model",
-  "embedding_dimensions",
-]);
-
-const REASONING_EFFORT_OPTIONS = ["minimal", "low", "medium", "high"] as const;
 
 function SettingField({
   name,
   value,
   onChange,
-  disabled,
-  tooltip,
 }: {
   name: string;
   value: unknown;
   onChange: (name: string, value: unknown) => void;
-  disabled?: boolean;
-  tooltip?: string;
 }) {
   if (typeof value === "boolean") {
     return (
       <div className="flex items-center justify-between">
-        <FieldLabel name={name} tooltip={tooltip} disabled={disabled} />
+        <Label className="text-sm">{name}</Label>
         <input
           type="checkbox"
           checked={value}
-          disabled={disabled}
           onChange={(e) => onChange(name, e.target.checked)}
           className="h-4 w-4"
         />
@@ -94,11 +48,10 @@ function SettingField({
   if (typeof value === "number") {
     return (
       <div className="grid gap-1.5">
-        <FieldLabel name={name} tooltip={tooltip} disabled={disabled} />
+        <Label className="text-sm">{name}</Label>
         <Input
           type="number"
           value={value}
-          disabled={disabled}
           onChange={(e) => onChange(name, Number(e.target.value))}
         />
       </div>
@@ -108,10 +61,9 @@ function SettingField({
   if (typeof value === "object" && value !== null) {
     return (
       <div className="grid gap-1.5">
-        <FieldLabel name={name} tooltip={tooltip} disabled={disabled} />
+        <Label className="text-sm">{name}</Label>
         <Textarea
           value={JSON.stringify(value, null, 2)}
-          disabled={disabled}
           rows={4}
           onChange={(e) => {
             try {
@@ -133,138 +85,22 @@ function SettingField({
 
   return (
     <div className="grid gap-1.5">
-      <FieldLabel name={name} tooltip={tooltip} disabled={disabled} />
+      <Label className="text-sm">{name}</Label>
       <Input
         type={isPassword ? "password" : "text"}
         value={String(value ?? "")}
-        disabled={disabled}
         onChange={(e) => onChange(name, e.target.value)}
       />
     </div>
   );
 }
 
-function FieldLabel({
-  name,
-  tooltip,
-  disabled,
-}: {
-  name: string;
-  tooltip?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <Label className="text-sm">{name}</Label>
-      {disabled && (
-        <Badge variant="outline" className="text-xs gap-1">
-          <Lock className="h-2.5 w-2.5" />
-          locked
-        </Badge>
-      )}
-      {tooltip && (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger>
-              <Info className="h-3.5 w-3.5 text-muted-foreground" />
-            </TooltipTrigger>
-            <TooltipContent side="right">
-              <p>{tooltip}</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      )}
-    </div>
-  );
-}
-
-function AISettings({
-  settings,
-  onChange,
-  embeddingsExist,
-}: {
-  settings: Record<string, unknown>;
-  onChange: (name: string, value: unknown) => void;
-  embeddingsExist: boolean;
-}) {
-  const embeddingTooltip = embeddingsExist
-    ? "Locked: changing the embedding model requires re-indexing all emails"
-    : undefined;
-
-  return (
-    <>
-      {/* Static provider label */}
-      <div className="grid gap-1.5">
-        <Label className="text-sm">provider</Label>
-        <div className="flex h-9 items-center rounded-md border border-input bg-muted/50 px-3 text-sm text-muted-foreground">
-          OpenAI
-        </div>
-      </div>
-
-      {/* Generic fields (api_key, model — not in AI_CUSTOM_FIELDS) */}
-      {Object.entries(settings)
-        .filter(
-          ([key]) =>
-            key !== "id" && key !== "category" && !AI_CUSTOM_FIELDS.has(key),
-        )
-        .map(([key, value]) => (
-          <SettingField
-            key={key}
-            name={key}
-            value={value}
-            onChange={onChange}
-          />
-        ))}
-
-      {/* Reasoning effort dropdown */}
-      <div className="grid gap-1.5">
-        <Label className="text-sm">reasoning_effort</Label>
-        <Select
-          value={String(settings.reasoning_effort ?? "medium")}
-          onValueChange={(v) => onChange("reasoning_effort", v)}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {REASONING_EFFORT_OPTIONS.map((opt) => (
-              <SelectItem key={opt} value={opt}>
-                {opt}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      {/* Embedding model (locked when embeddings exist) */}
-      <SettingField
-        name="embedding_model"
-        value={settings.embedding_model ?? ""}
-        onChange={onChange}
-        disabled={embeddingsExist}
-        tooltip={embeddingTooltip}
-      />
-
-      {/* Embedding dimensions (locked when embeddings exist) */}
-      <SettingField
-        name="embedding_dimensions"
-        value={settings.embedding_dimensions ?? 0}
-        onChange={onChange}
-        disabled={embeddingsExist}
-        tooltip={embeddingTooltip}
-      />
-    </>
-  );
-}
-
 function CategorySettings({
   category,
   settings,
-  embeddingsExist,
 }: {
   category: string;
   settings: Record<string, unknown>;
-  embeddingsExist: boolean;
 }) {
   const [localSettings, setLocalSettings] = useState(settings);
   const [dirty, setDirty] = useState(false);
@@ -287,44 +123,23 @@ function CategorySettings({
     );
   };
 
-  const isAI = category === "ai";
-
   const entries = Object.entries(localSettings).filter(
-    ([key]) =>
-      key !== "id" &&
-      key !== "category" &&
-      !(isAI && AI_CUSTOM_FIELDS.has(key)),
+    ([key]) => key !== "id" && key !== "category",
   );
 
   return (
     <div className="flex flex-col gap-4">
-      {isAI && (
-        <AISettings
-          settings={localSettings}
-          onChange={handleChange}
-          embeddingsExist={embeddingsExist}
-        />
-      )}
-      {!isAI &&
-        entries.map(([key, value]) => (
-          <SettingField
-            key={key}
-            name={key}
-            value={value}
-            onChange={handleChange}
-          />
-        ))}
-      {!isAI && entries.length === 0 && (
+      {entries.map(([key, value]) => (
+        <SettingField key={key} name={key} value={value} onChange={handleChange} />
+      ))}
+      {entries.length === 0 && (
         <div className="py-4 text-sm text-muted-foreground">
           No settings in this category
         </div>
       )}
       {dirty && (
         <div className="flex justify-end">
-          <Button
-            onClick={handleSave}
-            disabled={updateSettings.isPending}
-          >
+          <Button onClick={handleSave} disabled={updateSettings.isPending}>
             {updateSettings.isPending ? (
               <Loader2 className="mr-1 h-4 w-4 animate-spin" />
             ) : (
@@ -367,13 +182,6 @@ function ThemeSettings() {
 
 export function SettingsPage() {
   const { data: allSettings, isLoading } = useAllSettings();
-  const { data: stats } = useQuery({
-    queryKey: ["stats"],
-    queryFn: () => api.stats.get(),
-    staleTime: 60_000,
-  });
-
-  const embeddingsExist = (stats as StatsResponse)?.embedding_count > 0;
 
   if (isLoading) {
     return (
@@ -414,11 +222,7 @@ export function SettingsPage() {
             <Card>
               <CardContent className="pt-6">
                 {allSettings?.[key] ? (
-                  <CategorySettings
-                    category={key}
-                    settings={allSettings[key]}
-                    embeddingsExist={embeddingsExist}
-                  />
+                  <CategorySettings category={key} settings={allSettings[key]} />
                 ) : (
                   <div className="py-4 text-sm text-muted-foreground">
                     No settings available for this category

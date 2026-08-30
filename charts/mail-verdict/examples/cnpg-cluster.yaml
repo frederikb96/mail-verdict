@@ -1,0 +1,76 @@
+# Example CloudNativePG Cluster providing the PostgreSQL database MailVerdict
+# and PostIMAP share. Not applied by this chart -- PostgreSQL is deliberately
+# not a chart dependency, and PostIMAP is not a subchart (see the chart
+# README). Apply this yourself, once, before installing either chart. See the
+# CloudNativePG operator's docs: https://cloudnative-pg.io/documentation/
+#
+# This creates one CNPG Cluster with two login roles: `postimap` (schema
+# owner -- runs PostIMAP's migrations, needs CREATEDB/schema-owner-equivalent
+# privileges within its own database) and `mailverdict` (MailVerdict's own
+# role -- runs MailVerdict's migrations to create its owned tables, and is
+# separately granted the `postimap_app` role below to read and write
+# PostIMAP's tables within the columns its contract permits).
+#
+# `postimap_app` itself is NOT created here: PostIMAP's own migrations create
+# it as a NOLOGIN, grants-only role the first time PostIMAP starts against
+# this database (see PostIMAP's consumer-contract.md). Run the GRANT below
+# only after that has happened -- see the ordering note at the bottom.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: mail-postgres
+spec:
+  instances: 3
+  storage:
+    size: 10Gi
+  bootstrap:
+    initdb:
+      database: postimap
+      owner: postimap
+      secret:
+        name: postimap-db-owner-credentials
+  managed:
+    roles:
+      - name: mailverdict
+        ensure: present
+        login: true
+        passwordSecret:
+          name: mailverdict-db-credentials
+---
+# CNPG generates the `postimap` owner role's password itself when the
+# secret referenced by `bootstrap.initdb.secret.name` doesn't already exist
+# -- create it up front instead if you want a known password to feed into
+# the postimap chart's `secret.dbPassword` / `existingSecret`.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postimap-db-owner-credentials
+type: kubernetes.io/basic-auth
+stringData:
+  username: postimap
+  password: replace-with-a-generated-password
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mailverdict-db-credentials
+type: kubernetes.io/basic-auth
+stringData:
+  username: mailverdict
+  password: replace-with-a-generated-password
+---
+# Run once, after PostIMAP's first startup has created its schema AND its
+# `postimap_app` role (its migrations run automatically on container start
+# -- see the postimap chart README). Running this before that point fails:
+# `postimap_app` does not exist yet.
+#
+#   GRANT CONNECT ON DATABASE postimap TO mailverdict;
+#   GRANT USAGE ON SCHEMA public TO mailverdict;
+#   -- MailVerdict's own Alembic migration creates account_prefs,
+#   -- folder_prefs, settings, verdicts, mail_tags, image_exceptions in this
+#   -- schema; CREATE is what lets that migration run.
+#   GRANT CREATE ON SCHEMA public TO mailverdict;
+#   -- The contract grant: read/write on exactly the PostIMAP-owned columns
+#   -- documented in docs/consumer-contract.md, enforced by PostgreSQL, not
+#   -- by application code.
+#   GRANT postimap_app TO mailverdict;

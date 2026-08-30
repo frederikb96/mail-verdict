@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Tag / Attachment schemas (referenced by MessageDetail) ---
 
@@ -39,6 +39,23 @@ class AttachmentSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# --- Verdict schemas (defined before MessageDetail, which embeds one) ---
+
+
+class VerdictResponse(BaseModel):
+    """Verdict detail."""
+
+    id: uuid.UUID
+    message_id: uuid.UUID
+    is_spam: bool
+    model_used: str | None = None
+    reasoning: str | None = None
+    source: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 # --- Message schemas ---
 
 
@@ -48,6 +65,7 @@ class MessageSummary(BaseModel):
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
+    thread_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
@@ -56,9 +74,17 @@ class MessageSummary(BaseModel):
     is_flagged: bool = False
     is_answered: bool = False
     is_draft: bool = False
-    is_deleted: bool = False
-    deleted_at: datetime | None = None
     snippet: str | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
+    thread_count: int | None = Field(
+        default=None,
+        description="Number of messages in the thread, only present when threaded=true",
+    )
+    unread_in_thread: int | None = Field(
+        default=None,
+        description="Unread message count in the thread, only present when threaded=true",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -77,52 +103,61 @@ class MessageDetail(BaseModel):
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
-    imap_uid: int
-    message_id: str | None = None
+    thread_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
-    cc_addrs: Any | None = None
-    bcc_addrs: Any | None = None
-    reply_to: str | None = None
-    in_reply_to: str | None = None
-    body_text: str | None = None
-    body_html: str | None = None
-    raw_headers: dict[str, Any] | None = None
     received_at: datetime | None = None
-    size_bytes: int | None = None
     is_seen: bool = False
     is_flagged: bool = False
     is_answered: bool = False
     is_draft: bool = False
-    is_deleted: bool = False
+    snippet: str | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
+    message_id: str | None = None
+    cc_addrs: Any | None = None
+    bcc_addrs: Any | None = None
+    reply_to: str | None = None
+    in_reply_to: str | None = None
+    references: list[str] | None = None
+    body_text: str | None = None
+    body_html: str | None = None
+    size_bytes: int | None = None
     keywords: list[str] = Field(default_factory=list)
-    deleted_at: datetime | None = None
-    created_at: datetime
     has_blocked_images: bool = False
     images_allowed: bool = False
+    created_at: datetime
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
+    verdict: VerdictResponse | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ThreadResponse(BaseModel):
+    """Every message in a conversation, across folders, ascending by date."""
+
+    messages: list[MessageDetail]
 
 
 class MessageActionRequest(BaseModel):
     """Request to perform an action on a message."""
 
     action: Literal[
-        "move", "mark_read", "mark_unread", "delete",
-        "flag", "unflag", "archive", "spam",
+        "mark_read", "mark_unread", "flag", "unflag",
+        "move", "archive", "trash", "expunge",
+        "spam", "not_spam", "keyword_add", "keyword_remove",
     ] = Field(
         description="Action type",
     )
-    target_folder: str | None = Field(
-        default=None,
-        description="Target folder IMAP name for move action",
-    )
     target_folder_id: uuid.UUID | None = Field(
         default=None,
-        description="Target folder UUID for move action (alternative to target_folder)",
+        description="Target folder UUID, required for the move action",
+    )
+    keyword: str | None = Field(
+        default=None,
+        description="Keyword value, required for keyword_add / keyword_remove",
     )
 
 
@@ -135,6 +170,52 @@ class MessageActionResponse(BaseModel):
     message: str | None = None
 
 
+# --- Bulk action schemas (client-held selection, server-side scope) ---
+
+
+class BulkActionScope(BaseModel):
+    """Server-resolved selection for 'select all matching' bulk actions."""
+
+    folder_id: uuid.UUID
+    filter: Literal["unread", "all"] | None = None
+    exclude_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class BulkActionRequest(BaseModel):
+    """Request to apply one action to many messages, by id list or by scope."""
+
+    action: Literal[
+        "move", "mark_read", "mark_unread", "flag", "unflag",
+        "archive", "trash", "expunge", "spam", "not_spam",
+    ]
+    target_folder_id: uuid.UUID | None = Field(
+        default=None,
+        description="Target folder UUID, required for the move action",
+    )
+    ids: list[uuid.UUID] | None = None
+    scope: BulkActionScope | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_of_ids_or_scope(self) -> BulkActionRequest:
+        """Reject a request naming both or neither selection mechanism."""
+        if (self.ids is None) == (self.scope is None):
+            raise ValueError("Exactly one of 'ids' or 'scope' must be provided")
+        return self
+
+    def resolved_ids_or_scope(self) -> list[uuid.UUID] | BulkActionScope:
+        """Return whichever of ids/scope was provided (validated exclusive)."""
+        return self.ids if self.ids is not None else self.scope  # type: ignore[return-value]
+
+
+class BulkActionResponse(BaseModel):
+    """Result of a bulk action."""
+
+    success: bool
+    action: str
+    affected_count: int
+    errors: list[str] = Field(default_factory=list)
+
+
 # --- Search schemas ---
 
 
@@ -145,8 +226,7 @@ class SearchResult(BaseModel):
     subject: str | None = None
     from_addr: str | None = None
     received_at: datetime | None = None
-    score: float = 0.0
-    source: str = "fulltext"
+    snippet: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -156,11 +236,29 @@ class SearchResponse(BaseModel):
 
     results: list[SearchResult]
     total: int
-    mode: str
     query: str
 
 
 # --- Account schemas ---
+
+
+class SyncStatusResponse(BaseModel):
+    """Sync status for an account from PostIMAP's sync_state table."""
+
+    account_id: uuid.UUID
+    state: str
+    state_error: str | None = None
+    last_full_sync: datetime | None = None
+    last_incr_sync: datetime | None = None
+    sync_tier: str | None = None
+    folders_synced: int = 0
+    folders_total: int = 0
+    messages_synced: int = 0
+    error_count: int = 0
+    last_error: str | None = None
+    updated_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
 
 
 class AccountResponse(BaseModel):
@@ -186,8 +284,6 @@ class AccountResponse(BaseModel):
     # AccountPrefs fields (from account_prefs table)
     emoji: str | None = None
     spam_enabled: bool = False
-    embedding_lookback_days: int = 30
-    folder_mapping: dict[str, str | None] | None = None
     folder_order: list[str] | None = None
 
     model_config = {"from_attributes": True}
@@ -208,17 +304,19 @@ class AccountCreateRequest(BaseModel):
     is_active: bool = True
     # AccountPrefs fields
     emoji: str | None = None
-    embedding_lookback_days: int = 30
     spam_enabled: bool = False
 
 
 class AccountUpdateRequest(BaseModel):
-    """Request to update an account."""
+    """
+    Request to update an account.
+
+    imap_host/imap_port/imap_user are insert-only under PostIMAP's contract
+    (its grant on `accounts` has no UPDATE on those columns) -- changing the
+    IMAP host requires deleting and re-adding the account.
+    """
 
     name: str | None = None
-    imap_host: str | None = None
-    imap_port: int | None = None
-    imap_user: str | None = None
     imap_password: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None
@@ -227,7 +325,6 @@ class AccountUpdateRequest(BaseModel):
     is_active: bool | None = None
     # AccountPrefs fields
     emoji: str | None = None
-    embedding_lookback_days: int | None = None
     spam_enabled: bool | None = None
 
 
@@ -246,7 +343,7 @@ class FolderResponse(BaseModel):
     display_name: str | None = None
     special_use: str | None = None
     mailbox_id: str | None = None
-    exists_count: int = 0
+    initial_sync_done: bool = False
     last_synced_at: datetime | None = None
     sync_error: str | None = None
     created_at: datetime | None = None
@@ -255,26 +352,24 @@ class FolderResponse(BaseModel):
     # FolderPrefs fields (from folder_prefs table)
     unified_name: str | None = None
     is_visible: bool = True
-    subscribed: bool = True
 
     model_config = {"from_attributes": True}
+
+
+class FolderPrefsUpdate(BaseModel):
+    """Partial update to a folder's MailVerdict preferences.
+
+    The one write surface a folder has: visibility, display name, unified
+    name, and special-use override.
+    """
+
+    is_visible: bool | None = None
+    display_name: str | None = None
+    unified_name: str | None = None
+    special_use_override: str | None = None
 
 
 # --- Verdict schemas ---
-
-
-class VerdictResponse(BaseModel):
-    """Verdict detail."""
-
-    id: uuid.UUID
-    message_id: uuid.UUID
-    is_spam: bool
-    model_used: str | None = None
-    reasoning: str | None = None
-    source: str
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class FeedbackRequest(BaseModel):
@@ -357,7 +452,6 @@ class StatsResponse(BaseModel):
     accuracy: float
     weekly_trend: list[WeeklyTrendPoint]
     account_sync: list[AccountSyncStatus]
-    embedding_count: int = 0
 
 
 # --- Image exception schemas ---
@@ -408,68 +502,6 @@ class FolderOrderUpdate(BaseModel):
     order: list[uuid.UUID]
 
 
-class FolderVisibilityUpdate(BaseModel):
-    """Request to toggle folder visibility."""
-
-    is_visible: bool
-
-
-class FolderVisibilityResponse(BaseModel):
-    """Folder visibility update response."""
-
-    folder_id: uuid.UUID
-    is_visible: bool
-
-
-# --- Selection / bulk action schemas ---
-
-
-class SelectionResponse(BaseModel):
-    """Current selection state for an account."""
-
-    selected_ids: list[uuid.UUID]
-    count: int
-
-
-class SelectionToggle(BaseModel):
-    """Request to toggle a single message's selection."""
-
-    message_id: uuid.UUID
-
-
-class SelectionRange(BaseModel):
-    """Request for shift-click range selection."""
-
-    from_id: uuid.UUID
-    to_id: uuid.UUID
-    folder_id: uuid.UUID
-
-
-class SelectionAll(BaseModel):
-    """Request to select all messages in a folder."""
-
-    folder_id: uuid.UUID
-
-
-class BulkActionRequest(BaseModel):
-    """Request to execute an action on all selected messages."""
-
-    action: Literal[
-        "move", "archive", "spam", "star", "unstar",
-        "mark_read", "mark_unread", "delete",
-    ]
-    target_folder_id: uuid.UUID | None = None
-
-
-class BulkActionResponse(BaseModel):
-    """Result of a bulk action."""
-
-    success: bool
-    action: str
-    affected_count: int
-    errors: list[str] = Field(default_factory=list)
-
-
 # --- Unified view schemas ---
 
 
@@ -499,6 +531,7 @@ class UnifiedMessageSummary(BaseModel):
     account_id: uuid.UUID
     account_emoji: str | None = None
     folder_id: uuid.UUID
+    thread_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
@@ -507,9 +540,9 @@ class UnifiedMessageSummary(BaseModel):
     is_flagged: bool = False
     is_answered: bool = False
     is_draft: bool = False
-    is_deleted: bool = False
-    deleted_at: datetime | None = None
     snippet: str | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -532,16 +565,6 @@ class EmojiUpdate(BaseModel):
     )
 
 
-class UnifiedNameUpdate(BaseModel):
-    """Request to set/clear a folder's unified name."""
-
-    unified_name: str | None = Field(
-        default=None,
-        max_length=255,
-        description="Unified name for cross-account folder merging",
-    )
-
-
 class UnifiedFolderOrderResponse(BaseModel):
     """Unified folder display order."""
 
@@ -552,3 +575,56 @@ class UnifiedFolderOrderUpdate(BaseModel):
     """Request to save unified folder display order."""
 
     order: list[str]
+
+
+# --- Outbox schemas (send / draft) ---
+
+
+class OutboxCreateRequest(BaseModel):
+    """Request to send a message or save a draft.
+
+    Field names follow the UI's wire shape (to/cc/bcc), not the DB column
+    names (to_addrs/cc_addrs/bcc_addrs) -- the outbox insert helper maps
+    between the two.
+    """
+
+    account_id: uuid.UUID
+    kind: Literal["send", "draft"]
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+    subject: str | None = None
+    body_text: str | None = None
+    body_html: str | None = None
+    in_reply_to: str | None = None
+    references: list[str] | None = None
+
+
+class OutboxAttachmentSummary(BaseModel):
+    """Attachment metadata for an outbox row (no data)."""
+
+    id: uuid.UUID
+    filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class OutboxResponse(BaseModel):
+    """Send/draft composition status."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    kind: str
+    status: str
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+    subject: str | None = None
+    error: str | None = None
+    attachments: list[OutboxAttachmentSummary] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

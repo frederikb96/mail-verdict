@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
-from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.models import Attachment, MailTag, Message
 from mail_verdict.rules.conditions import MailContext, evaluate_condition
 from mail_verdict.rules.enrichment import EnrichmentConfig, EnrichmentResult, EnrichmentRunner
@@ -318,21 +317,9 @@ class RulesEngine:
                 )
                 tags = list(tag_result.scalars().all())
 
-                parsed_to = parse_jsonb(msg.to_addrs)
-                to_list: list[str] = []
-                if parsed_to and isinstance(parsed_to, dict):
-                    to_list = parsed_to.get("addrs", [])
-                elif parsed_to and isinstance(parsed_to, list):
-                    to_list = parsed_to
-
-                parsed_cc = parse_jsonb(msg.cc_addrs)
-                cc_list: list[str] = []
-                if parsed_cc and isinstance(parsed_cc, dict):
-                    cc_list = parsed_cc.get("addrs", [])
-                elif parsed_cc and isinstance(parsed_cc, list):
-                    cc_list = parsed_cc
-
-                parsed_headers = parse_jsonb(msg.raw_headers)
+                to_list: list[str] = msg.to_addrs if isinstance(msg.to_addrs, list) else []
+                cc_list: list[str] = msg.cc_addrs if isinstance(msg.cc_addrs, list) else []
+                parsed_headers = msg.raw_headers
 
                 folder_name = event.get("folder_name", "")
 

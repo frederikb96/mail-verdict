@@ -81,3 +81,11 @@ export function formatAddresses(
   if (Array.isArray(addrs)) return addrs.join(", ");
   return addrs;
 }
+
+/** Parse a comma/semicolon-separated address field into a list. */
+export function parseAddressList(value: string): string[] {
+  return value
+    .split(/[,;]/)
+    .map((a) => a.trim())
+    .filter(Boolean);
+}

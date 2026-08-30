@@ -72,28 +72,25 @@ class TestFolderOrderSchemas:
         assert update.order == []
 
 
-class TestFolderVisibilitySchemas:
-    """Tests for folder visibility schemas."""
+class TestFolderPrefsUpdateSchema:
+    """Tests for the consolidated folder preferences update schema."""
 
-    def test_visibility_update(self) -> None:
-        """FolderVisibilityUpdate accepts boolean."""
-        from mail_verdict.api.schemas import FolderVisibilityUpdate
+    def test_accepts_any_single_field(self) -> None:
+        """A caller may set just one preference field, leaving the rest unset."""
+        from mail_verdict.api.schemas import FolderPrefsUpdate
 
-        show = FolderVisibilityUpdate(is_visible=True)
-        assert show.is_visible is True
+        visibility_only = FolderPrefsUpdate(is_visible=False)
+        assert visibility_only.model_dump(exclude_unset=True) == {"is_visible": False}
 
-        hide = FolderVisibilityUpdate(is_visible=False)
-        assert hide.is_visible is False
+        unified_name_only = FolderPrefsUpdate(unified_name="Inbox")
+        assert unified_name_only.model_dump(exclude_unset=True) == {"unified_name": "Inbox"}
 
-    def test_visibility_response(self) -> None:
-        """FolderVisibilityResponse has folder_id and is_visible."""
-        from mail_verdict.api.schemas import FolderVisibilityResponse
+    def test_unified_name_accepts_null_to_clear(self) -> None:
+        """Explicitly setting unified_name to None clears it, distinct from leaving it unset."""
+        from mail_verdict.api.schemas import FolderPrefsUpdate
 
-        resp = FolderVisibilityResponse(
-            folder_id=uuid.uuid4(),
-            is_visible=False,
-        )
-        assert resp.is_visible is False
+        clear = FolderPrefsUpdate(unified_name=None)
+        assert clear.model_dump(exclude_unset=True) == {"unified_name": None}
 
 
 class TestFolderManagementRouterRegistration:
@@ -107,10 +104,15 @@ class TestFolderManagementRouterRegistration:
         assert any("account" in p for p in prefixes)
 
     def test_folder_management_endpoints(self) -> None:
-        """Folder management router has expected endpoint paths."""
+        """Folder management router has the folder-order endpoint."""
         from mail_verdict.api.folder_management import router
 
         routes = [r.path for r in router.routes]  # type: ignore[union-attr]
         assert any("folder-order" in r for r in routes)
-        assert any("visibility" in r for r in routes)
-        assert any("auto-detect" in r for r in routes)
+
+    def test_folder_prefs_router_has_prefs_endpoint(self) -> None:
+        """The flat /folders/{folder_id}/prefs endpoint replaces visibility/auto-detect."""
+        from mail_verdict.api.folder_management import folder_prefs_router
+
+        routes = [r.path for r in folder_prefs_router.routes]  # type: ignore[union-attr]
+        assert any("prefs" in r for r in routes)

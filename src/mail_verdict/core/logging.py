@@ -83,8 +83,7 @@ _LIBRARY_LOGGERS = (
     "fastmcp",
     "httpx",
     "asyncpg",
-    "openai",
-    "qdrant_client",
+    "anthropic",
 )
 
 _NOISY_LOGGERS = (

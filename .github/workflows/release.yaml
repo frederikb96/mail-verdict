@@ -4,18 +4,60 @@ on:
   push:
     tags:
       - "v*"
-      - "v*-rc*"
-      - "v*-beta*"
+
+# Deliberately no cancel-in-progress: publishing an image, a chart and a GitHub
+# release is not idempotent, and cancelling midway leaves a partial release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
+env:
+  IMAGE: ghcr.io/frederikb96/mail-verdict
+  CHART_REGISTRY: oci://ghcr.io/frederikb96/charts
+
 jobs:
-  build-and-push:
+  guard:
+    name: Version guard
+    runs-on: arc-runner-mail-verdict
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # The runner image is bare: anything invoking python needs this.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Tag, pyproject and chart must agree
+        run: python scripts/check_release_versions.py "${GITHUB_REF_NAME}"
+
+      - name: Resolve version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Extract changelog section
+        run: |
+          python scripts/extract_changelog.py "${{ steps.version.outputs.version }}" > release-notes.md
+          echo "--- release notes ---"
+          cat release-notes.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 1
+
+  image:
+    name: Build and push image
+    needs: guard
     runs-on: arc-runner-mail-verdict
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: docker/login-action@v3
         with:
@@ -28,7 +70,7 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ghcr.io/frederikb96/mail-verdict
+          images: ${{ env.IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -44,3 +86,48 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  chart:
+    name: Package and push Helm chart
+    needs: guard
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/setup-helm@v4
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Lint and template before publishing
+        run: |
+          helm lint charts/mail-verdict
+          helm template mail-verdict charts/mail-verdict > /dev/null
+
+      - name: Package and push
+        run: |
+          helm package charts/mail-verdict --destination dist
+          helm push "dist/mail-verdict-${{ needs.guard.outputs.version }}.tgz" \
+            "${{ env.CHART_REGISTRY }}"
+
+  publish:
+    name: Publish GitHub release
+    needs: [guard, image, chart]
+    runs-on: arc-runner-mail-verdict
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      # A JS action rather than the gh CLI: the runner image is bare and does not
+      # ship gh, but it always has the node that actions run on.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}

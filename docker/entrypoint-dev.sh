@@ -21,6 +21,7 @@ if [ "$(id -u)" = "0" ]; then
         --reload \
         --reload-dir /app/src \
         --factory \
+        --timeout-graceful-shutdown 5 \
         "$@"
 else
     exec uvicorn mail_verdict.server:create_app \
@@ -29,5 +30,6 @@ else
         --reload \
         --reload-dir /app/src \
         --factory \
+        --timeout-graceful-shutdown 5 \
         "$@"
 fi

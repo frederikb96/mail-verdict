@@ -58,20 +58,3 @@ export function useDeleteAccount() {
   });
 }
 
-export function useTestConnection() {
-  return useMutation({
-    mutationFn: (id: string) => api.accounts.testConnection(id),
-  });
-}
-
-export function useTriggerSync() {
-  return useMutation({
-    mutationFn: (id: string) => api.accounts.triggerSync(id),
-  });
-}
-
-export function useCancelSync() {
-  return useMutation({
-    mutationFn: (id: string) => api.accounts.cancelSync(id),
-  });
-}

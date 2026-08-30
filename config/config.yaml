@@ -1,24 +1,20 @@
 # MailVerdict Infrastructure Configuration
 #
-# This file contains ONLY infrastructure settings (requires restart).
-# Application settings (AI, spam, sync, retry) are stored in the database
-# and managed via the API.
+# This file contains ONLY infrastructure settings (file-based, requires a
+# restart to take effect). Application settings (AI, spam, rules, retry)
+# live in the database and are managed via the Settings API.
 #
-# Override: ~/.config/mail-verdict/mail-verdict.yaml or MAIL_VERDICT_<SECTION>_<KEY> env vars
+# Override: config-custom/config.override.yaml (sparse, only changed values)
+# or MAIL_VERDICT_<SECTION>_<KEY> environment variables.
 
 server:
   host: 0.0.0.0
   port: 8080
   log_level: INFO
-  cors_origins:
-    - http://localhost:5173
+  cors_origins: []            # same-origin serving by default; empty disables CORS
+  api_key: "${MAIL_VERDICT_API_KEY}"   # empty (unset env var) disables auth -- dev mode
 
 database:
-  url: ""
+  url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10
   max_overflow: 5
-
-qdrant:
-  host: localhost
-  port: 6333
-  collection_name: mail_embeddings

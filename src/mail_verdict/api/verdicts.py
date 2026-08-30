@@ -91,7 +91,7 @@ async def submit_feedback(
     """
     Submit user feedback on spam classification.
 
-    Triggers SpamFeedbackHandler to update Qdrant tag and log correction verdict.
+    Triggers SpamFeedbackHandler to log a correction verdict.
     """
     msg_repo = get_message_repo()
     msg = await msg_repo.get_by_id(account_id, mail_id)

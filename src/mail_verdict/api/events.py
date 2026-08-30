@@ -8,9 +8,8 @@ On fresh connect: sends connected event, then streams live events.
 On reconnect (Last-Event-ID header): replays missed events from EventRing,
 falls back to connected event if the ID is too old.
 
-PostIMAP integration: PG LISTEN/NOTIFY (via pg_listener.py) pushes
-message events into the EventRing. The SSE subscriber on the event bus
-is no longer needed.
+PostIMAP integration: postimap/listener.py listens on postimap_events and
+pushes parsed events into the EventRing.
 """
 
 from __future__ import annotations
@@ -18,8 +17,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import secrets
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
@@ -82,34 +79,6 @@ async def push_verdict_event(
             "is_spam": is_spam,
             "source": source,
             "account_id": str(account_id),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-
-
-async def push_selection_event(
-    account_id: uuid.UUID,
-    selected_ids: set[uuid.UUID],
-    count: int,
-) -> None:
-    """
-    Push a selection.changed event into the EventRing.
-
-    Args:
-        account_id: Account UUID
-        selected_ids: Currently selected message IDs
-        count: Number of selected messages
-    """
-    if _event_ring is None:
-        return
-
-    await _event_ring.add(
-        account_id=account_id,
-        event_type="selection.changed",
-        data={
-            "account_id": str(account_id),
-            "selected_ids": [str(mid) for mid in selected_ids],
-            "count": count,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -204,13 +173,10 @@ def _validate_api_key(request: Request) -> bool:
     Returns:
         True if auth passes (key valid or auth disabled)
     """
-    expected = os.environ.get("MAIL_VERDICT_API_KEY")
-    if not expected:
-        return True
+    from mail_verdict.api.auth import is_valid_api_key
+
     api_key = request.headers.get("X-API-Key") or request.query_params.get("api_key")
-    if not api_key:
-        return False
-    return secrets.compare_digest(api_key, expected)
+    return is_valid_api_key(api_key)
 
 
 async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
