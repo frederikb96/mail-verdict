@@ -1,7 +1,7 @@
 """
 The registry tying a named queue's WorkQueue, WorkerSupervisor and
 CircuitBreaker together, and the persisted operator state (pause/resume,
-concurrency, batch size) that survives a restart.
+concurrency) that survives a restart.
 
 Still domain-agnostic: registering a queue takes a table and a worker body
 coroutine, nothing that knows what the table holds.
@@ -43,7 +43,6 @@ class QueueStateRow:
     name: str
     state: str
     concurrency: int
-    batch_size: int
 
 
 @dataclass(frozen=True)
@@ -55,7 +54,6 @@ class QueueSummary:
     concurrency_target: int
     concurrency_actual: int
     max_allowed_concurrency: int
-    batch_size: int
     depth: dict[str, int]
     circuit: CircuitStatus
 
@@ -89,15 +87,29 @@ class _RegisteredQueue:
 class QueueManager:
     """Registry of named queues, and the REST-facing operations on them."""
 
-    def __init__(self, db: DatabaseConnection, *, reclaim_interval_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        db: DatabaseConnection,
+        *,
+        reserved_for_requests: int = 0,
+        reclaim_interval_seconds: float = 5.0,
+    ) -> None:
         """
         Args:
             db: Database connection every queue's state lives behind
+            reserved_for_requests: Connections held back from every
+                registered queue's combined running concurrency, so an
+                HTTP handler sharing the same pool always finds one free
+                (see `database.reserved_for_requests` in config.yaml,
+                which is what the running application actually passes
+                here -- the default of 0 here is for callers, such as
+                tests, that only care about the pool's own capacity)
             reclaim_interval_seconds: How often the shared, advisory-locked
                 reconciliation timer reclaims expired leases across every
                 registered queue
         """
         self._db = db
+        self._reserved_for_requests = max(0, reserved_for_requests)
         self._registered: dict[str, _RegisteredQueue] = {}
         self._reclaim_timer = ReconciliationTimer(
             db, _RECLAIM_LOCK_KEY, self._reclaim_all, reclaim_interval_seconds,
@@ -151,11 +163,30 @@ class QueueManager:
         return self._registered[name].work_queue
 
     async def start(self) -> None:
-        """Load persisted state for every registered queue, start its supervisor,
-        and start the shared lease-reclaim timer."""
+        """
+        Load persisted state for every registered queue, start its
+        supervisor, and start the shared lease-reclaim timer.
+
+        Clamps each queue's target to what remains of the budget after
+        every queue started earlier in this call -- `set_state` is what
+        normally keeps a persisted value inside that budget, but a row
+        written before this validation existed, or edited directly, is
+        read exactly as stored. Applying it uncapped here would recreate
+        the pool starvation the validation exists to prevent, silently,
+        on every restart.
+        """
+        budget = self._db.pool_capacity - self._reserved_for_requests
         for name, entry in self._registered.items():
             row = await self._get_or_create_state(name)
-            entry.supervisor.set_target(row.concurrency if row.state == "running" else 0)
+            target = row.concurrency if row.state == "running" else 0
+            if target > budget:
+                logger.warning(
+                    "Queue's persisted concurrency exceeds the remaining pool budget; clamping",
+                    extra={"queue": name, "persisted": target, "available": max(budget, 0)},
+                )
+                target = max(budget, 0)
+            entry.supervisor.set_target(target)
+            budget -= target
             await entry.supervisor.start()
         await self._reclaim_timer.start()
 
@@ -188,16 +219,40 @@ class QueueManager:
         row = await self._get_or_create_state(name)
         depth = await entry.work_queue.counts_by_status()
         circuit = await CircuitBreaker(self._db, entry.circuit_name).status()
+        committed = await self._committed_concurrency(exclude=name)
+        max_allowed = max(self._db.pool_capacity - self._reserved_for_requests - committed, 0)
         return QueueSummary(
             name=name,
             state=row.state,
             concurrency_target=entry.supervisor.target,
             concurrency_actual=entry.supervisor.actual,
-            max_allowed_concurrency=self._db.pool_capacity,
-            batch_size=row.batch_size,
+            max_allowed_concurrency=max_allowed,
             depth=depth,
             circuit=circuit,
         )
+
+    async def _committed_concurrency(self, *, exclude: str | None = None) -> int:
+        """
+        Sum of persisted concurrency across every other *running*
+        registered queue -- what already stands against the shared
+        connection pool, independent of whatever `exclude` is about to be
+        set to.
+
+        Args:
+            exclude: Queue name to leave out of the sum -- the one being
+                validated or reported on
+
+        Returns:
+            Combined concurrency every other running queue has committed
+        """
+        total = 0
+        for other_name in self._registered:
+            if other_name == exclude:
+                continue
+            row = await self._get_or_create_state(other_name)
+            if row.state == "running":
+                total += row.concurrency
+        return total
 
     async def list_summaries(self) -> list[QueueSummary]:
         """A summary for every registered queue."""
@@ -235,42 +290,61 @@ class QueueManager:
         *,
         state: str | None = None,
         concurrency: int | None = None,
-        batch_size: int | None = None,
     ) -> QueueSummary:
         """
         Change a queue's operator-controlled state, applied to the live
         supervisor immediately and persisted so it survives a restart.
 
+        Validated against every other registered queue's own persisted
+        concurrency, not just this queue's own request in isolation --
+        two queues each individually within the database pool's capacity
+        can still jointly claim more connections than the pool has to
+        give, starving the HTTP handlers that share it. The check re-runs
+        whenever this queue's *effective* running concurrency would
+        change, which includes resuming a paused queue with `state=
+        "running"` alone: its already-persisted concurrency is what takes
+        effect the moment it resumes, whether or not this call also
+        touches `concurrency`.
+
         Args:
             name: Registered queue name
             state: 'running' or 'paused', or None to leave unchanged
             concurrency: New target worker count, or None to leave unchanged
-            batch_size: New claim batch size, or None to leave unchanged
 
         Returns:
             The resulting summary
 
         Raises:
             KeyError: name is not registered
-            ValueError: state is not 'running'/'paused', or concurrency
-                exceeds what the database pool can actually support
+            ValueError: state is not 'running'/'paused', concurrency is
+                negative, or the resulting running concurrency -- combined
+                with every other running queue's own -- would exceed what
+                the database pool can actually support
         """
         if name not in self._registered:
             raise KeyError(name)
         if state is not None and state not in ("running", "paused"):
             raise ValueError(f"state must be 'running' or 'paused', got {state!r}")
-        if concurrency is not None:
-            if concurrency < 0:
-                raise ValueError("concurrency must be >= 0")
-            if concurrency > self._db.pool_capacity:
-                raise ValueError(
-                    f"concurrency {concurrency} exceeds the database pool capacity "
-                    f"({self._db.pool_capacity} = pool_size + max_overflow)"
-                )
-        if batch_size is not None and batch_size < 1:
-            raise ValueError("batch_size must be >= 1")
+        if concurrency is not None and concurrency < 0:
+            raise ValueError("concurrency must be >= 0")
 
-        await self._get_or_create_state(name)
+        current = await self._get_or_create_state(name)
+        effective_state = state if state is not None else current.state
+        effective_concurrency = concurrency if concurrency is not None else current.concurrency
+
+        if effective_state == "running" and effective_concurrency > 0:
+            committed = await self._committed_concurrency(exclude=name)
+            budget = self._db.pool_capacity - self._reserved_for_requests
+            if committed + effective_concurrency > budget:
+                raise ValueError(
+                    f"concurrency {effective_concurrency} for {name!r} would bring the "
+                    f"combined running concurrency across every queue to "
+                    f"{committed + effective_concurrency}, exceeding the {budget} "
+                    f"connections available to queues (database pool capacity "
+                    f"{self._db.pool_capacity}, {self._reserved_for_requests} reserved for "
+                    "non-queue requests)"
+                )
+
         async with self._db.session() as session:
             sets = []
             params: dict[str, object] = {"name": name}
@@ -280,9 +354,6 @@ class QueueManager:
             if concurrency is not None:
                 sets.append("concurrency = :concurrency")
                 params["concurrency"] = concurrency
-            if batch_size is not None:
-                sets.append("batch_size = :batch_size")
-                params["batch_size"] = batch_size
             if sets:
                 await session.execute(
                     text(f"UPDATE queue_state SET {', '.join(sets)} WHERE name = :name"),
@@ -304,26 +375,28 @@ class QueueManager:
                 {"name": name},
             )
             result = await session.execute(
-                text(
-                    "SELECT name, state, concurrency, batch_size FROM queue_state "
-                    "WHERE name = :name"
-                ),
+                text("SELECT name, state, concurrency FROM queue_state WHERE name = :name"),
                 {"name": name},
             )
             row = result.one()
-            return QueueStateRow(
-                name=row.name, state=row.state,
-                concurrency=row.concurrency, batch_size=row.batch_size,
-            )
+            return QueueStateRow(name=row.name, state=row.state, concurrency=row.concurrency)
 
 
 _manager: QueueManager | None = None
 
 
-def init_queue_manager(db: DatabaseConnection) -> QueueManager:
-    """Initialize the global QueueManager."""
+def init_queue_manager(db: DatabaseConnection, *, reserved_for_requests: int) -> QueueManager:
+    """
+    Initialize the global QueueManager.
+
+    Args:
+        db: Database connection every queue's state lives behind
+        reserved_for_requests: Connections held back from every queue's
+            combined running concurrency for the HTTP handlers sharing
+            the same pool -- `config.database.reserved_for_requests`
+    """
     global _manager
-    _manager = QueueManager(db)
+    _manager = QueueManager(db, reserved_for_requests=reserved_for_requests)
     return _manager
 
 

@@ -146,6 +146,22 @@ class APIConnectionError(Exception):
     pass
 
 
+class _SlowFakeProvider(FakeEmbeddingProvider):
+    """Succeeds like FakeEmbeddingProvider, but only after a delay --
+    stands in for a provider call slower than a short lease, and records
+    every text it was asked to embed so a test can catch the same message
+    being sent twice."""
+
+    def __init__(self, delay_seconds: float) -> None:
+        self._delay_seconds = delay_seconds
+        self.calls: list[str] = []
+
+    async def embed_batch(self, texts: list[str], *, model: str) -> list[list[float]]:
+        self.calls.extend(texts)
+        await asyncio.sleep(self._delay_seconds)
+        return await super().embed_batch(texts, model=model)
+
+
 @pytest.mark.asyncio
 async def test_registered_circuit_name_matches_the_one_the_worker_writes(
     migrated_db: DatabaseConnection,
@@ -311,3 +327,111 @@ async def test_a_persistently_retryable_failure_reaches_a_dead_letter(
             )
         ).one()
     assert final.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_slow_item_is_never_reclaimed_out_from_under_a_still_running_worker(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """One worker, several pending rows, and a provider call slower than
+    the lease -- the exact reproduction: a batch claimed under one lease
+    and processed serially must not leave the rows still waiting their
+    turn to be reclaimed (and re-billed) while the worker that claimed
+    them is still very much alive and working through the rest.
+
+    Runs the reconciliation timer's own reclaim query on a tight poll
+    alongside the worker loop, standing in for queue/manager.py's shared
+    reclaim timer firing mid-run in production.
+    """
+    model = _unique_model()
+    embedding_repo = EmbeddingRepository(migrated_db)
+    message_repo = MessageRepository(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        for _ in range(3):
+            await _seed_message(session, account_id=account_id, folder_id=folder_id)
+        await session.commit()
+    await embedding_repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+
+    async def _unused_worker_body(worker_id: str, stop_event: asyncio.Event) -> None:
+        return None
+
+    queue_manager = QueueManager(migrated_db)
+    queue_manager.register(
+        QUEUE_NAME, MessageEmbedding.__table__, _unused_worker_body, circuit_name=CIRCUIT_NAME,
+    )
+    work_queue = queue_manager.work_queue(QUEUE_NAME)
+    circuit = CircuitBreaker(migrated_db, f"provider-{uuid.uuid4().hex[:8]}")
+
+    import mail_verdict.embeddings.worker as worker_module
+
+    provider = _SlowFakeProvider(delay_seconds=0.6)
+    original_resolve = worker_module.resolve_embedding_provider
+    original_lease = worker_module.LEASE_SECONDS
+    worker_module.resolve_embedding_provider = lambda *a, **k: provider  # type: ignore[assignment]
+    # A lease this short against a 0.6s-per-item provider is what puts
+    # rows still waiting their turn on an already-expired lease --
+    # matches the review's own numbers (per-item time exceeding
+    # lease_seconds / batch_size).
+    worker_module.LEASE_SECONDS = 1.0
+
+    stop_event = asyncio.Event()
+    loop_task = asyncio.create_task(
+        _run_worker(
+            queue_manager, "w1", stop_event, embedding_repo, message_repo,
+            cred_repo=None, settings_service=_FakeSettings(), circuit=circuit,  # type: ignore[arg-type]
+        )
+    )
+    try:
+        deadline = asyncio.get_event_loop().time() + 6.0
+        while asyncio.get_event_loop().time() < deadline:
+            # The reconciliation timer's own query (queue/manager.py's
+            # _reclaim_all), run here directly rather than through a real
+            # timer so the test controls its cadence precisely.
+            await work_queue.reclaim_expired()
+            async with migrated_db.session() as session:
+                remaining = (
+                    await session.execute(
+                        text(
+                            "SELECT count(*) FROM message_embeddings "
+                            "WHERE account_id = :a AND model = :m AND status != 'done'"
+                        ),
+                        {"a": account_id, "m": model},
+                    )
+                ).scalar_one()
+            if remaining == 0:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("not every embedding reached 'done' within the deadline")
+    finally:
+        stop_event.set()
+        await asyncio.wait_for(loop_task, timeout=5.0)
+        worker_module.resolve_embedding_provider = original_resolve
+        worker_module.LEASE_SECONDS = original_lease
+
+    # Every message embedded exactly once -- a reclaimed-and-re-run row
+    # would call the provider a second time. (All three share the same
+    # text, so this counts calls rather than distinct payloads.)
+    assert len(provider.calls) == 3
+
+    async with migrated_db.session() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT status, attempts FROM message_embeddings "
+                    "WHERE account_id = :a AND model = :m"
+                ),
+                {"a": account_id, "m": model},
+            )
+        ).all()
+    assert len(rows) == 3
+    for row in rows:
+        assert row.status == "done"
+        # A row reclaimed mid-flight and re-claimed by the same worker is
+        # claimed (and billed) twice, but only ever charged one attempt at
+        # a time -- attempts == 1 is what a clean, single pass leaves
+        # behind; a duplicated run also leaves this at 1 despite having
+        # embedded the message twice, which is exactly why the call count
+        # above, not this, is the assertion that actually catches it.
+        assert row.attempts == 1

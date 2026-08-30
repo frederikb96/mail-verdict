@@ -622,7 +622,6 @@ export interface QueueResponse {
   name: string;
   state: "running" | "paused" | string;
   concurrency: QueueConcurrency;
-  batch_size: number;
   depth: Record<string, number>;
   circuit: CircuitStatusResponse;
 }
@@ -630,5 +629,4 @@ export interface QueueResponse {
 export interface QueuePatchRequest {
   state?: "running" | "paused";
   concurrency?: number;
-  batch_size?: number;
 }

@@ -134,7 +134,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_notifier = WorkQueueNotifier(dsn)
     await _pipeline_notifier.start()
 
-    _queue_manager = init_queue_manager(db)
+    _queue_manager = init_queue_manager(
+        db, reserved_for_requests=config.database.reserved_for_requests,
+    )
     pipeline_runner = PipelineRunner(
         db, settings_service, cred_repo, account_prefs_repo, event_ring, _pipeline_notifier,
     )

@@ -630,6 +630,14 @@ class QueueState(Base):
     that survive a restart rather than resetting to a hardcoded default.
     Domain-agnostic on purpose -- see queue/work_queue.py's module
     docstring for why this table has no knowledge of what it queues.
+
+    No claim-batch-size column: every registered worker claims one row at
+    a time (queue/worker_loop.py's heartbeat_while only ever extends the
+    lease of the row it currently wraps, so a batch claimed under one
+    shared lease would leave every other row in it unprotected -- see
+    embeddings/worker.py's own history for what that costs in duplicated
+    provider calls). A per-queue knob controlling something no queue would
+    be able to use safely is worse than no knob.
     """
 
     __tablename__ = "queue_state"
@@ -637,7 +645,6 @@ class QueueState(Base):
     name: Mapped[str] = mapped_column(Text, primary_key=True)
     state: Mapped[str] = mapped_column(Text, nullable=False, default="running")
     concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

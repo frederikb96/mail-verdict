@@ -72,7 +72,9 @@ async def db(postgres_url: str) -> AsyncIterator[DatabaseConnection]:
     module) -- this is its own engine/pool, the same pattern tests/pg's
     restricted_db fixture uses for the same reason.
     """
-    connection = DatabaseConnection(DatabaseConfig(url=postgres_url, pool_size=2, max_overflow=0))
+    connection = DatabaseConnection(
+        DatabaseConfig(url=postgres_url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+    )
     await connection.init()
     try:
         yield connection

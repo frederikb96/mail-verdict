@@ -89,6 +89,18 @@ async def default_worker_loop(
     `heartbeat_while` -- a call that runs long is extended rather than
     reclaimed out from under the worker still processing it.
 
+    `heartbeat_while` only ever extends the lease of the one row it wraps.
+    With `batch_size` greater than one, every other row this claimed under
+    the same lease sits unrenewed while `handle_item` works through the
+    rest of the batch in order -- a row late in the batch can have its
+    lease expire, be reclaimed by the reconciliation timer without its
+    attempt refunded, and be re-claimed and re-run by this same worker
+    once it loops back around, all while the first run is (or was) still
+    in flight. Safe only when either `batch_size` is 1, or processing one
+    item is fast enough relative to `lease_seconds / batch_size` that this
+    can never happen -- see embeddings/worker.py's own history for what it
+    costs when that margin runs out.
+
     On a stop request, any row already claimed in the current batch but not
     yet handed to `handle_item` is released immediately with its attempt
     refunded, rather than left claimed until its lease expires -- this is

@@ -37,3 +37,9 @@ database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10
   max_overflow: 5
+  # Connections held back from the combined running concurrency of every
+  # queue (queue/manager.py) so an HTTP handler sharing this pool always
+  # finds one free. A queue's own concurrency ceiling is
+  # (pool_size + max_overflow - reserved_for_requests) minus whatever
+  # every other running queue has already claimed.
+  reserved_for_requests: 3

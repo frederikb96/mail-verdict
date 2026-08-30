@@ -101,10 +101,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is being read. The read is now chunked and aborts as soon as the running total crosses the
   limit, which is what actually bounds memory for an oversized upload
 
+- **A slow embedding call could get billed twice and push a good message toward `failed`.** The
+  embedding queue claimed several messages at once under one shared lease, then processed them one
+  at a time; a message waiting its turn could have its lease expire and be reclaimed by the same
+  worker still busy with an earlier one, sending it back through the paid provider a second time
+  and, if this repeated, toward a failure state with no error ever recorded — after which it was
+  classified with no neighbour hints and nothing reported the degradation. The queue now claims one
+  message at a time, the same way the pipeline queue already did.
+- **Two background queues could each be configured within the database's own connection limit and
+  still starve the web UI and API of every connection.** Each queue's concurrency was validated
+  only against the pool's total capacity, never against what the other queue — or the HTTP requests
+  sharing the same pool — already needed. Concurrency is now validated against every registered
+  queue's combined demand, with a share of the pool reserved for requests
+  (`database.reserved_for_requests` in `config/config.yaml`), and the ceiling reported by
+  `GET /api/queues` reflects what is actually available to raise a queue to right now. Also applied
+  on every startup, so a combination stored before this validation existed is clamped rather than
+  applied as-is.
 - **`setup_logging` cleared every handler on the root logger, including ones it did not install.**
   In a test session that takes pytest's own log capture with it, permanently, for every test that
   runs after the first one to boot the application — so an assertion on a log line silently stops
   asserting anything. It now replaces only the handler it installed itself.
+
+### Removed
+
+- **The embedding queue's per-request claim-batch-size control (`batch_size` on `GET`/`PATCH
+  /api/queues`) is gone.** It never controlled the embedding queue's own claim size and had no
+  effect on the pipeline queue at all — changing it did nothing observable. Every queue now always
+  claims one row at a time, which is also what makes the fix above safe.
 
 
 ## [2.0.0] - 2026-08-30

@@ -20,7 +20,6 @@ def _summary(**overrides: object) -> QueueSummary:
         "concurrency_target": 4,
         "concurrency_actual": 4,
         "max_allowed_concurrency": 15,
-        "batch_size": 10,
         "depth": {"pending": 3, "claimed": 1, "done": 100},
         "circuit": CircuitStatus(
             name="pipeline", state=CircuitState.CLOSED, reason=None, since=None, retry_after=None,
@@ -76,7 +75,7 @@ class TestPatchQueue:
         assert resp.status_code == 200
         assert resp.json()["state"] == "paused"
         manager.set_state.assert_awaited_once_with(
-            "pipeline", state="paused", concurrency=None, batch_size=None,
+            "pipeline", state="paused", concurrency=None,
         )
 
     def test_concurrency_over_pool_capacity_is_400(self, client: TestClient) -> None:

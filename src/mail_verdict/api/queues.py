@@ -3,8 +3,8 @@ Queue lifecycle API.
 
 GET   /api/queues            -- summary of every registered queue
 GET   /api/queues/{name}     -- one queue's summary
-PATCH /api/queues/{name}     -- change state/concurrency/batch_size, or
-                                 force its circuit breaker closed, live
+PATCH /api/queues/{name}     -- change state/concurrency, or force its
+                                 circuit breaker closed, live
 
 A queue is registered by whichever module owns the table it claims from
 (an embedding worker, a pipeline runner); a name nothing registered is a
@@ -40,7 +40,6 @@ def _to_response(summary: QueueSummary) -> QueueResponse:
             actual=summary.concurrency_actual,
             max_allowed=summary.max_allowed_concurrency,
         ),
-        batch_size=summary.batch_size,
         depth=summary.depth,
         circuit=CircuitStatusResponse(
             state=summary.circuit.state.value,
@@ -72,22 +71,20 @@ async def get_queue(name: str) -> QueueResponse:
 @router.patch("/{name}", response_model=QueueResponse)
 async def patch_queue(name: str, request: QueuePatchRequest) -> QueueResponse:
     """
-    Change a queue's state, concurrency or batch size, or force its
-    circuit breaker closed.
+    Change a queue's state or concurrency, or force its circuit breaker
+    closed.
 
-    Concurrency is rejected with 400 if it exceeds the database pool's
-    capacity -- a setting that cannot work should fail here, not silently
-    degrade into serialized workers discovered much later.
+    Concurrency is rejected with 400 if it -- combined with every other
+    running queue's own -- would exceed what the database pool can
+    actually support: a setting that cannot work should fail here, not
+    silently degrade into starved HTTP handlers discovered much later.
     """
     manager = get_queue_manager()
     try:
         if request.reset_circuit:
             await manager.reset_circuit(name)
         summary = await manager.set_state(
-            name,
-            state=request.state,
-            concurrency=request.concurrency,
-            batch_size=request.batch_size,
+            name, state=request.state, concurrency=request.concurrency,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"No queue named {name!r}") from None
