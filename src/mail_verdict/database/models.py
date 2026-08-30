@@ -125,13 +125,19 @@ class Account(Base):
     smtp_user: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_password: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    # PostIMAP owns the lifecycle state; see the note on Outbox.status for why
-    # a Python-side default here would be sent on INSERT and accepted.
+    # PostIMAP owns the lifecycle state, its error and the negotiated
+    # capabilities, and grants none of them to a consumer. See the note on
+    # Outbox.status: a nullable column with no default of any kind is still
+    # named in an ORM insert, so every one of them needs FetchedValue().
     state: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=FetchedValue(),
     )
-    state_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    capabilities: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    state_error: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    capabilities: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True, server_default=FetchedValue(),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )

@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Adding an account was impossible on the deployment the chart documents.** `accounts.state_error`
+  and `accounts.capabilities` are PostIMAP's to write and carry no grant for a consumer, but neither
+  was marked server-managed — and a nullable column with no default of any kind is still named in an
+  ORM insert. So `POST /api/accounts` emitted them, and Postgres refused the insert for any
+  connection holding `postimap_app` rather than owning the database. A development database connects
+  as an owner, which ignores grants, so this worked everywhere except where it mattered. The
+  restricted-grant sweep in `tests/pg/test_grant_boundary.py` now covers every write helper in
+  `postimap/actions.py` — nine were absent, including this one — and fails if a helper is added
+  without being added to it.
+
 - **`setup_logging` cleared every handler on the root logger, including ones it did not install.**
   In a test session that takes pytest's own log capture with it, permanently, for every test that
   runs after the first one to boot the application — so an assertion on a log line silently stops

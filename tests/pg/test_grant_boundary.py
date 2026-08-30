@@ -22,12 +22,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Folder, Message, Outbox
 from mail_verdict.postimap.actions import (
+    acknowledge_all_notifications,
+    acknowledge_notification,
+    create_account,
     create_folder,
+    delete_account,
     delete_folder,
+    expunge,
+    expunge_bulk,
     expunge_guarded,
     insert_outbox,
     move_message,
+    move_message_bulk,
     move_message_guarded,
+    move_to_trash,
     set_flags,
     set_flags_bulk,
     set_flags_guarded,
@@ -280,6 +288,27 @@ async def test_every_contract_write_survives_the_restricted_grant(
     """
     async with migrated_db.session() as session:
         account_id, folder_id, message_id = await _seed_account_folder_message(session)
+        # Separate objects for the destructive helpers, so removing one does
+        # not decide whether a later write in the sweep reaches any rows --
+        # an UPDATE matching nothing raises nothing, permission or not.
+        _, doomed_folder_id, doomed_message_id = await _seed_account_folder_message(session)
+        trash_folder_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, special_use) "
+                "VALUES (:id, :account_id, 'Trash', 'trash')"
+            ),
+            {"id": trash_folder_id, "account_id": account_id},
+        )
+        notification_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO sync_notifications (account_id, action) "
+                    "VALUES (:account_id, 'set_flags') RETURNING id"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
         await session.commit()
 
     writes: list[tuple[str, Any]] = [
@@ -306,7 +335,27 @@ async def test_every_contract_write_survives_the_restricted_grant(
         ("set_folder_idle", lambda s: set_folder_idle(s, folder_id, requested=False)),
         ("update_account", lambda s: update_account(s, account_id, is_active=True)),
         ("expunge_guarded", lambda s: expunge_guarded(s, message_id)),
+        ("create_account", lambda s: create_account(
+            s, name=f"sweep-{uuid.uuid4()}", imap_host="imap.example.com", imap_port=993,
+            imap_user="sweep@example.com", imap_password="pw", smtp_host=None,
+            smtp_port=None, smtp_user=None, smtp_password=None, is_active=False,
+        )),
+        ("move_to_trash", lambda s: move_to_trash(s, doomed_message_id, trash_folder_id)),
+        ("move_message_bulk", lambda s: move_message_bulk(
+            s, [doomed_message_id], folder_id,
+        )),
+        ("expunge", lambda s: expunge(s, doomed_message_id)),
+        ("expunge_bulk", lambda s: expunge_bulk(s, [doomed_message_id])),
+        ("acknowledge_notification", lambda s: acknowledge_notification(s, notification_id)),
+        ("acknowledge_all_notifications", lambda s: acknowledge_all_notifications(s, account_id)),
+        ("create_folder", lambda s: create_folder(
+            s, account_id=account_id, imap_name=f"Sweep-{uuid.uuid4().hex[:8]}",
+        )),
+        ("delete_folder", lambda s: delete_folder(s, doomed_folder_id)),
+        ("delete_account", lambda s: delete_account(s, account_id)),
     ]
+
+    _assert_sweep_covers_every_write_helper({name for name, _ in writes})
 
     denied: list[str] = []
     for name, write in writes:
@@ -324,4 +373,42 @@ async def test_every_contract_write_survives_the_restricted_grant(
         "these contract writes name a column the consumer role may not write, "
         "so they would fail in any deployment that is not connected as an "
         "owner:\n  " + "\n  ".join(denied)
+    )
+
+
+# Helpers in postimap/actions.py that issue no write of their own, so a grant
+# has nothing to refuse. Everything else has to appear in the sweep above.
+_NON_WRITING_HELPERS = frozenset({"format_credential", "force_reconnect"})
+
+
+def _assert_sweep_covers_every_write_helper(covered: set[str]) -> None:
+    """Fail if a helper in postimap/actions.py is absent from the sweep.
+
+    The sweep is a hand-written list, so it claims a property it cannot
+    keep on its own: a helper added afterwards is simply not in it, and
+    nothing says so. Deriving the expected set from the module means the
+    next helper is caught here rather than in a deployment.
+
+    `force_reconnect` sends a NOTIFY over its own connection rather than
+    writing a row, so it belongs to the command channel, not the write
+    surface.
+    """
+    import inspect
+
+    from mail_verdict.postimap import actions
+
+    public = {
+        name
+        for name, obj in vars(actions).items()
+        if not name.startswith("_")
+        and (inspect.iscoroutinefunction(obj) or inspect.isfunction(obj))
+        and getattr(obj, "__module__", None) == actions.__name__
+    }
+    # A label may name a variant of one helper ("insert_outbox_with_attachment").
+    exercised = covered | {label.split("_with_")[0] for label in covered}
+    missing = sorted(public - _NON_WRITING_HELPERS - exercised)
+    assert not missing, (
+        "these write helpers are not exercised under the restricted grant, so a "
+        "column the consumer role may not write would reach a deployment "
+        "unnoticed:\n  " + "\n  ".join(missing)
     )
