@@ -328,3 +328,35 @@ class TestDraftEditing:
         _wait_for_message_gone_from_folder(
             app_client, composing_account["id"], drafts_folder["id"], draft_subject,
         )
+
+    def test_a_bad_supersede_reference_is_a_client_error(
+        self, app_client: TestClient, composing_account: dict,
+    ) -> None:
+        """A supersede target that cannot resolve is answered, not raised.
+
+        The column carries a foreign key onto messages, so an unresolvable id
+        reaches the database as a constraint violation. Left uncaught that
+        surfaces as a 500, which tells a client the server is broken when its
+        own request was -- and this endpoint is validated by hand, so nothing
+        turns a malformed field into a 422 unless it is done here.
+        """
+        body = {
+            "account_id": composing_account["id"], "kind": "draft",
+            "to": ["recipient@example.com"], "subject": "probe",
+            "body_text": "probe",
+        }
+
+        malformed = app_client.post(
+            "/api/outbox", json={**body, "replaces_message_id": "not-a-uuid"},
+        )
+        assert malformed.status_code == 422, malformed.text
+
+        empty = app_client.post("/api/outbox", json={**body, "replaces_message_id": ""})
+        assert empty.status_code == 422, empty.text
+
+        absent = app_client.post(
+            "/api/outbox",
+            json={**body, "replaces_message_id": "00000000-0000-0000-0000-000000000000"},
+        )
+        assert absent.status_code == 404, absent.text
+        assert "supersede" in absent.json()["detail"]

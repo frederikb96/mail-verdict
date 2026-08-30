@@ -17,6 +17,8 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy import desc, select
 from starlette.datastructures import UploadFile
 
@@ -26,7 +28,7 @@ from mail_verdict.api.schemas import (
     OutboxResponse,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Outbox, OutboxAttachment
+from mail_verdict.database.models import Message, Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import insert_outbox
 from mail_verdict.postimap.contract import read_postimap_info, supports_draft_edit
 
@@ -43,7 +45,14 @@ _AttachmentTuple = tuple[str, str | None, bytes]
 async def _parse_request(
     request: Request,
 ) -> tuple[OutboxCreateRequest, list[_AttachmentTuple]]:
-    """Parse either a JSON body or a multipart form into (payload, attachments)."""
+    """Parse either a JSON body or a multipart form into (payload, attachments).
+
+    The body is validated here rather than through a declared parameter,
+    because the same endpoint accepts JSON and multipart. FastAPI only turns a
+    ValidationError into a 422 for bodies it binds itself, so validating by
+    hand means catching it by hand -- otherwise a malformed field reaches the
+    client as a 500, telling it the server is broken when its request was.
+    """
     content_type = request.headers.get("content-type", "")
 
     if content_type.startswith("multipart/form-data"):
@@ -51,7 +60,10 @@ async def _parse_request(
         raw_data = form.get("data")
         if not isinstance(raw_data, str):
             raise HTTPException(status_code=400, detail="Missing 'data' field in multipart body")
-        payload = OutboxCreateRequest.model_validate_json(raw_data)
+        try:
+            payload = OutboxCreateRequest.model_validate_json(raw_data)
+        except ValidationError as exc:
+            raise RequestValidationError(exc.errors()) from exc
 
         attachments: list[tuple[str, str | None, bytes]] = []
         for value in form.getlist("attachments"):
@@ -67,7 +79,10 @@ async def _parse_request(
         return payload, attachments
 
     body = await request.json()
-    return OutboxCreateRequest.model_validate(body), []
+    try:
+        return OutboxCreateRequest.model_validate(body), []
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
 
 
 @router.post("", response_model=OutboxResponse, status_code=201)
@@ -95,6 +110,30 @@ async def create_outbox(request: Request) -> OutboxResponse:
                         f"service_version >= 1.4.0; the running instance reports "
                         f"{info.service_version if info else 'unknown'}."
                     ),
+                )
+
+            # The column carries a real foreign key onto messages, so an id
+            # that resolves to nothing is a constraint violation at insert
+            # time rather than a value PostIMAP ignores. Answer it as the
+            # client error it is.
+            superseded = await session.scalar(
+                select(Message.account_id).where(
+                    Message.id == payload.replaces_message_id,
+                    Message.expunged_at.is_(None),
+                )
+            )
+            if superseded is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"No message {payload.replaces_message_id} to supersede; "
+                        "it does not exist or has already been removed."
+                    ),
+                )
+            if superseded != payload.account_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A draft can only be superseded within its own account.",
                 )
 
         outbox = await insert_outbox(
