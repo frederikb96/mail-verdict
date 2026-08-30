@@ -25,20 +25,19 @@ The web UI is exposed at:
 Reachable through this Ingress means reachable to anyone who can resolve the
 host, unless something in front of it (a ForwardAuth middleware, network
 policy, or the API key itself) gates access -- MailVerdict has no login
-page of its own. See the chart README's auth model section before exposing
+page of its own. See the chart README's access section before exposing
 this publicly.
 {{- else }}
 
 No Ingress is enabled (ingress.enabled=false). The Service is only
 reachable from inside the cluster; use port-forward above, or set
 ingress.enabled=true with a host once you have an ingress controller and
-have read the chart README's auth model section.
+have read the chart README's access section.
 {{- end }}
 
 {{- if .Values.apiIngress.enabled }}
 
-The programmatic API route (MCP clients, scripts presenting X-API-Key
-themselves) is exposed at:
+The programmatic API route (MCP clients and scripts) is exposed at:
   http{{ if .Values.apiIngress.tls.enabled }}s{{ end }}://{{ .Values.apiIngress.host }}{{ .Values.apiIngress.path }}
 {{- end }}
 
