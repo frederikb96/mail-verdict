@@ -151,8 +151,8 @@ async def update_folder_prefs(
     """
     Partially update a folder's MailVerdict preferences.
 
-    Consolidates what used to be three separate endpoints (visibility,
-    unified-name, folder-mapping) into the folder's one write surface.
+    The one write surface for a folder's preferences: visibility, display
+    name, unified name, and special-use override.
     """
     values = request.model_dump(exclude_unset=True)
     if not values:

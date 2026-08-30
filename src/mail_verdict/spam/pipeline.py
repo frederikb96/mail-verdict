@@ -12,9 +12,9 @@ Steps:
 5. Store the verdict in Postgres
 6. If spam: move to the account's junk folder (+ optionally mark read)
 
-No embeddings, no vector search -- semantic similarity as spam-classifier
-context was removed along with Qdrant; the AI verdict is now purely
-content-based.
+The verdict is purely content-based, drawn from a short excerpt of the
+message plus its envelope and auth signals -- no embeddings or vector
+search involved.
 """
 
 from __future__ import annotations

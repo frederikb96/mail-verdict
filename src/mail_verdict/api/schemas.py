@@ -356,8 +356,8 @@ class FolderResponse(BaseModel):
 class FolderPrefsUpdate(BaseModel):
     """Partial update to a folder's MailVerdict preferences.
 
-    Consolidates what used to be separate visibility, unified-name and
-    folder-mapping endpoints into the one write surface a folder has.
+    The one write surface a folder has: visibility, display name, unified
+    name, and special-use override.
     """
 
     is_visible: bool | None = None
