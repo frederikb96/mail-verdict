@@ -21,6 +21,8 @@ from mail_verdict.queue.supervisor import WorkerSupervisor
 from mail_verdict.queue.work_queue import WorkQueue
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy import Table
 
     from mail_verdict.database.connection import DatabaseConnection
@@ -62,11 +64,26 @@ class _RegisteredQueue:
     """Internal bookkeeping for one queue registered with the manager."""
 
     def __init__(
-        self, work_queue: WorkQueue, supervisor: WorkerSupervisor, circuit_name: str,
+        self,
+        work_queue: WorkQueue,
+        supervisor: WorkerSupervisor,
+        circuit_name: str | Callable[[], str],
     ) -> None:
         self.work_queue = work_queue
         self.supervisor = supervisor
-        self.circuit_name = circuit_name
+        self._circuit_name = circuit_name
+
+    @property
+    def circuit_name(self) -> str:
+        """The breaker this queue's work actually trips, resolved now.
+
+        A queue whose provider is a live setting resolves its name per
+        call, so the reported breaker follows the setting instead of
+        naming one nothing ever writes to.
+        """
+        if callable(self._circuit_name):
+            return self._circuit_name()
+        return self._circuit_name
 
 
 class QueueManager:
@@ -98,7 +115,7 @@ class QueueManager:
         table: Table,
         worker_body: WorkerBody,
         *,
-        circuit_name: str | None = None,
+        circuit_name: str | Callable[[], str] | None = None,
         reconcile_interval_seconds: float = 1.0,
     ) -> WorkQueue:
         """
@@ -108,10 +125,11 @@ class QueueManager:
             name: Unique queue name, used in the API and the NOTIFY channel
             table: Table backing this queue's work rows
             worker_body: Coroutine run per worker task
-            circuit_name: Circuit breaker name to report for this queue;
-                defaults to the queue's own name, so two queues that should
-                share a provider's breaker must pass the same name
-                explicitly
+            circuit_name: Circuit breaker name to report for this queue,
+                or a callable resolving it when the queue's provider is a
+                live setting. Defaults to the queue's own name, so two
+                queues that should share a provider's breaker must pass
+                the same name explicitly
             reconcile_interval_seconds: Supervisor's periodic safety-net tick
 
         Returns:

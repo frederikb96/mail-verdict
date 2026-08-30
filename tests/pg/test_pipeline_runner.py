@@ -20,7 +20,7 @@ other definitions to this same table.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
@@ -29,7 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.repository import AccountPrefsRepository, VerdictRepository
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository, build_migrated_definition
-from mail_verdict.pipeline.runner import PipelineRunner
+from mail_verdict.pipeline.runner import QUEUE_NAME, PipelineRunner
+from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
+from mail_verdict.queue.manager import QueueManager
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
 
@@ -268,3 +270,24 @@ async def test_expunged_message_is_skipped_not_classified(migrated_db: DatabaseC
         ).one()
     assert run_row.status == "skipped"
     assert run_row.skip_reason == "message gone"
+
+
+@pytest.mark.asyncio
+async def test_the_queue_reports_the_breaker_a_classify_call_actually_trips(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """ModelGateway names its breaker for the provider, so the queue's
+    reported circuit has to follow `ai.provider` rather than the queue's
+    own name -- otherwise the readout shows a breaker nothing writes to
+    while the real one goes unseen."""
+    runner = await _make_runner(migrated_db)
+    manager = QueueManager(migrated_db)
+    runner.register(manager)
+
+    await CircuitBreaker(migrated_db, "anthropic").record_unavailable(
+        reason="no key configured", probe_interval=timedelta(minutes=5),
+    )
+
+    assert (await manager.summary(QUEUE_NAME)).circuit.state == CircuitState.CLOSED
+    await runner._settings.update("ai", {"provider": "anthropic"})
+    assert (await manager.summary(QUEUE_NAME)).circuit.state == CircuitState.SUSPENDED

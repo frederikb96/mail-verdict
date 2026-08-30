@@ -120,7 +120,18 @@ class PipelineRunner:
 
     def register(self, manager: QueueManager) -> WorkQueue:
         """Register the `pipeline` queue with the shared QueueManager."""
-        return manager.register(QUEUE_NAME, self._table, self._worker_body)
+        return manager.register(
+            QUEUE_NAME, self._table, self._worker_body, circuit_name=self._circuit_name,
+        )
+
+    def _circuit_name(self) -> str:
+        """The breaker a classify stage's calls actually trip.
+
+        `ModelGateway` names its breaker for the provider, which is the
+        live `ai.provider` setting rather than the queue -- so this is
+        resolved per call, not captured at registration.
+        """
+        return str(self._settings.get("ai")["provider"]).lower()
 
     async def dry_run(
         self, *, account_id: uuid.UUID, message_id: uuid.UUID,

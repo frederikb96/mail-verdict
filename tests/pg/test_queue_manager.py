@@ -166,6 +166,32 @@ class TestResetCircuit:
         ).state == CircuitState.SUSPENDED
 
     @pytest.mark.asyncio
+    async def test_a_resolved_circuit_name_follows_the_live_setting(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """A queue whose provider is a runtime setting registers a resolver,
+        not a fixed name -- so switching the provider moves the reported
+        breaker with it instead of leaving the readout pointing at one
+        nothing writes to."""
+        name = f"queue-{uuid.uuid4().hex[:8]}"
+        circuit_a = f"provider-{uuid.uuid4().hex[:8]}"
+        circuit_b = f"provider-{uuid.uuid4().hex[:8]}"
+        selected = circuit_a
+        manager = QueueManager(migrated_db)
+        manager.register(
+            name, throwaway_queue_table,
+            _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table)),
+            circuit_name=lambda: selected,
+        )
+        await CircuitBreaker(migrated_db, circuit_b).record_unavailable(
+            reason="no key configured", probe_interval=timedelta(minutes=5),
+        )
+
+        assert (await manager.summary(name)).circuit.state == CircuitState.CLOSED
+        selected = circuit_b
+        assert (await manager.summary(name)).circuit.state == CircuitState.SUSPENDED
+
+    @pytest.mark.asyncio
     async def test_of_an_unknown_name_raises(self, migrated_db: DatabaseConnection) -> None:
         manager = QueueManager(migrated_db)
         with pytest.raises(KeyError):

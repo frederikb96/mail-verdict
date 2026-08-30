@@ -348,6 +348,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   row and letting its real provider call be the probe. `PATCH /api/queues/{name}` also accepts a
   `reset_circuit` flag for the operator's immediate manual recovery, rather than waiting out the
   probe interval.
+- **The pipeline queue's circuit-breaker readout named a breaker nothing writes to.** The
+  registration left `circuit_name` at the queue's own name, `"pipeline"`, while a classify stage's
+  model calls trip a breaker named for the provider — and that name is the live `ai.provider`
+  setting, so it cannot be captured once at registration either. A queue now registers either a
+  fixed name or a resolver, and the pipeline registers one that follows the setting, so the
+  reported circuit is the one a stalled queue is actually stalled behind.
 - **The embedding queue's circuit-breaker readout was decorative.** Registering the queue left
   `circuit_name` at its default (the queue's own name, `"embeddings"`), while the worker's own
   `CircuitBreaker` writes to a breaker named for the provider (`"openai"`) — so the observability
