@@ -9,38 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Breaking Changes
 
-- **PostIMAP integration:** Entire IMAP sync layer (~4,700 LOC) replaced with PostIMAP microservice — MailVerdict is now a pure PostgreSQL application
+- **PostIMAP integration:** Entire IMAP sync layer (~4,700 LOC) replaced with the PostIMAP microservice — MailVerdict is now a pure PostgreSQL application, targeting PostIMAP's versioned contract (`contract_version` 1, service `1.0.0`)
 - **`Mail` → `Message`:** Model renamed, table `mails` → `messages`
-- **`uid` → `imap_uid`:** IMAP UID field renamed across entire stack
+- **`uid` → `imap_uid`:** IMAP UID field renamed across entire stack; now nullable, `NULL` meaning an optimistic move is pending (surfaced in the API as `pending_sync`)
 - **`is_read` → `is_seen`:** Read state field renamed across entire stack
 - **DB-centric architecture:** API layer is now pure DB reads/writes — zero IMAP imports
-- **`is_deleted` → `deleted_at`:** Boolean soft-delete replaced with nullable timestamp (retention-ready)
-- **Fresh Alembic migration:** All migration history removed, single v2 initial schema
-- **Folder counts:** Now maintained by Postgres triggers (not computed at query time)
+- **`is_deleted` → `expunged_at`:** Message soft-delete moved from a boolean to a nullable timestamp, matching PostIMAP's own column rename
+- **Fresh Alembic migration:** All migration history squashed to a single v1 baseline against an empty database (no upgrade path from pre-contract schemas — PostIMAP re-syncs from IMAP)
+- **Folder counts:** Maintained by PostIMAP's own triggers
+- **Semantic search removed:** Qdrant, OpenAI embeddings, and the `mode=semantic` search/MCP option are gone; full-text search (`websearch_to_tsquery('simple', ...)`) covers v1
+- **LLM provider switched to Anthropic:** `openai` and `qdrant-client` dependencies dropped, `anthropic` added; default model `claude-haiku-4-5`, configurable via the `ai` settings category
+- **Credential handling:** MailVerdict no longer encrypts anything — it always writes the contract's plaintext format (`0x00` prefix byte); PostIMAP encrypts credentials itself when its own key is configured. `MAIL_VERDICT_ENCRYPTION_KEY` and the `core/encryption.py` module are gone
+- **Owned tables carry no foreign keys onto PostIMAP tables:** the consumer database role has no `REFERENCES` grant, and verdict history must outlive PostIMAP's retention purge of expunged messages
+- **Config loader rewritten:** pydantic-validated, `${VAR}` placeholder resolution, arbitrary-depth `MAIL_VERDICT_<SECTION>_<KEY>` env overrides, fail-fast on missing required values (no more silently defaulted `cors_origins`)
 
 ### Added
 
-- **PostIMAP container:** All 3 compose files now include PostIMAP service (v0.2.0 with AES-256-GCM credential encryption)
-- **`pg_listener.py`:** PG LISTEN/NOTIFY event dispatcher — replaces in-process SyncManager events for real-time SSE
-- **`AccountPrefs` model:** Account preferences split to dedicated `account_prefs` table
-- **`FolderPrefs` model:** Folder preferences split to dedicated `folder_prefs` table
-- **search_vector trigger:** Postgres auto-populates tsvector from subject + body_text
-- **Test CLI:** `python -m tests.helpers.testenv [reset-seed|seed|inspect|wait|reset]`
-- **Compose split:** Production (`compose.yaml`), development (`compose.dev.yaml`), test (`compose.test.yaml`) with isolated ports and `--env-file` secret injection
-- **Config override directory:** `config-custom/` for sparse YAML overrides (gitignored)
+- **`postimap/` package:** the only module that knows the PostIMAP contract — `contract.py` (version handshake), `listener.py` (LISTEN `postimap_events`, typed event parsing, reconnect/keepalive), `commands.py` (`postimap_commands` sync requests), `actions.py` (every contract write in one place)
+- **Threading:** `messages.thread_id` is now mirrored and indexed, ready for conversation grouping
+- **`is_truncated` surfaced:** oversized messages (over `storage.max_message_bytes`) are now distinguishable in the API
+- **Verdict durability gate:** partial unique index on `(account_id, message_id_hdr) WHERE source = 'ai'` — an AI verdict is never reissued for the same message header, surviving both retention purge and a UIDVALIDITY resync
+- **`FakeSpamAnalyst`:** deterministic, keyword-driven `SpamAnalyst` implementation for tests and API-key-free local development
+- **`tests/setup/`:** testcontainers-based test infrastructure — container runtime bootstrap (rootless podman or a standard Docker/DinD socket, fails loudly with the fix command otherwise), pinned image tags, session-scoped Postgres + PostIMAP fixtures
+- **`tests/pg/`:** integration tests against a real Postgres + PostIMAP — Alembic migrating cleanly next to PostIMAP's own schema, the contract-version gate (pass and mismatch), and `postimap/actions.py`'s SQL round-tripping (move, expunge, flags, the verdict durability gate)
+- **CI:** `lint`, `unit`, and `pg` jobs, with a `pg` job running the new testcontainers suite
 
 ### Changed
 
-- All mail actions are now direct SQL `UPDATE` statements — PostIMAP PG triggers propagate changes to IMAP automatically
-- PG LISTEN/NOTIFY replaces SyncManager event queue for real-time SSE delivery
-- API mail actions (move, delete, flag) write directly to DB (instant response, no sync_queue)
-- Spam/rules engine actions now pure DB writes
-- Test infrastructure: constants centralized in `tests/helpers/testenv.py` (DRY)
-- Seed emails consolidated in `tests/helpers/seed.py` (single source of truth)
+- All mail actions are direct SQL `UPDATE`s through `postimap/actions.py` — PostIMAP's own triggers propagate them to IMAP
+- `postimap/listener.py` replaces the old custom `mv_message_notify` trigger — MailVerdict never installs DDL on a table it doesn't own
+- Folder-changing actions (`api/mails.py`, `rules/executor.py`, `api/mcp_tools.py`) use the contract's `folder_id + imap_uid = NULL` move instead of a random negative `imap_uid` sentinel
+- `verdicts` gained `account_id` and `message_id_hdr`; `create_verdict` now takes `account_id` and drops the removed `neighbor_ids` field
+- Search config switched from `'english'` to `'simple'` to match `search_vector`'s own tsvector config
+- `account_prefs.folder_mapping` dropped — `folders.special_use`, overridable per-folder via `folder_prefs.special_use_override`, is now the single source of truth
+- `folder_prefs.subscribed` dropped (unused concept)
 
 ### Fixed
 
-- INBOX appears empty on first visit after fresh start (race condition in auto-select)
+- Account deletion (`DELETE /api/accounts/:id`) is a real, working `DELETE FROM accounts` — PostIMAP 1.0.1 added the grant, so no interim "disable instead" workaround was needed
+- SQLAlchemy's default `Enum` column type persists a Python enum member's `.name`, not its `.value` — a raw-SQL predicate written against the value (like the verdict durability index's `source = 'ai'`) silently never matched. All three enum columns (`VerdictSource`, `TagSource`, `ImageExceptionType`) now explicitly persist `.value`
+- Alembic's `env.py` called `asyncio.run()` internally, which fails when migrations are triggered from code already inside a running event loop (the pg-layer test fixtures); the pg-layer harness now offloads the migration call to a worker thread
+- `postimap_info`'s actual primary key is `singleton` (a `BOOLEAN CHECK`), not `id` — the mapped model was wrong
 
 ### Removed
 
@@ -53,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - IDLE watchers (`sync/idle.py`), sync trackers (`sync/tracker.py`)
 - OutboundProcessor (`sync/outbound.py`), ActionPropagator (`sync/actions.py`)
 - `jobs.py` API endpoint (job state managed by PostIMAP)
+- `semantic/` package, Qdrant service (compose + config), `core/openai_provider.py`
+- `core/encryption.py`, `core/jsonb.py` (PostIMAP's jsonb columns are native jsonb now, no double-encoding to work around)
+- `database/pg_listener.py` (replaced by `postimap/listener.py`)
+- `api/selection.py` and its schemas (server-side per-account selection state; client-held selection + a bulk-action endpoint replaces it), `api/jmap.py` (placeholder)
+- `devenv/` CLI, `docker/stalwart-*.toml`, `compose.test.yaml`, the Stalwart-based `tests/e2e/` suite and its container manager — replaced by the testcontainers-based `tests/setup/` and `tests/pg/`
+- Committed E2E screenshots and result artifacts
 
 ## [1.0.0] - 2026-03-22
 
