@@ -9,7 +9,7 @@ Two entry points, both writing a user_feedback verdict row:
   recorded whatever the current verdict already says.
 - `handle_folder_move_to_junk` / `handle_folder_move_out_of_junk` --
   called only from the folder-move listener (spam/processor.py), gated on
-  whether the move contradicts the current verdict. The discriminator is
+  whether the move contradicts an *existing* verdict. The discriminator is
   deliberately not "who wrote the row": both the pipeline's own move-spam
   stage and a user dragging a message are the same application, and
   `origin` cannot tell them apart (it distinguishes PostIMAP from
@@ -18,6 +18,13 @@ Two entry points, both writing a user_feedback verdict row:
   classifier can never do to what it just wrote in the same run: by the
   time a move-spam effect's own move commits, its RecordVerdict effect
   already has, so the verdict this check reads back already agrees.
+  A move with no verdict to contradict never records feedback, even
+  though that also gives up capturing a genuine human drag of never-
+  classified mail: any other match stage with a move-to-junk effect --
+  "block this sender" is the obvious one -- can produce that same
+  no-verdict move with nothing human about it, and there is no signal
+  here that tells the two apart, so treating the absent case as
+  "must be human" is a guess this module has no way to stand behind.
   Moving spam to trash is excluded on purpose: deleting a message already
   agreed to be spam is the ordinary outcome of a junk folder, not a
   correction.
@@ -75,10 +82,13 @@ class SpamFeedbackHandler:
     async def handle_folder_move_to_junk(self, mail_id: uuid.UUID, account_id: uuid.UUID) -> bool:
         """
         A message landed in the junk folder. Records a correction only if
-        the current verdict does not already say spam -- an ordinary move
-        into junk with nothing to correct, and the pipeline's own
-        move-spam effect having just written that same verdict, both look
-        identical here and both correctly produce no feedback row.
+        an existing verdict says not-spam. No verdict at all -- whether
+        because nothing has classified this message yet, or because
+        another stage's own move-to-junk effect just fired with no
+        RecordVerdict of its own -- produces no feedback row either, since
+        there is nothing here to disagree with. The pipeline's own
+        move-spam effect having just written a spam verdict is the same
+        "already agrees" case as a verdict a person set earlier.
 
         Args:
             mail_id: Mail UUID
@@ -88,7 +98,7 @@ class SpamFeedbackHandler:
             True if a correction was recorded
         """
         current = await self._verdict_repo.get_current_verdict(mail_id)
-        if current is not None and current.is_spam:
+        if current is None or current.is_spam:
             return False
         return await self._record_feedback(mail_id, account_id, is_spam=True)
 
@@ -96,10 +106,12 @@ class SpamFeedbackHandler:
         self, mail_id: uuid.UUID, account_id: uuid.UUID, *, destination_special_use: str | None,
     ) -> bool:
         """
-        A message left the junk folder. Records a correction only if the
-        current verdict says spam and the destination is not trash --
+        A message left the junk folder. Records a correction only if an
+        existing verdict says spam and the destination is not trash --
         deleting mail already agreed to be spam is the commonest thing
         anyone does in a junk folder, not a sign the classifier was wrong.
+        No verdict at all produces no feedback row, for the same reason
+        as handle_folder_move_to_junk.
 
         Args:
             mail_id: Mail UUID
@@ -113,7 +125,7 @@ class SpamFeedbackHandler:
         if destination_special_use == "trash":
             return False
         current = await self._verdict_repo.get_current_verdict(mail_id)
-        if current is not None and not current.is_spam:
+        if current is None or not current.is_spam:
             return False
         return await self._record_feedback(mail_id, account_id, is_spam=False)
 

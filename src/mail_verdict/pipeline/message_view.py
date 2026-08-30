@@ -19,10 +19,10 @@ from datetime import datetime
 from email.utils import parseaddr
 
 import nh3
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.database.models import Attachment, Folder, MailTag, Message
+from mail_verdict.database.models import Attachment, Folder, FolderPrefs, MailTag, Message
 
 # How much of the body a stage ever sees. Long enough for a model to judge
 # tone and intent, short enough that a 20MB message costs nothing to load.
@@ -213,10 +213,22 @@ async def load_message_view(session: AsyncSession, message_id: uuid.UUID) -> Mes
     if row is None or row.expunged_at is not None:
         return None
 
+    # folder_prefs.special_use_override exists for servers that don't
+    # advertise SPECIAL-USE. Reading Folder.special_use raw here would
+    # disagree with the enqueue-time gate (pipeline/enqueue.py), which
+    # coalesces the override in -- a message the gate let through as
+    # in-scope would then look out-of-scope to the runner's own re-check.
     folder_result = await session.execute(
-        select(Folder.id, Folder.imap_name, Folder.special_use, Folder.deleted_at).where(
-            Folder.id == row.folder_id
+        select(
+            Folder.id,
+            Folder.imap_name,
+            func.coalesce(FolderPrefs.special_use_override, Folder.special_use).label(
+                "special_use"
+            ),
+            Folder.deleted_at,
         )
+        .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+        .where(Folder.id == row.folder_id)
     )
     folder_row = folder_result.one_or_none()
     if folder_row is None or folder_row.deleted_at is not None:

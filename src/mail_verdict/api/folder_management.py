@@ -316,12 +316,22 @@ async def delete_folder(folder_id: uuid.UUID) -> None:
         await _require_folder_crud_support(session)
 
         folder_result = await session.execute(
-            select(Folder).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
+            select(Folder, FolderPrefs.special_use_override)
+            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+            .where(Folder.id == folder_id, Folder.deleted_at.is_(None))
         )
-        folder = folder_result.scalar_one_or_none()
-        if folder is None:
+        row = folder_result.one_or_none()
+        if row is None:
             raise HTTPException(status_code=404, detail="Folder not found")
-        if (folder.special_use or "").lower() == "inbox":
+        folder, special_use_override = row
+        # IMAP's INBOX is case-insensitive and mandatory on every server
+        # regardless of whether SPECIAL-USE is advertised, so imap_name is
+        # checked unconditionally rather than only when special_use happens
+        # to be set. The override is checked too: a user who has told
+        # MailVerdict "this folder is my inbox" on a server that never
+        # advertised it gets the same protection as one where the server did.
+        effective_special_use = (special_use_override or folder.special_use or "").lower()
+        if effective_special_use == "inbox" or folder.imap_name.upper() == "INBOX":
             raise HTTPException(status_code=400, detail="INBOX cannot be deleted")
 
         await postimap_delete_folder(session, folder_id)
