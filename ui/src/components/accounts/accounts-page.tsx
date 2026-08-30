@@ -98,10 +98,19 @@ function AccountCard({
   const triggerSync = useTriggerSync();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const badgeInfo = STATE_BADGES[account.state] ?? {
-    variant: "outline" as const,
-    label: account.state,
-  };
+  // PostIMAP retries a failed account unboundedly with exponential backoff, so
+  // "error" means "having a bad time", not "dead". An account that has completed
+  // a full sync before is being retried and recovers on its own; one that never
+  // has is misconfigured and needs the user. last_full_sync separates the two.
+  const hasSyncedBefore = syncStatus?.last_full_sync != null;
+  const isRetrying = account.state === "error" && hasSyncedBefore;
+
+  const badgeInfo = isRetrying
+    ? { variant: "outline" as const, label: "Retrying" }
+    : (STATE_BADGES[account.state] ?? {
+        variant: "outline" as const,
+        label: account.state,
+      });
 
   return (
     <Card>
@@ -220,9 +229,17 @@ function AccountCard({
         </div>
 
         {account.state === "error" && account.state_error && (
-          <div className="flex items-center gap-1 text-sm text-destructive">
+          <div
+            className={
+              isRetrying
+                ? "flex items-center gap-1 text-sm text-muted-foreground"
+                : "flex items-center gap-1 text-sm text-destructive"
+            }
+          >
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-            {account.state_error}
+            {isRetrying
+              ? `Reconnecting after: ${account.state_error}`
+              : account.state_error}
           </div>
         )}
 

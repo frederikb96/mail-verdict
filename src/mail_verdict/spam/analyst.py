@@ -88,7 +88,7 @@ def _build_user_prompt(context: AnalysisContext) -> str:
     Build the user prompt from analysis context via Jinja2 template.
 
     Args:
-        context: Full analysis context with mail + neighbors
+        context: Full analysis context for the message
     """
     context_json = json.dumps(context.to_dict(), indent=2, ensure_ascii=False)
     if len(context_json) > MAX_CONTENT_LENGTH:
@@ -130,7 +130,7 @@ class SpamAnalyst(ABC):
         Analyze an email for spam.
 
         Args:
-            context: Mail content and neighbor context
+            context: Message envelope, excerpt and auth signals
 
         Returns:
             SpamVerdict with binary classification
