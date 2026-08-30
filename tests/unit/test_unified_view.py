@@ -78,6 +78,7 @@ class TestUnifiedViewSchemas:
             account_id=uuid.uuid4(),
             account_emoji="📮",
             folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(),
             subject="Test",
             from_addr="user@example.com",
             received_at=datetime.now(timezone.utc),
@@ -94,6 +95,7 @@ class TestUnifiedViewSchemas:
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(),
         )
         assert msg.account_emoji is None
 
@@ -119,16 +121,6 @@ class TestUnifiedViewSchemas:
         # Null emoji (clear)
         clear = EmojiUpdate(emoji=None)
         assert clear.emoji is None
-
-    def test_unified_name_update_schema(self) -> None:
-        """UnifiedNameUpdate accepts strings and null."""
-        from mail_verdict.api.schemas import UnifiedNameUpdate
-
-        update = UnifiedNameUpdate(unified_name="Inbox")
-        assert update.unified_name == "Inbox"
-
-        clear = UnifiedNameUpdate(unified_name=None)
-        assert clear.unified_name is None
 
     def test_folder_order_schemas(self) -> None:
         """UnifiedFolderOrderResponse and Update work correctly."""
@@ -218,9 +210,12 @@ class TestUnifiedRouterRegistration:
         assert any("folder-order" in r for r in routes)
 
     def test_account_router_endpoints(self) -> None:
-        """Account-scoped unified router has emoji and unified-name endpoints."""
+        """Account-scoped unified router has the emoji endpoint.
+
+        A folder's unified_name is set via folder_management.folder_prefs_router
+        instead -- one write surface for every folder preference.
+        """
         from mail_verdict.api.unified import account_router
 
         routes = [r.path for r in account_router.routes]  # type: ignore[union-attr]
         assert any("emoji" in r for r in routes)
-        assert any("unified-name" in r for r in routes)

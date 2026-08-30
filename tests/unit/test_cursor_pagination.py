@@ -70,6 +70,7 @@ class TestMessageSummarySchema:
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(),
         )
         assert summary.subject is None
         assert summary.is_seen is False
@@ -83,13 +84,13 @@ class TestMessageSummarySchema:
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(),
             subject="Test Subject",
             from_addr="sender@example.com",
             to_addrs=["recipient@example.com"],
             received_at=now,
             is_seen=True,
             is_flagged=True,
-            is_deleted=False,
         )
         assert summary.subject == "Test Subject"
         assert summary.is_seen is True
@@ -134,13 +135,29 @@ class TestMessageDetailSchema:
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
-            imap_uid=42,
+            thread_id=uuid.uuid4(),
+            pending_sync=False,
             body_html=None,
             body_text=None,
             created_at=now,
         )
-        assert detail.imap_uid == 42
+        assert detail.pending_sync is False
         assert detail.body_html is None
+
+    def test_message_detail_pending_sync_field(self) -> None:
+        """pending_sync reflects a folder move PostIMAP has not confirmed yet."""
+        from mail_verdict.api.schemas import MessageDetail
+
+        now = datetime.now(timezone.utc)
+        detail = MessageDetail(
+            id=uuid.uuid4(),
+            account_id=uuid.uuid4(),
+            folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(),
+            pending_sync=True,
+            created_at=now,
+        )
+        assert detail.pending_sync is True
 
     def test_message_detail_has_blocked_images_field(self) -> None:
         """MessageDetail includes has_blocked_images for image blocking state."""
@@ -151,7 +168,7 @@ class TestMessageDetailSchema:
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
-            imap_uid=1,
+            thread_id=uuid.uuid4(),
             created_at=now,
             has_blocked_images=True,
             images_allowed=False,
@@ -168,8 +185,34 @@ class TestMessageDetailSchema:
             id=uuid.uuid4(),
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
-            imap_uid=1,
+            thread_id=uuid.uuid4(),
             created_at=now,
             images_allowed=True,
         )
         assert detail.images_allowed is True
+
+    def test_message_detail_embeds_verdict(self) -> None:
+        """MessageDetail carries the current verdict inline, not as a separate fetch."""
+        from mail_verdict.api.schemas import MessageDetail, VerdictResponse
+
+        now = datetime.now(timezone.utc)
+        mail_id = uuid.uuid4()
+        detail = MessageDetail(
+            id=mail_id,
+            account_id=uuid.uuid4(),
+            folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(),
+            created_at=now,
+            verdict=VerdictResponse(
+                id=uuid.uuid4(), message_id=mail_id, is_spam=True,
+                source="ai", created_at=now,
+            ),
+        )
+        assert detail.verdict is not None
+        assert detail.verdict.is_spam is True
+
+        without_verdict = MessageDetail(
+            id=mail_id, account_id=uuid.uuid4(), folder_id=uuid.uuid4(),
+            thread_id=uuid.uuid4(), created_at=now,
+        )
+        assert without_verdict.verdict is None
