@@ -19,6 +19,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `postimap/actions.py` — nine were absent, including this one — and fails if a helper is added
   without being added to it.
 
+- **A message or folder change could arrive during the exact moment the live SSE stream
+  finished replaying a reconnect, and never reach the browser again.** The stream's own bookmark
+  was re-read from the live event counter right after handing events to the client rather than
+  captured from what was actually delivered, so anything appended in that narrow window got an
+  id the bookmark already considered seen — dropped permanently rather than delivered on the
+  next tick, with nothing in the UI to say a change had gone missing. The live loop separately
+  discarded a wake-up that arrived while it was mid-delivery instead of checking for it, which
+  could delay (though not lose) a change by up to the keepalive interval.
+- **`?account_id=` on the live-update stream matched nothing when the UUID was not lowercase.**
+  The stream silently fell back to sending nothing but keepalives for that connection, with no
+  error surfaced anywhere.
 - **`setup_logging` cleared every handler on the root logger, including ones it did not install.**
   In a test session that takes pytest's own log capture with it, permanently, for every test that
   runs after the first one to boot the application — so an assertion on a log line silently stops

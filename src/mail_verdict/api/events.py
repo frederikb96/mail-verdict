@@ -149,38 +149,53 @@ async def _sse_generator(
     """
     waiter = event_ring.register_waiter(account_id)
     try:
+        last_seen: int
         if last_event_id is not None:
             # Reconnect: try to replay from ring
             if event_ring.has_events_after(last_event_id, account_id):
                 missed = await event_ring.replay_from(last_event_id, account_id)
                 for event in missed:
                     yield _format_sse(event["id"], event["event_type"], event["data"])
+                # last_seen is what this client was actually handed, never a
+                # fresh read of the global counter -- anything appended to
+                # the ring while the yields above were suspended would
+                # otherwise get an id at or below a post-yield read and be
+                # skipped for good, since the next replay starts past it.
+                last_seen = missed[-1]["id"] if missed else last_event_id
             else:
                 # Gap too large to replay: whatever changed while disconnected
                 # is gone from the ring, so tell the client to invalidate
                 # everything rather than trust a cache that may be stale.
                 seq = event_ring.get_latest_seq()
                 yield f"id: {seq}\nevent: resync\ndata: {{}}\n\n"
+                last_seen = seq
         else:
             # Fresh connect: send connected event
             seq = event_ring.get_latest_seq()
             yield f"id: {seq}\nevent: connected\ndata: {{}}\n\n"
+            last_seen = seq
 
         # Stream live events
-        last_seen = event_ring.get_latest_seq()
         while True:
             if await request.is_disconnected():
                 return
 
+            # Clear before checking the ring, not after: an event that
+            # arrives between the clear and the check is still caught by
+            # replay_from below, and the wait is only entered once the ring
+            # is confirmed to have nothing new -- so a wake landing while
+            # this generator is mid-yield is never discarded outright, only
+            # ever picked up a little later than it could have been.
             waiter.clear()
-            try:
-                await asyncio.wait_for(waiter.wait(), timeout=KEEPALIVE_INTERVAL_S)
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
-                continue
-
-            # Fetch new events since last_seen
             new_events = await event_ring.replay_from(last_seen, account_id)
+            if not new_events:
+                try:
+                    await asyncio.wait_for(waiter.wait(), timeout=KEEPALIVE_INTERVAL_S)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                new_events = await event_ring.replay_from(last_seen, account_id)
+
             for event in new_events:
                 yield _format_sse(event["id"], event["event_type"], event["data"])
                 last_seen = event["id"]
@@ -211,8 +226,11 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
     raw_account_id = request.query_params.get("account_id")
     if raw_account_id:
         try:
-            uuid.UUID(raw_account_id)
-            filter_account_id = raw_account_id
+            # Canonical (lowercase, hyphenated) form -- EventRing keys its
+            # per-account rings on str(uuid.UUID), so keeping the client's
+            # raw casing here would never match, and the client would see
+            # nothing but keepalives with no error anywhere.
+            filter_account_id = str(uuid.UUID(raw_account_id))
         except ValueError:
             pass
 
