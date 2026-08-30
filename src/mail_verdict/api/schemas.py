@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # --- Tag / Attachment schemas (referenced by MessageDetail) ---
 
@@ -39,6 +39,23 @@ class AttachmentSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# --- Verdict schemas (defined before MessageDetail, which embeds one) ---
+
+
+class VerdictResponse(BaseModel):
+    """Verdict detail."""
+
+    id: uuid.UUID
+    message_id: uuid.UUID
+    is_spam: bool
+    model_used: str | None = None
+    reasoning: str | None = None
+    source: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 # --- Message schemas ---
 
 
@@ -48,7 +65,7 @@ class MessageSummary(BaseModel):
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
-    thread_id: uuid.UUID | None = None
+    thread_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
@@ -57,10 +74,17 @@ class MessageSummary(BaseModel):
     is_flagged: bool = False
     is_answered: bool = False
     is_draft: bool = False
-    is_deleted: bool = False
-    is_truncated: bool = False
-    expunged_at: datetime | None = None
     snippet: str | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
+    thread_count: int | None = Field(
+        default=None,
+        description="Number of messages in the thread, only present when threaded=true",
+    )
+    unread_in_thread: int | None = Field(
+        default=None,
+        description="Unread message count in the thread, only present when threaded=true",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -79,55 +103,61 @@ class MessageDetail(BaseModel):
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
-    thread_id: uuid.UUID | None = None
-    imap_uid: int | None = None
-    pending_sync: bool = False
-    is_truncated: bool = False
-    message_id: str | None = None
+    thread_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
-    cc_addrs: Any | None = None
-    bcc_addrs: Any | None = None
-    reply_to: str | None = None
-    in_reply_to: str | None = None
-    body_text: str | None = None
-    body_html: str | None = None
-    raw_headers: dict[str, Any] | None = None
     received_at: datetime | None = None
-    size_bytes: int | None = None
     is_seen: bool = False
     is_flagged: bool = False
     is_answered: bool = False
     is_draft: bool = False
-    is_deleted: bool = False
+    snippet: str | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
+    message_id: str | None = None
+    cc_addrs: Any | None = None
+    bcc_addrs: Any | None = None
+    reply_to: str | None = None
+    in_reply_to: str | None = None
+    references: list[str] | None = None
+    body_text: str | None = None
+    body_html: str | None = None
+    size_bytes: int | None = None
     keywords: list[str] = Field(default_factory=list)
-    expunged_at: datetime | None = None
-    created_at: datetime
     has_blocked_images: bool = False
     images_allowed: bool = False
+    created_at: datetime
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
+    verdict: VerdictResponse | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ThreadResponse(BaseModel):
+    """Every message in a conversation, across folders, ascending by date."""
+
+    messages: list[MessageDetail]
 
 
 class MessageActionRequest(BaseModel):
     """Request to perform an action on a message."""
 
     action: Literal[
-        "move", "mark_read", "mark_unread", "delete",
-        "flag", "unflag", "archive", "spam",
+        "mark_read", "mark_unread", "flag", "unflag",
+        "move", "archive", "trash", "expunge",
+        "spam", "not_spam", "keyword_add", "keyword_remove",
     ] = Field(
         description="Action type",
     )
-    target_folder: str | None = Field(
-        default=None,
-        description="Target folder IMAP name for move action",
-    )
     target_folder_id: uuid.UUID | None = Field(
         default=None,
-        description="Target folder UUID for move action (alternative to target_folder)",
+        description="Target folder UUID, required for the move action",
+    )
+    keyword: str | None = Field(
+        default=None,
+        description="Keyword value, required for keyword_add / keyword_remove",
     )
 
 
@@ -140,6 +170,52 @@ class MessageActionResponse(BaseModel):
     message: str | None = None
 
 
+# --- Bulk action schemas (client-held selection, server-side scope) ---
+
+
+class BulkActionScope(BaseModel):
+    """Server-resolved selection for 'select all matching' bulk actions."""
+
+    folder_id: uuid.UUID
+    filter: Literal["unread", "all"] | None = None
+    exclude_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class BulkActionRequest(BaseModel):
+    """Request to apply one action to many messages, by id list or by scope."""
+
+    action: Literal[
+        "move", "mark_read", "mark_unread", "flag", "unflag",
+        "archive", "trash", "expunge", "spam", "not_spam",
+    ]
+    target_folder_id: uuid.UUID | None = Field(
+        default=None,
+        description="Target folder UUID, required for the move action",
+    )
+    ids: list[uuid.UUID] | None = None
+    scope: BulkActionScope | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_of_ids_or_scope(self) -> BulkActionRequest:
+        """Reject a request naming both or neither selection mechanism."""
+        if (self.ids is None) == (self.scope is None):
+            raise ValueError("Exactly one of 'ids' or 'scope' must be provided")
+        return self
+
+    def resolved_ids_or_scope(self) -> list[uuid.UUID] | BulkActionScope:
+        """Return whichever of ids/scope was provided (validated exclusive)."""
+        return self.ids if self.ids is not None else self.scope  # type: ignore[return-value]
+
+
+class BulkActionResponse(BaseModel):
+    """Result of a bulk action."""
+
+    success: bool
+    action: str
+    affected_count: int
+    errors: list[str] = Field(default_factory=list)
+
+
 # --- Search schemas ---
 
 
@@ -150,8 +226,7 @@ class SearchResult(BaseModel):
     subject: str | None = None
     from_addr: str | None = None
     received_at: datetime | None = None
-    score: float = 0.0
-    source: str = "fulltext"
+    snippet: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -161,7 +236,6 @@ class SearchResponse(BaseModel):
 
     results: list[SearchResult]
     total: int
-    mode: str
     query: str
 
 
@@ -266,6 +340,7 @@ class FolderResponse(BaseModel):
     display_name: str | None = None
     special_use: str | None = None
     mailbox_id: str | None = None
+    initial_sync_done: bool = False
     last_synced_at: datetime | None = None
     sync_error: str | None = None
     created_at: datetime | None = None
@@ -278,21 +353,20 @@ class FolderResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FolderPrefsUpdate(BaseModel):
+    """Partial update to a folder's MailVerdict preferences.
+
+    Consolidates what used to be separate visibility, unified-name and
+    folder-mapping endpoints into the one write surface a folder has.
+    """
+
+    is_visible: bool | None = None
+    display_name: str | None = None
+    unified_name: str | None = None
+    special_use_override: str | None = None
+
+
 # --- Verdict schemas ---
-
-
-class VerdictResponse(BaseModel):
-    """Verdict detail."""
-
-    id: uuid.UUID
-    message_id: uuid.UUID
-    is_spam: bool
-    model_used: str | None = None
-    reasoning: str | None = None
-    source: str
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 class FeedbackRequest(BaseModel):
@@ -425,19 +499,6 @@ class FolderOrderUpdate(BaseModel):
     order: list[uuid.UUID]
 
 
-class FolderVisibilityUpdate(BaseModel):
-    """Request to toggle folder visibility."""
-
-    is_visible: bool
-
-
-class FolderVisibilityResponse(BaseModel):
-    """Folder visibility update response."""
-
-    folder_id: uuid.UUID
-    is_visible: bool
-
-
 # --- Unified view schemas ---
 
 
@@ -467,6 +528,7 @@ class UnifiedMessageSummary(BaseModel):
     account_id: uuid.UUID
     account_emoji: str | None = None
     folder_id: uuid.UUID
+    thread_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
@@ -475,9 +537,9 @@ class UnifiedMessageSummary(BaseModel):
     is_flagged: bool = False
     is_answered: bool = False
     is_draft: bool = False
-    is_deleted: bool = False
-    expunged_at: datetime | None = None
     snippet: str | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -500,16 +562,6 @@ class EmojiUpdate(BaseModel):
     )
 
 
-class UnifiedNameUpdate(BaseModel):
-    """Request to set/clear a folder's unified name."""
-
-    unified_name: str | None = Field(
-        default=None,
-        max_length=255,
-        description="Unified name for cross-account folder merging",
-    )
-
-
 class UnifiedFolderOrderResponse(BaseModel):
     """Unified folder display order."""
 
@@ -520,3 +572,56 @@ class UnifiedFolderOrderUpdate(BaseModel):
     """Request to save unified folder display order."""
 
     order: list[str]
+
+
+# --- Outbox schemas (send / draft) ---
+
+
+class OutboxCreateRequest(BaseModel):
+    """Request to send a message or save a draft.
+
+    Field names follow the UI's wire shape (to/cc/bcc), not the DB column
+    names (to_addrs/cc_addrs/bcc_addrs) -- the outbox insert helper maps
+    between the two.
+    """
+
+    account_id: uuid.UUID
+    kind: Literal["send", "draft"]
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+    subject: str | None = None
+    body_text: str | None = None
+    body_html: str | None = None
+    in_reply_to: str | None = None
+    references: list[str] | None = None
+
+
+class OutboxAttachmentSummary(BaseModel):
+    """Attachment metadata for an outbox row (no data)."""
+
+    id: uuid.UUID
+    filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class OutboxResponse(BaseModel):
+    """Send/draft composition status."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    kind: str
+    status: str
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+    subject: str | None = None
+    error: str | None = None
+    attachments: list[OutboxAttachmentSummary] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
