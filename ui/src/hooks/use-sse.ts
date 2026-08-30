@@ -176,7 +176,7 @@ export function useSSE(accountId?: string) {
           const data: SSEEvent = JSON.parse(e.data);
           queryClient.invalidateQueries({ queryKey: ["outbox"] });
           if (data.status) {
-            const toast = OUTBOX_TOAST[data.status];
+            const toast = OUTBOX_TOAST[data.status as OutboxStatus];
             if (toast) {
               pushToast(toast.message, toast.variant, data.status === "dead" ? 0 : 5000);
             }
@@ -189,6 +189,14 @@ export function useSSE(accountId?: string) {
         } catch {
           // Ignore
         }
+      });
+
+      // One line per finished run -- the pipeline live tail and failures
+      // table refresh from this rather than polling alone.
+      source.addEventListener("pipeline.run_finished", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["runs"] });
+        queryClient.invalidateQueries({ queryKey: ["queues"] });
       });
     }
 

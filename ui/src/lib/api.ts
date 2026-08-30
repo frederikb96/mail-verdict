@@ -25,7 +25,19 @@ import type {
   NotificationResponse,
   OutboxCreateRequest,
   OutboxResponse,
+  PipelineDocument,
+  PipelineHealthEntry,
+  PipelineRevisionSummary,
+  PipelineRunResponse,
+  PipelineTestRequest,
+  PipelineTestResponse,
+  PipelineWriteRequest,
+  QueuePatchRequest,
+  QueueResponse,
   SearchResponse,
+  StageCreateRequest,
+  StageTypeOut,
+  StageUpdateRequest,
   StatsResponse,
   SyncStatusResponse,
   ThreadResponse,
@@ -393,5 +405,111 @@ export const api = {
     dependencies: Record<string, unknown>;
   }> {
     return request("/health");
+  },
+
+  pipeline: {
+    get(): Promise<PipelineDocument> {
+      return request("/pipeline");
+    },
+    replace(data: PipelineWriteRequest): Promise<PipelineDocument> {
+      return request("/pipeline", { method: "PUT", body: JSON.stringify(data) });
+    },
+    stageTypes(): Promise<StageTypeOut[]> {
+      return request("/pipeline/stage-types");
+    },
+    createStage(data: StageCreateRequest): Promise<PipelineDocument> {
+      return request("/pipeline/stages", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    updateStage(
+      stageId: string,
+      data: StageUpdateRequest,
+    ): Promise<PipelineDocument> {
+      return request(`/pipeline/stages/${stageId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+    deleteStage(stageId: string, baseRevision?: number): Promise<PipelineDocument> {
+      return request(
+        `/pipeline/stages/${stageId}${qs({ base_revision: baseRevision })}`,
+        { method: "DELETE" },
+      );
+    },
+    reorderStages(
+      order: string[],
+      baseRevision?: number,
+    ): Promise<PipelineDocument> {
+      return request("/pipeline/stages/reorder", {
+        method: "POST",
+        body: JSON.stringify({ order, base_revision: baseRevision }),
+      });
+    },
+    revisions(): Promise<PipelineRevisionSummary[]> {
+      return request("/pipeline/revisions");
+    },
+    restoreRevision(revision: number): Promise<PipelineDocument> {
+      return request(`/pipeline/revisions/${revision}/restore`, {
+        method: "POST",
+      });
+    },
+    /** One resolution entry per stage per account it applies to. */
+    health(): Promise<PipelineHealthEntry[]> {
+      return request("/pipeline/health");
+    },
+    /** Dry-run the whole pipeline against an existing message -- nothing applied or persisted. */
+    test(data: PipelineTestRequest): Promise<PipelineTestResponse> {
+      return request("/pipeline/test", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    testStage(
+      stageId: string,
+      data: PipelineTestRequest,
+    ): Promise<Record<string, unknown>> {
+      return request(`/pipeline/stages/${stageId}/test`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+  },
+
+  queues: {
+    list(): Promise<QueueResponse[]> {
+      return request("/queues");
+    },
+    get(name: string): Promise<QueueResponse> {
+      return request(`/queues/${name}`);
+    },
+    patch(name: string, data: QueuePatchRequest): Promise<QueueResponse> {
+      return request(`/queues/${name}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+  },
+
+  runs: {
+    list(params: {
+      status?: string;
+      account_id?: string;
+      limit?: number;
+      offset?: number;
+    }): Promise<PipelineRunResponse[]> {
+      return request(`/runs${qs(params)}`);
+    },
+    get(id: string): Promise<PipelineRunResponse> {
+      return request(`/runs/${id}`);
+    },
+    retry(id: string): Promise<PipelineRunResponse> {
+      return request(`/runs/${id}/retry`, { method: "POST" });
+    },
+    /** "Why did this message get that treatment" -- every run for one message. */
+    forMail(mailId: string): Promise<PipelineRunResponse[]> {
+      return request(`/mails/${mailId}/runs`);
+    },
   },
 };

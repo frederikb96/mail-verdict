@@ -169,6 +169,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   configured one, an endpoint-group overview, and the two things about the API most likely to be
   assumed wrongly: that there is no authentication at all, and that a pipeline write behaves
   differently from every other write when it names a folder that does not exist yet.
+- **A `/pipeline` page**, so the pipeline is reachable from the browser rather than curl-only: two
+  queue cards (state, depth by status, a concurrency stepper, pause/resume, a red border and the
+  reason when a circuit is open); the stage list (order, type, enabled toggle, drag-to-reorder,
+  unresolved-folder warnings inline) with an add/edit dialog generated from `GET
+  /api/pipeline/stage-types`'s JSON Schema — a scalar property gets a real input, anything with
+  structure (a condition tree, an effect list) gets a JSON textarea, so a stage type registered
+  later needs no UI change; a failures table with per-row and retry-all; a live tail of the last
+  fifty runs; a dry-run tester for the whole pipeline or one stage; and revision history with
+  restore. Rules live here now — the settings page's Spam tab lost the toggles that only ever fed
+  the one-time migration into the pipeline's first revision, replaced with a note pointing here.
 - **Forward.** A reply-box button alongside reply/reply-all, prefilling the subject and a quoted
   body and carrying the original's attachments along — downloaded and re-attached client-side,
   no backend change needed since a forward is an ordinary `POST /api/outbox`. Deliberately sets
