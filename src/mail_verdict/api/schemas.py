@@ -399,33 +399,31 @@ class FeedbackResponse(BaseModel):
     message: str | None = None
 
 
-# --- Rule schemas ---
+# --- Pipeline run schemas ---
 
 
-class RuleResponse(BaseModel):
-    """Rule from config."""
+class PipelineRunResponse(BaseModel):
+    """One message's journey through the pipeline -- the "why did this
+    message get that treatment" surface."""
 
-    index: int
-    name: str
-    trigger: str
-    conditions: dict[str, Any] | list[Any] = Field(default_factory=dict)
-    actions: list[dict[str, Any]] = Field(default_factory=list)
-    enrichment: dict[str, Any] = Field(default_factory=dict)
-
-
-class RuleTestRequest(BaseModel):
-    """Request to test a rule against a message."""
-
-    message_id: uuid.UUID
+    id: uuid.UUID
     account_id: uuid.UUID
-
-
-class RuleTestResponse(BaseModel):
-    """Result of a rule dry-run test."""
-
-    rule_name: str
-    conditions_matched: bool
-    actions_would_run: list[dict[str, Any]]
+    msg_key: str
+    message_id: uuid.UUID | None
+    origin: str
+    apply: bool
+    status: str
+    skip_reason: str | None
+    attempts: int
+    pipeline_rev: int | None
+    halted_at_stage: str | None
+    failed_stage: str | None
+    last_error: str | None
+    trace: list[dict[str, Any]]
+    model_calls: int
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
 
 
 # --- Stats schemas ---

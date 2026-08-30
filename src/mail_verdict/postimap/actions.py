@@ -468,3 +468,127 @@ async def insert_outbox(
     await session.flush()
     await session.refresh(outbox)
     return outbox
+
+
+# --- Guarded writes, for the pipeline runner ---------------------------
+#
+# Every function below returns the rowcount its UPDATE actually touched
+# rather than assuming the caller's intent landed. A message expunged or
+# moved between a pipeline run reading the world and applying its effects
+# makes the guard predicate fail closed: zero rows, and the caller records
+# "not applied" instead of reporting an effect that silently did nothing --
+# see rules/executor.py's move_to handler for the bug this exists to
+# never reproduce.
+
+
+async def move_message_guarded(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    target_folder_id: uuid.UUID,
+    *,
+    expected_folder_id: uuid.UUID,
+) -> int:
+    """
+    Move a message, only if it is still where the run last saw it.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to move
+        target_folder_id: Destination folder
+        expected_folder_id: The folder the run believes the message is
+            currently in -- a mismatch means someone else moved it first
+
+    Returns:
+        1 if the move applied, 0 if the guard failed (message gone,
+        expunged, or already moved elsewhere)
+    """
+    result = await session.execute(
+        update(Message)
+        .where(
+            Message.id == message_id,
+            Message.expunged_at.is_(None),
+            Message.folder_id == expected_folder_id,
+        )
+        .values(folder_id=target_folder_id, imap_uid=None)
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def set_flags_guarded(session: AsyncSession, message_id: uuid.UUID, **flags: bool) -> int:
+    """
+    Set flags, only if the message has not been expunged.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to update
+        **flags: Any of is_seen, is_flagged, is_answered, is_deleted
+
+    Returns:
+        1 if applied, 0 if the message is gone
+    """
+    if not flags:
+        return 0
+    result = await session.execute(
+        update(Message)
+        .where(Message.id == message_id, Message.expunged_at.is_(None))
+        .values(**flags)
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def set_keywords_delta_guarded(
+    session: AsyncSession, message_id: uuid.UUID, *, add: list[str], remove: list[str],
+) -> int:
+    """
+    Add and/or remove keywords as a delta against whatever the array
+    currently holds, rather than a read-modify-write of the whole list --
+    a delta cannot lose a keyword PostIMAP wrote concurrently the way
+    replacing the full array can.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to update
+        add: Keywords to add (deduplicated against the result)
+        remove: Keywords to remove
+
+    Returns:
+        1 if applied, 0 if the message is gone
+    """
+    if not add and not remove:
+        return 0
+    result = await session.execute(
+        text(
+            """
+            UPDATE messages
+            SET keywords = COALESCE(
+                (
+                    SELECT array_agg(DISTINCT kw) FROM unnest(keywords || :add) AS kw
+                    WHERE NOT (kw = ANY(:remove))
+                ),
+                '{}'
+            )
+            WHERE id = :id AND expunged_at IS NULL
+            """
+        ),
+        {"id": message_id, "add": add, "remove": remove},
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def expunge_guarded(session: AsyncSession, message_id: uuid.UUID) -> int:
+    """
+    Expunge a message, only if it has not already been expunged.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to expunge
+
+    Returns:
+        1 if applied, 0 if it was already gone
+    """
+    result = await session.execute(
+        update(Message)
+        .where(Message.id == message_id, Message.expunged_at.is_(None))
+        .values(expunged_at=text("now()"))
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]

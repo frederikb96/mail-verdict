@@ -2,7 +2,14 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, spam, retry, rules, semantic.
+Categories: ai, spam, retry, pipeline, semantic.
+
+"rules" is not one of them: a rule is a `match` stage in the pipeline
+now (see pipeline/stages/match.py), and `settings.rules` -- if a pre-
+existing deployment still has one -- is read exactly once, by the
+migration that builds the first pipeline revision from it (see
+alembic/versions/0006_pipeline.py), never at runtime after that.
+
 """
 
 from __future__ import annotations
@@ -17,7 +24,7 @@ class SettingCategory(str, enum.Enum):
     AI = "ai"
     SPAM = "spam"
     RETRY = "retry"
-    RULES = "rules"
+    PIPELINE = "pipeline"
     SEMANTIC = "semantic"
 
 
@@ -49,8 +56,24 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_delay_seconds": 20.0,
         "exponential_base": 2.0,
     },
-    SettingCategory.RULES: {
-        "rules": [],
+    SettingCategory.PIPELINE: {
+        "enabled": True,
+        # Worker claim/lease mechanics -- see queue/work_queue.py.
+        "lease_seconds": 120,
+        "poll_interval_seconds": 2.0,
+        # Retry backoff for a stage raising StageTransient or an unmapped
+        # exception; full jitter, see queue/backoff.py.
+        "max_attempts": 5,
+        "base_delay_seconds": 2.0,
+        "max_delay_seconds": 60.0,
+        # How long a suspended or throttled run waits before becoming
+        # claimable again -- distinct from the circuit breaker's own
+        # probe interval, which gates whether a call is attempted at all.
+        "unavailable_probe_seconds": 60,
+        # Reconciliation's secondary guard against a missing or stale
+        # per-folder watermark: a message older than this is never
+        # treated as live-eligible, however its folder's watermark reads.
+        "live_max_age_days": 7,
     },
     SettingCategory.SEMANTIC: {
         # "openai" is the only real provider -- Anthropic has no embedding

@@ -614,38 +614,74 @@ class VerdictRepository:
             )
             return result.scalar_one_or_none()
 
-    async def has_ai_verdict_for_header(
+    async def has_ai_verdict_for_msg_key(
         self,
         account_id: uuid.UUID,
-        message_id_hdr: str,
+        msg_key: str,
+        from_addr: str | None,
     ) -> bool:
         """
-        Check whether an AI verdict already exists for this message header.
-
-        Backs the spam pipeline's durability gate: a message that already
-        has an AI verdict for its (account_id, message_id_hdr) is never
-        reclassified, even after retention purge or a UIDVALIDITY resync
-        reassigns it a new mail_id.
+        Check whether an AI verdict already exists for this durable
+        message identity -- the never-classify-twice gate. Keyed on
+        msg_key rather than message_id_hdr so a message with no
+        Message-ID header (msg_key's hash fallback) is covered too, and
+        `from_addr` is included so a sender forging the Message-ID of a
+        message already verdicted cannot bypass classification.
 
         Args:
             account_id: Account scope
-            message_id_hdr: RFC Message-ID header value (with angle brackets,
-                matching what PostIMAP stores)
+            msg_key: The durable key (see database/msg_key.py)
+            from_addr: Envelope sender, or None
 
         Returns:
-            True if a source=ai verdict already exists for this header
+            True if a source=ai verdict already exists for this identity
         """
         async with self._db.session() as session:
             result = await session.execute(
                 select(Verdict.id)
                 .where(
                     Verdict.account_id == account_id,
-                    Verdict.message_id_hdr == message_id_hdr,
+                    Verdict.msg_key == msg_key,
                     Verdict.source == VerdictSource.AI,
+                    Verdict.from_addr == from_addr if from_addr else Verdict.from_addr.is_(None),
                 )
                 .limit(1)
             )
             return result.scalar_one_or_none() is not None
+
+    async def get_current_verdict(self, mail_id: uuid.UUID) -> Verdict | None:
+        """
+        The verdict a caller should treat as current for a message: the
+        latest user_feedback row if one exists, otherwise the latest
+        ai/rule row. Never a naive "latest by created_at" across sources
+        -- a user's correction must not be shadowed by a model call that
+        was already in flight when they made it, however the two rows'
+        timestamps happen to land (see pipeline/context.py's VerdictView,
+        which this mirrors for the feedback listener's use).
+
+        Args:
+            mail_id: Message's current row id
+
+        Returns:
+            The current Verdict, or None if none has ever been recorded
+        """
+        async with self._db.session() as session:
+            feedback_result = await session.execute(
+                select(Verdict)
+                .where(Verdict.mail_id == mail_id, Verdict.source == VerdictSource.USER_FEEDBACK)
+                .order_by(desc(Verdict.created_at))
+                .limit(1)
+            )
+            row = feedback_result.scalar_one_or_none()
+            if row is not None:
+                return row
+            other_result = await session.execute(
+                select(Verdict)
+                .where(Verdict.mail_id == mail_id, Verdict.source != VerdictSource.USER_FEEDBACK)
+                .order_by(desc(Verdict.created_at))
+                .limit(1)
+            )
+            return other_result.scalar_one_or_none()
 
     async def get_stats(
         self,

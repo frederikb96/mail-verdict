@@ -10,11 +10,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Breaking Changes
 
 - **Application-level auth removed entirely:** `MAIL_VERDICT_API_KEY`, `require_auth`, `ApiKeyASGIMiddleware` and every `X-API-Key` check are gone from `/api/*`, `/mcp` and the SSE endpoint. The deployment model is an authenticating proxy in front of the application; the chart's `secret.apiKey` / `existingSecretKeys.apiKey` values are gone with it
-- **Settings genuinely take effect at runtime:** the spam processor and rules engine are now constructed unconditionally at startup and consult current settings on every event, instead of only existing when spam was enabled or a rule list was non-empty at process start. Enabling spam, adding a first rule, or switching AI provider/model/reasoning effort through the settings API changes behaviour on the next message, not the next restart
+- **Settings genuinely take effect at runtime:** the pipeline runner consults the current pipeline definition and settings on every claimed run, instead of only existing when spam was enabled or a rule list was non-empty at process start. Enabling spam, editing the pipeline, or switching AI provider/model/reasoning effort through the settings API changes behaviour on the next message, not the next restart
 - **Default AI provider is now OpenAI**, default model `gpt-5.4-nano`, default `reasoning_effort` `none`. Anthropic remains fully supported via `ai.provider: "anthropic"`
 - **Provider API keys move into the database, encrypted:** settable and reportable as present (with a last-four hint) through `PUT /api/settings/ai`'s `anthropic_api_key` / `openai_api_key` fields, never returned by any read. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` env vars remain a fallback. Requires `security.encryption_key` (`ENCRYPTION_KEY`, AES-256-GCM, 64 hex chars) — the same key format and, optionally, the same value PostIMAP uses for its own credential encryption
 - **Config shrunk to infrastructure only:** `server.api_key` is gone; `security.encryption_key` is the only addition
 - **Spam classification uses a strict JSON schema** (Anthropic's `output_config.format`, OpenAI's `text.format` with `strict: true`) instead of a loosely-requested JSON object, and every verdict now carries a one-sentence `reasoning` alongside the classification
+- **Spam classification and rules are one pipeline.** `rules/engine.py`, `rules/executor.py`,
+  `rules/enrichment.py` and `spam/pipeline.py` are gone. A message now passes through an ordered
+  list of *stages* — `match` (a rule, generalised: the same condition tree plus a `verdict_is`
+  condition, with the same effects) and `classify` (one structured-output model call, writing a
+  verdict and nothing else — it no longer moves mail itself). `spam.auto_move_to_junk` /
+  `spam.auto_mark_read` become a default `match` stage instead of a hardcoded side effect of
+  classification. `settings.rules` and the `rules` settings category are retired; an existing
+  deployment's rules and spam settings are migrated automatically, on first startup after
+  upgrading, into the first pipeline revision (Alembic `0006_pipeline`) — a rule whose trigger was
+  `mail.moved`/`mail.trashed`/`mail.deleted` cannot be migrated (the pipeline is triggered by
+  message arrival only, see below) and is dropped with a startup warning naming it.
+  `POST /api/mails/:id/feedback` and the MCP `submit_spam_feedback` tool are unaffected. `GET
+  /api/rules` is gone; the equivalent read/observability surface is `GET /api/pipeline` (current
+  definition) and `GET /api/runs` / `GET /api/mails/:id/runs` (one message's journey and why).
+- **The pipeline reacts to message arrival only**, never to a folder move. The previous rules
+  engine mapped every message *update* to a `mail.moved` trigger — including the update its own
+  `move_to_spam` action had just made, since `origin` distinguishes PostIMAP from a consumer, not
+  the classifier's own write from a user's. That made a move-triggered rule one edit away from
+  looping on itself. Reacting only to `insert`/`origin=sync` removes the possibility rather than
+  guarding against it; a folder move into or out of the junk folder is handled separately (below).
+- **Spam feedback is recorded when a folder move contradicts the stored verdict, not by who moved
+  it.** `spam/processor.py`'s `SpamEventProcessor` is now `SpamFeedbackListener`, and it no longer
+  routes new mail to a verdict pipeline — only a folder-move update reaches it. Two bugs this
+  fixes: the classifier's own move-to-junk effect used to log a "moved to spam" correction against
+  the verdict it had just written (origin cannot tell "the app itself, right now" from "a user, a
+  moment later"); and moving a message from Junk to Trash was recorded as "the classifier was
+  wrong", when deleting spam is the ordinary outcome of a junk folder, not a correction. Excluded
+  destination is trash; a verdict already agreeing with the move now produces no feedback row
+  either way.
+- **`VerdictRepository.has_ai_verdict_for_header` is gone**, replaced by
+  `has_ai_verdict_for_msg_key(account_id, msg_key, from_addr)` — the never-classify-twice gate now
+  keys on the durable identity (msg_key, §`verdicts.msg_key` below) plus sender, closing the same
+  Message-ID-forgery bypass the durability index already closes at the database level.
 ### Added
 
 - **OpenAI as a first-class `SpamAnalyst` provider**, selected the same way as `anthropic`/`fake` via `ai.provider`
@@ -33,8 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`closed`/`open`/`suspended`, the last requiring an explicit probe to clear), a `NOTIFY`-based
   wakeup with a poll fallback, and a supervisor that reconciles a live worker count without a
   restart. `attempts` increments at claim rather than at failure, so a row that kills its worker
-  every time still exhausts its attempts instead of looping forever. `message_embeddings` is the
-  first queue built on it; `pipeline_runs` is future work this is built to support unchanged.
+
 - **`GET/PATCH /api/queues`:** lists and changes a registered queue's state (`running`/`paused`),
   concurrency and batch size. A `PATCH` raising concurrency above what the database connection
   pool can actually support is rejected with `400` rather than silently serialising workers.
@@ -53,6 +85,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   appends the replacement and removes the superseded draft as one operation rather than an
   expunge-then-create with no ordering between them -- sending a reopened draft leaves no draft
   copy behind either. Requires PostIMAP service_version >= 1.4.0
+- **`pipeline/` package:** the message pipeline runner. A stage returns declarative *effects*
+  rather than writing SQL or a success flag — `MatchStage` (a rule, generalised) and
+  `ClassifyStage` (spam/ham, one model call) ship today; a stage that raises `StageMisconfigured`
+  fails the run permanently and names itself in `pipeline_runs.failed_stage`, `StageTransient`
+  retries with full-jitter backoff, and `StageThrottled`/`StageUnavailable` suspend the run
+  without burning one of its attempts and share the same per-provider circuit breaker
+  `queue/circuit.py` already provides. Every effect (`Move`, `Trash`, `Expunge`, `SetFlags`,
+  `Keywords`, `Tag`, `RecordVerdict`, `Notify`) is applied through a guarded UPDATE — the rowcount
+  is the only thing believed, and a guard that fails records `not applied: message gone` in the
+  run's trace instead of reporting success for a write that did nothing (`rules/executor.py`'s
+  `move_to` handler used to do exactly that). `pipeline_runs` is the `pipeline` queue registered
+  with `queue/manager.py`; `pipeline_revisions` is the append-only pipeline definition history,
+  current = `max(revision)`.
+- **`pipeline/enqueue.py`:** a live run is enqueued on `message`/`insert` with `origin = "sync"`
+  only — never on an update, which is what stops the pipeline from ever reacting to its own
+  writes. `pipeline_folder_state` records MailVerdict's own watermark (the timestamp a folder's
+  first full sync completed, since `folders.initial_sync_done` is a boolean with no timestamp),
+  and a reconciliation pass on a shared advisory lock finds live-eligible mail a listener
+  reconnect missed. Reconciliation's SQL anti-join is on `message_id`, not the durable `msg_key` —
+  computing the header's content-hash fallback in SQL would mean a second, driftable definition of
+  the same key `database/msg_key.py` already owns — so the anti-join is a cheap pre-filter, the
+  real dedup is `msg_key`'s unique constraint at insert time, and a conflict there (a UIDVALIDITY
+  resync assigning a new row to already-run mail) repoints the existing run's `message_id` rather
+  than being dropped, which is what makes the anti-join converge on the next pass instead of
+  reselecting the same message forever.
+- **`GET /api/runs`, `GET /api/runs/:id`, `POST /api/runs/:id/retry`, `GET
+  /api/mails/:id/runs`:** the pipeline's observability surface — every run's trace, filterable by
+  status/account, and re-queueing a failed one.
 - **Semantic search.** Every message gets a `text-embedding-3-small` vector (subject, sender and
   the first 2000 characters of the body, HTML-stripped when there is no plain-text body; envelope
   only when the body was never fetched at all), stored in `message_embeddings` and indexed with
@@ -71,9 +131,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   go through the existing `GET/PATCH /api/queues/embeddings`.
 ### Changed
 
-- Rule enrichment (`rules/enrichment.py`) now goes through the same provider dispatch and strict schema as spam classification, instead of being hardcoded to a captured-at-startup Anthropic model
-- `RulesEngine` re-parses the rule list from settings on every event instead of once at construction
 - `RetryConfig.delay_for_attempt` uses full jitter (a uniform draw over `[0, cap]`) instead of a fixed exponential value; default `retry` settings changed to 5 attempts, 1s base, 20s cap
+- The `classify` stage builds far more signal into the model call than the old spam analyst did:
+  alongside sender/recipient/subject/body it now sends the relationship between the From header
+  and everything around it — envelope sender (Return-Path) vs. From, Reply-To vs. From, and
+  whether a display name embeds a different address — stated as facts, never pre-judged into a
+  score. The model still gets no tools and one call per message.
 - **PostIMAP pinned to 1.5.0**, which adds consumer-driven folder creation and deletion, durable sync notifications, per-folder IMAP push, a draft-replace column, and a per-folder backfill total that gives an initial sync a denominator. Insert grants are now column-level rather than table-level, so writing a PostIMAP-managed column is refused rather than silently accepted. The consumer contract version is unchanged, so every addition is additive.
 - **PostgreSQL image now ships pgvector** (`pgvector/pgvector:pg18`), in both compose files and the test container. The stock image carries no `vector` extension, and pgvector is not a trusted extension so it cannot be added by an unprivileged role at runtime. Same major version and data directory as before, so an existing volume mounts unchanged. Deployments supplying their own PostgreSQL must provide the extension; on Kubernetes that means a vector-enabled image.
 ### Fixed
@@ -91,6 +154,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   role. `Folder.id`/`total_count`/`unread_count`/`initial_sync_done` carried the same latent defect,
   unexercised until this release's own folder-insert path. All five now use
   `server_default=FetchedValue()`, the pattern `Outbox.next_retry_at` already used
+- **A rule move to a folder that no longer resolves used to succeed silently** (`rules/executor.py`
+  logged a warning, returned, and the caller recorded `success=True` anyway). A `match` stage's
+  `Move` effect now raises `StageMisconfigured` when its target does not resolve, which fails the
+  run permanently with the unresolved reference named in `pipeline_runs.last_error` instead of
+  quietly leaving the message unreachable.
+- **Building rule/classify context no longer selects whole `Attachment` rows (including the
+  `bytea` blob) to find out whether a message has attachments and what kind.** The pipeline's
+  `MessageView` loader selects `content_type` only, and the message row itself never selects
+  `raw_source`. At pipeline concurrency, the old query was an out-of-memory pod restart waiting to
+  happen on any large-attachment mailbox, and it would have looked like anything but its cause.
+- **A message with no `Message-ID` header used to be reclassified on every resync.** The old
+  never-classify-twice gate checked `msg.message_id and await has_ai_verdict_for_header(...)`, so
+  an absent header skipped the check entirely rather than falling through to it. The `classify`
+  stage now gates on `verdicts.msg_key` (the header, or a content hash when there is none), which
+  is defined and non-null for every message.
+- **`body_contains` used to never match an HTML-only message.** The old rule context only
+  populated `body_text`; `MessageView` strips `body_html` to text with `nh3` when `body_text` is
+  NULL, so a `match` stage's conditions see the same body a newsletter's recipient does.
 
 ## [1.0.0] - 2026-08-30
 

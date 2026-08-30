@@ -17,7 +17,7 @@ from mail_verdict.api.mails import account_router as mails_account_router
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.api.queues import router as queues_router
-from mail_verdict.api.rules import router as rules_router
+from mail_verdict.api.runs import router as runs_router
 from mail_verdict.api.search import router as search_router
 from mail_verdict.api.settings_api import router as settings_router
 from mail_verdict.api.stats import router as stats_router
@@ -38,9 +38,9 @@ all_routers: list[APIRouter] = [
     unified_account_router,
     unified_router,
     settings_router,
-    rules_router,
     verdicts_router,
     stats_router,
     queues_router,
     embeddings_router,
+    runs_router,
 ]

@@ -50,7 +50,11 @@ That document is authoritative; this one only explains how MailVerdict uses it.
   definition.
 - **`database/`** — connection handling, models and queries. Models of PostIMAP's tables are a
   projection the application asserts, not a schema it owns.
-- **`spam/`, `rules/`, `settings/`** — application logic on top of the mail data.
+- **`queue/`** — a Postgres-native work-queue engine (claim, lease, backoff, a persisted circuit
+  breaker), parameterised by table and knowing nothing about what it queues.
+- **`pipeline/`** — the one machinery every message passes through: stages, effects, the runner,
+  and enqueueing an arrival. See "The message pipeline" below.
+- **`spam/`, `settings/`** — feedback recording and application settings on top of the mail data.
 
 ## Contract version handshake
 
@@ -99,30 +103,77 @@ columns, with no foreign key constraints. Two independent reasons, either suffic
 
 The cost is that joins are explicit and orphaned rows need occasional cleanup. Both are cheap.
 
-## Never classifying the same message twice
+## The message pipeline
+
+Spam classification and rules are one system: a message passes through an ordered list of
+*stages*, each returning declarative *effects* for the runner to apply, and spam classification
+is simply the `classify` stage. Processing is sequential per message, parallel across messages —
+`pipeline_runs` is a work queue (`queue/`), claimed by an asyncio worker pool inside the same
+process.
+
+A stage never writes SQL and never calls an action directly:
+
+```
+message arrives ──► pipeline_runs row ──► runner claims it
+                                              │
+                                for each stage in the pipeline definition:
+                                   outcome = stage.execute(view, ctx)
+                                   apply outcome.effects, each guarded
+                                   project the applied effects onto `view`
+                                   if outcome.halt: stop
+```
+
+Two built-in stage types today: `match` (a rule, generalised — the same condition tree, plus a
+`verdict_is` condition) and `classify` (one structured-output model call, writing a `RecordVerdict`
+effect and nothing else — it does not move mail). "Spam moves to Junk" is an ordinary `match`
+stage composed on top of `classify`'s output, not a side effect hidden inside the classifier.
+
+A stage that cannot do its job raises rather than returning a success flag — a `Move` effect
+whose target folder does not resolve is exactly the kind of failure a success-flag result type
+would let slip through as reported success on a write that did nothing. The exception type tells
+the runner whether to retry with backoff, suspend the queue (a provider outage or a rejected key,
+refunding the attempt), or fail the run permanently with the offending stage named in
+`pipeline_runs.failed_stage`.
+
+### Triggered by arrival only
+
+A live run is enqueued on `message`/`insert` with `origin = "sync"` and nothing else — never on
+an update. A stage reacting to a folder-move update could loop on its own writes: PostIMAP's
+`origin` field distinguishes its own sync writes from this application's, but not the pipeline's
+own write from a user's a moment later, so a move-triggered stage acting on a message its own
+move-to-junk effect just relocated is one edit away from acting on itself again. A folder move is
+handled by a separate, stateless listener instead (`spam/feedback.py`): it records a correction
+only when the move contradicts the message's *current* verdict, which is something the classifier
+can never do to what it just wrote, and excludes moving spam to Trash — deleting mail already
+agreed to be spam is the ordinary use of a junk folder, not a correction.
+
+### Never classifying the same message twice
 
 Sending every message to a language model would be expensive and, on a first sync, absurd — a
 new account against an existing mailbox would classify years of history as if it had all just
 arrived.
 
-Three gates prevent it:
+Layered gates prevent it:
 
 - **Backfill suppression.** During a folder's first full sync PostIMAP suppresses per-message
   events entirely and emits one completion event instead. Historical mail never reaches the
-  pipeline.
-- **Folder and account scope.** Only regular and inbox folders are classified, and only for
-  accounts where the feature is enabled.
+  pipeline as a live arrival at all.
 - **A durable verdict record.** Verdicts are keyed by the account and a `msg_key` under a unique
   index — the message's RFC `Message-ID` header when it has one, otherwise a hash of its envelope
   (sender, subject, receipt time, size). Either form is stable across resyncs, so a folder that is
   fully resynchronised — after a UIDVALIDITY change, say, where rows are recreated with new
-  identifiers — cannot trigger reclassification, including for the messages that have no header at
-  all. The index also constrains the sender: a message forging the `Message-ID` of one already
-  verdicted does not inherit that verdict, it gets its own.
+  identifiers — cannot trigger reclassification, including for messages with no header at all. The
+  index also constrains the sender: a message forging the `Message-ID` of one already verdicted
+  does not inherit that verdict, it gets its own. `classify` checks this before ever calling a
+  model.
+- **Folder, draft and account scope.** A message in Sent/Drafts/Trash/Junk/Archive, or a draft,
+  never enters the queue; `classify` additionally skips an account with spam detection disabled.
 
-The third gate is what makes this correct rather than merely usual. Backfill suppression only
-applies to a folder's *first* sync, so events from a later resync are indistinguishable from new
-mail. The verdict record is what tells them apart.
+Backfill suppression only applies to a folder's *first* sync, so events from a later resync are
+indistinguishable from new mail — the verdict record is what tells them apart there. A `classify`
+stage instance is also structurally ineligible for anything but a live-origin run, which matters
+once a deliberate historical reprocessing pass exists: a property of the stage type, not a
+parameter a sweep request could get wrong.
 
 ## The semantic layer
 

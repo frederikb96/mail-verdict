@@ -37,6 +37,10 @@ class MailContext:
     folder: str = ""
     tags: list[str] = field(default_factory=list)
     enrichment_tags: list[str] = field(default_factory=list)
+    # None means "no verdict yet" -- distinct from either boolean outcome,
+    # so a verdict_is condition can require a spam/not-spam verdict to
+    # exist rather than treating an unclassified message as not-spam.
+    verdict_is_spam: bool | None = None
 
 
 class ConditionEvaluator:
@@ -55,6 +59,9 @@ class ConditionEvaluator:
         - folder_is(name)
         - tag_is(tag_name)
         - enrichment_tag(tag_name)
+        - verdict_is("spam" | "not-spam") -- the current verdict for this
+          message, however it was produced; never true for a message with
+          no verdict yet
     """
 
     _EVALUATORS: dict[str, str] = {
@@ -72,6 +79,7 @@ class ConditionEvaluator:
         "folder_is": "_eval_folder_is",
         "tag_is": "_eval_tag_is",
         "enrichment_tag": "_eval_enrichment_tag",
+        "verdict_is": "_eval_verdict_is",
     }
 
     def evaluate(self, condition: dict[str, Any], ctx: MailContext) -> bool:
@@ -171,6 +179,13 @@ class ConditionEvaluator:
     def _eval_enrichment_tag(self, value: str, ctx: MailContext) -> bool:
         """Check if enrichment produced a specific tag."""
         return value.lower() in [t.lower() for t in ctx.enrichment_tags]
+
+    def _eval_verdict_is(self, value: str, ctx: MailContext) -> bool:
+        """Check the current verdict against "spam" or "not-spam". A
+        message with no verdict yet never matches either value."""
+        if ctx.verdict_is_spam is None:
+            return False
+        return ctx.verdict_is_spam == (value == "spam")
 
 
 def evaluate_condition(
