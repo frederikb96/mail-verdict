@@ -86,10 +86,16 @@ without needing a real mailbox anywhere.
 
 ```bash
 cd ui && npm run build
+podman compose --env-file .dev.env -f compose.dev.yaml restart app
 ```
 
-The static export is served by the backend, so a rebuild plus a browser refresh is the loop. For
-faster iteration `npm run dev` runs the Next.js dev server directly against the backend's API.
+The static export is served by the backend, which mounts `ui/build` into the container. **The
+restart is not optional**: the build replaces that directory rather than writing into it, so the
+running container's mount is left pointing at the old one and every page 404s until the container
+picks the new directory up.
+
+For faster iteration `npm run dev` runs the Next.js dev server directly against the backend's API,
+with no rebuild and no restart.
 
 ## Before pushing
 
