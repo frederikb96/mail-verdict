@@ -82,7 +82,9 @@ async def _get_folders_with_counts(
                 Message,
                 (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
-            .where(Folder.account_id == account_id)
+            # A deleted folder is tombstoned rather than removed, so every
+            # listing has to exclude it or it lingers in the sidebar forever.
+            .where(Folder.account_id == account_id, Folder.deleted_at.is_(None))
             .group_by(Folder.id, FolderPrefs.folder_id)
         )
         result = await session.execute(stmt)

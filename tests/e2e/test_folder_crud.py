@@ -217,3 +217,42 @@ class TestFolderDeletion:
         off = app_client.patch(f"/api/folders/{inbox['id']}/prefs", json={"real_time": False})
         assert off.status_code == 200, off.text
         assert off.json()["idle_requested"] is False
+
+    def test_a_deleted_folder_disappears_from_every_listing(
+        self, app_client: TestClient, folder_account: dict[str, object],
+    ) -> None:
+        """Deletion is a tombstone, so every listing must exclude it.
+
+        The folder list and the ordered list the sidebar reads are separate
+        queries against the same table. One filtered the tombstone and the
+        other did not, so a deleted folder vanished from settings and stayed
+        in the sidebar permanently -- visible, clickable, and gone from the
+        mail server.
+        """
+        account_id = str(folder_account["id"])
+        created = app_client.post(
+            f"/api/accounts/{account_id}/folders", json={"name": "Ephemeral"},
+        )
+        assert created.status_code == 201, created.text
+        folder_id = created.json()["id"]
+
+        ordered = app_client.get(f"/api/accounts/{account_id}/folder-order").json()
+        assert any(f["imap_name"] == "Ephemeral" for f in ordered["folders"])
+
+        deleted = app_client.delete(f"/api/folders/{folder_id}")
+        assert deleted.status_code == 204, deleted.text
+
+        def _gone_everywhere() -> bool | None:
+            listed = app_client.get(f"/api/accounts/{account_id}/folders").json()
+            ordered_now = app_client.get(
+                f"/api/accounts/{account_id}/folder-order"
+            ).json()["folders"]
+            in_either = any(f["imap_name"] == "Ephemeral" for f in listed) or any(
+                f["imap_name"] == "Ephemeral" for f in ordered_now
+            )
+            return True if not in_either else None
+
+        wait_for(
+            _gone_everywhere, timeout_s=45.0,
+            description="Deleted folder gone from both the list and the sidebar order",
+        )

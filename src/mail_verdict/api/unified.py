@@ -114,6 +114,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                 FolderPrefs.unified_name.isnot(None),
                 FolderPrefs.unified_name != "",
                 Account.is_active.is_(True),
+                Folder.deleted_at.is_(None),
             )
             .group_by(
                 Folder.id, FolderPrefs.folder_id,
