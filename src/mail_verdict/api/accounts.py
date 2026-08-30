@@ -2,10 +2,10 @@
 Account API endpoints.
 
 GET /api/accounts — list all accounts
-POST /api/accounts — create account (encrypts passwords)
+POST /api/accounts — create account (writes credentials in contract format)
 GET /api/accounts/:id — account detail
-PUT /api/accounts/:id — update account
-DELETE /api/accounts/:id — delete account
+PUT /api/accounts/:id — update account (bounces sync if credentials changed)
+DELETE /api/accounts/:id — delete account (requires PostIMAP >= 1.0.1)
 POST /api/accounts/:id/test-connection — test IMAP/SMTP connectivity
 GET /api/accounts/:id/folders — folder listing with counts
 GET /api/accounts/:id/folder-mapping — get/auto-detect folder mapping
@@ -23,7 +23,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import case, delete, select
+from sqlalchemy import case, select
 from sqlalchemy import func as sa_func
 
 from mail_verdict.api.deps import get_account_prefs_repo
@@ -44,8 +44,11 @@ from mail_verdict.database.models import (
     SyncState,
 )
 from mail_verdict.postimap.actions import create_account as postimap_create_account
+from mail_verdict.postimap.actions import delete_account as postimap_delete_account
+from mail_verdict.postimap.actions import force_reconnect
 from mail_verdict.postimap.actions import update_account as postimap_update_account
 from mail_verdict.postimap.commands import request_sync_now
+from mail_verdict.postimap.contract import read_postimap_info, supports_account_delete
 
 logger = logging.getLogger(__name__)
 
@@ -170,14 +173,24 @@ async def update_account(
     account_values = {k: v for k, v in all_values.items() if k not in prefs_fields}
     prefs_values = {k: v for k, v in all_values.items() if k in prefs_fields}
 
+    credentials_changed = "imap_password" in account_values or "smtp_password" in account_values
+
     async with db.session() as session:
         result = await session.execute(select(Account).where(Account.id == account_id))
         account = result.scalar_one_or_none()
         if account is None:
             raise HTTPException(status_code=404, detail="Account not found")
+        was_active = account.is_active
 
         if account_values:
             await postimap_update_account(session, account_id, **account_values)
+
+    if credentials_changed and was_active:
+        # A credential rewritten on an already-running account is not
+        # re-encrypted or used to reconnect until that account restarts --
+        # without this, a corrected password shows no error and nothing
+        # changes, which reads as the app ignoring the user.
+        await force_reconnect(db, account_id)
 
     # Update prefs if any prefs fields were provided
     if prefs_values:
@@ -198,14 +211,33 @@ async def update_account(
 
 @router.delete("/{account_id}", status_code=204)
 async def delete_account(account_id: uuid.UUID) -> None:
-    """Delete an account and all its data (cascading)."""
+    """
+    Permanently delete an account and its entire mirrored mailbox.
+
+    Requires PostIMAP service_version >= 1.0.1 (the DELETE grant on
+    accounts). Against an older PostIMAP this reports the capability as
+    unavailable rather than attempting a statement that fails on grants.
+    Irreversible; touches nothing on the IMAP server itself.
+    """
     db = get_db_connection()
     async with db.session() as session:
+        info = await read_postimap_info(session)
+        if info is None or not supports_account_delete(info):
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "Account deletion requires PostIMAP service_version >= 1.0.1; "
+                    f"the running instance reports "
+                    f"{info.service_version if info else 'unknown'}. "
+                    "Set is_active=false to pause syncing instead."
+                ),
+            )
+
         result = await session.execute(select(Account).where(Account.id == account_id))
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Account not found")
 
-        await session.execute(delete(Account).where(Account.id == account_id))
+        await postimap_delete_account(session, account_id)
 
 
 @router.post("/{account_id}/test-connection")

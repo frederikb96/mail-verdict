@@ -17,6 +17,12 @@ from mail_verdict.database.models import PostimapInfo
 
 SUPPORTED_CONTRACT_VERSION = 1
 
+# Account deletion (DELETE FROM accounts, cascading to everything hanging off
+# it) is granted from this PostIMAP service version onward -- contract_version
+# itself stays 1, since granting a new permission breaks nothing a consumer
+# already does. Gate the capability on service_version, not contract_version.
+MIN_ACCOUNT_DELETE_SERVICE_VERSION = (1, 0, 1)
+
 
 class ContractMismatchError(Exception):
     """Raised when the running PostIMAP's contract_version does not match."""
@@ -72,3 +78,36 @@ def assert_contract_version(info: PostimapVersionInfo) -> None:
             f"written against contract_version={SUPPORTED_CONTRACT_VERSION}. "
             f"Refusing to start against an incompatible contract."
         )
+
+
+def _parse_service_version(service_version: str) -> tuple[int, ...]:
+    """
+    Parse a dotted X.Y.Z service version into a comparable tuple.
+
+    Args:
+        service_version: e.g. "1.0.1"
+
+    Returns:
+        A tuple of ints, or an empty tuple if unparseable (treated as older
+        than any real release -- a capability check against it correctly
+        reports the capability as unavailable rather than raising)
+    """
+    parts: list[int] = []
+    for piece in service_version.split("."):
+        if not piece.isdigit():
+            return ()
+        parts.append(int(piece))
+    return tuple(parts)
+
+
+def supports_account_delete(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP grants DELETE on accounts.
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_ACCOUNT_DELETE_SERVICE_VERSION
+    """
+    return _parse_service_version(info.service_version) >= MIN_ACCOUNT_DELETE_SERVICE_VERSION

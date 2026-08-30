@@ -167,6 +167,12 @@ class Folder(Base):
 class Message(Base):
     """Mirrored email message -- PostIMAP-owned table.
 
+    There is no INSERT grant on this table: a message row exists because it
+    exists on the IMAP server, and only PostIMAP's own sync engine creates
+    one. MailVerdict never originates mail by inserting into messages --
+    to send or draft, insert into outbox instead; the copy appears here
+    once it syncs back.
+
     imap_uid is nullable: NULL means an optimistic folder move is pending
     (surfaced in the API as pending_sync). expunged_at is a soft-delete
     tombstone, distinct from the is_deleted \\Deleted flag -- see

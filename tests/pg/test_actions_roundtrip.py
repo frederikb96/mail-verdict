@@ -20,10 +20,18 @@ from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Account, Message, Verdict, VerdictSource
 from mail_verdict.postimap.actions import (
     create_account,
+    delete_account,
     expunge,
+    force_reconnect,
     format_credential,
     move_message,
     set_flags,
+)
+from mail_verdict.postimap.contract import (
+    MIN_ACCOUNT_DELETE_SERVICE_VERSION,
+    PostimapVersionInfo,
+    read_postimap_info,
+    supports_account_delete,
 )
 
 
@@ -226,3 +234,106 @@ class TestVerdictDurabilityGate:
                     message_id_hdr=header, is_spam=True, source=VerdictSource.USER_FEEDBACK,
                 )
             )
+
+
+class TestSupportsAccountDelete:
+    """Tests against the real PostIMAP instance's reported service_version."""
+
+    @pytest.mark.asyncio
+    async def test_live_postimap_supports_delete(self, migrated_db: DatabaseConnection) -> None:
+        """The pinned test image (1.0.1) is exactly the version the grant landed in."""
+        async with migrated_db.session() as session:
+            info = await read_postimap_info(session)
+
+        assert info is not None
+        assert supports_account_delete(info)
+
+    def test_version_below_threshold_is_unsupported(self) -> None:
+        """A service_version older than the grant reports the capability as unavailable."""
+        older = PostimapVersionInfo(contract_version=1, service_version="1.0.0")
+        assert not supports_account_delete(older)
+
+    def test_version_at_threshold_is_supported(self) -> None:
+        """The exact version the grant landed in reports the capability as available."""
+        exact = PostimapVersionInfo(
+            contract_version=1,
+            service_version=".".join(str(p) for p in MIN_ACCOUNT_DELETE_SERVICE_VERSION),
+        )
+        assert supports_account_delete(exact)
+
+    def test_unparseable_version_is_unsupported(self) -> None:
+        """A version string that fails to parse is treated as unsupported, not as an error."""
+        bogus = PostimapVersionInfo(contract_version=1, service_version="unknown")
+        assert not supports_account_delete(bogus)
+
+
+class TestDeleteAccount:
+    """Tests for the account-delete cascade against a real PostIMAP schema."""
+
+    @pytest.mark.asyncio
+    async def test_delete_cascades_to_folders_and_messages(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Deleting the account row also removes its folders and messages.
+
+        This is PostIMAP's own ON DELETE CASCADE, not application logic --
+        the test exists to prove the consumer role actually has the DELETE
+        grant against the real schema, not just that SQLAlchemy accepted
+        the statement.
+        """
+        async with migrated_db.session() as session:
+            account_id, inbox_id, message_id = await _seed_account_folder_message(session)
+            await delete_account(session, account_id)
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            acct_result = await session.execute(select(Account).where(Account.id == account_id))
+            assert acct_result.scalar_one_or_none() is None
+
+            msg_result = await session.execute(
+                select(Message).where(Message.id == message_id)
+            )
+            assert msg_result.scalar_one_or_none() is None
+
+            folder_result = await session.execute(
+                text("SELECT id FROM folders WHERE id = :fid"), {"fid": inbox_id},
+            )
+            assert folder_result.first() is None
+
+
+class TestForceReconnect:
+    """Tests for the is_active bounce that forces PostIMAP to re-read credentials."""
+
+    @pytest.mark.asyncio
+    async def test_bounces_back_to_active_and_actually_writes(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """After force_reconnect, an account that was active ends up active again,
+        and updated_at moved -- proving a write happened rather than a no-op that
+        merely leaves the pre-existing True value in place.
+
+        This does not prove PostIMAP observed two separate transitions (that would
+        need a live postimap_events listener, out of scope for the pg layer) -- only
+        that force_reconnect issues at least one real UPDATE.
+        """
+        async with migrated_db.session() as session:
+            account = await create_account(
+                session,
+                name=f"reconnect-{uuid.uuid4()}",
+                imap_host="imap.example.com",
+                imap_port=993,
+                imap_user="user@example.com",
+                imap_password="hunter2",
+                is_active=True,
+            )
+            await session.commit()
+            before_updated_at = account.updated_at
+
+        await force_reconnect(migrated_db, account.id)
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Account).where(Account.id == account.id))
+            row = result.scalar_one()
+
+        assert row.is_active is True
+        assert row.updated_at > before_updated_at

@@ -11,9 +11,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import text, update
+from sqlalchemy import delete, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Account, Message, Outbox, OutboxAttachment
 
 _CREDENTIAL_FORMAT_PLAINTEXT = b"\x00"
@@ -115,6 +116,53 @@ async def update_account(
     if not values:
         return
     await session.execute(update(Account).where(Account.id == account_id).values(**values))
+
+
+async def delete_account(session: AsyncSession, account_id: uuid.UUID) -> None:
+    """
+    Permanently delete an account and its entire mirrored mailbox.
+
+    Available from PostIMAP service_version 1.0.1 onward -- gate the call
+    site on postimap.contract.supports_account_delete() first, since an
+    older PostIMAP has no DELETE grant on accounts and this fails with
+    permission denied rather than a friendly error.
+
+    Irreversible: folders, messages, attachments, sync_state, sync_audit,
+    sync_queue and outbox all cascade via ON DELETE CASCADE against this
+    row -- there is nothing else to delete. Nothing on the IMAP server
+    itself is touched; re-adding the account re-syncs it from scratch.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        account_id: Account to delete
+    """
+    await session.execute(delete(Account).where(Account.id == account_id))
+
+
+async def force_reconnect(db: DatabaseConnection, account_id: uuid.UUID) -> None:
+    """
+    Bounce an account's sync connection by toggling is_active off then on.
+
+    A credential rewritten on an account that is already running is not
+    re-encrypted, and not used to reconnect, until that account restarts.
+    Call this after updating imap_password/smtp_password on an account
+    that was active, or the user sees no error and nothing changes --
+    which reads as the app silently ignoring the new password. The two
+    phases are separate committed transactions (not one UPDATE toggling
+    back and forth) so PostIMAP actually observes both transitions.
+
+    Args:
+        db: Database connection (each phase gets its own committed session)
+        account_id: Account to bounce
+    """
+    async with db.session() as session:
+        await session.execute(
+            update(Account).where(Account.id == account_id).values(is_active=False)
+        )
+    async with db.session() as session:
+        await session.execute(
+            update(Account).where(Account.id == account_id).values(is_active=True)
+        )
 
 
 async def set_flags(

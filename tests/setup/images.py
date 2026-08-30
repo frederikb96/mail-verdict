@@ -10,10 +10,10 @@ from __future__ import annotations
 POSTGRES_IMAGE = "postgres:18-alpine"
 
 # renovate: datasource=docker depName=ghcr.io/frederikb96/postimap versioning=docker
-POSTIMAP_IMAGE = "ghcr.io/frederikb96/postimap:1.0.0"
+POSTIMAP_IMAGE = "ghcr.io/frederikb96/postimap:1.0.1"
 
 # renovate: datasource=docker depName=dovecot/dovecot versioning=docker
 DOVECOT_IMAGE = "dovecot/dovecot:2.4.5"
 
 # renovate: datasource=docker depName=axllent/mailpit versioning=docker
-MAILPIT_IMAGE = "axllent/mailpit:latest"
+MAILPIT_IMAGE = "axllent/mailpit:v1.28.3"
