@@ -31,6 +31,11 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp
 
+from mail_verdict.api.security_headers import (
+    SecurityHeadersMiddleware,
+    build_content_security_policy,
+    compute_inline_script_hashes,
+)
 from mail_verdict.config import MCP_TRANSPORT, get_config
 from mail_verdict.database import close_database, get_db_connection, init_database
 from mail_verdict.postimap.contract import (
@@ -323,7 +328,15 @@ async def _outbox_event_payload(db: Any, event: Any) -> dict[str, Any]:
     return data
 
 
-def _build_fastapi() -> FastAPI:
+def _resolve_ui_build_dir() -> Path:
+    """Where the built UI lives, in a checkout or in the container image."""
+    ui_build_dir = Path(__file__).parent.parent.parent / "ui" / "build"
+    if not ui_build_dir.exists():
+        ui_build_dir = Path("/app/ui/build")
+    return ui_build_dir
+
+
+def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     """Build the FastAPI root app: MCP mount, API routers, SSE route, health."""
     from mail_verdict.api.mcp_tools import mcp as mcp_server
 
@@ -349,6 +362,12 @@ def _build_fastapi() -> FastAPI:
         allow_origins=config.server.cors_origins,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
+    )
+
+    script_hashes = compute_inline_script_hashes(ui_build_dir)
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        content_security_policy=build_content_security_policy(script_hashes),
     )
 
     app.mount("/mcp", mcp_app)
@@ -407,11 +426,8 @@ def _build_fastapi() -> FastAPI:
 
 def create_app() -> ASGIApp:
     """Create the MailVerdict ASGI application."""
-    app = _build_fastapi()
-
-    ui_build_dir = Path(__file__).parent.parent.parent / "ui" / "build"
-    if not ui_build_dir.exists():
-        ui_build_dir = Path("/app/ui/build")
+    ui_build_dir = _resolve_ui_build_dir()
+    app = _build_fastapi(ui_build_dir)
 
     if ui_build_dir.exists():
         next_dir = ui_build_dir / "_next"

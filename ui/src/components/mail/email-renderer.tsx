@@ -19,6 +19,13 @@ function getEmailStyles(theme: "light" | "dark"): string {
   return `
     :host {
       display: block;
+      /* A shadow root isolates styles but does not create a containing
+         block on its own, so position: fixed in a message would resolve
+         against the viewport rather than this box -- covering the whole
+         application regardless of what the server-side sanitizer catches.
+         Layout containment makes the host itself that containing block,
+         confining any such declaration to the message pane it belongs to. */
+      contain: layout paint;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 14px;
       line-height: 1.6;
