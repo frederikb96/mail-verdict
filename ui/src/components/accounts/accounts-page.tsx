@@ -51,7 +51,11 @@ import {
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
 import { useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
-import type { AccountCreateRequest, AccountResponse } from "@/types/api";
+import type {
+  AccountCreateRequest,
+  AccountResponse,
+  AccountUpdateRequest,
+} from "@/types/api";
 
 const STATE_BADGES: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
   created: { variant: "outline", label: "Created" },
@@ -304,27 +308,44 @@ function AccountForm({
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const form = new FormData(e.currentTarget);
-    const data: AccountCreateRequest = {
-      name: form.get("name") as string,
-      imap_host: form.get("imap_host") as string,
-      imap_port: Number(form.get("imap_port")),
-      imap_user: form.get("imap_user") as string,
-      imap_password: (form.get("imap_password") as string) || undefined,
-      smtp_host: (form.get("smtp_host") as string) || undefined,
-      smtp_port: form.get("smtp_port")
-        ? Number(form.get("smtp_port"))
-        : undefined,
-      smtp_user: (form.get("smtp_user") as string) || undefined,
-      smtp_password: (form.get("smtp_password") as string) || undefined,
-      spam_enabled: form.get("spam_enabled") === "on",
-    };
+    const name = form.get("name") as string;
+    const imap_password = (form.get("imap_password") as string) || undefined;
+    const smtp_host = (form.get("smtp_host") as string) || undefined;
+    const smtp_port = form.get("smtp_port")
+      ? Number(form.get("smtp_port"))
+      : undefined;
+    const smtp_user = (form.get("smtp_user") as string) || undefined;
+    const smtp_password = (form.get("smtp_password") as string) || undefined;
+    const spam_enabled = form.get("spam_enabled") === "on";
 
     if (isEditing) {
+      // imap_host/imap_port/imap_user are insert-only -- not part of this payload.
+      const data: AccountUpdateRequest = {
+        name,
+        imap_password,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        spam_enabled,
+      };
       updateAccount.mutate(
         { id: account.id, data },
         { onSuccess: onClose },
       );
     } else {
+      const data: AccountCreateRequest = {
+        name,
+        imap_host: form.get("imap_host") as string,
+        imap_port: Number(form.get("imap_port")),
+        imap_user: form.get("imap_user") as string,
+        imap_password,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        spam_enabled,
+      };
       createAccount.mutate(data, { onSuccess: onClose });
     }
   };
@@ -342,13 +363,20 @@ function AccountForm({
             placeholder="My Email"
           />
         </div>
+        {isEditing && (
+          <p className="text-xs text-muted-foreground">
+            IMAP host, port and user can&apos;t be changed on an existing
+            account — delete and re-add it to connect to a different server.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">
             <Label htmlFor="imap_host">IMAP Host</Label>
             <Input
               id="imap_host"
               name="imap_host"
-              required
+              required={!isEditing}
+              disabled={isEditing}
               defaultValue={account?.imap_host}
               placeholder="imap.example.com"
             />
@@ -359,7 +387,8 @@ function AccountForm({
               id="imap_port"
               name="imap_port"
               type="number"
-              required
+              required={!isEditing}
+              disabled={isEditing}
               defaultValue={account?.imap_port ?? 993}
             />
           </div>
@@ -370,7 +399,8 @@ function AccountForm({
             <Input
               id="imap_user"
               name="imap_user"
-              required
+              required={!isEditing}
+              disabled={isEditing}
               defaultValue={account?.imap_user}
               placeholder="user@example.com"
             />

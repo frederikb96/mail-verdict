@@ -308,12 +308,15 @@ class AccountCreateRequest(BaseModel):
 
 
 class AccountUpdateRequest(BaseModel):
-    """Request to update an account."""
+    """
+    Request to update an account.
+
+    imap_host/imap_port/imap_user are insert-only under PostIMAP's contract
+    (its grant on `accounts` has no UPDATE on those columns) -- changing the
+    IMAP host requires deleting and re-adding the account.
+    """
 
     name: str | None = None
-    imap_host: str | None = None
-    imap_port: int | None = None
-    imap_user: str | None = None
     imap_password: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None

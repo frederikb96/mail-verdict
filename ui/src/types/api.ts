@@ -138,11 +138,12 @@ export interface AccountCreateRequest {
   spam_enabled?: boolean;
 }
 
+/**
+ * imap_host/imap_port/imap_user are insert-only under PostIMAP's contract --
+ * changing the IMAP host requires deleting and re-adding the account.
+ */
 export interface AccountUpdateRequest {
   name?: string;
-  imap_host?: string;
-  imap_port?: number;
-  imap_user?: string;
   imap_password?: string;
   smtp_host?: string;
   smtp_port?: number;
