@@ -23,6 +23,7 @@ CHANNEL = "postimap_events"
 
 KEEPALIVE_INTERVAL_S = 30
 RECONNECT_DELAY_S = 5
+RECONNECT_MAX_DELAY_S = 60
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,12 @@ class PostimapListener:
     async def _keepalive(self) -> None:
         """Periodic keepalive; reconnects on failure.
 
+        A closed connection triggers a reconnect the same as a failed probe
+        -- asyncpg marks a connection closed without raising (a Postgres
+        restart, a failover, an idle reaper, a network blip), so treating
+        `is_closed()` as a reason to skip the probe leaves the loop spinning
+        on a dead connection forever instead of ever calling _reconnect().
+
         A reconnect loses any NOTIFY fired during the gap -- callers should
         treat reconnection as a signal to invalidate cached state broadly
         rather than assume no events were missed.
@@ -161,8 +168,9 @@ class PostimapListener:
         while self._running:
             try:
                 await asyncio.sleep(KEEPALIVE_INTERVAL_S)
-                if self._conn and not self._conn.is_closed():
-                    await self._conn.execute("SELECT 1")
+                if self._conn is None or self._conn.is_closed():
+                    raise ConnectionError("postimap_events connection is closed")
+                await self._conn.execute("SELECT 1")
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -170,20 +178,31 @@ class PostimapListener:
                 await self._reconnect()
 
     async def _reconnect(self) -> None:
-        """Reconnect after a connection loss."""
+        """Reconnect after a connection loss, retrying with backoff until it succeeds.
+
+        A single failed attempt used to leave `self._conn` pointing at the
+        already-closed connection, so the next keepalive tick would skip its
+        probe again -- retrying here instead of returning after one attempt
+        is what actually recovers the listener.
+        """
         if self._conn:
             try:
                 await self._conn.close()
             except Exception:
                 logger.debug("Failed to close stale connection before reconnect", exc_info=True)
+            self._conn = None
 
-        try:
-            self._conn = await asyncpg.connect(self._dsn)
-            await self._conn.add_listener(CHANNEL, self._on_notify)
-            logger.info("postimap_events listener reconnected")
-        except Exception:
-            logger.exception("postimap_events reconnect failed, retrying")
-            await asyncio.sleep(RECONNECT_DELAY_S)
+        delay = RECONNECT_DELAY_S
+        while self._running:
+            try:
+                self._conn = await asyncpg.connect(self._dsn)
+                await self._conn.add_listener(CHANNEL, self._on_notify)
+                logger.info("postimap_events listener reconnected")
+                return
+            except Exception:
+                logger.exception("postimap_events reconnect failed, retrying in %ss", delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_MAX_DELAY_S)
 
 
 def parse_dsn_from_sqlalchemy_url(url: str) -> str:
