@@ -344,6 +344,12 @@ class FolderResponse(BaseModel):
     special_use: str | None = None
     mailbox_id: str | None = None
     initial_sync_done: bool = False
+    # How many messages the folder held when its first sync began: the
+    # denominator for total_count while that sync runs. Set with
+    # initial_sync_done false means this folder is being synced now.
+    backfill_total: int | None = None
+    idle_requested: bool = False
+    idle_status: str | None = None
     last_synced_at: datetime | None = None
     sync_error: str | None = None
     created_at: datetime | None = None
@@ -357,16 +363,19 @@ class FolderResponse(BaseModel):
 
 
 class FolderPrefsUpdate(BaseModel):
-    """Partial update to a folder's MailVerdict preferences.
+    """Partial update to a folder's preferences.
 
-    The one write surface a folder has: visibility, display name, unified
-    name, and special-use override.
+    Visibility, display name, unified name and special-use override are
+    MailVerdict's own. real_time asks PostIMAP to hold an IMAP connection
+    open for this folder so changes arrive in seconds rather than on the
+    sync interval; it is the one PostIMAP-owned column a consumer may set.
     """
 
     is_visible: bool | None = None
     display_name: str | None = None
     unified_name: str | None = None
     special_use_override: str | None = None
+    real_time: bool | None = None
 
 
 class FolderCreateRequest(BaseModel):

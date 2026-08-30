@@ -183,6 +183,23 @@ class Folder(Base):
     initial_sync_done: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=FetchedValue(),
     )
+    # How many messages the folder held when its first sync began, so
+    # total_count has a denominator while that sync runs. NULL until it
+    # starts; set with initial_sync_done false means this is the folder
+    # being worked on right now, and only one folder per account ever is.
+    backfill_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # idle_requested is the one thing here MailVerdict may write: asking
+    # PostIMAP to hold an IMAP connection open for this folder so changes
+    # arrive in seconds rather than on the sync interval. idle_status is
+    # PostIMAP's answer (off / watching / unsupported / failed).
+    idle_requested: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
+    idle_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Mirrors the server's own subscription answer. A server that tracks no
+    # subscription state reports every mailbox as subscribed, so this means
+    # visible, never "the user chose this one" -- do not hide folders on it.
+    subscribed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
@@ -354,7 +371,9 @@ class Outbox(Base):
     status: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=FetchedValue(),
     )
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
     attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default=FetchedValue(),
     )
@@ -363,8 +382,12 @@ class Outbox(Base):
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
     )
-    sent_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sent_message_id: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )

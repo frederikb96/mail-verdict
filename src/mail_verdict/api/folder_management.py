@@ -2,16 +2,15 @@
 Folder management API endpoints.
 
 GET/PUT /accounts/{account_id}/folder-order — custom folder display order
-PATCH /folders/{folder_id}/prefs — the one write surface a folder has:
-  visibility, display name, unified name, special-use override
+PATCH /folders/{folder_id}/prefs — a folder's write surface: visibility,
+  display name, unified name, special-use override, and real-time sync
 POST /accounts/{account_id}/folders — create a folder (requires PostIMAP >= 1.3.0)
 DELETE /folders/{folder_id} — delete a folder and every message in it on the
   server, irreversibly (requires PostIMAP >= 1.3.0)
 
-IDLE endpoints removed -- PostIMAP handles IMAP IDLE. Renaming and
-re-nesting a folder is a documented PostIMAP non-goal and stays out here
-too: IMAP RENAME also renames every child folder, which no single-row
-UPDATE can express.
+Renaming and re-nesting a folder is a documented PostIMAP non-goal and
+stays out here too: IMAP RENAME also renames every child folder, which no
+single-row UPDATE can express.
 """
 
 from __future__ import annotations
@@ -38,6 +37,7 @@ from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, FolderPrefs, Message
 from mail_verdict.postimap.actions import create_folder as postimap_create_folder
 from mail_verdict.postimap.actions import delete_folder as postimap_delete_folder
+from mail_verdict.postimap.actions import set_folder_idle
 from mail_verdict.postimap.contract import read_postimap_info, supports_folder_crud
 
 logger = logging.getLogger(__name__)
@@ -191,6 +191,9 @@ async def _fetch_folder_response(
         special_use=(fp.special_use_override if fp else None) or f.special_use,
         mailbox_id=f.mailbox_id,
         initial_sync_done=f.initial_sync_done,
+        backfill_total=f.backfill_total,
+        idle_requested=f.idle_requested,
+        idle_status=f.idle_status,
         last_synced_at=f.last_synced_at,
         sync_error=f.sync_error,
         created_at=f.created_at,
@@ -332,19 +335,45 @@ async def update_folder_prefs(
     request: FolderPrefsUpdate,
 ) -> FolderResponse:
     """
-    Partially update a folder's MailVerdict preferences.
+    Partially update a folder's preferences.
 
-    The one write surface for a folder's preferences: visibility, display
-    name, unified name, and special-use override.
+    Visibility, display name, unified name and special-use override are
+    MailVerdict's own. real_time is PostIMAP's: it asks for an IMAP
+    connection held open on this folder, so changes arrive in seconds
+    rather than on the sync interval.
+
+    Each watched folder costs one connection, plus one for the account
+    itself, and providers cap connections per account -- commonly around
+    ten, though the figure is rarely published. Five or six watched folders
+    is comfortable. Exhausting the cap is visible rather than silent: the
+    folder's idle_status becomes "failed" and a notification is written,
+    instead of it quietly reverting to interval sync.
     """
     values = request.model_dump(exclude_unset=True)
     if not values:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    prefs_repo = get_folder_prefs_repo()
-    await prefs_repo.update(folder_id, **values)
-
     db = get_db_connection()
+    real_time = values.pop("real_time", None)
+
+    if real_time is not None:
+        async with db.session() as session:
+            info = await read_postimap_info(session)
+            if info is None or not supports_folder_crud(info):
+                raise HTTPException(
+                    status_code=501,
+                    detail=(
+                        "Per-folder real-time sync requires PostIMAP "
+                        f"service_version >= 1.3.0; the running instance reports "
+                        f"{info.service_version if info else 'unknown'}."
+                    ),
+                )
+            await set_folder_idle(session, folder_id, requested=real_time)
+
+    if values:
+        prefs_repo = get_folder_prefs_repo()
+        await prefs_repo.update(folder_id, **values)
+
     async with db.session() as session:
         response = await _fetch_folder_response(session, folder_id)
 

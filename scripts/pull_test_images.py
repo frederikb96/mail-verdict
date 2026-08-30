@@ -12,6 +12,7 @@ the suite actually starts.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
@@ -23,6 +24,20 @@ from tests.setup import images  # noqa: E402
 
 ATTEMPTS = 3
 BACKOFF_SECONDS = 5
+
+
+def container_cli() -> str:
+    """The container tool present here.
+
+    CI runs Docker-in-Docker, which is what testcontainers drives there.
+    A developer machine may have only podman, and hardcoding either one
+    makes this script fail on the other for no reason -- it only ever
+    pulls images, which both do identically.
+    """
+    for candidate in ("docker", "podman"):
+        if shutil.which(candidate):
+            return candidate
+    raise SystemExit("Neither docker nor podman is on PATH; cannot pull images.")
 
 
 def image_tags() -> list[str]:
@@ -38,7 +53,7 @@ def pull(tag: str) -> bool:
     """Pull one image, retrying a transient registry failure."""
     for attempt in range(1, ATTEMPTS + 1):
         result = subprocess.run(
-            ["docker", "pull", "--quiet", tag],
+            [container_cli(), "pull", "--quiet", tag],
             capture_output=True,
             text=True,
         )

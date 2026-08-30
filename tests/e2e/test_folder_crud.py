@@ -182,3 +182,38 @@ class TestFolderDeletion:
     ) -> None:
         resp = app_client.delete(f"/api/folders/{uuid.uuid4()}")
         assert resp.status_code == 404, resp.text
+
+    def test_real_time_sync_can_be_requested_per_folder(
+        self, app_client: TestClient, folder_account: dict[str, object],
+    ) -> None:
+        """A folder can be asked to sync in real time, and asked to stop.
+
+        Each watched folder holds its own IMAP connection, so this is a
+        budget the user spends rather than a switch they flip. What is
+        asserted here is the request and the readback, which is what this
+        application owns; whether the server then establishes the watch is
+        PostIMAP's to answer, on its own timing, and it reports that on
+        idle_status rather than through this call.
+        """
+        inbox = wait_for_folder(app_client, str(folder_account["id"]), "INBOX")
+        assert "idle_status" in inbox
+
+        # Establish the starting state rather than assuming it: the database
+        # outlives a single test, so an earlier run is a state this one has
+        # to survive.
+        base = app_client.patch(
+            f"/api/folders/{inbox['id']}/prefs", json={"real_time": False},
+        )
+        assert base.status_code == 200, base.text
+        assert base.json()["idle_requested"] is False
+
+        on = app_client.patch(f"/api/folders/{inbox['id']}/prefs", json={"real_time": True})
+        assert on.status_code == 200, on.text
+        assert on.json()["idle_requested"] is True
+
+        listed = app_client.get(f"/api/accounts/{folder_account['id']}/folders").json()
+        assert next(f for f in listed if f["id"] == inbox["id"])["idle_requested"] is True
+
+        off = app_client.patch(f"/api/folders/{inbox['id']}/prefs", json={"real_time": False})
+        assert off.status_code == 200, off.text
+        assert off.json()["idle_requested"] is False

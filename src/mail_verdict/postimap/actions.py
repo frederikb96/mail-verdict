@@ -386,6 +386,31 @@ async def delete_folder(session: AsyncSession, folder_id: uuid.UUID) -> None:
     )
 
 
+async def set_folder_idle(
+    session: AsyncSession, folder_id: uuid.UUID, *, requested: bool
+) -> None:
+    """
+    Ask PostIMAP to watch this folder for changes, or stop watching it.
+
+    A watched folder holds its own IMAP connection open, so changes arrive
+    in seconds instead of on the sync interval. PostIMAP answers on
+    folders.idle_status rather than through this statement -- a server that
+    does not support it, or a watch that exhausts its reconnection
+    attempts, shows up there and in a notification, not as a failure here.
+
+    Available from PostIMAP service_version 1.3.0 onward -- gate the call
+    site on postimap.contract.supports_folder_crud() first.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        folder_id: Folder to watch or stop watching
+        requested: Whether the folder should be watched
+    """
+    await session.execute(
+        update(Folder).where(Folder.id == folder_id).values(idle_requested=requested)
+    )
+
+
 async def insert_outbox(
     session: AsyncSession,
     *,

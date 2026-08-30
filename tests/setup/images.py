@@ -10,7 +10,7 @@ from __future__ import annotations
 POSTGRES_IMAGE = "pgvector/pgvector:pg18"
 
 # renovate: datasource=docker depName=ghcr.io/frederikb96/postimap versioning=docker
-POSTIMAP_IMAGE = "ghcr.io/frederikb96/postimap:1.4.0"
+POSTIMAP_IMAGE = "ghcr.io/frederikb96/postimap:1.5.0"
 
 # renovate: datasource=docker depName=dovecot/dovecot versioning=docker
 DOVECOT_IMAGE = "dovecot/dovecot:2.4.5"
