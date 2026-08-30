@@ -98,12 +98,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             MessageRepository,
             VerdictRepository,
         )
-        from mail_verdict.spam.analyst import AnthropicSpamAnalyst
+        from mail_verdict.spam.analyst import (
+            AnthropicSpamAnalyst,
+            FakeSpamAnalyst,
+            SpamAnalyst,
+        )
         from mail_verdict.spam.feedback import SpamFeedbackHandler
         from mail_verdict.spam.pipeline import VerdictPipeline
 
         retry_config = RC.from_settings(settings_service.get("retry"))
-        analyst = AnthropicSpamAnalyst(ai_settings, spam_settings, retry_config)
+        provider = str(ai_settings.get("provider", "anthropic")).lower()
+        analyst: SpamAnalyst
+        if provider == "fake":
+            analyst = FakeSpamAnalyst()
+            logger.info("Spam analyst: keyword-based, no model calls")
+        else:
+            analyst = AnthropicSpamAnalyst(ai_settings, spam_settings, retry_config)
         verdict_repo = VerdictRepository(db)
         message_repo = MessageRepository(db)
         folder_repo = FolderRepository(db)

@@ -22,6 +22,9 @@ class SettingCategory(str, enum.Enum):
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     SettingCategory.AI: {
+        # "anthropic" calls the real model and needs ANTHROPIC_API_KEY.
+        # "fake" classifies on keywords alone, for local use without a key.
+        "provider": "anthropic",
         "model": "claude-haiku-4-5",
         "enrichment_model": "claude-haiku-4-5",
         "max_tokens": 1024,

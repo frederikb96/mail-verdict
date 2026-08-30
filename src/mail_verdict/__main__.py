@@ -21,4 +21,9 @@ if __name__ == "__main__":
         port=config.server.port,
         log_config=None,
         factory=True,
+        # An SSE stream stays open for as long as its client is connected, and
+        # a graceful shutdown waits for open connections. Without a bound, a
+        # process with a browser attached never exits on its own and is killed
+        # by whatever is supervising it once its grace period runs out.
+        timeout_graceful_shutdown=10,
     )
