@@ -27,6 +27,7 @@ from mail_verdict.pipeline.contracts import (
     StageThrottled,
     StageUnavailable,
 )
+from mail_verdict.pipeline.neighbors import NeighborService
 from mail_verdict.queue.circuit import CircuitBreaker
 
 if TYPE_CHECKING:
@@ -288,6 +289,7 @@ class RunContext:
     verdict: VerdictView | None
     history: MessageHistory
     folders: FolderResolver
+    neighbors: NeighborService
     models: ModelGateway
     log: BoundLog
     # The per-account "enable spam detection" toggle (account_prefs.spam_enabled),

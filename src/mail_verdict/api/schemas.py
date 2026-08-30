@@ -716,3 +716,116 @@ class SemanticSearchResponse(BaseModel):
     results: list[SemanticSearchResult]
     query: str
     model: str
+
+
+# --- Pipeline configuration schemas ---
+
+
+class StageOut(BaseModel):
+    """One stage as stored in a pipeline revision."""
+
+    stage_id: str
+    type: str
+    name: str
+    config: dict[str, Any]
+    enabled: bool
+    halt: bool
+    accounts: list[uuid.UUID] | None = None
+
+
+class PipelineHealthEntryOut(BaseModel):
+    """One folder reference's resolution against one account."""
+
+    stage_id: str
+    account_id: uuid.UUID
+    reference: str
+    ok: bool
+    detail: str | None = None
+
+
+class PipelineDocumentOut(BaseModel):
+    """The current pipeline definition, with its live resolution state."""
+
+    revision: int
+    enabled: bool
+    stages: list[StageOut]
+    warnings: list[PipelineHealthEntryOut]
+
+
+class PipelineWriteRequest(BaseModel):
+    """Replace the whole pipeline document.
+
+    base_revision makes the write optimistic: omit it to overwrite
+    unconditionally, or supply the revision this edit was based on to get
+    a 409 instead of silently clobbering a concurrent writer.
+    """
+
+    base_revision: int | None = None
+    enabled: bool = True
+    stages: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class StageCreateRequest(BaseModel):
+    """Add one stage to the current pipeline definition."""
+
+    stage_id: str
+    type: str
+    name: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    halt: bool = False
+    accounts: list[uuid.UUID] | None = None
+    position: int | None = None  # None appends
+    base_revision: int | None = None
+
+
+class StageUpdateRequest(BaseModel):
+    """Partial update to one existing stage; omitted fields are unchanged."""
+
+    name: str | None = None
+    config: dict[str, Any] | None = None
+    enabled: bool | None = None
+    halt: bool | None = None
+    accounts: list[uuid.UUID] | None = None
+    base_revision: int | None = None
+
+
+class StageReorderRequest(BaseModel):
+    """The full, new stage order -- must be a permutation of every
+    existing stage_id, not a partial list."""
+
+    order: list[str]
+    base_revision: int | None = None
+
+
+class StageTypeOut(BaseModel):
+    """One registered stage type: what it can be configured with."""
+
+    type: str
+    runs_on: list[str]
+    schema_: dict[str, Any] = Field(alias="schema")
+
+    model_config = {"populate_by_name": True}
+
+
+class PipelineRevisionSummary(BaseModel):
+    """One revision's metadata, without its document -- the history list."""
+
+    revision: int
+    note: str | None
+    created_at: datetime
+
+
+class PipelineTestRequest(BaseModel):
+    """Dry-run the pipeline (or one stage) against an existing message."""
+
+    message_id: uuid.UUID
+    origin: Literal["live", "historical"] = "live"
+
+
+class PipelineTestResponse(BaseModel):
+    """A dry run's outcome: status and the full trace, nothing applied."""
+
+    status: str
+    skip_reason: str | None = None
+    trace: list[dict[str, Any]]

@@ -1,7 +1,20 @@
 """
-Turning a live message arrival into a `pipeline_runs` row, and the
+Turning a live message arrival into an embedding enqueue, the gate that
+gives that embedding's terminal state a `pipeline_runs` row, and the
 watermark and reconciliation that cover the gap a listener reconnect
 leaves behind.
+
+Embedding strictly precedes the pipeline: `enqueue_live_arrival` enqueues
+a `message_embeddings` row, never a `pipeline_runs` row directly. Only
+`enqueue_pipeline_run_if_live_eligible`, called from
+embeddings/repository.py inside the same transaction that moves an
+embedding to 'done' or 'failed', ever inserts into `pipeline_runs`. Both
+provider calls (embedding and classification) hit the same account, so
+gating on the first costs no real availability -- if the provider is
+down, nothing downstream was going to be classified either -- and it buys
+the invariant that everything in the pipeline queue has a vector. A
+message whose embedding permanently fails still reaches the gate on that
+failure, so it is still classified, just without neighbour hints.
 
 The pipeline is triggered by arrival only: `message`/`insert` with
 `origin = "sync"`, and nothing else -- never a `message`/`update`. A
@@ -17,7 +30,9 @@ during the gap (postimap/listener.py's own docstring says so). A
 set-difference query finds what was missed, but a set-difference query
 alone cannot tell "arrived while disconnected" (must be enqueued) from
 "historical mail" (must never be) -- that is what the watermark in
-pipeline_folder_state is for.
+pipeline_folder_state is for. It also respects the embedding gate: it
+only enqueues a run for a message whose current-model embedding has
+already reached a terminal state, never for one still pending.
 """
 
 from __future__ import annotations
@@ -29,9 +44,12 @@ from typing import TYPE_CHECKING
 from sqlalchemy import text
 
 from mail_verdict.database.msg_key import compute_msg_key
+from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
 from mail_verdict.queue.notify import ReconciliationTimer, WorkQueueNotifier
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.postimap.listener import PostimapEvent
     from mail_verdict.settings.service import SettingsService
@@ -50,17 +68,27 @@ _DEFAULT_RECONCILE_INTERVAL_S = 30.0
 _RECONCILE_BATCH_SIZE = 200
 
 
-async def enqueue_live_arrival(db: DatabaseConnection, event: PostimapEvent) -> None:
+async def enqueue_live_arrival(
+    db: DatabaseConnection, event: PostimapEvent, settings_service: SettingsService,
+) -> None:
     """
-    Enqueue a pipeline run for a message that just arrived, if it is in
-    scope. Called directly from the `message`/`insert` branch of the
-    postimap_events dispatcher -- never from an `update`.
+    Enqueue an embedding for a message that just arrived, if it is
+    embeddable at all. Called directly from the `message`/`insert` branch
+    of the postimap_events dispatcher -- never from an `update`.
 
-    A message out of scope (sent/drafts/trash/junk/archive, or a draft)
-    produces no row at all, which is deliberate: a run that never existed
-    needs no explanation, whereas a run that did nothing still has to say
-    why (see pipeline/runner.py's scope re-check for the symmetric case).
+    Deliberately not the pipeline-scope gate (sent/drafts/trash/junk/
+    archive): embeddings serve semantic search across every folder, the
+    same breadth the backfill reconciler already gives them
+    (embeddings/worker.py). The narrower pipeline scope is enforced once,
+    at the second enqueue in enqueue_pipeline_run_if_live_eligible, so it
+    cannot drift between the two gates.
+
+    Priority 0, ahead of the backfill sweep's 100, so live mail's
+    embedding -- and everything waiting on it -- is never stuck behind a
+    backlog.
     """
+    from mail_verdict.embeddings.repository import EmbeddingRepository
+
     try:
         message_id = uuid.UUID(event.id)
         account_id = uuid.UUID(event.account_id)
@@ -68,63 +96,108 @@ async def enqueue_live_arrival(db: DatabaseConnection, event: PostimapEvent) -> 
         logger.warning("Invalid message insert payload: %s", event)
         return
 
-    async with db.session() as session:
-        row = await session.execute(
-            text(
-                """
-                SELECT m.account_id, m.message_id, m.from_addr, m.subject, m.received_at,
-                       m.size_bytes, m.is_draft, m.expunged_at,
-                       coalesce(fp.special_use_override, f.special_use) AS effective_special_use,
-                       f.deleted_at AS folder_deleted_at
-                FROM messages m
-                JOIN folders f ON f.id = m.folder_id
-                LEFT JOIN folder_prefs fp ON fp.folder_id = f.id
-                WHERE m.id = :message_id AND m.account_id = :account_id
-                """
-            ),
-            {"message_id": message_id, "account_id": account_id},
-        )
-        result = row.one_or_none()
-        if result is None:
-            return
-        if (
-            result.is_draft
-            or result.expunged_at is not None
-            or result.folder_deleted_at is not None
-            or (result.effective_special_use or "") in _SKIP_FOLDER_SPECIAL_USE
-        ):
-            return
+    semantic_settings = (
+        settings_service.get("semantic") if settings_service.has_category("semantic") else {}
+    )
+    model = str(semantic_settings.get("model", DEFAULT_EMBEDDING_MODEL))
 
-        msg_key = compute_msg_key(
-            account_id=account_id, message_id_hdr=result.message_id, from_addr=result.from_addr,
-            subject=result.subject, received_at=result.received_at, size_bytes=result.size_bytes,
-        )
+    embedding_repo = EmbeddingRepository(db)
+    inserted = await embedding_repo.enqueue_one(
+        account_id=account_id, message_id=message_id, model=model, priority=0,
+    )
+    if inserted:
+        async with db.session() as session:
+            await WorkQueueNotifier.notify(session, "embeddings")
 
-        # A UIDVALIDITY resync fires an ordinary message/insert for mail
-        # that already has a run under the old message id -- not
-        # suppressed by PostIMAP the way a folder's first sync is (see
-        # the consumer contract's backfill-suppression section). msg_key
-        # is unchanged, so ON CONFLICT still finds the existing row; DO
-        # UPDATE repoints its message_id at the new one instead of
-        # DO NOTHING silently leaving it stale, which is what
-        # GET /api/mails/{id}/runs joins on.
-        insert_result = await session.execute(
-            text(
-                """
-                INSERT INTO pipeline_runs
-                    (account_id, msg_key, message_id, dedup_key, origin, apply, priority)
-                VALUES (:account_id, :msg_key, :message_id, 'live', 'live', true, 0)
-                ON CONFLICT (account_id, msg_key, dedup_key) DO UPDATE
-                    SET message_id = EXCLUDED.message_id
-                    WHERE pipeline_runs.message_id IS DISTINCT FROM EXCLUDED.message_id
-                RETURNING (xmax = 0) AS was_inserted
-                """
-            ),
-            {"account_id": account_id, "msg_key": msg_key, "message_id": message_id},
-        )
-        row_result = insert_result.one_or_none()
-        if row_result is not None and row_result.was_inserted:
-            await WorkQueueNotifier.notify(session, "pipeline")
+
+async def enqueue_pipeline_run_if_live_eligible(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    message_id: uuid.UUID | None,
+    settings_service: SettingsService,
+) -> bool:
+    """
+    The pipeline half of the embedding gate. Called by
+    embeddings/repository.py inside the same transaction that moves a
+    message_embeddings row to 'done' or 'failed' -- never called directly,
+    and never opens its own session, so the two writes commit or roll back
+    together and the second enqueue can never be lost independently of the
+    first.
+
+    Live-eligible mirrors _reconcile_once's own definition exactly, since
+    both answer the same question at different moments: the message's
+    folder carries our watermark (pipeline_folder_state), the message
+    arrived after it, and it is not older than
+    pipeline.live_max_age_days -- the secondary guard against a missing or
+    stale watermark reclassifying old mail. A message that fails this
+    check produces no row and no explanation, the same "never existed"
+    convention the old direct enqueue used, since scope was never in
+    doubt (see the module docstring).
+
+    Returns:
+        True if a new row was inserted -- the caller notifies "pipeline"
+    """
+    if message_id is None:
+        return False
+
+    pipeline_settings = (
+        settings_service.get("pipeline") if settings_service.has_category("pipeline") else {}
+    )
+    max_age_days = int(pipeline_settings.get("live_max_age_days", 7))
+
+    row = await session.execute(
+        text(
+            """
+            SELECT m.message_id AS message_id_hdr, m.from_addr, m.subject,
+                   m.received_at, m.size_bytes
+            FROM messages m
+            JOIN folders f ON f.id = m.folder_id
+            JOIN pipeline_folder_state s ON s.folder_id = f.id
+            LEFT JOIN folder_prefs fp ON fp.folder_id = f.id
+            WHERE m.id = :message_id AND m.account_id = :account_id
+              AND m.expunged_at IS NULL AND m.is_draft = false AND f.deleted_at IS NULL
+              AND coalesce(fp.special_use_override, f.special_use, '') NOT IN
+                  ('sent', 'drafts', 'trash', 'junk', 'archive')
+              AND s.backfill_completed_at IS NOT NULL
+              AND m.created_at > s.backfill_completed_at
+              AND m.received_at > now() - make_interval(days => :max_age_days)
+            """
+        ),
+        {"message_id": message_id, "account_id": account_id, "max_age_days": max_age_days},
+    )
+    result = row.one_or_none()
+    if result is None:
+        return False
+
+    msg_key = compute_msg_key(
+        account_id=account_id, message_id_hdr=result.message_id_hdr, from_addr=result.from_addr,
+        subject=result.subject, received_at=result.received_at, size_bytes=result.size_bytes,
+    )
+
+    # A UIDVALIDITY resync fires an ordinary message/insert for mail that
+    # already has a run under the old message id -- not suppressed by
+    # PostIMAP the way a folder's first sync is (see the consumer
+    # contract's backfill-suppression section). msg_key is unchanged, so
+    # ON CONFLICT still finds the existing row; DO UPDATE repoints its
+    # message_id at the new one instead of DO NOTHING silently leaving it
+    # stale, which is what GET /api/mails/{id}/runs joins on.
+    insert_result = await session.execute(
+        text(
+            """
+            INSERT INTO pipeline_runs
+                (account_id, msg_key, message_id, dedup_key, origin, apply, priority)
+            VALUES (:account_id, :msg_key, :message_id, 'live', 'live', true, 0)
+            ON CONFLICT (account_id, msg_key, dedup_key) DO UPDATE
+                SET message_id = EXCLUDED.message_id
+                WHERE pipeline_runs.message_id IS DISTINCT FROM EXCLUDED.message_id
+            RETURNING (xmax = 0) AS was_inserted
+            """
+        ),
+        {"account_id": account_id, "msg_key": msg_key, "message_id": message_id},
+    )
+    row_result = insert_result.one_or_none()
+    return bool(row_result is not None and row_result.was_inserted)
 
 
 async def record_folder_watermark(db: DatabaseConnection, event: PostimapEvent) -> None:
@@ -165,19 +238,32 @@ async def record_folder_watermark(db: DatabaseConnection, event: PostimapEvent) 
 
 async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsService) -> None:
     """
-    Find live-eligible messages with no pipeline run yet and enqueue them
-    -- the gap a listener reconnect leaves, bounded to one batch per tick
-    so a very large gap does not hold the advisory lock for long.
+    Find live-eligible messages with a terminal embedding and no pipeline
+    run yet, and enqueue them -- the gap a listener reconnect leaves,
+    bounded to one batch per tick so a very large gap does not hold the
+    advisory lock for long.
 
     Live-eligible: the message's folder has a watermark, the message
     arrived after it, and it is not older than `pipeline.live_max_age_days`
     -- a secondary guard against a missing or stale watermark quietly
-    reclassifying an entire mailbox.
+    reclassifying an entire mailbox. The same definition
+    enqueue_pipeline_run_if_live_eligible applies at the embedding's own
+    terminal transition; this query additionally requires that terminal
+    state to already exist, since a listener gap can just as easily have
+    lost the message's arrival before its embedding was ever enqueued --
+    the embeddings backfill reconciler (embeddings/worker.py) is what
+    eventually gives it one, and this pass then finds it on a later tick.
+    A message whose embedding is still pending is left for that
+    transition to enqueue instead, never enqueued here ahead of it.
     """
     pipeline_settings = (
         settings_service.get("pipeline") if settings_service.has_category("pipeline") else {}
     )
     max_age_days = int(pipeline_settings.get("live_max_age_days", 7))
+    semantic_settings = (
+        settings_service.get("semantic") if settings_service.has_category("semantic") else {}
+    )
+    embedding_model = str(semantic_settings.get("model", DEFAULT_EMBEDDING_MODEL))
 
     async with db.session() as session:
         rows = await session.execute(
@@ -188,6 +274,9 @@ async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsServ
                 FROM messages m
                 JOIN folders f ON f.id = m.folder_id
                 JOIN pipeline_folder_state s ON s.folder_id = f.id
+                JOIN message_embeddings me ON me.account_id = m.account_id
+                    AND me.message_id = m.id AND me.model = :embedding_model
+                    AND me.status IN ('done', 'failed')
                 LEFT JOIN folder_prefs fp ON fp.folder_id = f.id
                 WHERE m.expunged_at IS NULL
                   AND m.is_draft = false
@@ -206,7 +295,10 @@ async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsServ
                 LIMIT :batch
                 """
             ),
-            {"max_age_days": max_age_days, "batch": _RECONCILE_BATCH_SIZE},
+            {
+                "max_age_days": max_age_days, "embedding_model": embedding_model,
+                "batch": _RECONCILE_BATCH_SIZE,
+            },
         )
         candidates = rows.all()
         if not candidates:

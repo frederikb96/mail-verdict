@@ -38,10 +38,19 @@ def build_stage(definition: StageDefinition) -> Stage:
     schema = stage_cls.config_schema()
     try:
         config = schema.model_validate(dict(definition.config))
+        return stage_cls(definition.stage_id, config)  # type: ignore[no-any-return]
+    except StageMisconfigured:
+        raise
     except Exception as exc:
+        # Covers both a config shape pydantic rejects and a construction
+        # failure a type's own __init__ raises on otherwise-well-typed
+        # config -- MatchStage parsing an unknown effect kind, most
+        # notably (pipeline/effect_codec.EffectConfigError). Both are
+        # "a person has to fix this" problems, never retried; folding
+        # them into one exception type here is what makes that true
+        # regardless of which stage of construction caught it.
         raise StageMisconfigured(
             f"stage {definition.stage_id!r}: config does not match "
             f"{definition.type!r} schema: {exc}",
             stage_id=definition.stage_id,
         ) from exc
-    return stage_cls(definition.stage_id, config)  # type: ignore[no-any-return]

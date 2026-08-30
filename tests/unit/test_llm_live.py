@@ -35,6 +35,7 @@ from mail_verdict.pipeline.context import (
 )
 from mail_verdict.pipeline.contracts import RecordVerdict
 from mail_verdict.pipeline.message_view import FolderView, MessageView
+from mail_verdict.pipeline.neighbors import NeighborService
 from mail_verdict.pipeline.stages.classify import ClassifyConfig, ClassifyStage
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 
@@ -92,6 +93,7 @@ def _build_ctx(ai_settings: dict[str, object]) -> RunContext:
         settings={"ai": ai_settings, "retry": retry_settings}, trace=(), facts={},
         verdict=None, history=MessageHistory(has_ai_verdict=False),
         folders=FolderResolver(db=None, account_id=uuid.uuid4()),  # type: ignore[arg-type]
+        neighbors=NeighborService(db=None, account_id=uuid.uuid4()),  # type: ignore[arg-type]
         models=ModelGateway(
             db=None, cred_repo=cred_repo, retry_config=RetryConfig.from_settings(retry_settings),
         ),

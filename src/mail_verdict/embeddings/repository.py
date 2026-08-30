@@ -1,6 +1,7 @@
 """
-Repository for message_embeddings: the backfill enqueue, writing a
-finished vector back, and coverage status.
+Repository for message_embeddings: the live-arrival enqueue, the backfill
+enqueue, writing a finished vector back (or a permanent failure), and
+coverage status.
 
 The backfill is a self-advancing set-difference predicate run in batches,
 not a cursor walk -- there is no cursor to persist, it is resumable by
@@ -11,6 +12,14 @@ into: msg_key's content-hash fallback for headerless mail cannot be
 expressed in SQL without duplicating database/msg_key.py's algorithm
 there, so headered mail (the overwhelming majority) is filtered in SQL and
 headerless mail is filtered in Python against the same batch.
+
+write_result and fail() are also where the embedding-first gate lives: a
+message becomes eligible for the pipeline queue only once its embedding
+reaches a terminal state, done or failed. Both call
+pipeline.enqueue.enqueue_pipeline_run_if_live_eligible inside the same
+transaction that moves this row to its terminal status, which is what
+makes the second enqueue exactly-once with the first -- see that
+function's docstring for what "live-eligible" means.
 """
 
 from __future__ import annotations
@@ -28,6 +37,7 @@ from mail_verdict.database.msg_key import compute_msg_key
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
+    from mail_verdict.settings.service import SettingsService
 
 # In-scope messages this batch inspected before Python-side filtering, and
 # how many genuinely new rows were inserted -- the caller stops looping
@@ -172,6 +182,74 @@ class EmbeddingRepository:
 
             return (len(candidates), inserted)
 
+    async def enqueue_one(
+        self, *, account_id: uuid.UUID, message_id: uuid.UUID, model: str, priority: int = 0,
+    ) -> bool:
+        """
+        Enqueue a single message's embedding immediately, ahead of the
+        batched backfill sweep (priority 0 against its 100) -- the
+        live-arrival path this piece of the design's build plan requires:
+        a message is embedded before it can ever reach the pipeline queue,
+        rather than waiting for the periodic backfill reconciler to notice
+        it (see pipeline/enqueue.py's enqueue_live_arrival).
+
+        Mirrors enqueue_missing_batch's resync-repoint behaviour for one
+        row: if this (account_id, msg_key, model) already exists under a
+        different message_id (a UIDVALIDITY resync), it is repointed
+        rather than duplicated, and nothing new is inserted.
+
+        Args:
+            account_id: Account the message belongs to
+            message_id: The message's current messages.id
+            model: Embedding model to enqueue for
+            priority: Claim ordering -- lower claims first, same
+                convention pipeline_runs uses for live vs. sweep work
+
+        Returns:
+            True if a new pending row was inserted
+        """
+        async with self._db.session() as session:
+            row = (await session.execute(
+                select(
+                    Message.account_id, Message.message_id.label("message_id_hdr"),
+                    Message.from_addr, Message.subject, Message.received_at, Message.size_bytes,
+                    Message.expunged_at, Message.is_draft,
+                ).where(Message.id == message_id, Message.account_id == account_id)
+            )).one_or_none()
+            if row is None or row.expunged_at is not None or row.is_draft:
+                return False
+
+            key = compute_msg_key(
+                account_id=account_id, message_id_hdr=row.message_id_hdr,
+                from_addr=row.from_addr, subject=row.subject,
+                received_at=row.received_at, size_bytes=row.size_bytes,
+            )
+            existing = (await session.execute(
+                select(MessageEmbedding.id, MessageEmbedding.message_id).where(
+                    MessageEmbedding.account_id == account_id,
+                    MessageEmbedding.msg_key == key,
+                    MessageEmbedding.model == model,
+                )
+            )).one_or_none()
+            if existing is not None:
+                if existing.message_id != message_id:
+                    await session.execute(
+                        update(MessageEmbedding)
+                        .where(MessageEmbedding.id == existing.id)
+                        .values(message_id=message_id)
+                    )
+                return False
+
+            stmt_ins = pg_insert(MessageEmbedding).values(
+                account_id=account_id, msg_key=key, message_id=message_id,
+                model=model, priority=priority,
+            )
+            stmt_ins = stmt_ins.on_conflict_do_nothing(
+                index_elements=["account_id", "msg_key", "model"],
+            )
+            result = await session.execute(stmt_ins)
+            return (result.rowcount or 0) > 0  # type: ignore[attr-defined]
+
     async def write_result(
         self,
         item_id: uuid.UUID,
@@ -181,10 +259,12 @@ class EmbeddingRepository:
         model: str,
         content_level: str,
         source_hash: str,
+        settings_service: SettingsService,
     ) -> bool:
         """
-        Write a finished vector and move the row to 'done', guarded the
-        same way queue/work_queue.py's own terminal transitions are.
+        Write a finished vector, move the row to 'done', and -- in the
+        same transaction -- gate the message's pipeline run on this
+        terminal state (see the module docstring).
 
         Args:
             item_id: Row to complete
@@ -195,10 +275,15 @@ class EmbeddingRepository:
                 guard predicate is cheap insurance against a stale claim)
             content_level: 'full' or 'envelope'
             source_hash: Hash of the exact text embedded
+            settings_service: Read for the live-eligibility check's
+                pipeline.live_max_age_days guard
 
         Returns:
             True if this worker still held the claim and the write landed
         """
+        from mail_verdict.pipeline.enqueue import enqueue_pipeline_run_if_live_eligible
+        from mail_verdict.queue.notify import WorkQueueNotifier
+
         async with self._db.session() as session:
             result = await session.execute(
                 update(MessageEmbedding)
@@ -213,8 +298,75 @@ class EmbeddingRepository:
                     source_hash=source_hash, claimed_by=None, claimed_at=None,
                     lease_expires_at=None, updated_at=datetime.now(timezone.utc),
                 )
+                .returning(MessageEmbedding.account_id, MessageEmbedding.message_id)
             )
-            return (result.rowcount or 0) > 0  # type: ignore[attr-defined]
+            row = result.one_or_none()
+            if row is None:
+                return False
+            enqueued = await enqueue_pipeline_run_if_live_eligible(
+                session, account_id=row.account_id, message_id=row.message_id,
+                settings_service=settings_service,
+            )
+            if enqueued:
+                await WorkQueueNotifier.notify(session, "pipeline")
+            return True
+
+    async def fail(
+        self,
+        item_id: uuid.UUID,
+        *,
+        worker_id: str,
+        last_error: str,
+        settings_service: SettingsService,
+    ) -> bool:
+        """
+        Move a claimed row permanently to 'failed' and, in the same
+        transaction, gate the message's pipeline run on this terminal
+        state (see the module docstring).
+
+        A message whose embedding can never succeed must still be
+        classified rather than stranded forever waiting on a vector that
+        will never exist -- reaching 'failed' is as terminal as reaching
+        'done', so it opens the same gate. The classify stage sees no
+        neighbour hints for it, and records that in its own trace.
+
+        Args:
+            item_id: Row to fail
+            worker_id: Must match the row's current claimant
+            last_error: Recorded on the row for the failure list
+            settings_service: Read for the live-eligibility check's
+                pipeline.live_max_age_days guard
+
+        Returns:
+            True if this worker still held the claim and the update landed
+        """
+        from mail_verdict.pipeline.enqueue import enqueue_pipeline_run_if_live_eligible
+        from mail_verdict.queue.notify import WorkQueueNotifier
+
+        async with self._db.session() as session:
+            result = await session.execute(
+                update(MessageEmbedding)
+                .where(
+                    MessageEmbedding.id == item_id,
+                    MessageEmbedding.status == "claimed",
+                    MessageEmbedding.claimed_by == worker_id,
+                )
+                .values(
+                    status="failed", last_error=last_error, claimed_by=None, claimed_at=None,
+                    lease_expires_at=None, updated_at=datetime.now(timezone.utc),
+                )
+                .returning(MessageEmbedding.account_id, MessageEmbedding.message_id)
+            )
+            row = result.one_or_none()
+            if row is None:
+                return False
+            enqueued = await enqueue_pipeline_run_if_live_eligible(
+                session, account_id=row.account_id, message_id=row.message_id,
+                settings_service=settings_service,
+            )
+            if enqueued:
+                await WorkQueueNotifier.notify(session, "pipeline")
+            return True
 
     async def status(
         self, *, model: str, account_id: uuid.UUID | None = None,

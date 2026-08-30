@@ -154,7 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if event.op == "insert":
                 await event_ring.add(account_uuid, "mail.new", sse_data)
                 if event.origin == "sync":
-                    await enqueue_live_arrival(db, event)
+                    await enqueue_live_arrival(db, event, settings_service)
             elif event.op == "update":
                 await event_ring.add(
                     account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},

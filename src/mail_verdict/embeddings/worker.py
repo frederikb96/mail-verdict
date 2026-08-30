@@ -195,7 +195,10 @@ async def _handle_one(
     No session is held open across the provider call: the message is read
     in its own session (via MessageRepository), the embedding request
     holds no session at all, and the result is written in a final, freshly
-    opened session (via EmbeddingRepository.write_result).
+    opened session -- via EmbeddingRepository.write_result or .fail,
+    never work_queue's own generic terminal transitions, since both of
+    those also gate this message's pipeline run in the same transaction
+    (see pipeline/enqueue.enqueue_pipeline_run_if_live_eligible).
     """
     item_id: uuid.UUID = row["id"]
     account_id: uuid.UUID = row["account_id"]
@@ -203,13 +206,17 @@ async def _handle_one(
     model: str = row["model"]
 
     if message_id is None:
-        await work_queue.fail(item_id, worker_id=worker_id, last_error="no message_id on row")
+        await embedding_repo.fail(
+            item_id, worker_id=worker_id, last_error="no message_id on row",
+            settings_service=settings_service,
+        )
         return
 
     message = await message_repo.get_by_id(account_id, message_id)
     if message is None:
-        await work_queue.fail(
+        await embedding_repo.fail(
             item_id, worker_id=worker_id, last_error="message no longer exists",
+            settings_service=settings_service,
         )
         return
 
@@ -236,13 +243,17 @@ async def _handle_one(
             await circuit.record_backoff(retry_after=timedelta(seconds=30), reason=str(exc))
             await work_queue.release_untouched(item_id, worker_id=worker_id)
         else:
-            await work_queue.fail(item_id, worker_id=worker_id, last_error=str(exc))
+            await embedding_repo.fail(
+                item_id, worker_id=worker_id, last_error=str(exc),
+                settings_service=settings_service,
+            )
         return
 
     await circuit.record_success()
     wrote = await embedding_repo.write_result(
         item_id, worker_id=worker_id, embedding=vectors[0], model=model,
         content_level=embedding_input.content_level, source_hash=embedding_input.source_hash,
+        settings_service=settings_service,
     )
     if not wrote:
         logger.warning(
