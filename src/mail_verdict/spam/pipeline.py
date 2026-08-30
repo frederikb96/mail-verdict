@@ -23,6 +23,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.models import Folder, Message, VerdictSource
 from mail_verdict.postimap.actions import move_message
 from mail_verdict.spam.analyst import AnalysisContext, SpamAnalyst
@@ -145,6 +146,7 @@ class VerdictPipeline:
                 source=VerdictSource.AI,
                 message_id_hdr=msg.message_id,
                 model_used=self._settings.get("ai").get("model"),
+                reasoning=verdict.reasoning,
             )
 
             if verdict.is_spam and auto_move_to_junk:
@@ -159,6 +161,12 @@ class VerdictPipeline:
             )
             return verdict.is_spam
 
+        except ProviderUnavailableError:
+            logger.warning(
+                "No API key configured for the selected provider, skipping spam check",
+                extra={"message_id": msg_id_str[:8]},
+            )
+            return None
         except Exception:
             logger.exception("Verdict pipeline failed for message %s", msg_id_str[:8])
             return None

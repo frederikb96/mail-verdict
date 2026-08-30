@@ -51,7 +51,6 @@ def app_client(
     asyncio.run(run_migrations(postgres_url))
 
     os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
-    os.environ.pop("MAIL_VERDICT_API_KEY", None)  # auth disabled -- dev mode
     reset_config()
 
     from mail_verdict.server import create_app

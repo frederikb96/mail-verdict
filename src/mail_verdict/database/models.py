@@ -407,6 +407,28 @@ class Setting(Base):
     )
 
 
+class ProviderCredential(Base):
+    """Encrypted AI provider API key, one row per provider.
+
+    encrypted_key is AES-256-GCM ciphertext (core/encryption.py) -- never
+    plaintext at rest, and never read back out through the API. Settings
+    writes go through settings/credentials.py, the only code that decrypts
+    a row.
+    """
+
+    __tablename__ = "provider_credentials"
+
+    provider: Mapped[str] = mapped_column(String(50), primary_key=True)
+    encrypted_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+
 class Verdict(Base):
     """Spam/ham verdict for an email.
 

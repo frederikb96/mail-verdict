@@ -88,7 +88,7 @@ jobs:
         run: uv pip install --system -e ".[dev]"
 
       - name: Unit tests
-        run: pytest tests/unit/ -v --tb=short
+        run: pytest tests/unit/ -m "not llm" -v --tb=short
 
   pg:
     name: Postgres + PostIMAP integration tests

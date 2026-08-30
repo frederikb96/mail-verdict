@@ -1,9 +1,15 @@
 """
 Rule evaluation engine.
 
-Loads rules from config, evaluates conditions, runs enrichment,
+Reads rules from settings, evaluates conditions, runs enrichment,
 and executes actions for matching rules. Triggered by PG LISTEN
 events for new messages.
+
+The rule list is parsed fresh from SettingsService on every event rather
+than once at construction -- adding, editing, or removing a rule through
+the settings API takes effect on the next event, not the next restart.
+Re-parsing a handful of small rule dicts per event costs nothing worth
+caching for.
 """
 
 from __future__ import annotations
@@ -22,6 +28,7 @@ from mail_verdict.rules.executor import ActionExecutor, ActionResult, StopProces
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
+    from mail_verdict.settings.service import SettingsService
 
 logger = logging.getLogger(__name__)
 
@@ -60,13 +67,13 @@ class RuleExecutionLog:
 
 def _parse_rules(raw_rules: list[dict[str, Any]]) -> list[RuleConfig]:
     """
-    Parse raw rule dicts from YAML config into RuleConfig objects.
+    Parse raw rule dicts from the "rules" settings category into RuleConfig objects.
 
     Args:
-        raw_rules: List of rule dicts from config.yaml
+        raw_rules: List of rule dicts from settings
 
     Returns:
-        Parsed RuleConfig list (preserves config order = priority)
+        Parsed RuleConfig list (preserves settings order = priority)
     """
     rules: list[RuleConfig] = []
     for raw in raw_rules:
@@ -106,7 +113,7 @@ def _parse_rules(raw_rules: list[dict[str, Any]]) -> list[RuleConfig]:
             )
         )
 
-    logger.info("Loaded rules from config", extra={"count": len(rules)})
+    logger.debug("Rules parsed", extra={"count": len(rules)})
     return rules
 
 
@@ -122,13 +129,13 @@ class RulesEngine:
     """
     Rule evaluation engine triggered by PG LISTEN events.
 
-    Evaluates rules in config order and executes matching actions.
+    Evaluates rules in settings order and executes matching actions.
     Integrates AI enrichment per-rule.
     """
 
     def __init__(
         self,
-        rules: list[dict[str, Any]],
+        settings_service: SettingsService,
         action_executor: ActionExecutor,
         enrichment_runner: EnrichmentRunner | None = None,
         db: DatabaseConnection | None = None,
@@ -137,15 +144,22 @@ class RulesEngine:
         Initialize rules engine.
 
         Args:
-            rules: Raw rule dicts from config
+            settings_service: Application settings service, read for the
+                "rules" category on every event
             action_executor: Executor for rule actions
             enrichment_runner: Optional AI enrichment runner
             db: Database connection for fetching mail context
         """
-        self._rules = _parse_rules(rules)
+        self._settings = settings_service
         self._executor = action_executor
         self._enrichment = enrichment_runner
         self._db = db
+
+    def _current_rules(self) -> list[RuleConfig]:
+        """Parse the rule list from the current settings cache."""
+        rules_data = self._settings.get("rules") if self._settings.has_category("rules") else {}
+        raw_rules = rules_data.get("rules", []) if isinstance(rules_data, dict) else []
+        return _parse_rules(raw_rules)
 
     async def handle_message_event(self, event: dict[str, Any]) -> None:
         """
@@ -167,7 +181,7 @@ class RulesEngine:
         if not trigger_str:
             return
 
-        matching_rules = [r for r in self._rules if r.trigger == trigger_str]
+        matching_rules = [r for r in self._current_rules() if r.trigger == trigger_str]
         if not matching_rules:
             return
 

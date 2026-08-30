@@ -12,6 +12,27 @@ from mail_verdict.rules.engine import TRIGGER_TYPES, RulesEngine, _parse_rules
 from mail_verdict.rules.executor import ActionExecutor, StopProcessing
 
 
+class _RulesSettingsStub:
+    """Minimal stand-in for SettingsService exposing only what RulesEngine reads.
+
+    Mutable after construction so tests can prove a rule change takes
+    effect on the engine's very next event, with no rebuild.
+    """
+
+    def __init__(self, rules: list[dict[str, Any]]) -> None:
+        self._rules = rules
+
+    def get(self, category: str) -> dict[str, Any]:
+        return {"rules": self._rules} if category == "rules" else {}
+
+    def has_category(self, category: str) -> bool:
+        return category == "rules"
+
+    def set_rules(self, rules: list[dict[str, Any]]) -> None:
+        """Simulate what SettingsService.update("rules", ...) leaves in cache."""
+        self._rules = rules
+
+
 class TestTriggerTypes:
     """Tests for TRIGGER_TYPES configuration."""
 
@@ -89,7 +110,7 @@ class TestRulesEngine:
     def _make_engine(
         self,
         rules: list[dict[str, Any]] | None = None,
-    ) -> tuple[RulesEngine, MagicMock]:
+    ) -> tuple[RulesEngine, MagicMock, _RulesSettingsStub]:
         """Create a RulesEngine with mock executor."""
         executor = MagicMock(spec=ActionExecutor)
         executor.execute = AsyncMock()
@@ -102,16 +123,17 @@ class TestRulesEngine:
                 "actions": [{"tag": "billing"}],
             }]
 
+        settings = _RulesSettingsStub(rules)
         engine = RulesEngine(
-            rules=rules,
+            settings_service=settings,  # type: ignore[arg-type]
             action_executor=executor,
         )
-        return engine, executor
+        return engine, executor, settings
 
     @pytest.mark.asyncio
     async def test_handle_insert_event(self) -> None:
         """Insert event triggers matching rules."""
-        engine, executor = self._make_engine(rules=[{
+        engine, executor, _ = self._make_engine(rules=[{
             "name": "catch_all",
             "trigger": "mail.received",
             "conditions": {},
@@ -132,7 +154,7 @@ class TestRulesEngine:
     @pytest.mark.asyncio
     async def test_unrelated_op_ignored(self) -> None:
         """Events with unknown op are ignored."""
-        engine, executor = self._make_engine()
+        engine, executor, _ = self._make_engine()
 
         event = {
             "op": "truncate",
@@ -160,7 +182,7 @@ class TestRulesEngine:
                 "actions": [{"tag": "test"}],
             },
         ]
-        engine, executor = self._make_engine(rules=rules)
+        engine, executor, _ = self._make_engine(rules=rules)
         executor.execute = AsyncMock(side_effect=StopProcessing())
 
         event = {
@@ -172,3 +194,33 @@ class TestRulesEngine:
         }
         await engine.handle_message_event(event)
         assert executor.execute.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rule_added_after_construction_fires_without_rebuild(self) -> None:
+        """A rule added through settings takes effect on the next event, no restart.
+
+        Regression test for the bug this slice fixes: the engine used to
+        parse its rule list once in __init__ and never look again.
+        """
+        engine, executor, settings = self._make_engine(rules=[])
+
+        event = {
+            "op": "insert",
+            "id": str(uuid.uuid4()),
+            "account_id": str(uuid.uuid4()),
+            "folder_id": str(uuid.uuid4()),
+            "folder_name": "INBOX",
+        }
+
+        await engine.handle_message_event(event)
+        executor.execute.assert_not_awaited()
+
+        settings.set_rules([{
+            "name": "late_arrival",
+            "trigger": "mail.received",
+            "conditions": {},
+            "actions": [{"tag": "test"}],
+        }])
+
+        await engine.handle_message_event(event)
+        executor.execute.assert_awaited()

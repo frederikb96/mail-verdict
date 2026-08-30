@@ -233,3 +233,36 @@ class TestVerdictPipeline:
         result = await pipeline.process_message(_make_message(), _make_folder())
         assert result is None
         mocks["analyst"].analyze.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_enabling_spam_through_settings_takes_effect_without_rebuild(self) -> None:
+        """
+        Flipping spam.enabled on the same settings cache changes the
+        pipeline's next call, with no new VerdictPipeline constructed.
+
+        Regression test: spam.enabled used to only be read once, at
+        server startup, to decide whether to build the pipeline at all.
+        """
+        settings_state = {"enabled": False}
+        settings_service = MagicMock()
+        settings_service.get = MagicMock(side_effect=lambda cat: {
+            "spam": {
+                "enabled": settings_state["enabled"],
+                "excerpt_length": 300,
+                "auto_move_to_junk": True,
+                "auto_mark_read": True,
+            },
+            "ai": {"model": "test-model"},
+        }.get(cat, {}))
+
+        pipeline, mocks = self._make_pipeline(settings_service=settings_service)
+
+        result = await pipeline.process_message(_make_message(), _make_folder())
+        assert result is None
+        mocks["analyst"].analyze.assert_not_awaited()
+
+        settings_state["enabled"] = True
+
+        result = await pipeline.process_message(_make_message(), _make_folder())
+        assert result is False
+        mocks["analyst"].analyze.assert_awaited_once()

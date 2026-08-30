@@ -33,9 +33,11 @@ class TestDefaults:
             assert cat in SETTING_DEFAULTS or cat.value in SETTING_DEFAULTS
 
     def test_ai_defaults(self) -> None:
-        """AI defaults include the model and enrichment model settings."""
+        """AI defaults include the provider, model, effort, and enrichment model settings."""
         ai = SETTING_DEFAULTS[SettingCategory.AI]
+        assert "provider" in ai
         assert "model" in ai
+        assert "reasoning_effort" in ai
         assert "enrichment_model" in ai
         assert "max_tokens" in ai
 

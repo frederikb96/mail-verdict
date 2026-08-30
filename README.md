@@ -53,7 +53,7 @@ helm install mail-verdict oci://ghcr.io/frederikb96/charts/mail-verdict --versio
 
 It expects an external PostgreSQL shared with PostIMAP. The
 [chart README](charts/mail-verdict/README.md) walks through the three steps — database, PostIMAP,
-then MailVerdict — and includes a CloudNativePG example and the authentication setup.
+then MailVerdict — and includes a CloudNativePG example and the access setup.
 
 ## Configuration
 
@@ -63,27 +63,26 @@ repeat it.
 
 Configuration comes from that file, then a sparse override file, then environment variables — and
 the application refuses to start on anything missing rather than quietly substituting a fallback.
-Anything that changes at runtime (the AI model, spam behaviour, rules) is a **setting**, stored in
-the database and edited in the interface, not in a file.
+Anything that changes at runtime — the AI provider and model, spam behaviour, rules, and provider
+API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API,
+not in a file.
 
-Secrets are environment variables and are never stored in the database:
+A handful of values stay environment variables regardless, because they either gate config loading
+itself or are the fallback path for a deployment that would rather not put a key in the database:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` | Spam classification and rule enrichment |
-| `MAIL_VERDICT_API_KEY` | Guards the API and MCP endpoints. Unset disables the check — only appropriate locally |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
 | `MAIL_VERDICT_DATABASE_URL` | PostgreSQL connection, shared with PostIMAP |
 | `POSTGRES_PASSWORD` | Database password, used by compose |
-| `ENCRYPTION_KEY` | Optional. Passed to PostIMAP, which encrypts stored mail credentials at rest |
+| `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, and PostIMAP's own credential-at-rest encryption — one key shared by both. Optional; without it, provider keys can only come from the two env vars above |
 
-## Authentication
+## Access
 
-MailVerdict has no login screen. It checks an API key on its API and MCP endpoints, and that is
-the whole mechanism.
-
-For browser access, put an authenticating proxy in front of it and have that proxy inject the key
-once a user has signed in — so people never handle it and the application stays free of session
-management. The chart README has a worked example. Programmatic clients send the key themselves.
+MailVerdict has no login screen and no auth mechanism of its own — nothing checks a header or a
+key on any endpoint. Put an authenticating proxy in front of it (OIDC, basic auth, an internal
+SSO) and let that handle sign-in — people never touch application credentials, and the application
+stays free of session management. The chart README has a worked example.
 
 ## Architecture
 

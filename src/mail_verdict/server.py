@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse
@@ -39,6 +39,10 @@ from mail_verdict.postimap.contract import (
     read_postimap_info,
 )
 from mail_verdict.postimap.listener import PostimapListener, parse_dsn_from_sqlalchemy_url
+from mail_verdict.settings.credentials import (
+    init_provider_credential_repo,
+    reset_provider_credential_repo,
+)
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 logger = logging.getLogger(__name__)
@@ -73,13 +77,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings_service = await init_settings_service(db)
     logger.info("Settings loaded from DB")
 
-    ai_settings = settings_service.get("ai")
-    spam_settings = settings_service.get("spam")
-
-    from mail_verdict.core.anthropic_provider import init_anthropic_provider
-
-    anthropic_client = init_anthropic_provider()
-    logger.info("Anthropic API key configured" if anthropic_client else "No Anthropic API key set")
+    cred_repo = init_provider_credential_repo(db, config.security.encryption_key)
+    logger.info(
+        "Provider credential storage ready"
+        if config.security.encryption_key
+        else "No ENCRYPTION_KEY set -- provider keys must come from environment variables",
+    )
 
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.api.events import init_event_ring
@@ -88,86 +91,61 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_event_ring(event_ring)
     logger.info("EventRing initialized")
 
+    # The spam processor and rules engine are always constructed -- neither
+    # is gated on a setting at startup. Each consults current settings on
+    # every event it handles (VerdictPipeline re-checks spam.enabled per
+    # message, RulesEngine re-parses the rule list per event), so enabling
+    # spam detection or adding a first rule through the settings API takes
+    # effect on the next message rather than the next restart.
+    from mail_verdict.database.repository import (
+        AccountPrefsRepository,
+        FolderRepository,
+        MessageRepository,
+        TagRepository,
+        VerdictRepository,
+    )
+    from mail_verdict.rules.engine import RulesEngine
+    from mail_verdict.rules.enrichment import EnrichmentRunner
+    from mail_verdict.rules.executor import ActionExecutor
+    from mail_verdict.spam.analyst import LiveSpamAnalyst
+    from mail_verdict.spam.feedback import SpamFeedbackHandler
+    from mail_verdict.spam.pipeline import VerdictPipeline
     from mail_verdict.spam.processor import SpamEventProcessor
 
-    if spam_settings.get("enabled", False):
-        from mail_verdict.core.retry import RetryConfig as RC
-        from mail_verdict.database.repository import (
-            AccountPrefsRepository,
-            FolderRepository,
-            MessageRepository,
-            VerdictRepository,
-        )
-        from mail_verdict.spam.analyst import (
-            AnthropicSpamAnalyst,
-            FakeSpamAnalyst,
-            SpamAnalyst,
-        )
-        from mail_verdict.spam.feedback import SpamFeedbackHandler
-        from mail_verdict.spam.pipeline import VerdictPipeline
+    verdict_repo = VerdictRepository(db)
+    message_repo = MessageRepository(db)
+    folder_repo = FolderRepository(db)
+    account_prefs_repo = AccountPrefsRepository(db)
+    feedback = SpamFeedbackHandler(verdict_repo)
+    analyst = LiveSpamAnalyst(settings_service, cred_repo)
 
-        retry_config = RC.from_settings(settings_service.get("retry"))
-        provider = str(ai_settings.get("provider", "anthropic")).lower()
-        analyst: SpamAnalyst
-        if provider == "fake":
-            analyst = FakeSpamAnalyst()
-            logger.info("Spam analyst: keyword-based, no model calls")
-        else:
-            analyst = AnthropicSpamAnalyst(ai_settings, spam_settings, retry_config)
-        verdict_repo = VerdictRepository(db)
-        message_repo = MessageRepository(db)
-        folder_repo = FolderRepository(db)
-        account_prefs_repo = AccountPrefsRepository(db)
-        feedback = SpamFeedbackHandler(verdict_repo)
+    pipeline = VerdictPipeline(
+        settings_service=settings_service,
+        analyst=analyst,
+        verdict_repo=verdict_repo,
+        folder_repo=folder_repo,
+        account_prefs_repo=account_prefs_repo,
+        db=db,
+    )
+    _spam_processor = SpamEventProcessor(
+        pipeline=pipeline,
+        feedback=feedback,
+        message_repo=message_repo,
+        folder_repo=folder_repo,
+        db=db,
+    )
+    logger.info("Spam processor initialized")
 
-        pipeline = VerdictPipeline(
-            settings_service=settings_service,
-            analyst=analyst,
-            verdict_repo=verdict_repo,
-            folder_repo=folder_repo,
-            account_prefs_repo=account_prefs_repo,
-            db=db,
-        )
-        _spam_processor = SpamEventProcessor(
-            pipeline=pipeline,
-            feedback=feedback,
-            message_repo=message_repo,
-            folder_repo=folder_repo,
-            db=db,
-        )
-        logger.info("Spam processor initialized")
-    else:
-        logger.info("Spam detection disabled")
-
-    rules_data = settings_service.get("rules") if settings_service.has_category("rules") else {}
-    rules_list = rules_data.get("rules", []) if isinstance(rules_data, dict) else []
-
-    if rules_list:
-        from mail_verdict.database.repository import FolderRepository as FR
-        from mail_verdict.database.repository import TagRepository
-        from mail_verdict.rules.engine import RulesEngine
-        from mail_verdict.rules.enrichment import EnrichmentRunner
-        from mail_verdict.rules.executor import ActionExecutor
-
-        tag_repo = TagRepository(db)
-        rules_folder_repo = FR(db)
-        enrichment_model = str(
-            ai_settings.get("enrichment_model") or ai_settings.get("model") or "claude-haiku-4-5",
-        )
-        enrichment_runner = EnrichmentRunner(ai_model=enrichment_model)
-        action_executor = ActionExecutor(
-            tag_repo=tag_repo,
-            folder_repo=rules_folder_repo,
-        )
-        _rules_engine = RulesEngine(
-            rules=rules_list,
-            action_executor=action_executor,
-            enrichment_runner=enrichment_runner,
-            db=db,
-        )
-        logger.info("Rules engine initialized")
-    else:
-        logger.info("No rules configured")
+    tag_repo = TagRepository(db)
+    enrichment_runner = EnrichmentRunner(settings_service, cred_repo)
+    action_executor = ActionExecutor(tag_repo=tag_repo, folder_repo=folder_repo)
+    _rules_engine = RulesEngine(
+        settings_service=settings_service,
+        action_executor=action_executor,
+        enrichment_runner=enrichment_runner,
+        db=db,
+    )
+    logger.info("Rules engine initialized")
 
     async def _on_postimap_event(event: Any) -> None:
         """Dispatch a parsed postimap_events payload to EventRing, spam, and rules."""
@@ -239,8 +217,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _contract_ok = False
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
+    from mail_verdict.core.openai_provider import reset_openai_provider
 
     reset_anthropic_provider()
+    reset_openai_provider()
+    reset_provider_credential_repo()
     reset_settings_service()
     await close_database()
     logger.info("Database connection closed")
@@ -325,7 +306,6 @@ async def _outbox_event_payload(db: Any, event: Any) -> dict[str, Any]:
 
 def _build_fastapi() -> FastAPI:
     """Build the FastAPI root app: MCP mount, API routers, SSE route, health."""
-    from mail_verdict.api.auth import ApiKeyASGIMiddleware, require_auth
     from mail_verdict.api.mcp_tools import mcp as mcp_server
 
     # FastMCP's session manager runs its own lifespan; mounting it under a
@@ -339,10 +319,9 @@ def _build_fastapi() -> FastAPI:
             async with lifespan(app):
                 yield
 
-    # dependencies=[Depends(require_auth)] must live on api_router below, not
-    # here: a Mount is an ASGI boundary, and dependencies declared on this
-    # outer app never run for a mounted sub-app's own routes. The same trap
-    # applies to /mcp, so it is wrapped in ApiKeyASGIMiddleware instead.
+    # MailVerdict has no auth layer of its own: the deployment model is an
+    # authenticating proxy in front of it (see README). Nothing here checks
+    # a header or a key.
     app = FastAPI(title="MailVerdict", lifespan=combined_lifespan)
 
     config = get_config()
@@ -353,17 +332,13 @@ def _build_fastapi() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.mount("/mcp", ApiKeyASGIMiddleware(mcp_app))
+    app.mount("/mcp", mcp_app)
 
     from mail_verdict.api.routes import all_routers
 
-    # require_auth is attached per-router (not at the FastAPI(dependencies=)
-    # level) so /health and /health/live can stay unauthenticated: FastAPI
-    # app-level dependencies run for every route unconditionally and cannot
-    # be opted out of per-route, only scoped at inclusion time like this.
     api_router = FastAPI()
     for router in all_routers:
-        api_router.include_router(router, dependencies=[Depends(require_auth)])
+        api_router.include_router(router)
 
     @api_router.get("/health/live")
     async def health_live() -> JSONResponse:

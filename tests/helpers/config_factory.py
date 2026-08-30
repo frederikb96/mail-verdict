@@ -28,7 +28,11 @@ _TEST_DEFAULTS: dict[str, Any] = {
     "server": {
         "port": 18080,
         "cors_origins": ["http://localhost:5173"],
-        "api_key": "",
+    },
+    "security": {
+        # A fixed, obviously-fake 32-byte key so tests can round-trip
+        # provider-credential encryption without a real secret.
+        "encryption_key": "0" * 64,
     },
 }
 

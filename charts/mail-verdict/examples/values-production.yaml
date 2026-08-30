@@ -23,16 +23,17 @@ config:
     max_overflow: 5
 
 # The `mailverdict-db-credentials` Secret (see cnpg-cluster.yaml) holds only
-# `username`/`password` -- assemble the full connection URL, plus the two
-# API keys, into a Secret of your own with `existingSecretKeys.databaseUrl`
-# pointing at it (sealed-secrets, external-secrets, or `kubectl create
-# secret generic` -- anything that keeps it out of this file and out of
-# Helm release history).
+# `username`/`password` -- assemble the full connection URL, plus the
+# provider keys and the encryption key, into a Secret of your own with
+# `existingSecretKeys.databaseUrl` pointing at it (sealed-secrets,
+# external-secrets, or `kubectl create secret generic` -- anything that
+# keeps it out of this file and out of Helm release history).
 existingSecret: mail-verdict-secrets
 existingSecretKeys:
   databaseUrl: DATABASE_URL
-  apiKey: API_KEY
   anthropicApiKey: ANTHROPIC_API_KEY
+  openaiApiKey: OPENAI_API_KEY
+  encryptionKey: ENCRYPTION_KEY
 
 resources:
   requests:
@@ -64,10 +65,9 @@ networkPolicy:
 
 # Browser-facing route, behind Traefik ForwardAuth. The middleware
 # authenticates the browser session (OIDC, basic auth, whatever your IdP
-# is -- not this chart's concern) and injects X-API-Key via
-# headers.customRequestHeaders so MailVerdict itself never sees a login.
-# See the chart README for the full Middleware/IngressRoute example this
-# annotation set assumes.
+# is -- not this chart's concern) before traffic ever reaches MailVerdict,
+# which has no login page of its own. See the chart README for the full
+# Middleware example this annotation set assumes.
 ingress:
   enabled: true
   className: traefik
@@ -79,9 +79,10 @@ ingress:
     enabled: true
     secretName: mail-verdict-tls
 
-# Programmatic route (MCP clients, scripts) -- same host, a path Traefik
-# routes around the ForwardAuth middleware above; callers present
-# X-API-Key themselves.
+# Programmatic route (MCP clients, scripts) that can't do the browser's
+# login flow -- same host, a path Traefik routes around the ForwardAuth
+# middleware above. Put a machine-appropriate mechanism (mTLS, a static
+# bearer token, an IP allowlist) in front of this path yourself.
 apiIngress:
   enabled: true
   className: traefik

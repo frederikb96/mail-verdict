@@ -9,7 +9,7 @@ import email.policy
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -56,33 +56,6 @@ def mock_db_session() -> AsyncMock:
     session.close = AsyncMock()
     session.flush = AsyncMock()
     return session
-
-
-def _anthropic_response(text: str) -> MagicMock:
-    """Build a mock Anthropic Messages API response with one text block."""
-    block = MagicMock()
-    block.type = "text"
-    block.text = text
-    response = MagicMock()
-    response.content = [block]
-    return response
-
-
-@pytest.fixture()
-def anthropic_response() -> Any:
-    """Factory building a mock Anthropic Messages API response for a given text."""
-    return _anthropic_response
-
-
-@pytest.fixture()
-def mock_anthropic() -> MagicMock:
-    """Mock AsyncAnthropic client returning a not-spam verdict by default."""
-    client = MagicMock()
-    client.messages = MagicMock()
-    client.messages.create = AsyncMock(
-        return_value=_anthropic_response('{"verdict": "not-spam"}')
-    )
-    return client
 
 
 @pytest.fixture()

@@ -167,10 +167,10 @@ networkPolicy:
 # change; everything else falls back to the image's built-in defaults.
 #
 # Unlike PostIMAP's chart, this section has no required key: the image's
-# bundled config.yaml already resolves `server.api_key` from
-# `${MAIL_VERDICT_API_KEY}` and `database.url` from
-# `${MAIL_VERDICT_DATABASE_URL}` -- both wired from the Secret below, not
-# duplicated here. Set values here only to change something else, e.g.
+# bundled config.yaml already resolves `database.url` from
+# `${MAIL_VERDICT_DATABASE_URL}` and `security.encryption_key` from
+# `${ENCRYPTION_KEY}` -- both wired from the Secret below, not duplicated
+# here. Set values here only to change something else, e.g.
 # `server.cors_origins` or `database.pool_size`.
 #
 # This is intentionally freeform: when new config sections are added to the
@@ -197,15 +197,19 @@ secret:
   # "postgresql+asyncpg://mailverdict:<password>@<host>:5432/postimap".
   # Required -- there is no usable default for an external database.
   databaseUrl: ""
-  # -- API key clients must present as the `X-API-Key` header on `/api/*`
-  # and `/mcp`. Required for anything reachable outside a trusted network --
-  # see the chart README's auth model section. Leaving it empty disables
-  # auth entirely (dev mode); do not do this on a public ingress.
-  apiKey: ""
   # -- Anthropic API key for spam classification and rule enrichment.
-  # Optional to start the pod, but the spam pipeline and LLM-backed rule
-  # actions fail at call time without it.
+  # Optional to start the pod -- prefer setting provider keys through the
+  # running application's Settings API instead (stored encrypted, no
+  # restart needed); this is the fallback for a deployment that prefers
+  # keeping keys out of the database.
   anthropicApiKey: ""
+  # -- OpenAI API key, same purpose as anthropicApiKey.
+  openaiApiKey: ""
+  # -- Encrypts provider API keys stored via the Settings API. Also usable
+  # as PostIMAP's own credential-at-rest encryption key -- one key across
+  # the deployment. Optional; without it, provider keys can only come from
+  # the env vars above. AES-256-GCM, 64 hex characters / 32 bytes.
+  encryptionKey: ""
 
 # -- Name of a pre-existing Secret to use instead of `secret.create`. Must
 # contain the keys named in `existingSecretKeys` below.
@@ -213,15 +217,17 @@ existingSecret: ""
 
 existingSecretKeys:
   databaseUrl: MAIL_VERDICT_DATABASE_URL
-  apiKey: MAIL_VERDICT_API_KEY
   anthropicApiKey: ANTHROPIC_API_KEY
+  openaiApiKey: OPENAI_API_KEY
+  encryptionKey: ENCRYPTION_KEY
 
 ingress:
-  # -- Browser-facing ingress. Expected to sit behind a ForwardAuth (or
-  # equivalent) middleware that handles login and injects the `X-API-Key`
-  # header -- the app itself has no login page. See the chart README for a
-  # worked Traefik example. `annotations` is deliberately free-form: no
-  # identity provider is hard-coded here.
+  # -- Browser-facing ingress. MailVerdict has no login page or auth
+  # mechanism of its own -- this is expected to sit behind an
+  # authenticating proxy (OIDC, basic auth, an internal SSO) that handles
+  # sign-in before traffic ever reaches the pod. See the chart README's
+  # access section for a worked Traefik ForwardAuth example. `annotations`
+  # is deliberately free-form: no identity provider is hard-coded here.
   enabled: false
   className: ""
   annotations: {}
@@ -236,10 +242,11 @@ ingress:
 
 apiIngress:
   # -- Optional second ingress for programmatic clients (MCP clients,
-  # scripts) that present `X-API-Key` themselves and should NOT sit behind
-  # the browser ForwardAuth middleware. Point this at the same or a
-  # different host/path than `ingress` -- whichever your ForwardAuth
-  # middleware setup does not intercept.
+  # scripts) that can't do an interactive browser login flow. Point this at
+  # a host/path your `ingress` ForwardAuth middleware doesn't intercept,
+  # and put whatever auth mechanism suits a machine client (mTLS, a static
+  # bearer token, an IP allowlist) in front of it instead -- entirely a
+  # proxy-level decision, since the application enforces nothing itself.
   enabled: false
   className: ""
   annotations: {}

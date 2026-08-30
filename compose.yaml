@@ -10,8 +10,9 @@ services:
       - ./config-custom:/app/config-custom:ro,Z
     environment:
       MAIL_VERDICT_DATABASE_URL: "postgresql+asyncpg://mailverdict:${POSTGRES_PASSWORD}@postgres:5432/mail_verdict"
-      MAIL_VERDICT_API_KEY: "${MAIL_VERDICT_API_KEY:-}"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
     depends_on:
       postgres:
         condition: service_healthy

@@ -145,21 +145,23 @@ There is no subject-based fallback. The raw headers remain on every row if one i
 
 Two separate mechanisms that must not overlap:
 
-- **Config** is infrastructure — server, database. It comes from files and environment variables
-  and takes effect at startup. `config/config.yaml` holds every default with a comment and is the
-  only place a default exists; the application fails at startup rather than substituting a
-  fallback for something missing.
-- **Settings** are application behaviour — AI model, spam handling, rules. They live in the
-  database and change at runtime through the API.
+- **Config** is infrastructure — server, database, the encryption key. It comes from files and
+  environment variables and takes effect at startup. `config/config.yaml` holds every default with
+  a comment and is the only place a default exists; the application fails at startup rather than
+  substituting a fallback for something missing.
+- **Settings** are application behaviour — AI provider, model, reasoning effort, spam handling,
+  rules, and provider API keys. They live in the database and change at runtime through the API.
 
-API keys are neither. They are environment variables and never stored in the database.
+Provider API keys sit inside the "ai" settings category but are write-only: settable, reportable
+as present with a last-four-character hint, never returned by any read. They are encrypted at rest
+with `security.encryption_key` (AES-256-GCM), the one config value in this system that protects a
+setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`) is the fallback for a deployment that would rather keep a key out of the database
+entirely — read fresh on every call, so switching from the env var to a stored key, or rotating a
+stored one, takes effect on the next request with no restart.
 
-## Authentication
+## Access
 
-The application has no login. It checks an API key header on its API and MCP surfaces, and that
-is the whole mechanism.
-
-Browser access is expected to sit behind an authenticating proxy that handles sign-in and injects
-the key, so users never hold it. Programmatic clients present it themselves. A deployment that
-wants neither can leave the key unset, which disables the check — appropriate for a local
-development instance and nothing else.
+The application has no login and no auth mechanism of its own — nothing checks a header or a key
+on any endpoint. The deployment model is an authenticating proxy in front of it, handling sign-in
+before traffic ever reaches the application, so users never hold an application credential at all.

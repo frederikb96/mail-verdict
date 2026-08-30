@@ -200,10 +200,13 @@
         "databaseUrl": {
           "type": "string"
         },
-        "apiKey": {
+        "anthropicApiKey": {
           "type": "string"
         },
-        "anthropicApiKey": {
+        "openaiApiKey": {
+          "type": "string"
+        },
+        "encryptionKey": {
           "type": "string"
         }
       }
@@ -215,19 +218,24 @@
       "type": "object",
       "required": [
         "databaseUrl",
-        "apiKey",
-        "anthropicApiKey"
+        "anthropicApiKey",
+        "openaiApiKey",
+        "encryptionKey"
       ],
       "properties": {
         "databaseUrl": {
           "type": "string",
           "minLength": 1
         },
-        "apiKey": {
+        "anthropicApiKey": {
           "type": "string",
           "minLength": 1
         },
-        "anthropicApiKey": {
+        "openaiApiKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "encryptionKey": {
           "type": "string",
           "minLength": 1
         }
