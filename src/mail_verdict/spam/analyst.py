@@ -1,8 +1,8 @@
 """
 Spam Analyst: LLM-based spam classification.
 
-Abstract SpamAnalyst ABC with OpenAI implementation.
-Takes mail context + neighbor data, returns binary spam/not-spam verdict.
+Abstract SpamAnalyst ABC with an Anthropic implementation. Takes mail
+context, returns a binary spam/not-spam verdict.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from mail_verdict.core.prompts import load_static_prompt, render_prompt
@@ -20,23 +20,6 @@ from mail_verdict.core.retry import RetryConfig
 logger = logging.getLogger(__name__)
 
 _VALID_VERDICTS = {"spam", "not-spam"}
-
-
-@dataclass
-class NeighborContext:
-    """Context for a single neighbor mail used in spam analysis."""
-
-    mail_id: str
-    tag: str | None
-    excerpt: str
-
-    def to_dict(self) -> dict[str, Any]:
-        """Serialize to dict for prompt construction."""
-        return {
-            "mail_id": self.mail_id,
-            "tag": self.tag or "unknown",
-            "excerpt": self.excerpt,
-        }
 
 
 @dataclass
@@ -51,11 +34,10 @@ class AnalysisContext:
     dkim_pass: bool | None = None
     spf_pass: bool | None = None
     dmarc_pass: bool | None = None
-    neighbors: list[NeighborContext] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for the LLM prompt."""
-        result: dict[str, Any] = {
+        return {
             "new_mail": {
                 "from": self.from_addr or "",
                 "to": self.to_addrs or "",
@@ -67,9 +49,7 @@ class AnalysisContext:
                     "dmarc": _auth_str(self.dmarc_pass),
                 },
             },
-            "neighbors": [n.to_dict() for n in self.neighbors],
         }
-        return result
 
 
 @dataclass
@@ -160,8 +140,8 @@ class SpamAnalyst(ABC):
         """
 
 
-class OpenAISpamAnalyst(SpamAnalyst):
-    """Spam analyst using OpenAI chat completions with JSON mode."""
+class AnthropicSpamAnalyst(SpamAnalyst):
+    """Spam analyst using the Anthropic Messages API."""
 
     def __init__(
         self,
@@ -170,35 +150,36 @@ class OpenAISpamAnalyst(SpamAnalyst):
         retry_config: RetryConfig,
     ) -> None:
         """
-        Initialize the OpenAI spam analyst.
+        Initialize the Anthropic spam analyst.
 
         Args:
-            ai_settings: AI settings dict (model key)
+            ai_settings: AI settings dict (model, max_tokens keys)
             spam_settings: Spam settings dict
             retry_config: Retry configuration
         """
-        self._model = ai_settings.get("model", "gpt-5-mini")
-        self._reasoning_effort = ai_settings.get("reasoning_effort")
+        self._model = ai_settings.get("model", "claude-haiku-4-5")
+        self._max_tokens = int(ai_settings.get("max_tokens", 1024))
         self._retry = retry_config
         self._system_prompt = _load_system_prompt()
 
     def _get_client(self) -> Any:
-        """Get the OpenAI client from the global provider."""
-        from mail_verdict.core.openai_provider import get_openai_client
+        """Get the Anthropic client from the global provider."""
+        from mail_verdict.core.anthropic_provider import get_anthropic_client
 
-        client = get_openai_client()
+        client = get_anthropic_client()
         if client is None:
-            raise RuntimeError("No OpenAI API key configured")
+            raise RuntimeError("No Anthropic API key configured")
         return client
 
     async def analyze(self, context: AnalysisContext) -> SpamVerdict:
         """
-        Analyze an email for spam using OpenAI chat completions.
+        Analyze an email for spam using the Anthropic Messages API.
 
-        Retries on malformed responses with exponential backoff.
+        Retries on malformed responses and rate limits with exponential
+        backoff.
 
         Args:
-            context: Mail content and neighbor context
+            context: Mail content and metadata
 
         Returns:
             SpamVerdict with binary classification
@@ -222,20 +203,16 @@ class OpenAISpamAnalyst(SpamAnalyst):
 
         for attempt in range(self._retry.max_retries + 1):
             try:
-                create_kwargs: dict[str, Any] = {
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": self._system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "response_format": {"type": "json_object"},
-                }
-                if self._reasoning_effort:
-                    create_kwargs["reasoning"] = {"effort": self._reasoning_effort}
+                response = await client.messages.create(
+                    model=self._model,
+                    max_tokens=self._max_tokens,
+                    system=self._system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                )
 
-                response = await client.chat.completions.create(**create_kwargs)
-
-                raw_content = response.choices[0].message.content or ""
+                raw_content = "".join(
+                    block.text for block in response.content if block.type == "text"
+                )
                 verdict = _parse_verdict(raw_content)
 
                 logger.info(
@@ -264,21 +241,14 @@ class OpenAISpamAnalyst(SpamAnalyst):
                     await asyncio.sleep(delay)
 
             except Exception as e:
-                from openai import RateLimitError
+                from anthropic import RateLimitError
 
                 last_error = e
                 if isinstance(e, RateLimitError):
-                    retry_after = getattr(e, "retry_after", None)
-                    delay = (
-                        float(retry_after) if retry_after
-                        else self._retry.delay_for_attempt(attempt)
-                    )
+                    delay = self._retry.delay_for_attempt(attempt)
                     logger.warning(
-                        "OpenAI rate limited, backing off",
-                        extra={
-                            "mail_id": context.mail_id,
-                            "delay": delay,
-                        },
+                        "Anthropic rate limited, backing off",
+                        extra={"mail_id": context.mail_id, "delay": delay},
                     )
                     await asyncio.sleep(delay)
                 elif attempt < self._retry.max_retries:
@@ -296,4 +266,42 @@ class OpenAISpamAnalyst(SpamAnalyst):
 
         raise RuntimeError(
             f"Spam analysis failed after {self._retry.max_retries + 1} attempts: {last_error}"
+        )
+
+
+class FakeSpamAnalyst(SpamAnalyst):
+    """Deterministic, keyword-driven analyst -- the test workhorse.
+
+    Never calls out to a real LLM: flags a message as spam if any of a
+    configurable set of keywords appears (case-insensitive) in the subject
+    or body excerpt. Used by tests and available as a settings-selectable
+    provider for local development without an API key.
+    """
+
+    DEFAULT_KEYWORDS = ("viagra", "lottery winner", "wire transfer", "nigerian prince")
+
+    def __init__(self, keywords: tuple[str, ...] = DEFAULT_KEYWORDS) -> None:
+        """
+        Initialize the fake analyst.
+
+        Args:
+            keywords: Lowercase substrings that trigger a spam verdict
+        """
+        self._keywords = keywords
+
+    async def analyze(self, context: AnalysisContext) -> SpamVerdict:
+        """
+        Classify as spam if any configured keyword appears in the content.
+
+        Args:
+            context: Mail content and metadata
+
+        Returns:
+            SpamVerdict with a deterministic classification
+        """
+        haystack = f"{context.subject or ''} {context.body_excerpt}".lower()
+        is_spam = any(kw in haystack for kw in self._keywords)
+        return SpamVerdict(
+            is_spam=is_spam,
+            raw_response={"verdict": "spam" if is_spam else "not-spam"},
         )

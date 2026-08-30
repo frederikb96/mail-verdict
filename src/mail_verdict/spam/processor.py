@@ -1,20 +1,22 @@
 """
 Spam event processor.
 
-Handles PG LISTEN events for new messages, routes them to
-VerdictPipeline (for new messages) and SpamFeedbackHandler
-(for user folder moves).
+Routes postimap_events message events to VerdictPipeline (new mail) and
+SpamFeedbackHandler (user folder moves to/from junk). Backfill suppression
+is handled upstream by PostIMAP itself -- per-message insert events never
+fire during a folder's initial sync, so no additional gating is needed here
+beyond the pipeline's own durability gate.
 """
 
 from __future__ import annotations
 
 import logging
-import uuid
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.database.repository import FolderRepository, MessageRepository
+    from mail_verdict.postimap.listener import PostimapEvent
     from mail_verdict.spam.feedback import SpamFeedbackHandler
     from mail_verdict.spam.pipeline import VerdictPipeline
 
@@ -22,14 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class SpamEventProcessor:
-    """
-    Processes PG LISTEN events for spam analysis.
-
-    Routes events to the appropriate handler:
-    - New message INSERT -> VerdictPipeline.process_message()
-    - Message folder change (moved to junk) -> SpamFeedbackHandler.handle_moved_to_spam()
-    - Message folder change (moved from junk) -> SpamFeedbackHandler.handle_moved_from_spam()
-    """
+    """Processes postimap_events message events for spam analysis."""
 
     def __init__(
         self,
@@ -55,40 +50,35 @@ class SpamEventProcessor:
         self._folder_repo = folder_repo
         self._db = db
 
-    async def handle_message_event(self, event: dict[str, Any]) -> None:
+    async def handle_message_event(self, event: PostimapEvent) -> None:
         """
-        Handle a message event from PG LISTEN.
-
-        Dispatches to the appropriate handler based on the operation type.
+        Handle a message event from postimap_events.
 
         Args:
-            event: PG LISTEN event payload with keys:
-                - op: "insert" or "update"
-                - id: Message UUID string
-                - account_id: Account UUID string
-                - folder_id: Current folder UUID string
-                - old_folder_id: Previous folder UUID (for updates/moves)
+            event: Parsed postimap_events payload
         """
-        op = event.get("op")
-
-        if op == "insert":
+        if event.op == "insert" and event.origin == "sync":
             await self._handle_new_message(event)
-        elif op == "update":
-            await self._handle_message_update(event)
+        elif event.op == "update" and "imap_uid" not in event.changed:
+            # A folder_id-changing update surfaces as imap_uid also
+            # changing (moves always reset it to NULL); an update that
+            # left imap_uid untouched cannot be a folder move.
+            return
+        elif event.op == "update":
+            await self._handle_possible_move(event)
 
-    async def _handle_new_message(self, event: dict[str, Any]) -> None:
-        """
-        Handle new message: look up full message + folder, run verdict pipeline.
+    async def _handle_new_message(self, event: PostimapEvent) -> None:
+        """Look up the full message + folder and run the verdict pipeline."""
+        import uuid
 
-        Args:
-            event: PG LISTEN event payload
-        """
         try:
-            message_id = uuid.UUID(event["id"])
-            account_id = uuid.UUID(event["account_id"])
-            folder_id = uuid.UUID(event["folder_id"])
-        except (KeyError, ValueError) as exc:
-            logger.warning("Invalid message event payload: %s", exc)
+            message_id = uuid.UUID(event.id)
+            account_id = uuid.UUID(event.account_id)
+            folder_id = uuid.UUID(event.folder_id) if event.folder_id else None
+        except ValueError:
+            logger.warning("Invalid message event payload: %s", event)
+            return
+        if folder_id is None:
             return
 
         msg = await self._message_repo.get_by_id(account_id, message_id)
@@ -103,44 +93,25 @@ class SpamEventProcessor:
 
         await self._pipeline.process_message(msg, folder)
 
-    async def _handle_message_update(self, event: dict[str, Any]) -> None:
-        """
-        Handle message update: check if folder changed (user move to/from spam).
+    async def _handle_possible_move(self, event: PostimapEvent) -> None:
+        """Check whether an update moved a message to/from the junk folder."""
+        import uuid
 
-        Args:
-            event: PG LISTEN event payload
-        """
-        old_folder_id_str = event.get("old_folder_id")
-        new_folder_id_str = event.get("folder_id")
-
-        if not old_folder_id_str or not new_folder_id_str:
+        if not event.folder_id:
             return
-
-        if old_folder_id_str == new_folder_id_str:
-            return  # Not a folder move
-
         try:
-            message_id = uuid.UUID(event["id"])
-            account_id = uuid.UUID(event["account_id"])
-            old_folder_id = uuid.UUID(old_folder_id_str)
-            new_folder_id = uuid.UUID(new_folder_id_str)
-        except (KeyError, ValueError) as exc:
-            logger.warning("Invalid message update event payload: %s", exc)
+            message_id = uuid.UUID(event.id)
+            account_id = uuid.UUID(event.account_id)
+            new_folder_id = uuid.UUID(event.folder_id)
+        except ValueError:
+            logger.warning("Invalid message update event payload: %s", event)
             return
 
-        # Look up folder special_use for both old and new folders
-        old_folder = await self._folder_repo.get_by_id(old_folder_id)
         new_folder = await self._folder_repo.get_by_id(new_folder_id)
+        if new_folder is None:
+            return
 
-        if old_folder and old_folder.special_use == "junk":
-            # Moved FROM spam -> user correction (not-spam)
-            await self._feedback.handle_moved_from_spam(
-                mail_id=message_id,
-                account_id=account_id,
-            )
-        elif new_folder and new_folder.special_use == "junk":
-            # Moved TO spam -> user feedback (spam)
+        if new_folder.special_use == "junk":
             await self._feedback.handle_moved_to_spam(
-                mail_id=message_id,
-                account_id=account_id,
+                mail_id=message_id, account_id=account_id,
             )

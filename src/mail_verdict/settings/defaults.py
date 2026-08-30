@@ -22,17 +22,14 @@ class SettingCategory(str, enum.Enum):
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     SettingCategory.AI: {
-        "provider": "openai",
-        "model": "gpt-5-mini",
-        "embedding_model": "text-embedding-3-large",
-        "embedding_dimensions": 3072,
-        "api_key": "",
-        "reasoning_effort": "medium",
+        "model": "claude-haiku-4-5",
+        "enrichment_model": "claude-haiku-4-5",
+        "max_tokens": 1024,
     },
     SettingCategory.SPAM: {
         "enabled": True,
         "excerpt_length": 300,
-        "neighbor_count": 3,
+        "auto_move_to_junk": True,
         "auto_mark_read": True,
     },
     SettingCategory.RETRY: {

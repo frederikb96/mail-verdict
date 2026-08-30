@@ -234,17 +234,12 @@ class ActionExecutor:
             logger.warning("Target folder not found", extra={"folder": folder})
             return
 
-        from sqlalchemy import update
-
         from mail_verdict.database.connection import get_db_connection
-        from mail_verdict.database.models import Message
+        from mail_verdict.postimap.actions import move_message
 
         db = get_db_connection()
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == mail_id)
-                .values(folder_id=target_folder_id)
-            )
+            await move_message(session, mail_id, target_folder_id)
 
     async def _action_copy_to(
         self,
@@ -270,25 +265,15 @@ class ActionExecutor:
         uid: int = 0,
     ) -> None:
         """Mark message as read or unread via direct SQL UPDATE."""
-        if not mail_id:
+        if not mail_id or value not in ("read", "unread"):
             return
 
-        from sqlalchemy import update
-
         from mail_verdict.database.connection import get_db_connection
-        from mail_verdict.database.models import Message
+        from mail_verdict.postimap.actions import set_flags
 
         db = get_db_connection()
-        if value == "read":
-            async with db.session() as session:
-                await session.execute(
-                    update(Message).where(Message.id == mail_id).values(is_seen=True)
-                )
-        elif value == "unread":
-            async with db.session() as session:
-                await session.execute(
-                    update(Message).where(Message.id == mail_id).values(is_seen=False)
-                )
+        async with db.session() as session:
+            await set_flags(session, mail_id, is_seen=(value == "read"))
 
     async def _action_star(
         self,
@@ -302,16 +287,12 @@ class ActionExecutor:
         if not mail_id:
             return
 
-        from sqlalchemy import update
-
         from mail_verdict.database.connection import get_db_connection
-        from mail_verdict.database.models import Message
+        from mail_verdict.postimap.actions import set_flags
 
         db = get_db_connection()
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == mail_id).values(is_flagged=True)
-            )
+            await set_flags(session, mail_id, is_flagged=True)
 
     async def _action_unstar(
         self,
@@ -325,16 +306,12 @@ class ActionExecutor:
         if not mail_id:
             return
 
-        from sqlalchemy import update
-
         from mail_verdict.database.connection import get_db_connection
-        from mail_verdict.database.models import Message
+        from mail_verdict.postimap.actions import set_flags
 
         db = get_db_connection()
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == mail_id).values(is_flagged=False)
-            )
+            await set_flags(session, mail_id, is_flagged=False)
 
     async def _action_tag(
         self,
@@ -395,17 +372,12 @@ class ActionExecutor:
             logger.warning("No trash folder found, skipping trash action")
             return
 
-        from sqlalchemy import update
-
         from mail_verdict.database.connection import get_db_connection
-        from mail_verdict.database.models import Message
+        from mail_verdict.postimap.actions import move_to_trash
 
         db = get_db_connection()
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == mail_id)
-                .values(folder_id=trash_folder_id)
-            )
+            await move_to_trash(session, mail_id, trash_folder_id)
 
     async def _action_move_to_spam(
         self,
@@ -428,17 +400,12 @@ class ActionExecutor:
             logger.warning("No spam folder found, skipping move_to_spam action")
             return
 
-        from sqlalchemy import update
-
         from mail_verdict.database.connection import get_db_connection
-        from mail_verdict.database.models import Message
+        from mail_verdict.postimap.actions import move_message
 
         db = get_db_connection()
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == mail_id)
-                .values(folder_id=spam_folder_id)
-            )
+            await move_message(session, mail_id, spam_folder_id)
 
     async def _action_notify(
         self,
