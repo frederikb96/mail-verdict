@@ -62,7 +62,7 @@ services:
     restart: "no"
 
   postgres:
-    image: docker.io/postgres:18-alpine
+    image: docker.io/pgvector/pgvector:pg18
     container_name: mv-postgres-dev
     ports:
       - "15433:5432"

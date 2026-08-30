@@ -6,8 +6,8 @@ independently of the compose files' own image pins.
 
 from __future__ import annotations
 
-# renovate: datasource=docker depName=postgres versioning=docker
-POSTGRES_IMAGE = "postgres:18-alpine"
+# renovate: datasource=docker depName=pgvector/pgvector versioning=docker
+POSTGRES_IMAGE = "pgvector/pgvector:pg18"
 
 # renovate: datasource=docker depName=ghcr.io/frederikb96/postimap versioning=docker
 POSTIMAP_IMAGE = "ghcr.io/frederikb96/postimap:1.1.0"

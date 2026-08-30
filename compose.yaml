@@ -47,7 +47,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: docker.io/postgres:18-alpine
+    image: docker.io/pgvector/pgvector:pg18
     container_name: mv-postgres
     environment:
       POSTGRES_DB: mail_verdict
