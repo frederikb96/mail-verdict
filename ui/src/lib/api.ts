@@ -12,6 +12,7 @@ import type {
   BulkActionResponse,
   FeedbackResponse,
   FolderOrderResponse,
+  FolderPrefsUpdate,
   FolderResponse,
   ImageExceptionCreate,
   ImageExceptionResponse,
@@ -19,13 +20,12 @@ import type {
   MessageActionResponse,
   MessageDetail,
   MessageListResponse,
+  OutboxCreateRequest,
+  OutboxResponse,
   SearchResponse,
-  SelectionAll,
-  SelectionRange,
-  SelectionResponse,
-  SelectionToggle,
   StatsResponse,
   SyncStatusResponse,
+  ThreadResponse,
   UnifiedFolderOrderResponse,
   UnifiedFolderResponse,
   UnifiedMessageListResponse,
@@ -45,8 +45,11 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const isFormData = init?.body instanceof FormData;
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: isFormData
+      ? init?.headers
+      : { "Content-Type": "application/json", ...init?.headers },
     ...init,
   });
   if (!res.ok) {
@@ -86,15 +89,13 @@ export const api = {
     },
     update(id: string, data: AccountUpdateRequest): Promise<AccountResponse> {
       return request(`/accounts/${id}`, {
-        method: "PUT",
+        method: "PATCH",
         body: JSON.stringify(data),
       });
     },
+    /** Permanently removes the account and its entire locally mirrored mailbox. */
     delete(id: string): Promise<void> {
       return request(`/accounts/${id}`, { method: "DELETE" });
-    },
-    testConnection(id: string): Promise<Record<string, string>> {
-      return request(`/accounts/${id}/test-connection`, { method: "POST" });
     },
     syncStatus(id: string): Promise<SyncStatusResponse> {
       return request(`/accounts/${id}/sync-status`);
@@ -102,11 +103,26 @@ export const api = {
     triggerSync(id: string): Promise<Record<string, string>> {
       return request(`/accounts/${id}/sync`, { method: "POST" });
     },
+    setEmoji(id: string, emoji: string | null): Promise<{ emoji: string | null }> {
+      return request(`/accounts/${id}/emoji`, {
+        method: "PUT",
+        body: JSON.stringify({ emoji }),
+      });
+    },
   },
 
   folders: {
     list(accountId: string): Promise<FolderResponse[]> {
       return request(`/accounts/${accountId}/folders`);
+    },
+    updatePrefs(
+      folderId: string,
+      data: FolderPrefsUpdate,
+    ): Promise<FolderResponse> {
+      return request(`/folders/${folderId}/prefs`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
     },
   },
 
@@ -151,72 +167,37 @@ export const api = {
         body: JSON.stringify({ order }),
       });
     },
-    toggleVisibility(
-      accountId: string,
-      folderId: string,
-      isVisible: boolean,
-    ): Promise<{ folder_id: string; is_visible: boolean }> {
-      return request(
-        `/accounts/${accountId}/folders/${folderId}/visibility`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({ is_visible: isVisible }),
-        },
-      );
-    },
-    autoDetectMapping(
-      accountId: string,
-    ): Promise<Record<string, string | null>> {
-      return request(`/accounts/${accountId}/folder-mapping/auto-detect`, {
-        method: "POST",
-      });
-    },
-    getMapping(
-      accountId: string,
-    ): Promise<Record<string, string | null>> {
-      return request(`/accounts/${accountId}/folder-mapping`);
-    },
-    updateMapping(
-      accountId: string,
-      mapping: Record<string, string | null>,
-    ): Promise<Record<string, string | null>> {
-      return request(`/accounts/${accountId}/folder-mapping`, {
-        method: "PUT",
-        body: JSON.stringify(mapping),
-      });
-    },
   },
 
   mails: {
     list(params: {
-      account_id?: string;
+      account_id: string;
       folder_id?: string;
-      is_seen?: boolean;
+      threaded?: boolean;
       before?: string;
       limit?: number;
     }): Promise<MessageListResponse> {
-      return request(`/mails${qs(params)}`);
+      const { account_id, ...rest } = params;
+      return request(`/accounts/${account_id}/messages${qs(rest)}`);
     },
 
-    get(
-      id: string,
-      accountId: string,
-      loadImages?: boolean,
-    ): Promise<MessageDetail> {
-      return request(
-        `/mails/${id}${qs({ account_id: accountId, load_images: loadImages })}`,
-      );
+    get(id: string, loadImages?: boolean): Promise<MessageDetail> {
+      return request(`/messages/${id}${qs({ load_images: loadImages })}`);
     },
 
-    action(
-      id: string,
-      accountId: string,
-      body: MessageActionRequest,
-    ): Promise<MessageActionResponse> {
-      return request(`/mails/${id}/action${qs({ account_id: accountId })}`, {
+    thread(id: string): Promise<ThreadResponse> {
+      return request(`/messages/${id}/thread`);
+    },
+
+    action(id: string, body: MessageActionRequest): Promise<MessageActionResponse> {
+      return request(`/messages/${id}/action`, {
         method: "POST",
         body: JSON.stringify(body),
       });
+    },
+
+    attachmentUrl(messageId: string, attachmentId: string): string {
+      return `${BASE_URL}/messages/${messageId}/attachments/${attachmentId}`;
     },
   },
 
@@ -253,6 +234,35 @@ export const api = {
     },
   },
 
+  outbox: {
+    /**
+     * Sends or saves a draft. Multipart when attachments are present so the
+     * server can stream files straight into outbox_attachments without an
+     * orphaned-upload lifecycle; JSON otherwise.
+     */
+    create(data: OutboxCreateRequest, attachments?: File[]): Promise<OutboxResponse> {
+      if (!attachments || attachments.length === 0) {
+        return request("/outbox", {
+          method: "POST",
+          body: JSON.stringify(data),
+        });
+      }
+      const form = new FormData();
+      form.append("data", JSON.stringify(data));
+      for (const file of attachments) {
+        form.append("attachments", file, file.name);
+      }
+      return request("/outbox", { method: "POST", body: form });
+    },
+
+    list(params: {
+      account_id?: string;
+      status?: string;
+    }): Promise<OutboxResponse[]> {
+      return request(`/outbox${qs(params)}`);
+    },
+  },
+
   stats: {
     get(accountId?: string): Promise<StatsResponse> {
       return request(`/stats${qs({ account_id: accountId })}`);
@@ -260,11 +270,7 @@ export const api = {
   },
 
   search: {
-    query(params: {
-      q: string;
-      account_id?: string;
-      mode?: "semantic" | "fulltext";
-    }): Promise<SearchResponse> {
+    query(params: { q: string; account_id?: string }): Promise<SearchResponse> {
       return request(`/search${qs(params)}`);
     },
   },
@@ -295,47 +301,12 @@ export const api = {
     },
   },
 
-  selection: {
-    get(accountId: string): Promise<SelectionResponse> {
-      return request(`/accounts/${accountId}/selection`);
-    },
-    toggle(
-      accountId: string,
-      body: SelectionToggle,
-    ): Promise<SelectionResponse> {
-      return request(`/accounts/${accountId}/selection/toggle`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    range(
-      accountId: string,
-      body: SelectionRange,
-    ): Promise<SelectionResponse> {
-      return request(`/accounts/${accountId}/selection/range`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    all(
-      accountId: string,
-      body: SelectionAll,
-    ): Promise<SelectionResponse> {
-      return request(`/accounts/${accountId}/selection/all`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    clear(accountId: string): Promise<SelectionResponse> {
-      return request(`/accounts/${accountId}/selection/clear`, {
-        method: "POST",
-      });
-    },
-    action(
+  messages: {
+    bulkAction(
       accountId: string,
       body: BulkActionRequest,
     ): Promise<BulkActionResponse> {
-      return request(`/accounts/${accountId}/selection/action`, {
+      return request(`/accounts/${accountId}/messages/bulk-action`, {
         method: "POST",
         body: JSON.stringify(body),
       });
@@ -343,27 +314,15 @@ export const api = {
   },
 
   unified: {
-    setEmoji(
-      accountId: string,
-      emoji: string | null,
-    ): Promise<{ emoji: string | null }> {
-      return request(`/accounts/${accountId}/emoji`, {
-        method: "PUT",
-        body: JSON.stringify({ emoji }),
-      });
-    },
     setUnifiedName(
       accountId: string,
       folderId: string,
       unifiedName: string | null,
     ): Promise<FolderResponse> {
-      return request(
-        `/accounts/${accountId}/folders/${folderId}/unified-name`,
-        {
-          method: "PUT",
-          body: JSON.stringify({ unified_name: unifiedName }),
-        },
-      );
+      return request(`/folders/${folderId}/prefs`, {
+        method: "PATCH",
+        body: JSON.stringify({ unified_name: unifiedName }),
+      });
     },
     folders(): Promise<UnifiedFolderResponse[]> {
       return request("/unified/folders");

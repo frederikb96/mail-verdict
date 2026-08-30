@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
+  type LucideIcon,
   Plus,
   Server,
   CheckCircle2,
@@ -10,10 +11,8 @@ import {
   RefreshCw,
   Trash2,
   Pencil,
-  Activity,
   Loader2,
   ChevronDown,
-  FolderInput,
   GripVertical,
   ImageOff,
   Layers,
@@ -37,7 +36,6 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 
-import { FolderAssignment } from "@/components/settings/folder-assignment";
 import { FolderOrder } from "@/components/settings/folder-order";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
 import {
@@ -49,7 +47,6 @@ import {
   useAccounts,
   useCreateAccount,
   useDeleteAccount,
-  useTestConnection,
   useUpdateAccount,
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
@@ -71,7 +68,7 @@ function SectionTrigger({
   icon: Icon,
   label,
 }: {
-  icon: typeof FolderInput;
+  icon: LucideIcon;
   label: string;
 }) {
   return (
@@ -91,11 +88,11 @@ function AccountCard({
   onEdit: (account: AccountResponse) => void;
 }) {
   const deleteAccount = useDeleteAccount();
-  const testConnection = useTestConnection();
   const updateAccount = useUpdateAccount();
   const updateEmoji = useUpdateAccountEmoji();
   const { data: syncStatus } = useSyncStatus(account.id);
   const triggerSync = useTriggerSync();
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const badgeInfo = STATE_BADGES[account.state] ?? {
     variant: "outline" as const,
@@ -200,19 +197,6 @@ function AccountCard({
             Sync
           </Button>
           <Button
-            variant="outline"
-            size="sm"
-            onClick={() => testConnection.mutate(account.id)}
-            disabled={testConnection.isPending}
-          >
-            {testConnection.isPending ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <Activity className="mr-1 h-3 w-3" />
-            )}
-            Status
-          </Button>
-          <Button
             variant="ghost"
             size="sm"
             onClick={() => onEdit(account)}
@@ -224,39 +208,56 @@ function AccountCard({
             variant="ghost"
             size="sm"
             className="text-destructive"
-            onClick={() => {
-              if (confirm(`Delete account "${account.name}"?`)) {
-                deleteAccount.mutate(account.id);
-              }
-            }}
+            onClick={() => setConfirmDelete(true)}
           >
             <Trash2 className="mr-1 h-3 w-3" />
             Delete
           </Button>
         </div>
 
-        {testConnection.isSuccess && (
-          <div className="text-sm text-green-600 dark:text-green-400">
-            Status: {syncStatus?.state ?? "unknown"}
+        {account.state === "error" && account.state_error && (
+          <div className="flex items-center gap-1 text-sm text-destructive">
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+            {account.state_error}
           </div>
         )}
-        {testConnection.isError && (
-          <div className="text-sm text-destructive">
-            Connection failed: {(testConnection.error as Error).message}
-          </div>
-        )}
+
+        <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete &ldquo;{account.name}&rdquo;?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              This removes the account and its entire locally mirrored mailbox.
+              It cannot be undone. Nothing is touched on the mail server itself
+              — re-adding the account re-syncs everything from scratch.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setConfirmDelete(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={deleteAccount.isPending}
+                onClick={() =>
+                  deleteAccount.mutate(account.id, {
+                    onSuccess: () => setConfirmDelete(false),
+                  })
+                }
+              >
+                {deleteAccount.isPending ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="mr-1 h-3 w-3" />
+                )}
+                Delete permanently
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* Per-account settings sections */}
         <div className="mt-2 flex flex-col gap-1 border-t pt-3">
-          <Collapsible.Root>
-            <SectionTrigger icon={FolderInput} label="Folder Assignment" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <FolderAssignment accountId={account.id} />
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
-
           <Collapsible.Root>
             <SectionTrigger icon={GripVertical} label="Folder Order & Visibility" />
             <Collapsible.Panel className="overflow-hidden">

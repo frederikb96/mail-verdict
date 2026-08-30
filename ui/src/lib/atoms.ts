@@ -1,6 +1,7 @@
 /** Jotai state atoms. */
 
 import { atom } from "jotai";
+import { atomWithStorage } from "jotai/utils";
 
 /**
  * Currently selected account ID.
@@ -21,3 +22,9 @@ export const isUnifiedViewAtom = atom<boolean>((get) => {
 
 /** Currently selected mail ID */
 export const selectedMailIdAtom = atom<string | null>(null);
+
+/** Whether the mail list groups messages into conversations. Defaults on. */
+export const threadedViewAtom = atomWithStorage<boolean>(
+  "mailverdict:threaded",
+  true,
+);

@@ -17,21 +17,30 @@ import type {
   MessageActionRequest,
   MessageListResponse,
   MessageSummary,
+  ThreadResponse,
 } from "@/types/api";
 
 export const mailKeys = {
-  list: (accountId?: string, folderId?: string) =>
-    ["mails", accountId, folderId].filter(Boolean) as string[],
+  list: (accountId?: string, folderId?: string, threaded?: boolean) =>
+    ["mails", accountId, folderId, threaded ? "threaded" : "flat"].filter(
+      Boolean,
+    ) as string[],
   detail: (id: string) => ["mail", id] as const,
+  thread: (id: string) => ["thread", id] as const,
 };
 
-export function useMailList(accountId: string | null, folderId: string | null) {
+export function useMailList(
+  accountId: string | null,
+  folderId: string | null,
+  threaded: boolean,
+) {
   return useInfiniteQuery({
-    queryKey: mailKeys.list(accountId ?? undefined, folderId ?? undefined),
+    queryKey: mailKeys.list(accountId ?? undefined, folderId ?? undefined, threaded),
     queryFn: ({ pageParam }) =>
       api.mails.list({
-        account_id: accountId ?? undefined,
+        account_id: accountId!,
         folder_id: folderId ?? undefined,
+        threaded,
         before: pageParam ?? undefined,
         limit: 50,
       }),
@@ -44,12 +53,22 @@ export function useMailList(accountId: string | null, folderId: string | null) {
   });
 }
 
-export function useMailDetail(mailId: string | null, accountId: string | null) {
+export function useMailDetail(mailId: string | null) {
   return useQuery({
     queryKey: mailKeys.detail(mailId!),
-    queryFn: () => api.mails.get(mailId!, accountId!),
-    enabled: !!mailId && !!accountId,
+    queryFn: () => api.mails.get(mailId!),
+    enabled: !!mailId,
     staleTime: 5 * 60_000,
+  });
+}
+
+/** All messages in a mail's conversation across folders, ascending by date. */
+export function useThread(mailId: string | null) {
+  return useQuery<ThreadResponse>({
+    queryKey: mailKeys.thread(mailId!),
+    queryFn: () => api.mails.thread(mailId!),
+    enabled: !!mailId,
+    staleTime: 30_000,
   });
 }
 
@@ -151,13 +170,12 @@ export function useMailAction() {
   return useMutation({
     mutationFn: ({
       mailId,
-      accountId,
       action,
     }: {
       mailId: string;
       accountId: string;
       action: MessageActionRequest;
-    }) => api.mails.action(mailId, accountId, action),
+    }) => api.mails.action(mailId, action),
 
     onMutate: async ({ mailId, accountId, action }) => {
       await qc.cancelQueries({ queryKey: ["mails"] });
@@ -171,8 +189,9 @@ export function useMailAction() {
       const prevMailDetail = qc.getQueryData(["mail", mailId]);
 
       const act = action.action;
+      const removesFromList = ["trash", "expunge", "archive", "spam"].includes(act);
 
-      if (["delete", "archive", "spam"].includes(act)) {
+      if (removesFromList) {
         removeMailFromCache(qc, mailId);
         updateFolderCounts(
           qc,
@@ -193,15 +212,18 @@ export function useMailAction() {
         updateMailInCache(qc, mailId, { is_seen: false });
         if (mailInfo.isSeen)
           updateFolderCounts(qc, accountId, mailInfo.folderId, 0, 1);
+      } else if (act === "move") {
+        updateMailInCache(qc, mailId, { pending_sync: true });
       }
 
       // Update detail cache
-      if (prevMailDetail && !["delete", "archive", "spam"].includes(act)) {
+      if (prevMailDetail && !removesFromList) {
         const updates: Partial<MessageSummary> = {};
         if (act === "flag") updates.is_flagged = true;
         if (act === "unflag") updates.is_flagged = false;
         if (act === "mark_read") updates.is_seen = true;
         if (act === "mark_unread") updates.is_seen = false;
+        if (act === "move") updates.pending_sync = true;
         qc.setQueryData(["mail", mailId], {
           ...(prevMailDetail as Record<string, unknown>),
           ...updates,

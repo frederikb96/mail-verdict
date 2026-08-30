@@ -16,17 +16,23 @@ export interface MessageSummary {
   id: string;
   account_id: string;
   folder_id: string;
+  thread_id: string;
   subject: string | null;
   from_addr: string | null;
-  to_addrs: string | string[] | null;
+  to_addrs: string[] | null;
   received_at: string | null;
   is_seen: boolean;
   is_flagged: boolean;
   is_answered: boolean;
   is_draft: boolean;
-  is_deleted: boolean;
-  deleted_at: string | null;
   snippet: string | null;
+  /** True while imap_uid is NULL — the message just moved and IMAP has not confirmed yet. */
+  pending_sync: boolean;
+  /** True when the server never fetched the body because it exceeded the size limit. */
+  is_truncated: boolean;
+  /** Only present when the list was fetched with threaded=true. */
+  thread_count?: number;
+  unread_in_thread?: number;
 }
 
 export interface MessageListResponse {
@@ -36,15 +42,14 @@ export interface MessageListResponse {
 }
 
 export interface MessageDetail extends MessageSummary {
-  imap_uid: number;
   message_id: string | null;
-  cc_addrs: string | string[] | null;
-  bcc_addrs: string | string[] | null;
+  cc_addrs: string[] | null;
+  bcc_addrs: string[] | null;
   reply_to: string | null;
   in_reply_to: string | null;
+  references: string[] | null;
   body_text: string | null;
   body_html: string | null;
-  raw_headers: Record<string, unknown> | null;
   size_bytes: number | null;
   keywords: string[];
   has_blocked_images: boolean;
@@ -52,20 +57,31 @@ export interface MessageDetail extends MessageSummary {
   created_at: string;
   tags: TagResponse[];
   attachments: AttachmentSummary[];
+  verdict: VerdictResponse | null;
 }
 
+export interface ThreadResponse {
+  messages: MessageDetail[];
+}
+
+export type MessageActionType =
+  | "mark_read"
+  | "mark_unread"
+  | "flag"
+  | "unflag"
+  | "move"
+  | "archive"
+  | "trash"
+  | "expunge"
+  | "spam"
+  | "not_spam"
+  | "keyword_add"
+  | "keyword_remove";
+
 export interface MessageActionRequest {
-  action:
-    | "move"
-    | "mark_read"
-    | "mark_unread"
-    | "delete"
-    | "flag"
-    | "unflag"
-    | "archive"
-    | "spam";
-  target_folder?: string;
+  action: MessageActionType;
   target_folder_id?: string;
+  keyword?: string;
 }
 
 export interface MessageActionResponse {
@@ -80,14 +96,12 @@ export interface SearchResult {
   subject: string | null;
   from_addr: string | null;
   received_at: string | null;
-  score: number;
-  source: string;
+  snippet: string | null;
 }
 
 export interface SearchResponse {
   results: SearchResult[];
   total: number;
-  mode: string;
   query: string;
 }
 
@@ -105,9 +119,7 @@ export interface AccountResponse {
   state_error: string | null;
   capabilities: Record<string, unknown> | null;
   emoji: string | null;
-  embedding_lookback_days: number;
   spam_enabled: boolean;
-  folder_mapping: Record<string, string | null> | null;
   folder_order: string[] | null;
   created_at: string;
   updated_at: string;
@@ -123,7 +135,6 @@ export interface AccountCreateRequest {
   smtp_port?: number;
   smtp_user?: string;
   smtp_password?: string;
-  embedding_lookback_days?: number;
   spam_enabled?: boolean;
 }
 
@@ -138,7 +149,6 @@ export interface AccountUpdateRequest {
   smtp_user?: string;
   smtp_password?: string;
   is_active?: boolean;
-  embedding_lookback_days?: number;
   spam_enabled?: boolean;
 }
 
@@ -147,17 +157,24 @@ export interface FolderResponse {
   account_id: string;
   imap_name: string;
   display_name: string | null;
+  /** Effective special_use — folder_prefs.special_use_override coalesced with the server's own value. */
   special_use: string | null;
   mailbox_id: string | null;
-  exists_count: number;
   unified_name: string | null;
-  subscribed: boolean;
   is_visible: boolean;
+  initial_sync_done: boolean;
   last_synced_at: string | null;
   sync_error: string | null;
   created_at: string | null;
   unread_count: number;
   total_count: number;
+}
+
+export interface FolderPrefsUpdate {
+  is_visible?: boolean;
+  display_name?: string | null;
+  unified_name?: string | null;
+  special_use_override?: string | null;
 }
 
 export interface VerdictResponse {
@@ -204,8 +221,19 @@ export interface StatsResponse {
   accuracy: number;
   weekly_trend: WeeklyTrendPoint[];
   account_sync: AccountSyncStatus[];
-  embedding_count: number;
 }
+
+/** Names of `/api/events` SSE event types the client subscribes to. */
+export type SSEEventType =
+  | "mail.new"
+  | "mail.updated"
+  | "mail.deleted"
+  | "folder.synced"
+  | "folder.changed"
+  | "account.changed"
+  | "outbox.updated"
+  | "verdict.issued"
+  | "resync";
 
 export interface SSEEvent {
   event_type?: string;
@@ -213,11 +241,18 @@ export interface SSEEvent {
   folder_id?: string;
   folder_name?: string;
   message_id?: string;
+  outbox_id?: string;
   is_seen?: boolean;
   is_flagged?: boolean;
   is_spam?: boolean;
   source?: string;
-  status?: string;
+  status?: OutboxStatus;
+  /** Fields that changed on a mail.updated event, e.g. ["imap_uid"] confirms a move. */
+  changed?: string[];
+  /** "sync" = PostIMAP-originated, "app" = echo of our own write. */
+  origin?: "sync" | "app";
+  /** True on folder.synced when this was the initial backfill. */
+  backfill?: boolean;
   timestamp: string;
   old_folder_id?: string;
 }
@@ -252,39 +287,32 @@ export interface FolderOrderUpdate {
   order: string[];
 }
 
-// --- Selection / bulk action types ---
+// --- Bulk action types (client-held selection, server-side scope) ---
 
-export interface SelectionResponse {
-  selected_ids: string[];
-  count: number;
-}
+export type BulkActionType =
+  | "move"
+  | "mark_read"
+  | "mark_unread"
+  | "flag"
+  | "unflag"
+  | "archive"
+  | "trash"
+  | "expunge"
+  | "spam"
+  | "not_spam";
 
-export interface SelectionToggle {
-  message_id: string;
-}
-
-export interface SelectionRange {
-  from_id: string;
-  to_id: string;
+export interface BulkActionScope {
   folder_id: string;
+  filter?: "unread" | "all";
+  exclude_ids?: string[];
 }
 
-export interface SelectionAll {
-  folder_id: string;
-}
+export type BulkActionTarget = { ids: string[] } | { scope: BulkActionScope };
 
-export interface BulkActionRequest {
-  action:
-    | "move"
-    | "archive"
-    | "spam"
-    | "star"
-    | "unstar"
-    | "mark_read"
-    | "mark_unread"
-    | "delete";
+export type BulkActionRequest = BulkActionTarget & {
+  action: BulkActionType;
   target_folder_id?: string;
-}
+};
 
 export interface BulkActionResponse {
   success: boolean;
@@ -315,17 +343,20 @@ export interface UnifiedMessageSummary {
   account_id: string;
   account_emoji: string | null;
   folder_id: string;
+  thread_id: string;
   subject: string | null;
   from_addr: string | null;
-  to_addrs: string | string[] | null;
+  to_addrs: string[] | null;
   received_at: string | null;
   is_seen: boolean;
   is_flagged: boolean;
   is_answered: boolean;
   is_draft: boolean;
-  is_deleted: boolean;
-  deleted_at: string | null;
   snippet: string | null;
+  pending_sync: boolean;
+  is_truncated: boolean;
+  thread_count?: number;
+  unread_in_thread?: number;
 }
 
 export interface UnifiedMessageListResponse {
@@ -351,4 +382,44 @@ export interface SyncStatusResponse {
   error_count: number;
   last_error: string | null;
   updated_at: string | null;
+}
+
+// --- Outbox (send / draft) ---
+
+export type OutboxKind = "send" | "draft";
+export type OutboxStatus = "queued" | "sending" | "sent" | "failed" | "dead";
+
+export interface OutboxCreateRequest {
+  account_id: string;
+  kind: OutboxKind;
+  to: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject: string;
+  body_text: string;
+  body_html?: string;
+  in_reply_to?: string;
+  references?: string[];
+}
+
+export interface OutboxAttachmentSummary {
+  id: string;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number | null;
+}
+
+export interface OutboxResponse {
+  id: string;
+  account_id: string;
+  kind: OutboxKind;
+  status: OutboxStatus;
+  to: string[];
+  cc: string[] | null;
+  bcc: string[] | null;
+  subject: string | null;
+  error: string | null;
+  attachments: OutboxAttachmentSummary[];
+  created_at: string;
+  updated_at: string;
 }

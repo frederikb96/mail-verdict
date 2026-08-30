@@ -17,7 +17,7 @@ export function useUpdateAccountEmoji() {
     }: {
       accountId: string;
       emoji: string | null;
-    }) => api.unified.setEmoji(accountId, emoji),
+    }) => api.accounts.setEmoji(accountId, emoji),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
       queryClient.invalidateQueries({ queryKey: ["unified"] });

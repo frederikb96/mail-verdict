@@ -3,6 +3,7 @@
 import {
   Archive,
   Ban,
+  CheckSquare,
   ChevronDown,
   Star,
   Trash2,
@@ -17,20 +18,26 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useBulkAction, useClearSelection } from "@/hooks/use-selection";
+import { useBulkAction, useClearSelection, useSelectAll } from "@/hooks/use-selection";
 import { selectionCountAtom } from "@/store/selection-atom";
 import { selectedAccountIdAtom } from "@/lib/atoms";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 
+interface BulkToolbarProps {
+  folderId: string | null;
+  visibleIds: string[];
+}
+
 /**
  * Toolbar that appears above the mail list when mails are selected.
- * Provides bulk action buttons for move, archive, star, spam, delete.
+ * Provides bulk action buttons for move, archive, star, spam, trash.
  */
-export function BulkToolbar() {
+export function BulkToolbar({ folderId, visibleIds }: BulkToolbarProps) {
   const count = useAtomValue(selectionCountAtom);
   const accountId = useAtomValue(selectedAccountIdAtom);
   const bulkAction = useBulkAction();
   const clearSelection = useClearSelection();
+  const { selectFetched, selectFolderScope } = useSelectAll();
   const { data: orderData } = useFolderOrder(accountId);
 
   if (count === 0 || !accountId) return null;
@@ -42,6 +49,29 @@ export function BulkToolbar() {
       <Badge variant="secondary" className="mr-1">
         {count} selected
       </Badge>
+
+      {folderId && (
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<Button variant="ghost" size="sm" className="h-7 gap-1 px-2" />}
+          >
+            <CheckSquare className="h-3.5 w-3.5" />
+            Select
+            <ChevronDown className="h-3 w-3" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem onClick={() => selectFetched(visibleIds)}>
+              All loaded ({visibleIds.length})
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => selectFolderScope(folderId, "all")}>
+              Every message in this folder
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => selectFolderScope(folderId, "unread")}>
+              Every unread message in this folder
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
 
       {/* Move to folder */}
       <DropdownMenu>
@@ -60,10 +90,8 @@ export function BulkToolbar() {
               onClick={() =>
                 bulkAction.mutate({
                   accountId,
-                  body: {
-                    action: "move",
-                    target_folder_id: folder.folder_id,
-                  },
+                  action: "move",
+                  targetFolderId: folder.folder_id,
                 })
               }
             >
@@ -77,9 +105,7 @@ export function BulkToolbar() {
         variant="ghost"
         size="sm"
         className="h-7 gap-1 px-2"
-        onClick={() =>
-          bulkAction.mutate({ accountId, body: { action: "archive" } })
-        }
+        onClick={() => bulkAction.mutate({ accountId, action: "archive" })}
       >
         <Archive className="h-3.5 w-3.5" />
         Archive
@@ -89,9 +115,7 @@ export function BulkToolbar() {
         variant="ghost"
         size="sm"
         className="h-7 gap-1 px-2"
-        onClick={() =>
-          bulkAction.mutate({ accountId, body: { action: "star" } })
-        }
+        onClick={() => bulkAction.mutate({ accountId, action: "flag" })}
       >
         <Star className="h-3.5 w-3.5" />
         Star
@@ -101,9 +125,7 @@ export function BulkToolbar() {
         variant="ghost"
         size="sm"
         className="h-7 gap-1 px-2"
-        onClick={() =>
-          bulkAction.mutate({ accountId, body: { action: "spam" } })
-        }
+        onClick={() => bulkAction.mutate({ accountId, action: "spam" })}
       >
         <Ban className="h-3.5 w-3.5" />
         Spam
@@ -113,12 +135,10 @@ export function BulkToolbar() {
         variant="ghost"
         size="sm"
         className="h-7 gap-1 px-2"
-        onClick={() =>
-          bulkAction.mutate({ accountId, body: { action: "delete" } })
-        }
+        onClick={() => bulkAction.mutate({ accountId, action: "trash" })}
       >
         <Trash2 className="h-3.5 w-3.5" />
-        Delete
+        Trash
       </Button>
 
       <div className="ml-auto">
@@ -126,7 +146,7 @@ export function BulkToolbar() {
           variant="ghost"
           size="sm"
           className="h-7 px-2"
-          onClick={() => clearSelection.mutate({ accountId })}
+          onClick={() => clearSelection()}
         >
           <X className="h-3.5 w-3.5" />
         </Button>

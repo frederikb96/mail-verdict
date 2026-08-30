@@ -58,9 +58,3 @@ export function useDeleteAccount() {
   });
 }
 
-export function useTestConnection() {
-  return useMutation({
-    mutationFn: (id: string) => api.accounts.testConnection(id),
-  });
-}
-

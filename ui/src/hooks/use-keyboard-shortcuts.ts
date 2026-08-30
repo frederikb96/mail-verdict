@@ -96,8 +96,8 @@ export function useKeyboardShortcuts({
         case "x": {
           e.preventDefault();
           const mail = getFocusedMail();
-          if (mail && accountId) {
-            toggleSelection.mutate({ accountId, body: { message_id: mail.id } });
+          if (mail) {
+            toggleSelection(mail.id);
           }
           break;
         }
@@ -120,7 +120,7 @@ export function useKeyboardShortcuts({
             mailAction.mutate({
               mailId: mail.id,
               accountId,
-              action: { action: "delete" },
+              action: { action: "trash" },
             });
           }
           break;

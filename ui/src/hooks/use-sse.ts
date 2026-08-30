@@ -2,7 +2,7 @@
  * SSE client hook for real-time updates from the backend.
  *
  * Connects to /api/events, handles reconnect with Last-Event-ID,
- * updates Jotai sync state atoms and invalidates TanStack Query cache.
+ * updates Jotai connection state and invalidates TanStack Query cache.
  */
 
 "use client";
@@ -10,18 +10,29 @@
 import { useEffect, useRef } from "react";
 import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
-import { selectedMailIdsAtom } from "@/store/selection-atom";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import type { SSEEvent } from "@/types/api";
+import { useToast } from "@/hooks/use-toast";
+import type { OutboxStatus, SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
 
+const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" | "warning" | "error" } | null> = {
+  queued: null,
+  sending: null,
+  sent: { message: "Message sent", variant: "success" },
+  failed: { message: "Sending failed, retrying", variant: "warning" },
+  dead: {
+    message: "Could not send message — check SMTP settings on this account",
+    variant: "error",
+  },
+};
+
 export function useSSE(accountId?: string) {
-  const setSelectedMailIds = useSetAtom(selectedMailIdsAtom);
   const setConnectionState = useSetAtom(sseConnectionStateAtom);
   const queryClient = useQueryClient();
+  const { push: pushToast } = useToast();
   const lastEventIdRef = useRef<string | null>(null);
   const reconnectDelayRef = useRef(RECONNECT_DELAY_MS);
   const sourceRef = useRef<EventSource | null>(null);
@@ -72,7 +83,13 @@ export function useSSE(accountId?: string) {
         );
       };
 
-      // Mail events - invalidate queries
+      // A reconnect gap loses NOTIFYs in between; the server tells us to
+      // invalidate everything once rather than trust a stale cache.
+      source.addEventListener("resync", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries();
+      });
+
       source.addEventListener("mail.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
@@ -130,15 +147,36 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries({ queryKey: ["sync-status"] });
       });
 
-      // Selection state events
-      source.addEventListener("selection.changed", (e: MessageEvent) => {
+      // A folder finished syncing (including initial backfill) — refetch
+      // its message list and counts.
+      source.addEventListener("folder.synced", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["mails"] });
+        invalidateAllFolderCaches(queryClient);
+      });
+
+      source.addEventListener("folder.changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        invalidateAllFolderCaches(queryClient);
+      });
+
+      // Send/draft status: toast + refresh the outbox list.
+      source.addEventListener("outbox.updated", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
-          const data = JSON.parse(e.data) as {
-            selected_ids: string[];
-            count: number;
-          };
-          setSelectedMailIds(new Set(data.selected_ids));
+          const data: SSEEvent = JSON.parse(e.data);
+          queryClient.invalidateQueries({ queryKey: ["outbox"] });
+          if (data.status) {
+            const toast = OUTBOX_TOAST[data.status];
+            if (toast) {
+              pushToast(toast.message, toast.variant, data.status === "dead" ? 0 : 5000);
+            }
+          }
+          if (data.status === "sent") {
+            // The sent copy lands in the account's Sent folder on its next sync.
+            queryClient.invalidateQueries({ queryKey: ["mails"] });
+            invalidateAllFolderCaches(queryClient);
+          }
         } catch {
           // Ignore
         }
@@ -158,5 +196,5 @@ export function useSSE(accountId?: string) {
       }
       setConnectionState("disconnected");
     };
-  }, [accountId, setSelectedMailIds, setConnectionState, queryClient]);
+  }, [accountId, setConnectionState, queryClient, pushToast]);
 }

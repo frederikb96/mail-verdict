@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/sidebar";
 
 import { DroppableFolder } from "@/components/sidebar/droppable-folder";
+import { ComposeDialog } from "@/components/mail/compose-dialog";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
@@ -256,6 +257,15 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <ComposeDialog />
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupLabel>
             {isUnified ? "Unified Folders" : "Folders"}
