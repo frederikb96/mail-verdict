@@ -1,0 +1,36 @@
+# Everything the image build does not need. Without this the build context is
+# well over a gigabyte, almost all of it dependency trees that the build
+# reinstalls from lockfiles anyway.
+
+.git
+.gitignore
+**/.git
+
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+ui/node_modules
+ui/build
+ui/.next
+node_modules
+
+# Secrets never belong in a build context, even though they are gitignored.
+.env
+.dev.env
+.prod.env
+config-custom/
+
+tmp/
+docs/
+charts/
+tests/
+.github/
+.claude/
+compose*.yaml
+CHANGELOG.md
