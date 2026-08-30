@@ -4,11 +4,13 @@ Unified view API endpoints.
 Multi-account folder merging and cross-account message listing.
 
 PUT /api/accounts/:id/emoji — set account emoji (via AccountPrefs)
-PUT /api/accounts/:id/folders/:fid/unified-name — set folder unified name (via FolderPrefs)
 GET /api/unified/folders — merged folder list across all accounts
 GET /api/unified/mails — merged message list sorted by date
 GET /api/unified/folder-order — unified folder display order
 PUT /api/unified/folder-order — save unified folder display order
+
+A folder's unified_name is set via PATCH /folders/{folder_id}/prefs
+(folder_management.py) -- one write surface for every folder preference.
 """
 
 from __future__ import annotations
@@ -21,17 +23,15 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import and_, case, desc, or_, select, update
 from sqlalchemy import func as sa_func
 
-from mail_verdict.api.deps import get_account_prefs_repo, get_folder_prefs_repo
+from mail_verdict.api.deps import get_account_prefs_repo
 from mail_verdict.api.schemas import (
     EmojiUpdate,
-    FolderResponse,
     UnifiedFolderOrderResponse,
     UnifiedFolderOrderUpdate,
     UnifiedFolderResponse,
     UnifiedFolderSource,
     UnifiedMessageListResponse,
     UnifiedMessageSummary,
-    UnifiedNameUpdate,
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 UNIFIED_VIEW_CATEGORY = "unified_view"
 
-# Account-scoped endpoints for emoji and unified name
+# Account-scoped endpoint for emoji
 account_router = APIRouter(prefix="/accounts/{account_id}", tags=["unified-view"])
 
 # Top-level unified endpoints
@@ -75,75 +75,6 @@ async def set_account_emoji(
     await prefs_repo.update(account_id, emoji=request.emoji)
 
     return {"emoji": request.emoji}
-
-
-@account_router.put(
-    "/folders/{folder_id}/unified-name",
-    response_model=FolderResponse,
-)
-async def set_unified_name(
-    account_id: uuid.UUID,
-    folder_id: uuid.UUID,
-    request: UnifiedNameUpdate,
-) -> FolderResponse:
-    """Set or clear the unified name for a folder (stored in FolderPrefs)."""
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(
-            select(Folder).where(
-                Folder.id == folder_id,
-                Folder.account_id == account_id,
-            )
-        )
-        folder = result.scalar_one_or_none()
-        if folder is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
-
-    # Update FolderPrefs
-    prefs_repo = get_folder_prefs_repo()
-    await prefs_repo.update(folder_id, unified_name=request.unified_name)
-
-    # Re-fetch with counts to return FolderResponse
-    async with db.session() as session:
-        stmt = (
-            select(
-                Folder,
-                FolderPrefs,
-                sa_func.count(Message.id).label("total_count"),
-                sa_func.count(
-                    case((Message.is_seen.is_(False), Message.id))
-                ).label("unread_count"),
-            )
-            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
-            .outerjoin(
-                Message,
-                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
-            )
-            .where(Folder.id == folder_id)
-            .group_by(Folder.id, FolderPrefs.folder_id)
-        )
-        result = await session.execute(stmt)
-        row = result.one_or_none()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
-
-    f, fp, total, unread = row
-    return FolderResponse(
-        id=f.id,
-        account_id=f.account_id,
-        imap_name=f.imap_name,
-        display_name=f.display_name or (fp.display_name if fp else None),
-        special_use=(fp.special_use_override if fp else None) or f.special_use,
-        mailbox_id=f.mailbox_id,
-        last_synced_at=f.last_synced_at,
-        sync_error=f.sync_error,
-        created_at=f.created_at,
-        unified_name=fp.unified_name if fp else None,
-        is_visible=fp.is_visible if fp else True,
-        total_count=total,
-        unread_count=unread,
-    )
 
 
 # --- Unified data queries ---
@@ -299,6 +230,7 @@ async def list_unified_messages(
             account_id=msg.account_id,
             account_emoji=account_emoji,
             folder_id=msg.folder_id,
+            thread_id=msg.thread_id,
             subject=msg.subject,
             from_addr=msg.from_addr,
             to_addrs=msg.to_addrs,
@@ -307,8 +239,8 @@ async def list_unified_messages(
             is_flagged=msg.is_flagged,
             is_answered=msg.is_answered,
             is_draft=msg.is_draft,
-            is_deleted=msg.is_deleted,
-            expunged_at=msg.expunged_at,
+            is_truncated=msg.is_truncated,
+            pending_sync=msg.imap_uid is None,
             snippet=msg.body_text[:120] if msg.body_text else None,
         )
         for msg, account_emoji in rows

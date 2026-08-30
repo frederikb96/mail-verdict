@@ -4,17 +4,16 @@ Account API endpoints.
 GET /api/accounts — list all accounts
 POST /api/accounts — create account (writes credentials in contract format)
 GET /api/accounts/:id — account detail
-PUT /api/accounts/:id — update account (bounces sync if credentials changed)
+PATCH /api/accounts/:id — update account (bounces sync if credentials changed)
 DELETE /api/accounts/:id — delete account (requires PostIMAP >= 1.0.1)
-POST /api/accounts/:id/test-connection — test IMAP/SMTP connectivity
 GET /api/accounts/:id/folders — folder listing with counts
-GET /api/accounts/:id/folder-mapping — get/auto-detect folder mapping
-PUT /api/accounts/:id/folder-mapping — save folder mapping
 GET /api/accounts/:id/sync-status — sync progress from PostIMAP sync_state
 POST /api/accounts/:id/sync — trigger immediate sync via PG NOTIFY
 
-PostIMAP integration: accounts table is PostIMAP-owned.
-AccountPrefs stores MailVerdict-specific preferences.
+PostIMAP integration: accounts table is PostIMAP-owned. AccountPrefs stores
+MailVerdict-specific preferences. account.state/state_error is the
+connectivity truth surface -- there is no separate test-connection probe,
+and never any direct IMAP import.
 """
 
 from __future__ import annotations
@@ -157,7 +156,7 @@ async def get_account(account_id: uuid.UUID) -> AccountResponse:
     return _build_account_response(account, prefs)
 
 
-@router.put("/{account_id}", response_model=AccountResponse)
+@router.patch("/{account_id}", response_model=AccountResponse)
 async def update_account(
     account_id: uuid.UUID,
     request: AccountUpdateRequest,
@@ -240,22 +239,6 @@ async def delete_account(account_id: uuid.UUID) -> None:
         await postimap_delete_account(session, account_id)
 
 
-@router.post("/{account_id}/test-connection")
-async def test_connection(account_id: uuid.UUID) -> dict[str, str]:
-    """Test connectivity — delegated to PostIMAP (check account state)."""
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(select(Account).where(Account.id == account_id))
-        account = result.scalar_one_or_none()
-    if account is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    return {
-        "imap": "ok" if account.state == "active" else f"state: {account.state}",
-        "state_error": account.state_error or "",
-    }
-
-
 @router.get("/{account_id}/folders", response_model=list[FolderResponse])
 async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
     """List all folders for an account with message counts and prefs."""
@@ -291,6 +274,7 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             display_name=f.display_name or (fp.display_name if fp else None),
             special_use=(fp.special_use_override if fp else None) or f.special_use,
             mailbox_id=f.mailbox_id,
+            initial_sync_done=f.initial_sync_done,
             last_synced_at=f.last_synced_at,
             sync_error=f.sync_error,
             created_at=f.created_at,
@@ -301,41 +285,6 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
         )
         for f, fp, total, unread in rows
     ]
-
-
-@router.get("/{account_id}/folder-mapping")
-async def get_folder_mapping(account_id: uuid.UUID) -> dict[str, str | None]:
-    """
-    Auto-detect the special-use folder mapping for an account.
-
-    folders.special_use (overridable per-folder via FolderPrefs, see
-    list_folders) is the single source of truth -- there is no separate
-    stored mapping to fall back to.
-    """
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(select(Account).where(Account.id == account_id))
-        account = result.scalar_one_or_none()
-    if account is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    from mail_verdict.database.repository import FolderRepository
-
-    folder_repo = FolderRepository(db)
-    all_folders = await folder_repo.get_by_account(account_id)
-
-    mapping: dict[str, str | None] = {
-        "inbox": None,
-        "sent": None,
-        "drafts": None,
-        "trash": None,
-        "junk": None,
-        "archive": None,
-    }
-    for folder in all_folders:
-        if folder.special_use and folder.special_use in mapping:
-            mapping[folder.special_use] = folder.imap_name
-    return mapping
 
 
 @router.get("/{account_id}/sync-status", response_model=SyncStatusResponse)
