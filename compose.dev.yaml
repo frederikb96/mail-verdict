@@ -45,6 +45,9 @@ services:
       POSTIMAP_DATABASE_PORT: "5432"
       POSTIMAP_DATABASE_NAME: mail_verdict_dev
       POSTIMAP_DATABASE_USER: devuser
+      # The dev mail server presents a self-signed certificate. Production
+      # must never set this -- it is why compose.yaml has no equivalent.
+      POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED: "false"
       DB_PASSWORD: "${POSTGRES_PASSWORD}"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:-}"
     depends_on:
