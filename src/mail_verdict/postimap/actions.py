@@ -1,0 +1,292 @@
+"""
+The contract's write SQL -- every INSERT/UPDATE MailVerdict issues against
+a PostIMAP-owned table lives here and only here.
+
+Each function is close to literally the contract's own worked example.
+Callers (api/, rules/, spam/) never construct this SQL themselves.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from sqlalchemy import text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mail_verdict.database.models import Account, Message, Outbox, OutboxAttachment
+
+_CREDENTIAL_FORMAT_PLAINTEXT = b"\x00"
+
+
+def format_credential(plaintext: str) -> bytes:
+    """
+    Encode a plaintext password in the contract's consumer-write format.
+
+    A consumer always writes format 0x00 (plaintext); PostIMAP is the only
+    party that ever produces format 0x01 (its own AES-256-GCM encryption),
+    rewriting the credential itself once the account starts syncing. The
+    0x00 prefix is mandatory -- a bare-UTF-8 password has its first byte
+    misread as the format byte and fails much later, inside the sync
+    engine, not at insert time.
+
+    Args:
+        plaintext: The IMAP or SMTP password in plaintext
+
+    Returns:
+        The 0x00-prefixed bytes value to write to imap_password/smtp_password
+    """
+    return _CREDENTIAL_FORMAT_PLAINTEXT + plaintext.encode("utf-8")
+
+
+async def create_account(
+    session: AsyncSession,
+    *,
+    name: str,
+    imap_host: str,
+    imap_port: int,
+    imap_user: str,
+    imap_password: str,
+    smtp_host: str | None = None,
+    smtp_port: int | None = None,
+    smtp_user: str | None = None,
+    smtp_password: str | None = None,
+    is_active: bool = True,
+) -> Account:
+    """
+    Insert a new account row.
+
+    PostIMAP detects the insert via postimap_events and starts syncing
+    without a restart.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        name: Unique display name
+        imap_host: IMAP server hostname
+        imap_port: IMAP server port
+        imap_user: IMAP login username
+        imap_password: IMAP password, plaintext (encoded here per contract)
+        smtp_host: SMTP server hostname, optional (required for sending)
+        smtp_port: SMTP server port, optional
+        smtp_user: SMTP login username, optional
+        smtp_password: SMTP password, plaintext, optional
+        is_active: Whether PostIMAP should sync this account
+
+    Returns:
+        The inserted Account row (flushed, not yet committed)
+    """
+    account = Account(
+        name=name,
+        imap_host=imap_host,
+        imap_port=imap_port,
+        imap_user=imap_user,
+        imap_password=format_credential(imap_password),
+        smtp_host=smtp_host,
+        smtp_port=smtp_port,
+        smtp_user=smtp_user,
+        smtp_password=format_credential(smtp_password) if smtp_password else None,
+        is_active=is_active,
+    )
+    session.add(account)
+    await session.flush()
+    await session.refresh(account)
+    return account
+
+
+async def update_account(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    **fields: Any,
+) -> None:
+    """
+    Update account fields, encoding imap_password/smtp_password if present.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        account_id: Account to update
+        **fields: Any writable Account column; imap_password and
+            smtp_password are given as plaintext strings and encoded here
+    """
+    values = dict(fields)
+    if values.get("imap_password"):
+        values["imap_password"] = format_credential(values["imap_password"])
+    if values.get("smtp_password"):
+        values["smtp_password"] = format_credential(values["smtp_password"])
+    if not values:
+        return
+    await session.execute(update(Account).where(Account.id == account_id).values(**values))
+
+
+async def set_flags(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    **flags: bool,
+) -> None:
+    """
+    Update one or more IMAP-mapped flags on a message.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to update
+        **flags: Any of is_seen, is_flagged, is_answered, is_draft, is_deleted
+    """
+    if not flags:
+        return
+    await session.execute(update(Message).where(Message.id == message_id).values(**flags))
+
+
+async def set_keywords(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    keywords: list[str],
+) -> None:
+    """
+    Replace a message's custom IMAP keywords/labels.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to update
+        keywords: Full replacement keyword list
+    """
+    await session.execute(
+        update(Message).where(Message.id == message_id).values(keywords=keywords)
+    )
+
+
+async def move_message(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    target_folder_id: uuid.UUID,
+) -> None:
+    """
+    Move a message to a different folder.
+
+    Setting imap_uid to NULL alongside the new folder_id is what makes this
+    optimistic: PostIMAP writes the real UID back once the IMAP MOVE
+    succeeds, and NULL never collides with another pending move under the
+    UNIQUE(folder_id, imap_uid) constraint -- no sentinel value needed.
+    imap_uid IS NULL is itself the "move pending" signal, surfaced in the
+    API as pending_sync.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to move
+        target_folder_id: Destination folder
+    """
+    await session.execute(
+        update(Message)
+        .where(Message.id == message_id)
+        .values(folder_id=target_folder_id, imap_uid=None)
+    )
+
+
+async def move_to_trash(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    trash_folder_id: uuid.UUID,
+) -> None:
+    """
+    Move a message to the trash folder -- the default UI "delete".
+
+    Distinct from expunge(): this is reversible, the message row and its
+    IMAP presence both survive, just relocated.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to trash
+        trash_folder_id: The account's trash-special-use folder
+    """
+    await move_message(session, message_id, trash_folder_id)
+
+
+async def expunge(session: AsyncSession, message_id: uuid.UUID) -> None:
+    """
+    Permanently remove a message -- enqueues an IMAP EXPUNGE.
+
+    The row survives in Postgres (for audit/undo) with expunged_at set; it
+    drops out of folder counts immediately. Distinct from the is_deleted
+    \\Deleted flag, which only marks a message for deletion without
+    removing it.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: Message to expunge
+    """
+    await session.execute(
+        update(Message).where(Message.id == message_id).values(expunged_at=text("now()"))
+    )
+
+
+async def insert_outbox(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    kind: str,
+    to_addrs: list[str] | None = None,
+    cc_addrs: list[str] | None = None,
+    bcc_addrs: list[str] | None = None,
+    subject: str | None = None,
+    body_text: str | None = None,
+    body_html: str | None = None,
+    from_addr: str | None = None,
+    in_reply_to: str | None = None,
+    references: list[str] | None = None,
+    attachments: list[tuple[str, str | None, bytes]] | None = None,
+) -> Outbox:
+    """
+    Insert an outbox row -- a send (kind="send") or a draft (kind="draft").
+
+    PostIMAP composes the MIME message once, sends it for kind="send", and
+    appends a copy to the account's sent or drafts special-use folder. The
+    appended copy flows back into messages through normal inbound sync,
+    thread_id included -- in_reply_to/references is what makes it resolve
+    onto the same thread as the message it replies to.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        account_id: Account to send/draft from
+        kind: "send" or "draft"
+        to_addrs: Recipient addresses
+        cc_addrs: CC addresses
+        bcc_addrs: BCC addresses
+        subject: Message subject
+        body_text: Plain text body
+        body_html: HTML body, optional
+        from_addr: Sender address override; falls back to accounts.imap_user
+        in_reply_to: The replied-to message's Message-ID header value
+        references: Full References chain for threading
+        attachments: (filename, content_type, data) tuples, inserted into
+            outbox_attachments before the row is picked up
+
+    Returns:
+        The inserted Outbox row (flushed, not yet committed)
+    """
+    outbox = Outbox(
+        account_id=account_id,
+        kind=kind,
+        from_addr=from_addr,
+        to_addrs=to_addrs,
+        cc_addrs=cc_addrs,
+        bcc_addrs=bcc_addrs,
+        subject=subject,
+        body_text=body_text,
+        body_html=body_html,
+        in_reply_to=in_reply_to,
+        msg_references=references,
+    )
+    session.add(outbox)
+    await session.flush()
+
+    for filename, content_type, data in attachments or []:
+        session.add(
+            OutboxAttachment(
+                outbox_id=outbox.id,
+                filename=filename,
+                content_type=content_type,
+                data=data,
+            )
+        )
+
+    await session.flush()
+    await session.refresh(outbox)
+    return outbox
