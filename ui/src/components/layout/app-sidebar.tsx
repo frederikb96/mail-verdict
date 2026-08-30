@@ -17,6 +17,7 @@ import {
   UserCircle,
   ChevronDown,
   RefreshCw,
+  Workflow,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -421,6 +422,15 @@ export function AppSidebar() {
             >
               <UserCircle className="h-4 w-4" />
               <span>Accounts</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/pipeline" />}
+              isActive={pathname === "/pipeline"}
+            >
+              <Workflow className="h-4 w-4" />
+              <span>Pipeline</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

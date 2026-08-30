@@ -245,6 +245,7 @@ export type SSEEventType =
   | "outbox.updated"
   | "verdict.issued"
   | "notification.new"
+  | "pipeline.run_finished"
   | "resync";
 
 export interface SSEEvent {
@@ -260,9 +261,13 @@ export interface SSEEvent {
   is_flagged?: boolean;
   is_spam?: boolean;
   source?: string;
-  status?: OutboxStatus;
+  /** Outbox status on outbox.updated; pipeline run status on pipeline.run_finished. */
+  status?: OutboxStatus | string;
   /** Outbox row kind, e.g. "send" or "draft". */
   kind?: string;
+  /** Present on pipeline.run_finished. */
+  run_id?: string;
+  halted_at?: string | null;
   /** Fields that changed on a mail.updated event, e.g. ["imap_uid"] confirms a move. */
   changed?: string[];
   /** "sync" = PostIMAP-originated, "app" = echo of our own write. */
@@ -461,4 +466,169 @@ export interface NotificationResponse {
 
 export interface NotificationCountResponse {
   unacknowledged: number;
+}
+
+// --- Pipeline ---
+
+export type StageRunsOn = "live" | "historical";
+
+/** One registered stage type's JSON Schema for its `config` field. */
+export interface StageTypeOut {
+  type: string;
+  runs_on: StageRunsOn[];
+  schema: JsonSchema;
+}
+
+/** A (subset of) JSON Schema, enough to drive a generated form. */
+export interface JsonSchema {
+  type?: string;
+  title?: string;
+  description?: string;
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+  additionalProperties?: boolean;
+}
+
+export interface JsonSchemaProperty {
+  type?: string;
+  title?: string;
+  description?: string;
+  enum?: string[];
+  default?: unknown;
+  anyOf?: JsonSchemaProperty[];
+  items?: JsonSchemaProperty;
+}
+
+export interface StageOut {
+  stage_id: string;
+  type: string;
+  name: string;
+  config: Record<string, unknown>;
+  enabled: boolean;
+  halt: boolean;
+  accounts: string[] | null;
+}
+
+export interface PipelineHealthEntry {
+  stage_id: string;
+  account_id: string;
+  reference: string;
+  ok: boolean;
+  detail: string | null;
+}
+
+export interface PipelineDocument {
+  revision: number;
+  enabled: boolean;
+  stages: StageOut[];
+  warnings: PipelineHealthEntry[];
+}
+
+export interface PipelineWriteRequest {
+  base_revision?: number | null;
+  enabled?: boolean;
+  stages?: Record<string, unknown>[];
+}
+
+export interface StageCreateRequest {
+  stage_id: string;
+  type: string;
+  name?: string | null;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+  halt?: boolean;
+  accounts?: string[] | null;
+  position?: number | null;
+  base_revision?: number | null;
+}
+
+export interface StageUpdateRequest {
+  name?: string | null;
+  config?: Record<string, unknown> | null;
+  enabled?: boolean | null;
+  halt?: boolean | null;
+  accounts?: string[] | null;
+  base_revision?: number | null;
+}
+
+export interface PipelineRevisionSummary {
+  revision: number;
+  note: string | null;
+  created_at: string;
+}
+
+export type PipelineTestOrigin = "live" | "historical";
+
+export interface PipelineTestRequest {
+  message_id: string;
+  origin?: PipelineTestOrigin;
+}
+
+export interface PipelineTraceEntry {
+  stage_id: string;
+  type: string;
+  matched?: boolean;
+  halt?: boolean;
+  detail?: string;
+  usage?: { model?: string; latency_ms?: number } | null;
+  effects?: Record<string, unknown>[];
+  applied?: { effect: Record<string, unknown>; applied: boolean; detail?: string }[];
+  [key: string]: unknown;
+}
+
+export interface PipelineTestResponse {
+  status: string;
+  skip_reason: string | null;
+  trace: PipelineTraceEntry[];
+}
+
+export interface PipelineRunResponse {
+  id: string;
+  account_id: string;
+  msg_key: string;
+  message_id: string | null;
+  origin: string;
+  apply: boolean;
+  status: string;
+  skip_reason: string | null;
+  attempts: number;
+  pipeline_rev: number | null;
+  halted_at_stage: string | null;
+  failed_stage: string | null;
+  last_error: string | null;
+  trace: PipelineTraceEntry[];
+  model_calls: number;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+
+// --- Queues ---
+
+export interface QueueConcurrency {
+  target: number;
+  actual: number;
+  max_allowed: number;
+}
+
+export interface CircuitStatusResponse {
+  state: string;
+  reason: string | null;
+  since: string | null;
+  retry_after: string | null;
+}
+
+export interface QueueResponse {
+  name: string;
+  state: "running" | "paused" | string;
+  concurrency: QueueConcurrency;
+  batch_size: number;
+  depth: Record<string, number>;
+  circuit: CircuitStatusResponse;
+}
+
+export interface QueuePatchRequest {
+  state?: "running" | "paused";
+  concurrency?: number;
+  batch_size?: number;
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Save, Loader2, Bot, ShieldAlert, Repeat, Sun, Moon, Monitor } from "lucide-react";
+import { Save, Loader2, Bot, ShieldAlert, Repeat, Sun, Moon, Monitor, Workflow } from "lucide-react";
+import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +24,16 @@ const CATEGORIES = [
   { key: "spam", label: "Spam", icon: ShieldAlert },
   { key: "retry", label: "Retry", icon: Repeat },
 ] as const;
+
+// spam.enabled, spam.auto_move_to_junk and spam.auto_mark_read only ever
+// fed the one-time migration that built the pipeline's first revision --
+// classification is now a `classify` stage, and moving/marking spam is a
+// `match` stage the pipeline page edits directly. spam.excerpt_length has
+// no reader left either. Editing any of them here would silently do
+// nothing, which is worse than not offering the control.
+const DEAD_SETTINGS: Record<string, string[]> = {
+  spam: ["enabled", "auto_move_to_junk", "auto_mark_read", "excerpt_length"],
+};
 
 function SettingField({
   name,
@@ -125,8 +136,9 @@ function CategorySettings({
     );
   };
 
+  const dead = DEAD_SETTINGS[category] ?? [];
   const entries = Object.entries(localSettings).filter(
-    ([key]) => key !== "id" && key !== "category",
+    ([key]) => key !== "id" && key !== "category" && !dead.includes(key),
   );
 
   return (
@@ -222,7 +234,21 @@ export function SettingsPage() {
         {CATEGORIES.map(({ key }) => (
           <TabsContent key={key} value={key}>
             <Card>
-              <CardContent className="pt-6">
+              <CardContent className="flex flex-col gap-4 pt-6">
+                {key === "spam" && (
+                  <div className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm">
+                    <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                    <div>
+                      Classification and what happens to spam are stages in the{" "}
+                      <Link href="/pipeline" className="underline">
+                        pipeline
+                      </Link>{" "}
+                      now -- a <span className="font-mono">classify</span> stage produces the
+                      verdict, a <span className="font-mono">match</span> stage decides what
+                      happens to it.
+                    </div>
+                  </div>
+                )}
                 {allSettings?.[key] ? (
                   <CategorySettings category={key} settings={allSettings[key]} />
                 ) : (
