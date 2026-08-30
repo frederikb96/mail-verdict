@@ -8,6 +8,7 @@ from mail_verdict.core.image_sanitizer import (
     restore_remote_images,
     strip_remote_images,
 )
+from mail_verdict.core.sanitizer import sanitize_email_html
 
 
 class TestStripRemoteImages:
@@ -137,3 +138,33 @@ class TestExtractSenderDomain:
     def test_subdomain(self) -> None:
         """Subdomain is preserved."""
         assert extract_sender_domain("no-reply@mail.example.com") == "mail.example.com"
+
+
+class TestCssRestoration:
+    """Allowing a sender must restore CSS images too, and only safely."""
+
+    def test_a_blocked_css_image_counts_as_blocked_content(self) -> None:
+        """Otherwise the banner says nothing was blocked while something was."""
+        blocked = sanitize_email_html(
+            '<div style="background:url(https://t.test/p.gif)">x</div>'
+        )
+        _, has_remote = strip_remote_images(blocked)
+        assert has_remote is True
+
+    def test_allowing_a_sender_restores_the_original_css(self) -> None:
+        """The whole point of the allowlist."""
+        blocked = sanitize_email_html(
+            '<div style="color:red;background:url(https://t.test/p.gif)">x</div>'
+        )
+        restored = restore_remote_images(blocked)
+        assert "https://t.test/p.gif" in restored
+        assert "about:blank" not in restored
+        assert "color:red" in restored
+        assert "data-x-style" not in restored
+
+    def test_restoring_does_not_revive_a_dangerous_scheme(self) -> None:
+        """Consent to load images is not consent to run script."""
+        blocked = sanitize_email_html(
+            '<div style="background:url(javascript:alert(1))">x</div>'
+        )
+        assert "javascript:" not in restore_remote_images(blocked)

@@ -28,12 +28,22 @@ ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "font": {"color", "size", "face"},
     "div": {"align"},
     "p": {"align"},
-    "*": {"class", "style", "dir", "lang"},
+    "*": {"class", "style", "data-x-style", "dir", "lang"},
 }
 
 _SRC_RE = re.compile(r'\bsrc\s*=\s*"([^"]*)"', re.IGNORECASE)
 _SRC_SINGLE_RE = re.compile(r"\bsrc\s*=\s*'([^']*)'", re.IGNORECASE)
 _BG_RE = re.compile(r'\bbackground\s*=\s*"([^"]*)"', re.IGNORECASE)
+
+# A style attribute can fetch a remote resource through any of several CSS
+# properties -- background-image, background, list-style-image, border-image,
+# content, cursor and more. Matching url() itself rather than the property
+# names is what keeps this from being a list that a new property defeats.
+_STYLE_RE = re.compile(r'\bstyle\s*=\s*"([^"]*)"', re.IGNORECASE)
+_STYLE_SINGLE_RE = re.compile(r"\bstyle\s*=\s*'([^']*)'", re.IGNORECASE)
+_CSS_URL_RE = re.compile(r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)", re.IGNORECASE)
+
+_LOCAL_URL_PREFIXES = ("cid:", "data:", "about:", "#")
 
 
 def _rewrite_src(match: re.Match[str]) -> str:
@@ -58,9 +68,33 @@ def _rewrite_bg(match: re.Match[str]) -> str:
     return f'data-x-bg="{url}"'
 
 
+def _is_remote(url: str) -> bool:
+    """Whether fetching this URL would reach the network."""
+    return not url.strip().lower().startswith(_LOCAL_URL_PREFIXES)
+
+
+def _rewrite_style(match: re.Match[str], quote: str) -> str:
+    """Neutralise remote url() in a style attribute, keeping the original.
+
+    The neutralised declaration stays in place rather than the whole
+    attribute being moved aside, so the element keeps its layout while its
+    remote fetch is dead. The untouched original goes to data-x-style, which
+    is what the image-policy layer restores from once a sender is allowed.
+    """
+    style = match.group(1)
+    if not any(_is_remote(url) for url in _CSS_URL_RE.findall(style)):
+        return match.group(0)
+
+    blocked = _CSS_URL_RE.sub(
+        lambda m: m.group(0) if not _is_remote(m.group(1)) else "url(about:blank)",
+        style,
+    )
+    return f"style={quote}{blocked}{quote} data-x-style={quote}{style}{quote}"
+
+
 def _rewrite_remote_images(html: str) -> str:
     """
-    Replace img src and background URLs with data-x-* attributes.
+    Replace img src, background and CSS url() references with data-x-*.
 
     CID references (inline MIME images) are preserved as-is.
 
@@ -73,6 +107,8 @@ def _rewrite_remote_images(html: str) -> str:
     html = _SRC_RE.sub(_rewrite_src, html)
     html = _SRC_SINGLE_RE.sub(_rewrite_src_single, html)
     html = _BG_RE.sub(_rewrite_bg, html)
+    html = _STYLE_RE.sub(lambda m: _rewrite_style(m, '"'), html)
+    html = _STYLE_SINGLE_RE.sub(lambda m: _rewrite_style(m, "'"), html)
     return html
 
 

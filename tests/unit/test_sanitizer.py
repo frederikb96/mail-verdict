@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from mail_verdict.core.sanitizer import sanitize_email_html
 
 
@@ -137,3 +139,58 @@ class TestEdgeCases:
         assert "<script" not in result
         assert "data-x-src=" in result
         assert "<a " in result
+
+
+class TestCssRemoteContent:
+    """A style attribute can fetch a remote resource, and used to.
+
+    Blocking only img src and the background attribute left CSS as an open
+    door: background-image, background, list-style-image, border-image,
+    content and cursor all take a url(), and every one of them made a request
+    when the message was opened. A tracking pixel does not have to be an
+    <img>, and a sender who wants to track knows that.
+    """
+
+    @pytest.mark.parametrize(
+        "css",
+        [
+            "background-image:url(https://t.test/p.gif)",
+            "background:url(https://t.test/p.gif)",
+            "list-style-image:url(https://t.test/p.gif)",
+            "border-image:url(https://t.test/p.gif)",
+            "content:url(https://t.test/p.gif)",
+            "cursor:url(https://t.test/p.gif),auto",
+        ],
+    )
+    def test_no_css_property_can_reach_the_network(self, css: str) -> None:
+        """Whichever property carries the url(), the fetch is dead."""
+        out = sanitize_email_html(f'<div style="{css}">x</div>')
+        assert "t.test" not in out.split("data-x-")[0]
+
+    def test_a_quoted_or_single_quoted_url_is_caught_too(self) -> None:
+        """Quoting style must not be a way around it."""
+        for html in (
+            "<div style='background:url(https://t.test/p.gif)'>x</div>",
+            '<div style=\'background:url("https://t.test/p.gif")\'>x</div>',
+        ):
+            assert "t.test" not in sanitize_email_html(html).split("data-x-")[0]
+
+    def test_the_rest_of_the_style_survives(self) -> None:
+        """Only the url() is neutralised, so the message still looks right."""
+        out = sanitize_email_html(
+            '<div style="color:red;background:url(https://t.test/p.gif);margin:4px">x</div>'
+        )
+        assert "color:red" in out
+        assert "margin:4px" in out
+
+    def test_an_inline_attachment_reference_is_left_alone(self) -> None:
+        """cid: is the message's own attachment, not a remote fetch."""
+        out = sanitize_email_html('<div style="background:url(cid:logo)">x</div>')
+        assert "url(cid:logo)" in out
+        assert "data-x-style" not in out
+
+    def test_a_style_with_nothing_remote_is_untouched(self) -> None:
+        """No url() means nothing to block and nothing to preserve."""
+        out = sanitize_email_html('<div style="color:blue">x</div>')
+        assert "color:blue" in out
+        assert "data-x-style" not in out

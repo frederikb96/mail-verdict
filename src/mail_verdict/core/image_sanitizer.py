@@ -22,6 +22,14 @@ _DATA_X_SRC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# A style attribute whose remote url() was neutralised at sanitize time.
+# Counted as a blocked image so the banner tells the truth: a tracking
+# pixel in CSS is blocked for the same reason and needs the same consent.
+_DATA_X_STYLE_RE = re.compile(
+    r'\bdata-x-style\s*=\s*["\'][^"\']*["\']',
+    re.IGNORECASE,
+)
+
 
 def strip_remote_images(html: str) -> tuple[str, bool]:
     """
@@ -37,7 +45,11 @@ def strip_remote_images(html: str) -> tuple[str, bool]:
     Returns:
         Tuple of (stripped HTML, whether any remote images were found)
     """
-    has_remote = bool(_REMOTE_IMG_RE.search(html)) or bool(_DATA_X_SRC_RE.search(html))
+    has_remote = (
+        bool(_REMOTE_IMG_RE.search(html))
+        or bool(_DATA_X_SRC_RE.search(html))
+        or bool(_DATA_X_STYLE_RE.search(html))
+    )
     stripped = _REMOTE_IMG_RE.sub("", html)
     stripped = _DATA_X_SRC_RE.sub("", stripped)
     return stripped, has_remote
@@ -65,6 +77,36 @@ def _restore_if_safe(match: re.Match[str]) -> str:
     return ""
 
 
+def _restore_one_style(match: re.Match[str]) -> str:
+    """Put a preserved style back, dropping any url() that is not http(s).
+
+    The stored value is the sender's original CSS, so it gets the same
+    scheme check the src path gets -- allowing a sender to load images is
+    not consent to a javascript: or data: url reappearing in a rule.
+    """
+    original = match.group(1)
+    safe = re.sub(
+        r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)",
+        lambda m: m.group(0) if _SAFE_SCHEME_RE.match(m.group(1)) else "url(about:blank)",
+        original,
+        flags=re.IGNORECASE,
+    )
+    return f'style="{safe}"'
+
+
+def _restore_styles(html: str) -> str:
+    """Swap each neutralised style for its preserved original."""
+    html = re.sub(
+        r'\bstyle\s*=\s*["\'][^"\']*["\']\s+(?=data-x-style)', "", html, flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r'\bdata-x-style\s*=\s*["\']([^"\']*)["\']',
+        _restore_one_style,
+        html,
+        flags=re.IGNORECASE,
+    )
+
+
 def restore_remote_images(html: str) -> str:
     """
     Restore data-x-src attributes back to src for rendering with images allowed.
@@ -78,12 +120,13 @@ def restore_remote_images(html: str) -> str:
     Returns:
         HTML with safe data-x-src converted back to src
     """
-    return re.sub(
+    html = re.sub(
         r'\bdata-x-src\s*=\s*["\']([^"\']*)["\']',
         _restore_if_safe,
         html,
         flags=re.IGNORECASE,
     )
+    return _restore_styles(html)
 
 
 def extract_sender_domain(email_addr: str | None) -> str | None:
