@@ -25,7 +25,7 @@ create the database or install PostIMAP for you:
    [`examples/cnpg-cluster.yaml`](examples/cnpg-cluster.yaml) for a worked
    [CloudNativePG](https://cloudnative-pg.io/) setup: one Cluster, PostIMAP's owner role, and
    MailVerdict's own role.
-2. **PostIMAP** 1.0.1 or newer, its own released chart
+2. **PostIMAP** 1.1.0 or newer, its own released chart
    (`oci://ghcr.io/frederikb96/charts/postimap`), pointed at
    the same database. See [`examples/postimap-values.yaml`](examples/postimap-values.yaml). Its
    migrations run automatically on first start and create the `postimap_app` role that step 1's

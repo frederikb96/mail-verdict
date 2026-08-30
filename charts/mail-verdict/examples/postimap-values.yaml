@@ -5,12 +5,14 @@
 # separately, before mail-verdict itself:
 #
 #   helm install postimap oci://ghcr.io/frederikb96/charts/postimap \
-#     --version 1.0.1 \
+#     --version 1.1.0 \
 #     --namespace mail --create-namespace \
 #     -f postimap-values.yaml
 #
-# 1.0.1 is the minimum: it is the release that lets a consumer delete an
-# account, and that encrypts stored mail credentials at rest.
+# 1.1.0 is the minimum. It carries the previous folder on a move event, which
+# is how MailVerdict learns that a message dragged out of Junk was not spam;
+# it also lets a consumer delete an account, and encrypts stored mail
+# credentials at rest.
 
 config:
   database:
