@@ -25,7 +25,16 @@ _INLINE_SCRIPT_RE = re.compile(
 # Swagger UI and ReDoc load their own assets from a CDN and are FastAPI's
 # own developer-facing pages, not part of the application surface the rest
 # of this policy is written for.
-_CSP_EXEMPT_PREFIXES = ("/api/docs", "/api/redoc")
+_CSP_EXEMPT_PATHS = frozenset({"/api/docs", "/api/redoc", "/api/docs/oauth2-redirect"})
+
+
+def _is_csp_exempt(path: str) -> bool:
+    """Whether this exact path is one of the CDN-backed documentation pages.
+
+    Matched whole rather than as a prefix: a future route whose name merely
+    starts with one of these would otherwise lose its policy silently.
+    """
+    return path.rstrip("/") in _CSP_EXEMPT_PATHS or path in _CSP_EXEMPT_PATHS
 
 _STATIC_HEADERS: list[tuple[bytes, bytes]] = [
     (b"x-content-type-options", b"nosniff"),
@@ -124,7 +133,7 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        exempt_csp = scope["path"].startswith(_CSP_EXEMPT_PREFIXES)
+        exempt_csp = _is_csp_exempt(scope["path"])
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":

@@ -312,3 +312,75 @@ class TestCssParsingCannotBeSyntaxedAround:
         r"""ur\6c( is `url(` to a browser -- the same escape, not the same target."""
         out = sanitize_email_html('<div style="background:ur\\6c(https://evil.test/p.gif)">x</div>')
         assert "evil.test" not in out.split("data-x-")[0]
+
+
+class TestMalformedCssCannotBreakOutOfTheAttribute:
+    """A style value is spliced back into markup, so whatever the tokenizer
+    hands back has to be escaped there.
+
+    A CSS tokenizer recovering from malformed input echoes the malformed
+    text back rather than discarding it, and an unterminated string comes
+    back carrying the quote that opened it and nothing that closes it.
+    Spliced unescaped, that quote ends the attribute early and every
+    character after it becomes markup -- on an element that has already
+    passed the tag and attribute allowlist, so an event handler arrives on
+    a tag nothing approved it for. The backend's contract is that its
+    output is safe to embed anywhere, and `GET /api/mails/{id}` hands
+    `body_html` to any API consumer, so this cannot rest on the browser
+    client happening to sanitize a second time.
+
+    Only the single-quoted CSS string reaches this: nh3 escapes a double
+    quote to an entity before the rewrite sees it, so the other shapes here
+    cover the neighbourhood rather than reproduce the defect.
+    """
+
+    @staticmethod
+    def _attributes(html: str) -> dict[str, str | None]:
+        """Every attribute a real HTML parser sees on the first tag."""
+        from html.parser import HTMLParser
+
+        found: dict[str, str | None] = {}
+
+        class Collector(HTMLParser):
+            def handle_starttag(
+                self, tag: str, attrs: list[tuple[str, str | None]],
+            ) -> None:
+                found.update(dict(attrs))
+
+        Collector().feed(html)
+        return found
+
+    @pytest.mark.parametrize(
+        "html",
+        [
+            pytest.param(
+                '<img src="cid:x" style="background:url(\'cid: '
+                'onerror=alert(1) foo=bar" alt="x">',
+                id="unterminated-single-quote",
+            ),
+            pytest.param(
+                '<img src="cid:x" style=\'background:url("cid: '
+                "onerror=alert(1) foo=bar' alt=\"x\">",
+                id="unterminated-double-quote",
+            ),
+            pytest.param(
+                '<div style="background:url(\'http://evil.test/t.gif '
+                'onerror=alert(1) x=y">hi</div>',
+                id="unterminated-on-the-remote-url-branch",
+            ),
+        ],
+    )
+    def test_an_unterminated_string_cannot_inject_an_attribute(self, html: str) -> None:
+        attributes = self._attributes(sanitize_email_html(html))
+        injected = [name for name in attributes if name.startswith("on")]
+        assert not injected, f"event handler injected: {injected} in {attributes}"
+
+    def test_a_legitimate_remote_url_still_round_trips(self) -> None:
+        """The escaping must not cost the image-consent layer its original."""
+        cleaned = sanitize_email_html(
+            '<div style="color:red;background:url(&quot;http://evil.test/p.gif&quot;)">'
+            "ok</div>"
+        )
+        attributes = self._attributes(cleaned)
+        assert "data-x-style" in attributes
+        assert "about:blank" in (attributes.get("style") or "")

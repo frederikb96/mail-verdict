@@ -127,3 +127,18 @@ class TestSecurityHeadersMiddleware:
         resp = client.get("/stream")
         assert resp.text == "chunk-1chunk-2"
         assert resp.headers["content-security-policy"] == "default-src 'self'"
+
+class TestCspExemptionMatchesWholePaths:
+    """A path that merely starts with a documentation route must keep its policy.
+
+    Prefix matching hands a future `/api/docs-export` the exemption written
+    for Swagger UI, and it loses its CSP with nothing saying so.
+    """
+
+    def test_a_route_beginning_with_an_exempt_path_is_not_exempt(self) -> None:
+        from mail_verdict.api.security_headers import _is_csp_exempt
+
+        assert _is_csp_exempt("/api/docs")
+        assert _is_csp_exempt("/api/redoc")
+        assert not _is_csp_exempt("/api/docs-export")
+        assert not _is_csp_exempt("/api/redocument")

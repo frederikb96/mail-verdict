@@ -140,8 +140,32 @@ def _parsed_declarations(style: str) -> list[Declaration]:
             continue
         if _canonical_property_name(node.lower_name) in _ESCAPING_PROPERTIES:
             continue
+        if _contains_parse_error(node.value):
+            continue
         kept.append(node)
     return kept
+
+
+def _contains_parse_error(nodes: list[Node]) -> bool:
+    """Whether any token in this value failed to parse.
+
+    A tokenizer recovering from malformed input echoes the malformed text
+    back, so serializing such a value reproduces it verbatim -- an
+    unterminated string comes back carrying the quote that opened it and
+    nothing that closes it. A declaration that did not parse cleanly
+    carries no layout an email needs, so it is dropped rather than
+    round-tripped.
+    """
+    for node in nodes:
+        if node.type == "error":
+            return True
+        if node.type == "function" and _contains_parse_error(node.arguments):
+            return True
+        if node.type in ("() block", "[] block", "{} block") and _contains_parse_error(
+            node.content
+        ):
+            return True
+    return False
 
 
 def _serialize_declarations(declarations: list[Declaration]) -> str:
@@ -198,6 +222,21 @@ def _neutralize_remote_urls(nodes: list[Node]) -> None:
             _neutralize_remote_urls(node.content)
 
 
+def _attr_value(text: str, quote: str) -> str:
+    """Escape a string for use inside an HTML attribute delimited by `quote`.
+
+    Whatever a CSS tokenizer hands back is being spliced into markup, so it
+    has to be escaped there rather than trusted to contain no delimiter. An
+    unescaped quote ends the attribute early and every character after it
+    becomes markup the tag allowlist never approved -- an `onerror=` among
+    them, on an element that already passed sanitization.
+    """
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    if quote == '"':
+        return escaped.replace('"', "&quot;")
+    return escaped.replace("'", "&#39;")
+
+
 def _rewrite_style(match: re.Match[str], quote: str) -> str:
     """Make one style attribute safe, keeping the original for restoration.
 
@@ -215,7 +254,7 @@ def _rewrite_style(match: re.Match[str], quote: str) -> str:
     if not has_remote:
         if preserved == style:
             return match.group(0)
-        return f"style={quote}{preserved}{quote}"
+        return f"style={quote}{_attr_value(preserved, quote)}{quote}"
 
     # Re-parsed from the already-cleaned text so the mutation below leaves
     # `declarations` -- and the `preserved` string built from it -- alone.
@@ -229,7 +268,10 @@ def _rewrite_style(match: re.Match[str], quote: str) -> str:
     for decl in blocked_declarations:
         _neutralize_remote_urls(decl.value)
     blocked = _serialize_declarations(blocked_declarations)
-    return f"style={quote}{blocked}{quote} data-x-style={quote}{preserved}{quote}"
+    return (
+        f"style={quote}{_attr_value(blocked, quote)}{quote} "
+        f"data-x-style={quote}{_attr_value(preserved, quote)}{quote}"
+    )
 
 
 def _rewrite_remote_images(html: str) -> str:

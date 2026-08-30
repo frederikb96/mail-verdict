@@ -7,6 +7,7 @@ claiming from a throwaway table.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -290,6 +291,68 @@ class TestResetCircuit:
         manager = QueueManager(migrated_db)
         with pytest.raises(KeyError):
             await manager.reset_circuit("nope")
+
+
+class TestConcurrentStateWrites:
+    @pytest.mark.asyncio
+    async def test_two_simultaneous_raises_cannot_jointly_exceed_the_budget(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """The sequential version of this passes even with the check and the
+        write unsynchronised, because the first call has already written by
+        the time the second reads. Two calls issued together do not reliably
+        interleave either -- the event loop is free to run one to completion.
+
+        So the interleaving is forced: both calls are held after reading the
+        committed budget and released together, which is the state two
+        `PATCH /api/queues/{name}` requests landing close together reach on
+        their own. Each then sees a budget the other is about to spend, and
+        both pass a check whose entire purpose is that they should not.
+        """
+        manager = QueueManager(migrated_db, reserved_for_requests=0)
+        body = _draining_worker_body(WorkQueue(migrated_db, throwaway_queue_table))
+        name_a = f"queue-{uuid.uuid4().hex[:8]}"
+        name_b = f"queue-{uuid.uuid4().hex[:8]}"
+        manager.register(name_a, throwaway_queue_table, body)
+        manager.register(name_b, throwaway_queue_table, body)
+
+        budget = migrated_db.pool_capacity
+        each = budget // 2 + 1  # any two of these together overrun the pool
+
+        both_have_read = asyncio.Barrier(2)
+        real_committed = manager._committed_concurrency
+
+        async def _read_then_wait(**kwargs: object) -> int:
+            total = await real_committed(**kwargs)  # type: ignore[arg-type]
+            # Serialized correctly, the second call never reaches this point
+            # while the first holds the lock, so the wait simply expires and
+            # the first proceeds. Unsynchronised, both arrive at once and are
+            # released together, each holding a budget read taken before the
+            # other's write.
+            with contextlib.suppress(TimeoutError, asyncio.BrokenBarrierError):
+                await asyncio.wait_for(both_have_read.wait(), timeout=2.0)
+            return total
+
+        manager._committed_concurrency = _read_then_wait  # type: ignore[method-assign]
+
+        results = await asyncio.gather(
+            manager.set_state(name_a, state="running", concurrency=each),
+            manager.set_state(name_b, state="running", concurrency=each),
+            return_exceptions=True,
+        )
+
+        accepted = [r for r in results if not isinstance(r, BaseException)]
+        assert len(accepted) == 1, (
+            f"both raises were accepted, committing {each * 2} against a budget of {budget}"
+        )
+        assert any(isinstance(r, ValueError) for r in results)
+
+        committed = 0
+        for queue_name in (name_a, name_b):
+            row = await manager.get_state(queue_name)
+            if row.state == "running":
+                committed += row.concurrency
+        assert committed <= budget
 
 
 class TestPersistedState:

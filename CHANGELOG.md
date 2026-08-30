@@ -30,6 +30,15 @@ consumer role the chart prescribes.
 
 ### Security
 
+- **A crafted `style` attribute could put an event handler on an element the sanitizer had
+  already approved.** A CSS tokenizer recovering from an unterminated string echoes the malformed
+  text back, quote and all, and that text was spliced into the rewritten `style` attribute
+  unescaped — so the attribute ended early and everything after it became markup the tag and
+  attribute allowlist never saw, `onerror=` included. The browser client happened to strip it in a
+  later pass, but `GET /api/mails/{id}` hands `body_html` to any API consumer with no such pass.
+  Values are now escaped as they are written into the attribute, and a declaration whose value
+  failed to parse is dropped rather than serialized back out.
+
 - **A message could cover the entire application and steal every click on it.** The server-side
   sanitizer tried to strip `position`, `z-index`, `transform` and similar CSS declarations by
   matching the property name with a plain string split, which is not how CSS is actually parsed —
@@ -55,6 +64,11 @@ consumer role the chart prescribes.
   `Strict-Transport-Security`.
 
 ### Fixed
+
+- **Two queue concurrency changes arriving together could jointly claim more of the connection
+  pool than it has**, starving the API of every connection — each read the committed budget before
+  either wrote, so both saw room the other was about to take. The check and the write it authorises
+  now happen in one transaction behind an advisory lock.
 
 - **Upgrading a 1.0.0 database that had ever recorded a verdict failed outright.** Migration 0002's
   backfill sets `msg_key` and `from_addr` through a lightweight table construct that did not declare

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sqlalchemy import Table
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.queue.supervisor import WorkerBody
@@ -34,6 +35,14 @@ logger = logging.getLogger(__name__)
 # timer -- must not collide with a key any other reconciliation timer in
 # the process picks (a sweep controller, say). Fits a bigint comfortably.
 _RECLAIM_LOCK_KEY = 761_034_221
+
+# Serializes the read-then-write in set_state across processes. Reading every
+# queue's committed concurrency and writing this one's are two round trips, so
+# two callers that both read before either writes each see a budget the other
+# is about to spend -- and both pass a check whose whole purpose is that they
+# should not. Distinct from the reclaim key above; they guard different things
+# and must never wait on each other.
+_STATE_WRITE_LOCK_KEY = 761_034_222
 
 
 @dataclass(frozen=True)
@@ -231,7 +240,9 @@ class QueueManager:
             circuit=circuit,
         )
 
-    async def _committed_concurrency(self, *, exclude: str | None = None) -> int:
+    async def _committed_concurrency(
+        self, *, exclude: str | None = None, session: AsyncSession | None = None,
+    ) -> int:
         """
         Sum of persisted concurrency across every other *running*
         registered queue -- what already stands against the shared
@@ -241,6 +252,8 @@ class QueueManager:
         Args:
             exclude: Queue name to leave out of the sum -- the one being
                 validated or reported on
+            session: Read through this session rather than opening one, so
+                a caller holding a lock sees the state that lock protects
 
         Returns:
             Combined concurrency every other running queue has committed
@@ -249,7 +262,7 @@ class QueueManager:
         for other_name in self._registered:
             if other_name == exclude:
                 continue
-            row = await self._get_or_create_state(other_name)
+            row = await self._get_or_create_state(other_name, session=session)
             if row.state == "running":
                 total += row.concurrency
         return total
@@ -328,24 +341,35 @@ class QueueManager:
         if concurrency is not None and concurrency < 0:
             raise ValueError("concurrency must be >= 0")
 
-        current = await self._get_or_create_state(name)
-        effective_state = state if state is not None else current.state
-        effective_concurrency = concurrency if concurrency is not None else current.concurrency
-
-        if effective_state == "running" and effective_concurrency > 0:
-            committed = await self._committed_concurrency(exclude=name)
-            budget = self._db.pool_capacity - self._reserved_for_requests
-            if committed + effective_concurrency > budget:
-                raise ValueError(
-                    f"concurrency {effective_concurrency} for {name!r} would bring the "
-                    f"combined running concurrency across every queue to "
-                    f"{committed + effective_concurrency}, exceeding the {budget} "
-                    f"connections available to queues (database pool capacity "
-                    f"{self._db.pool_capacity}, {self._reserved_for_requests} reserved for "
-                    "non-queue requests)"
-                )
-
+        # One transaction, holding an advisory lock, for the budget check and
+        # the write it authorises. Apart they are two round trips, so two
+        # callers can both read a budget the other is about to spend and both
+        # pass -- jointly claiming more of the connection pool than it has,
+        # which is the single thing this check exists to prevent. The lock is
+        # released when the transaction ends, however it ends.
         async with self._db.session() as session:
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _STATE_WRITE_LOCK_KEY},
+            )
+            current = await self._get_or_create_state(name, session=session)
+            effective_state = state if state is not None else current.state
+            effective_concurrency = (
+                concurrency if concurrency is not None else current.concurrency
+            )
+
+            if effective_state == "running" and effective_concurrency > 0:
+                committed = await self._committed_concurrency(exclude=name, session=session)
+                budget = self._db.pool_capacity - self._reserved_for_requests
+                if committed + effective_concurrency > budget:
+                    raise ValueError(
+                        f"concurrency {effective_concurrency} for {name!r} would bring the "
+                        f"combined running concurrency across every queue to "
+                        f"{committed + effective_concurrency}, exceeding the {budget} "
+                        f"connections available to queues (database pool capacity "
+                        f"{self._db.pool_capacity}, {self._reserved_for_requests} reserved "
+                        "for non-queue requests)"
+                    )
+
             sets = []
             params: dict[str, object] = {"name": name}
             if state is not None:
@@ -365,21 +389,28 @@ class QueueManager:
         entry.supervisor.set_target(row.concurrency if row.state == "running" else 0)
         return await self.summary(name)
 
-    async def _get_or_create_state(self, name: str) -> QueueStateRow:
-        async with self._db.session() as session:
-            await session.execute(
-                text(
-                    "INSERT INTO queue_state (name) VALUES (:name) "
-                    "ON CONFLICT (name) DO NOTHING"
-                ),
-                {"name": name},
-            )
-            result = await session.execute(
-                text("SELECT name, state, concurrency FROM queue_state WHERE name = :name"),
-                {"name": name},
-            )
-            row = result.one()
-            return QueueStateRow(name=row.name, state=row.state, concurrency=row.concurrency)
+    async def _get_or_create_state(
+        self, name: str, *, session: AsyncSession | None = None,
+    ) -> QueueStateRow:
+        if session is not None:
+            return await self._read_state(session, name)
+        async with self._db.session() as owned:
+            return await self._read_state(owned, name)
+
+    @staticmethod
+    async def _read_state(session: AsyncSession, name: str) -> QueueStateRow:
+        await session.execute(
+            text(
+                "INSERT INTO queue_state (name) VALUES (:name) ON CONFLICT (name) DO NOTHING"
+            ),
+            {"name": name},
+        )
+        result = await session.execute(
+            text("SELECT name, state, concurrency FROM queue_state WHERE name = :name"),
+            {"name": name},
+        )
+        row = result.one()
+        return QueueStateRow(name=row.name, state=row.state, concurrency=row.concurrency)
 
 
 _manager: QueueManager | None = None
