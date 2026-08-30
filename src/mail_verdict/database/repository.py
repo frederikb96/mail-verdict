@@ -451,6 +451,59 @@ class MessageRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def search_fulltext_with_snippet(
+        self,
+        account_id: uuid.UUID | None,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> list[tuple[Message, str]]:
+        """
+        Full-text search returning a highlighted snippet per result.
+
+        The snippet is built from the same coalesced subject/from/body text
+        the generated search_vector column itself indexes on, so a
+        truncated message with no body still gets a snippet from its
+        subject/sender rather than an empty one.
+
+        Args:
+            account_id: Account scope, or None to search across all accounts
+            query: Search query string
+            limit: Max results
+
+        Returns:
+            (Message, snippet) pairs ranked by relevance
+        """
+        async with self._db.session() as session:
+            ts_query = func.websearch_to_tsquery("simple", query)
+            searchable_text = (
+                func.coalesce(Message.subject, "")
+                + " "
+                + func.coalesce(Message.from_addr, "")
+                + " "
+                + func.coalesce(Message.body_text, "")
+            )
+            snippet = func.ts_headline(
+                "simple", searchable_text, ts_query,
+                "StartSel=**, StopSel=**, MaxWords=35, MinWords=15",
+            )
+            rank = func.ts_rank(Message.search_vector, ts_query)
+
+            stmt = (
+                select(Message, snippet.label("snippet"))
+                .where(
+                    Message.expunged_at.is_(None),
+                    Message.search_vector.op("@@")(ts_query),
+                )
+                .order_by(desc(rank))
+                .limit(limit)
+            )
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
+
+            result = await session.execute(stmt)
+            return [(row[0], row[1]) for row in result.all()]
+
 
 class VerdictRepository:
     """Repository for Verdict CRUD operations."""

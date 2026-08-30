@@ -265,6 +265,69 @@ async def expunge(session: AsyncSession, message_id: uuid.UUID) -> None:
     )
 
 
+async def set_flags_bulk(
+    session: AsyncSession,
+    message_ids: list[uuid.UUID],
+    **flags: bool,
+) -> None:
+    """
+    Update one or more IMAP-mapped flags on many messages at once.
+
+    Same contract columns as set_flags(), batched into a single UPDATE via
+    an IN clause -- the shape PostIMAP's trigger sees per row is identical.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_ids: Messages to update
+        **flags: Any of is_seen, is_flagged, is_answered, is_draft, is_deleted
+    """
+    if not flags or not message_ids:
+        return
+    await session.execute(
+        update(Message).where(Message.id.in_(message_ids)).values(**flags)
+    )
+
+
+async def move_message_bulk(
+    session: AsyncSession,
+    message_ids: list[uuid.UUID],
+    target_folder_id: uuid.UUID,
+) -> None:
+    """
+    Move many messages to a different folder at once.
+
+    Same optimistic folder_id + imap_uid=NULL shape as move_message(),
+    batched into a single UPDATE.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_ids: Messages to move
+        target_folder_id: Destination folder
+    """
+    if not message_ids:
+        return
+    await session.execute(
+        update(Message)
+        .where(Message.id.in_(message_ids))
+        .values(folder_id=target_folder_id, imap_uid=None)
+    )
+
+
+async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> None:
+    """
+    Permanently remove many messages at once -- see expunge().
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_ids: Messages to expunge
+    """
+    if not message_ids:
+        return
+    await session.execute(
+        update(Message).where(Message.id.in_(message_ids)).values(expunged_at=text("now()"))
+    )
+
+
 async def insert_outbox(
     session: AsyncSession,
     *,

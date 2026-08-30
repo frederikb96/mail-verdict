@@ -31,6 +31,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    FetchedValue,
     Index,
     Integer,
     LargeBinary,
@@ -311,8 +312,13 @@ class Outbox(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    # server_default=FetchedValue() tells SQLAlchemy this column is entirely
+    # PostIMAP-managed: never send it explicitly on INSERT (the real column
+    # is NOT NULL with its own server-side default) and never try to fetch
+    # it back automatically -- this projection has no DDL of its own for a
+    # table Alembic doesn't create.
     next_retry_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True,
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
     )
     sent_message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
