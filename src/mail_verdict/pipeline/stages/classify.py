@@ -11,8 +11,14 @@ pipeline/revisions.py's default definition).
 
 The model gets no tools and one call per message, so a message crafted to
 manipulate the prompt can influence exactly one verdict and nothing else
--- the untrusted body is fenced in delimiters in the prompt template
-regardless, but the real protection is the absence of tools.
+-- the untrusted body is fenced in `<email_content>` delimiters in the
+prompt template regardless, but the real protection is the absence of
+tools. `json.dumps` escapes quotes and backslashes, not angle brackets,
+so a body containing the literal string "close-email-content-tag" would
+close the fence early were it embedded as-is; `_escape_delimiter_breakout`
+below replaces every `<` and `>` in the JSON with its unicode escape
+first -- valid JSON, parses back to the same string, and contains no
+literal angle bracket the fence could ever be broken with.
 
 Neighbour hints (settings.semantic.neighbor_hints_enabled, default off)
 add a `similar_past_mail` list to the prompt's context: the k nearest
@@ -128,8 +134,23 @@ _EVIDENCE_LABEL = {
 }
 
 
+def _escape_delimiter_breakout(json_text: str) -> str:
+    """Replace every `<` and `>` with its `\\uXXXX` escape.
+
+    Still valid JSON -- a unicode escape inside a string literal decodes
+    to the same character -- but the delimiter tags the untrusted content
+    is fenced in (spam_user.md.j2's `<email_content>`/`</email_content>`)
+    can no longer be spelled inside it, so a message body containing the
+    literal closing tag can no longer close the fence early. `json.dumps`
+    itself has no option for this: it escapes quotes and backslashes,
+    never angle brackets.
+    """
+    return json_text.replace("<", "\\u003c").replace(">", "\\u003e")
+
+
 def _build_user_prompt(msg: MessageView, neighbor_hints: tuple[NeighborHint, ...]) -> str:
     context_json = json.dumps(_build_context(msg, neighbor_hints), indent=2, ensure_ascii=False)
+    context_json = _escape_delimiter_breakout(context_json)
     if len(context_json) > _MAX_CONTENT_LENGTH:
         context_json = context_json[:_MAX_CONTENT_LENGTH] + "\n... [truncated]"
     return render_prompt("spam_user.md.j2", context_json=context_json)

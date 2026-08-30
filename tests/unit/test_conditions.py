@@ -1,4 +1,4 @@
-"""Tests for all 14 condition types + composite conditions (all/any/not)."""
+"""Tests for all 13 condition types + composite conditions (all/any/not)."""
 
 from __future__ import annotations
 
@@ -184,18 +184,6 @@ class TestTagIs:
     def test_no_match(self) -> None:
         ctx = _ctx(tags=["personal"])
         assert evaluate_condition({"tag_is": "billing"}, ctx) is False
-
-
-class TestEnrichmentTag:
-    """Tests for enrichment_tag condition."""
-
-    def test_match(self) -> None:
-        ctx = _ctx(enrichment_tags=["priority", "action-required"])
-        assert evaluate_condition({"enrichment_tag": "priority"}, ctx) is True
-
-    def test_no_match(self) -> None:
-        ctx = _ctx(enrichment_tags=[])
-        assert evaluate_condition({"enrichment_tag": "priority"}, ctx) is False
 
 
 class TestUnknownCondition:

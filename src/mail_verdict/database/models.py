@@ -732,6 +732,17 @@ class PipelineRun(Base):
     second insert attempt for the same (account_id, msg_key) is absorbed
     by `uq_pipeline_run` rather than producing a duplicate journey. A
     sweep (not built by this revision) would dedup to its own id instead.
+
+    `from_addr` mirrors the same column on Verdict and for the same
+    reason: `uq_pipeline_run` is a database-level unique index on
+    `(account_id, msg_key, dedup_key, coalesce(from_addr, ''))`, not
+    representable as a plain SQLAlchemy UniqueConstraint (see
+    0008_pipeline_run_from_addr) and so not declared in __table_args__
+    below, the same way Verdict's own coalesce-based index is not.
+    Without the sender in the run's own dedup key, a message forging the
+    Message-ID of one already run would collapse into that run before
+    `classify` ever got to check the verdict table's sender-scoped
+    index -- the protection that index exists for would never be reached.
     """
 
     __tablename__ = "pipeline_runs"
@@ -742,6 +753,7 @@ class PipelineRun(Base):
     message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     sweep_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     dedup_key: Mapped[str] = mapped_column(Text, nullable=False)
+    from_addr: Mapped[str | None] = mapped_column(Text, nullable=True)
     origin: Mapped[str] = mapped_column(Text, nullable=False)
     apply: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
@@ -773,7 +785,10 @@ class PipelineRun(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("account_id", "msg_key", "dedup_key", name="uq_pipeline_run"),
+        # The real uniqueness constraint is a coalesce-expression unique
+        # index created directly in the migration (see the class
+        # docstring); SQLAlchemy's UniqueConstraint cannot express it, so
+        # it is intentionally absent here.
         Index("idx_pipeline_run_claim", "priority", "next_attempt_at"),
         Index("idx_pipeline_run_lease", "lease_expires_at"),
         Index("idx_pipeline_run_failed", "account_id", "finished_at"),

@@ -17,10 +17,10 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mail_verdict.core.errors import ProviderUnavailableError
-from mail_verdict.database.models import Folder, Verdict, VerdictSource
+from mail_verdict.database.models import Folder, FolderPrefs, Verdict, VerdictSource
 from mail_verdict.pipeline.contracts import (
     JsonValue,
     StageOutcome,
@@ -119,10 +119,19 @@ class FolderResolver:
                 )
                 return result.scalar_one_or_none()
             if special_use is not None:
+                # folder_prefs.special_use_override exists for servers that
+                # don't advertise SPECIAL-USE -- matching Folder.special_use
+                # alone leaves an overridden folder unresolvable here, so
+                # the default move-spam stage would raise StageMisconfigured
+                # on every run for that account (database/repository.py's
+                # get_effective_special_use is the same coalesce).
                 result = await session.execute(
-                    select(Folder.id).where(
+                    select(Folder.id)
+                    .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+                    .where(
                         Folder.account_id == self._account_id,
-                        Folder.special_use == special_use,
+                        func.coalesce(FolderPrefs.special_use_override, Folder.special_use)
+                        == special_use,
                         Folder.deleted_at.is_(None),
                     ).limit(1)
                 )

@@ -3,14 +3,15 @@ Hard validation for a pipeline document before it becomes a revision.
 
 Two kinds of problem, and the write endpoints in api/pipeline.py treat
 them differently on purpose. A syntax error, an unknown stage type, an
-unknown effect, an unknown condition type, or a duplicate stage name can
-never become valid on their own -- these are rejected outright (400),
-collected all at once rather than stopping at the first one, since fixing
-them one HTTP round trip at a time is not a client's job. A folder
-reference that does not currently resolve is a different kind of problem
-entirely and is never rejected here -- see pipeline/health.py, which is
-where it belongs: folders appear asynchronously, so a stage referencing
-one that does not exist yet may still be correct.
+unknown effect, an unknown condition type, a condition leaf with more
+than one key, or a duplicate stage name can never become valid on their
+own -- these are rejected outright (400), collected all at once rather
+than stopping at the first one, since fixing them one HTTP round trip at
+a time is not a client's job. A folder reference that does not currently
+resolve is a different kind of problem entirely and is never rejected
+here -- see pipeline/health.py, which is where it belongs: folders
+appear asynchronously, so a stage referencing one that does not exist
+yet may still be correct.
 """
 
 from __future__ import annotations
@@ -126,6 +127,16 @@ def _validate_condition_tree(condition: Any, *, stage_id: str) -> list[str]:
     unknown = [key for key in condition if key not in KNOWN_CONDITION_TYPES]
     if unknown:
         return [f"stage {stage_id!r}: unknown condition type {unknown[0]!r}"]
+    # rules/conditions.py's evaluator takes exactly one key per leaf --
+    # {"subject_contains": "x", "sender_domain": "y"} reads as AND to
+    # anyone looking at it, but nothing evaluates it that way, so it is
+    # rejected here rather than silently matching on "x" alone. "all" is
+    # the vocabulary's one way to combine conditions.
+    if len(condition) > 1:
+        return [
+            f"stage {stage_id!r}: a condition may only have one key, got "
+            f"{sorted(condition)!r} -- use 'all' to combine conditions"
+        ]
     return []
 
 

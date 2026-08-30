@@ -58,6 +58,7 @@ from mail_verdict.core.sanitizer import sanitize_email_html
 from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import (
     Attachment,
+    Folder,
     ImageException,
     ImageExceptionType,
     Message,
@@ -91,6 +92,17 @@ _LIST_DEFERRED_COLUMNS = (
     defer(Message.raw_source),
     defer(Message.raw_headers),
     defer(Message.body_html),
+)
+
+# MessageDetail renders body_text/body_html but never raw_source (the
+# entire RFC822 bytea, its own GET .../raw endpoint) or raw_headers (used
+# only by the pipeline's MessageView, never by this response). Without
+# this, get_message and get_thread pull the full raw message for every
+# row just to produce about a kilobyte of JSON -- the thread endpoint
+# doing it once per message in the conversation.
+_DETAIL_DEFERRED_COLUMNS = (
+    defer(Message.raw_source),
+    defer(Message.raw_headers),
 )
 
 
@@ -287,7 +299,9 @@ async def get_message(
     """
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(select(Message).where(Message.id == message_id))
+        result = await session.execute(
+            select(Message).options(*_DETAIL_DEFERRED_COLUMNS).where(Message.id == message_id)
+        )
         msg = result.scalar_one_or_none()
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -408,6 +422,7 @@ async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
 
         result = await session.execute(
             select(Message)
+            .options(*_DETAIL_DEFERRED_COLUMNS)
             .where(Message.thread_id == thread_id, Message.expunged_at.is_(None))
             .order_by(Message.received_at)
         )
@@ -642,6 +657,10 @@ async def message_action(
         if not request.target_folder_id:
             raise HTTPException(status_code=400, detail="target_folder_id required for move")
         async with db.session() as session:
+            if not await _folder_belongs_to_account(session, account_id, request.target_folder_id):
+                raise HTTPException(
+                    status_code=400, detail="target_folder_id does not belong to this account",
+                )
             await move_message(session, message_id, request.target_folder_id)
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
@@ -713,6 +732,31 @@ async def _resolve_special_folder(account_id: uuid.UUID, role: str) -> uuid.UUID
     return await FolderRepository(get_db_connection()).resolve_special_folder(account_id, role)
 
 
+async def _folder_belongs_to_account(
+    session: AsyncSession, account_id: uuid.UUID, folder_id: uuid.UUID,
+) -> bool:
+    """
+    A move's target folder is client-supplied and never otherwise checked
+    against the message's own account -- without this, a client can move
+    a message into another account's folder, since move_message() and
+    move_message_bulk() write folder_id with no ownership check of their
+    own (they trust the caller, same as every other postimap/actions.py
+    helper).
+
+    Args:
+        session: Active AsyncSession
+        account_id: The account the message being moved belongs to
+        folder_id: The client-supplied target folder
+
+    Returns:
+        True if `folder_id` exists and belongs to `account_id`
+    """
+    result = await session.execute(
+        select(Folder.id).where(Folder.id == folder_id, Folder.account_id == account_id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 @account_router.post("/bulk-action", response_model=BulkActionResponse)
 async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> BulkActionResponse:
     """
@@ -727,7 +771,11 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
 
     async with db.session() as session:
         if isinstance(target, list):
-            message_ids = target
+            # An explicit id list is client-supplied and otherwise never
+            # checked against the path's account_id -- narrowed to the
+            # ids that actually belong here (and still exist) the same
+            # way a scope already is, rather than trusting the list.
+            message_ids = await _resolve_explicit_ids(session, account_id, target)
         else:
             message_ids = await _resolve_scope_ids(session, account_id, target)
 
@@ -736,28 +784,35 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
 
     action = request.action
     errors: list[str] = []
+    affected = 0
 
     if action in ("mark_read", "mark_unread"):
         async with db.session() as session:
-            await set_flags_bulk(session, message_ids, is_seen=(action == "mark_read"))
+            affected = await set_flags_bulk(session, message_ids, is_seen=(action == "mark_read"))
     elif action in ("flag", "unflag"):
         async with db.session() as session:
-            await set_flags_bulk(session, message_ids, is_flagged=(action == "flag"))
+            affected = await set_flags_bulk(
+                session, message_ids, is_flagged=(action == "flag"),
+            )
     elif action == "trash":
         trash_folder_id = await _resolve_special_folder(account_id, "trash")
         if trash_folder_id is None:
             errors.append("No trash folder found for this account")
         else:
             async with db.session() as session:
-                await move_message_bulk(session, message_ids, trash_folder_id)
+                affected = await move_message_bulk(session, message_ids, trash_folder_id)
     elif action == "expunge":
         async with db.session() as session:
-            await expunge_bulk(session, message_ids)
+            affected = await expunge_bulk(session, message_ids)
     elif action == "move":
         if not request.target_folder_id:
             raise HTTPException(status_code=400, detail="target_folder_id required for move")
         async with db.session() as session:
-            await move_message_bulk(session, message_ids, request.target_folder_id)
+            if not await _folder_belongs_to_account(session, account_id, request.target_folder_id):
+                raise HTTPException(
+                    status_code=400, detail="target_folder_id does not belong to this account",
+                )
+            affected = await move_message_bulk(session, message_ids, request.target_folder_id)
     elif action in ("archive", "spam", "not_spam"):
         role = {"archive": "archive", "spam": "junk", "not_spam": "inbox"}[action]
         folder_id = await _resolve_special_folder(account_id, role)
@@ -765,7 +820,7 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
             errors.append(f"No {role} folder found for this account")
         else:
             async with db.session() as session:
-                await move_message_bulk(session, message_ids, folder_id)
+                affected = await move_message_bulk(session, message_ids, folder_id)
             if action == "not_spam":
                 from mail_verdict.server import get_spam_processor
 
@@ -776,10 +831,33 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
-    affected = 0 if errors else len(message_ids)
     return BulkActionResponse(
         success=not errors, action=action, affected_count=affected, errors=errors,
     )
+
+
+async def _resolve_explicit_ids(
+    session: AsyncSession, account_id: uuid.UUID, ids: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    """
+    Narrow a client-supplied id list to the ones that actually belong to
+    this account and still exist.
+
+    Without this, a bulk action's explicit-id path (unlike its scope
+    path, which is already account-scoped by construction) acts on
+    whatever ids a client names -- including one belonging to a different
+    account, or one already expunged. An id that fails either check is
+    silently dropped rather than acted on; affected_count then reflects
+    the resolved subset, not the length of what was asked for.
+    """
+    if not ids:
+        return []
+    result = await session.execute(
+        select(Message.id).where(
+            Message.id.in_(ids), Message.account_id == account_id, Message.expunged_at.is_(None),
+        )
+    )
+    return list(result.scalars().all())
 
 
 async def _resolve_scope_ids(

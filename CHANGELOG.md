@@ -274,6 +274,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   nothing on the client treats as a reason to invalidate anything — instead of `resync`, the event
   `use-sse.ts` actually listens for. Everything that happened during the gap was silently missed
   until the next unrelated event landed. The server now sends `resync` in that case.
+- **`folder_prefs.special_use_override` is now honoured by the pipeline itself, not only by the
+  folder repository and the enqueue query.** The move-spam stage's `FolderResolver` and the
+  runner's own `MessageView` folder load both matched the raw `folders.special_use` column only,
+  so on a server that never advertises SPECIAL-USE, the default move-spam stage could never
+  resolve a junk folder set only through the override — every spam message's run failed
+  permanently, silently, with nothing to distinguish it from any other misconfiguration. Both now
+  coalesce the override in, the same way `database/repository.py`'s `get_effective_special_use`
+  already did.
+- **Deleting INBOX no longer only checks the raw `special_use` column.** On a server without
+  SPECIAL-USE, or a folder whose INBOX status is only known through
+  `folder_prefs.special_use_override`, the guard never fired — deleting that folder destroyed the
+  entire mailbox on the server, irreversibly. The check now also matches the case-insensitive
+  `imap_name` IMAP mandates for every server, and the override.
+- **A second message reusing the Message-ID of one already run no longer silently bypasses
+  classification.** `pipeline_runs`' dedup key was `(account_id, msg_key, dedup_key)`, with no
+  sender — the run-level dedup collapsed before `classify` ever reached the verdict table's own
+  sender-scoped protection, so the second message got no run at all, and the conflicting insert
+  repointed the first message's run row at the second message's id, making the first message's own
+  run history disappear. `pipeline_runs` gains a `from_addr` column, folded into the same unique
+  index the verdicts table already uses it in (Alembic `0008_pipeline_run_from_addr`).
+- **A rule with a move-to-junk effect and no `RecordVerdict` of its own no longer manufactures a
+  fake human correction.** The folder-move feedback listener recorded a `user_feedback` verdict
+  whenever a move into junk did not already agree with `is_spam=true` — including when no verdict
+  existed at all, which the listener's own reasoning had assumed could only happen for a genuine
+  human drag. Any other stage with a move-to-junk effect (a "block this sender" rule, most
+  obviously) produces that same no-verdict move for a reason that is not human, and there is no
+  signal available here to tell the two apart — the classifier's own move-spam stage stays
+  unaffected, since it always writes its verdict before its move commits. A correction is now
+  recorded only when an existing verdict actually disagrees with the destination.
+- **A condition leaf with more than one key silently evaluated only the first and ignored the
+  rest**, `{"subject_contains": "x", "sender_domain": "y"}` reading as AND to anyone writing it and
+  matching on `"x"` alone. Rejected outright at pipeline-write time now — `all` is the vocabulary's
+  one way to combine conditions.
+- **The `enrichment_tag` condition could never match.** Nothing in the codebase populates
+  `MailContext.enrichment_tags`, so a stage configured with it silently never fired. Removed along
+  with the dead `enrichment_tags` field, rather than left as a condition type nobody can make work.
+- **A pipeline write's `base_revision` check could lose a concurrent writer's edit.** Reading the
+  current revision and appending the new one were two separate round trips; two writers computing
+  their edit against the same base both passed the check and both appended, with the later one
+  silently winning — the exact race the `409` exists to prevent. `PipelineRevisionRepository
+  .append()` now makes the check and the insert one transaction, serialized by an advisory lock.
+- **The classifier's prompt fence did not hold against a message containing its own closing
+  delimiter.** `json.dumps` escapes quotes and backslashes but not angle brackets, so a body
+  containing the literal `</email_content>` could close the `<email_content>` fence the docstring
+  named as the mitigation and inject text the model would read as outside the untrusted section.
+  Every `<`/`>` in the embedded JSON is now replaced with its unicode escape before it is
+  interpolated into the prompt, which is still valid JSON but can no longer spell the delimiter.
+- **A message move can no longer target another account's folder.** Neither the single-message nor
+  the bulk move endpoint checked that a client-supplied `target_folder_id` belonged to the
+  message's own account; both now reject one that does not with `400`.
+- **A bulk action's explicit id list was never checked against the path's account, and bulk
+  expunge had no account check at all.** Both now resolve the supplied ids down to the ones that
+  actually belong to the account and still exist, the same way a scope-resolved selection already
+  did — an id from another account, or one already gone, is silently excluded rather than acted
+  on.
+- **A bulk action reported the number of ids it was asked to act on, not the number it actually
+  changed.** `set_flags`, `set_keywords`, `move_message`, `move_to_trash`, `expunge` and their bulk
+  equivalents in `postimap/actions.py` now return the row count their write actually touched, and
+  `affected_count` reports that instead of `len(message_ids)` — a bulk action over ids some of
+  which had already been expunged used to report success on all of them regardless.
+- **Message detail and thread endpoints no longer pull the full raw message for every row.** The
+  list endpoints already deferred `raw_source`/`raw_headers`; `GET /messages/:id` and `GET
+  /messages/:id/thread` now do too, the latter having pulled it once per message in the whole
+  conversation to produce about a kilobyte of JSON per row.
 
 ## [1.0.0] - 2026-08-30
 

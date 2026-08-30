@@ -176,7 +176,7 @@ async def set_flags(
     session: AsyncSession,
     message_id: uuid.UUID,
     **flags: bool,
-) -> None:
+) -> int:
     """
     Update one or more IMAP-mapped flags on a message.
 
@@ -184,17 +184,25 @@ async def set_flags(
         session: Active AsyncSession (caller commits)
         message_id: Message to update
         **flags: Any of is_seen, is_flagged, is_answered, is_draft, is_deleted
+
+    Returns:
+        The number of rows actually updated (0 or 1) -- a caller reporting
+        success on a write that touched nothing is the same "recorded as
+        having worked" bug the pipeline's guarded effects exist to avoid.
     """
     if not flags:
-        return
-    await session.execute(update(Message).where(Message.id == message_id).values(**flags))
+        return 0
+    result = await session.execute(
+        update(Message).where(Message.id == message_id).values(**flags)
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 async def set_keywords(
     session: AsyncSession,
     message_id: uuid.UUID,
     keywords: list[str],
-) -> None:
+) -> int:
     """
     Replace a message's custom IMAP keywords/labels.
 
@@ -202,17 +210,21 @@ async def set_keywords(
         session: Active AsyncSession (caller commits)
         message_id: Message to update
         keywords: Full replacement keyword list
+
+    Returns:
+        The number of rows actually updated (0 or 1)
     """
-    await session.execute(
+    result = await session.execute(
         update(Message).where(Message.id == message_id).values(keywords=keywords)
     )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 async def move_message(
     session: AsyncSession,
     message_id: uuid.UUID,
     target_folder_id: uuid.UUID,
-) -> None:
+) -> int:
     """
     Move a message to a different folder.
 
@@ -227,19 +239,23 @@ async def move_message(
         session: Active AsyncSession (caller commits)
         message_id: Message to move
         target_folder_id: Destination folder
+
+    Returns:
+        The number of rows actually updated (0 or 1)
     """
-    await session.execute(
+    result = await session.execute(
         update(Message)
         .where(Message.id == message_id)
         .values(folder_id=target_folder_id, imap_uid=None)
     )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 async def move_to_trash(
     session: AsyncSession,
     message_id: uuid.UUID,
     trash_folder_id: uuid.UUID,
-) -> None:
+) -> int:
     """
     Move a message to the trash folder -- the default UI "delete".
 
@@ -250,11 +266,14 @@ async def move_to_trash(
         session: Active AsyncSession (caller commits)
         message_id: Message to trash
         trash_folder_id: The account's trash-special-use folder
+
+    Returns:
+        The number of rows actually updated (0 or 1)
     """
-    await move_message(session, message_id, trash_folder_id)
+    return await move_message(session, message_id, trash_folder_id)
 
 
-async def expunge(session: AsyncSession, message_id: uuid.UUID) -> None:
+async def expunge(session: AsyncSession, message_id: uuid.UUID) -> int:
     """
     Permanently remove a message -- enqueues an IMAP EXPUNGE.
 
@@ -266,17 +285,21 @@ async def expunge(session: AsyncSession, message_id: uuid.UUID) -> None:
     Args:
         session: Active AsyncSession (caller commits)
         message_id: Message to expunge
+
+    Returns:
+        The number of rows actually updated (0 or 1)
     """
-    await session.execute(
+    result = await session.execute(
         update(Message).where(Message.id == message_id).values(expunged_at=text("now()"))
     )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 async def set_flags_bulk(
     session: AsyncSession,
     message_ids: list[uuid.UUID],
     **flags: bool,
-) -> None:
+) -> int:
     """
     Update one or more IMAP-mapped flags on many messages at once.
 
@@ -287,19 +310,25 @@ async def set_flags_bulk(
         session: Active AsyncSession (caller commits)
         message_ids: Messages to update
         **flags: Any of is_seen, is_flagged, is_answered, is_draft, is_deleted
+
+    Returns:
+        The number of rows actually updated -- may be fewer than
+        `len(message_ids)` if some had already been expunged or otherwise
+        no longer matched.
     """
     if not flags or not message_ids:
-        return
-    await session.execute(
+        return 0
+    result = await session.execute(
         update(Message).where(Message.id.in_(message_ids)).values(**flags)
     )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 async def move_message_bulk(
     session: AsyncSession,
     message_ids: list[uuid.UUID],
     target_folder_id: uuid.UUID,
-) -> None:
+) -> int:
     """
     Move many messages to a different folder at once.
 
@@ -310,29 +339,39 @@ async def move_message_bulk(
         session: Active AsyncSession (caller commits)
         message_ids: Messages to move
         target_folder_id: Destination folder
+
+    Returns:
+        The number of rows actually updated -- may be fewer than
+        `len(message_ids)`
     """
     if not message_ids:
-        return
-    await session.execute(
+        return 0
+    result = await session.execute(
         update(Message)
         .where(Message.id.in_(message_ids))
         .values(folder_id=target_folder_id, imap_uid=None)
     )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
-async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> None:
+async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> int:
     """
     Permanently remove many messages at once -- see expunge().
 
     Args:
         session: Active AsyncSession (caller commits)
         message_ids: Messages to expunge
+
+    Returns:
+        The number of rows actually updated -- may be fewer than
+        `len(message_ids)`
     """
     if not message_ids:
-        return
-    await session.execute(
+        return 0
+    result = await session.execute(
         update(Message).where(Message.id.in_(message_ids)).values(expunged_at=text("now()"))
     )
+    return result.rowcount or 0  # type: ignore[attr-defined]
 
 
 async def create_folder(

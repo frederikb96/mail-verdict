@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Guards the read-current-then-insert in append() below. Distinct from
+# every other advisory-lock key in the process (queue/manager.py's
+# reclaim timer at 761_034_221, embeddings/worker.py's backfill lock at
+# 761_034_222, pipeline/enqueue.py's reconciliation timer at 761_034_331).
+_APPEND_LOCK_KEY = 761_034_402
+
 # Only mail.received rules migrate into a stage -- the pipeline is
 # enqueued on arrival only (see pipeline/enqueue.py), so a rule keyed to
 # a move or a delete trigger has nothing left to fire it, and reacting to
@@ -49,6 +55,17 @@ class PipelineDefinition:
     revision: int
     enabled: bool
     stages: tuple[StageDefinition, ...]
+
+
+class StaleRevisionError(Exception):
+    """`append`'s `expected_base_revision` no longer matches -- the API's
+    409. Carries both numbers so a caller can report them without a
+    second read."""
+
+    def __init__(self, expected: int, actual: int) -> None:
+        super().__init__(f"base_revision {expected} is stale -- current revision is {actual}")
+        self.expected = expected
+        self.actual = actual
 
 
 class PipelineRevisionRepository:
@@ -84,18 +101,50 @@ class PipelineRevisionRepository:
             return None
         return _parse_document(row.revision, row.document)
 
-    async def append(self, document: dict[str, Any], *, note: str | None = None) -> int:
+    async def append(
+        self,
+        document: dict[str, Any],
+        *,
+        note: str | None = None,
+        expected_base_revision: int | None = None,
+    ) -> int:
         """
         Append a new revision, returning its revision number.
 
         Args:
             document: `{"enabled": bool, "stages": [...]}`
             note: Free-text, shown in the revision history
+            expected_base_revision: If given, the revision the caller's
+                edit was computed against. Checked against the current
+                revision and the insert performed in the same
+                transaction, serialized by an advisory lock held for
+                its duration -- reading the current revision in one
+                session and appending in another (a caller checking
+                separately, then calling this with no expectation) lets
+                two writers who read the same base both pass and both
+                append, with the later one silently winning and the
+                other writer's edit lost. Postgres gives no way to lock
+                an aggregate query directly, which is why this takes a
+                lock rather than `SELECT ... FOR UPDATE`.
 
         Returns:
             The new revision number
+
+        Raises:
+            StaleRevisionError: `expected_base_revision` no longer
+                matches the current revision
         """
         async with self._db.session() as session:
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"), {"key": _APPEND_LOCK_KEY},
+            )
+            if expected_base_revision is not None:
+                current_result = await session.execute(
+                    text("SELECT revision FROM pipeline_revisions ORDER BY revision DESC LIMIT 1")
+                )
+                current_revision = current_result.scalar_one_or_none() or 0
+                if current_revision != expected_base_revision:
+                    raise StaleRevisionError(expected_base_revision, current_revision)
             result = await session.execute(
                 text(
                     "INSERT INTO pipeline_revisions (document, note) "
@@ -274,6 +323,7 @@ def _migrate_action(kind: str, value: Any) -> dict[str, Any] | None:
 __all__ = [
     "PipelineDefinition",
     "PipelineRevisionRepository",
+    "StaleRevisionError",
     "build_migrated_definition",
     "definition_to_document",
     "effect_to_dict",

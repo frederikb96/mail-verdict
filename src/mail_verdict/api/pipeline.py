@@ -61,6 +61,7 @@ from mail_verdict.pipeline.registry import STAGE_TYPES
 from mail_verdict.pipeline.revisions import (
     PipelineDefinition,
     PipelineRevisionRepository,
+    StaleRevisionError,
     definition_to_document,
 )
 from mail_verdict.pipeline.runner import PipelineRunner
@@ -107,6 +108,14 @@ async def _document_out(definition: PipelineDefinition) -> PipelineDocumentOut:
 
 
 def _check_base_revision(current: PipelineDefinition, base_revision: int | None) -> None:
+    """A cheap early exit before validation does any work. Not itself
+    what makes a stale write 409 -- that is PipelineRevisionRepository
+    .append()'s own check, made atomically with the insert it guards.
+    Reading `current` here and appending afterwards are still two
+    separate round trips, so a concurrent writer can append in the gap
+    between this check passing and the eventual append() call; append()
+    re-checks at that point and is what actually raises for that case.
+    """
     if base_revision is not None and current.revision != base_revision:
         raise HTTPException(
             status_code=409,
@@ -119,10 +128,17 @@ def _check_base_revision(current: PipelineDefinition, base_revision: int | None)
 
 async def _write(
     repo: PipelineRevisionRepository, *, enabled: bool, stages: list[StageDefinition],
-    note: str,
+    note: str, expected_base_revision: int | None,
 ) -> PipelineDefinition:
     """Validate and append a new revision built from already-parsed stage
-    definitions, returning the definition as written."""
+    definitions, returning the definition as written.
+
+    `expected_base_revision` is forwarded to append() so the check that
+    decides whether it is still current and the insert that appends
+    happen in the same transaction -- see that method's docstring for
+    why a separate pre-check (`_check_base_revision` above) is not
+    enough on its own.
+    """
     document = definition_to_document(
         PipelineDefinition(revision=0, enabled=enabled, stages=tuple(stages)),
     )
@@ -130,7 +146,15 @@ async def _write(
         validate_document(document)
     except DocumentValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.problems) from None
-    revision = await repo.append(document, note=note)
+    try:
+        revision = await repo.append(
+            document, note=note, expected_base_revision=expected_base_revision,
+        )
+    except StaleRevisionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"base_revision {exc.expected} is stale -- current revision is {exc.actual}",
+        ) from None
     return PipelineDefinition(revision=revision, enabled=enabled, stages=tuple(stages))
 
 
@@ -169,7 +193,15 @@ async def replace_pipeline(request: PipelineWriteRequest) -> PipelineDocumentOut
     except DocumentValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.problems) from None
 
-    revision = await repo.append(document, note="replaced via API")
+    try:
+        revision = await repo.append(
+            document, note="replaced via API", expected_base_revision=request.base_revision,
+        )
+    except StaleRevisionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"base_revision {exc.expected} is stale -- current revision is {exc.actual}",
+        ) from None
     written = PipelineDefinition(revision=revision, enabled=request.enabled, stages=tuple(stages))
     return await _document_out(written)
 
@@ -214,7 +246,7 @@ async def create_stage(request: StageCreateRequest) -> PipelineDocumentOut:
 
     definition = await _write(
         repo, enabled=current.enabled, stages=stages,
-        note=f"added stage {request.stage_id!r}",
+        note=f"added stage {request.stage_id!r}", expected_base_revision=request.base_revision,
     )
     return await _document_out(definition)
 
@@ -249,6 +281,7 @@ async def update_stage(stage_id: str, request: StageUpdateRequest) -> PipelineDo
 
     definition = await _write(
         repo, enabled=current.enabled, stages=stages, note=f"updated stage {stage_id!r}",
+        expected_base_revision=request.base_revision,
     )
     return await _document_out(definition)
 
@@ -269,6 +302,7 @@ async def delete_stage(stage_id: str, base_revision: int | None = None) -> Pipel
 
     definition = await _write(
         repo, enabled=current.enabled, stages=stages, note=f"removed stage {stage_id!r}",
+        expected_base_revision=base_revision,
     )
     return await _document_out(definition)
 
@@ -290,7 +324,10 @@ async def reorder_stages(request: StageReorderRequest) -> PipelineDocumentOut:
         )
     stages = [by_id[stage_id] for stage_id in request.order]
 
-    definition = await _write(repo, enabled=current.enabled, stages=stages, note="reordered stages")
+    definition = await _write(
+        repo, enabled=current.enabled, stages=stages, note="reordered stages",
+        expected_base_revision=request.base_revision,
+    )
     return await _document_out(definition)
 
 
@@ -314,7 +351,7 @@ async def restore_revision(revision: int) -> PipelineDocumentOut:
 
     definition = await _write(
         repo, enabled=old.enabled, stages=list(old.stages),
-        note=f"restored from revision {revision}",
+        note=f"restored from revision {revision}", expected_base_revision=None,
     )
     return await _document_out(definition)
 

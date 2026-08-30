@@ -186,15 +186,18 @@ async def enqueue_pipeline_run_if_live_eligible(
         text(
             """
             INSERT INTO pipeline_runs
-                (account_id, msg_key, message_id, dedup_key, origin, apply, priority)
-            VALUES (:account_id, :msg_key, :message_id, 'live', 'live', true, 0)
-            ON CONFLICT (account_id, msg_key, dedup_key) DO UPDATE
+                (account_id, msg_key, message_id, from_addr, dedup_key, origin, apply, priority)
+            VALUES (:account_id, :msg_key, :message_id, :from_addr, 'live', 'live', true, 0)
+            ON CONFLICT (account_id, msg_key, dedup_key, (coalesce(from_addr, ''))) DO UPDATE
                 SET message_id = EXCLUDED.message_id
                 WHERE pipeline_runs.message_id IS DISTINCT FROM EXCLUDED.message_id
             RETURNING (xmax = 0) AS was_inserted
             """
         ),
-        {"account_id": account_id, "msg_key": msg_key, "message_id": message_id},
+        {
+            "account_id": account_id, "msg_key": msg_key, "message_id": message_id,
+            "from_addr": result.from_addr,
+        },
     )
     row_result = insert_result.one_or_none()
     return bool(row_result is not None and row_result.was_inserted)
@@ -327,15 +330,20 @@ async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsServ
                 text(
                     """
                     INSERT INTO pipeline_runs
-                        (account_id, msg_key, message_id, dedup_key, origin, apply, priority)
-                    VALUES (:account_id, :msg_key, :message_id, 'live', 'live', true, 0)
-                    ON CONFLICT (account_id, msg_key, dedup_key) DO UPDATE
-                        SET message_id = EXCLUDED.message_id
+                        (account_id, msg_key, message_id, from_addr, dedup_key, origin,
+                         apply, priority)
+                    VALUES (:account_id, :msg_key, :message_id, :from_addr, 'live', 'live',
+                            true, 0)
+                    ON CONFLICT (account_id, msg_key, dedup_key, (coalesce(from_addr, '')))
+                        DO UPDATE SET message_id = EXCLUDED.message_id
                         WHERE pipeline_runs.message_id IS DISTINCT FROM EXCLUDED.message_id
                     RETURNING (xmax = 0) AS was_inserted
                     """
                 ),
-                {"account_id": row.account_id, "msg_key": msg_key, "message_id": row.id},
+                {
+                    "account_id": row.account_id, "msg_key": msg_key, "message_id": row.id,
+                    "from_addr": row.from_addr,
+                },
             )
             row_result = result.one_or_none()
             if row_result is not None and row_result.was_inserted:

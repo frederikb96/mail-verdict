@@ -79,15 +79,19 @@ class TestHandleFolderMoveToJunk:
     """Tests for the contradiction-gated folder-move listener path."""
 
     @pytest.mark.asyncio
-    async def test_records_a_correction_when_no_verdict_exists(self) -> None:
-        """Nothing to contradict yet -- the move itself is the first label."""
+    async def test_no_op_when_no_verdict_exists(self) -> None:
+        """Nothing to contradict, so nothing is recorded -- a rule with a
+        move-to-junk effect and no RecordVerdict of its own (e.g. "block
+        this sender") produces exactly this same no-verdict move, and
+        there is no way from here to tell that apart from a human drag,
+        so neither is treated as a correction."""
         handler, verdict_repo = _make_handler()
         verdict_repo.get_current_verdict = AsyncMock(return_value=None)
 
         result = await handler.handle_folder_move_to_junk(uuid.uuid4(), uuid.uuid4())
 
-        assert result is True
-        assert verdict_repo.create_verdict.call_args.kwargs["is_spam"] is True
+        assert result is False
+        verdict_repo.create_verdict.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_op_when_current_verdict_already_agrees(self) -> None:
@@ -147,6 +151,20 @@ class TestHandleFolderMoveOutOfJunk:
         """Verdict already says not-spam -- nothing to correct."""
         handler, verdict_repo = _make_handler()
         verdict_repo.get_current_verdict = AsyncMock(return_value=_Verdict(is_spam=False))
+
+        result = await handler.handle_folder_move_out_of_junk(
+            uuid.uuid4(), uuid.uuid4(), destination_special_use=None,
+        )
+
+        assert result is False
+        verdict_repo.create_verdict.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_op_when_no_verdict_exists(self) -> None:
+        """Nothing to contradict, so nothing is recorded -- symmetric with
+        TestHandleFolderMoveToJunk.test_no_op_when_no_verdict_exists."""
+        handler, verdict_repo = _make_handler()
+        verdict_repo.get_current_verdict = AsyncMock(return_value=None)
 
         result = await handler.handle_folder_move_out_of_junk(
             uuid.uuid4(), uuid.uuid4(), destination_special_use=None,

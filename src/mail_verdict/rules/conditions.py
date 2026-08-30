@@ -36,7 +36,6 @@ class MailContext:
     attachment_types: list[str] = field(default_factory=list)
     folder: str = ""
     tags: list[str] = field(default_factory=list)
-    enrichment_tags: list[str] = field(default_factory=list)
     # None means "no verdict yet" -- distinct from either boolean outcome,
     # so a verdict_is condition can require a spam/not-spam verdict to
     # exist rather than treating an unclassified message as not-spam.
@@ -58,7 +57,6 @@ class ConditionEvaluator:
         - has_attachment (bool, optional type filter)
         - folder_is(name)
         - tag_is(tag_name)
-        - enrichment_tag(tag_name)
         - verdict_is("spam" | "not-spam") -- the current verdict for this
           message, however it was produced; never true for a message with
           no verdict yet
@@ -78,7 +76,6 @@ class ConditionEvaluator:
         "has_attachment": "_eval_has_attachment",
         "folder_is": "_eval_folder_is",
         "tag_is": "_eval_tag_is",
-        "enrichment_tag": "_eval_enrichment_tag",
         "verdict_is": "_eval_verdict_is",
     }
 
@@ -88,13 +85,31 @@ class ConditionEvaluator:
         """
         Evaluate a single condition against mail context.
 
+        A leaf condition dict must carry exactly one key.
+        document_validation.py rejects more than one at write time --
+        `{"subject_contains": "x", "sender_domain": "y"}` reads as AND to
+        anyone looking at it, and iterating the dict while returning on
+        the first key silently evaluated only "x" and ignored "y" rather
+        than raising. Getting here with more than one key means a caller
+        is evaluating a tree that bypassed that validation (an unsaved
+        edit under test, most likely), so it is raised rather than
+        repeated: a wrong-but-silent answer is worse than a loud one.
+
         Args:
             condition: Condition dict (e.g. {"subject_contains": "invoice"})
             ctx: Mail context to evaluate against
 
         Returns:
             True if condition matches
+
+        Raises:
+            ValueError: `condition` has more than one key
         """
+        if len(condition) > 1:
+            raise ValueError(
+                f"a leaf condition may only have one key, got {sorted(condition)!r} -- "
+                "use 'all' to combine conditions"
+            )
         for key, value in condition.items():
             method_name = self._EVALUATORS.get(key)
             if method_name is None:
@@ -177,10 +192,6 @@ class ConditionEvaluator:
     def _eval_tag_is(self, value: str, ctx: MailContext) -> bool:
         """Check if mail has a specific tag (from Postgres)."""
         return value.lower() in [t.lower() for t in ctx.tags]
-
-    def _eval_enrichment_tag(self, value: str, ctx: MailContext) -> bool:
-        """Check if enrichment produced a specific tag."""
-        return value.lower() in [t.lower() for t in ctx.enrichment_tags]
 
     def _eval_verdict_is(self, value: str, ctx: MailContext) -> bool:
         """Check the current verdict against "spam" or "not-spam". A
