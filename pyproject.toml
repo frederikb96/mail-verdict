@@ -58,7 +58,7 @@ markers = [
     "unit: Unit tests (no external services)",
     "pg: Integration tests against Postgres + PostIMAP via testcontainers",
     "e2e: End-to-end tests against the full stack (testcontainers) with the app in-process",
-    "llm: Tests requiring a real Anthropic API key (excluded from CI, run manually)",
+    "llm: Tests that call a real model provider (excluded from CI, run manually)",
 ]
 
 [tool.ruff]

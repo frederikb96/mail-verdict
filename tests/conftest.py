@@ -15,7 +15,11 @@ import mail_verdict.config.loader as _loader
 # rootdir conftest -- a non-top-level one is rejected since pytest 8.
 pytest_plugins = ["tests.setup.containers"]
 
-_LAYER_DIRS = {"pg": pytest.mark.pg, "e2e": pytest.mark.e2e}
+_LAYER_DIRS = {
+    "unit": pytest.mark.unit,
+    "pg": pytest.mark.pg,
+    "e2e": pytest.mark.e2e,
+}
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
