@@ -117,7 +117,11 @@ class Account(Base):
     smtp_user: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_password: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    state: Mapped[str] = mapped_column(Text, nullable=False, default="created")
+    # PostIMAP owns the lifecycle state; see the note on Outbox.status for why
+    # a Python-side default here would be sent on INSERT and accepted.
+    state: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=FetchedValue(),
+    )
     state_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     capabilities: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -308,15 +312,26 @@ class Outbox(Base):
     msg_references: Mapped[list[str] | None] = mapped_column(
         "references", ARRAY(Text), nullable=True,
     )
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     # server_default=FetchedValue() tells SQLAlchemy this column is entirely
     # PostIMAP-managed: never send it explicitly on INSERT (the real column
     # is NOT NULL with its own server-side default) and never try to fetch
     # it back automatically -- this projection has no DDL of its own for a
     # table Alembic doesn't create.
+    #
+    # A Python-side default would be sent on every INSERT, which matters more
+    # than it looks: the table carries a table-level INSERT grant, so a value
+    # written here is accepted rather than refused. A status PostIMAP does not
+    # treat as claimable means the row is never picked up and the mail never
+    # goes out, with nothing reporting an error.
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=FetchedValue(),
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=FetchedValue(),
+    )
+    # Insertable by the consumer, per the contract -- unlike the two above.
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     next_retry_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
     )
