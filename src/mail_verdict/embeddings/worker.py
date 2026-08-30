@@ -19,7 +19,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from mail_verdict.core.errors import ProviderUnavailableError
@@ -28,9 +28,11 @@ from mail_verdict.database.repository import MessageRepository
 from mail_verdict.embeddings.content import build_embedding_input
 from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL, resolve_embedding_provider
 from mail_verdict.embeddings.repository import EmbeddingRepository
-from mail_verdict.queue.circuit import CircuitBreaker
+from mail_verdict.queue.backoff import compute_backoff
+from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.queue.manager import QueueManager
 from mail_verdict.queue.notify import ReconciliationTimer
+from mail_verdict.queue.worker_loop import heartbeat_while
 
 if TYPE_CHECKING:
     from sqlalchemy import Table
@@ -45,6 +47,12 @@ QUEUE_NAME = "embeddings"
 CIRCUIT_NAME = "openai"
 LEASE_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
+
+# How long a suspended breaker blocks the next probe attempt -- matches
+# the probe_interval passed to record_unavailable below, so a worker that
+# wins the right to probe is also the worker whose next claim actually is
+# that probe.
+PROBE_INTERVAL = timedelta(minutes=5)
 
 # Arbitrary, stable advisory lock key for the backfill reconciler -- must
 # not collide with queue/manager.py's own reclaim-timer key or any other
@@ -106,7 +114,10 @@ def register_embeddings(
             embedding_repo, message_repo, cred_repo, settings_service, circuit,
         )
 
-    queue_manager.register(QUEUE_NAME, cast("Table", MessageEmbedding.__table__), worker_body)
+    queue_manager.register(
+        QUEUE_NAME, cast("Table", MessageEmbedding.__table__), worker_body,
+        circuit_name=CIRCUIT_NAME,
+    )
 
     async def _reconcile() -> None:
         settings = settings_service.get("semantic")
@@ -151,13 +162,25 @@ async def _run_worker(
     work_queue = queue_manager.work_queue(QUEUE_NAME)
 
     while not stop_event.is_set():
+        probing = False
         if not await circuit.is_available():
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
-            continue
+            status = await circuit.status()
+            if status.state != CircuitState.SUSPENDED or not await circuit.try_probe(
+                probe_interval=PROBE_INTERVAL,
+            ):
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                continue
+            # Won the right to probe: claim exactly one row below and let
+            # its real provider call be the probe. A success closes the
+            # breaker via record_success in _handle_one, the ordinary
+            # success path -- there is no separate probe call, and
+            # claiming only one keeps a bad key from being retried against
+            # a whole batch before that one call's outcome is known.
+            probing = True
 
+        batch_size = 1 if probing else _current_batch_size(settings_service)
         claimed = await work_queue.claim_batch(
-            worker_id=worker_id, batch_size=_current_batch_size(settings_service),
-            lease_seconds=LEASE_SECONDS,
+            worker_id=worker_id, batch_size=batch_size, lease_seconds=LEASE_SECONDS,
         )
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
@@ -167,10 +190,13 @@ async def _run_worker(
             if stop_event.is_set():
                 await work_queue.release_untouched(row["id"], worker_id=worker_id)
                 continue
-            await _handle_one(
-                row, worker_id, work_queue, embedding_repo, message_repo,
-                cred_repo, settings_service, circuit,
-            )
+            async with heartbeat_while(
+                work_queue, row["id"], worker_id=worker_id, lease_seconds=LEASE_SECONDS,
+            ):
+                await _handle_one(
+                    row, worker_id, work_queue, embedding_repo, message_repo,
+                    cred_repo, settings_service, circuit,
+                )
 
 
 def _current_batch_size(settings_service: SettingsService) -> int:
@@ -234,14 +260,30 @@ async def _handle_one(
         provider = resolve_embedding_provider(provider_name, cred_repo)
         vectors = await provider.embed_batch([embedding_input.text], model=model)
     except ProviderUnavailableError as exc:
-        await circuit.record_unavailable(reason=str(exc), probe_interval=timedelta(minutes=5))
+        await circuit.record_unavailable(reason=str(exc), probe_interval=PROBE_INTERVAL)
         await work_queue.release_untouched(item_id, worker_id=worker_id)
         return
     except Exception as exc:
-        retryable = _is_retryable(exc)
-        if retryable:
+        name = type(exc).__name__
+        if name in _SHARED_THROTTLE_ERRORS:
+            # A shared-resource throttle, not this item's fault: every
+            # queued item waits out the same circuit backoff, and none of
+            # them burns an attempt over it -- the same uncapped refund
+            # ProviderUnavailableError gets above.
             await circuit.record_backoff(retry_after=timedelta(seconds=30), reason=str(exc))
             await work_queue.release_untouched(item_id, worker_id=worker_id)
+        elif _is_retryable(exc):
+            # Unlike a throttle, this class of error (a connection drop, a
+            # 5xx, a timeout) can recur for one payload specifically, so it
+            # must reach a terminal state eventually rather than retry
+            # forever -- counted against the row's own attempts and capped,
+            # mirroring how the pipeline runner caps StageTransient.
+            await circuit.record_backoff(retry_after=timedelta(seconds=30), reason=str(exc))
+            await _retry_or_fail(
+                item_id, worker_id=worker_id, row=row, error=str(exc),
+                work_queue=work_queue, embedding_repo=embedding_repo,
+                settings=settings, settings_service=settings_service,
+            )
         else:
             await embedding_repo.fail(
                 item_id, worker_id=worker_id, last_error=str(exc),
@@ -262,9 +304,16 @@ async def _handle_one(
         )
 
 
+# A rate limit is a shared-resource throttle: every item queued behind it
+# is equally blameless, so it is refunded and retried uncapped rather than
+# counted against any one row's attempts -- see ProviderUnavailableError's
+# handling above, which this mirrors.
+_SHARED_THROTTLE_ERRORS = frozenset({"RateLimitError"})
+
+
 def _is_retryable(exc: Exception) -> bool:
-    """Whether an embedding-provider exception is worth retrying rather
-    than failing permanently.
+    """Whether an embedding-provider exception is worth retrying at all,
+    rather than failing permanently on the spot.
 
     Matches on class name rather than importing `openai`'s exception
     types at module load -- resolve_embedding_provider only imports the
@@ -273,6 +322,57 @@ def _is_retryable(exc: Exception) -> bool:
     module.
     """
     name = type(exc).__name__
-    return name in {
-        "RateLimitError", "APIConnectionError", "InternalServerError", "APITimeoutError",
+    return name in _SHARED_THROTTLE_ERRORS | {
+        "APIConnectionError", "InternalServerError", "APITimeoutError",
     }
+
+
+async def _retry_or_fail(
+    item_id: uuid.UUID,
+    *,
+    worker_id: str,
+    row: Mapping[str, Any],
+    error: str,
+    work_queue: Any,
+    embedding_repo: EmbeddingRepository,
+    settings: Mapping[str, Any],
+    settings_service: SettingsService,
+) -> None:
+    """
+    Requeue a retryable-but-possibly-item-specific failure with backoff,
+    counting it against the row's own attempts.
+
+    The dead-letter path this class of error needs: a connection drop or a
+    5xx that keeps recurring for one particular payload must eventually
+    reach 'failed' rather than retry forever, unlike a shared-resource
+    throttle where every item is equally blameless.
+
+    Args:
+        item_id: Row to requeue or fail
+        worker_id: Must match the row's current claimant
+        row: The claimed row, for its current `attempts` count
+        error: Recorded as the row's last_error either way
+        work_queue: Queue to requeue against
+        embedding_repo: Repository to fail through, so a permanent
+            failure still opens the pipeline gate (see its own docstring)
+        settings: The "semantic" settings category, already read by the
+            caller
+        settings_service: Passed through to embedding_repo.fail for its
+            own live-eligibility check
+    """
+    max_attempts = int(settings.get("max_attempts", 5))
+    if row["attempts"] >= max_attempts:
+        await embedding_repo.fail(
+            item_id, worker_id=worker_id, last_error=error, settings_service=settings_service,
+        )
+        return
+    delay = compute_backoff(
+        row["attempts"],
+        base_seconds=float(settings.get("base_delay_seconds", 2.0)),
+        cap_seconds=float(settings.get("max_delay_seconds", 60.0)),
+    )
+    await work_queue.retry(
+        item_id, worker_id=worker_id,
+        next_attempt_at=datetime.now(timezone.utc) + timedelta(seconds=delay),
+        last_error=error,
+    )

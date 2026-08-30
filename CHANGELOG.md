@@ -338,6 +338,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   list endpoints already deferred `raw_source`/`raw_headers`; `GET /messages/:id` and `GET
   /messages/:id/thread` now do too, the latter having pulled it once per message in the whole
   conversation to produce about a kilobyte of JSON per row.
+- **A suspended circuit breaker could never recover.** `try_probe` existed and was tested, but
+  nothing in either worker loop ever called it — every path that could clear a breaker was gated
+  behind `is_available()`, which stays `False` while suspended. A fresh install with no provider
+  key configured, or a mistyped one, suspended the embedding breaker permanently: setting the key
+  afterward through the settings API changed nothing, since embedding is what admits a message to
+  the pipeline, classification stalled behind it too, and only a manual database update unstuck
+  it. The embedding worker loop now calls `try_probe` itself when suspended, claiming exactly one
+  row and letting its real provider call be the probe. `PATCH /api/queues/{name}` also accepts a
+  `reset_circuit` flag for the operator's immediate manual recovery, rather than waiting out the
+  probe interval.
+- **The embedding queue's circuit-breaker readout was decorative.** Registering the queue left
+  `circuit_name` at its default (the queue's own name, `"embeddings"`), while the worker's own
+  `CircuitBreaker` writes to a breaker named for the provider (`"openai"`) — so the observability
+  surface reported a breaker nobody ever tripped while the real one went unseen. Registration now
+  names the same breaker the worker writes to.
+- **A slow provider call could be reclaimed and re-run while the first call was still in
+  flight.** Neither worker loop ever extended a claimed row's lease (`WorkQueue.heartbeat` had no
+  production call site), and the OpenAI/Anthropic clients were constructed with no request timeout
+  and the SDK's own default retries left on — so a call slower than its lease (30s for embeddings,
+  120s for the pipeline) got its row reclaimed by the periodic reclaim pass and picked up by
+  another worker mid-call. On the pipeline that duplicated a paid model call, and every reclaim
+  also increments the row's attempt count, so a slow spell could drive a run to permanent failure
+  while its original call was still going to succeed; on embeddings the worker that lost its lease
+  computed a vector and discarded it. Both worker loops now extend their claimed row's lease on a
+  fixed interval for as long as an item is being handled (`queue/worker_loop.py`'s
+  `heartbeat_while`, reused by the pipeline runner's `default_worker_loop` and the embedding
+  worker's own claim loop), and the OpenAI/Anthropic clients now carry a request timeout well
+  inside the shorter of the two leases (20s and 60s respectively) with the SDK's own retries
+  disabled in favour of the application's single, already-jittered retry layer.
+- **A persistently retryable embedding failure retried forever, with no dead letter.** A
+  connection drop, a 5xx or a timeout all refunded the row's attempt count and rescheduled it
+  immediately (correct for a genuinely shared-resource throttle like a rate limit, where no queued
+  item is at fault) — but the same uncapped path applied to a failure that keeps recurring for one
+  specific payload, which never reached a terminal state and stalled that message's classification
+  behind it forever. That class of error is now counted against the row's own attempts and capped
+  by a new `semantic.max_attempts` setting, mirroring how the pipeline runner already caps a
+  `StageTransient` failure — a rate limit alone stays uncapped.
+- **A burst of PostIMAP events could spawn thousands of concurrent, unreferenced asyncio tasks.**
+  The NOTIFY listener spawned one task per event per handler with no reference kept anywhere, so a
+  sync burst ran unbounded concurrency against a connection pool of roughly fifteen, starving the
+  HTTP handlers sharing it — and an unreferenced task is eligible for garbage collection mid-flight,
+  which could silently drop the event it was dispatching. The listener now feeds a bounded queue
+  drained by a fixed number of dispatch workers, so concurrency stays capped and every queued event
+  is held by the queue itself until a worker picks it up.
+- **A listener reconnect never told any client to resync.** `docs/architecture.md` documented this
+  safeguard, but the listener's reconnect path only logged; the only `resync` event in the codebase
+  came from a browser's own SSE reconnect replaying a stale `Last-Event-ID`, which never covers a
+  browser whose SSE connection stayed up throughout the gap. Any NOTIFY fired while the listener's
+  database connection was down is gone for good, so a client with a healthy stream could hold
+  stale mail indefinitely. The listener now broadcasts a `resync` to every account once its
+  connection recovers.
 
 ## [1.0.0] - 2026-08-30
 

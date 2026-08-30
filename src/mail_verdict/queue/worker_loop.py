@@ -10,13 +10,61 @@ queue.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+import contextlib
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
+from uuid import UUID
 
 from mail_verdict.queue.notify import wait_for_work
 from mail_verdict.queue.work_queue import WorkQueue
 
 ItemHandler = Callable[[Mapping[str, Any]], Awaitable[None]]
+
+
+@contextlib.asynccontextmanager
+async def heartbeat_while(
+    work_queue: WorkQueue,
+    item_id: UUID,
+    *,
+    worker_id: str,
+    lease_seconds: float,
+    interval_seconds: float | None = None,
+) -> AsyncIterator[None]:
+    """
+    Extend `item_id`'s lease on a fixed interval for as long as the
+    context body runs.
+
+    Without this, a call that legitimately takes longer than the lease
+    (a slow provider, not a dead worker) gets reclaimed and re-run by
+    another worker while the first call is still in flight -- on a paid
+    model call that is a duplicated charge, and every reclaim also
+    increments the row's attempt count, so a slow spell can drive a row to
+    permanent failure while its original call was still going to succeed.
+
+    Args:
+        work_queue: Queue the row was claimed from
+        item_id: Row currently being processed
+        worker_id: Must match the row's current claimant
+        lease_seconds: Lease duration each heartbeat extends by
+        interval_seconds: Gap between heartbeats; None defaults to a third
+            of `lease_seconds`, so one missed beat still leaves margin
+            before the lease actually expires -- a floor here would
+            invert that relationship for a short lease, so there isn't one
+    """
+    gap = interval_seconds if interval_seconds is not None else lease_seconds / 3
+
+    async def _beat() -> None:
+        while True:
+            await asyncio.sleep(gap)
+            await work_queue.heartbeat([item_id], worker_id=worker_id, lease_seconds=lease_seconds)
+
+    task = asyncio.create_task(_beat())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def default_worker_loop(
@@ -37,7 +85,9 @@ async def default_worker_loop(
     (via `complete`, `fail`, `retry` or `release_untouched` on the same
     `work_queue`) -- this loop only decides *when* to claim and when to
     give up on the rest of an in-progress batch, never what a row's outcome
-    means.
+    means. While a row is being handled, its lease is kept alive by
+    `heartbeat_while` -- a call that runs long is extended rather than
+    reclaimed out from under the worker still processing it.
 
     On a stop request, any row already claimed in the current batch but not
     yet handed to `handle_item` is released immediately with its attempt
@@ -71,4 +121,7 @@ async def default_worker_loop(
             if stop_event.is_set():
                 await work_queue.release_untouched(row["id"], worker_id=worker_id)
                 continue
-            await handle_item(row)
+            async with heartbeat_while(
+                work_queue, row["id"], worker_id=worker_id, lease_seconds=lease_seconds,
+            ):
+                await handle_item(row)

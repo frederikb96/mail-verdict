@@ -185,6 +185,32 @@ class QueueManager:
         """A summary for every registered queue."""
         return [await self.summary(name) for name in self._registered]
 
+    async def reset_circuit(self, name: str) -> QueueSummary:
+        """
+        Force a queue's circuit breaker closed.
+
+        The operator's manual recovery path: a breaker suspended on a
+        missing or rejected credential clears itself only through
+        `try_probe`, which a worker attempts on its own schedule -- this
+        is for closing it immediately, right after the credential that
+        caused the suspension has just been fixed, rather than waiting out
+        the probe interval.
+
+        Args:
+            name: Registered queue name
+
+        Returns:
+            The resulting summary
+
+        Raises:
+            KeyError: name is not registered
+        """
+        if name not in self._registered:
+            raise KeyError(name)
+        entry = self._registered[name]
+        await CircuitBreaker(self._db, entry.circuit_name).record_success()
+        return await self.summary(name)
+
     async def set_state(
         self,
         name: str,

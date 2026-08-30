@@ -109,3 +109,90 @@ async def test_reconnect_retries_with_backoff_until_it_succeeds(
     new_conn.add_listener.assert_awaited_once_with(CHANNEL, listener._on_notify)
     stale_conn.close.assert_awaited_once()
     assert sleeps == [RECONNECT_DELAY_S, RECONNECT_DELAY_S * 2]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_runs_every_registered_reconnect_handler(
+    listener: PostimapListener,
+) -> None:
+    """Any NOTIFY fired during the gap is gone for good -- a successful
+    reconnect must tell every registered reconnect handler, not just log
+    that it happened."""
+    listener._running = True
+    calls: list[int] = []
+
+    async def _handler_one() -> None:
+        calls.append(1)
+
+    async def _handler_two() -> None:
+        calls.append(2)
+
+    listener.add_reconnect_handler(_handler_one)
+    listener.add_reconnect_handler(_handler_two)
+
+    new_conn = AsyncMock()
+    with patch(
+        "mail_verdict.postimap.listener.asyncpg.connect", AsyncMock(return_value=new_conn),
+    ):
+        await listener._reconnect()
+
+    assert calls == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reconnect_handler_does_not_block_the_others(
+    listener: PostimapListener,
+) -> None:
+    """One handler's own bug must not prevent the rest from running, or a
+    single broken consumer would silently take every other one down with
+    it on every future reconnect."""
+    listener._running = True
+    calls: list[str] = []
+
+    async def _broken_handler() -> None:
+        calls.append("broken-ran")
+        raise RuntimeError("boom")
+
+    async def _healthy_handler() -> None:
+        calls.append("healthy-ran")
+
+    listener.add_reconnect_handler(_broken_handler)
+    listener.add_reconnect_handler(_healthy_handler)
+
+    new_conn = AsyncMock()
+    with patch(
+        "mail_verdict.postimap.listener.asyncpg.connect", AsyncMock(return_value=new_conn),
+    ):
+        await listener._reconnect()  # must not raise
+
+    assert calls == ["broken-ran", "healthy-ran"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connect_attempt_never_runs_reconnect_handlers(
+    listener: PostimapListener, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The signal means "we are connected again" -- firing it against a
+    connection that never actually succeeded would tell every client to
+    invalidate its cache for a reconnect that has not happened yet."""
+    listener._running = True
+
+    async def _fake_sleep(_delay: float) -> None:
+        listener._running = False  # stop the retry loop after one failure
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+
+    calls: list[str] = []
+
+    async def _handler() -> None:
+        calls.append("ran")
+
+    listener.add_reconnect_handler(_handler)
+
+    with patch(
+        "mail_verdict.postimap.listener.asyncpg.connect",
+        AsyncMock(side_effect=ConnectionError("still down")),
+    ):
+        await listener._reconnect()
+
+    assert calls == []

@@ -98,3 +98,28 @@ class TestPatchQueue:
         with patch("mail_verdict.api.queues.get_queue_manager", return_value=AsyncMock()):
             resp = client.patch("/queues/pipeline", json={"state": "sleeping"})
         assert resp.status_code == 422
+
+    def test_reset_circuit_is_forwarded_to_the_manager(self, client: TestClient) -> None:
+        manager = AsyncMock()
+        manager.reset_circuit = AsyncMock()
+        manager.set_state = AsyncMock(return_value=_summary())
+        with patch("mail_verdict.api.queues.get_queue_manager", return_value=manager):
+            resp = client.patch("/queues/pipeline", json={"reset_circuit": True})
+        assert resp.status_code == 200
+        manager.reset_circuit.assert_awaited_once_with("pipeline")
+
+    def test_omitting_reset_circuit_never_calls_it(self, client: TestClient) -> None:
+        manager = AsyncMock()
+        manager.reset_circuit = AsyncMock()
+        manager.set_state = AsyncMock(return_value=_summary())
+        with patch("mail_verdict.api.queues.get_queue_manager", return_value=manager):
+            resp = client.patch("/queues/pipeline", json={"state": "paused"})
+        assert resp.status_code == 200
+        manager.reset_circuit.assert_not_awaited()
+
+    def test_reset_circuit_of_an_unknown_name_is_404(self, client: TestClient) -> None:
+        manager = AsyncMock()
+        manager.reset_circuit = AsyncMock(side_effect=KeyError("nope"))
+        with patch("mail_verdict.api.queues.get_queue_manager", return_value=manager):
+            resp = client.patch("/queues/nope", json={"reset_circuit": True})
+        assert resp.status_code == 404
