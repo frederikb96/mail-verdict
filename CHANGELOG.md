@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **PostIMAP pinned to 1.4.0**, which adds consumer-driven folder creation and deletion, durable sync notifications, per-folder IMAP push, and a draft-replace column. The consumer contract version is unchanged, so every addition is additive.
 - **PostgreSQL image now ships pgvector** (`pgvector/pgvector:pg18`), in both compose files and the test container. The stock image carries no `vector` extension, and pgvector is not a trusted extension so it cannot be added by an unprivileged role at runtime. Same major version and data directory as before, so an existing volume mounts unchanged. Deployments supplying their own PostgreSQL must provide the extension; on Kubernetes that means a vector-enabled image.
 
 ### Fixed
