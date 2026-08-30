@@ -5,9 +5,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-import pytest
-from pydantic import ValidationError
-
 
 class TestMessageListResponseSchema:
     """Tests for MessageListResponse pagination schema."""
@@ -176,82 +173,3 @@ class TestMessageDetailSchema:
             images_allowed=True,
         )
         assert detail.images_allowed is True
-
-
-class TestSelectionSchemas:
-    """Tests for selection and bulk action schemas."""
-
-    def test_selection_response_schema(self) -> None:
-        """SelectionResponse has selected_ids and count."""
-        from mail_verdict.api.schemas import SelectionResponse
-
-        ids = [uuid.uuid4(), uuid.uuid4()]
-        resp = SelectionResponse(selected_ids=ids, count=len(ids))
-        assert resp.count == 2
-        assert len(resp.selected_ids) == 2
-
-    def test_selection_toggle_schema(self) -> None:
-        """SelectionToggle has a message_id."""
-        from mail_verdict.api.schemas import SelectionToggle
-
-        toggle = SelectionToggle(message_id=uuid.uuid4())
-        assert toggle.message_id is not None
-
-    def test_selection_range_schema(self) -> None:
-        """SelectionRange has from_id, to_id, and folder_id."""
-        from mail_verdict.api.schemas import SelectionRange
-
-        sr = SelectionRange(
-            from_id=uuid.uuid4(),
-            to_id=uuid.uuid4(),
-            folder_id=uuid.uuid4(),
-        )
-        assert sr.from_id is not None
-        assert sr.folder_id is not None
-
-    def test_selection_all_schema(self) -> None:
-        """SelectionAll has a folder_id."""
-        from mail_verdict.api.schemas import SelectionAll
-
-        sa = SelectionAll(folder_id=uuid.uuid4())
-        assert sa.folder_id is not None
-
-    def test_bulk_action_request_valid_actions(self) -> None:
-        """BulkActionRequest accepts all valid action types."""
-        from mail_verdict.api.schemas import BulkActionRequest
-
-        valid_actions = [
-            "move", "archive", "spam", "star", "unstar",
-            "mark_read", "mark_unread", "delete",
-        ]
-        for action in valid_actions:
-            req = BulkActionRequest(action=action)  # type: ignore[arg-type]
-            assert req.action == action
-
-    def test_bulk_action_request_invalid_action(self) -> None:
-        """BulkActionRequest rejects invalid action types."""
-        from mail_verdict.api.schemas import BulkActionRequest
-
-        with pytest.raises(ValidationError):
-            BulkActionRequest(action="invalid_action")  # type: ignore[arg-type]
-
-    def test_bulk_action_request_with_target(self) -> None:
-        """BulkActionRequest accepts optional target_folder_id."""
-        from mail_verdict.api.schemas import BulkActionRequest
-
-        target = uuid.uuid4()
-        req = BulkActionRequest(action="move", target_folder_id=target)
-        assert req.target_folder_id == target
-
-    def test_bulk_action_response_schema(self) -> None:
-        """BulkActionResponse has success, action, affected_count, errors."""
-        from mail_verdict.api.schemas import BulkActionResponse
-
-        resp = BulkActionResponse(
-            success=True,
-            action="mark_read",
-            affected_count=5,
-            errors=[],
-        )
-        assert resp.success is True
-        assert resp.affected_count == 5

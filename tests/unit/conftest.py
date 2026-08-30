@@ -58,88 +58,30 @@ def mock_db_session() -> AsyncMock:
     return session
 
 
-@pytest.fixture()
-def mock_mailbox() -> MagicMock:
-    """Mock imap-tools MailBox with preset folder, idle, and fetch methods."""
-    mailbox = MagicMock()
-
-    # Folder manager
-    folder_mgr = MagicMock()
-    folder_mgr.set = MagicMock()
-    folder_mgr.list = MagicMock(return_value=[])
-    folder_mgr.status = MagicMock(return_value={
-        "MESSAGES": 0, "UIDNEXT": 1, "UIDVALIDITY": 1, "UNSEEN": 0,
-    })
-    mailbox.folder = folder_mgr
-
-    # Idle manager
-    idle_mgr = MagicMock()
-    idle_mgr.wait = MagicMock(return_value=[])
-    idle_mgr.start = MagicMock()
-    idle_mgr.stop = MagicMock()
-    mailbox.idle = idle_mgr
-
-    # Fetch, uids, flag, move, copy, delete
-    mailbox.fetch = MagicMock(return_value=iter([]))
-    mailbox.uids = MagicMock(return_value=[])
-    mailbox.flag = MagicMock()
-    mailbox.move = MagicMock()
-    mailbox.copy = MagicMock()
-    mailbox.delete = MagicMock()
-    mailbox.login = MagicMock(return_value=mailbox)
-    mailbox.logout = MagicMock()
-
-    # Underlying imaplib client for NOOP health check
-    client = MagicMock()
-    client.noop = MagicMock(return_value=("OK", []))
-    mailbox.client = client
-
-    return mailbox
+def _anthropic_response(text: str) -> MagicMock:
+    """Build a mock Anthropic Messages API response with one text block."""
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    response = MagicMock()
+    response.content = [block]
+    return response
 
 
 @pytest.fixture()
-def mock_qdrant() -> MagicMock:
-    """Mock AsyncQdrantClient with configurable search results."""
-    client = MagicMock()
-
-    collections_response = MagicMock()
-    collections_response.collections = []
-    client.get_collections = AsyncMock(return_value=collections_response)
-    client.create_collection = AsyncMock()
-    client.create_payload_index = AsyncMock()
-    client.retrieve = AsyncMock(return_value=[])
-    client.upsert = AsyncMock()
-    client.set_payload = AsyncMock()
-
-    query_response = MagicMock()
-    query_response.points = []
-    client.query_points = AsyncMock(return_value=query_response)
-
-    return client
+def anthropic_response() -> Any:
+    """Factory building a mock Anthropic Messages API response for a given text."""
+    return _anthropic_response
 
 
 @pytest.fixture()
-def mock_openai() -> MagicMock:
-    """Mock AsyncOpenAI client with fake embeddings and chat responses."""
+def mock_anthropic() -> MagicMock:
+    """Mock AsyncAnthropic client returning a not-spam verdict by default."""
     client = MagicMock()
-
-    embedding_item = MagicMock()
-    embedding_item.embedding = [0.1] * 3072
-    embedding_response = MagicMock()
-    embedding_response.data = [embedding_item]
-    client.embeddings = MagicMock()
-    client.embeddings.create = AsyncMock(return_value=embedding_response)
-
-    chat_message = MagicMock()
-    chat_message.content = '{"verdict": "not-spam"}'
-    chat_choice = MagicMock()
-    chat_choice.message = chat_message
-    chat_response = MagicMock()
-    chat_response.choices = [chat_choice]
-    client.chat = MagicMock()
-    client.chat.completions = MagicMock()
-    client.chat.completions.create = AsyncMock(return_value=chat_response)
-
+    client.messages = MagicMock()
+    client.messages.create = AsyncMock(
+        return_value=_anthropic_response('{"verdict": "not-spam"}')
+    )
     return client
 
 
