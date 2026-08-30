@@ -6,11 +6,23 @@ SpamFeedbackHandler (user folder moves to/from junk). Backfill suppression
 is handled upstream by PostIMAP itself -- per-message insert events never
 fire during a folder's initial sync, so no additional gating is needed here
 beyond the pipeline's own durability gate.
+
+The "moved out of junk" signal in _handle_possible_move only fires for a
+move made inside this application. A move made in another mail client
+(Thunderbird, webmail) is not a folder_id change at all from PostIMAP's
+side: IMAP assigns the message a new UID in the destination and expunges
+it from the source, so the mirror follows as an expunged_at update in the
+source folder plus a separate insert in the destination -- no old_folder_id,
+no signal. Correlating those two rows by message_id would catch it, but
+that is cross-folder dedup, a documented non-goal PostIMAP deliberately
+does not attempt (it would be wrong on a server that genuinely duplicates
+a message across folders); not attempted here either for the same reason.
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -69,8 +81,6 @@ class SpamEventProcessor:
 
     async def _handle_new_message(self, event: PostimapEvent) -> None:
         """Look up the full message + folder and run the verdict pipeline."""
-        import uuid
-
         try:
             message_id = uuid.UUID(event.id)
             account_id = uuid.UUID(event.account_id)
@@ -95,8 +105,6 @@ class SpamEventProcessor:
 
     async def _handle_possible_move(self, event: PostimapEvent) -> None:
         """Check whether an update moved a message to/from the junk folder."""
-        import uuid
-
         if not event.folder_id:
             return
         try:
@@ -113,5 +121,26 @@ class SpamEventProcessor:
 
         if new_folder.special_use == "junk":
             await self._feedback.handle_moved_to_spam(
+                mail_id=message_id, account_id=account_id,
+            )
+        elif event.old_folder_id:
+            await self._handle_possible_junk_exit(event.old_folder_id, message_id, account_id)
+
+    async def _handle_possible_junk_exit(
+        self, old_folder_id: str, message_id: uuid.UUID, account_id: uuid.UUID,
+    ) -> None:
+        """Record a correction when a move's source folder was junk and its destination isn't.
+
+        old_folder_id is only present on a move made inside this application
+        -- see the module docstring for the case it does not cover.
+        """
+        try:
+            old_folder = await self._folder_repo.get_by_id(uuid.UUID(old_folder_id))
+        except ValueError:
+            logger.warning("Invalid old_folder_id in message update event: %s", old_folder_id)
+            return
+
+        if old_folder is not None and old_folder.special_use == "junk":
+            await self._feedback.handle_moved_from_spam(
                 mail_id=message_id, account_id=account_id,
             )

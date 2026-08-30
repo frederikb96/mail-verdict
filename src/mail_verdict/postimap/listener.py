@@ -38,6 +38,10 @@ class PostimapEvent:
     origin: str | None = None
     changed: tuple[str, ...] = ()
     backfill: bool = False
+    # Present only when changed includes "folder_id" (a move made inside
+    # this application); omitted entirely otherwise, never null -- read
+    # with .get(), not raw["old_folder_id"].
+    old_folder_id: str | None = None
 
     @classmethod
     def from_payload(cls, raw: dict[str, Any]) -> PostimapEvent:
@@ -61,6 +65,7 @@ class PostimapEvent:
             origin=str(raw["origin"]) if raw.get("origin") else None,
             changed=tuple(raw.get("changed") or ()),
             backfill=bool(raw.get("backfill", False)),
+            old_folder_id=str(raw["old_folder_id"]) if raw.get("old_folder_id") else None,
         )
 
 
