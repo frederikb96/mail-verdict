@@ -22,6 +22,7 @@ from mail_verdict.database.models import (
     FolderPrefs,
     MailTag,
     Message,
+    SyncNotification,
     TagSource,
     Verdict,
     VerdictSource,
@@ -834,6 +835,65 @@ class FolderRepository:
                 .limit(1)
             )
             return result.scalar_one_or_none()
+
+
+class SyncNotificationRepository:
+    """Repository for sync_notifications read operations.
+
+    Writes go through postimap/actions.py -- acknowledged_at is the only
+    consumer-writable column and even that is a contract write, not a plain
+    UPDATE issued from here.
+    """
+
+    def __init__(self, db: DatabaseConnection) -> None:
+        """
+        Initialize repository with database connection.
+
+        Args:
+            db: Database connection instance
+        """
+        self._db = db
+
+    async def list_for_account(
+        self, account_id: uuid.UUID, *, unacknowledged_only: bool = False, limit: int = 100,
+    ) -> list[SyncNotification]:
+        """
+        List notifications for an account, newest first.
+
+        Args:
+            account_id: Account to list notifications for
+            unacknowledged_only: Only rows with acknowledged_at IS NULL --
+                the query the partial index on this table exists for
+            limit: Maximum rows to return
+
+        Returns:
+            SyncNotification rows, newest first
+        """
+        async with self._db.session() as session:
+            stmt = (
+                select(SyncNotification)
+                .where(SyncNotification.account_id == account_id)
+                # id as a tiebreaker: two rows written in the same transaction
+                # share PostgreSQL's transaction-frozen now(), so created_at
+                # alone leaves their order unspecified.
+                .order_by(desc(SyncNotification.created_at), desc(SyncNotification.id))
+                .limit(limit)
+            )
+            if unacknowledged_only:
+                stmt = stmt.where(SyncNotification.acknowledged_at.is_(None))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def unacknowledged_count(self, account_id: uuid.UUID) -> int:
+        """Count of unacknowledged notifications for an account -- a bell badge."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(func.count(SyncNotification.id)).where(
+                    SyncNotification.account_id == account_id,
+                    SyncNotification.acknowledged_at.is_(None),
+                )
+            )
+            return result.scalar_one()
 
 
 class AttachmentRepository:

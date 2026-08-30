@@ -6,7 +6,9 @@ Supports ?account_id=<uuid> query parameter to filter events by account.
 
 On fresh connect: sends connected event, then streams live events.
 On reconnect (Last-Event-ID header): replays missed events from EventRing,
-falls back to connected event if the ID is too old.
+falls back to a resync event -- telling the client to invalidate every
+cache rather than trust one that may now be stale -- if the ID is too old
+to replay.
 
 PostIMAP integration: postimap/listener.py listens on postimap_events and
 pushes parsed events into the EventRing.
@@ -127,9 +129,11 @@ async def _sse_generator(
                 for event in missed:
                     yield _format_sse(event["id"], event["event_type"], event["data"])
             else:
-                # Gap too large: send connected event
+                # Gap too large to replay: whatever changed while disconnected
+                # is gone from the ring, so tell the client to invalidate
+                # everything rather than trust a cache that may be stale.
                 seq = event_ring.get_latest_seq()
-                yield f"id: {seq}\nevent: connected\ndata: {{}}\n\n"
+                yield f"id: {seq}\nevent: resync\ndata: {{}}\n\n"
         else:
             # Fresh connect: send connected event
             seq = event_ring.get_latest_seq()

@@ -21,6 +21,8 @@ import type {
   MessageActionResponse,
   MessageDetail,
   MessageListResponse,
+  NotificationCountResponse,
+  NotificationResponse,
   OutboxCreateRequest,
   OutboxResponse,
   SearchResponse,
@@ -213,6 +215,11 @@ export const api = {
     attachmentUrl(messageId: string, attachmentId: string): string {
       return `${BASE_URL}/messages/${messageId}/attachments/${attachmentId}`;
     },
+
+    /** The message's RFC822 source as a .eml download. */
+    rawUrl(messageId: string): string {
+      return `${BASE_URL}/messages/${messageId}/raw`;
+    },
   },
 
   verdicts: {
@@ -355,6 +362,28 @@ export const api = {
       return request("/unified/folder-order", {
         method: "PUT",
         body: JSON.stringify({ order }),
+      });
+    },
+  },
+
+  notifications: {
+    list(
+      accountId: string,
+      params?: { unacknowledged_only?: boolean; limit?: number },
+    ): Promise<NotificationResponse[]> {
+      return request(`/accounts/${accountId}/notifications${qs(params ?? {})}`);
+    },
+    unacknowledgedCount(accountId: string): Promise<NotificationCountResponse> {
+      return request(`/accounts/${accountId}/notifications/unacknowledged-count`);
+    },
+    acknowledge(accountId: string, notificationId: number): Promise<void> {
+      return request(`/accounts/${accountId}/notifications/${notificationId}/ack`, {
+        method: "POST",
+      });
+    },
+    acknowledgeAll(accountId: string): Promise<void> {
+      return request(`/accounts/${accountId}/notifications/ack-all`, {
+        method: "POST",
       });
     },
   },

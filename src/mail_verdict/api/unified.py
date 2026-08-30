@@ -20,8 +20,9 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import and_, case, desc, or_, select, update
+from sqlalchemy import case, desc, select, update
 from sqlalchemy import func as sa_func
+from sqlalchemy.orm import defer
 
 from mail_verdict.api.deps import get_account_prefs_repo
 from mail_verdict.api.schemas import (
@@ -33,6 +34,7 @@ from mail_verdict.api.schemas import (
     UnifiedMessageListResponse,
     UnifiedMessageSummary,
 )
+from mail_verdict.core.cursor import after_cursor
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -180,6 +182,9 @@ async def list_unified_messages(
     async with db.session() as session:
         stmt = (
             select(Message, AccountPrefs.emoji.label("account_emoji"))
+            .options(
+                defer(Message.raw_source), defer(Message.raw_headers), defer(Message.body_html),
+            )
             .join(Folder, Message.folder_id == Folder.id)
             .join(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .join(Account, Message.account_id == Account.id)
@@ -205,13 +210,7 @@ async def list_unified_messages(
                 )
             cursor_received_at, cursor_id = cursor_row
             stmt = stmt.where(
-                or_(
-                    Message.received_at < cursor_received_at,
-                    and_(
-                        Message.received_at == cursor_received_at,
-                        Message.id < cursor_id,
-                    ),
-                )
+                after_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
             )
 
         stmt = stmt.limit(limit + 1)

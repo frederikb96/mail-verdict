@@ -164,6 +164,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   collected at once); a folder reference that does not currently resolve is *accepted*, since
   folders appear asynchronously as PostIMAP discovers them — it is reported as a warning on every
   document response and stays queryable afterwards through the health endpoint.
+- **`docs/api.md`:** the REST API reference — worked examples from an empty instance to a
+  configured one, an endpoint-group overview, and the two things about the API most likely to be
+  assumed wrongly: that there is no authentication at all, and that a pipeline write behaves
+  differently from every other write when it names a folder that does not exist yet.
+- **Forward.** A reply-box button alongside reply/reply-all, prefilling the subject and a quoted
+  body and carrying the original's attachments along — downloaded and re-attached client-side,
+  no backend change needed since a forward is an ordinary `POST /api/outbox`. Deliberately sets
+  neither `in_reply_to` nor `references`: a forward starts a new thread with someone new rather
+  than joining the sender's own conversation.
+- **`GET /api/messages/:id/raw`:** downloads a message's stored RFC822 source as a `.eml` file.
+  `409` when `raw_source` is NULL because the message exceeded `storage.max_message_bytes` and
+  was never fetched from IMAP at all, distinct from `404` for a message that does not exist.
+- **The notification centre.** PostIMAP's `sync_notifications` — a durable, acknowledgeable record
+  of a write that never reached the server, including a send that never left — is now surfaced:
+  `GET /accounts/:id/notifications`, `GET .../unacknowledged-count`, `POST .../:id/ack`, `POST
+  .../ack-all`, a `notification.new` SSE event, and a bell in the sidebar with an unread badge.
+  Requires PostIMAP service_version >= 1.3.0, gated the same way folder CRUD is.
+- **A confirmation before permanently deleting a message.** The reading pane offers "Delete
+  forever" only inside Trash (everywhere else, the trash button is the reversible move it already
+  was), behind the same confirm-dialog pattern folder deletion already used — now shared as
+  `ConfirmDialog` rather than duplicated.
 ### Changed
 
 - `RetryConfig.delay_for_attempt` uses full jitter (a uniform draw over `[0, cap]`) instead of a fixed exponential value; default `retry` settings changed to 5 attempts, 1s base, 20s cap
@@ -215,6 +236,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   retry path and was retried up to `max_attempts` times before failing, exactly the noisy,
   hides-the-real-problem behaviour `StageMisconfigured` exists to avoid. `build_stage` now wraps
   construction in the same try/except as config validation.
+- **Cursor pagination could repeat or skip a page.** The message list, threaded list and unified
+  list all order by `received_at DESC, id DESC`; a cursor whose row had a NULL `received_at` (or
+  whose previous page ended on one) either applied no filter at all — repeating the page it was
+  meant to advance past — or excluded every remaining row, depending on which endpoint. Both
+  followed from a plain `received_at < cursor` comparison, which SQL's three-valued logic treats
+  as unknown, not false, whenever either side is NULL. `core/cursor.py`'s `after_cursor` builds
+  the predicate PostgreSQL's own NULLS-FIRST-on-DESC placement actually needs.
+- **A message list query pulled the full raw message and HTML body of every row.** `GET
+  /accounts/:id/messages` and the unified equivalent `SELECT`ed the whole `Message` entity for a
+  response that renders a sender, a subject and a 120-character snippet; `raw_source`,
+  `raw_headers` and `body_html` are now deferred on every list query.
+- **An attachment or `.eml` filename outside Latin-1 raised `UnicodeEncodeError` building the
+  response**, turning a download into a `500`. `Content-Disposition` now carries both the plain
+  ASCII-folded form and the RFC 5987 `filename*=UTF-8''...` form every current browser prefers.
+- **A dropped SSE connection resumed blind.** A reconnect whose `Last-Event-ID` had fallen out of
+  the in-memory ring buffer was told `connected` — the event a *fresh* connection gets, which
+  nothing on the client treats as a reason to invalidate anything — instead of `resync`, the event
+  `use-sse.ts` actually listens for. Everything that happened during the gap was silently missed
+  until the next unrelated event landed. The server now sends `resync` in that case.
 
 ## [1.0.0] - 2026-08-30
 

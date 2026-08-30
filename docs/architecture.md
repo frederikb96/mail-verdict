@@ -261,6 +261,26 @@ draft's `messages.id`. PostIMAP appends the replacement first and only then remo
 names, so the two briefly coexist in Drafts; the composer renders from its own state rather than
 by re-reading the mailbox, which is what makes that gap invisible.
 
+## Notifications
+
+A write to a column the contract grants is accepted immediately and reaches the mail server
+afterwards; between those two moments it can fail permanently — the folder is gone, the
+credential stopped working, the server rejects the flag, an SMTP send never leaves. PostIMAP
+writes a durable `sync_notifications` row for every such failure, mirrored read-only as
+`SyncNotification` (`database/models.py`), covering a failed sync operation and a failed send
+alike. `acknowledged_at` is the only column a consumer writes; everything else is PostIMAP's own
+account of what it attempted and why it gave up.
+
+The row's insert fires a `notification` event on `postimap_events`, which the listener forwards
+as `notification.new` over SSE so a client refreshes rather than polls. `reverted_at` records
+whether PostIMAP has since put the mirror right for that one operation — re-reading a message's
+flags after a failed flag change, restoring `folder_id`/`imap_uid` after a failed move, and so
+on. A row with `reverted_at` still NULL is one where the value written through this application
+may still be sitting in the column looking applied, when the server never actually received it.
+
+Available from PostIMAP `service_version` 1.3.0 onward, gated in `postimap/contract.py` the same
+way folder CRUD is.
+
 ## Folders
 
 Creating a folder is an insert; IMAP has no parent concept, so the full path is built by joining

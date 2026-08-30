@@ -17,10 +17,15 @@ mirror, which is what keeps it simple.
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
   list that stays smooth on large mailboxes, and unified views across accounts. Folders can be
   created and deleted (renaming and re-nesting are an IMAP limitation, not implemented).
-- **Compose** — send, reply, reply-all and drafts, with attachments. Replies thread correctly.
-  Reopening a draft continues editing it in place, and sending one leaves no draft behind.
-- **Actions** — read/unread, flag, archive, trash, permanent delete, keywords, drag-and-drop moves,
-  and bulk actions over a selection or a whole folder.
+- **Compose** — send, reply, reply-all, forward and drafts, with attachments. Replies thread
+  correctly. Reopening a draft continues editing it in place, and sending one leaves no draft
+  behind. Any message can be downloaded as a raw `.eml` file.
+- **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
+  is irreversible), keywords, drag-and-drop moves, and bulk actions over a selection or a whole
+  folder.
+- **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
+  server, including a send that never left, surfaced with the reason and a live update the moment
+  it happens.
 - **Spam verdicts** — each new message is classified by a language model, with the reasoning
   visible and a correction loop when it gets one wrong. Historical mail is never classified, and
   nothing is classified twice.
@@ -86,6 +91,16 @@ MailVerdict has no login screen and no auth mechanism of its own — nothing che
 key on any endpoint. Put an authenticating proxy in front of it (OIDC, basic auth, an internal
 SSO) and let that handle sign-in — people never touch application credentials, and the application
 stays free of session management. The chart README has a worked example.
+
+## API
+
+MailVerdict is built to be driven by an agent as much as by the browser UI. [docs/api.md](docs/api.md)
+is the reference: worked examples from an empty instance to a configured one, the REST endpoint
+groups, and the two things about the API that are easy to assume wrongly — that there is no
+authentication at all, and that a pipeline write behaves differently from every other write when
+it names something that does not exist yet. The generated OpenAPI document at `/api/openapi.json`
+is the exhaustive schema; the MCP server at `/mcp` wraps a curated subset of the same
+functionality as typed tools.
 
 ## Architecture
 

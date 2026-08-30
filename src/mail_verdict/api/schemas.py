@@ -399,6 +399,31 @@ class FeedbackResponse(BaseModel):
     message: str | None = None
 
 
+# --- Notification schemas ---
+
+
+class NotificationResponse(BaseModel):
+    """One sync_notifications row -- a write that never reached the server."""
+
+    id: int
+    account_id: uuid.UUID
+    action: str
+    message_id: uuid.UUID | None
+    folder_id: uuid.UUID | None
+    outbox_id: uuid.UUID | None
+    error: str | None
+    detail: dict[str, Any] | None
+    acknowledged_at: datetime | None
+    reverted_at: datetime | None
+    created_at: datetime
+
+
+class NotificationCountResponse(BaseModel):
+    """Unacknowledged count for an account -- what a bell badge renders."""
+
+    unacknowledged: int
+
+
 # --- Pipeline run schemas ---
 
 

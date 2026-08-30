@@ -6,6 +6,7 @@ GET /api/accounts/:account_id/messages — cursor-paginated list, optionally
 GET /api/messages/:id — detail view (sanitized HTML, embedded verdict)
 GET /api/messages/:id/thread — every message in the conversation, ascending
 GET /api/messages/:id/attachments/:attachment_id — streamed attachment
+GET /api/messages/:id/raw — the message's RFC822 source as a .eml download
 POST /api/messages/:id/action — single-message action
 POST /api/accounts/:account_id/messages/bulk-action — action over many
   messages, by id list or by a server-resolved scope
@@ -22,9 +23,9 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import and_, case, desc, func, or_, select
+from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, defer
 
 from mail_verdict.api.deps import (
     get_attachment_repo,
@@ -45,6 +46,8 @@ from mail_verdict.api.schemas import (
     ThreadResponse,
     VerdictResponse,
 )
+from mail_verdict.core.content_disposition import content_disposition
+from mail_verdict.core.cursor import after_cursor
 from mail_verdict.core.image_sanitizer import (
     extract_sender_domain,
     extract_sender_email,
@@ -77,6 +80,18 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 
 # List + bulk-action routes: /api/accounts/{account_id}/messages...
 account_router = APIRouter(prefix="/accounts/{account_id}/messages", tags=["messages"])
+
+# A list row (MessageSummary) never renders these -- deferring them keeps a
+# page of the list from pulling the full raw message and its HTML body
+# across the wire for every row just to read a sender and a subject.
+# body_text stays eager: the list snippet reads the first 120 characters of
+# it, and a deferred attribute accessed outside the session's own greenlet
+# raises MissingGreenlet rather than lazy-loading, the way it would sync.
+_LIST_DEFERRED_COLUMNS = (
+    defer(Message.raw_source),
+    defer(Message.raw_headers),
+    defer(Message.body_html),
+)
 
 
 @account_router.get("", response_model=MessageListResponse)
@@ -147,6 +162,7 @@ async def list_messages(
         else:
             stmt = (
                 select(Message)
+                .options(*_LIST_DEFERRED_COLUMNS)
                 .where(Message.expunged_at.is_(None), Message.account_id == account_id)
                 .order_by(desc(Message.received_at), desc(Message.id))
             )
@@ -156,15 +172,9 @@ async def list_messages(
                 stmt = stmt.where(Message.is_seen == is_seen)
             if since is not None:
                 stmt = stmt.where(Message.received_at >= since)
-            if cursor_received_at is not None:
+            if cursor_id is not None:
                 stmt = stmt.where(
-                    or_(
-                        Message.received_at < cursor_received_at,
-                        and_(
-                            Message.received_at == cursor_received_at,
-                            Message.id < cursor_id,
-                        ),
-                    )
+                    after_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
                 )
             stmt = stmt.limit(limit + 1)
             result = await session.execute(stmt)
@@ -253,12 +263,9 @@ async def _list_messages_threaded(
         .join(thread_stats, thread_stats.c.thread_id == latest.thread_id)
         .order_by(desc(latest.received_at), desc(latest.id))
     )
-    if cursor_received_at is not None:
+    if cursor_id is not None:
         stmt = stmt.where(
-            or_(
-                latest.received_at < cursor_received_at,
-                and_(latest.received_at == cursor_received_at, latest.id < cursor_id),
-            )
+            after_cursor(latest.received_at, latest.id, cursor_received_at, cursor_id)
         )
     stmt = stmt.limit(limit + 1)
 
@@ -486,7 +493,47 @@ async def get_attachment(message_id: uuid.UUID, attachment_id: uuid.UUID) -> Res
     return Response(
         content=attachment.data,
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
+@router.get("/{message_id}/raw")
+async def get_raw_source(message_id: uuid.UUID) -> Response:
+    """
+    Download a message's full RFC822 source as a .eml file.
+
+    raw_source is the entire message on every row, so this is its own
+    single-column query rather than reusing MessageDetail -- and NULL when
+    is_truncated, since a message over storage.max_message_bytes was never
+    fetched from IMAP at all.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Message.subject, Message.raw_source, Message.is_truncated)
+            .where(Message.id == message_id)
+        )
+        row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    if row.raw_source is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No raw source stored for this message -- it exceeded "
+                "storage.max_message_bytes when it was fetched and was "
+                "never downloaded from IMAP."
+                if row.is_truncated
+                else "No raw source stored for this message."
+            ),
+        )
+
+    filename = f"{row.subject or 'message'}.eml"
+    return Response(
+        content=row.raw_source,
+        media_type="message/rfc822",
+        headers={"Content-Disposition": content_disposition(filename)},
     )
 
 

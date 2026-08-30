@@ -6,6 +6,7 @@ import {
   Mail,
   Paperclip,
   Download,
+  FileDown,
   ShieldAlert,
   Trash2,
   Star,
@@ -22,6 +23,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmailRenderer } from "@/components/mail/email-renderer";
@@ -32,6 +34,7 @@ import { DraftEditor } from "@/components/mail/draft-editor";
 import { api } from "@/lib/api";
 import { useMailAction, useThread } from "@/hooks/use-mails";
 import { useAccount } from "@/hooks/use-accounts";
+import { useFolders } from "@/hooks/use-folders";
 import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { selectedMailIdAtom } from "@/lib/atoms";
 import {
@@ -223,6 +226,14 @@ function ThreadMessage({
             }
           />
         </Button>
+        <a
+          href={api.mails.rawUrl(mail.id)}
+          download={`${mail.subject ?? "message"}.eml`}
+          className="flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+          title="Download as .eml"
+        >
+          <FileDown className="h-3.5 w-3.5" />
+        </a>
         {mail.verdict?.is_spam && (
           <Button
             variant="ghost"
@@ -269,13 +280,19 @@ export function ReadingPane() {
   const mailAction = useMailAction();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
+  const [confirmExpunge, setConfirmExpunge] = useState(false);
   const autoReadRef = useRef<string | null>(null);
 
   const messages = thread?.messages ?? [];
   const primary =
     messages.find((m) => m.id === mailId) ?? messages[messages.length - 1] ?? null;
   const account = useAccount(primary?.account_id ?? null);
+  const { data: folders } = useFolders(primary?.account_id ?? null);
   const isDraft = primary?.is_draft ?? false;
+  // Permanent delete is only offered inside Trash -- everywhere else "delete"
+  // means the reversible move-to-trash button already above it.
+  const isInTrash =
+    folders?.find((f) => f.id === primary?.folder_id)?.special_use === "trash";
 
   // Reset expansion state per opened mail: last message expanded, plus
   // whichever message the user actually clicked in the list.
@@ -389,23 +406,53 @@ export function ReadingPane() {
           >
             <Ban className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() =>
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: "trash" },
-              })
-            }
-            title="Move to trash"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
+          {isInTrash ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-destructive"
+              onClick={() => setConfirmExpunge(true)}
+              title="Delete forever"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: primary.id,
+                  accountId: primary.account_id,
+                  action: { action: "trash" },
+                })
+              }
+              title="Move to trash"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={confirmExpunge}
+        onOpenChange={setConfirmExpunge}
+        title="Delete this message forever?"
+        description="This removes it from the mail server. It cannot be undone."
+        isConfirming={mailAction.isPending}
+        onConfirm={() =>
+          mailAction.mutate(
+            {
+              mailId: primary.id,
+              accountId: primary.account_id,
+              action: { action: "expunge" },
+            },
+            { onSuccess: () => setConfirmExpunge(false) },
+          )
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-auto">
         {messages.map((m) => (

@@ -15,7 +15,14 @@ from sqlalchemy import delete, insert, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Account, Folder, Message, Outbox, OutboxAttachment
+from mail_verdict.database.models import (
+    Account,
+    Folder,
+    Message,
+    Outbox,
+    OutboxAttachment,
+    SyncNotification,
+)
 
 _CREDENTIAL_FORMAT_PLAINTEXT = b"\x00"
 
@@ -383,6 +390,44 @@ async def delete_folder(session: AsyncSession, folder_id: uuid.UUID) -> None:
     """
     await session.execute(
         update(Folder).where(Folder.id == folder_id).values(deleted_at=text("now()"))
+    )
+
+
+async def acknowledge_notification(session: AsyncSession, notification_id: int) -> None:
+    """
+    Mark one sync_notifications row as seen.
+
+    acknowledged_at is the only consumer-writable column on this table --
+    everything else is PostIMAP's own account of an operation it gave up
+    on. Available from PostIMAP service_version 1.3.0 onward -- gate the
+    call site on postimap.contract.supports_sync_notifications() first.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        notification_id: The sync_notifications row to acknowledge
+    """
+    await session.execute(
+        update(SyncNotification)
+        .where(SyncNotification.id == notification_id)
+        .values(acknowledged_at=text("now()"))
+    )
+
+
+async def acknowledge_all_notifications(session: AsyncSession, account_id: uuid.UUID) -> None:
+    """
+    Mark every unacknowledged notification for an account as seen.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        account_id: Account whose notifications to acknowledge
+    """
+    await session.execute(
+        update(SyncNotification)
+        .where(
+            SyncNotification.account_id == account_id,
+            SyncNotification.acknowledged_at.is_(None),
+        )
+        .values(acknowledged_at=text("now()"))
     )
 
 
