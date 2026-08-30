@@ -5,20 +5,19 @@ GET /api/mails — cursor-based paginated list with filters
 GET /api/mails/:id — detail view
 POST /api/mails/:id/action — actions (move, mark, delete)
 
-PostIMAP integration: SQL UPDATEs are sufficient for all actions.
-PostIMAP's PG trigger handles IMAP propagation; MailVerdict's
-mv_message_notify trigger handles SSE events.
+PostIMAP integration: SQL UPDATEs are sufficient for all actions --
+postimap/actions.py owns the write shapes; PostIMAP's own triggers
+propagate them to IMAP, and postimap/listener.py fans them out to SSE.
 """
 
 from __future__ import annotations
 
 import logging
-import random
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import and_, desc, or_, select, update
+from sqlalchemy import and_, desc, or_, select
 
 from mail_verdict.api.deps import (
     get_attachment_repo,
@@ -35,9 +34,9 @@ from mail_verdict.api.schemas import (
     MessageSummary,
     TagResponse,
 )
-from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Folder, Message
+from mail_verdict.postimap.actions import expunge, move_message, move_to_trash, set_flags
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ async def list_messages(
     async with db.session() as session:
         stmt = (
             select(Message)
-            .where(Message.deleted_at.is_(None))
+            .where(Message.expunged_at.is_(None))
             .order_by(desc(Message.received_at), desc(Message.id))
         )
 
@@ -120,16 +119,18 @@ async def list_messages(
                 id=m.id,
                 account_id=m.account_id,
                 folder_id=m.folder_id,
+                thread_id=m.thread_id,
                 subject=m.subject,
                 from_addr=m.from_addr,
-                to_addrs=parse_jsonb(m.to_addrs),
+                to_addrs=m.to_addrs,
                 received_at=m.received_at,
                 is_seen=m.is_seen,
                 is_flagged=m.is_flagged,
                 is_answered=m.is_answered,
                 is_draft=m.is_draft,
                 is_deleted=m.is_deleted,
-                deleted_at=m.deleted_at,
+                is_truncated=m.is_truncated,
+                expunged_at=m.expunged_at,
                 snippet=m.body_text[:120] if m.body_text else None,
             )
             for m in messages
@@ -187,18 +188,21 @@ async def get_message(
         id=msg.id,
         account_id=msg.account_id,
         folder_id=msg.folder_id,
+        thread_id=msg.thread_id,
         imap_uid=msg.imap_uid,
+        pending_sync=msg.imap_uid is None,
+        is_truncated=msg.is_truncated,
         message_id=msg.message_id,
         subject=msg.subject,
         from_addr=msg.from_addr,
-        to_addrs=parse_jsonb(msg.to_addrs),
-        cc_addrs=parse_jsonb(msg.cc_addrs),
-        bcc_addrs=parse_jsonb(msg.bcc_addrs),
+        to_addrs=msg.to_addrs,
+        cc_addrs=msg.cc_addrs,
+        bcc_addrs=msg.bcc_addrs,
         reply_to=msg.reply_to,
         in_reply_to=msg.in_reply_to,
         body_text=msg.body_text,
         body_html=body_html,
-        raw_headers=parse_jsonb(msg.raw_headers),
+        raw_headers=msg.raw_headers,
         received_at=msg.received_at,
         size_bytes=msg.size_bytes,
         is_seen=msg.is_seen,
@@ -207,7 +211,7 @@ async def get_message(
         is_draft=msg.is_draft,
         is_deleted=msg.is_deleted,
         keywords=msg.keywords or [],
-        deleted_at=msg.deleted_at,
+        expunged_at=msg.expunged_at,
         created_at=msg.created_at,
         has_blocked_images=has_blocked_images,
         images_allowed=images_allowed,
@@ -300,58 +304,42 @@ async def message_action(
 
     if action == "mark_read":
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == message_id).values(is_seen=True)
-            )
+            await set_flags(session, message_id, is_seen=True)
 
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "mark_unread":
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == message_id).values(is_seen=False)
-            )
+            await set_flags(session, message_id, is_seen=False)
 
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "flag":
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == message_id).values(is_flagged=True)
-            )
+            await set_flags(session, message_id, is_flagged=True)
 
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "unflag":
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == message_id).values(is_flagged=False)
-            )
+            await set_flags(session, message_id, is_flagged=False)
 
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     elif action == "delete":
-        # Move to trash if mapped and not already in trash; otherwise permanent delete
+        # Move to trash if not already there; otherwise permanent delete
         trash_folder_id = await _resolve_special_folder(account_id, "trash")
         if trash_folder_id and source_folder_id != trash_folder_id:
-            # Move to trash
             async with db.session() as session:
-                await session.execute(
-                    update(Message).where(Message.id == message_id)
-                    .values(folder_id=trash_folder_id, imap_uid=-random.randint(1, 2_000_000_000))
-                )
+                await move_to_trash(session, message_id, trash_folder_id)
 
             return MessageActionResponse(
                 success=True, action=action, message_id=message_id,
                 message="Moved to trash",
             )
         else:
-            # Permanent delete (already in trash or no trash folder)
-            now = datetime.now(timezone.utc)
             async with db.session() as session:
-                await session.execute(
-                    update(Message).where(Message.id == message_id).values(deleted_at=now)
-                )
+                await expunge(session, message_id)
 
             return MessageActionResponse(
                 success=True, action=action, message_id=message_id,
@@ -383,10 +371,7 @@ async def message_action(
             target_name = target.imap_name
 
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == message_id)
-                .values(folder_id=target_id, imap_uid=-random.randint(1, 2_000_000_000))
-            )
+            await move_message(session, message_id, target_id)
 
         return MessageActionResponse(
             success=True,
@@ -402,14 +387,11 @@ async def message_action(
         if target_folder_id is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"No {action} folder mapped for this account",
+                detail=f"No {action} folder found for this account",
             )
 
         async with db.session() as session:
-            await session.execute(
-                update(Message).where(Message.id == message_id)
-                .values(folder_id=target_folder_id, imap_uid=-random.randint(1, 2_000_000_000))
-            )
+            await move_message(session, message_id, target_folder_id)
 
         return MessageActionResponse(
             success=True,

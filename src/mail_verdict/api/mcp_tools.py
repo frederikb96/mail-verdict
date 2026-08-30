@@ -12,7 +12,6 @@ import uuid
 
 from fastmcp import FastMCP
 
-from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -26,6 +25,7 @@ from mail_verdict.database.repository import (
     TagRepository,
     VerdictRepository,
 )
+from mail_verdict.postimap.actions import move_message
 
 mcp = FastMCP(
     name="mail-verdict",
@@ -37,16 +37,14 @@ mcp = FastMCP(
 async def search_mail(
     query: str,
     account_id: str | None = None,
-    mode: str = "fulltext",
     limit: int = 20,
 ) -> list[dict]:
     """
-    Search emails by content.
+    Search emails by full-text content match.
 
     Args:
         query: Search query text
         account_id: Optional account UUID to scope search
-        mode: Search mode - 'fulltext' (Postgres) or 'semantic' (Qdrant vectors)
         limit: Max results (default 20)
 
     Returns:
@@ -54,50 +52,19 @@ async def search_mail(
     """
     results: list[dict] = []
     db = get_db_connection()
+    msg_repo = MessageRepository(db)
 
-    if mode == "semantic":
-        from mail_verdict.semantic.store import get_semantic_store
-
-        try:
-            store = get_semantic_store()
-            hits = await store.search(
-                query,
-                limit=limit,
-                account_id=account_id,
-            )
-            for hit in hits:
-                results.append(
-                    {
-                        "message_id": hit.mail_id,
-                        "score": hit.score,
-                        "source": "semantic",
-                    }
-                )
-        except RuntimeError:
-            return [{"error": "SemanticStore not initialized"}]
+    if account_id:
+        messages = await msg_repo.search_fulltext(uuid.UUID(account_id), query, limit=limit)
+        results.extend(_message_summary(msg) for msg in messages)
     else:
-        msg_repo = MessageRepository(db)
-        if account_id:
-            messages = await msg_repo.search_fulltext(
-                uuid.UUID(account_id),
-                query,
-                limit=limit,
-            )
-            for msg in messages:
-                results.append(_message_summary(msg))
-        else:
-            from sqlalchemy import select
+        from sqlalchemy import select
 
-            async with db.session() as session:
-                accts = await session.execute(select(Account.id))
-                for row in accts.all():
-                    messages = await msg_repo.search_fulltext(
-                        row[0],
-                        query,
-                        limit=limit,
-                    )
-                    for msg in messages:
-                        results.append(_message_summary(msg))
+        async with db.session() as session:
+            accts = await session.execute(select(Account.id))
+            for row in accts.all():
+                messages = await msg_repo.search_fulltext(row[0], query, limit=limit)
+                results.extend(_message_summary(msg) for msg in messages)
 
     return results[:limit]
 
@@ -127,8 +94,8 @@ async def get_mail(
         "id": str(msg.id),
         "subject": msg.subject,
         "from_addr": msg.from_addr,
-        "to_addrs": parse_jsonb(msg.to_addrs),
-        "cc_addrs": parse_jsonb(msg.cc_addrs),
+        "to_addrs": msg.to_addrs,
+        "cc_addrs": msg.cc_addrs,
         "body_text": msg.body_text,
         "received_at": msg.received_at.isoformat() if msg.received_at else None,
         "is_seen": msg.is_seen,
@@ -209,7 +176,7 @@ async def move_mail(
     Returns:
         Success status and message
     """
-    from sqlalchemy import select, update
+    from sqlalchemy import select
 
     db = get_db_connection()
     msg_repo = MessageRepository(db)
@@ -228,11 +195,7 @@ async def move_mail(
         if folder is None:
             return {"success": False, "error": f"Folder not found: {target_folder}"}
 
-        mid = uuid.UUID(mail_id)
-        await session.execute(
-            update(Message).where(Message.id == mid)
-            .values(folder_id=folder.id)
-        )
+        await move_message(session, uuid.UUID(mail_id), folder.id)
 
     return {"success": True, "message": f"Moved to {target_folder}"}
 

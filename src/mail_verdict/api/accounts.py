@@ -19,12 +19,11 @@ AccountPrefs stores MailVerdict-specific preferences.
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import case, delete, select, text, update
+from sqlalchemy import case, delete, select
 from sqlalchemy import func as sa_func
 
 from mail_verdict.api.deps import get_account_prefs_repo
@@ -35,8 +34,6 @@ from mail_verdict.api.schemas import (
     FolderResponse,
     SyncStatusResponse,
 )
-from mail_verdict.core.encryption import encrypt
-from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -46,6 +43,9 @@ from mail_verdict.database.models import (
     Message,
     SyncState,
 )
+from mail_verdict.postimap.actions import create_account as postimap_create_account
+from mail_verdict.postimap.actions import update_account as postimap_update_account
+from mail_verdict.postimap.commands import request_sync_now
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +78,11 @@ def _build_account_response(
         is_active=account.is_active,
         state=account.state,
         state_error=account.state_error,
-        capabilities=parse_jsonb(account.capabilities),
+        capabilities=account.capabilities,
         created_at=account.created_at,
         updated_at=account.updated_at,
         emoji=prefs.emoji if prefs else None,
         spam_enabled=prefs.spam_enabled if prefs else False,
-        embedding_lookback_days=prefs.embedding_lookback_days if prefs else 30,
-        folder_mapping=prefs.folder_mapping if prefs else None,
         folder_order=prefs.folder_order if prefs else None,
     )
 
@@ -105,31 +103,32 @@ async def list_accounts() -> list[AccountResponse]:
 
 @router.post("", response_model=AccountResponse, status_code=201)
 async def create_account(request: AccountCreateRequest) -> AccountResponse:
-    """Create a new IMAP account with encrypted passwords."""
-    db = get_db_connection()
-    account = Account(
-        name=request.name,
-        imap_host=request.imap_host,
-        imap_port=request.imap_port,
-        imap_user=request.imap_user,
-        imap_password=encrypt(request.imap_password) if request.imap_password else b"",
-        smtp_host=request.smtp_host,
-        smtp_port=request.smtp_port,
-        smtp_user=request.smtp_user,
-        smtp_password=encrypt(request.smtp_password) if request.smtp_password else None,
-        is_active=request.is_active,
-    )
-    async with db.session() as session:
-        session.add(account)
-        await session.flush()
-        await session.refresh(account)
+    """Create a new IMAP account.
 
-        # Create AccountPrefs record
+    Credentials are written in the contract's consumer format (plaintext,
+    0x00-prefixed) via postimap/actions.py; PostIMAP re-encrypts them
+    itself once it picks the account up.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        account = await postimap_create_account(
+            session,
+            name=request.name,
+            imap_host=request.imap_host,
+            imap_port=request.imap_port,
+            imap_user=request.imap_user,
+            imap_password=request.imap_password or "",
+            smtp_host=request.smtp_host,
+            smtp_port=request.smtp_port,
+            smtp_user=request.smtp_user,
+            smtp_password=request.smtp_password,
+            is_active=request.is_active,
+        )
+
         prefs = AccountPrefs(
             account_id=account.id,
             emoji=request.emoji,
             spam_enabled=request.spam_enabled,
-            embedding_lookback_days=request.embedding_lookback_days,
         )
         session.add(prefs)
         await session.flush()
@@ -160,21 +159,16 @@ async def update_account(
     account_id: uuid.UUID,
     request: AccountUpdateRequest,
 ) -> AccountResponse:
-    """Update an existing account. Passwords are re-encrypted if provided."""
+    """Update an existing account. Passwords are re-formatted if provided."""
     db = get_db_connection()
     all_values = request.model_dump(exclude_unset=True)
     if not all_values:
         raise HTTPException(status_code=400, detail="No fields to update")
 
     # Separate Account fields from AccountPrefs fields
-    prefs_fields = {"emoji", "embedding_lookback_days", "spam_enabled"}
+    prefs_fields = {"emoji", "spam_enabled"}
     account_values = {k: v for k, v in all_values.items() if k not in prefs_fields}
     prefs_values = {k: v for k, v in all_values.items() if k in prefs_fields}
-
-    if "imap_password" in account_values and account_values["imap_password"] is not None:
-        account_values["imap_password"] = encrypt(account_values["imap_password"])
-    if "smtp_password" in account_values and account_values["smtp_password"] is not None:
-        account_values["smtp_password"] = encrypt(account_values["smtp_password"])
 
     async with db.session() as session:
         result = await session.execute(select(Account).where(Account.id == account_id))
@@ -183,9 +177,7 @@ async def update_account(
             raise HTTPException(status_code=404, detail="Account not found")
 
         if account_values:
-            await session.execute(
-                update(Account).where(Account.id == account_id).values(**account_values)
-            )
+            await postimap_update_account(session, account_id, **account_values)
 
     # Update prefs if any prefs fields were provided
     if prefs_values:
@@ -250,9 +242,9 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(
                 Message,
-                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
+                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
-            .where(Folder.account_id == account_id)
+            .where(Folder.account_id == account_id, Folder.deleted_at.is_(None))
             .group_by(Folder.id, FolderPrefs.folder_id)
             .order_by(Folder.imap_name)
         )
@@ -265,14 +257,12 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             account_id=f.account_id,
             imap_name=f.imap_name,
             display_name=f.display_name or (fp.display_name if fp else None),
-            special_use=f.special_use,
+            special_use=(fp.special_use_override if fp else None) or f.special_use,
             mailbox_id=f.mailbox_id,
-            exists_count=f.exists_count,
             last_synced_at=f.last_synced_at,
             sync_error=f.sync_error,
             created_at=f.created_at,
             unified_name=fp.unified_name if fp else None,
-            subscribed=fp.subscribed if fp else True,
             is_visible=fp.is_visible if fp else True,
             total_count=total,
             unread_count=unread,
@@ -284,10 +274,11 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
 @router.get("/{account_id}/folder-mapping")
 async def get_folder_mapping(account_id: uuid.UUID) -> dict[str, str | None]:
     """
-    Get the folder mapping for an account.
+    Auto-detect the special-use folder mapping for an account.
 
-    Returns stored mapping from AccountPrefs, or auto-detects
-    from Folder.special_use if not set.
+    folders.special_use (overridable per-folder via FolderPrefs, see
+    list_folders) is the single source of truth -- there is no separate
+    stored mapping to fall back to.
     """
     db = get_db_connection()
     async with db.session() as session:
@@ -296,13 +287,6 @@ async def get_folder_mapping(account_id: uuid.UUID) -> dict[str, str | None]:
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # Check AccountPrefs for stored mapping
-    prefs_repo = get_account_prefs_repo()
-    prefs = await prefs_repo.get_by_account(account_id)
-    if prefs and prefs.folder_mapping:
-        return prefs.folder_mapping
-
-    # Auto-detect from Folder.special_use
     from mail_verdict.database.repository import FolderRepository
 
     folder_repo = FolderRepository(db)
@@ -319,23 +303,6 @@ async def get_folder_mapping(account_id: uuid.UUID) -> dict[str, str | None]:
     for folder in all_folders:
         if folder.special_use and folder.special_use in mapping:
             mapping[folder.special_use] = folder.imap_name
-    return mapping
-
-
-@router.put("/{account_id}/folder-mapping")
-async def update_folder_mapping(
-    account_id: uuid.UUID,
-    mapping: dict[str, str | None],
-) -> dict[str, str | None]:
-    """Save custom folder mapping for an account in AccountPrefs."""
-    db = get_db_connection()
-    async with db.session() as session:
-        result = await session.execute(select(Account).where(Account.id == account_id))
-        if result.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail="Account not found")
-
-    prefs_repo = get_account_prefs_repo()
-    await prefs_repo.update(account_id, folder_mapping=mapping)
     return mapping
 
 
@@ -407,11 +374,6 @@ async def trigger_sync(account_id: uuid.UUID) -> dict[str, str]:
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Account not found")
 
-    async with db.session() as session:
-        payload = json.dumps({"action": "sync", "account_id": str(account_id)})
-        await session.execute(
-            text("SELECT pg_notify('postimap_commands', :payload)"),
-            {"payload": payload},
-        )
+    await request_sync_now(db, account_id)
 
     return {"status": "sync_requested", "account_id": str(account_id)}

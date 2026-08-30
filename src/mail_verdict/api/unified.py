@@ -33,7 +33,6 @@ from mail_verdict.api.schemas import (
     UnifiedMessageSummary,
     UnifiedNameUpdate,
 )
-from mail_verdict.core.jsonb import parse_jsonb
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -118,7 +117,7 @@ async def set_unified_name(
             .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(
                 Message,
-                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
+                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
             .where(Folder.id == folder_id)
             .group_by(Folder.id, FolderPrefs.folder_id)
@@ -135,14 +134,12 @@ async def set_unified_name(
         account_id=f.account_id,
         imap_name=f.imap_name,
         display_name=f.display_name or (fp.display_name if fp else None),
-        special_use=f.special_use,
+        special_use=(fp.special_use_override if fp else None) or f.special_use,
         mailbox_id=f.mailbox_id,
-        exists_count=f.exists_count,
         last_synced_at=f.last_synced_at,
         sync_error=f.sync_error,
         created_at=f.created_at,
         unified_name=fp.unified_name if fp else None,
-        subscribed=fp.subscribed if fp else True,
         is_visible=fp.is_visible if fp else True,
         total_count=total,
         unread_count=unread,
@@ -178,7 +175,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
             .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
             .outerjoin(
                 Message,
-                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
+                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
             .where(
                 FolderPrefs.unified_name.isnot(None),
@@ -259,7 +256,7 @@ async def list_unified_messages(
             .where(
                 FolderPrefs.unified_name == folder_name,
                 Account.is_active.is_(True),
-                Message.deleted_at.is_(None),
+                Message.expunged_at.is_(None),
             )
             .order_by(desc(Message.received_at), desc(Message.id))
         )
@@ -304,14 +301,14 @@ async def list_unified_messages(
             folder_id=msg.folder_id,
             subject=msg.subject,
             from_addr=msg.from_addr,
-            to_addrs=parse_jsonb(msg.to_addrs),
+            to_addrs=msg.to_addrs,
             received_at=msg.received_at,
             is_seen=msg.is_seen,
             is_flagged=msg.is_flagged,
             is_answered=msg.is_answered,
             is_draft=msg.is_draft,
             is_deleted=msg.is_deleted,
-            deleted_at=msg.deleted_at,
+            expunged_at=msg.expunged_at,
             snippet=msg.body_text[:120] if msg.body_text else None,
         )
         for msg, account_emoji in rows

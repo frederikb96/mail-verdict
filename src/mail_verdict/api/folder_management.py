@@ -59,7 +59,7 @@ async def _get_folders_with_counts(
             .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(
                 Message,
-                (Message.folder_id == Folder.id) & Message.deleted_at.is_(None),
+                (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
             .where(Folder.account_id == account_id)
             .group_by(Folder.id, FolderPrefs.folder_id)

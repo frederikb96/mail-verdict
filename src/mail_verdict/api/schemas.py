@@ -48,6 +48,7 @@ class MessageSummary(BaseModel):
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
+    thread_id: uuid.UUID | None = None
     subject: str | None = None
     from_addr: str | None = None
     to_addrs: Any | None = None
@@ -57,7 +58,8 @@ class MessageSummary(BaseModel):
     is_answered: bool = False
     is_draft: bool = False
     is_deleted: bool = False
-    deleted_at: datetime | None = None
+    is_truncated: bool = False
+    expunged_at: datetime | None = None
     snippet: str | None = None
 
     model_config = {"from_attributes": True}
@@ -77,7 +79,10 @@ class MessageDetail(BaseModel):
     id: uuid.UUID
     account_id: uuid.UUID
     folder_id: uuid.UUID
-    imap_uid: int
+    thread_id: uuid.UUID | None = None
+    imap_uid: int | None = None
+    pending_sync: bool = False
+    is_truncated: bool = False
     message_id: str | None = None
     subject: str | None = None
     from_addr: str | None = None
@@ -97,7 +102,7 @@ class MessageDetail(BaseModel):
     is_draft: bool = False
     is_deleted: bool = False
     keywords: list[str] = Field(default_factory=list)
-    deleted_at: datetime | None = None
+    expunged_at: datetime | None = None
     created_at: datetime
     has_blocked_images: bool = False
     images_allowed: bool = False
@@ -205,8 +210,6 @@ class AccountResponse(BaseModel):
     # AccountPrefs fields (from account_prefs table)
     emoji: str | None = None
     spam_enabled: bool = False
-    embedding_lookback_days: int = 30
-    folder_mapping: dict[str, str | None] | None = None
     folder_order: list[str] | None = None
 
     model_config = {"from_attributes": True}
@@ -227,7 +230,6 @@ class AccountCreateRequest(BaseModel):
     is_active: bool = True
     # AccountPrefs fields
     emoji: str | None = None
-    embedding_lookback_days: int = 30
     spam_enabled: bool = False
 
 
@@ -246,7 +248,6 @@ class AccountUpdateRequest(BaseModel):
     is_active: bool | None = None
     # AccountPrefs fields
     emoji: str | None = None
-    embedding_lookback_days: int | None = None
     spam_enabled: bool | None = None
 
 
@@ -265,7 +266,6 @@ class FolderResponse(BaseModel):
     display_name: str | None = None
     special_use: str | None = None
     mailbox_id: str | None = None
-    exists_count: int = 0
     last_synced_at: datetime | None = None
     sync_error: str | None = None
     created_at: datetime | None = None
@@ -274,7 +274,6 @@ class FolderResponse(BaseModel):
     # FolderPrefs fields (from folder_prefs table)
     unified_name: str | None = None
     is_visible: bool = True
-    subscribed: bool = True
 
     model_config = {"from_attributes": True}
 
@@ -376,7 +375,6 @@ class StatsResponse(BaseModel):
     accuracy: float
     weekly_trend: list[WeeklyTrendPoint]
     account_sync: list[AccountSyncStatus]
-    embedding_count: int = 0
 
 
 # --- Image exception schemas ---
@@ -440,55 +438,6 @@ class FolderVisibilityResponse(BaseModel):
     is_visible: bool
 
 
-# --- Selection / bulk action schemas ---
-
-
-class SelectionResponse(BaseModel):
-    """Current selection state for an account."""
-
-    selected_ids: list[uuid.UUID]
-    count: int
-
-
-class SelectionToggle(BaseModel):
-    """Request to toggle a single message's selection."""
-
-    message_id: uuid.UUID
-
-
-class SelectionRange(BaseModel):
-    """Request for shift-click range selection."""
-
-    from_id: uuid.UUID
-    to_id: uuid.UUID
-    folder_id: uuid.UUID
-
-
-class SelectionAll(BaseModel):
-    """Request to select all messages in a folder."""
-
-    folder_id: uuid.UUID
-
-
-class BulkActionRequest(BaseModel):
-    """Request to execute an action on all selected messages."""
-
-    action: Literal[
-        "move", "archive", "spam", "star", "unstar",
-        "mark_read", "mark_unread", "delete",
-    ]
-    target_folder_id: uuid.UUID | None = None
-
-
-class BulkActionResponse(BaseModel):
-    """Result of a bulk action."""
-
-    success: bool
-    action: str
-    affected_count: int
-    errors: list[str] = Field(default_factory=list)
-
-
 # --- Unified view schemas ---
 
 
@@ -527,7 +476,7 @@ class UnifiedMessageSummary(BaseModel):
     is_answered: bool = False
     is_draft: bool = False
     is_deleted: bool = False
-    deleted_at: datetime | None = None
+    expunged_at: datetime | None = None
     snippet: str | None = None
 
     model_config = {"from_attributes": True}

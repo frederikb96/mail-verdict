@@ -14,7 +14,6 @@ from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.rules import router as rules_router
 from mail_verdict.api.search import router as search_router
-from mail_verdict.api.selection import router as selection_router
 from mail_verdict.api.settings_api import router as settings_router
 from mail_verdict.api.stats import router as stats_router
 from mail_verdict.api.unified import account_router as unified_account_router
@@ -30,7 +29,6 @@ all_routers: list[APIRouter] = [
     folder_management_router,
     unified_account_router,
     unified_router,
-    selection_router,
     settings_router,
     rules_router,
     verdicts_router,
