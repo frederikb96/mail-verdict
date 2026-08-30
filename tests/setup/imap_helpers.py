@@ -2,15 +2,17 @@
 Raw IMAP helpers against the test Dovecot, using the standard library
 imaplib -- no client library beyond what ships with Python.
 
-The IMAP port (31143) is plain, no TLS: confirmed against PostIMAP's own
-e2e helpers (imap-helpers.ts, `secure: false`), which talk to the same
-image.
+The IMAP port carries no implicit TLS, but the server refuses cleartext
+authentication on a connection it does not consider secure, so the session
+upgrades with STARTTLS before logging in. The certificate is self-signed and
+this only ever talks to a throwaway container, so it is not verified.
 """
 
 from __future__ import annotations
 
 import imaplib
 import re
+import ssl
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,8 +23,13 @@ _FLAGS_RE = re.compile(rb"FLAGS \(([^)]*)\)")
 @contextmanager
 def imap_session(host: str, port: int, user: str, password: str) -> Iterator[imaplib.IMAP4]:
     """A logged-in IMAP4 connection, closed and logged out on exit."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+
     conn = imaplib.IMAP4(host, port)
     try:
+        conn.starttls(ssl_context=context)
         conn.login(user, password)
         yield conn
     finally:
