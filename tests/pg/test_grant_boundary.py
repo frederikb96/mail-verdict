@@ -12,15 +12,30 @@ column -- is refused by Postgres itself with permission denied.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from sqlalchemy import select, text, update
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Folder, Message, Outbox
-from mail_verdict.postimap.actions import create_folder, delete_folder, insert_outbox, set_flags
+from mail_verdict.postimap.actions import (
+    create_folder,
+    delete_folder,
+    expunge_guarded,
+    insert_outbox,
+    move_message,
+    move_message_guarded,
+    set_flags,
+    set_flags_bulk,
+    set_flags_guarded,
+    set_folder_idle,
+    set_keywords,
+    set_keywords_delta_guarded,
+    update_account,
+)
 
 
 async def _seed_account_folder_message(
@@ -244,3 +259,69 @@ async def test_insert_outbox_with_replaces_message_id_succeeds_under_the_restric
             select(Outbox.replaces_message_id).where(Outbox.id == outbox_id)
         )
         assert result.scalar_one() == message_id
+
+
+@pytest.mark.asyncio
+async def test_every_contract_write_survives_the_restricted_grant(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """Sweep every write helper, not just the ones with their own test.
+
+    A development database connects as an owner, and an owner bypasses
+    grants entirely -- so a helper naming a column the consumer role may not
+    write looks healthy there and fails only once deployed. That is how
+    three PostIMAP-managed columns reached the outbox insert: they carried
+    no default of any kind, so nothing marked them server-managed and the
+    ORM named them anyway.
+
+    Testing each helper individually leaves the next one uncovered. This
+    asserts the property across the surface, so a helper added later is
+    caught by an existing test rather than by a deployment.
+    """
+    async with migrated_db.session() as session:
+        account_id, folder_id, message_id = await _seed_account_folder_message(session)
+        await session.commit()
+
+    writes: list[tuple[str, Any]] = [
+        ("insert_outbox", lambda s: insert_outbox(
+            s, account_id=account_id, kind="draft",
+            to_addrs=["sweep@example.com"], subject="sweep", body_text="x",
+        )),
+        ("insert_outbox_with_attachment", lambda s: insert_outbox(
+            s, account_id=account_id, kind="draft",
+            to_addrs=["sweep@example.com"], subject="sweep", body_text="x",
+            attachments=[("a.txt", "text/plain", b"hello")],
+        )),
+        ("set_flags", lambda s: set_flags(s, message_id, is_seen=True)),
+        ("set_keywords", lambda s: set_keywords(s, message_id, ["sweep"])),
+        ("set_flags_bulk", lambda s: set_flags_bulk(s, [message_id], is_flagged=True)),
+        ("move_message", lambda s: move_message(s, message_id, folder_id)),
+        ("move_message_guarded", lambda s: move_message_guarded(
+            s, message_id, folder_id, expected_folder_id=folder_id,
+        )),
+        ("set_flags_guarded", lambda s: set_flags_guarded(s, message_id, is_seen=True)),
+        ("set_keywords_delta_guarded", lambda s: set_keywords_delta_guarded(
+            s, message_id, add=["sweep2"], remove=[],
+        )),
+        ("set_folder_idle", lambda s: set_folder_idle(s, folder_id, requested=False)),
+        ("update_account", lambda s: update_account(s, account_id, is_active=True)),
+        ("expunge_guarded", lambda s: expunge_guarded(s, message_id)),
+    ]
+
+    denied: list[str] = []
+    for name, write in writes:
+        try:
+            async with restricted_db.session() as session:
+                await write(session)
+                await session.commit()
+        except ProgrammingError as exc:
+            if "permission denied" in str(exc):
+                denied.append(f"{name}: {str(exc).splitlines()[0][:90]}")
+            else:
+                raise
+
+    assert not denied, (
+        "these contract writes name a column the consumer role may not write, "
+        "so they would fail in any deployment that is not connected as an "
+        "owner:\n  " + "\n  ".join(denied)
+    )
