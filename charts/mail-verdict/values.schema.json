@@ -11,81 +11,175 @@
     },
     "image": {
       "type": "object",
-      "required": ["repository"],
+      "required": [
+        "repository"
+      ],
       "properties": {
-        "repository": { "type": "string", "minLength": 1 },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
         "pullPolicy": {
           "type": "string",
-          "enum": ["Always", "IfNotPresent", "Never"]
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
         },
-        "tag": { "type": "string" }
+        "tag": {
+          "type": "string"
+        }
       }
     },
     "imagePullSecrets": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name"],
-        "properties": { "name": { "type": "string" } }
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
       }
     },
-    "nameOverride": { "type": "string" },
-    "fullnameOverride": { "type": "string" },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
     "serviceAccount": {
       "type": "object",
       "properties": {
-        "create": { "type": "boolean" },
-        "automount": { "type": "boolean" },
-        "annotations": { "type": "object" },
-        "name": { "type": "string" }
+        "create": {
+          "type": "boolean"
+        },
+        "automount": {
+          "type": "boolean"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        }
       }
     },
-    "podAnnotations": { "type": "object" },
-    "podLabels": { "type": "object" },
-    "podSecurityContext": { "type": "object" },
-    "securityContext": { "type": "object" },
+    "podAnnotations": {
+      "type": "object"
+    },
+    "podLabels": {
+      "type": "object"
+    },
+    "podSecurityContext": {
+      "type": "object"
+    },
+    "securityContext": {
+      "type": "object"
+    },
     "service": {
       "type": "object",
-      "required": ["type", "port"],
+      "required": [
+        "type",
+        "port"
+      ],
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+          "enum": [
+            "ClusterIP",
+            "NodePort",
+            "LoadBalancer"
+          ]
         },
-        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
       }
     },
-    "resources": { "type": "object" },
-    "livenessProbe": { "type": "object" },
+    "resources": {
+      "type": "object"
+    },
+    "livenessProbe": {
+      "type": "object"
+    },
     "readinessProbe": {
       "type": "object",
-      "required": ["enabled", "path"],
+      "required": [
+        "enabled",
+        "path"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "path": { "type": "string", "pattern": "^/" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        }
       }
     },
-    "nodeSelector": { "type": "object" },
-    "tolerations": { "type": "array" },
-    "affinity": { "type": "object" },
-    "extraVolumes": { "type": "array" },
-    "extraVolumeMounts": { "type": "array" },
-    "extraEnv": { "type": "array" },
-    "extraEnvFrom": { "type": "array" },
+    "nodeSelector": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "extraVolumes": {
+      "type": "array"
+    },
+    "extraVolumeMounts": {
+      "type": "array"
+    },
+    "extraEnv": {
+      "type": "array"
+    },
+    "extraEnvFrom": {
+      "type": "array"
+    },
     "podDisruptionBudget": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "minAvailable": { "type": ["integer", "string", "null"] },
-        "maxUnavailable": { "type": ["integer", "string", "null"] }
+        "enabled": {
+          "type": "boolean"
+        },
+        "minAvailable": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "maxUnavailable": {
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
       }
     },
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "allowDNS": { "type": "boolean" },
-        "egress": { "type": "array" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "allowDNS": {
+          "type": "boolean"
+        },
+        "egress": {
+          "type": "array"
+        }
       }
     },
     "config": {
@@ -93,66 +187,134 @@
       "description": "Freeform, deep-merged onto config/config.yaml in the image. Mirrors that file's structure so new sections can be added without chart changes. No required key: the image's own default config already resolves the database URL and API key from the Secret via ${VAR} placeholders.",
       "additionalProperties": true
     },
-    "configOverridePath": { "type": "string", "minLength": 1 },
+    "configOverridePath": {
+      "const": "/app/config-custom/config.override.yaml",
+      "description": "Fixed: the application reads this exact path and has no setting to relocate it."
+    },
     "secret": {
       "type": "object",
       "properties": {
-        "create": { "type": "boolean" },
-        "databaseUrl": { "type": "string" },
-        "apiKey": { "type": "string" },
-        "anthropicApiKey": { "type": "string" }
+        "create": {
+          "type": "boolean"
+        },
+        "databaseUrl": {
+          "type": "string"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "anthropicApiKey": {
+          "type": "string"
+        }
       }
     },
-    "existingSecret": { "type": "string" },
+    "existingSecret": {
+      "type": "string"
+    },
     "existingSecretKeys": {
       "type": "object",
-      "required": ["databaseUrl", "apiKey", "anthropicApiKey"],
+      "required": [
+        "databaseUrl",
+        "apiKey",
+        "anthropicApiKey"
+      ],
       "properties": {
-        "databaseUrl": { "type": "string", "minLength": 1 },
-        "apiKey": { "type": "string", "minLength": 1 },
-        "anthropicApiKey": { "type": "string", "minLength": 1 }
+        "databaseUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apiKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "anthropicApiKey": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "ingress": {
       "type": "object",
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "annotations": { "type": "object" },
-        "host": { "type": "string" },
-        "path": { "type": "string", "minLength": 1 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "host": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
         "pathType": {
           "type": "string",
-          "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+          "enum": [
+            "Prefix",
+            "Exact",
+            "ImplementationSpecific"
+          ]
         },
         "tls": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "secretName": { "type": "string" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            }
           }
         }
       }
     },
     "apiIngress": {
       "type": "object",
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "annotations": { "type": "object" },
-        "host": { "type": "string" },
-        "path": { "type": "string", "minLength": 1 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "host": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
         "pathType": {
           "type": "string",
-          "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+          "enum": [
+            "Prefix",
+            "Exact",
+            "ImplementationSpecific"
+          ]
         },
         "tls": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "secretName": { "type": "string" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            }
           }
         }
       }

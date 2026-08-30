@@ -184,7 +184,10 @@ config: {}
 #   max_overflow: 5
 
 # -- Path the config override ConfigMap is mounted at inside the container.
-# Must match the image's working directory layout.
+# Fixed, and pinned in values.schema.json: the application reads this exact
+# path and has no setting to relocate it, so a different value here would
+# mount the ConfigMap somewhere nothing reads and the override would be
+# silently ignored.
 configOverridePath: /app/config-custom/config.override.yaml
 
 secret:
