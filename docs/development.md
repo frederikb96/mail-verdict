@@ -76,8 +76,10 @@ python scripts/seed_dev.py
 
 That delivers the test corpus — spam, legitimate mail, phishing, an attachment, and a handful of
 awkward edge cases — over LMTP, so it arrives as genuinely inbound mail rather than being written
-straight into the database. Then add the account through the interface. PostIMAP picks up a new
-account without a restart.
+straight into the database. Each message is stamped with the current date and a fresh Message-ID
+on the way out, which is what makes the pipeline treat it as mail that just landed and classify
+it; `--keep-dates` delivers the fixtures verbatim instead. Then add the account through the
+interface. PostIMAP picks up a new account without a restart.
 
 Mailpit's own interface shows everything the application sends, so you can check a send worked
 without needing a real mailbox anywhere.

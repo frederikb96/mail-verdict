@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/seed_dev.py` stamps each delivery with the current date and a fresh Message-ID. The
+  fixtures carry dates from the year they were written, so the corpus arrived older than
+  `pipeline.live_max_age_days` and was never classified — the development stack came up with
+  spam detection apparently dead. A repeated Message-ID had the same effect on a second run.
+  `--keep-dates` delivers the fixtures verbatim
+
 ## [3.0.0] - 2026-08-30
 
 Supersedes 2.0.0, which could not add an account at all on a deployment connected as the

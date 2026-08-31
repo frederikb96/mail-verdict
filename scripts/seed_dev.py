@@ -11,16 +11,25 @@ messages arrive as genuinely inbound mail rather than being injected into the da
     python scripts/seed_dev.py
     python scripts/seed_dev.py --to bob@test.local --folder INBOX
 
-Run it after the development stack is up. It is idempotent in the sense that running it
-twice delivers the corpus twice -- useful for generating volume, occasionally surprising.
+Run it after the development stack is up. Running it twice delivers the corpus twice --
+useful for generating volume, occasionally surprising.
+
+Each delivery is stamped with the current date and a fresh Message-ID, so the corpus
+arrives as mail that just landed rather than as mail from the year the fixture was
+written. Both matter downstream: the pipeline refuses to classify anything older than
+`pipeline.live_max_age_days`, and a repeated Message-ID resolves to a message already
+carrying a verdict, so a second run would add messages that are silently never
+classified. Pass --keep-dates for the fixtures byte-for-byte.
 """
 
 from __future__ import annotations
 
 import argparse
+import email.utils
 import socket
 import ssl
 import sys
+from email.parser import BytesParser
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -95,13 +104,30 @@ def deliver(message: bytes, host: str, port: int, sender: str, recipient: str) -
             stream.flush()
 
 
-def load_corpus() -> list[tuple[str, bytes]]:
+def freshen(raw: bytes) -> bytes:
+    """Restamp a fixture as mail arriving now: current Date, unique Message-ID.
+
+    Parsed and reserialised rather than pattern-matched, so a folded header or a
+    multipart body is rewritten the way the fixture actually structures it. Only the
+    two headers are touched; every other byte survives the round trip.
+    """
+    message = BytesParser().parsebytes(raw)
+    del message["Date"]
+    message["Date"] = email.utils.formatdate(localtime=True)
+    del message["Message-ID"]
+    message["Message-ID"] = email.utils.make_msgid(domain="test.local")
+    return message.as_bytes()
+
+
+def load_corpus(*, keep_dates: bool = False) -> list[tuple[str, bytes]]:
     """Return every fixture email as (name, RFC822 bytes with CRLF line endings)."""
     if not CORPUS.is_dir():
         raise SystemExit(f"No corpus at {CORPUS}")
     messages: list[tuple[str, bytes]] = []
     for path in sorted(CORPUS.glob("*.eml")):
         raw = path.read_bytes()
+        if not keep_dates:
+            raw = freshen(raw)
         # Fixtures are stored with plain newlines; the wire needs CRLF.
         normalised = raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
         messages.append((path.name, normalised))
@@ -119,9 +145,14 @@ def main() -> int:
     parser.add_argument(
         "--from", dest="sender", default="sender@example.com", help="envelope sender"
     )
+    parser.add_argument(
+        "--keep-dates",
+        action="store_true",
+        help="deliver the fixtures verbatim, keeping their original Date and Message-ID",
+    )
     args = parser.parse_args()
 
-    corpus = load_corpus()
+    corpus = load_corpus(keep_dates=args.keep_dates)
     if not corpus:
         raise SystemExit(f"No .eml files in {CORPUS}")
 
