@@ -235,17 +235,27 @@ async def move_message(
     imap_uid IS NULL is itself the "move pending" signal, surfaced in the
     API as pending_sync.
 
+    A message already in target_folder_id is left untouched rather than
+    clearing imap_uid for a folder change that will never happen -- without
+    this, marking mail already in Junk as spam again (or the same shape for
+    archive/trash/not_spam/an explicit move onto the current folder) writes
+    imap_uid=NULL with folder_id unchanged, PostIMAP's move trigger only
+    enqueues a sync when folder_id actually changed so nothing ever clears
+    it, and the row spins as pending_sync forever.
+
     Args:
         session: Active AsyncSession (caller commits)
         message_id: Message to move
         target_folder_id: Destination folder
 
     Returns:
-        The number of rows actually updated (0 or 1)
+        The number of rows actually updated -- 0 either if the message is
+        gone or if it was already in target_folder_id (a no-op, not a
+        failure)
     """
     result = await session.execute(
         update(Message)
-        .where(Message.id == message_id)
+        .where(Message.id == message_id, Message.folder_id != target_folder_id)
         .values(folder_id=target_folder_id, imap_uid=None)
     )
     return result.rowcount or 0  # type: ignore[attr-defined]
@@ -346,13 +356,18 @@ async def move_message_bulk(
 
     Returns:
         The number of rows actually updated -- may be fewer than
-        `len(message_ids)`
+        `len(message_ids)`, since a message already in target_folder_id is
+        left untouched rather than clearing imap_uid for nothing (see
+        move_message())
     """
     if not message_ids:
         return 0
     result = await session.execute(
         update(Message)
-        .where(Message.id == any_(message_ids))  # type: ignore[arg-type]
+        .where(
+            Message.id == any_(message_ids),  # type: ignore[arg-type]
+            Message.folder_id != target_folder_id,
+        )
         .values(folder_id=target_folder_id, imap_uid=None)
     )
     return result.rowcount or 0  # type: ignore[attr-defined]

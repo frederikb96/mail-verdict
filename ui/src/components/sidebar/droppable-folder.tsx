@@ -31,6 +31,8 @@ export function DroppableFolder({ folderId, folderMapping, children }: Droppable
   return (
     <div
       ref={setNodeRef}
+      data-testid="folder"
+      data-folder-id={folderId}
       className={cn(
         "transition-colors",
         isOver && "rounded-md ring-2 ring-primary/50 bg-primary/10",

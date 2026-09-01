@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An action on a message already in its target folder (marking spam already in Junk as spam
+  again, archiving something already in Archive, an explicit move onto the current folder, and
+  the bulk variants of each) no longer strands the row mid-move. `move_message()` and
+  `move_message_bulk()` wrote `imap_uid = NULL` unconditionally, and PostIMAP only enqueues a
+  sync when the folder actually changes, so nothing ever cleared it and the row spun forever.
+  Both writes now skip a message already in the target folder
+- Dragging a message onto a folder moved it to the folder above the one under the pointer,
+  because the default rectangle-intersection collision detection compared the dragged row's
+  height against the shorter sidebar items. Drag-and-drop now uses pointer-position collision
+  detection, and dropping a message back onto its current folder is a no-op rather than a request
 - `scripts/seed_dev.py` stamps each delivery with the current date and a fresh Message-ID. The
   fixtures carry dates from the year they were written, so the corpus arrived older than
   `pipeline.live_max_age_days` and was never classified — the development stack came up with

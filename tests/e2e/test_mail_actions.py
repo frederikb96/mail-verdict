@@ -183,6 +183,52 @@ class TestMailActions:
         )
 
     @pytest.mark.asyncio
+    async def test_moving_a_message_to_its_current_folder_is_a_no_op(
+        self,
+        app_client: TestClient,
+        synced_account: dict[str, Any],
+        junk_folder: dict[str, Any],
+        db: DatabaseConnection,
+    ) -> None:
+        """
+        A same-folder move must not clear imap_uid: PostIMAP's move trigger
+        only enqueues a sync when folder_id actually changes, so a naive
+        write that always sets imap_uid=NULL strands the row pending_sync
+        forever with nothing left to ever clear it. Reuses the message the
+        previous test moved into Junk (and already waited for a real
+        imap_uid) and moves it into Junk again.
+        """
+        resp = app_client.get(
+            f"/api/accounts/{synced_account['id']}/messages",
+            params={"folder_id": junk_folder["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        junked = resp.json()["messages"]
+        assert junked, "expected the message the previous test moved into Junk"
+        message_id = uuid.UUID(junked[0]["id"])
+
+        async with db.session() as session:
+            result = await session.execute(
+                select(Message.imap_uid).where(Message.id == message_id)
+            )
+            uid_before = result.scalar_one()
+        assert uid_before is not None, "message should already carry a real imap_uid"
+
+        resp = app_client.post(
+            f"/api/messages/{message_id}/action",
+            json={"action": "move", "target_folder_id": junk_folder["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+
+        async with db.session() as session:
+            result = await session.execute(
+                select(Message.folder_id, Message.imap_uid).where(Message.id == message_id)
+            )
+            folder_id, uid_after = result.one()
+        assert folder_id == uuid.UUID(junk_folder["id"])
+        assert uid_after == uid_before, "a same-folder move must leave imap_uid untouched"
+
+    @pytest.mark.asyncio
     async def test_trash_resolves_the_special_use_trash_folder(
         self,
         app_client: TestClient,

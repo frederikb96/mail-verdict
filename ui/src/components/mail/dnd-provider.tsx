@@ -4,6 +4,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
   useSensor,
   useSensors,
   type DragEndEvent,
@@ -80,6 +81,11 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
 
     if (!effectiveAccountId) return;
 
+    // Dropping back onto the folder the message is already in is a no-op --
+    // skip the request rather than sending a move with no destination change.
+    const sourceFolderId = activeData.folderId as string | undefined;
+    if (sourceFolderId && sourceFolderId === targetFolderId) return;
+
     for (const mailId of mailIds) {
       mailAction.mutate({
         mailId,
@@ -92,6 +98,7 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
   return (
     <DndContext
       sensors={sensors}
+      collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
