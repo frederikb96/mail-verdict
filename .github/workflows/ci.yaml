@@ -1,3 +1,13 @@
+# 🚨 This workflow runs on GitHub-hosted runners, never on a self-hosted one.
+#
+# It triggers on `pull_request`, and for that trigger GitHub runs the workflow file as it exists
+# on the pull request's own head. On a public repository that means a stranger can rewrite this
+# file in their fork and execute whatever they like on whatever machine it names — so naming a
+# self-hosted runner here would hand them a shell inside the cluster that runner lives in.
+#
+# Standard GitHub-hosted runners are unmetered on public repositories, so there is no cost
+# argument for doing otherwise. release.yaml triggers on push, which requires write access to
+# reach, so it still uses the self-hosted runner.
 name: CI
 
 on:
@@ -6,6 +16,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -13,7 +26,7 @@ concurrency:
 jobs:
   detect:
     name: Detect changed paths
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     outputs:
       python: ${{ steps.filter.outputs.python }}
       ui: ${{ steps.filter.outputs.ui }}
@@ -51,7 +64,7 @@ jobs:
     name: Lint + type check
     needs: detect
     if: ${{ needs.detect.outputs.python == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -74,7 +87,7 @@ jobs:
     name: Unit tests
     needs: detect
     if: ${{ needs.detect.outputs.python == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -94,7 +107,7 @@ jobs:
     name: Postgres + PostIMAP integration tests
     needs: detect
     if: ${{ needs.detect.outputs.python == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -119,7 +132,7 @@ jobs:
     name: End-to-end tests
     needs: detect
     if: ${{ needs.detect.outputs.python == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -143,7 +156,7 @@ jobs:
     name: UI type check + build
     needs: detect
     if: ${{ needs.detect.outputs.ui == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -169,7 +182,7 @@ jobs:
     name: Container image builds
     needs: detect
     if: ${{ needs.detect.outputs.image == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -190,7 +203,7 @@ jobs:
     name: Helm chart
     needs: detect
     if: ${{ needs.detect.outputs.chart == 'true' }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -217,7 +230,7 @@ jobs:
     name: CI ok
     needs: [detect, lint, unit, pg, e2e, ui, image, chart]
     if: ${{ !cancelled() }}
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - name: Fail if any required job failed
         run: |
