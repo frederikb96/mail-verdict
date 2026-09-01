@@ -6,8 +6,13 @@ development stack.
 
 from __future__ import annotations
 
+import email.utils
 import socket
 import ssl
+from email.parser import BytesParser
+from pathlib import Path
+
+CORPUS_DIR = Path(__file__).parent.parent / "fixtures" / "emails"
 
 
 class LmtpError(RuntimeError):
@@ -96,3 +101,39 @@ def build_eml(
     headers += ["MIME-Version: 1.0", "Content-Type: text/plain; charset=utf-8"]
     lines = [*headers, "", body, ""]
     return "\r\n".join(lines).encode("utf-8")
+
+
+def freshen(raw: bytes) -> bytes:
+    """Restamp a fixture as mail arriving now: current Date, unique Message-ID.
+
+    Parsed and reserialised rather than pattern-matched, so a folded header or a
+    multipart body is rewritten the way the fixture actually structures it. Only the
+    two headers are touched; every other byte survives the round trip.
+    """
+    message = BytesParser().parsebytes(raw)
+    del message["Date"]
+    message["Date"] = email.utils.formatdate(localtime=True)
+    del message["Message-ID"]
+    message["Message-ID"] = email.utils.make_msgid(domain="test.local")
+    return message.as_bytes()
+
+
+def load_corpus(*, keep_dates: bool = False) -> list[tuple[str, bytes]]:
+    """Return every fixture email as (name, RFC822 bytes with CRLF line endings).
+
+    Fixtures are stamped with the current date and a fresh Message-ID by default,
+    which is what makes the pipeline treat them as mail that just landed and
+    classify it; a repeated Message-ID resolves to an already-verdicted message and
+    is silently never classified again. `keep_dates` delivers them byte-for-byte.
+    """
+    if not CORPUS_DIR.is_dir():
+        raise SystemExit(f"No corpus at {CORPUS_DIR}")
+    messages: list[tuple[str, bytes]] = []
+    for path in sorted(CORPUS_DIR.glob("*.eml")):
+        raw = path.read_bytes()
+        if not keep_dates:
+            raw = freshen(raw)
+        # Fixtures are stored with plain newlines; the wire needs CRLF.
+        normalised = raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        messages.append((path.name, normalised))
+    return messages

@@ -25,15 +25,15 @@ classified. Pass --keep-dates for the fixtures byte-for-byte.
 from __future__ import annotations
 
 import argparse
-import email.utils
 import socket
 import ssl
 import sys
-from email.parser import BytesParser
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CORPUS = REPO_ROOT / "tests" / "fixtures" / "emails"
+sys.path.insert(0, str(REPO_ROOT))
+
+from tests.setup.mail_delivery import CORPUS_DIR, load_corpus  # noqa: E402
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_LMTP_PORT = 24024
@@ -104,36 +104,6 @@ def deliver(message: bytes, host: str, port: int, sender: str, recipient: str) -
             stream.flush()
 
 
-def freshen(raw: bytes) -> bytes:
-    """Restamp a fixture as mail arriving now: current Date, unique Message-ID.
-
-    Parsed and reserialised rather than pattern-matched, so a folded header or a
-    multipart body is rewritten the way the fixture actually structures it. Only the
-    two headers are touched; every other byte survives the round trip.
-    """
-    message = BytesParser().parsebytes(raw)
-    del message["Date"]
-    message["Date"] = email.utils.formatdate(localtime=True)
-    del message["Message-ID"]
-    message["Message-ID"] = email.utils.make_msgid(domain="test.local")
-    return message.as_bytes()
-
-
-def load_corpus(*, keep_dates: bool = False) -> list[tuple[str, bytes]]:
-    """Return every fixture email as (name, RFC822 bytes with CRLF line endings)."""
-    if not CORPUS.is_dir():
-        raise SystemExit(f"No corpus at {CORPUS}")
-    messages: list[tuple[str, bytes]] = []
-    for path in sorted(CORPUS.glob("*.eml")):
-        raw = path.read_bytes()
-        if not keep_dates:
-            raw = freshen(raw)
-        # Fixtures are stored with plain newlines; the wire needs CRLF.
-        normalised = raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
-        messages.append((path.name, normalised))
-    return messages
-
-
 def main() -> int:
     """Deliver the corpus and report what landed."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -154,7 +124,7 @@ def main() -> int:
 
     corpus = load_corpus(keep_dates=args.keep_dates)
     if not corpus:
-        raise SystemExit(f"No .eml files in {CORPUS}")
+        raise SystemExit(f"No .eml files in {CORPUS_DIR}")
 
     delivered = 0
     for name, message in corpus:

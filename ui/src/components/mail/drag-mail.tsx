@@ -7,6 +7,7 @@ import { selectedMailIdsAtom, selectionModeAtom } from "@/store/selection-atom";
 interface DragMailProps {
   mailId: string;
   accountId?: string;
+  folderId?: string;
   children: React.ReactNode;
 }
 
@@ -14,7 +15,7 @@ interface DragMailProps {
  * Draggable wrapper for a mail list item.
  * When dragging a selected mail, all selected mails move together.
  */
-export function DragMail({ mailId, accountId, children }: DragMailProps) {
+export function DragMail({ mailId, accountId, folderId, children }: DragMailProps) {
   const selectedIds = useAtomValue(selectedMailIdsAtom);
   const selectionMode = useAtomValue(selectionModeAtom);
   const isInSelection = selectedIds.has(mailId);
@@ -25,6 +26,7 @@ export function DragMail({ mailId, accountId, children }: DragMailProps) {
       type: "mail",
       mailId,
       accountId,
+      folderId,
       mailIds: isInSelection ? Array.from(selectedIds) : [mailId],
       count: isInSelection ? selectedIds.size : 1,
     },
@@ -35,6 +37,8 @@ export function DragMail({ mailId, accountId, children }: DragMailProps) {
       ref={setNodeRef}
       {...listeners}
       {...attributes}
+      data-testid="mail-row"
+      data-mail-id={mailId}
       className="relative"
       style={{ opacity: isDragging ? 0.5 : 1 }}
     >

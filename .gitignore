@@ -36,6 +36,9 @@ ui/node_modules/
 tests/e2e/results/*.yaml
 tests/e2e/screenshots/
 
+# UI test artifacts (screenshots/videos on failure)
+tests/ui/results/
+
 # Archive
 .archive/
 
