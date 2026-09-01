@@ -16,6 +16,7 @@ from typing import Any
 from fastmcp import FastMCP
 from sqlalchemy import desc, select
 
+from mail_verdict.api.identities import resolve_send_from_addr
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, Message, TagSource
 from mail_verdict.database.repository import (
@@ -494,14 +495,20 @@ async def _create_outbox_row(
     bcc: list[str] | None,
     in_reply_to: str | None,
     references: list[str] | None,
+    identity_id: str | None,
 ) -> dict[str, Any]:
     """Shared insert path for send_mail and draft_mail."""
     db = get_db_connection()
+    account_uuid = uuid.UUID(account_id)
     async with db.session() as session:
+        from_addr = await resolve_send_from_addr(
+            session, account_uuid, uuid.UUID(identity_id) if identity_id else None,
+        )
         outbox = await insert_outbox(
             session,
-            account_id=uuid.UUID(account_id),
+            account_id=account_uuid,
             kind=kind,
+            from_addr=from_addr,
             to_addrs=to,
             cc_addrs=cc,
             bcc_addrs=bcc,
@@ -532,6 +539,7 @@ async def send_mail(
     bcc: list[str] | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
+    identity_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Send an email through the given account's SMTP settings.
@@ -550,6 +558,10 @@ async def send_mail(
         in_reply_to: Message-ID header of the message being replied to, with
             angle brackets, for threading (optional)
         references: Full References chain for threading (optional)
+        identity_id: Identity UUID to send as, optional -- falls back to the
+            account's default identity, or its imap_user if it has none.
+            Identities are managed via the REST API's /identities endpoints,
+            not exposed as an MCP tool
 
     Returns:
         {"success": bool, "outbox_id": str, "status": str} -- status starts
@@ -557,7 +569,7 @@ async def send_mail(
         to see it transition to sent/failed/dead
     """
     return await _create_outbox_row(
-        account_id, "send", to, subject, body_text, cc, bcc, in_reply_to, references,
+        account_id, "send", to, subject, body_text, cc, bcc, in_reply_to, references, identity_id,
     )
 
 
@@ -580,6 +592,7 @@ async def draft_mail(
     bcc: list[str] | None = None,
     in_reply_to: str | None = None,
     references: list[str] | None = None,
+    identity_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Save a draft to the account's Drafts folder without sending it.
@@ -593,12 +606,14 @@ async def draft_mail(
         bcc: BCC addresses, optional
         in_reply_to: Message-ID header of the message being replied to, optional
         references: Full References chain for threading, optional
+        identity_id: Identity UUID to draft as, optional -- falls back to the
+            account's default identity, or its imap_user if it has none
 
     Returns:
         {"success": bool, "outbox_id": str, "status": str}
     """
     return await _create_outbox_row(
-        account_id, "draft", to, subject, body_text, cc, bcc, in_reply_to, references,
+        account_id, "draft", to, subject, body_text, cc, bcc, in_reply_to, references, identity_id,
     )
 
 

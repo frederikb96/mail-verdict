@@ -621,6 +621,49 @@ class UnifiedFolderOrderUpdate(BaseModel):
     order: list[str]
 
 
+# --- Identity schemas ---
+
+
+class IdentityCreate(BaseModel):
+    """Request to create an identity -- an address its account may send as."""
+
+    account_id: uuid.UUID
+    email: str
+    display_name: str | None = None
+    is_default: bool = Field(
+        default=False,
+        description="An account's first identity is always made the default "
+        "regardless of this field. A later identity requesting it takes over "
+        "from whichever identity holds it now.",
+    )
+
+
+class IdentityUpdate(BaseModel):
+    """Fields to change on an identity; omitted fields are left as-is."""
+
+    email: str | None = None
+    display_name: str | None = None
+    is_default: bool | None = Field(
+        default=None,
+        description="Setting this false on the current default is refused -- "
+        "set another identity as default instead, which unsets this one as "
+        "a side effect.",
+    )
+
+
+class IdentityResponse(BaseModel):
+    """One address an account may send as."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    email: str
+    display_name: str | None = None
+    is_default: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 # --- Outbox schemas (send / draft) ---
 
 
@@ -642,6 +685,11 @@ class OutboxCreateRequest(BaseModel):
     body_html: str | None = None
     in_reply_to: str | None = None
     references: list[str] | None = None
+    identity_id: uuid.UUID | None = Field(
+        default=None,
+        description="The identity to send as. Falls back to the account's "
+        "default identity, or accounts.imap_user if it has none at all.",
+    )
     replaces_message_id: uuid.UUID | None = Field(
         default=None,
         description="The messages.id of a draft this row replaces -- editing "
@@ -668,6 +716,12 @@ class OutboxResponse(BaseModel):
     account_id: uuid.UUID
     kind: str
     status: str
+    from_addr: str | None = Field(
+        default=None,
+        description="The address this row was actually written with. None "
+        "means the identity resolution found no override -- PostIMAP falls "
+        "back to accounts.imap_user.",
+    )
     to: list[str] = Field(default_factory=list)
     cc: list[str] | None = None
     bcc: list[str] | None = None

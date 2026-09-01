@@ -8,8 +8,8 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
   projection is built against)
 
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
-  account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings
-  (created by Alembic, fully managed by MailVerdict)
+  account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
+  identities (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
 consumer database role has no REFERENCES grant on those tables, and
@@ -620,6 +620,38 @@ class ImageException(Base):
         ),
         Index("idx_image_exception_account", "account_id"),
     )
+
+
+class Identity(Base):
+    """An address a mail account may send as -- an alias.
+
+    outbox.from_addr (PostIMAP-owned) is a free-form string with no notion
+    of which addresses an account legitimately owns; api/identities.py's
+    resolve_send_from_addr() is what compose and the MCP send tool
+    consult before writing it. Deleting a row here has no effect on mail
+    already sent: from_addr is copied onto the outbox row at insert time,
+    never referenced by id.
+
+    At most one identity per account is the default -- enforced by the
+    partial unique index uq_identities_default (account_id) WHERE
+    is_default, created in the migration since SQLAlchemy's
+    UniqueConstraint cannot express a WHERE clause. Addresses are unique
+    within an account case-insensitively (uq_identities_account_email, a
+    functional index on lower(email), for the same reason).
+    """
+
+    __tablename__ = "identities"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (Index("idx_identities_account_id", "account_id"),)
 
 
 class QueueState(Base):

@@ -7,7 +7,10 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   attachments, multipart/form-data (a "data" field holding the same JSON
   body, plus repeated "attachments" file fields) when there are.
   replaces_message_id edits or sends an existing draft in place, leaving
-  no duplicate behind (requires PostIMAP >= 1.4.0).
+  no duplicate behind (requires PostIMAP >= 1.4.0). identity_id resolves
+  through api/identities.py to the from_addr the row is actually written
+  with, falling back to the account's default identity and then to
+  accounts.imap_user (PostIMAP's own fallback) if it has none.
 GET /api/outbox — list outbox rows, for the outbox/status view
 """
 
@@ -22,6 +25,7 @@ from pydantic import ValidationError
 from sqlalchemy import desc, select
 from starlette.datastructures import UploadFile
 
+from mail_verdict.api.identities import resolve_send_from_addr
 from mail_verdict.api.schemas import (
     OutboxAttachmentSummary,
     OutboxCreateRequest,
@@ -196,10 +200,14 @@ async def create_outbox(request: Request) -> OutboxResponse:
                     detail="A draft can only be superseded within its own account.",
                 )
 
+        from_addr = await resolve_send_from_addr(
+            session, payload.account_id, payload.identity_id,
+        )
         outbox = await insert_outbox(
             session,
             account_id=payload.account_id,
             kind=payload.kind,
+            from_addr=from_addr,
             to_addrs=payload.to or None,
             cc_addrs=payload.cc,
             bcc_addrs=payload.bcc,
@@ -255,6 +263,7 @@ def _to_response(outbox: Outbox, attachments: list[OutboxAttachment]) -> OutboxR
         account_id=outbox.account_id,
         kind=outbox.kind,
         status=outbox.status,
+        from_addr=outbox.from_addr,
         to=list(outbox.to_addrs) if outbox.to_addrs else [],
         cc=list(outbox.cc_addrs) if outbox.cc_addrs else None,
         bcc=list(outbox.bcc_addrs) if outbox.bcc_addrs else None,
