@@ -26,11 +26,13 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse
+from starlette.requests import Request
+from starlette.responses import FileResponse, RedirectResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp
 
+from mail_verdict import __version__
 from mail_verdict.api.security_headers import (
     SecurityHeadersMiddleware,
     build_content_security_policy,
@@ -372,11 +374,23 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
         content_security_policy=build_content_security_policy(script_hashes),
     )
 
+    # Registered before the mount, because a Mount claims every path at and
+    # below its prefix and a route added afterwards is simply unreachable.
+    # The mount answers /mcp/ but not /mcp, which is the address the README
+    # and every client config give -- and the failure is a 405, which reads
+    # as a wrong method rather than a missing slash. 307 preserves the POST
+    # and its body.
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"], include_in_schema=False)
+    async def _mcp_slash_redirect(request: Request) -> RedirectResponse:
+        return RedirectResponse(url="/mcp/", status_code=307)
+
     app.mount("/mcp", mcp_app)
 
     from mail_verdict.api.routes import all_routers
 
-    api_router = FastAPI()
+    # Read from the installed distribution rather than restated here, so the
+    # served document cannot drift from the package it describes.
+    api_router = FastAPI(title="MailVerdict API", version=__version__)
     for router in all_routers:
         api_router.include_router(router)
 
