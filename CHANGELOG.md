@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A `ui` test layer (`tests/ui/`, `pytest -m ui`) drives the application through a real browser
+  with Playwright, reusing the same testcontainers world the `e2e` layer builds for itself, plus
+  `scripts/devstack.py` for running an independent, compose-less development stack per checkout
+
 ### Fixed
 
 - An action on a message already in its target folder (marking spam already in Junk as spam

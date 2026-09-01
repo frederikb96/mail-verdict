@@ -11,10 +11,16 @@ pip install -e '.[dev]'
 That is enough to run the test suite. The tests start their own containers, so nothing needs to
 be running first.
 
-For frontend work you also need the UI dependencies:
+For frontend work, or to run the `ui` test layer, you also need the UI dependencies and a build:
 
 ```bash
-cd ui && npm install
+cd ui && npm install && npm run build
+```
+
+The `ui` layer additionally needs Playwright's own browser, once:
+
+```bash
+playwright install chromium
 ```
 
 ## Running the tests
@@ -24,6 +30,7 @@ pytest                    # everything except the tests that call a real languag
 pytest -m unit            # fast, no containers
 pytest -m pg              # against a real PostgreSQL and PostIMAP
 pytest -m e2e             # full flows, including a real mail server
+pytest -m ui              # the same, driven through a real browser
 ```
 
 Anything beyond the unit layer needs a container runtime. Docker works; so does rootless Podman,
@@ -47,7 +54,16 @@ dominate the run otherwise.
 | `unit` | Pure logic: rules, config loading, sanitizers, prompt rendering, cursors | Nothing |
 | `pg` | Migrations alongside PostIMAP's schema, the contract version gate, the notification listener, and every write the contract permits | PostgreSQL, PostIMAP |
 | `e2e` | Whole flows with the application running in-process: accounts, mail actions, sending, spam, rules, search | The above plus Dovecot and Mailpit |
+| `ui` | What the browser does with state: row/reading-pane/keyboard/bulk/drag controls, compose, drafts, SSE-driven refresh, mobile layout | The above plus a built `ui/` and Playwright's Chromium |
 | `llm` | Classification against the real model, both providers | `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Excluded from CI (`pytest tests/unit/ -m "not llm"`); run it deliberately |
+
+The `e2e` layer owns state reconciliation -- does an action reach PostIMAP, does a count change,
+does the Sent copy come back. The `ui` layer owns what's rendered and what a control actually
+sends; a `ui` test that only re-asserts a database row is duplicating `e2e` and should assert the
+request body or the DOM instead. It runs the application against a real bound port rather than an
+in-process ASGI client, since a browser needs an actual socket to connect to; `pytest tests/ui/`
+fails immediately, naming the build command, if `ui/build` doesn't exist or is older than
+`ui/src` -- there is no silent skip for a missing frontend build.
 
 The `llm` layer asserts its keys are present and fails loudly without them.
 
@@ -83,6 +99,29 @@ interface. PostIMAP picks up a new account without a restart.
 
 Mailpit's own interface shows everything the application sends, so you can check a send worked
 without needing a real mailbox anywhere.
+
+### Running more than one stack at once
+
+`compose.dev.yaml` has one fixed name, five fixed host ports, and one fixed pgdata directory, so
+only one instance of it can exist on a machine — and two checkouts on different Alembic revisions
+can never share its one database, since the application runs `alembic upgrade head` at startup and
+refuses to start against two heads. Working in more than one checkout at a time (a second worktree,
+a branch under review) needs a second, independent stack rather than a second copy of the compose
+file:
+
+```bash
+python scripts/devstack.py
+python scripts/devstack.py --to bob@test.local
+```
+
+This starts Postgres, Dovecot, Mailpit and PostIMAP on a private network with random host ports —
+the same containers the `ui` and `e2e` test layers build for themselves — migrates that checkout's
+own database, delivers the test corpus, creates and waits for the account, and prints where to
+reach the application and Mailpit. Ctrl-C, or a plain `kill` of the process, stops the application
+and removes every container it started; nothing it creates is shared with another instance,
+including one started from the same checkout a second time. It warns rather than failing if
+`ui/build` doesn't exist, since the API alone is often enough — build the frontend first if you
+need pages to render.
 
 ## Frontend
 

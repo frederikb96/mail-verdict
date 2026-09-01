@@ -19,6 +19,7 @@ _LAYER_DIRS = {
     "unit": pytest.mark.unit,
     "pg": pytest.mark.pg,
     "e2e": pytest.mark.e2e,
+    "ui": pytest.mark.ui,
 }
 
 

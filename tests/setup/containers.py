@@ -1,5 +1,8 @@
 """
-Session-scoped container fixtures for the pg and e2e test layers.
+Session-scoped container fixtures for the pg and e2e test layers, built on
+top of plain functions (build_*_container, wait_for_*_ready) that carry no
+pytest dependency -- scripts/devstack.py calls those same functions
+directly to bring up an equivalent, ephemeral world outside pytest.
 
 All containers share one testcontainers Network so PostIMAP can reach
 Postgres, Dovecot, and Mailpit by hostname the way it would in compose or
@@ -44,42 +47,6 @@ MAILPIT_HTTP_PORT = 8025
 MAILPIT_READY_TIMEOUT_S = 60
 
 
-@pytest.fixture(scope="session")
-def _container_runtime() -> None:
-    """
-    Bootstrap DOCKER_HOST once per test session before any container starts.
-
-    Deliberately NOT autouse: this module is registered as a plugin at the
-    root conftest (pytest_plugins must live there, not in tests/pg/), so it
-    is visible to every test session including pure `pytest tests/unit/`
-    runs. Every container fixture below depends on this explicitly instead,
-    so a unit-only run never probes for a runtime it doesn't need.
-    """
-    bootstrap_container_runtime()
-
-
-@pytest.fixture(scope="session")
-def test_network(_container_runtime: None) -> Iterator[Network]:
-    """A shared Docker network for all containers in this test session."""
-    with Network() as network:
-        yield network
-
-
-@pytest.fixture(scope="session")
-def postgres_container(test_network: Network) -> Iterator[PostgresContainer]:
-    """A Postgres container, network-aliased as `postgres`, migrated by nothing yet."""
-    container = (
-        PostgresContainer(
-            POSTGRES_IMAGE, dbname=POSTGRES_DB,
-            username=POSTGRES_USER, password=POSTGRES_PASSWORD,
-        )
-        .with_network(test_network)
-        .with_network_aliases(POSTGRES_ALIAS)
-    )
-    with container as pg:
-        yield pg
-
-
 def _wait_for_http_ready(host: str, port: int, path: str, timeout_s: float, what: str) -> None:
     """Poll an HTTP endpoint until it reports 200 or the timeout expires."""
     deadline = time.monotonic() + timeout_s
@@ -112,28 +79,32 @@ def _wait_for_tcp_port(host: str, port: int, timeout_s: float, what: str) -> Non
     raise TimeoutError(f"{what} did not become ready within {timeout_s}s: {last_error}")
 
 
-@pytest.fixture(scope="session")
-def postimap_container(
-    test_network: Network, postgres_container: PostgresContainer,
-) -> Iterator[DockerContainer]:
-    """
-    A PostIMAP container on the shared network, migrated and healthy.
+def build_postgres_container(network: Network) -> PostgresContainer:
+    """A Postgres container, network-aliased as `postgres`, migrated by nothing yet."""
+    return (
+        PostgresContainer(
+            POSTGRES_IMAGE, dbname=POSTGRES_DB,
+            username=POSTGRES_USER, password=POSTGRES_PASSWORD,
+        )
+        .with_network(network)
+        .with_network_aliases(POSTGRES_ALIAS)
+    )
 
-    Zero accounts configured at fixture-ready time (it needs no IMAP server
-    to reach /readyz) -- the pg layer uses it exactly like that. The e2e
-    layer additionally depends on dovecot_container and mailpit_container
-    to give the accounts it creates somewhere real to sync against.
+
+def build_postimap_container(network: Network) -> DockerContainer:
+    """
+    A PostIMAP container on the shared network, not yet started.
 
     POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED=false is set unconditionally:
     Dovecot presents a self-signed certificate, so any account created
     against it would otherwise sit in `error` forever (the same setting
     compose.dev.yaml carries on its postimap service, for the same
-    reason). Harmless for the pg layer, which never creates an account
-    with real IMAP settings.
+    reason). Harmless for a caller that never creates an account with
+    real IMAP settings.
     """
-    container = (
+    return (
         DockerContainer(POSTIMAP_IMAGE)
-        .with_network(test_network)
+        .with_network(network)
         .with_env("DB_PASSWORD", POSTGRES_PASSWORD)
         .with_env("POSTIMAP_DATABASE_HOST", POSTGRES_ALIAS)
         .with_env("POSTIMAP_DATABASE_PORT", "5432")
@@ -142,66 +113,142 @@ def postimap_container(
         .with_env("POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED", "false")
         .with_exposed_ports(POSTIMAP_HEALTH_PORT)
     )
-    with container as postimap:
-        host = postimap.get_container_host_ip()
-        port = int(postimap.get_exposed_port(POSTIMAP_HEALTH_PORT))
-        _wait_for_http_ready(host, port, "/readyz", POSTIMAP_READY_TIMEOUT_S, "PostIMAP")
-        yield postimap
 
 
-@pytest.fixture(scope="session")
-def dovecot_container(test_network: Network) -> Iterator[DockerContainer]:
+def wait_postimap_ready(postimap: DockerContainer) -> None:
+    host = postimap.get_container_host_ip()
+    port = int(postimap.get_exposed_port(POSTIMAP_HEALTH_PORT))
+    _wait_for_http_ready(host, port, "/readyz", POSTIMAP_READY_TIMEOUT_S, "PostIMAP")
+
+
+def build_dovecot_container(network: Network) -> DockerContainer:
     """
-    A throwaway Dovecot mail world, network-aliased as `dovecot`.
+    A throwaway Dovecot mail world, network-aliased as `dovecot`, not yet started.
 
     Any username authenticates against DOVECOT_PASSWORD and gets its
     mailbox created on first login. IMAP (31143) is plain, no TLS; LMTP
     (31024) speaks implicit TLS -- see tests/setup/mail_delivery.py.
     """
-    container = (
+    return (
         DockerContainer(DOVECOT_IMAGE)
-        .with_network(test_network)
+        .with_network(network)
         .with_network_aliases(DOVECOT_ALIAS)
         .with_env("USER_PASSWORD", DOVECOT_PASSWORD)
         .with_exposed_ports(DOVECOT_IMAP_PORT, DOVECOT_LMTP_PORT)
     )
-    with container as dovecot:
-        host = dovecot.get_container_host_ip()
-        port = int(dovecot.get_exposed_port(DOVECOT_IMAP_PORT))
-        _wait_for_tcp_port(host, port, DOVECOT_READY_TIMEOUT_S, "Dovecot")
-        yield dovecot
 
 
-@pytest.fixture(scope="session")
-def mailpit_container(test_network: Network) -> Iterator[DockerContainer]:
+def wait_dovecot_ready(dovecot: DockerContainer) -> None:
+    host = dovecot.get_container_host_ip()
+    port = int(dovecot.get_exposed_port(DOVECOT_IMAP_PORT))
+    _wait_for_tcp_port(host, port, DOVECOT_READY_TIMEOUT_S, "Dovecot")
+
+
+def build_mailpit_container(network: Network) -> DockerContainer:
     """
-    A Mailpit SMTP sink with an HTTP API, network-aliased as `mailpit`.
+    A Mailpit SMTP sink with an HTTP API, network-aliased as `mailpit`, not yet started.
 
     Accepts any SMTP AUTH so an account's smtp_user/smtp_password
-    round-trips through a real exchange, and its HTTP API lets a test
+    round-trips through a real exchange, and its HTTP API lets a caller
     assert on what was actually received rather than mocking the send.
     """
-    container = (
+    return (
         DockerContainer(MAILPIT_IMAGE)
-        .with_network(test_network)
+        .with_network(network)
         .with_network_aliases(MAILPIT_ALIAS)
         .with_env("MP_SMTP_AUTH_ACCEPT_ANY", "1")
         .with_env("MP_SMTP_AUTH_ALLOW_INSECURE", "1")
         .with_exposed_ports(MAILPIT_SMTP_PORT, MAILPIT_HTTP_PORT)
     )
-    with container as mailpit:
-        host = mailpit.get_container_host_ip()
-        port = int(mailpit.get_exposed_port(MAILPIT_HTTP_PORT))
-        _wait_for_http_ready(host, port, "/readyz", MAILPIT_READY_TIMEOUT_S, "Mailpit")
+
+
+def wait_mailpit_ready(mailpit: DockerContainer) -> None:
+    host = mailpit.get_container_host_ip()
+    port = int(mailpit.get_exposed_port(MAILPIT_HTTP_PORT))
+    _wait_for_http_ready(host, port, "/readyz", MAILPIT_READY_TIMEOUT_S, "Mailpit")
+
+
+def postgres_url_for(postgres: PostgresContainer) -> str:
+    """asyncpg-format connection URL for a started Postgres, from the host side."""
+    host = postgres.get_container_host_ip()
+    port = postgres.get_exposed_port(5432)
+    return f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{host}:{port}/{POSTGRES_DB}"
+
+
+@pytest.fixture(scope="session")
+def _container_runtime() -> None:
+    """
+    Bootstrap DOCKER_HOST once per test session before any container starts.
+
+    Deliberately NOT autouse: this module is registered as a plugin at the
+    root conftest (pytest_plugins must live there, not in tests/pg/), so it
+    is visible to every test session including pure `pytest tests/unit/`
+    runs. Every container fixture below depends on this explicitly instead,
+    so a unit-only run never probes for a runtime it doesn't need.
+    """
+    bootstrap_container_runtime()
+
+
+@pytest.fixture(scope="session")
+def test_network(_container_runtime: None) -> Iterator[Network]:
+    """A shared Docker network for all containers in this test session."""
+    with Network() as network:
+        yield network
+
+
+@pytest.fixture(scope="session")
+def postgres_container(test_network: Network) -> Iterator[PostgresContainer]:
+    with build_postgres_container(test_network) as pg:
+        yield pg
+
+
+@pytest.fixture(scope="session")
+def postimap_container(
+    test_network: Network, postgres_container: PostgresContainer,
+) -> Iterator[DockerContainer]:
+    """
+    Zero accounts configured at fixture-ready time (it needs no IMAP server
+    to reach /readyz) -- the pg layer uses it exactly like that. The e2e
+    and ui layers additionally depend on dovecot_container and
+    mailpit_container to give the accounts they create somewhere real to
+    sync against.
+    """
+    with build_postimap_container(test_network) as postimap:
+        wait_postimap_ready(postimap)
+        yield postimap
+
+
+@pytest.fixture(scope="session")
+def dovecot_container(test_network: Network) -> Iterator[DockerContainer]:
+    with build_dovecot_container(test_network) as dovecot:
+        wait_dovecot_ready(dovecot)
+        yield dovecot
+
+
+@pytest.fixture(scope="session")
+def mailpit_container(test_network: Network) -> Iterator[DockerContainer]:
+    with build_mailpit_container(test_network) as mailpit:
+        wait_mailpit_ready(mailpit)
         yield mailpit
 
 
 @pytest.fixture(scope="session")
 def postgres_url(postgres_container: PostgresContainer) -> str:
-    """asyncpg-format connection URL for the shared Postgres, from the host side."""
-    host = postgres_container.get_container_host_ip()
-    port = postgres_container.get_exposed_port(5432)
-    return (
-        f"postgresql+asyncpg://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
-        f"@{host}:{port}/{POSTGRES_DB}"
-    )
+    return postgres_url_for(postgres_container)
+
+
+@pytest.fixture(scope="session")
+def dovecot_endpoint(dovecot_container: DockerContainer) -> tuple[str, int, int]:
+    """Host-mapped (host, imap_port, lmtp_port) for connecting to Dovecot from the test process."""
+    host = dovecot_container.get_container_host_ip()
+    imap_port = int(dovecot_container.get_exposed_port(DOVECOT_IMAP_PORT))
+    lmtp_port = int(dovecot_container.get_exposed_port(DOVECOT_LMTP_PORT))
+    return host, imap_port, lmtp_port
+
+
+@pytest.fixture(scope="session")
+def mailpit_http_url(mailpit_container: DockerContainer) -> str:
+    """Host-mapped base URL for Mailpit's HTTP API."""
+    host = mailpit_container.get_container_host_ip()
+    port = int(mailpit_container.get_exposed_port(MAILPIT_HTTP_PORT))
+    return f"http://{host}:{port}"

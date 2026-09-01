@@ -22,7 +22,6 @@ from testcontainers.core.container import DockerContainer
 
 from mail_verdict.config.loader import DatabaseConfig, reset_config
 from mail_verdict.database.connection import DatabaseConnection
-from tests.setup.containers import DOVECOT_IMAP_PORT, DOVECOT_LMTP_PORT, MAILPIT_HTTP_PORT
 from tests.setup.migrations import run_migrations
 
 
@@ -82,18 +81,6 @@ async def db(postgres_url: str) -> AsyncIterator[DatabaseConnection]:
         await connection.close()
 
 
-@pytest.fixture(scope="module")
-def dovecot_endpoint(dovecot_container: DockerContainer) -> tuple[str, int, int]:
-    """Host-mapped (host, imap_port, lmtp_port) for connecting to Dovecot from the test process."""
-    host = dovecot_container.get_container_host_ip()
-    imap_port = int(dovecot_container.get_exposed_port(DOVECOT_IMAP_PORT))
-    lmtp_port = int(dovecot_container.get_exposed_port(DOVECOT_LMTP_PORT))
-    return host, imap_port, lmtp_port
-
-
-@pytest.fixture(scope="module")
-def mailpit_http_url(mailpit_container: DockerContainer) -> str:
-    """Host-mapped base URL for Mailpit's HTTP API."""
-    host = mailpit_container.get_container_host_ip()
-    port = int(mailpit_container.get_exposed_port(MAILPIT_HTTP_PORT))
-    return f"http://{host}:{port}"
+# dovecot_endpoint and mailpit_http_url come from tests.setup.containers, the
+# same session-scoped plugin fixtures tests/ui/ reuses -- see that module's
+# docstring for why they live there rather than in this e2e-only conftest.
