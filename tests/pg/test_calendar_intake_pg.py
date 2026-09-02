@@ -19,6 +19,7 @@ round-trip fills in `uid` the way it does in production.
 from __future__ import annotations
 
 import itertools
+import json
 import uuid
 
 import pytest
@@ -242,6 +243,7 @@ async def _seed_existing_object(
 async def _seed_message_with_ics(
     session: AsyncSession, *, account_id: uuid.UUID, folder_id: uuid.UUID, data: str,
     message_id_hdr: str, from_addr: str = "anna@example.com",
+    to_addrs: list[str] | None = None, cc_addrs: list[str] | None = None,
 ) -> uuid.UUID:
     """from_addr defaults to the organizer used throughout this file's
     REQUEST/CANCEL fixtures -- a REPLY's own sender is the attendee it
@@ -251,14 +253,16 @@ async def _seed_message_with_ics(
         text(
             "INSERT INTO messages "
             "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
-            " from_addr, received_at, size_bytes) "
+            " from_addr, to_addrs, cc_addrs, received_at, size_bytes) "
             "VALUES (:id, :account_id, :folder_id, :imap_uid, :thread_id, :msg_id, 'Kickoff', "
-            " :from_addr, now(), 1024)"
+            " :from_addr, :to_addrs, :cc_addrs, now(), 1024)"
         ),
         {
             "id": message_id, "account_id": account_id, "folder_id": folder_id,
             "imap_uid": next(_imap_uid_counter),
             "thread_id": message_id, "msg_id": message_id_hdr, "from_addr": from_addr,
+            "to_addrs": json.dumps(to_addrs) if to_addrs is not None else None,
+            "cc_addrs": json.dumps(cc_addrs) if cc_addrs is not None else None,
         },
     )
     await session.execute(
@@ -356,6 +360,52 @@ class TestImport:
         assert "SCHEDULE-AGENT=CLIENT" in ical.set_schedule_agent_client_on_organizer(stored)
         master, _ = ical.parse_master_and_exceptions(stored)
         assert master.uid == uid
+
+    @pytest.mark.asyncio
+    async def test_addressed_but_not_an_attendee_is_not_auto_imported(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 113: being a To/Cc recipient is not the same as being
+        invited. Only ATTENDEE resolves an identity for an automatic
+        import -- the to/cc fallback stays available to
+        resolve_attendee_identity()'s callers, just never for this one,
+        since it is also the delivery vector for an unbounded RRULE (row
+        108): anyone who merely addresses the mailbox could otherwise put
+        an event straight into the calendar."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            _dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid, attendee="someone-else@example.com"),
+                message_id_hdr="<m2b@example.com>", to_addrs=["freddy@work.example"],
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text("SELECT status, object_id FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).one()
+            object_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                    {"c": collection_id},
+                )
+            ).scalar_one()
+        assert row.status == "unlinked"
+        assert row.object_id is None
+        assert object_count == 0
 
     @pytest.mark.asyncio
     async def test_redelivered_message_is_a_no_op(self, migrated_db: DatabaseConnection) -> None:

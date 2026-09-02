@@ -192,7 +192,7 @@ class CalendarIntakeHandler:
                 collection_id=existing.collection_id, existing=existing,
             )
 
-        identity = await self._resolve_identity(account_id, message, invitation)
+        identity = await self.resolve_attendee_identity(account_id, invitation)
         if identity is None:
             return IntakeDecision(status="unlinked", reason="no identity was among the attendees")
 
@@ -334,38 +334,19 @@ class CalendarIntakeHandler:
             target = match
         return invitation.master.sequence < target.sequence
 
-    async def _resolve_identity(
-        self, account_id: uuid.UUID, message: Message, invitation: ical.ParsedInvitation,
-    ) -> Identity | None:
-        """ATTENDEE mailto: values intersected with this mail account's
-        identities, falling back to to_addrs ∪ cc_addrs."""
-        async with self._db.session() as session:
-            result = await session.execute(
-                select(Identity).where(Identity.account_id == account_id)
-            )
-            identities = result.scalars().all()
-        if not identities:
-            return None
-
-        attendee_emails = {a.email.lower() for a in invitation.master.attendees}
-        for identity in identities:
-            if identity.email.lower() in attendee_emails:
-                return identity
-
-        fallback = {a.lower() for a in (message.to_addrs or [])}
-        fallback |= {a.lower() for a in (message.cc_addrs or [])}
-        for identity in identities:
-            if identity.email.lower() in fallback:
-                return identity
-        return None
-
     async def resolve_attendee_identity(
         self, account_id: uuid.UUID, invitation: ical.ParsedInvitation,
     ) -> Identity | None:
-        """The identity actually named in the ATTENDEE list -- never the
-        to/cc fallback. api/invitations.py's own_address is this and
-        nothing else: a forwarded invitation can still be imported, but
-        is not something a reply can be sent for, which is exactly what
+        """The identity actually named in the ATTENDEE list -- never a
+        to/cc fallback. decide()'s automatic import uses this and nothing
+        else: a stranger who merely addresses you is not the same as
+        being invited, and falling back to to/cc there is what let a
+        spam invitation (or the RRULE bomb it carries) create a calendar
+        entry for someone who was never an attendee. api/invitations.py's
+        own_address is the same call: a forwarded invitation can still be
+        imported by hand (POST .../import takes an explicit calendar_id
+        and needs no identity resolution to know where), but is not
+        something a reply can be sent for, which is exactly what
         own_address being null tells the UI."""
         async with self._db.session() as session:
             result = await session.execute(

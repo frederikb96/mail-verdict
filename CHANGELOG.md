@@ -29,9 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sender who merely knew an event's UID — a co-attendee, since it is in the `.ics` they
   themselves received — could silently rewrite, cancel or mark an attendee's response on it by
   emailing a matching UID with a higher SEQUENCE. A failed check is recorded as a new
-  `calendar_intake` status, `unauthorized`, left unapplied. The UID lookup itself is also now
-  scoped to DAV accounts reachable from the receiving mail account's own identities, rather than
-  every DAV account in the database
+  `calendar_intake` status, `unauthorized`, left unapplied. The automatic listener's UID lookup is
+  also now scoped to DAV accounts reachable from the receiving mail account's own identities,
+  rather than every DAV account in the database -- a person explicitly importing one message by
+  hand is unaffected, since that lookup was never the unauthenticated surface
+- Automatic invitation import now requires the identity to actually be an ATTENDEE, rather than
+  falling back to being a To/Cc recipient. Being addressed is not being invited, and the fallback
+  was also the easiest way to get an RRULE past a spam filter into the calendar in the first
+  place, since intake runs before the message is ever classified. The manual "add to calendar"
+  flow is unaffected -- a person choosing to import a specific message needs no identity
+  resolution to know which calendar to use
 - A recurring event's RRULE is bounded before it is ever expanded: a series that could produce
   more than a few thousand occurrences in the requested window is refused outright rather than
   handed to the expansion library, which previously ran synchronously on the same process as

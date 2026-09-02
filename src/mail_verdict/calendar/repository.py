@@ -153,13 +153,32 @@ class DavObjectRepository:
             )
             return result.scalar_one_or_none()
 
+    async def find_by_uid_anywhere(self, uid: str) -> DavObject | None:
+        """A UID already held in any dav_objects row of any DAV account --
+        for a person choosing to import or retry a specific message
+        (api/invitations.py's POST .../import). A hand-imported event can
+        live under any DAV account regardless of how (or whether) it is
+        linked to a mail identity, and the design settles on "update in
+        place where it lives, whatever the mapping says" for that case.
+        This is safe here because a human, not an emailed .ics, is the
+        one deciding to write -- find_by_uid_reachable() below is what
+        the *automatic* listener path needs instead, since there nothing
+        but the UID itself is under this application's control."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(DavObject)
+                .where(DavObject.uid == uid, DavObject.deleted_at.is_(None))
+                .order_by(DavObject.created_at)
+            )
+            return result.scalars().first()
+
     async def find_by_uid_reachable(self, uid: str, account_id: uuid.UUID) -> DavObject | None:
-        """The UID lookup calendar/intake.py needs: a UID already held in
-        a dav_objects row of a DAV account reachable from this mail
-        account -- the hand-imported case the design settles on ("update
-        in place where it lives, whatever the mapping says"), and what
-        keeps two of a user's own addresses being invited to the same
-        event from producing two copies.
+        """The UID lookup calendar/intake.py's automatic listener needs: a
+        UID already held in a dav_objects row of a DAV account reachable
+        from this mail account -- the hand-imported case the design
+        settles on ("update in place where it lives, whatever the mapping
+        says"), and what keeps two of a user's own addresses being
+        invited to the same event from producing two copies.
 
         Scoped to DAV accounts that have at least one collection linked
         (calendar_prefs.identity_id) to one of this mail account's own
@@ -168,7 +187,10 @@ class DavObjectRepository:
         mail account's identities must never resolve to that object.
         Without this, any DAV account in the whole database was in scope,
         so an invitation to mail account A could rewrite an object under
-        an unrelated mail account's calendar."""
+        an unrelated mail account's calendar. find_by_uid_anywhere() above
+        is what a person explicitly choosing to import one message still
+        uses -- that scoping only matters where nothing but the UID is
+        under this application's control."""
         async with self._db.session() as session:
             reachable_dav_accounts = (
                 select(DavCollection.account_id)

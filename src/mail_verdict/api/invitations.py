@@ -250,7 +250,7 @@ async def import_invitation(
         raise HTTPException(status_code=404, detail="Calendar not found")
 
     object_repo = DavObjectRepository(db)
-    existing = await object_repo.find_by_uid_reachable(invitation.master.uid, message.account_id)
+    existing = await object_repo.find_by_uid_anywhere(invitation.master.uid)
     fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(data))
 
     if existing is not None:
