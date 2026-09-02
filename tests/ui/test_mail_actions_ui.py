@@ -199,6 +199,103 @@ class TestMailActionsUi:
         detail = api_client.get(f"/api/messages/{target['id']}").json()
         assert detail["is_seen"] is True
 
+    def test_undo_after_trash_restores_the_row(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Trash acts immediately, but its success toast's Undo moves the
+        message straight back to the folder it came from."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"Undo me {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"]):
+                if m["subject"] == subject:
+                    return m
+            return None
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        _open_folder(page, inbox_folder)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        row.hover()
+        row.get_by_title("Move to trash").click()
+        expect(row).not_to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Undo", exact=True).click()
+
+        expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
+        detail = api_client.get(f"/api/messages/{target['id']}").json()
+        assert detail["folder_id"] == inbox_folder["id"]
+
+    def test_bulk_undo_after_trash_restores_every_row(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The bulk toolbar's Trash button offers the same Undo, moving
+        every affected message back -- the selection's own compensating-move
+        path, not the single-row one above."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Bulk undo {i} {uuid.uuid4()}" for i in range(2)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(_find_all, description="both bulk-undo messages synced into INBOX")
+
+        page.goto(app_server)
+        _open_folder(page, inbox_folder)
+        rows = [mail_row(page, target["id"]) for target in targets]
+        for row in rows:
+            expect(row).to_be_visible(timeout=15_000)
+        rows[0].hover()
+        rows[0].get_by_role("checkbox").click()
+        rows[1].get_by_role("checkbox").click()
+
+        page.get_by_role("main").get_by_role("button", name="Trash", exact=True).click()
+        for row in rows:
+            expect(row).not_to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Undo", exact=True).click()
+
+        for target in targets:
+            expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            assert detail["folder_id"] == inbox_folder["id"]
+
     def test_spam_on_an_already_junked_message_settles(
         self,
         page: Page,

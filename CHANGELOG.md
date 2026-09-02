@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Trash, archive and spam offer an "Undo" on their success toast, both from a single row and
+  from the bulk toolbar, moving the affected message(s) straight back to the folder they were
+  in — a compensating action rather than a delayed commit, the same shape a failed mutation's
+  own optimistic rollback already uses
 - A `ui` test layer (`tests/ui/`, `pytest -m ui`) drives the application through a real browser
   with Playwright, reusing the same testcontainers world the `e2e` layer builds for itself, plus
   `scripts/devstack.py` for running an independent, compose-less development stack per checkout

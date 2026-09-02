@@ -26,6 +26,15 @@ import type {
 /** Actions that move a message out of the folder it was just shown in. */
 const LEAVES_FOLDER_ACTIONS = ["trash", "expunge", "archive", "spam", "not_spam"];
 
+/**
+ * Destructive actions offered with an "Undo" toast on success -- moving the
+ * message straight back to the folder it was in is the compensating action,
+ * the same shape a failed mutation's own rollback already uses. `expunge`
+ * has no compensating action (there is nothing left to move back) and
+ * `not_spam` already is the corrective action for a wrong `spam` verdict.
+ */
+export const UNDOABLE_ACTIONS = ["trash", "archive", "spam"];
+
 /** Human phrasing for a message/bulk action, used in error toasts. */
 export const ACTION_LABELS: Record<string, string> = {
   mark_read: "mark as read",
@@ -40,6 +49,13 @@ export const ACTION_LABELS: Record<string, string> = {
   not_spam: "mark as not spam",
   keyword_add: "add keyword",
   keyword_remove: "remove keyword",
+};
+
+/** Human phrasing for the success toast a completed undoable action shows. */
+export const UNDO_TOAST_LABELS: Record<string, string> = {
+  trash: "Moved to trash",
+  archive: "Archived",
+  spam: "Marked as spam",
 };
 
 export const mailKeys = {
@@ -196,7 +212,7 @@ export function useMailAction() {
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const { push: pushToast } = useToast();
 
-  return useMutation({
+  const mailAction = useMutation({
     mutationFn: ({
       mailId,
       action,
@@ -261,7 +277,24 @@ export function useMailAction() {
         });
       }
 
-      return { prevMailQueries, prevFolders, prevMailDetail, accountId, mailId, wasSelected };
+      return {
+        prevMailQueries, prevFolders, prevMailDetail, accountId, mailId, wasSelected,
+        originalFolderId: mailInfo.folderId,
+      };
+    },
+
+    onSuccess: (_data, { action }, ctx) => {
+      if (!ctx?.originalFolderId || !UNDOABLE_ACTIONS.includes(action.action)) return;
+      const { accountId, mailId, originalFolderId } = ctx;
+      pushToast(UNDO_TOAST_LABELS[action.action], "success", 6000, {
+        label: "Undo",
+        onClick: () =>
+          mailAction.mutate({
+            mailId,
+            accountId,
+            action: { action: "move", target_folder_id: originalFolderId },
+          }),
+      });
     },
 
     onError: (err, vars, ctx) => {
@@ -294,4 +327,6 @@ export function useMailAction() {
       invalidateAllFolderCaches(qc);
     },
   });
+
+  return mailAction;
 }
