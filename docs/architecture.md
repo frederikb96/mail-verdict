@@ -317,6 +317,23 @@ expanded in storage. `calendar/ical.py` is where a body is parsed, expanded over
 (`vobject`). Neither touches the database — the API layer hands the result to
 `postimap/actions.py`.
 
+The month view reads only what its window could contain: `list_in_collections()` filters in SQL to
+a recurring master (any occurrence could fall inside the window) or a non-recurring object whose
+own `[dtstart, dtend)` overlaps it, using PostIMAP's own parsed `dtstart`/`dtend`/`is_recurring`
+columns rather than parsing and expanding every object in every visible calendar on every request.
+Updating an event with attendees sends a `METHOD:REQUEST`, the same as creating one and the same as
+deleting one sends `METHOD:CANCEL`, whenever the calendar's own identity is the `ORGANIZER`.
+Correcting a wrong password on an already-running `dav_accounts` row force-reconnects it the same
+way a mail account's credential change does — an `is_active` bounce across two committed
+transactions, since a credential rewritten on a running account is not re-read until it restarts.
+
+A DAV write PostIMAP could not complete surfaces on the event it concerns: `get_write_errors()`
+reads `dav_notifications` for both a still-unresolved failure and a `412` conflict PostIMAP already
+resolved by re-reading the server's copy over the row (`reverted_at` set) — the one case where a
+user's edit was actually discarded rather than merely still pending, worded accordingly. A full DAV
+notification centre (list/acknowledge endpoints, its own UI surface, mirroring the mail side's
+bell) is not built; only the event-level surfacing above is.
+
 Three tables are owned by MailVerdict, migrated alongside `identities`:
 
 - **`calendar_prefs`** — one row per calendar, linking it to an identity and marking at most one
@@ -352,24 +369,50 @@ this listener ever sees is live mail by construction, with no separate watermark
 `CalendarIntakeHandler.decide()` is a pure read — given a message and its parsed invitation, it
 works out the outcome (which calendar, which existing object, which `calendar_intake` status)
 without writing anything. `handle_message_event()` writes the `calendar_intake` row first, gated
-on its own uniqueness on `(account_id, msg_key)`, and only then applies the outcome — so a
-redelivered or resynced message finds the row already there and applies nothing a second time.
-`api/invitations.py`'s `GET` reuses `decide()` for a message the listener never saw (backfilled
-mail, or one that arrived before intake was wired up) to render the same view without ever writing
-`calendar_intake` itself; only the explicit `POST .../import` writes for that case, which is what
-keeps "backfilled mail is never imported automatically" true while still letting a person choose
-"add to calendar" for it.
+on its own uniqueness on `(account_id, msg_key)`. For an outcome `_apply()` will actually write
+something for (`imported`/`updated`/`cancelled`) the row is inserted as `pending` and promoted to
+its real status only once that write lands, so anything interrupting between the two leaves an
+honestly-labelled row rather than a terminal status with no object behind it; a `pending` row
+found on a later call is retried rather than treated as already handled. `api/invitations.py`'s
+`GET` reuses `decide()` for a message the listener never saw (backfilled mail, or one that arrived
+before intake was wired up) to render the same view without ever writing `calendar_intake` itself;
+only the explicit `POST .../import` writes for that case, which is what keeps "backfilled mail is
+never imported automatically" true while still letting a person choose "add to calendar" for it.
 
-A `REQUEST` whose UID is already held by any `dav_objects` row, in any DAV account, is updated in
-place wherever it lives rather than imported a second time — the hand-imported case, and what
-keeps two of an identity's own addresses invited to the same event from producing two copies. A
-lower `SEQUENCE` than the held object's own is stale and ignored. A `CANCEL` sets the event
-`STATUS:CANCELLED` rather than deleting it, so it stays visible until the user removes it. A
-`REPLY` updates the matching `ATTENDEE`'s `PARTSTAT` on the held object. Identity resolution
-intersects the `ATTENDEE` list against the mail account's `identities`, falling back to
-`to_addrs`/`cc_addrs` — an invitation to an address linked to no calendar (`calendar_prefs.intake`)
-is left `unlinked`, surfaced by `GET /api/calendar/invitations/{message_id}` with the candidate
-calendars to import into.
+A `REQUEST` or `CANCEL` whose UID is already held by a `dav_objects` row is updated in place
+wherever it lives rather than imported a second time — the hand-imported case, and what keeps two
+of an identity's own addresses invited to the same event from producing two copies — but only
+after the incoming `ORGANIZER` is checked against the held object's own (case-insensitive); a
+mismatch is recorded as `unauthorized` and applied nowhere, since otherwise anyone who merely knew
+the UID (a co-attendee, since it is in the `.ics` they themselves received) could rewrite or
+cancel an event they do not organize. A `REPLY` is authorized the same way, against the message's
+own sender rather than the ORGANIZER, before it updates the matching `ATTENDEE`'s `PARTSTAT` on the
+held object. The lookup itself is scoped to DAV accounts reachable from the receiving mail
+account's own identities (`calendar_prefs.identity_id`) for this automatic path — a person
+importing one specific message by hand (`POST .../import`) still resolves a UID anywhere, since a
+human choosing to write is not the unauthenticated surface the scoping exists for. Past
+authorization, a lower `SEQUENCE` than the held object's own is stale and ignored. A `CANCEL`
+sets the event `STATUS:CANCELLED` rather than deleting it, so it stays visible until the user
+removes it.
+
+Identity resolution for automatic import requires the identity to actually appear in the
+`ATTENDEE` list — being a `to_addrs`/`cc_addrs` recipient is not being invited, and that fallback
+was also how a spam invitation (or an unbounded `RRULE`, see below) reached the calendar before the
+message was ever classified. The to/cc fallback stays available to `resolve_attendee_identity()`'s
+other callers, such as the manual "add to calendar" flow, where a person is choosing. An invitation
+to an address linked to no calendar (`calendar_prefs.intake`), or whose intake calendar is
+`read_only`, is left `unlinked`, surfaced by `GET /api/calendar/invitations/{message_id}` with the
+candidate calendars to import into.
+
+`ical.expand_instances()` refuses to expand a series whose `RRULE` could produce more than a few
+thousand occurrences in the requested window, rather than asking `recurring-ical-events` to
+generate them — a `FREQ=SECONDLY` series handed to that library, even over a one-day window,
+blocks the process for tens of seconds at hundreds of MB, synchronously, on the same event loop as
+mail sync and health checks. Creating or editing an event refuses `FREQ=SECONDLY`/`MINUTELY`
+outright. `SEQUENCE` only advances when the calendar's own identity organizes the event (or the
+event has no `ORGANIZER` at all) — bumping it on an edit to an event held only as an attendee would
+make the real organizer's next genuine update compare as stale against the check above and be
+silently discarded.
 
 ## Configuration and settings
 
