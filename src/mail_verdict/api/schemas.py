@@ -1127,8 +1127,14 @@ class RespondRequest(BaseModel):
     recurrence_id: str | None = None
 
 
+# "ignored" -- a CANCEL or REPLY naming a UID this application never held:
+# calendar_intake still gets a row (the never-twice gate), but there is
+# nothing to show or act on. The UI's own InvitationStatus type does not
+# carry this value; every one of its status checks is an equality
+# comparison, not an exhaustive switch, so a message in this state simply
+# renders its header and nothing below it rather than failing to render.
 InvitationStatus = Literal[
-    "imported", "updated", "unlinked", "cancelled", "ignored_stale", "failed",
+    "imported", "updated", "unlinked", "cancelled", "ignored_stale", "failed", "ignored",
 ]
 
 

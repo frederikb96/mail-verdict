@@ -20,6 +20,7 @@ from mail_verdict.api.folder_management import folder_prefs_router
 from mail_verdict.api.folder_management import router as folder_management_router
 from mail_verdict.api.identities import router as identities_router
 from mail_verdict.api.image_exceptions import router as image_exceptions_router
+from mail_verdict.api.invitations import router as invitations_router
 from mail_verdict.api.mails import account_router as mails_account_router
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.notifications import router as notifications_router
@@ -61,4 +62,5 @@ all_routers: list[APIRouter] = [
     addressbooks_router,
     contacts_router,
     calendar_events_router,
+    invitations_router,
 ]
