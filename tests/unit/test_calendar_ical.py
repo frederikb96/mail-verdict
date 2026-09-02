@@ -328,3 +328,70 @@ class TestEditOccurrence:
         # The exception does not carry its own RRULE (it would recurse a
         # second series from one occurrence otherwise).
         assert new_exception.rrule is None
+
+
+class TestParseItipMessage:
+    """calendar/intake.py's own parser for a raw iTIP message -- more
+    tolerant than parse_invitation()/parse_master_and_exceptions(), which
+    are for a stored resource and assume it holds a whole series."""
+
+    def test_parses_a_request_the_same_as_parse_invitation(self) -> None:
+        parsed = ical.parse_itip_message(_INVITATION_REQUEST)
+        assert parsed.method == "REQUEST"
+        assert parsed.master.uid == "invite-1@example.com"
+        assert parsed.master.recurrence_id is None
+        assert parsed.exceptions == []
+
+    def test_reply_with_no_dtstart_does_not_raise(self) -> None:
+        """RFC 5546 does not require DTSTART on a REPLY --
+        parse_invitation() raises on this; parse_itip_message() falls
+        back to DTSTAMP instead."""
+        reply = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "METHOD:REPLY\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:invite-1@example.com\r\n"
+            "DTSTAMP:20260901T130000Z\r\n"
+            "SEQUENCE:0\r\n"
+            "ORGANIZER:mailto:anna@example.com\r\n"
+            "ATTENDEE;PARTSTAT=ACCEPTED:mailto:freddy@work.example\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        parsed = ical.parse_itip_message(reply)
+        assert parsed.method == "REPLY"
+        assert parsed.master.uid == "invite-1@example.com"
+        assert parsed.master.dtstart == datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc)
+        assert parsed.master.attendees[0].partstat == "accepted"
+
+    def test_a_lone_occurrence_with_no_master_does_not_raise(self) -> None:
+        """A CANCEL or REQUEST about one occurrence of a series can arrive
+        as a single RECURRENCE-ID component with no master alongside it
+        -- parse_master_and_exceptions() has no master to find here and
+        raises; parse_itip_message() takes the one component it gets."""
+        one_occurrence = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "METHOD:CANCEL\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:series-1@example.com\r\n"
+            "RECURRENCE-ID:20260908T090000Z\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260908T110000Z\r\n"
+            "DTEND:20260908T120000Z\r\n"
+            "SUMMARY:Weekly standup (moved)\r\n"
+            "SEQUENCE:1\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        parsed = ical.parse_itip_message(one_occurrence)
+        assert parsed.method == "CANCEL"
+        assert parsed.master.recurrence_id == "20260908T090000Z"
+        assert parsed.exceptions == []
+
+    def test_no_method_raises(self) -> None:
+        import pytest
+
+        with pytest.raises(ValueError, match="METHOD"):
+            ical.parse_itip_message(_SIMPLE_EVENT)

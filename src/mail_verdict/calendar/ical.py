@@ -158,12 +158,20 @@ def _tz_name(value: object) -> str | None:
 
 
 def _parse_component(
-    component: Component, *, is_recurring: bool, is_exception: bool,
+    component: Component, *, is_recurring: bool, is_exception: bool, lenient: bool = False,
 ) -> ParsedEvent:
     dtstart_prop = component.get("DTSTART")
     if dtstart_prop is None:
-        raise ValueError("VEVENT has no DTSTART")
-    dtstart_val = dtstart_prop.dt
+        if not lenient:
+            raise ValueError("VEVENT has no DTSTART")
+        # A REPLY commonly omits DTSTART (RFC 5546 does not require it) --
+        # DTSTAMP is required on every component, and stands in.
+        dtstamp_prop = component.get("DTSTAMP")
+        dtstart_val: Any = (
+            dtstamp_prop.dt if dtstamp_prop is not None else datetime.now(timezone.utc)
+        )
+    else:
+        dtstart_val = dtstart_prop.dt
     all_day = not isinstance(dtstart_val, datetime)
 
     dtend_prop = component.get("DTEND")
@@ -263,6 +271,41 @@ def parse_invitation(data: str) -> ParsedInvitation:
     if method is None:
         raise ValueError("Invitation carries no METHOD")
     master, exceptions = parse_master_and_exceptions(data)
+    return ParsedInvitation(method=method, master=master, exceptions=exceptions)
+
+
+def parse_itip_message(data: str) -> ParsedInvitation:
+    """
+    A raw iTIP message lifted out of an email attachment -- REQUEST, REPLY
+    or CANCEL, for calendar/intake.py. parse_invitation() (and
+    parse_master_and_exceptions() underneath it) is for a stored resource
+    and is stricter than a message on the wire is guaranteed to be: a
+    REPLY commonly omits DTSTART/DTEND/SUMMARY (RFC 5546 does not require
+    them), and a REQUEST or CANCEL about a single occurrence of a series
+    can arrive as a lone RECURRENCE-ID component with no master alongside
+    it -- something parse_master_and_exceptions cannot represent at all,
+    since it requires finding one.
+
+    Whichever component appears first becomes "master" here regardless of
+    whether it carries RECURRENCE-ID -- unlike the stored-resource
+    functions, this reads exactly what the message says about itself
+    rather than assuming it holds a whole series.
+    """
+    method = get_method(data)
+    if method is None:
+        raise ValueError("Invitation carries no METHOD")
+    components = _components(data)
+    if not components:
+        raise ValueError("VCALENDAR has no VEVENT component")
+    is_recurring = bool(components[0].get("RRULE") or components[0].get("RDATE"))
+    master = _parse_component(
+        components[0], is_recurring=is_recurring,
+        is_exception=components[0].get("RECURRENCE-ID") is not None, lenient=True,
+    )
+    exceptions = [
+        _parse_component(c, is_recurring=is_recurring, is_exception=True, lenient=True)
+        for c in components[1:]
+    ]
     return ParsedInvitation(method=method, master=master, exceptions=exceptions)
 
 

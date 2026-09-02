@@ -136,9 +136,11 @@ class DavObjectRepository:
     async def find_by_account_and_uid(
         self, account_id: uuid.UUID, uid: str,
     ) -> DavObject | None:
-        """The UID lookup intake needs: a UID already held anywhere in the
-        account, whatever calendar it lives in -- see the contract's
-        "(account_id, uid)" index."""
+        """A UID already held somewhere in one DAV account -- see the
+        contract's "(account_id, uid)" index. Scoped to a single DAV
+        account; find_by_uid_anywhere() is what intake actually needs,
+        since a hand-imported event may live under a different DAV
+        account than the one an identity's intake calendar points at."""
         async with self._db.session() as session:
             result = await session.execute(
                 select(DavObject).where(
@@ -148,6 +150,20 @@ class DavObjectRepository:
                 )
             )
             return result.scalar_one_or_none()
+
+    async def find_by_uid_anywhere(self, uid: str) -> DavObject | None:
+        """The UID lookup calendar/intake.py needs: a UID already held in
+        any dav_objects row of any DAV account -- the hand-imported case
+        the design settles on ("update in place where it lives, whatever
+        the mapping says"), and what keeps two of a user's own addresses
+        being invited to the same event from producing two copies."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(DavObject)
+                .where(DavObject.uid == uid, DavObject.deleted_at.is_(None))
+                .order_by(DavObject.created_at)
+            )
+            return result.scalars().first()
 
     async def list_in_collections(
         self, collection_ids: list[uuid.UUID],
