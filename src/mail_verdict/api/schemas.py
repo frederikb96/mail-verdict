@@ -625,10 +625,15 @@ class UnifiedFolderOrderUpdate(BaseModel):
 
 
 class IdentityCreate(BaseModel):
-    """Request to create an identity -- an address its account may send as."""
+    """Request to create an identity -- an address its account may send as.
+
+    The wire field is `address`, matching the UI's Identity type
+    (ui/src/types/api.ts) rather than the `email` column name Identity
+    carries at the database layer (database/models.py).
+    """
 
     account_id: uuid.UUID
-    email: str
+    address: str
     display_name: str | None = None
     is_default: bool = Field(
         default=False,
@@ -641,7 +646,7 @@ class IdentityCreate(BaseModel):
 class IdentityUpdate(BaseModel):
     """Fields to change on an identity; omitted fields are left as-is."""
 
-    email: str | None = None
+    address: str | None = None
     display_name: str | None = None
     is_default: bool | None = Field(
         default=None,
@@ -656,12 +661,10 @@ class IdentityResponse(BaseModel):
 
     id: uuid.UUID
     account_id: uuid.UUID
-    email: str
+    address: str
     display_name: str | None = None
     is_default: bool
     created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 # --- Outbox schemas (send / draft) ---
