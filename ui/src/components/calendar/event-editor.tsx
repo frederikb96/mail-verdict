@@ -121,7 +121,7 @@ export function EventEditor({
   const readOnly = calendar?.read_only ?? false;
   const isRecurring = mode === "edit" && (event?.is_recurring ?? false);
 
-  const buildPayload = () => ({
+  const buildCommonPayload = () => ({
     calendar_id: calendarId,
     summary,
     dtstart: range.start,
@@ -130,18 +130,20 @@ export function EventEditor({
     location: location || undefined,
     description: description || undefined,
     rrule: rrule ?? undefined,
-    attendees: parseAddressList(attendees).map((email) => ({ email })),
   });
 
   const doSave = (scope?: RecurrenceScope) => {
     if (mode === "create") {
-      createEvent.mutate(buildPayload(), {
-        onSuccess: () => {
-          pushToast("Event created", "success");
-          onOpenChange(false);
+      createEvent.mutate(
+        { ...buildCommonPayload(), attendees: parseAddressList(attendees).map((email) => ({ email })) },
+        {
+          onSuccess: () => {
+            pushToast("Event created", "success");
+            onOpenChange(false);
+          },
+          onError: (err) => pushToast(`Could not create event: ${err.message}`, "error", 0),
         },
-        onError: (err) => pushToast(`Could not create event: ${err.message}`, "error", 0),
-      });
+      );
       return;
     }
     if (!event) return;
@@ -149,7 +151,17 @@ export function EventEditor({
       {
         objectId: event.object_id,
         recurrenceId: event.recurrence_id,
-        data: { ...buildPayload(), scope, recurrence_id: event.recurrence_id ?? undefined },
+        // recurrence_id is only meaningful (and only accepted by the API)
+        // alongside scope="this" -- every occurrence, recurring or not,
+        // carries a recurrence_id once expanded for display, so gating
+        // this on scope rather than on event.recurrence_id being set is
+        // what keeps a non-recurring event's edit from being misread as
+        // one occurrence of a series with no scope given.
+        data: {
+          ...buildCommonPayload(),
+          scope,
+          recurrence_id: scope === "this" ? (event.recurrence_id ?? undefined) : undefined,
+        },
       },
       {
         onSuccess: () => {
@@ -322,8 +334,13 @@ export function EventEditor({
                 value={attendees}
                 onChange={(e) => setAttendees(e.target.value)}
                 placeholder="name@example.com, another@example.com"
-                disabled={readOnly}
+                disabled={readOnly || mode === "edit"}
               />
+              {mode === "edit" && (
+                <p className="text-xs text-muted-foreground">
+                  Attendees cannot be changed after an event is created.
+                </p>
+              )}
             </div>
           </div>
 

@@ -61,7 +61,18 @@ export function EventPopover() {
       if (e.key === "Escape") setSelected(null);
     }
     function onPointerDown(e: PointerEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setSelected(null);
+      const target = e.target as Node;
+      if (ref.current?.contains(target)) return;
+      // The editor Sheet, and the recurrence-scope/delete confirmation
+      // dialogs it can open, all render into a portal outside this
+      // popover's own DOM subtree -- without this, the very first
+      // pointerdown inside any of them (the Save button included) reads
+      // as "outside the popover" and closes it, unmounting the dialog
+      // before its own click ever completes.
+      if ((target as Element).closest?.('[data-slot="sheet-content"], [data-slot="dialog-content"]')) {
+        return;
+      }
+      setSelected(null);
     }
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("pointerdown", onPointerDown);

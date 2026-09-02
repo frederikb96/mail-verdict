@@ -42,6 +42,12 @@ def folder(page: Page, folder_id: str) -> Locator:
     return page.locator(f'[data-testid="folder"][data-folder-id="{folder_id}"]')
 
 
+def event_chip(page: Page, object_id: str) -> Locator:
+    """The clickable calendar event chip, by its object id -- month cell,
+    time grid block or agenda row, whichever view is rendering it."""
+    return page.locator(f'[data-testid="event"][data-event-id="{object_id}"]')
+
+
 def drag_row_to_folder(page: Page, row: Locator, target: Locator) -> None:
     """Drag a mail row onto a folder with a real pointer sequence.
 

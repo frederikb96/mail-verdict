@@ -810,12 +810,10 @@ export interface EventUpdateRequest {
   summary?: string;
   dtstart?: string;
   dtend?: string;
-  tz?: string;
   all_day?: boolean;
   location?: string;
   description?: string;
   rrule?: string;
-  attendees?: { email: string; cn?: string }[];
   /** Required when the object is a recurring instance. */
   scope?: RecurrenceScope;
   recurrence_id?: string;
