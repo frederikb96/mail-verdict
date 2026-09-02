@@ -32,8 +32,12 @@ RUN SITE_PKG=$(python3 -c "import sysconfig; print(sysconfig.get_path('purelib')
     chmod -R a+rw "$SITE_PKG/_mail_verdict.pth" "$SITE_PKG/mail_verdict.egg-info" 2>/dev/null || true && \
     chown -R 1000:1000 /app
 
-HEALTHCHECK --interval=10s --timeout=5s --retries=20 --start-period=30s \
-    CMD curl -sf http://localhost:8080/api/health || exit 1
+# --max-time bounds curl itself rather than relying on --timeout to kill
+# it -- --reload keeps the listening socket open across a worker crash
+# (see compose.dev.yaml), so a plain curl -sf can hang on a connection
+# that will never get a response instead of failing outright.
+HEALTHCHECK --interval=5s --timeout=5s --retries=6 --start-period=30s \
+    CMD curl -sf --max-time 3 http://localhost:8080/api/health || exit 1
 
 COPY docker/entrypoint-dev.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

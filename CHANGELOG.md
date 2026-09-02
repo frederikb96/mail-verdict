@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The pipeline queue's worker loop never passed its own `max_attempts` setting down to
   `claim_batch`, so a row that crashed the worker process itself before ever reaching the
   retry-vs-fail decision was reclaimed and re-claimed forever instead of eventually stopping
+- The dev image's `/api/health` check could report the container healthy for minutes after a
+  file-watcher reload crashed at startup. `--reload` pre-binds the listening socket once and
+  reuses it across every worker generation, so a dead worker still leaves 8080 accepting
+  connections; a plain `curl -sf` with no timeout of its own can hang on a response that never
+  comes rather than failing. The check now bounds curl with `--max-time` and checks more often,
+  so a dead worker is reported unhealthy within seconds instead of minutes
 
 ## [3.0.0] - 2026-08-30
 

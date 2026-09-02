@@ -30,11 +30,24 @@ services:
         condition: service_started
       mailpit:
         condition: service_started
+    # --reload pre-binds the listening socket once in the reloader
+    # process and hands it to each worker generation, so it stays open
+    # and accepting connections across a restart -- if the worker that
+    # reload just spawned dies at startup, a TCP connect against 8080
+    # still succeeds (nothing readable serves it, curl's own request
+    # never gets a response) and stays open until the next file change
+    # respawns a worker. Without --max-time, curl -sf would hang on
+    # exactly that dangling connection rather than reporting failure --
+    # a passing check would then be proving the reloader's socket is
+    # still bound, not that the application answered. retries/interval
+    # are tighter than the prod image's, since a worker in this state
+    # can otherwise sit reported "healthy" for minutes before enough
+    # consecutive failures flip the status.
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/api/health"]
-      interval: 10s
+      test: ["CMD", "curl", "-sf", "--max-time", "3", "http://localhost:8080/api/health"]
+      interval: 5s
       timeout: 5s
-      retries: 20
+      retries: 6
       start_period: 45s
     restart: "no"
 
