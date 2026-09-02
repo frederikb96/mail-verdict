@@ -213,6 +213,31 @@ class DavObjectRepository:
             )
             return list(result.scalars().all())
 
+    async def get_unresolved_errors(
+        self, object_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, str]:
+        """
+        object_id -> error, for every object with an unresolved failed
+        write -- a dav_notifications row with reverted_at IS NULL, the
+        same "may still be sitting in the column looking applied" state
+        the contract's Pending writes and conflicts section describes.
+        Batched over the whole visible set rather than one query per
+        object.
+        """
+        if not object_ids:
+            return {}
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(DavNotification.object_id, DavNotification.error)
+                .where(
+                    DavNotification.object_id.in_(object_ids),
+                    DavNotification.reverted_at.is_(None),
+                )
+                .order_by(DavNotification.created_at)
+            )
+            # Last write wins if an object has more than one unresolved row.
+            return {row.object_id: row.error for row in result.all() if row.object_id is not None}
+
 
 class CalendarPrefsRepository:
     """calendar_prefs -- MailVerdict-owned, full read/write."""

@@ -240,6 +240,19 @@ class TestBuildAndEdit:
         assert master.status == "cancelled"
         assert master.sequence == 1
 
+    def test_mark_cancelled_on_an_occurrence_with_no_stored_exception(self) -> None:
+        """The named occurrence has never been edited before -- there is
+        no exception component in `data` yet, only what recurring
+        expansion computes. Cancelling it must clone one rather than
+        failing to find it."""
+        updated = ical.mark_cancelled(_RECURRING_EVENT, recurrence_id="20260915T090000Z")
+        _, exceptions = ical.parse_master_and_exceptions(updated)
+        cancelled = next(e for e in exceptions if e.recurrence_id == "20260915T090000Z")
+        assert cancelled.status == "cancelled"
+        # The master and the other exception are untouched.
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.status == "confirmed"
+
 
 class TestReply:
     def test_build_reply_ics_carries_only_organizer_and_one_attendee(self) -> None:

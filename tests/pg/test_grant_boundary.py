@@ -329,9 +329,10 @@ async def test_create_dav_account_succeeds_under_the_restricted_grant(
 ) -> None:
     """create_dav_account writes exactly (id, name, url, username, password,
     is_active) -- the dav_accounts insert grant."""
+    name = f"Nextcloud-{uuid.uuid4()}"
     async with restricted_db.session() as session:
         account = await create_dav_account(
-            session, name="Nextcloud", url="https://cloud.example.org/remote.php/dav/",
+            session, name=name, url="https://cloud.example.org/remote.php/dav/",
             username="alice", password="an-app-password",
         )
         await session.commit()
@@ -339,7 +340,7 @@ async def test_create_dav_account_succeeds_under_the_restricted_grant(
 
     async with migrated_db.session() as session:
         result = await session.execute(select(DavAccount.name).where(DavAccount.id == account_id))
-        assert result.scalar_one() == "Nextcloud"
+        assert result.scalar_one() == name
 
 
 @pytest.mark.asyncio

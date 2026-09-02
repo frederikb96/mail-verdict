@@ -493,6 +493,37 @@ def replace_master_fields(
     return _serialize(cal)
 
 
+def _get_or_clone_exception(cal: Calendar, recurrence_id: str) -> Component:
+    """
+    The exception component at recurrence_id, creating it first if the
+    series has none there yet -- the common case, since a occurrence a
+    caller names almost always came from expand_instances() rather than
+    from a component actually stored in `data`. Cloned from the master,
+    with RRULE dropped (an exception does not recur its own series) and
+    RECURRENCE-ID set to the occurrence actually named -- never the
+    master's own DTSTART, which is the series' first occurrence and
+    would silently misfile every later one.
+    """
+    existing = next(
+        (c for c in cal.walk() if c.name == "VEVENT" and _recurrence_id_of(c) == recurrence_id),
+        None,
+    )
+    if existing is not None:
+        return existing
+
+    master = next(
+        (c for c in cal.walk() if c.name == "VEVENT" and c.get("RECURRENCE-ID") is None), None,
+    )
+    if master is None:
+        raise ValueError("VCALENDAR has no master VEVENT")
+    exception = deepcopy(master)
+    if "RRULE" in exception:
+        del exception["RRULE"]
+    _set(exception, "RECURRENCE-ID", vDDDTypes.from_ical(recurrence_id))
+    cal.add_component(exception)
+    return exception
+
+
 def edit_occurrence(
     data: str,
     recurrence_id: str,
@@ -508,39 +539,14 @@ def edit_occurrence(
     scope="this": edit one occurrence of a series without touching the
     others. Updates the existing exception at recurrence_id if there is
     one, otherwise clones the master as a new exception carrying the
-    overrides -- the same "clone master, override, add as exception"
-    shape replace_exception_partstat_or_add() uses for a REPLY.
+    overrides.
     """
     cal = Calendar.from_ical(data)
-    existing = next(
-        (c for c in cal.walk() if c.name == "VEVENT" and _recurrence_id_of(c) == recurrence_id),
-        None,
-    )
-    if existing is not None:
-        _apply_field_overrides(
-            existing, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
-            location=location, description=description, rrule=None,
-        )
-        return _serialize(cal)
-
-    master = next(
-        (c for c in cal.walk() if c.name == "VEVENT" and c.get("RECURRENCE-ID") is None), None,
-    )
-    if master is None:
-        raise ValueError("VCALENDAR has no master VEVENT")
-    exception = deepcopy(master)
-    if "RRULE" in exception:
-        del exception["RRULE"]
-    # The exception's own original occurrence time, parsed from the
-    # recurrence_id the caller computed from an expanded instance --
-    # never the master's own DTSTART, which is the series' first
-    # occurrence and would silently misfile every later one.
-    _set(exception, "RECURRENCE-ID", vDDDTypes.from_ical(recurrence_id))
+    target = _get_or_clone_exception(cal, recurrence_id)
     _apply_field_overrides(
-        exception, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
+        target, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
         location=location, description=description, rrule=None,
     )
-    cal.add_component(exception)
     return _serialize(cal)
 
 
@@ -585,9 +591,15 @@ def _find_component(cal: Calendar, recurrence_id: str | None) -> Component:
 def mark_cancelled(data: str, *, recurrence_id: str | None = None) -> str:
     """Set STATUS:CANCELLED on the whole series (recurrence_id=None) or
     on one occurrence -- the event stays visible, cancelled, until the
-    user removes it (the intake design's CANCEL handling)."""
+    user removes it (the intake design's CANCEL handling). Cancelling one
+    occurrence of a series that has no stored exception there yet clones
+    the master as a cancelled exception, the same as edit_occurrence()."""
     cal = Calendar.from_ical(data)
-    target = _find_component(cal, recurrence_id)
+    target = (
+        _get_or_clone_exception(cal, recurrence_id)
+        if recurrence_id is not None
+        else _find_component(cal, None)
+    )
     _set(target, "STATUS", "CANCELLED")
     _set(target, "SEQUENCE", int(target.get("SEQUENCE", 0)) + 1)
     return _serialize(cal)
@@ -617,40 +629,16 @@ def merge_exception(existing_data: str, exception_data: str, recurrence_id: str)
 
 
 def replace_exception_partstat_or_add(
-    existing_data: str, master_organizer_email: str, attendee_email: str,
-    partstat: str, recurrence_id: str,
+    existing_data: str, attendee_email: str, partstat: str, recurrence_id: str,
 ) -> str:
     """REPLY intake for one occurrence of a series: update the exception's
     PARTSTAT if one already exists for recurrence_id, otherwise clone the
     master as a new exception carrying the updated PARTSTAT."""
     cal = Calendar.from_ical(existing_data)
-    existing_exception = next(
-        (
-            c for c in cal.walk()
-            if c.name == "VEVENT" and _recurrence_id_of(c) == recurrence_id
-        ),
-        None,
-    )
-    if existing_exception is not None:
-        return set_partstat(
-            cal.to_ical().decode("utf-8"), attendee_email, partstat, recurrence_id=recurrence_id,
-        )
-
-    master = next(
-        (c for c in cal.walk() if c.name == "VEVENT" and c.get("RECURRENCE-ID") is None), None,
-    )
-    if master is None:
-        raise ValueError("VCALENDAR has no master VEVENT")
-    exception = deepcopy(master)
-    if "RRULE" in exception:
-        del exception["RRULE"]
-    # See edit_occurrence()'s comment: the exception's own occurrence
-    # time, not the master's DTSTART.
-    _set(exception, "RECURRENCE-ID", vDDDTypes.from_ical(recurrence_id))
+    exception = _get_or_clone_exception(cal, recurrence_id)
     for attendee in _as_list(exception.get("ATTENDEE")):
         if _addr_email(attendee).lower() == attendee_email.lower():
             attendee.params["PARTSTAT"] = partstat.upper()
-    cal.add_component(exception)
     return _serialize(cal)
 
 

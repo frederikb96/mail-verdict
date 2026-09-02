@@ -76,17 +76,18 @@ class TestDavAccounts:
     def test_create_and_list_dav_account(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
+        name = f"Nextcloud-{uuid.uuid4()}"
         with patch(_DAV_ACCOUNTS_TARGET, return_value=migrated_db):
             created = client.post(
                 "/dav-accounts",
                 json={
-                    "name": "Nextcloud", "discovery_url": "https://cloud.example.org/dav/",
+                    "name": name, "discovery_url": "https://cloud.example.org/dav/",
                     "username": "alice", "password": "an-app-password",
                 },
             )
             assert created.status_code == 201, created.text
             body = created.json()
-            assert body["name"] == "Nextcloud"
+            assert body["name"] == name
             assert body["discovery_url"] == "https://cloud.example.org/dav/"
             assert body["collections"] == []
 

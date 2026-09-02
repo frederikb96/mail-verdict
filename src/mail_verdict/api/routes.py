@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from mail_verdict.api.accounts import router as accounts_router
+from mail_verdict.api.calendar_events import router as calendar_events_router
 from mail_verdict.api.calendars import addressbooks_router
 from mail_verdict.api.calendars import links_router as calendar_links_router
 from mail_verdict.api.calendars import router as calendars_router
@@ -59,4 +60,5 @@ all_routers: list[APIRouter] = [
     calendar_links_router,
     addressbooks_router,
     contacts_router,
+    calendar_events_router,
 ]
