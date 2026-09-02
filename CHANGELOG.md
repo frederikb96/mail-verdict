@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The MCP server gains fifteen calendar and contact tools, mirroring the fifteen existing mail
+  ones: `list_calendars`, `list_events`, `get_event`, `create_event`, `update_event`,
+  `delete_event`, `respond_to_event`, `list_addressbooks`, `list_contacts`, `search_contacts`,
+  `get_contact`, `create_contact`, `update_contact`, `delete_contact`. Each wraps the same
+  `api/calendar_events.py`, `api/calendars.py` and `api/contacts.py` functions the REST endpoints
+  call, so there is one definition of what creating or editing an event does. `create_event` and
+  `update_event` accept a raw `RRULE` value, the full RFC 5545 vocabulary rather than a fixed
+  preset, so an agent can express an interval, a weekday set, a count or an end date the same way
+  the REST API already could
+
 ### Fixed
 
 - The month view now reads only what its window could contain -- a SQL predicate on

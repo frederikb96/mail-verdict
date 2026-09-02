@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -14,11 +15,69 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.calendar_events import router as events_router
 from mail_verdict.api.calendars import router as calendars_router
+from mail_verdict.calendar import ical
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
 
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
+
+# Shaped like what a real CalDAV server (Nextcloud, or an Outlook
+# invitation) actually emits for a timezone-bound recurring series: a
+# VTIMEZONE component, an RRULE narrowed by an EXDATE, an RDATE adding an
+# extra occurrence, an exception overriding one occurrence, and
+# properties this codebase never models (CATEGORIES, an X- property, a
+# VALARM subcomponent). Row 125's round-trip proof for the PATCH endpoint
+# itself, not just the ical.py functions underneath it.
+_EXOTIC_RECURRING_ICS = (
+    "BEGIN:VCALENDAR\r\n"
+    "VERSION:2.0\r\n"
+    "BEGIN:VTIMEZONE\r\n"
+    "TZID:Europe/Berlin\r\n"
+    "BEGIN:DAYLIGHT\r\n"
+    "TZOFFSETFROM:+0100\r\n"
+    "TZOFFSETTO:+0200\r\n"
+    "TZNAME:CEST\r\n"
+    "DTSTART:19700329T020000\r\n"
+    "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\n"
+    "END:DAYLIGHT\r\n"
+    "BEGIN:STANDARD\r\n"
+    "TZOFFSETFROM:+0200\r\n"
+    "TZOFFSETTO:+0100\r\n"
+    "TZNAME:CET\r\n"
+    "DTSTART:19701025T030000\r\n"
+    "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\n"
+    "END:STANDARD\r\n"
+    "END:VTIMEZONE\r\n"
+    "BEGIN:VEVENT\r\n"
+    "UID:exotic-pg-1\r\n"
+    "DTSTAMP:20260901T120000Z\r\n"
+    "DTSTART;TZID=Europe/Berlin:20260907T090000\r\n"
+    "DTEND;TZID=Europe/Berlin:20260907T100000\r\n"
+    "SUMMARY:Weekly standup\r\n"
+    "CATEGORIES:WORK,PLANNING\r\n"
+    "SEQUENCE:0\r\n"
+    "X-CUSTOM-CLIENT-ID:abc-123\r\n"
+    "RRULE:FREQ=WEEKLY;COUNT=6\r\n"
+    "EXDATE;TZID=Europe/Berlin:20260914T090000\r\n"
+    "RDATE;TZID=Europe/Berlin:20261020T130000\r\n"
+    "BEGIN:VALARM\r\n"
+    "ACTION:DISPLAY\r\n"
+    "DESCRIPTION:Reminder\r\n"
+    "TRIGGER:-PT15M\r\n"
+    "END:VALARM\r\n"
+    "END:VEVENT\r\n"
+    "BEGIN:VEVENT\r\n"
+    "UID:exotic-pg-1\r\n"
+    "RECURRENCE-ID;TZID=Europe/Berlin:20260921T090000\r\n"
+    "DTSTAMP:20260901T120000Z\r\n"
+    "DTSTART;TZID=Europe/Berlin:20260921T100000\r\n"
+    "DTEND;TZID=Europe/Berlin:20260921T110000\r\n"
+    "SUMMARY:Weekly standup (moved)\r\n"
+    "SEQUENCE:1\r\n"
+    "END:VEVENT\r\n"
+    "END:VCALENDAR\r\n"
+)
 
 
 @pytest.fixture()
@@ -686,3 +745,133 @@ class TestRespond:
                 json={"identity_id": str(other_identity_id), "partstat": "accepted"},
             )
         assert resp.status_code == 409
+
+
+class TestRecurrenceRoundTrip:
+    """Row 125: an object shaped like something a real CalDAV server
+    produced must survive an edit through the PATCH endpoint an agent or
+    the UI actually calls, not just the pure ical.py functions
+    underneath it."""
+
+    async def _seed_exotic_event(self, db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID]:
+        async with db.session() as session:
+            dav_account_id, collection_id = await _seed_calendar(session)
+            object_id = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                    "VALUES (:id, :account_id, :collection_id, 'calendar', :data)"
+                ),
+                {
+                    "id": object_id, "account_id": dav_account_id,
+                    "collection_id": collection_id, "data": _EXOTIC_RECURRING_ICS,
+                },
+            )
+            await session.commit()
+        return collection_id, object_id
+
+    async def _raw_data(self, db: DatabaseConnection, object_id: uuid.UUID) -> str:
+        async with db.session() as session:
+            result = await session.execute(
+                text("SELECT data FROM dav_objects WHERE id = :id"), {"id": object_id},
+            )
+            return str(result.scalar_one())
+
+    def test_editing_the_summary_through_the_api_preserves_everything_else(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        _calendar_id, object_id = client.portal.call(self._seed_exotic_event, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"summary": "Renamed via API", "scope": "all"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["summary"] == "Renamed via API"
+
+        raw = client.portal.call(self._raw_data, migrated_db, object_id)
+        assert "BEGIN:VTIMEZONE" in raw
+        assert "TZID:Europe/Berlin" in raw
+        assert "EXDATE" in raw
+        assert "RDATE" in raw
+        assert "X-CUSTOM-CLIENT-ID:abc-123" in raw
+        assert "CATEGORIES:WORK,PLANNING" in raw
+        assert "BEGIN:VALARM" in raw
+        assert "Weekly standup (moved)" in raw  # the exception, untouched
+
+        master, exceptions = ical.parse_master_and_exceptions(raw)
+        assert master.summary == "Renamed via API"
+        assert len(exceptions) == 1
+
+        # Excluding the EXDATE date and honouring the moved exception and
+        # the RDATE addition still holds after an edit through the API.
+        instances = ical.expand_instances(
+            raw,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 11, 1, tzinfo=timezone.utc),
+        )
+        # 6 RRULE occurrences, one excluded by EXDATE, plus RDATE's addition.
+        assert len(instances) == 6
+        assert not any(i.dtstart.day == 14 and i.dtstart.month == 9 for i in instances)
+
+    def test_editing_one_occurrence_leaves_the_master_and_its_recurrence_data_alone(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        _calendar_id, object_id = client.portal.call(self._seed_exotic_event, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.patch(
+                f"/calendar/events/{object_id}",
+                json={
+                    "summary": "Moved once more", "scope": "this",
+                    "recurrence_id": "20260921T090000",
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["summary"] == "Moved once more"
+
+        raw = client.portal.call(self._raw_data, migrated_db, object_id)
+        master, exceptions = ical.parse_master_and_exceptions(raw)
+        assert master.summary == "Weekly standup"
+        assert "BEGIN:VTIMEZONE" in raw
+        assert "EXDATE" in raw
+        assert "RDATE" in raw
+        assert len(exceptions) == 1
+        assert exceptions[0].summary == "Moved once more"
+
+
+class TestCreateWithComplexRrule:
+    """Row 125's other half: creating complex recurrence through the API
+    -- an interval and an end -- has to actually work, not just survive
+    what already exists."""
+
+    def test_create_with_interval_and_until(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Fortnightly review",
+                    "dtstart": "2026-09-07T10:00:00+00:00",
+                    "dtend": "2026-09-07T11:00:00+00:00",
+                    "rrule": "FREQ=WEEKLY;INTERVAL=2;UNTIL=20261102T100000Z",
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            listed = client.get(
+                "/calendar/events", params={"month": "2026-10", "calendars": str(calendar_id)},
+            )
+        assert listed.status_code == 200
+        starts = sorted(
+            datetime.fromisoformat(e["dtstart"])
+            for e in listed.json()["events"] if e["summary"] == "Fortnightly review"
+        )
+        # Every 2 weeks from 2026-09-07T10:00Z: 09-21, 10-05, 10-19, 11-02.
+        # Only 10-05 and 10-19 fall inside October's [start, end) window;
+        # 11-02 sits on UNTIL's own boundary but the following month.
+        assert starts == [
+            datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 19, 10, 0, tzinfo=timezone.utc),
+        ]

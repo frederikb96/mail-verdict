@@ -200,7 +200,10 @@ are deliberately not evented); the two things a client integrating against it ne
 ## Building a client against this API
 
 The MCP server at `/mcp` (FastMCP, streamable-http transport) wraps a curated subset of this
-same functionality — search, read, organise, send, spam feedback, semantic search — as typed
-tools for an MCP client, and is very often the better fit for an agent than calling REST
-directly. Reach for the REST API when the MCP surface does not cover what's needed (folder or
-pipeline management, queue control, settings) or when building the browser UI itself.
+same functionality — search, read, organise, send, spam feedback, semantic search, and reading,
+creating, editing and deleting calendar events and contacts — as typed tools for an MCP client,
+and is very often the better fit for an agent than calling REST directly. Each event tool takes a
+raw `RRULE` value where recurrence applies, the same full RFC 5545 vocabulary the REST API
+accepts, not a fixed preset. Reach for the REST API when the MCP surface does not cover what's
+needed (folder or pipeline management, queue control, settings, or creating/deleting a calendar
+or address book itself) or when building the browser UI.
