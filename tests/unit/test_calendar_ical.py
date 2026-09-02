@@ -137,6 +137,13 @@ class TestMethodAndScheduleAgent:
         master, _ = ical.parse_master_and_exceptions(stripped)
         assert master.summary == "Kickoff"
 
+    def test_with_method_is_strip_methods_inverse(self) -> None:
+        stripped = ical.strip_method(_INVITATION_REQUEST)
+        restored = ical.with_method(stripped, "REQUEST")
+        assert ical.get_method(restored) == "REQUEST"
+        master, _ = ical.parse_master_and_exceptions(restored)
+        assert master.summary == "Kickoff"
+
     def test_schedule_agent_client_on_organizer(self) -> None:
         updated = ical.set_schedule_agent_client_on_organizer(_INVITATION_REQUEST)
         assert "SCHEDULE-AGENT=CLIENT" in updated
@@ -203,6 +210,19 @@ class TestBuildAndEdit:
         # Untouched fields survive.
         assert master.location == "Room 4"
 
+    def test_replace_master_fields_moves_the_time(self) -> None:
+        """A raw datetime dict-assigned onto a Component serializes with
+        Python's str() rather than the RFC 5545 wire format unless it goes
+        through _set()'s encode step -- this is what catches a regression
+        of that."""
+        new_start = datetime(2026, 9, 6, 9, 0, tzinfo=timezone.utc)
+        new_end = datetime(2026, 9, 6, 10, 0, tzinfo=timezone.utc)
+        updated = ical.replace_master_fields(_SIMPLE_EVENT, dtstart=new_start, dtend=new_end)
+        assert "20260906T090000Z" in updated
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.dtstart == new_start
+        assert master.dtend == new_end
+
     def test_set_partstat_updates_the_named_attendee(self) -> None:
         updated = ical.set_partstat(_INVITATION_REQUEST, "freddy@work.example", "accepted")
         master, _ = ical.parse_master_and_exceptions(updated)
@@ -263,3 +283,35 @@ class TestExceptionMerge:
         _, exceptions = ical.parse_master_and_exceptions(merged)
         assert len(exceptions) == 1
         assert exceptions[0].summary == "Weekly standup (moved again)"
+
+
+class TestEditOccurrence:
+    def test_edits_an_existing_exception_in_place(self) -> None:
+        updated = ical.edit_occurrence(
+            _RECURRING_EVENT, "20260908T090000Z", summary="Standup (renamed)",
+        )
+        _, exceptions = ical.parse_master_and_exceptions(updated)
+        assert len(exceptions) == 1
+        assert exceptions[0].summary == "Standup (renamed)"
+        # The other, untouched occurrences are unaffected.
+        instances = ical.expand_instances(
+            updated,
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert instances[0].summary == "Weekly standup"
+
+    def test_creates_a_new_exception_at_the_named_occurrence(self) -> None:
+        """The third occurrence (2026-09-15) has no exception yet -- this
+        creates one carrying only the override, RECURRENCE-ID set to the
+        occurrence actually named, not the master's own DTSTART."""
+        updated = ical.edit_occurrence(
+            _RECURRING_EVENT, "20260915T090000Z", summary="Standup (special)",
+        )
+        _, exceptions = ical.parse_master_and_exceptions(updated)
+        assert len(exceptions) == 2
+        new_exception = next(e for e in exceptions if e.summary == "Standup (special)")
+        assert new_exception.recurrence_id == "20260915T090000Z"
+        # The exception does not carry its own RRULE (it would recurse a
+        # second series from one occurrence otherwise).
+        assert new_exception.rrule is None

@@ -16,12 +16,13 @@ the result to postimap/actions.py.
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, cast
 
 import recurring_ical_events
-from icalendar import Calendar, Component, Event, vCalAddress, vText
+from icalendar import Calendar, Component, Event, vCalAddress, vDDDTypes, vText
 
 
 def _serialize(component: Any) -> str:
@@ -29,6 +30,24 @@ def _serialize(component: Any) -> str:
     place that tells mypy the result is the str every function here
     promises to return."""
     return cast(str, component.to_ical().decode("utf-8"))
+
+
+def _set(component: Component, name: str, value: Any) -> None:
+    """
+    Replace a singular property with a properly-typed value.
+
+    `component[name] = value` (dict-style) stores whatever it's given
+    completely unencoded -- a raw datetime has no .to_ical() of its own,
+    so a later direct .to_ical() read (or even the whole calendar's own
+    serialization) renders it with Python's str() instead of the RFC 5545
+    wire format. `component.add(name, value)` does encode correctly, but
+    never replaces -- called twice it leaves two properties of the same
+    name. This does both: drop whatever is there, then add the encoded
+    replacement.
+    """
+    if name in component:
+        del component[name]
+    component.add(name, value)
 
 
 # icalendar represents a single-valued property (ORGANIZER, one ATTENDEE)
@@ -289,6 +308,15 @@ def strip_method(data: str) -> str:
     return _serialize(cal)
 
 
+def with_method(data: str, method: str) -> str:
+    """The inverse of strip_method() -- for the .ics attachment mailed
+    alongside a REQUEST/CANCEL, which does need METHOD, unlike the copy
+    this application stores."""
+    cal = Calendar.from_ical(data)
+    _set(cal, "METHOD", method)
+    return _serialize(cal)
+
+
 def set_schedule_agent_client_on_organizer(data: str) -> str:
     """Silence a server's own scheduling engine when we hold an
     invitation as an attendee: the ORGANIZER line carries
@@ -396,6 +424,44 @@ def _parse_rrule_value(rrule: str) -> dict[str, Any]:
     return cast(dict[str, Any], vRecur.from_ical(rrule))
 
 
+def _apply_field_overrides(
+    component: Component,
+    *,
+    summary: str | None,
+    dtstart: datetime | None,
+    dtend: datetime | None,
+    all_day: bool | None,
+    location: str | None,
+    description: str | None,
+    rrule: str | None,
+) -> None:
+    """Mutate one VEVENT component in place -- fields left as None are
+    unchanged. Shared by replace_master_fields() (scope="all") and
+    edit_occurrence() (scope="this")."""
+    if summary is not None:
+        _set(component, "SUMMARY", summary)
+    if dtstart is not None:
+        is_all_day = all_day if all_day is not None else not isinstance(
+            component.get("DTSTART").dt, datetime,
+        )
+        _set(component, "DTSTART", dtstart.date() if is_all_day else dtstart)
+    if dtend is not None:
+        is_all_day = all_day if all_day is not None else not isinstance(
+            component.get("DTSTART").dt, datetime,
+        )
+        _set(component, "DTEND", dtend.date() if is_all_day else dtend)
+    if location is not None:
+        _set(component, "LOCATION", location)
+    if description is not None:
+        _set(component, "DESCRIPTION", description)
+    if rrule is not None:
+        if "RRULE" in component:
+            del component["RRULE"]
+        if rrule:
+            component.add("RRULE", _parse_rrule_value(rrule))
+    _set(component, "SEQUENCE", int(component.get("SEQUENCE", 0)) + 1)
+
+
 def replace_master_fields(
     data: str,
     *,
@@ -420,28 +486,61 @@ def replace_master_fields(
     if master is None:
         raise ValueError("VCALENDAR has no master VEVENT")
 
-    if summary is not None:
-        master["SUMMARY"] = summary
-    if dtstart is not None:
-        is_all_day = all_day if all_day is not None else not isinstance(
-            master.get("DTSTART").dt, datetime,
-        )
-        master["DTSTART"] = dtstart.date() if is_all_day else dtstart
-    if dtend is not None:
-        is_all_day = all_day if all_day is not None else not isinstance(
-            master.get("DTSTART").dt, datetime,
-        )
-        master["DTEND"] = dtend.date() if is_all_day else dtend
-    if location is not None:
-        master["LOCATION"] = location
-    if description is not None:
-        master["DESCRIPTION"] = description
-    if rrule is not None:
-        master["RRULE"] = _parse_rrule_value(rrule) if rrule else None
-        if not rrule and "RRULE" in master:
-            del master["RRULE"]
+    _apply_field_overrides(
+        master, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
+        location=location, description=description, rrule=rrule,
+    )
+    return _serialize(cal)
 
-    master["SEQUENCE"] = int(master.get("SEQUENCE", 0)) + 1
+
+def edit_occurrence(
+    data: str,
+    recurrence_id: str,
+    *,
+    summary: str | None = None,
+    dtstart: datetime | None = None,
+    dtend: datetime | None = None,
+    all_day: bool | None = None,
+    location: str | None = None,
+    description: str | None = None,
+) -> str:
+    """
+    scope="this": edit one occurrence of a series without touching the
+    others. Updates the existing exception at recurrence_id if there is
+    one, otherwise clones the master as a new exception carrying the
+    overrides -- the same "clone master, override, add as exception"
+    shape replace_exception_partstat_or_add() uses for a REPLY.
+    """
+    cal = Calendar.from_ical(data)
+    existing = next(
+        (c for c in cal.walk() if c.name == "VEVENT" and _recurrence_id_of(c) == recurrence_id),
+        None,
+    )
+    if existing is not None:
+        _apply_field_overrides(
+            existing, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
+            location=location, description=description, rrule=None,
+        )
+        return _serialize(cal)
+
+    master = next(
+        (c for c in cal.walk() if c.name == "VEVENT" and c.get("RECURRENCE-ID") is None), None,
+    )
+    if master is None:
+        raise ValueError("VCALENDAR has no master VEVENT")
+    exception = deepcopy(master)
+    if "RRULE" in exception:
+        del exception["RRULE"]
+    # The exception's own original occurrence time, parsed from the
+    # recurrence_id the caller computed from an expanded instance --
+    # never the master's own DTSTART, which is the series' first
+    # occurrence and would silently misfile every later one.
+    _set(exception, "RECURRENCE-ID", vDDDTypes.from_ical(recurrence_id))
+    _apply_field_overrides(
+        exception, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
+        location=location, description=description, rrule=None,
+    )
+    cal.add_component(exception)
     return _serialize(cal)
 
 
@@ -489,8 +588,8 @@ def mark_cancelled(data: str, *, recurrence_id: str | None = None) -> str:
     user removes it (the intake design's CANCEL handling)."""
     cal = Calendar.from_ical(data)
     target = _find_component(cal, recurrence_id)
-    target["STATUS"] = "CANCELLED"
-    target["SEQUENCE"] = int(target.get("SEQUENCE", 0)) + 1
+    _set(target, "STATUS", "CANCELLED")
+    _set(target, "SEQUENCE", int(target.get("SEQUENCE", 0)) + 1)
     return _serialize(cal)
 
 
@@ -542,10 +641,12 @@ def replace_exception_partstat_or_add(
     )
     if master is None:
         raise ValueError("VCALENDAR has no master VEVENT")
-    from copy import deepcopy
-
     exception = deepcopy(master)
-    exception["RECURRENCE-ID"] = master.get("DTSTART")
+    if "RRULE" in exception:
+        del exception["RRULE"]
+    # See edit_occurrence()'s comment: the exception's own occurrence
+    # time, not the master's DTSTART.
+    _set(exception, "RECURRENCE-ID", vDDDTypes.from_ical(recurrence_id))
     for attendee in _as_list(exception.get("ATTENDEE")):
         if _addr_email(attendee).lower() == attendee_email.lower():
             attendee.params["PARTSTAT"] = partstat.upper()
