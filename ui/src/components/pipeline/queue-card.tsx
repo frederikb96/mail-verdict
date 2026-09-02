@@ -85,6 +85,8 @@ export function QueueCard({ queue }: { queue: QueueResponse }) {
               size="icon-sm"
               disabled={queue.concurrency.target <= 0 || patchQueue.isPending}
               onClick={() => setConcurrency(-1)}
+              title="Decrease concurrency"
+              aria-label="Decrease concurrency"
             >
               <Minus className="h-3 w-3" />
             </Button>
@@ -100,6 +102,8 @@ export function QueueCard({ queue }: { queue: QueueResponse }) {
                 patchQueue.isPending
               }
               onClick={() => setConcurrency(1)}
+              title="Increase concurrency"
+              aria-label="Increase concurrency"
             >
               <Plus className="h-3 w-3" />
             </Button>

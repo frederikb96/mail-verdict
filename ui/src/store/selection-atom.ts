@@ -13,11 +13,6 @@ export const selectionCountAtom = atom<number>(
 /** Last clicked mail ID for shift-select anchor tracking. */
 export const lastClickedMailIdAtom = atom<string | null>(null);
 
-/** Whether selection mode is active (at least one mail selected). */
-export const selectionModeAtom = atom<boolean>(
-  (get) => get(selectedMailIdsAtom).size > 0,
-);
-
 /**
  * Set when "select all" is used on a folder larger than what is fetched
  * client-side. Bulk actions send this scope instead of an id list; any
@@ -27,3 +22,8 @@ export const selectionScopeAtom = atom<{
   folderId: string;
   filter?: "unread" | "all";
 } | null>(null);
+
+/** Whether selection mode is active: explicit ids, or a folder-wide scope. */
+export const selectionModeAtom = atom<boolean>(
+  (get) => get(selectedMailIdsAtom).size > 0 || get(selectionScopeAtom) !== null,
+);

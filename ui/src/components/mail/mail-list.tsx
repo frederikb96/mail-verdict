@@ -12,6 +12,7 @@ import { BulkToolbar } from "@/components/mail/bulk-toolbar";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
+import { useFolders } from "@/hooks/use-folders";
 import { useUnifiedMails } from "@/hooks/use-unified-view";
 import {
   useSelection,
@@ -36,7 +37,14 @@ import type { MessageActionType, MessageSummary, UnifiedMessageSummary } from "@
 
 type RowAction = Extract<
   MessageActionType,
-  "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
+  | "flag"
+  | "unflag"
+  | "archive"
+  | "spam"
+  | "not_spam"
+  | "trash"
+  | "mark_read"
+  | "mark_unread"
 >;
 
 export function MailList() {
@@ -64,6 +72,9 @@ export function MailList() {
     folderId,
     threaded,
   );
+
+  const { data: folders } = useFolders(isUnifiedView ? null : accountId);
+  const isJunkFolder = folders?.find((f) => f.id === folderId)?.special_use === "junk";
 
   const result = isUnifiedView ? unifiedResult : singleAccountResult;
   const {
@@ -209,6 +220,7 @@ export function MailList() {
                   isFocused={index === focusedIndex}
                   isChecked={checkedIds.has(mail.id)}
                   selectionMode={selectionMode}
+                  isJunk={isJunkFolder}
                   onSelect={setSelectedMailId}
                   onCheckToggle={handleCheckToggle}
                   onAction={handleAction}

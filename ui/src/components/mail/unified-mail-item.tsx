@@ -23,6 +23,11 @@ type RowAction = Extract<
   "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
 >;
 
+// Kept in the layout at full width at all times; only opacity/pointer-events
+// toggle, so revealing these controls never shifts anything else in the row.
+const revealOnHoverClass =
+  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto";
+
 interface UnifiedMailItemProps {
   mail: UnifiedMessageSummary;
   isSelected: boolean;
@@ -144,37 +149,24 @@ export function UnifiedMailItem({
         )}
       </div>
 
-      {/* Always-visible indicators */}
+      {/*
+        Row actions. Every button is always in the DOM at a fixed position -
+        only opacity/pointer-events toggle on hover or focus - so the
+        always-visible mark-read control never shifts under the pointer when
+        the rest of the row reveals itself.
+      */}
       <div className="flex shrink-0 items-center gap-1">
         <button
-          className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read", mail.account_id);
-          }}
-          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
-        >
-          {mail.is_seen ? (
-            <MailIcon className="h-3.5 w-3.5" />
-          ) : (
-            <MailOpen className="h-3.5 w-3.5" />
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            !mail.is_flagged && revealOnHoverClass,
           )}
-        </button>
-
-        {mail.is_flagged && (
-          <Star className="h-4 w-4 fill-yellow-400 text-yellow-400 group-hover:hidden" />
-        )}
-      </div>
-
-      {/* Hover actions */}
-      <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
-        <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, mail.is_flagged ? "unflag" : "flag", mail.account_id);
           }}
           title={mail.is_flagged ? "Unflag" : "Star"}
+          aria-label={mail.is_flagged ? "Unflag" : "Star"}
         >
           <Star
             className={cn(
@@ -186,34 +178,61 @@ export function UnifiedMailItem({
           />
         </button>
         <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            revealOnHoverClass,
+          )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "archive", mail.account_id);
           }}
           title="Archive"
+          aria-label="Archive"
         >
           <Archive className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            revealOnHoverClass,
+          )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "spam", mail.account_id);
           }}
           title="Spam"
+          aria-label="Mark as spam"
         >
           <Ban className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            revealOnHoverClass,
+          )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "trash", mail.account_id);
           }}
           title="Move to trash"
+          aria-label="Move to trash"
         >
           <Trash2 className="h-4 w-4 text-muted-foreground" />
+        </button>
+        <button
+          className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read", mail.account_id);
+          }}
+          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
+          aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
+        >
+          {mail.is_seen ? (
+            <MailIcon className="h-3.5 w-3.5" />
+          ) : (
+            <MailOpen className="h-3.5 w-3.5" />
+          )}
         </button>
       </div>
     </div>

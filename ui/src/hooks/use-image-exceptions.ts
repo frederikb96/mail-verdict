@@ -45,8 +45,10 @@ export function useCreateImageException() {
       queryClient.invalidateQueries({
         queryKey: imageExceptionKeys.list(variables.accountId),
       });
-      // Invalidate mail queries to refresh image blocking status
+      // Invalidate mail and thread queries to refresh image blocking status
+      // -- the reading pane reads from the thread cache, not the mail one.
       queryClient.invalidateQueries({ queryKey: ["mail"] });
+      queryClient.invalidateQueries({ queryKey: ["thread"] });
     },
   });
 }
@@ -66,6 +68,7 @@ export function useDeleteImageException() {
         queryKey: imageExceptionKeys.list(variables.accountId),
       });
       queryClient.invalidateQueries({ queryKey: ["mail"] });
+      queryClient.invalidateQueries({ queryKey: ["thread"] });
     },
   });
 }

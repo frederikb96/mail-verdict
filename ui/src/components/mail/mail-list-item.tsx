@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, Archive, Ban, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
+import { Star, Archive, Ban, ThumbsUp, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   extractSenderName,
@@ -14,8 +14,20 @@ import type { MessageActionType, MessageSummary } from "@/types/api";
 
 type RowAction = Extract<
   MessageActionType,
-  "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
+  | "flag"
+  | "unflag"
+  | "archive"
+  | "spam"
+  | "not_spam"
+  | "trash"
+  | "mark_read"
+  | "mark_unread"
 >;
+
+// Kept in the layout at full width at all times; only opacity/pointer-events
+// toggle, so revealing these controls never shifts anything else in the row.
+const revealOnHoverClass =
+  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto";
 
 interface MailListItemProps {
   mail: MessageSummary;
@@ -23,6 +35,8 @@ interface MailListItemProps {
   isFocused?: boolean;
   isChecked: boolean;
   selectionMode: boolean;
+  /** True when the row's folder is Junk -- swaps the Spam control for Not spam. */
+  isJunk?: boolean;
   onSelect: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (mailId: string, action: RowAction) => void;
@@ -34,6 +48,7 @@ export function MailListItem({
   isFocused,
   isChecked,
   selectionMode,
+  isJunk,
   onSelect,
   onCheckToggle,
   onAction,
@@ -122,37 +137,24 @@ export function MailListItem({
         )}
       </div>
 
-      {/* Always-visible indicators */}
+      {/*
+        Row actions. Every button is always in the DOM at a fixed position -
+        only opacity/pointer-events toggle on hover or focus - so the
+        always-visible mark-read control never shifts under the pointer when
+        the rest of the row reveals itself.
+      */}
       <div className="flex shrink-0 items-center gap-1">
         <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read");
-          }}
-          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
-        >
-          {mail.is_seen ? (
-            <MailIcon className="h-4 w-4" />
-          ) : (
-            <MailOpen className="h-4 w-4" />
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            !mail.is_flagged && revealOnHoverClass,
           )}
-        </button>
-
-        {mail.is_flagged && (
-          <Star className="h-4 w-4 fill-yellow-400 text-yellow-400 group-hover:hidden" />
-        )}
-      </div>
-
-      {/* Hover actions */}
-      <div className="hidden shrink-0 items-center gap-1 group-hover:flex">
-        <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, mail.is_flagged ? "unflag" : "flag");
           }}
           title={mail.is_flagged ? "Unflag" : "Star"}
+          aria-label={mail.is_flagged ? "Unflag" : "Star"}
         >
           <Star
             className={cn(
@@ -164,34 +166,78 @@ export function MailListItem({
           />
         </button>
         <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            revealOnHoverClass,
+          )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "archive");
           }}
           title="Archive"
+          aria-label="Archive"
         >
           <Archive className="h-4 w-4 text-muted-foreground" />
         </button>
+        {isJunk ? (
+          <button
+            className={cn(
+              "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+              revealOnHoverClass,
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(mail.id, "not_spam");
+            }}
+            title="Not spam"
+            aria-label="Not spam"
+          >
+            <ThumbsUp className="h-4 w-4 text-muted-foreground" />
+          </button>
+        ) : (
+          <button
+            className={cn(
+              "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+              revealOnHoverClass,
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(mail.id, "spam");
+            }}
+            title="Spam"
+            aria-label="Mark as spam"
+          >
+            <Ban className="h-4 w-4 text-muted-foreground" />
+          </button>
+        )}
         <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(mail.id, "spam");
-          }}
-          title="Spam"
-        >
-          <Ban className="h-4 w-4 text-muted-foreground" />
-        </button>
-        <button
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className={cn(
+            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            revealOnHoverClass,
+          )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "trash");
           }}
           title="Move to trash"
+          aria-label="Move to trash"
         >
           <Trash2 className="h-4 w-4 text-muted-foreground" />
+        </button>
+        <button
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read");
+          }}
+          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
+          aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
+        >
+          {mail.is_seen ? (
+            <MailIcon className="h-4 w-4" />
+          ) : (
+            <MailOpen className="h-4 w-4" />
+          )}
         </button>
       </div>
     </div>

@@ -147,7 +147,7 @@ function ThreadMessage({
           accountId={mail.account_id}
           senderEmail={senderEmail}
           senderDomain={senderEmail?.split("@")[1] ?? null}
-          imagesAllowed={mail.images_allowed}
+          imagesAllowed={mail.images_allowed || imagesAllowedOverride}
           hasBlockedImages={mail.has_blocked_images}
           onLoadForMessage={onLoadImages}
         />
@@ -189,6 +189,8 @@ function ThreadMessage({
                   href={api.mails.attachmentUrl(mail.id, att.id)}
                   download={att.filename ?? "attachment"}
                   className="ml-1"
+                  title={`Download ${att.filename ?? "attachment"}`}
+                  aria-label={`Download ${att.filename ?? "attachment"}`}
                 >
                   <Download className="h-3 w-3 text-muted-foreground hover:text-foreground" />
                 </a>
@@ -210,6 +212,8 @@ function ThreadMessage({
               action: { action: mail.is_seen ? "mark_unread" : "mark_read" },
             })
           }
+          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
+          aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
         >
           {mail.is_seen ? (
             <MailIcon className="h-3.5 w-3.5" />
@@ -228,6 +232,8 @@ function ThreadMessage({
               action: { action: mail.is_flagged ? "unflag" : "flag" },
             })
           }
+          title={mail.is_flagged ? "Unflag" : "Star"}
+          aria-label={mail.is_flagged ? "Unflag" : "Star"}
         >
           <Star
             className={
@@ -242,6 +248,7 @@ function ThreadMessage({
           download={`${mail.subject ?? "message"}.eml`}
           className="flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
           title="Download as .eml"
+          aria-label="Download as .eml"
         >
           <FileDown className="h-3.5 w-3.5" />
         </a>
@@ -250,14 +257,22 @@ function ThreadMessage({
             variant="ghost"
             size="sm"
             className="h-7 gap-1 px-2"
-            onClick={() =>
+            onClick={() => {
+              // Records the correction for the classifier and moves the
+              // message out of Junk -- two distinct writes, both needed.
               verdictFeedback.mutate({
                 mailId: mail.id,
                 accountId: mail.account_id,
                 isSpam: false,
-              })
-            }
+              });
+              mailAction.mutate({
+                mailId: mail.id,
+                accountId: mail.account_id,
+                action: { action: "not_spam" },
+              });
+            }}
             title="Mark as not spam"
+            aria-label="Mark as not spam"
           >
             <ThumbsUp className="h-3.5 w-3.5" />
           </Button>
@@ -275,6 +290,7 @@ function ThreadMessage({
               })
             }
             title="Mark as spam"
+            aria-label="Mark as spam"
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </Button>
@@ -304,6 +320,10 @@ export function ReadingPane() {
   // means the reversible move-to-trash button already above it.
   const isInTrash =
     folders?.find((f) => f.id === primary?.folder_id)?.special_use === "trash";
+  // Junk offers "not spam" instead of "spam" -- classifying an already-junked
+  // message as spam again is a no-op the API doesn't need to see.
+  const isInJunk =
+    folders?.find((f) => f.id === primary?.folder_id)?.special_use === "junk";
 
   // Reset expansion state per opened mail: last message expanded, plus
   // whichever message the user actually clicked in the list.
@@ -399,24 +419,45 @@ export function ReadingPane() {
               })
             }
             title="Archive"
+            aria-label="Archive"
           >
             <Archive className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() =>
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: "spam" },
-              })
-            }
-            title="Spam"
-          >
-            <Ban className="h-4 w-4" />
-          </Button>
+          {isInJunk ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: primary.id,
+                  accountId: primary.account_id,
+                  action: { action: "not_spam" },
+                })
+              }
+              title="Not spam"
+              aria-label="Not spam"
+            >
+              <ThumbsUp className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: primary.id,
+                  accountId: primary.account_id,
+                  action: { action: "spam" },
+                })
+              }
+              title="Spam"
+              aria-label="Spam"
+            >
+              <Ban className="h-4 w-4" />
+            </Button>
+          )}
           {isInTrash ? (
             <Button
               variant="ghost"
@@ -424,6 +465,7 @@ export function ReadingPane() {
               className="h-8 w-8 text-destructive"
               onClick={() => setConfirmExpunge(true)}
               title="Delete forever"
+              aria-label="Delete forever"
             >
               <Trash2 className="h-4 w-4" />
             </Button>
@@ -440,6 +482,7 @@ export function ReadingPane() {
                 })
               }
               title="Move to trash"
+              aria-label="Move to trash"
             >
               <Trash2 className="h-4 w-4" />
             </Button>

@@ -108,6 +108,15 @@ function getFolderDisplayName(folder: FolderResponse): string {
   return folder.imap_name;
 }
 
+/**
+ * Drafts never carry an unread state, so the unread-count badge that every
+ * other folder uses is always zero there -- show the total instead, which
+ * is what tells you a draft is sitting unsent.
+ */
+function getFolderBadgeCount(folder: FolderResponse | FolderOrderItem): number {
+  return folder.special_use === "drafts" ? folder.total_count : folder.unread_count;
+}
+
 export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -143,14 +152,17 @@ export function AppSidebar() {
     }
   }, [isUnified, selectedAccountId, accounts, setSelectedAccountId]);
 
-  // Use custom folder order if available, with visibility filtering
-  const orderedFolders = useMemo<FolderOrderItem[] | null>(
-    () =>
-      folderOrderData?.folders
-        ? folderOrderData.folders.filter((f) => f.is_visible)
-        : null,
-    [folderOrderData],
-  );
+  // Use custom folder order if available, with visibility filtering. INBOX
+  // always leads regardless of the saved order -- the API's default order
+  // (before anyone has dragged a folder) is alphabetical, which buries it.
+  const orderedFolders = useMemo<FolderOrderItem[] | null>(() => {
+    if (!folderOrderData?.folders) return null;
+    const visible = folderOrderData.folders.filter((f) => f.is_visible);
+    const inboxIndex = visible.findIndex((f) => f.special_use === "inbox");
+    if (inboxIndex <= 0) return visible;
+    const [inbox] = visible.splice(inboxIndex, 1);
+    return [inbox, ...visible];
+  }, [folderOrderData]);
 
   // Fallback to legacy sorted folders (visible ones only)
   const sortedFolders = useMemo(
@@ -300,6 +312,7 @@ export function AppSidebar() {
                       <DroppableFolder
                         key={uf.unified_name}
                         folderId={folderMapping[0]?.folder_id ?? uf.unified_name}
+                        folderName={uf.unified_name}
                         folderMapping={folderMapping}
                       >
                         <SidebarMenuItem>
@@ -334,6 +347,7 @@ export function AppSidebar() {
                         <DroppableFolder
                           key={folder.folder_id}
                           folderId={folder.folder_id}
+                          folderName={folder.display_name || folder.imap_name}
                         >
                           <SidebarMenuItem>
                             <SidebarMenuButton
@@ -345,12 +359,12 @@ export function AppSidebar() {
                               <span className="flex-1 truncate">
                                 {folder.display_name || folder.imap_name}
                               </span>
-                              {folder.unread_count > 0 && (
+                              {getFolderBadgeCount(folder) > 0 && (
                                 <Badge
                                   variant="secondary"
                                   className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
                                 >
-                                  {folder.unread_count}
+                                  {getFolderBadgeCount(folder)}
                                 </Badge>
                               )}
                             </SidebarMenuButton>
@@ -365,6 +379,7 @@ export function AppSidebar() {
                         <DroppableFolder
                           key={folder.id}
                           folderId={folder.id}
+                          folderName={getFolderDisplayName(folder)}
                         >
                           <SidebarMenuItem>
                             <SidebarMenuButton
@@ -376,12 +391,12 @@ export function AppSidebar() {
                               <span className="flex-1 truncate">
                                 {getFolderDisplayName(folder)}
                               </span>
-                              {folder.unread_count > 0 && (
+                              {getFolderBadgeCount(folder) > 0 && (
                                 <Badge
                                   variant="secondary"
                                   className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
                                 >
-                                  {folder.unread_count}
+                                  {getFolderBadgeCount(folder)}
                                 </Badge>
                               )}
                             </SidebarMenuButton>

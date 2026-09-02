@@ -9,8 +9,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
+import { useToast } from "@/hooks/use-toast";
+import { selectedMailIdAtom } from "@/lib/atoms";
 import type {
   FolderOrderResponse,
   FolderResponse,
@@ -19,6 +22,25 @@ import type {
   MessageSummary,
   ThreadResponse,
 } from "@/types/api";
+
+/** Actions that move a message out of the folder it was just shown in. */
+const LEAVES_FOLDER_ACTIONS = ["trash", "expunge", "archive", "spam", "not_spam"];
+
+/** Human phrasing for a message/bulk action, used in error toasts. */
+export const ACTION_LABELS: Record<string, string> = {
+  mark_read: "mark as read",
+  mark_unread: "mark as unread",
+  flag: "star",
+  unflag: "unstar",
+  move: "move",
+  archive: "archive",
+  trash: "move to trash",
+  expunge: "delete forever",
+  spam: "mark as spam",
+  not_spam: "mark as not spam",
+  keyword_add: "add keyword",
+  keyword_remove: "remove keyword",
+};
 
 export const mailKeys = {
   list: (accountId?: string, folderId?: string, threaded?: boolean) =>
@@ -167,6 +189,13 @@ export function updateFolderCounts(
 
 export function useMailAction() {
   const qc = useQueryClient();
+  // Selected mail lives in the same store every action initiator (list row,
+  // reading pane, bulk toolbar) reads from, so clearing it here reaches all
+  // of them: once the open message leaves its folder, nothing keeps acting
+  // on it under a reading pane that still shows its old content.
+  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const { push: pushToast } = useToast();
+
   return useMutation({
     mutationFn: ({
       mailId,
@@ -181,15 +210,17 @@ export function useMailAction() {
       await qc.cancelQueries({ queryKey: ["mails"] });
       await qc.cancelQueries({ queryKey: ["folders"] });
 
+      const act = action.action;
+      const removesFromList = LEAVES_FOLDER_ACTIONS.includes(act);
+      const wasSelected = removesFromList && mailId === selectedMailId;
+      if (wasSelected) setSelectedMailId(null);
+
       const mailInfo = findMailInCache(qc, mailId);
-      if (!mailInfo) return {};
+      if (!mailInfo) return { wasSelected, mailId };
 
       const prevMailQueries = qc.getQueriesData({ queryKey: ["mails"] });
       const prevFolders = qc.getQueryData(["folders", accountId]);
       const prevMailDetail = qc.getQueryData(["mail", mailId]);
-
-      const act = action.action;
-      const removesFromList = ["trash", "expunge", "archive", "spam"].includes(act);
 
       if (removesFromList) {
         removeMailFromCache(qc, mailId);
@@ -230,10 +261,13 @@ export function useMailAction() {
         });
       }
 
-      return { prevMailQueries, prevFolders, prevMailDetail, accountId, mailId };
+      return { prevMailQueries, prevFolders, prevMailDetail, accountId, mailId, wasSelected };
     },
 
-    onError: (_err, _vars, ctx) => {
+    onError: (err, vars, ctx) => {
+      const label = ACTION_LABELS[vars.action.action] ?? vars.action.action;
+      pushToast(`Could not ${label}: ${err.message}`, "error", 0);
+
       if (!ctx) return;
       if (ctx.prevMailQueries) {
         for (const [key, data] of ctx.prevMailQueries as Array<
@@ -248,11 +282,15 @@ export function useMailAction() {
       if (ctx.prevMailDetail && ctx.mailId) {
         qc.setQueryData(["mail", ctx.mailId], ctx.prevMailDetail);
       }
+      if (ctx.wasSelected && ctx.mailId) {
+        setSelectedMailId(ctx.mailId);
+      }
     },
 
-    onSettled: () => {
+    onSettled: (_data, _err, { mailId }) => {
       qc.invalidateQueries({ queryKey: ["mails"] });
       qc.invalidateQueries({ queryKey: ["mail"] });
+      qc.invalidateQueries({ queryKey: ["thread", mailId] });
       invalidateAllFolderCaches(qc);
     },
   });
