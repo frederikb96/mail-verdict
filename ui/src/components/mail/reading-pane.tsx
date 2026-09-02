@@ -31,6 +31,7 @@ import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
 import { ReplyBox } from "@/components/mail/reply-box";
 import { DraftEditor } from "@/components/mail/draft-editor";
+import { InvitationCard } from "@/components/mail/invitation-card";
 import { api } from "@/lib/api";
 import { useMailAction, useThread } from "@/hooks/use-mails";
 import { useAccount } from "@/hooks/use-accounts";
@@ -46,6 +47,14 @@ import {
   formatSize,
 } from "@/lib/format";
 import type { MessageDetail } from "@/types/api";
+
+const CALENDAR_CONTENT_TYPES = ["text/calendar", "application/ics"];
+
+function hasCalendarAttachment(mail: MessageDetail): boolean {
+  return mail.attachments.some(
+    (att) => att.content_type && CALENDAR_CONTENT_TYPES.includes(att.content_type),
+  );
+}
 
 function ThreadMessage({
   mail,
@@ -128,6 +137,8 @@ function ThreadMessage({
           </div>
         )}
       </div>
+
+      {hasCalendarAttachment(mail) && <InvitationCard messageId={mail.id} />}
 
       {mail.is_truncated && <TruncatedBanner />}
 

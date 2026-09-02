@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Save, Loader2, Bot, ShieldAlert, Repeat, Sun, Moon, Monitor, Workflow } from "lucide-react";
+import { Save, Loader2, Bot, CalendarDays, ShieldAlert, Repeat, Sun, Moon, Monitor, Workflow } from "lucide-react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
 import { UnifiedOrder } from "@/components/settings/unified-order";
+import { CalendarLinksCard } from "@/components/settings/calendar-links";
 
 // "rules" is not a settings category any more -- a rule is a `match` stage
 // in the pipeline now, edited through the pipeline definition rather than
@@ -23,6 +24,7 @@ const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
   { key: "spam", label: "Spam", icon: ShieldAlert },
   { key: "retry", label: "Retry", icon: Repeat },
+  { key: "calendar", label: "Calendar", icon: CalendarDays },
 ] as const;
 
 // spam.enabled, spam.auto_move_to_junk and spam.auto_mark_read only ever
@@ -221,6 +223,8 @@ export function SettingsPage() {
 
       {/* Unified folder ordering (cross-account) */}
       <UnifiedOrder />
+
+      <CalendarLinksCard />
 
       <Tabs defaultValue="ai">
         <TabsList>

@@ -175,13 +175,19 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           queryClient.invalidateQueries({ queryKey: ["outbox"] });
-          if (data.status) {
+          if (data.itip === "reply") {
+            // A calendar reply's outbox row -- own_reply on the event and
+            // the invitation card both read its status, not the mail toast.
+            queryClient.invalidateQueries({ queryKey: ["calendar-events"] });
+            queryClient.invalidateQueries({ queryKey: ["calendar-event"] });
+            queryClient.invalidateQueries({ queryKey: ["invitation"] });
+          } else if (data.status) {
             const toast = OUTBOX_TOAST[data.status as OutboxStatus];
             if (toast) {
               pushToast(toast.message, toast.variant, data.status === "dead" ? 0 : 5000);
             }
           }
-          if (data.status === "sent") {
+          if (data.status === "sent" && data.itip !== "reply") {
             // The sent copy lands in the account's Sent folder on its next sync.
             queryClient.invalidateQueries({ queryKey: ["mails"] });
             invalidateAllFolderCaches(queryClient);
@@ -197,6 +203,35 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["runs"] });
         queryClient.invalidateQueries({ queryKey: ["queues"] });
+      });
+
+      // Calendar sync is polling-based (60s) on the backend, so this only
+      // refreshes what a poll already changed -- it doesn't shorten the lag.
+      source.addEventListener("calendar.object", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["calendar-events"], refetchType: "active" });
+        queryClient.invalidateQueries({ queryKey: ["calendar-event"] });
+        queryClient.invalidateQueries({ queryKey: ["invitation"] });
+      });
+
+      source.addEventListener("calendar.collection", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["calendars"] });
+      });
+
+      source.addEventListener("calendar.account", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["dav-accounts"] });
+      });
+
+      source.addEventListener("contact.object", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["contacts"] });
+      });
+
+      source.addEventListener("contact.collection", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["addressbooks"] });
       });
     }
 

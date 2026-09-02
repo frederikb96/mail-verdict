@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Collapsible } from "@base-ui/react/collapsible";
 import {
   type LucideIcon,
+  AtSign,
   Plus,
   Server,
   CheckCircle2,
@@ -38,6 +39,8 @@ import { Switch } from "@/components/ui/switch";
 
 import { FolderOrder } from "@/components/settings/folder-order";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
+import { IdentitiesSection } from "@/components/accounts/identities-section";
+import { DavAccountsSection } from "@/components/accounts/dav-account-card";
 import {
   EmojiPicker,
   UnifiedNames,
@@ -302,6 +305,15 @@ function AccountCard({
             <Collapsible.Panel className="overflow-hidden">
               <div className="px-1 pt-2">
                 <UnifiedNames accountId={account.id} />
+              </div>
+            </Collapsible.Panel>
+          </Collapsible.Root>
+
+          <Collapsible.Root>
+            <SectionTrigger icon={AtSign} label="Sending Identities" />
+            <Collapsible.Panel className="overflow-hidden">
+              <div className="px-1 pt-2">
+                <IdentitiesSection accountId={account.id} />
               </div>
             </Collapsible.Panel>
           </Collapsible.Root>
@@ -571,6 +583,8 @@ export function AccountsPage() {
           />
         ))}
       </div>
+
+      <DavAccountsSection />
     </div>
   );
 }

@@ -10,9 +10,14 @@ export function useToast() {
   const setToasts = useSetAtom(toastsAtom);
 
   const push = useCallback(
-    (message: string, variant: ToastItem["variant"] = "info", durationMs = 5000) => {
+    (
+      message: string,
+      variant: ToastItem["variant"] = "info",
+      durationMs = 5000,
+      action?: ToastItem["action"],
+    ) => {
       const id = `toast-${Date.now()}-${counter++}`;
-      setToasts((prev) => [...prev, { id, message, variant }]);
+      setToasts((prev) => [...prev, { id, message, variant, action }]);
       if (durationMs > 0) {
         setTimeout(() => {
           setToasts((prev) => prev.filter((t) => t.id !== id));

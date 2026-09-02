@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { RecipientField } from "@/components/contacts/recipient-field";
 import { useCreateOutbox } from "@/hooks/use-outbox";
 import { useToast } from "@/hooks/use-toast";
-import { parseAddressList } from "@/lib/format";
 import type { OutboxCreateRequest } from "@/types/api";
 
 interface ComposeFormProps {
@@ -47,9 +47,9 @@ export function ComposeForm({
   compact = false,
   onDone,
 }: ComposeFormProps) {
-  const [to, setTo] = useState(defaultTo.join(", "));
-  const [cc, setCc] = useState(defaultCc.join(", "));
-  const [bcc, setBcc] = useState(defaultBcc.join(", "));
+  const [to, setTo] = useState<string[]>(defaultTo);
+  const [cc, setCc] = useState<string[]>(defaultCc);
+  const [bcc, setBcc] = useState<string[]>(defaultBcc);
   const [showCcBcc, setShowCcBcc] = useState(defaultCc.length > 0 || defaultBcc.length > 0);
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
@@ -62,9 +62,9 @@ export function ComposeForm({
   const buildRequest = (kind: "send" | "draft"): OutboxCreateRequest => ({
     account_id: accountId,
     kind,
-    to: parseAddressList(to),
-    cc: parseAddressList(cc),
-    bcc: parseAddressList(bcc),
+    to,
+    cc,
+    bcc,
     subject,
     body_text: body,
     in_reply_to: inReplyTo,
@@ -97,22 +97,11 @@ export function ComposeForm({
 
   return (
     <div className="flex flex-col gap-2">
-      {!compact && (
-        <Input
-          value={to}
-          onChange={(e) => setTo(e.target.value)}
-          placeholder="To"
-        />
-      )}
+      {!compact && <RecipientField value={to} onChange={setTo} placeholder="To" />}
       {compact && (
         <div className="grid grid-cols-[auto_1fr] items-center gap-2">
           <span className="text-xs text-muted-foreground">To</span>
-          <Input
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            placeholder="Recipients"
-            className="h-8"
-          />
+          <RecipientField value={to} onChange={setTo} placeholder="Recipients" />
         </div>
       )}
 
@@ -128,18 +117,8 @@ export function ComposeForm({
       )}
       {showCcBcc && (
         <>
-          <Input
-            value={cc}
-            onChange={(e) => setCc(e.target.value)}
-            placeholder="Cc"
-            className={compact ? "h-8" : undefined}
-          />
-          <Input
-            value={bcc}
-            onChange={(e) => setBcc(e.target.value)}
-            placeholder="Bcc"
-            className={compact ? "h-8" : undefined}
-          />
+          <RecipientField value={cc} onChange={setCc} placeholder="Cc" />
+          <RecipientField value={bcc} onChange={setBcc} placeholder="Bcc" />
         </>
       )}
 

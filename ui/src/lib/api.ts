@@ -8,15 +8,37 @@ import type {
   AccountCreateRequest,
   AccountResponse,
   AccountUpdateRequest,
+  AddressbookSummary,
   BulkActionRequest,
   BulkActionResponse,
+  Calendar,
+  CalendarCreateRequest,
+  CalendarLinks,
+  CalendarLinksUpdate,
+  CalendarUpdateRequest,
+  Contact,
+  ContactCreateRequest,
+  ContactListResponse,
+  ContactSearchHit,
+  ContactUpdateRequest,
+  DavAccountCreateRequest,
+  DavAccountResponse,
+  DavAccountUpdateRequest,
+  EventCreateRequest,
+  EventDeleteRequest,
+  EventInstance,
+  EventListResponse,
+  EventUpdateRequest,
   FeedbackResponse,
   FolderCreateRequest,
   FolderOrderResponse,
   FolderPrefsUpdate,
   FolderResponse,
+  Identity,
   ImageExceptionCreate,
   ImageExceptionResponse,
+  ImportInvitationRequest,
+  Invitation,
   MessageActionRequest,
   MessageActionResponse,
   MessageDetail,
@@ -34,6 +56,7 @@ import type {
   PipelineWriteRequest,
   QueuePatchRequest,
   QueueResponse,
+  RespondRequest,
   SearchResponse,
   StageCreateRequest,
   StageTypeOut,
@@ -517,6 +540,153 @@ export const api = {
     /** "Why did this message get that treatment" -- every run for one message. */
     forMail(mailId: string): Promise<PipelineRunResponse[]> {
       return request(`/mails/${mailId}/runs`);
+    },
+  },
+
+  identities: {
+    list(accountId?: string): Promise<Identity[]> {
+      return request(`/identities${qs({ account_id: accountId })}`);
+    },
+    create(data: {
+      account_id: string;
+      address: string;
+      display_name?: string;
+      is_default?: boolean;
+    }): Promise<Identity> {
+      return request("/identities", { method: "POST", body: JSON.stringify(data) });
+    },
+    update(
+      id: string,
+      data: { display_name?: string; is_default?: boolean },
+    ): Promise<Identity> {
+      return request(`/identities/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+    },
+    delete(id: string): Promise<void> {
+      return request(`/identities/${id}`, { method: "DELETE" });
+    },
+  },
+
+  davAccounts: {
+    list(): Promise<DavAccountResponse[]> {
+      return request("/dav-accounts");
+    },
+    get(id: string): Promise<DavAccountResponse> {
+      return request(`/dav-accounts/${id}`);
+    },
+    create(data: DavAccountCreateRequest): Promise<DavAccountResponse> {
+      return request("/dav-accounts", { method: "POST", body: JSON.stringify(data) });
+    },
+    update(id: string, data: DavAccountUpdateRequest): Promise<DavAccountResponse> {
+      return request(`/dav-accounts/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+    },
+    delete(id: string): Promise<void> {
+      return request(`/dav-accounts/${id}`, { method: "DELETE" });
+    },
+    triggerSync(id: string): Promise<Record<string, string>> {
+      return request(`/dav-accounts/${id}/sync`, { method: "POST" });
+    },
+  },
+
+  calendars: {
+    list(): Promise<Calendar[]> {
+      return request("/calendars");
+    },
+    create(data: CalendarCreateRequest): Promise<Calendar> {
+      return request("/calendars", { method: "POST", body: JSON.stringify(data) });
+    },
+    update(id: string, data: CalendarUpdateRequest): Promise<Calendar> {
+      return request(`/calendars/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+    },
+    delete(id: string): Promise<void> {
+      return request(`/calendars/${id}`, { method: "DELETE" });
+    },
+    links: {
+      get(): Promise<CalendarLinks> {
+        return request("/calendar/links");
+      },
+      update(data: CalendarLinksUpdate): Promise<CalendarLinks> {
+        return request("/calendar/links", { method: "PUT", body: JSON.stringify(data) });
+      },
+    },
+  },
+
+  events: {
+    /** One calendar-month chunk, e.g. "2026-09", across every visible calendar
+     * unless `calendars` narrows it. Omitting `calendars` means "all visible". */
+    list(params: { month: string; calendars?: string[] }): Promise<EventListResponse> {
+      return request(
+        `/calendar/events${qs({ month: params.month, calendars: params.calendars?.join(",") })}`,
+      );
+    },
+    get(objectId: string, recurrenceId?: string): Promise<EventInstance> {
+      return request(`/calendar/events/${objectId}${qs({ recurrence_id: recurrenceId })}`);
+    },
+    create(data: EventCreateRequest): Promise<EventInstance> {
+      return request("/calendar/events", { method: "POST", body: JSON.stringify(data) });
+    },
+    update(objectId: string, data: EventUpdateRequest): Promise<EventInstance> {
+      return request(`/calendar/events/${objectId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+    delete(objectId: string, data?: EventDeleteRequest): Promise<void> {
+      return request(`/calendar/events/${objectId}`, {
+        method: "DELETE",
+        body: data ? JSON.stringify(data) : undefined,
+      });
+    },
+    respond(objectId: string, data: RespondRequest): Promise<EventInstance> {
+      return request(`/calendar/events/${objectId}/respond`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+  },
+
+  invitations: {
+    get(messageId: string): Promise<Invitation> {
+      return request(`/calendar/invitations/${messageId}`);
+    },
+    import(messageId: string, data: ImportInvitationRequest): Promise<Invitation> {
+      return request(`/calendar/invitations/${messageId}/import`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+  },
+
+  addressbooks: {
+    list(): Promise<AddressbookSummary[]> {
+      return request("/addressbooks");
+    },
+  },
+
+  contacts: {
+    list(params?: {
+      addressbook_id?: string;
+      q?: string;
+      limit?: number;
+      cursor?: string;
+    }): Promise<ContactListResponse> {
+      return request(`/contacts${qs(params ?? {})}`);
+    },
+    get(id: string): Promise<Contact> {
+      return request(`/contacts/${id}`);
+    },
+    /** One row per email address, so a person with several addresses is
+     * several choices in the compose autocomplete. */
+    search(q: string): Promise<ContactSearchHit[]> {
+      return request(`/contacts/search${qs({ q })}`);
+    },
+    create(data: ContactCreateRequest): Promise<Contact> {
+      return request("/contacts", { method: "POST", body: JSON.stringify(data) });
+    },
+    update(id: string, data: ContactUpdateRequest): Promise<Contact> {
+      return request(`/contacts/${id}`, { method: "PATCH", body: JSON.stringify(data) });
+    },
+    delete(id: string): Promise<void> {
+      return request(`/contacts/${id}`, { method: "DELETE" });
     },
   },
 };
