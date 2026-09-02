@@ -7,6 +7,7 @@ Remote images rewritten to data-x-src for privacy (SnappyMail pattern).
 
 from __future__ import annotations
 
+import html
 import re
 
 import nh3
@@ -53,6 +54,12 @@ _STYLE_SINGLE_RE = re.compile(r"\bstyle\s*=\s*'([^']*)'", re.IGNORECASE)
 
 _LOCAL_URL_PREFIXES = ("cid:", "data:", "about:", "#")
 
+# CSS functions besides url() whose string argument can also name a remote
+# resource -- src() (a proposed general-purpose alternative to url()) and
+# image() (CSS Images level 4) both take a plain string, so a check keyed
+# on url tokens alone misses them entirely.
+_URL_STRING_FUNCTIONS = frozenset({"url", "src", "image"})
+
 # Positioning, stacking and transforms are how content leaves the box it was
 # rendered into. Nothing in an email needs them. Compared against a name
 # tinycss2 has already parsed, so a vendor variant such as -webkit-transform
@@ -72,24 +79,26 @@ _VENDOR_PREFIX_RE = re.compile(r"^-[a-z]+-")
 
 
 def _rewrite_src(match: re.Match[str]) -> str:
-    """Replace src with data-x-src, preserving CID references."""
+    """Replace src with data-x-src, preserving local references."""
     url = match.group(1)
-    if url.lower().startswith("cid:"):
+    if not _is_remote(url):
         return match.group(0)
     return f'data-x-src="{url}"'
 
 
 def _rewrite_src_single(match: re.Match[str]) -> str:
-    """Replace single-quoted src with data-x-src, preserving CID references."""
+    """Replace single-quoted src with data-x-src, preserving local references."""
     url = match.group(1)
-    if url.lower().startswith("cid:"):
+    if not _is_remote(url):
         return match.group(0)
     return f"data-x-src='{url}'"
 
 
 def _rewrite_bg(match: re.Match[str]) -> str:
-    """Replace background attribute with data-x-bg."""
+    """Replace background attribute with data-x-bg, preserving local references."""
     url = match.group(1)
+    if not _is_remote(url):
+        return match.group(0)
     return f'data-x-bg="{url}"'
 
 
@@ -192,7 +201,7 @@ def _find_remote_url(nodes: list[Node]) -> bool:
             if _is_remote(node.value):
                 return True
         elif node.type == "function":
-            if node.lower_name == "url" and any(
+            if node.lower_name in _URL_STRING_FUNCTIONS and any(
                 arg.type == "string" and _is_remote(arg.value) for arg in node.arguments
             ):
                 return True
@@ -212,7 +221,7 @@ def _neutralize_remote_urls(nodes: list[Node]) -> None:
                 node.value = "about:blank"
                 node.representation = "url(about:blank)"
         elif node.type == "function":
-            if node.lower_name == "url":
+            if node.lower_name in _URL_STRING_FUNCTIONS:
                 for arg in node.arguments:
                     if arg.type == "string" and _is_remote(arg.value):
                         arg.value = "about:blank"
@@ -246,7 +255,14 @@ def _rewrite_style(match: re.Match[str], quote: str) -> str:
     goes to data-x-style, which the image-policy layer restores from once a
     sender is allowed.
     """
-    style = match.group(1)
+    # nh3 has already run and serialises a `"` inside an attribute value as
+    # &quot; -- captured verbatim by _STYLE_RE, that entity text still
+    # contains the `;` from inside the quote, so a font stack like
+    # font-family:"Open Sans", Arial tokenises into garbage unless it is
+    # unescaped back to a literal quote before tinycss2 ever sees it.
+    # _attr_value below is what escapes the result again on the way out,
+    # exactly once.
+    style = html.unescape(match.group(1))
     declarations = _parsed_declarations(style)
     preserved = _serialize_declarations(declarations)
     has_remote = any(_find_remote_url(decl.value) for decl in declarations)
@@ -314,11 +330,16 @@ def sanitize_email_html(html: str) -> str:
     # silent hole, since the rewrite simply does not fire. nh3 normalises
     # every attribute to a quoted form, so rewriting its output matches
     # one shape rather than every shape a sender might produce.
+    # "data" is here so an embedded data: image survives nh3 at all -- it
+    # is not a network fetch (see _LOCAL_URL_PREFIXES), and without the
+    # scheme allowed nh3 drops the src attribute outright before the
+    # rewrite pass below ever gets a chance to recognise it as local and
+    # leave it alone.
     cleaned = nh3.clean(
         html,
         tags=ALLOWED_TAGS,
         attributes=ALLOWED_ATTRIBUTES,
         link_rel="noopener noreferrer",
-        url_schemes={"http", "https", "mailto", "cid"},
+        url_schemes={"http", "https", "mailto", "cid", "data"},
     )
     return _rewrite_remote_images(cleaned)

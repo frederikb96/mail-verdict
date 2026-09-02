@@ -384,3 +384,85 @@ class TestMalformedCssCannotBreakOutOfTheAttribute:
         attributes = self._attributes(cleaned)
         assert "data-x-style" in attributes
         assert "about:blank" in (attributes.get("style") or "")
+
+
+class TestQuotedCssStringsSurviveSanitization:
+    """nh3 runs first and entity-encodes a `"` inside an attribute value as
+    &quot; -- captured verbatim, that text still carries the `;` from
+    inside the quote, so a quoted font stack tokenises into garbage and
+    parse errors unless it is unescaped before tinycss2 ever parses it.
+    Quoted font-family is the single most common style pattern in real
+    newsletters, so this is not a corner case.
+    """
+
+    def test_a_quoted_font_family_round_trips(self) -> None:
+        out = sanitize_email_html(
+            '<div style=\'font-family:"Open Sans", Arial; color:red\'>x</div>'
+        )
+        attributes = TestMalformedCssCannotBreakOutOfTheAttribute._attributes(out)
+        style = attributes.get("style") or ""
+        assert "Open Sans" in style
+        assert "color:red" in style
+        # Never double-escaped -- exactly one round of entity-encoding.
+        assert "&amp;quot;" not in out
+
+    def test_a_quoted_content_value_round_trips(self) -> None:
+        out = sanitize_email_html('<div style=\'content:"→"\'>x</div>')
+        attributes = TestMalformedCssCannotBreakOutOfTheAttribute._attributes(out)
+        assert "→" in (attributes.get("style") or "")
+
+    def test_a_quoted_remote_url_inside_a_double_quoted_attribute_is_still_blocked(
+        self,
+    ) -> None:
+        """The unescape must not reopen the remote-url hole the escaping
+        exists to close -- only the round-trip of harmless text changes."""
+        out = sanitize_email_html(
+            '<div style="background:url(&quot;https://evil.test/p.gif&quot;)">x</div>'
+        )
+        assert "evil.test" not in out.split("data-x-")[0]
+
+
+class TestUrlStringFunctionsCannotEvadeDetection:
+    """A remote reference does not have to be a url() token -- src() (a
+    proposed general url() alternative) and image() (CSS Images level 4)
+    both take a plain string argument, so a check keyed on url tokens
+    alone misses them."""
+
+    @pytest.mark.parametrize("fn", ["src", "image"])
+    def test_a_remote_reference_via_the_function_is_neutralised(self, fn: str) -> None:
+        out = sanitize_email_html(
+            f'<div style="background:{fn}(&quot;https://evil.test/p.gif&quot;)">x</div>'
+        )
+        assert "evil.test" not in out.split("data-x-")[0]
+
+    @pytest.mark.parametrize("fn", ["src", "image"])
+    def test_a_local_reference_via_the_function_is_left_alone(self, fn: str) -> None:
+        out = sanitize_email_html(f'<div style="background:{fn}(&quot;cid:logo&quot;)">x</div>')
+        assert "cid:logo" in out
+        assert "data-x-style" not in out
+
+
+class TestDataImagesRenderAsDocumented:
+    """A data: image is embedded, not a network fetch -- _LOCAL_URL_PREFIXES
+    already says so, but nh3's url_schemes dropped the src attribute
+    outright before that preservation logic ever got to see it, so the
+    documented "preserved" behaviour never actually rendered anything."""
+
+    def test_a_data_uri_image_survives_untouched(self) -> None:
+        out = sanitize_email_html('<img src="data:image/png;base64,AAAA" alt="x">')
+        assert 'src="data:image/png;base64,AAAA"' in out
+        assert "data-x-src" not in out
+
+    def test_a_data_uri_background_survives_untouched(self) -> None:
+        out = sanitize_email_html(
+            '<table><tr><td background="data:image/png;base64,AAAA">x</td></tr></table>'
+        )
+        assert 'background="data:image/png;base64,AAAA"' in out
+        assert "data-x-bg" not in out
+
+    def test_a_remote_image_is_still_blocked(self) -> None:
+        """Allowing the data: scheme through must not reopen the remote
+        case the rewrite exists for."""
+        out = sanitize_email_html('<img src="https://tracker.example.com/pixel.gif">')
+        assert "data-x-src=" in out
+        assert ' src="https' not in out
