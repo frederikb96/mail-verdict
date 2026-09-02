@@ -2,14 +2,16 @@
 SQLAlchemy ORM models for MailVerdict database.
 
 PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
-  outbox, outbox_attachments, postimap_info, sync_notifications
+  outbox, outbox_attachments, postimap_info, sync_notifications, dav_accounts,
+  dav_collections, dav_objects, dav_notifications
   (created by PostIMAP's own migrations; mapped here as a projection of the
   consumer contract -- see postimap/contract.py for the version this
   projection is built against)
 
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
-  identities (created by Alembic, fully managed by MailVerdict)
+  identities, calendar_prefs, calendar_intake, calendar_replies
+  (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
 consumer database role has no REFERENCES grant on those tables, and
@@ -464,6 +466,242 @@ class SyncNotification(Base):
     __table_args__ = (
         Index(
             "idx_notifications_unacknowledged", "account_id", created_at.desc(),
+            postgresql_where=acknowledged_at.is_(None),
+        ),
+    )
+
+
+class DavAccount(Base):
+    """A CalDAV/CardDAV server credential -- PostIMAP-owned table.
+
+    Mirrors accounts: name/url/username/password are insert-only,
+    name/password/is_active are update-only, everything else is
+    PostIMAP's own discovery and sync bookkeeping. password follows the
+    same 0x00-prefixed plaintext contract format as Account's IMAP/SMTP
+    credentials -- see postimap/actions.py.
+    """
+
+    __tablename__ = "dav_accounts"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    password: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    state: Mapped[str] = mapped_column(Text, nullable=False, server_default=FetchedValue())
+    state_error: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    principal_url: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    calendar_home_url: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    addressbook_home_url: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    last_polled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    error_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=FetchedValue(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
+class DavCollection(Base):
+    """One calendar or address book -- PostIMAP-owned table.
+
+    id/account_id/kind/slug are insert-only, display_name/color/description
+    are the server's own properties (insert and update, sent onward with
+    PROPPATCH -- unlike folders.display_name, this is not a local label).
+    deleted_at is the one other update surface, for deletion. Everything
+    else -- href, supported_components, read_only, sync_tier/sync_token/
+    ctag, initial_sync_done/backfill_total/total_count, sync_error -- is
+    PostIMAP's own sync bookkeeping.
+    """
+
+    __tablename__ = "dav_collections"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    href: Mapped[str | None] = mapped_column(Text, nullable=True, server_default=FetchedValue())
+    slug: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    color: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supported_components: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True, server_default=FetchedValue(),
+    )
+    read_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
+    sync_tier: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    sync_token: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    ctag: Mapped[str | None] = mapped_column(Text, nullable=True, server_default=FetchedValue())
+    initial_sync_done: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
+    backfill_total: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, server_default=FetchedValue(),
+    )
+    total_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=FetchedValue(),
+    )
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    last_full_reconcile_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    sync_error: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    # Update-only (deleting a collection), not insert-granted -- like every
+    # other column here that create_collection() never sets, this needs
+    # FetchedValue() or the ORM insert sends it explicitly as NULL and the
+    # missing grant turns that into "permission denied" (see CLAUDE.md's
+    # note on this trap: a plain nullable column with no default of any
+    # kind is still named in an ORM insert).
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (Index("idx_dav_collections_account", "account_id"),)
+
+
+class DavObject(Base):
+    """One event, task, journal entry or contact -- PostIMAP-owned table.
+
+    id/account_id/collection_id/data are insert-only; collection_id and
+    data are also the two update surfaces (changing collection_id is a
+    move, see postimap/actions.py's move_object()), plus deleted_at for
+    deletion. Every parsed column (uid, component, summary, dtstart, ...)
+    is PostIMAP's own reading of `data` and carries no grant at all --
+    never named on an insert or update from this application. etag NULL
+    means a create or move is pending, the same idiom as
+    Message.imap_uid.
+    """
+
+    __tablename__ = "dav_objects"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    collection_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    href: Mapped[str | None] = mapped_column(Text, nullable=True, server_default=FetchedValue())
+    etag: Mapped[str | None] = mapped_column(Text, nullable=True, server_default=FetchedValue())
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=FetchedValue())
+    data: Mapped[str] = mapped_column(Text, nullable=False)
+    uid: Mapped[str | None] = mapped_column(Text, nullable=True, server_default=FetchedValue())
+    component: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    summary: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    dtstart: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    dtend: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    dtstart_tz: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    all_day: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
+    is_recurring: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
+    has_exceptions: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=FetchedValue(),
+    )
+    status: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    sequence: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, server_default=FetchedValue(),
+    )
+    organizer: Mapped[str | None] = mapped_column(
+        Text, nullable=True, server_default=FetchedValue(),
+    )
+    attendees: Mapped[list[Any] | None] = mapped_column(
+        JSONB, nullable=True, server_default=FetchedValue(),
+    )
+    emails: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True, server_default=FetchedValue(),
+    )
+    last_modified: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    size_bytes: Mapped[int | None] = mapped_column(
+        Integer, nullable=True, server_default=FetchedValue(),
+    )
+    # Update-only (deleting an object), not insert-granted -- see
+    # DavCollection.deleted_at's comment for why this needs FetchedValue().
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("idx_dav_objects_account_uid", "account_id", "uid"),
+        Index("idx_dav_objects_collection_dtstart", "collection_id", "dtstart"),
+        Index("idx_dav_objects_emails", "emails", postgresql_using="gin"),
+    )
+
+
+class DavNotification(Base):
+    """The DAV counterpart of SyncNotification -- PostIMAP-owned table,
+    its own table rather than a widened sync_notifications (that table's
+    account_id is NOT NULL and references accounts). acknowledged_at is
+    the only consumer-writable column.
+    """
+
+    __tablename__ = "dav_notifications"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    action: Mapped[str] = mapped_column(Text, nullable=False)
+    collection_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    reverted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_dav_notifications_unacknowledged", "account_id", created_at.desc(),
             postgresql_where=acknowledged_at.is_(None),
         ),
     )

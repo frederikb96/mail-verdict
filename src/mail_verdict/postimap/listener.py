@@ -41,7 +41,16 @@ DISPATCH_QUEUE_MAXSIZE = 10_000
 
 @dataclass(frozen=True)
 class PostimapEvent:
-    """A single parsed postimap_events NOTIFY payload."""
+    """A single parsed postimap_events NOTIFY payload.
+
+    Four more `type` values cover calendars and contacts: `dav_account`,
+    `dav_collection`, `dav_object`, `dav_notification`. `account_id`
+    carries `dav_accounts.id` for all four, exactly as it carries
+    `accounts.id` for mail -- a handler filtering by mail account id never
+    matches one of these. `collection_id` is present on the latter three;
+    `old_collection_id` only on a `dav_object` move, mirroring
+    `old_folder_id`.
+    """
 
     v: int
     type: str
@@ -56,6 +65,11 @@ class PostimapEvent:
     # this application); omitted entirely otherwise, never null -- read
     # with .get(), not raw["old_folder_id"].
     old_folder_id: str | None = None
+    # DAV events only -- see the class docstring.
+    collection_id: str | None = None
+    old_collection_id: str | None = None
+    # Present only on type="dav_notification": put|move|delete|mkcol|proppatch|rmcol.
+    action: str | None = None
 
     @classmethod
     def from_payload(cls, raw: dict[str, Any]) -> PostimapEvent:
@@ -80,6 +94,11 @@ class PostimapEvent:
             changed=tuple(raw.get("changed") or ()),
             backfill=bool(raw.get("backfill", False)),
             old_folder_id=str(raw["old_folder_id"]) if raw.get("old_folder_id") else None,
+            collection_id=str(raw["collection_id"]) if raw.get("collection_id") else None,
+            old_collection_id=(
+                str(raw["old_collection_id"]) if raw.get("old_collection_id") else None
+            ),
+            action=str(raw["action"]) if raw.get("action") else None,
         )
 
 

@@ -37,6 +37,13 @@ MIN_DRAFT_EDIT_SERVICE_VERSION = (1, 4, 0)
 # service version onward. Shipped in the same release as folder CRUD.
 MIN_SYNC_NOTIFICATIONS_SERVICE_VERSION = (1, 3, 0)
 
+# dav_accounts/dav_collections/dav_objects/dav_notifications -- CalDAV and
+# CardDAV mirrored the same way mailboxes are -- exist, and are granted,
+# from this PostIMAP service version onward. contract_version itself stays
+# 1: every table and grant is new, so nothing an existing consumer already
+# does can break.
+MIN_DAV_SERVICE_VERSION = (1, 6, 0)
+
 
 class ContractMismatchError(Exception):
     """Raised when the running PostIMAP's contract_version does not match."""
@@ -167,3 +174,18 @@ def supports_sync_notifications(info: PostimapVersionInfo) -> bool:
         _parse_service_version(info.service_version)
         >= MIN_SYNC_NOTIFICATIONS_SERVICE_VERSION
     )
+
+
+def supports_dav(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP mirrors calendars and contacts (the
+    dav_accounts/dav_collections/dav_objects/dav_notifications tables and
+    their grants).
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_DAV_SERVICE_VERSION
+    """
+    return _parse_service_version(info.service_version) >= MIN_DAV_SERVICE_VERSION

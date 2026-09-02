@@ -17,6 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import (
     Account,
+    DavAccount,
+    DavCollection,
+    DavNotification,
+    DavObject,
     Folder,
     Message,
     Outbox,
@@ -597,6 +601,300 @@ async def insert_outbox(
     await session.flush()
     await session.refresh(outbox)
     return outbox
+
+
+# --- DAV writes (calendars and contacts) --------------------------------
+#
+# Available from PostIMAP service_version 1.6.0 onward -- gate the call
+# site on postimap.contract.supports_dav() first, the same discipline as
+# folder CRUD and sync_notifications.
+
+
+async def create_dav_account(
+    session: AsyncSession,
+    *,
+    name: str,
+    url: str,
+    username: str,
+    password: str,
+    is_active: bool = True,
+) -> DavAccount:
+    """
+    Insert a new dav_accounts row -- adding a CalDAV/CardDAV server.
+
+    PostIMAP detects the insert via postimap_events and starts discovery
+    and backfill without a restart, the same as create_account().
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        name: Unique display name
+        url: The discovery URL, e.g. https://cloud.example.org/remote.php/dav/
+        username: Login username
+        password: Password (or app password), plaintext (encoded here per contract)
+        is_active: Whether PostIMAP should sync this account
+
+    Returns:
+        The inserted DavAccount row (flushed, not yet committed)
+    """
+    account = DavAccount(
+        name=name, url=url, username=username,
+        password=format_credential(password), is_active=is_active,
+    )
+    session.add(account)
+    await session.flush()
+    await session.refresh(account)
+    return account
+
+
+async def update_dav_account(
+    session: AsyncSession,
+    dav_account_id: uuid.UUID,
+    **fields: Any,
+) -> None:
+    """
+    Update dav_accounts fields, encoding password if present.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        dav_account_id: DAV account to update
+        **fields: Any of name, password, is_active -- password given as a
+            plaintext string and encoded here
+    """
+    values = dict(fields)
+    if values.get("password"):
+        values["password"] = format_credential(values["password"])
+    if not values:
+        return
+    await session.execute(
+        update(DavAccount).where(DavAccount.id == dav_account_id).values(**values)
+    )
+
+
+async def delete_dav_account(session: AsyncSession, dav_account_id: uuid.UUID) -> None:
+    """
+    Permanently delete a DAV account and everything mirrored under it.
+
+    Every dav_collections/dav_objects/dav_sync_queue row cascades via ON
+    DELETE CASCADE -- there is nothing else to delete. Nothing on the
+    server itself is touched; re-adding the account re-syncs it from
+    scratch.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        dav_account_id: DAV account to delete
+    """
+    await session.execute(delete(DavAccount).where(DavAccount.id == dav_account_id))
+
+
+async def create_collection(
+    session: AsyncSession,
+    *,
+    dav_account_id: uuid.UUID,
+    kind: str,
+    slug: str,
+    display_name: str | None = None,
+    color: str | None = None,
+    description: str | None = None,
+) -> DavCollection:
+    """
+    Insert a dav_collections row -- creating a calendar or address book.
+
+    PostIMAP issues MKCALENDAR (or extended MKCOL for an address book) at
+    <home>/<slug>/ and writes href back; a collection that already exists
+    at that URL is adopted rather than failing, the same as folder create
+    adopting an existing IMAP mailbox.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        dav_account_id: The DAV account this collection belongs to
+        kind: "calendar" or "addressbook"
+        slug: The last path segment the collection gets on the server;
+            set once, at creation
+        display_name: The server's displayname property
+        color: The server's calendar-color property (calendars only)
+        description: The server's calendar-description/addressbook-description
+
+    Returns:
+        The inserted DavCollection row (flushed, not yet committed)
+    """
+    collection = DavCollection(
+        account_id=dav_account_id, kind=kind, slug=slug,
+        display_name=display_name, color=color, description=description,
+    )
+    session.add(collection)
+    await session.flush()
+    await session.refresh(collection)
+    return collection
+
+
+async def update_collection(
+    session: AsyncSession,
+    collection_id: uuid.UUID,
+    **fields: Any,
+) -> None:
+    """
+    Update a collection's own server properties.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        collection_id: Collection to update
+        **fields: Any of display_name, color, description, deleted_at
+    """
+    if not fields:
+        return
+    await session.execute(
+        update(DavCollection).where(DavCollection.id == collection_id).values(**fields)
+    )
+
+
+async def delete_collection(session: AsyncSession, collection_id: uuid.UUID) -> None:
+    """
+    Delete a calendar or address book -- destroys every object in it on
+    the server, irreversibly. PostIMAP tombstones the mirrored rows in
+    the same transaction that records the server's confirmation.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        collection_id: Collection to delete
+    """
+    await session.execute(
+        update(DavCollection).where(DavCollection.id == collection_id)
+        .values(deleted_at=text("now()"))
+    )
+
+
+async def create_object(
+    session: AsyncSession,
+    *,
+    dav_account_id: uuid.UUID,
+    collection_id: uuid.UUID,
+    data: str,
+) -> DavObject:
+    """
+    Insert a dav_objects row -- a new event, task, journal entry or contact.
+
+    kind is never named here: a BEFORE INSERT trigger derives it from the
+    collection this row is inserted into, and the insert grant deliberately
+    does not include it -- naming it explicitly would be one more place
+    for it to disagree with the collection. href becomes <uid>.ics/.vcf
+    from the parsed UID once the outbound processor's PUT lands; until
+    then the parsed columns are NULL, same as a message row before its
+    embedding is filled.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        dav_account_id: The DAV account this object belongs to
+        collection_id: The calendar or address book to create it in
+        data: The whole iCalendar or vCard resource, verbatim
+
+    Returns:
+        The inserted DavObject row (flushed, not yet committed)
+    """
+    obj = DavObject(account_id=dav_account_id, collection_id=collection_id, data=data)
+    session.add(obj)
+    await session.flush()
+    await session.refresh(obj)
+    return obj
+
+
+async def replace_object_data(session: AsyncSession, object_id: uuid.UUID, data: str) -> int:
+    """
+    Replace the whole body of an existing object -- an edit.
+
+    Conditional on the etag the row holds, enforced server-side; a
+    concurrent server-side change answers 412 and PostIMAP re-reads the
+    server's copy over the row rather than accepting this write.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        object_id: Object to edit
+        data: The whole replacement iCalendar or vCard resource, verbatim
+
+    Returns:
+        The number of rows actually updated (0 or 1)
+    """
+    result = await session.execute(
+        update(DavObject).where(DavObject.id == object_id).values(data=data)
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def move_object(
+    session: AsyncSession, object_id: uuid.UUID, target_collection_id: uuid.UUID,
+) -> int:
+    """
+    Move an object to a different calendar or address book.
+
+    One statement, the calendar counterpart of move_message(): a BEFORE
+    UPDATE trigger nulls etag itself, so this never sets it explicitly --
+    etag IS NULL is the pending-move signal once the row lands.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        object_id: Object to move
+        target_collection_id: Destination collection
+
+    Returns:
+        The number of rows actually updated (0 or 1)
+    """
+    result = await session.execute(
+        update(DavObject).where(DavObject.id == object_id)
+        .values(collection_id=target_collection_id)
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def delete_object(session: AsyncSession, object_id: uuid.UUID) -> int:
+    """
+    Delete an event, task, journal entry or contact. Soft delete; the row
+    survives until retention removes it. Nextcloud moves the resource to
+    its own trash bin rather than destroying it, and reports the href as
+    gone all the same.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        object_id: Object to delete
+
+    Returns:
+        The number of rows actually updated (0 or 1)
+    """
+    result = await session.execute(
+        update(DavObject).where(DavObject.id == object_id).values(deleted_at=text("now()"))
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def acknowledge_dav_notification(session: AsyncSession, notification_id: int) -> None:
+    """
+    Mark one dav_notifications row as seen. acknowledged_at is the only
+    consumer-writable column on this table.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        notification_id: The dav_notifications row to acknowledge
+    """
+    await session.execute(
+        update(DavNotification).where(DavNotification.id == notification_id)
+        .values(acknowledged_at=text("now()"))
+    )
+
+
+async def acknowledge_all_dav_notifications(
+    session: AsyncSession, dav_account_id: uuid.UUID,
+) -> None:
+    """
+    Mark every unacknowledged dav_notifications row for a DAV account as seen.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        dav_account_id: DAV account whose notifications to acknowledge
+    """
+    await session.execute(
+        update(DavNotification).where(
+            DavNotification.account_id == dav_account_id,
+            DavNotification.acknowledged_at.is_(None),
+        ).values(acknowledged_at=text("now()"))
+    )
 
 
 # --- Guarded writes, for the pipeline runner ---------------------------
