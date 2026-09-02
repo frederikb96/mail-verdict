@@ -159,9 +159,10 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Group | Prefix | What it's for |
 |---|---|---|
 | Accounts | `/accounts` | Create, update, delete, list; folder listing; sync status and manual sync trigger |
+| Identities | `/identities` | An account's addresses to send as — create, update, delete, list (optionally scoped by `account_id`); at most one default per account, enforced at the database level. `POST /outbox`'s `identity_id` resolves through these |
 | Folders | `/accounts/{id}/folders`, `/folders/{id}` | Create and delete a folder, folder display prefs, custom ordering — see [known limitations](../README.md#known-limitations-deliberately) for what folder management deliberately does not do. Deletion is irreversible and destroys every message in the folder on the server, so `DELETE /folders/{id}` requires a `confirm_message_count` query parameter matching the folder's current message count; a call without it (or with a stale count) is a `409` naming the actual count rather than a deletion |
 | Messages | `/accounts/{id}/messages`, `/messages/{id}` | Cursor-paginated list (optionally threaded), detail, thread, attachment streaming, `.eml` download, single and bulk actions |
-| Outbox | `/outbox` | Send, save or edit a draft (JSON or multipart with attachments); list outbox rows for send/draft status |
+| Outbox | `/outbox` | Send, save or edit a draft (JSON or multipart with attachments); list outbox rows for send/draft status. `identity_id` picks which of the account's identities to send as, falling back to its default identity and then to `accounts.imap_user` |
 | Search | `/search`, `/embeddings/search` | Full-text and semantic search, respectively |
 | Verdicts | `/verdicts`, `/mails/{id}/verdict`, `/mails/{id}/feedback` | Spam verdict history and the user-correction feedback loop |
 | Pipeline | `/pipeline` | Read/replace the whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |

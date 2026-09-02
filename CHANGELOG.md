@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A `ui` test layer (`tests/ui/`, `pytest -m ui`) drives the application through a real browser
   with Playwright, reusing the same testcontainers world the `e2e` layer builds for itself, plus
   `scripts/devstack.py` for running an independent, compose-less development stack per checkout
+- **Identities** — a mail account's addresses to send as. `GET`/`POST /api/identities`,
+  `PATCH`/`DELETE /api/identities/{id}`; at most one default per account, enforced at the
+  database level. `POST /api/outbox` and the MCP `send_mail`/`draft_mail` tools accept an
+  `identity_id`, falling back to the account's default identity and then to `accounts.imap_user`
+  when it has none — an account that never adopts this table behaves exactly as before
 
 ### Fixed
 

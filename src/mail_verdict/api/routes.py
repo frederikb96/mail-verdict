@@ -12,6 +12,7 @@ from mail_verdict.api.accounts import router as accounts_router
 from mail_verdict.api.embeddings import router as embeddings_router
 from mail_verdict.api.folder_management import folder_prefs_router
 from mail_verdict.api.folder_management import router as folder_management_router
+from mail_verdict.api.identities import router as identities_router
 from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.api.mails import account_router as mails_account_router
 from mail_verdict.api.mails import router as mails_router
@@ -35,6 +36,7 @@ all_routers: list[APIRouter] = [
     outbox_router,
     search_router,
     accounts_router,
+    identities_router,
     image_exceptions_router,
     folder_management_router,
     folder_prefs_router,
