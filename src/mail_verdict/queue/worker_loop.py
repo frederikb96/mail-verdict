@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 from uuid import UUID
 
 from mail_verdict.queue.notify import wait_for_work
 from mail_verdict.queue.work_queue import WorkQueue
+
+logger = logging.getLogger(__name__)
 
 ItemHandler = Callable[[Mapping[str, Any]], Awaitable[None]]
 
@@ -54,9 +57,28 @@ async def heartbeat_while(
     gap = interval_seconds if interval_seconds is not None else lease_seconds / 3
 
     async def _beat() -> None:
+        # An unhandled exception here kills this task silently -- nothing
+        # awaits it until the context manager's own finally block, which
+        # only runs once the body below has already finished. Left
+        # unguarded, one database blip stops every future beat too: the
+        # lease then expires mid-item, the reconciliation timer reclaims
+        # it without refunding the attempt this call already spent, and a
+        # second worker re-runs it -- a duplicated paid provider call for
+        # the embedding and pipeline workers this wraps. Catching and
+        # logging keeps the loop itself alive to retry next interval,
+        # which is what the lease-margin the docstring above describes
+        # actually depends on.
         while True:
             await asyncio.sleep(gap)
-            await work_queue.heartbeat([item_id], worker_id=worker_id, lease_seconds=lease_seconds)
+            try:
+                await work_queue.heartbeat(
+                    [item_id], worker_id=worker_id, lease_seconds=lease_seconds,
+                )
+            except Exception:
+                logger.exception(
+                    "Heartbeat failed to extend lease; retrying next interval",
+                    extra={"item_id": str(item_id), "worker_id": worker_id},
+                )
 
     task = asyncio.create_task(_beat())
     try:

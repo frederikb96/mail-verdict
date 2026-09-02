@@ -9,6 +9,7 @@ extended rather than reclaimed out from under the worker still running it.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 import pytest
@@ -155,6 +156,69 @@ class TestHeartbeatWhile:
         await asyncio.sleep(0.15)
         row = await _row(migrated_db, throwaway_queue_table, row_id)
         assert row.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_heartbeat_is_logged_and_the_loop_keeps_beating(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """A single transient failure (a database blip, say) must not kill
+        the beat loop for the rest of a long-running call -- the next
+        interval has to still land, and the failure must be observable
+        rather than an exception nothing ever retrieves.
+
+        A plain handler attached directly to the module's own logger,
+        not pytest's caplog: alembic's env.py calls fileConfig() as part
+        of running migrations against a fresh migrated_db, and
+        fileConfig()'s default disable_existing_loggers=True sets
+        `.disabled = True` on every logger already registered at that
+        point -- including this module's, imported at collection time --
+        which silently drops every record before any handler (caplog's
+        or one attached here) ever sees it.
+        """
+        [row_id] = await _seed_rows(migrated_db, throwaway_queue_table, 1)
+        queue = WorkQueue(migrated_db, throwaway_queue_table)
+        claimed = await queue.claim_batch(worker_id="w1", batch_size=1, lease_seconds=1)
+        first_lease = claimed[0]["lease_expires_at"]
+
+        heartbeat_calls = 0
+        real_heartbeat = queue.heartbeat
+
+        async def _fail_once_then_succeed(*args: object, **kwargs: object) -> int:
+            nonlocal heartbeat_calls
+            heartbeat_calls += 1
+            if heartbeat_calls == 1:
+                raise RuntimeError("simulated transient database blip")
+            return await real_heartbeat(*args, **kwargs)  # type: ignore[arg-type]
+
+        queue.heartbeat = _fail_once_then_succeed  # type: ignore[method-assign]
+
+        records: list[logging.LogRecord] = []
+
+        class _CollectingHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _CollectingHandler()
+        wl_logger = logging.getLogger("mail_verdict.queue.worker_loop")
+        wl_logger.addHandler(handler)
+        was_disabled = wl_logger.disabled
+        wl_logger.disabled = False
+        try:
+            async with heartbeat_while(
+                queue, row_id, worker_id="w1", lease_seconds=10, interval_seconds=0.1,
+            ):
+                # Several intervals: one guaranteed to fail (the first),
+                # several more that must still land afterward.
+                await asyncio.sleep(0.6)
+        finally:
+            wl_logger.removeHandler(handler)
+            wl_logger.disabled = was_disabled
+
+        assert heartbeat_calls >= 2, "the loop must not have died after the first failure"
+        assert any("Heartbeat failed" in r.getMessage() for r in records)
+
+        row = await _row(migrated_db, throwaway_queue_table, row_id)
+        assert row.lease_expires_at > first_lease, "a later, successful beat extended the lease"
 
 
 class TestDefaultWorkerLoopHeartbeat:
