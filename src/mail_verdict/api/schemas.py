@@ -1133,8 +1133,16 @@ class RespondRequest(BaseModel):
 # carry this value; every one of its status checks is an equality
 # comparison, not an exhaustive switch, so a message in this state simply
 # renders its header and nothing below it rather than failing to render.
+#
+# "unauthorized" -- a REQUEST/CANCEL/REPLY naming a UID this application
+# does hold, whose sender is not entitled to touch it: the ORGANIZER does
+# not match the stored object's (REQUEST/CANCEL), or the replying
+# ATTENDEE does not match the message's own sender (REPLY). Left
+# unapplied; the object_id/calendar_id still name what it claims to be
+# about, so a person can go look.
 InvitationStatus = Literal[
     "imported", "updated", "unlinked", "cancelled", "ignored_stale", "failed", "ignored",
+    "unauthorized",
 ]
 
 

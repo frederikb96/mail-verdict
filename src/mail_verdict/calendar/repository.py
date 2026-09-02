@@ -28,6 +28,7 @@ from mail_verdict.database.models import (
     DavCollection,
     DavNotification,
     DavObject,
+    Identity,
 )
 
 if TYPE_CHECKING:
@@ -151,16 +152,36 @@ class DavObjectRepository:
             )
             return result.scalar_one_or_none()
 
-    async def find_by_uid_anywhere(self, uid: str) -> DavObject | None:
+    async def find_by_uid_reachable(self, uid: str, account_id: uuid.UUID) -> DavObject | None:
         """The UID lookup calendar/intake.py needs: a UID already held in
-        any dav_objects row of any DAV account -- the hand-imported case
-        the design settles on ("update in place where it lives, whatever
-        the mapping says"), and what keeps two of a user's own addresses
-        being invited to the same event from producing two copies."""
+        a dav_objects row of a DAV account reachable from this mail
+        account -- the hand-imported case the design settles on ("update
+        in place where it lives, whatever the mapping says"), and what
+        keeps two of a user's own addresses being invited to the same
+        event from producing two copies.
+
+        Scoped to DAV accounts that have at least one collection linked
+        (calendar_prefs.identity_id) to one of this mail account's own
+        identities -- an emailed invitation naming a UID that happens to
+        collide with an object in a DAV account belonging to a different
+        mail account's identities must never resolve to that object.
+        Without this, any DAV account in the whole database was in scope,
+        so an invitation to mail account A could rewrite an object under
+        an unrelated mail account's calendar."""
         async with self._db.session() as session:
+            reachable_dav_accounts = (
+                select(DavCollection.account_id)
+                .join(CalendarPrefs, CalendarPrefs.collection_id == DavCollection.id)
+                .join(Identity, Identity.id == CalendarPrefs.identity_id)
+                .where(Identity.account_id == account_id)
+            )
             result = await session.execute(
                 select(DavObject)
-                .where(DavObject.uid == uid, DavObject.deleted_at.is_(None))
+                .where(
+                    DavObject.uid == uid,
+                    DavObject.deleted_at.is_(None),
+                    DavObject.account_id.in_(reachable_dav_accounts),
+                )
                 .order_by(DavObject.created_at)
             )
             return result.scalars().first()

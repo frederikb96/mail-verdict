@@ -25,7 +25,7 @@ implemented here -- flagged in the report as unfinished.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
@@ -233,12 +233,19 @@ async def get_event(object_id: uuid.UUID, recurrence_id: str | None = None) -> E
     if recurrence_id is not None:
         parsed = next((e for e in exceptions if e.recurrence_id == recurrence_id), None)
         if parsed is None:
-            # No stored exception at this occurrence -- expand a wide
-            # enough window around the master's own start to find it.
-            candidates = ical.expand_instances(
-                obj.data, master.dtstart.replace(year=master.dtstart.year - 1),
-                master.dtstart.replace(year=master.dtstart.year + 5),
-            )
+            # No stored exception at this occurrence -- RECURRENCE-ID is
+            # itself the occurrence's own DTSTART (RFC 5545), so a
+            # one-day window around that exact moment is where it would
+            # be, without expanding the whole series to look for it.
+            try:
+                target = ical.recurrence_id_to_datetime(recurrence_id)
+                candidates = ical.expand_instances(
+                    obj.data, target, target + timedelta(days=1),
+                )
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(
+                    status_code=404, detail="Occurrence not found",
+                ) from exc
             parsed = next((c for c in candidates if c.recurrence_id == recurrence_id), None)
         if parsed is None:
             raise HTTPException(status_code=404, detail="Occurrence not found")
@@ -287,13 +294,16 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
             raise HTTPException(status_code=409, detail="calendar has no identity")
         organizer_email = organizer_identity.email
 
-    data = ical.build_new_event(
-        summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
-        all_day=request.all_day, location=request.location, description=request.description,
-        rrule=request.rrule, organizer_email=organizer_email,
-        organizer_cn=organizer_identity.display_name if organizer_identity else None,
-        attendees=[(a.email, a.cn) for a in request.attendees] if request.attendees else None,
-    )
+    try:
+        data = ical.build_new_event(
+            summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
+            all_day=request.all_day, location=request.location, description=request.description,
+            rrule=request.rrule, organizer_email=organizer_email,
+            organizer_cn=organizer_identity.display_name if organizer_identity else None,
+            attendees=[(a.email, a.cn) for a in request.attendees] if request.attendees else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async with db.session() as session:
         obj = await create_object(
@@ -370,12 +380,15 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
             description=request.description,
         )
     else:
-        updated_data = ical.replace_master_fields(
-            obj.data,
-            summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
-            all_day=request.all_day, location=request.location,
-            description=request.description, rrule=request.rrule,
-        )
+        try:
+            updated_data = ical.replace_master_fields(
+                obj.data,
+                summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
+                all_day=request.all_day, location=request.location,
+                description=request.description, rrule=request.rrule,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async with db.session() as session:
         await replace_object_data(session, object_id, updated_data)

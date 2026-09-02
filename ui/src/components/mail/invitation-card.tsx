@@ -205,6 +205,16 @@ export function InvitationCard({ messageId }: InvitationCardProps) {
         <p className="text-xs text-destructive">This event was cancelled by the organizer.</p>
       )}
 
+      {invitation.status === "unauthorized" && (
+        <div className="text-xs text-destructive">
+          This message claims to update an event but was not sent by its organizer, so it was
+          not applied.{" "}
+          <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={openInCalendar}>
+            View the event
+          </Button>
+        </div>
+      )}
+
       {invitation.status === "ignored_stale" && (
         <div className="text-xs text-muted-foreground">
           Outdated — a newer version of this invitation has already been applied.{" "}

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from mail_verdict.calendar import ical
 
 
@@ -127,6 +129,97 @@ class TestExpansion:
             datetime(2027, 2, 1, tzinfo=timezone.utc),
         )
         assert instances == []
+
+
+class TestOccurrenceBound:
+    """Row 108: an event whose RRULE could expand to an unreasonable
+    occurrence count inside the requested window is refused outright,
+    before recurring-ical-events is ever asked to generate anything."""
+
+    def test_secondly_over_a_day_is_refused(self) -> None:
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:bomb-1@example.com\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260901T000000Z\r\n"
+            "DTEND:20260901T000001Z\r\n"
+            "SUMMARY:Tick\r\n"
+            "SEQUENCE:0\r\n"
+            "RRULE:FREQ=SECONDLY\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        with pytest.raises(ical.TooManyOccurrencesError):
+            ical.expand_instances(
+                data,
+                datetime(2026, 9, 1, tzinfo=timezone.utc),
+                datetime(2026, 9, 2, tzinfo=timezone.utc),
+            )
+
+    def test_minutely_over_a_month_is_refused(self) -> None:
+        """The finding's second amplifier: list_events' own calendar-month
+        window, over a frequency the day-scale case alone would not
+        already cover the reasoning for."""
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:bomb-2@example.com\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260901T000000Z\r\n"
+            "DTEND:20260901T000001Z\r\n"
+            "SUMMARY:Tick\r\n"
+            "SEQUENCE:0\r\n"
+            "RRULE:FREQ=MINUTELY\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        with pytest.raises(ical.TooManyOccurrencesError):
+            ical.expand_instances(
+                data,
+                datetime(2026, 9, 1, tzinfo=timezone.utc),
+                datetime(2026, 10, 1, tzinfo=timezone.utc),
+            )
+
+    def test_weekly_series_is_unaffected(self) -> None:
+        """A normal recurring event, however wide the window, stays well
+        under the bound and expands as before."""
+        instances = ical.expand_instances(
+            _RECURRING_EVENT,
+            datetime(2020, 1, 1, tzinfo=timezone.utc),
+            datetime(2030, 1, 1, tzinfo=timezone.utc),
+        )
+        assert len(instances) == 4
+
+    def test_build_new_event_refuses_secondly_rrule(self) -> None:
+        with pytest.raises(ValueError, match="SECONDLY"):
+            ical.build_new_event(
+                summary="Tick", dtstart=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 1, 0, 1, tzinfo=timezone.utc),
+                rrule="FREQ=SECONDLY",
+            )
+
+    def test_build_new_event_accepts_a_normal_rrule(self) -> None:
+        data = ical.build_new_event(
+            summary="Standup", dtstart=datetime(2026, 9, 1, tzinfo=timezone.utc),
+            dtend=datetime(2026, 9, 1, 1, 0, tzinfo=timezone.utc),
+            rrule="FREQ=WEEKLY;BYDAY=MO",
+        )
+        master, _ = ical.parse_master_and_exceptions(data)
+        assert master.rrule == "FREQ=WEEKLY;BYDAY=MO"
+
+    def test_replace_master_fields_refuses_minutely_rrule(self) -> None:
+        with pytest.raises(ValueError, match="MINUTELY"):
+            ical.replace_master_fields(_SIMPLE_EVENT, rrule="FREQ=MINUTELY")
+
+    def test_recurrence_id_to_datetime_round_trips(self) -> None:
+        assert ical.recurrence_id_to_datetime("20260908T090000Z") == datetime(
+            2026, 9, 8, 9, 0, tzinfo=timezone.utc,
+        )
 
 
 class TestMethodAndScheduleAgent:

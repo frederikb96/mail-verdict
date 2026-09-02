@@ -24,6 +24,86 @@ from typing import Any, cast
 import recurring_ical_events
 from icalendar import Calendar, Component, Event, vCalAddress, vDDDTypes, vText
 
+# A window this wide could contain more occurrences than a caller ever
+# means to render, and expand_instances() refuses rather than asking
+# recurring-ical-events to actually generate them -- see
+# TooManyOccurrencesError.
+MAX_EXPANDED_OCCURRENCES = 3000
+
+# The shortest possible gap, in seconds, between two occurrences at each
+# RRULE FREQ -- deliberately conservative (a month is never shorter than
+# 28 days, a year never shorter than 365), since BYDAY/BYSETPOS and
+# similar only ever narrow a series further, never widen it. Used to
+# reject a series before asking recurring-ical-events to expand it, not
+# to size the result.
+_FREQ_MIN_SECONDS = {
+    "SECONDLY": 1,
+    "MINUTELY": 60,
+    "HOURLY": 3600,
+    "DAILY": 86400,
+    "WEEKLY": 7 * 86400,
+    "MONTHLY": 28 * 86400,
+    "YEARLY": 365 * 86400,
+}
+
+
+class TooManyOccurrencesError(ValueError):
+    """A series whose RRULE could produce more than MAX_EXPANDED_OCCURRENCES
+    occurrences inside the requested window -- raised before
+    recurring-ical-events is ever asked to expand it, since that call
+    itself is what a FREQ=SECONDLY series over even a one-day window
+    measures at tens of seconds and hundreds of MB, synchronously, on the
+    process's only event loop."""
+
+
+def _would_exceed_window(
+    component: Component, window_start: datetime, window_end: datetime,
+) -> bool:
+    """A cheap upper bound on how many occurrences this component's RRULE
+    could produce inside [window_start, window_end) -- window duration
+    divided by the shortest possible gap at this FREQ/INTERVAL. Never
+    calls recurring-ical-events, since that call is the one this exists
+    to guard; a component with no RRULE, or an unrecognised FREQ, is
+    never flagged here."""
+    rrule_prop = component.get("RRULE")
+    if rrule_prop is None:
+        return False
+    freq_values = rrule_prop.get("FREQ")
+    freq = str(freq_values[0]).upper() if freq_values else ""
+    min_seconds = _FREQ_MIN_SECONDS.get(freq)
+    if min_seconds is None:
+        return False
+    interval_values = rrule_prop.get("INTERVAL")
+    interval = int(interval_values[0]) if interval_values else 1
+    window_seconds = (window_end - window_start).total_seconds()
+    if window_seconds <= 0:
+        return False
+    max_possible = window_seconds / (min_seconds * max(interval, 1))
+    return max_possible > MAX_EXPANDED_OCCURRENCES
+
+
+def validate_rrule_frequency(rrule: str) -> None:
+    """Refuse FREQ=SECONDLY or FREQ=MINUTELY -- expand_instances()'s
+    MAX_EXPANDED_OCCURRENCES guard already stops either from freezing a
+    read, but an event this application originates has no reason to ever
+    carry one, and rejecting it at the point of creation or edit is
+    cheaper than storing an object no view will ever fully render."""
+    parsed = _parse_rrule_value(rrule)
+    freq_values = parsed.get("FREQ")
+    freq = str(freq_values[0]).upper() if freq_values else ""
+    if freq in ("SECONDLY", "MINUTELY"):
+        raise ValueError(f"FREQ={freq} recurs too frequently to be usable")
+
+
+def recurrence_id_to_datetime(recurrence_id: str) -> datetime:
+    """The occurrence datetime a RECURRENCE-ID string names. RFC 5545
+    ties every RECURRENCE-ID to the DTSTART of the occurrence it
+    overrides, so this is where that exact occurrence would be found --
+    used to search a window of hours around one specific occurrence
+    instead of the whole series when looking one up by RECURRENCE-ID."""
+    value = vDDDTypes.from_ical(recurrence_id)
+    return _to_datetime(value, not isinstance(value, datetime))
+
 
 def _serialize(component: Any) -> str:
     """icalendar's to_ical()/decode() chain is untyped -- this is the one
@@ -333,11 +413,20 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
 
     Returns:
         One ParsedEvent per occurrence in range, dtstart-ordered
+
+    Raises:
+        TooManyOccurrencesError: the RRULE could produce more than
+            MAX_EXPANDED_OCCURRENCES occurrences in this window -- never
+            actually attempted, see _would_exceed_window().
     """
     cal = _parse_calendar(data)
-    is_recurring = any(
-        c.get("RRULE") or c.get("RDATE") for c in cal.walk() if c.name == "VEVENT"
-    )
+    vevents = [c for c in cal.walk() if c.name == "VEVENT"]
+    if any(_would_exceed_window(c, window_start, window_end) for c in vevents):
+        raise TooManyOccurrencesError(
+            f"RRULE would produce more than {MAX_EXPANDED_OCCURRENCES} occurrences "
+            f"between {window_start.isoformat()} and {window_end.isoformat()}",
+        )
+    is_recurring = any(c.get("RRULE") or c.get("RDATE") for c in vevents)
     occurrences = recurring_ical_events.of(cal).between(window_start, window_end)
     parsed = [
         _parse_component(
@@ -444,6 +533,7 @@ def build_new_event(
     if description:
         event.add("DESCRIPTION", description)
     if rrule:
+        validate_rrule_frequency(rrule)
         event.add("RRULE", _parse_rrule_value(rrule))
 
     if attendees:
@@ -509,6 +599,7 @@ def _apply_field_overrides(
         if "RRULE" in component:
             del component["RRULE"]
         if rrule:
+            validate_rrule_frequency(rrule)
             component.add("RRULE", _parse_rrule_value(rrule))
     _set(component, "SEQUENCE", int(component.get("SEQUENCE", 0)) + 1)
 

@@ -144,11 +144,17 @@ class CalendarIntakeHandler:
         self, account_id: uuid.UUID, message: Message, invitation: ical.ParsedInvitation,
     ) -> IntakeDecision:
         """What this invitation resolves to, right now -- no writes."""
-        existing = await self._object_repo.find_by_uid_anywhere(invitation.master.uid)
+        existing = await self._object_repo.find_by_uid_reachable(invitation.master.uid, account_id)
 
         if invitation.method == "CANCEL":
             if existing is None:
                 return IntakeDecision(status="ignored")
+            if not self._organizer_authorized(existing, invitation):
+                return IntakeDecision(
+                    status="unauthorized", dav_account_id=existing.account_id,
+                    collection_id=existing.collection_id, existing=existing,
+                    reason="the sender does not match this event's organizer",
+                )
             return IntakeDecision(
                 status="cancelled", dav_account_id=existing.account_id,
                 collection_id=existing.collection_id, existing=existing,
@@ -157,6 +163,12 @@ class CalendarIntakeHandler:
         if invitation.method == "REPLY":
             if existing is None:
                 return IntakeDecision(status="ignored")
+            if not self._reply_attendee_authorized(message, invitation):
+                return IntakeDecision(
+                    status="unauthorized", dav_account_id=existing.account_id,
+                    collection_id=existing.collection_id, existing=existing,
+                    reason="the sender does not match the attendee this reply is for",
+                )
             return IntakeDecision(
                 status="updated", dav_account_id=existing.account_id,
                 collection_id=existing.collection_id, existing=existing,
@@ -164,6 +176,12 @@ class CalendarIntakeHandler:
 
         # REQUEST
         if existing is not None:
+            if not self._organizer_authorized(existing, invitation):
+                return IntakeDecision(
+                    status="unauthorized", dav_account_id=existing.account_id,
+                    collection_id=existing.collection_id, existing=existing,
+                    reason="the sender does not match this event's organizer",
+                )
             if self._is_stale(existing, invitation):
                 return IntakeDecision(
                     status="ignored_stale", dav_account_id=existing.account_id,
@@ -255,10 +273,47 @@ class CalendarIntakeHandler:
             await self._intake_repo.update_status(row.id, status="imported", object_id=obj.id)
             return
 
-        # ignored / ignored_stale / unlinked -- the intake row already
-        # says everything there is to say; nothing to write onto an object.
+        # ignored / ignored_stale / unlinked / unauthorized -- the intake
+        # row already says everything there is to say; nothing to write
+        # onto an object.
 
     # --- shared building blocks ---
+
+    def _organizer_authorized(self, existing: DavObject, invitation: ical.ParsedInvitation) -> bool:
+        """Whether this REQUEST/CANCEL is entitled to touch the object it
+        names: the incoming ORGANIZER must match the object's own stored
+        ORGANIZER, case-insensitively. Without this, anyone who merely
+        knows an event's UID -- a co-attendee, since it is in the .ics
+        they themselves received -- could silently rewrite or cancel it
+        by emailing a REQUEST or CANCEL that names a UID they hold and an
+        ORGANIZER of their own choosing; `_is_stale()` alone does not stop
+        this, since SEQUENCE is attacker-controlled too."""
+        try:
+            master, _ = ical.parse_master_and_exceptions(existing.data)
+        except ValueError:
+            return False
+        stored_organizer = master.organizer.email.lower() if master.organizer else None
+        incoming_organizer = (
+            invitation.master.organizer.email.lower() if invitation.master.organizer else None
+        )
+        if stored_organizer is None or incoming_organizer is None:
+            return False
+        return stored_organizer == incoming_organizer
+
+    def _reply_attendee_authorized(
+        self, message: Message, invitation: ical.ParsedInvitation,
+    ) -> bool:
+        """Whether this REPLY is entitled to write the PARTSTAT it
+        carries: `_apply()` writes `attendees[0]`'s PARTSTAT onto the
+        stored object without any other check, so a REPLY naming a UID
+        the sender knows and an ATTENDEE of their own choosing could mark
+        any other attendee's response -- accepted, declined, whatever the
+        sender likes -- unless the attendee being updated is confirmed to
+        be the message's own sender."""
+        attendee = invitation.master.attendees[0] if invitation.master.attendees else None
+        if attendee is None or not message.from_addr:
+            return False
+        return attendee.email.lower() == message.from_addr.lower()
 
     def _is_stale(self, existing: DavObject, invitation: ical.ParsedInvitation) -> bool:
         """SEQUENCE lower than the matching component's own stored

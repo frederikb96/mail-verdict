@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- An emailed `METHOD:REQUEST`/`CANCEL`/`REPLY` no longer touches a stored calendar object unless
+  its sender is entitled to: the incoming `ORGANIZER` must match the stored object's own
+  (REQUEST/CANCEL), and a REPLY's attendee must match the message's own sender. Previously any
+  sender who merely knew an event's UID — a co-attendee, since it is in the `.ics` they
+  themselves received — could silently rewrite, cancel or mark an attendee's response on it by
+  emailing a matching UID with a higher SEQUENCE. A failed check is recorded as a new
+  `calendar_intake` status, `unauthorized`, left unapplied. The UID lookup itself is also now
+  scoped to DAV accounts reachable from the receiving mail account's own identities, rather than
+  every DAV account in the database
+- A recurring event's RRULE is bounded before it is ever expanded: a series that could produce
+  more than a few thousand occurrences in the requested window is refused outright rather than
+  handed to the expansion library, which previously ran synchronously on the same process as
+  mail sync, SSE and health checks — a single emailed `FREQ=SECONDLY` invitation could freeze and
+  OOM-kill the whole application for as long as the event stayed in the calendar. Creating or
+  editing an event through the API refuses `FREQ=SECONDLY`/`MINUTELY` outright, and looking up a
+  single occurrence by `RECURRENCE-ID` now searches a one-day window around that occurrence's own
+  timestamp instead of a six-year span
+
 ## [3.1.0] - 2026-09-02
 
 ### Added

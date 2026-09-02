@@ -117,6 +117,49 @@ def _reply_ics(
     )
 
 
+def _attacker_request_ics(uid: str, *, sequence: int = 99) -> str:
+    """The row 107 repro's attack body: a REQUEST naming a UID the sender
+    merely knows (a co-attendee has it, since it is in the .ics they
+    themselves received), an ORGANIZER of the attacker's own choosing,
+    no ATTENDEE line at all, and a SEQUENCE high enough to beat
+    `_is_stale()` on its own."""
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//Test//EN\r\n"
+        "METHOD:REQUEST\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        "DTSTAMP:20260901T120000Z\r\n"
+        "DTSTART:20260911T030000Z\r\n"
+        "DTEND:20260911T040000Z\r\n"
+        "SUMMARY:MOVED - see attacker.example\r\n"
+        f"SEQUENCE:{sequence}\r\n"
+        "ORGANIZER:mailto:attacker@evil.example\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+
+def _attacker_cancel_ics(uid: str, *, sequence: int = 99) -> str:
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//Test//EN\r\n"
+        "METHOD:CANCEL\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        "DTSTAMP:20260901T120000Z\r\n"
+        "DTSTART:20260910T090000Z\r\n"
+        "DTEND:20260910T100000Z\r\n"
+        "SUMMARY:Kickoff\r\n"
+        f"SEQUENCE:{sequence}\r\n"
+        "ORGANIZER:mailto:attacker@evil.example\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+
 async def _seed_mail_account_folder_and_identity(
     session: AsyncSession, *, email: str | None,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]:
@@ -198,8 +241,11 @@ async def _seed_existing_object(
 
 async def _seed_message_with_ics(
     session: AsyncSession, *, account_id: uuid.UUID, folder_id: uuid.UUID, data: str,
-    message_id_hdr: str,
+    message_id_hdr: str, from_addr: str = "anna@example.com",
 ) -> uuid.UUID:
+    """from_addr defaults to the organizer used throughout this file's
+    REQUEST/CANCEL fixtures -- a REPLY's own sender is the attendee it
+    replies as, not the organizer, so a REPLY test passes its own."""
     message_id = uuid.uuid4()
     await session.execute(
         text(
@@ -207,12 +253,12 @@ async def _seed_message_with_ics(
             "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
             " from_addr, received_at, size_bytes) "
             "VALUES (:id, :account_id, :folder_id, :imap_uid, :thread_id, :msg_id, 'Kickoff', "
-            " 'anna@example.com', now(), 1024)"
+            " :from_addr, now(), 1024)"
         ),
         {
             "id": message_id, "account_id": account_id, "folder_id": folder_id,
             "imap_uid": next(_imap_uid_counter),
-            "thread_id": message_id, "msg_id": message_id_hdr,
+            "thread_id": message_id, "msg_id": message_id_hdr, "from_addr": from_addr,
         },
     )
     await session.execute(
@@ -536,7 +582,7 @@ class TestImport:
             reply_mail_id = await _seed_message_with_ics(
                 session, account_id=account_id, folder_id=folder_id,
                 data=_reply_ics(uid, attendee="freddy@work.example", partstat="ACCEPTED"),
-                message_id_hdr="<m8b@example.com>",
+                message_id_hdr="<m8b@example.com>", from_addr="freddy@work.example",
             )
 
         await _handler(migrated_db).handle_message_event(_insert_event(reply_mail_id, account_id))
@@ -639,6 +685,220 @@ class TestImport:
                 )
             ).scalar_one()
         assert count == 0
+
+
+class TestAuthentication:
+    """Row 107: an incoming REQUEST/CANCEL/REPLY may only touch an object
+    it is entitled to -- the sender is a stranger to this application
+    until proven otherwise, not another mail account."""
+
+    @pytest.mark.asyncio
+    async def test_request_from_a_different_organizer_is_not_applied(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The row 107 repro: a co-attendee (or anyone else) who merely
+        knows the UID cannot move or rewrite the event by emailing a
+        REQUEST that names a different ORGANIZER, however high its
+        SEQUENCE."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            original_data = _stored_event_data(uid)
+            existing_object_id = await _seed_existing_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid=uid, data=original_data,
+            )
+            attack_mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_attacker_request_ics(uid), message_id_hdr="<attack1@evil.example>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(attack_mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            status = (
+                await session.execute(
+                    text("SELECT status FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).scalar_one()
+            stored = (
+                await session.execute(
+                    text("SELECT data FROM dav_objects WHERE id = :id"),
+                    {"id": existing_object_id},
+                )
+            ).scalar_one()
+        assert status == "unauthorized"
+        assert stored == original_data
+        master, _ = ical.parse_master_and_exceptions(stored)
+        assert master.organizer is not None and master.organizer.email == "anna@example.com"
+        assert master.summary == "Kickoff"
+
+    @pytest.mark.asyncio
+    async def test_cancel_from_a_different_organizer_is_not_applied(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            original_data = _stored_event_data(uid)
+            existing_object_id = await _seed_existing_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid=uid, data=original_data,
+            )
+            attack_mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_attacker_cancel_ics(uid), message_id_hdr="<attack2@evil.example>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(attack_mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            status = (
+                await session.execute(
+                    text("SELECT status FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).scalar_one()
+            deleted_at, stored = (
+                await session.execute(
+                    text("SELECT deleted_at, data FROM dav_objects WHERE id = :id"),
+                    {"id": existing_object_id},
+                )
+            ).one()
+        assert status == "unauthorized"
+        assert deleted_at is None
+        assert stored == original_data
+        master, _ = ical.parse_master_and_exceptions(stored)
+        assert master.status == "confirmed"
+
+    @pytest.mark.asyncio
+    async def test_reply_from_a_different_attendee_is_not_applied(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """`_apply()` would otherwise write attendees[0]'s PARTSTAT
+        unconditionally -- a third party who knows the UID could mark any
+        attendee DECLINED by claiming to be them in the REPLY body while
+        actually mailing from somewhere else."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            original_data = _stored_event_data(uid)
+            existing_object_id = await _seed_existing_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid=uid, data=original_data,
+            )
+            # The REPLY claims to speak for freddy@work.example, but the
+            # message itself (from_addr, set by _seed_message_with_ics)
+            # arrives from anna@example.com.
+            attack_mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_reply_ics(uid, attendee="freddy@work.example", partstat="DECLINED"),
+                message_id_hdr="<attack3@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(attack_mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            status = (
+                await session.execute(
+                    text("SELECT status FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).scalar_one()
+            stored = (
+                await session.execute(
+                    text("SELECT data FROM dav_objects WHERE id = :id"),
+                    {"id": existing_object_id},
+                )
+            ).scalar_one()
+        assert status == "unauthorized"
+        assert stored == original_data
+
+    @pytest.mark.asyncio
+    async def test_uid_lookup_is_not_reachable_across_unrelated_accounts(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The scope half of row 107: a UID collision with an object under
+        a DAV account only linked to a different mail account's identity
+        must not resolve at all -- it has to be treated as a fresh
+        invitation (or ignored, for CANCEL/REPLY), never as "the existing
+        object", however matching ORGANIZER would otherwise pass."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            # The object lives under a DAV account linked to a *different*
+            # mail account's identity.
+            _other_account_id, _other_folder_id, other_identity_id = (
+                await _seed_mail_account_folder_and_identity(session, email="other@work.example")
+            )
+            assert other_identity_id is not None
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=other_identity_id,
+            )
+            original_data = _stored_event_data(uid)
+            existing_object_id = await _seed_existing_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid=uid, data=original_data,
+            )
+
+            # The receiving mail account has no calendar linked to this
+            # DAV account at all -- an invitation naming the same UID
+            # arrives here regardless (a stranger can put any UID in the
+            # .ics they send).
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                # Same UID, same ORGANIZER as the stored object -- if scope
+                # were not enforced, this alone would pass the organizer
+                # check and update the wrong account's object.
+                data=_request_ics(uid), message_id_hdr="<cross-account@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            status = (
+                await session.execute(
+                    text("SELECT status FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).scalar_one()
+            stored = (
+                await session.execute(
+                    text("SELECT data FROM dav_objects WHERE id = :id"),
+                    {"id": existing_object_id},
+                )
+            ).scalar_one()
+        # Not "updated" -- the sending account has no reachable link to
+        # that object, so this is unlinked (no intake calendar of its
+        # own), and the other account's object is untouched.
+        assert status == "unlinked"
+        assert stored == original_data
 
 
 class TestDecideIsPure:

@@ -842,7 +842,8 @@ export type InvitationStatus =
   | "unlinked"
   | "cancelled"
   | "ignored_stale"
-  | "failed";
+  | "failed"
+  | "unauthorized";
 
 export interface Invitation {
   message_id: string;
