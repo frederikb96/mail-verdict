@@ -213,6 +213,27 @@ async def record_folder_watermark(db: DatabaseConnection, event: PostimapEvent) 
     contract. A later resync of an already-synced folder does not repeat
     this event, which is exactly right: the watermark should never move
     backward or reset.
+
+    The watermark is read from `folders.last_synced_at` rather than taken
+    as `now()` on this side. This handler runs asynchronously -- NOTIFY
+    delivery plus the listener's own dispatch queue -- so `now()` here is
+    always later than the moment PostIMAP actually finished the backfill,
+    by however long that gap happens to be. Any message PostIMAP inserts
+    in that gap gets a `created_at` earlier than a watermark taken from
+    this side's clock and is permanently excluded from
+    `enqueue_pipeline_run_if_live_eligible` and `_reconcile_once` alike,
+    since both compare against the same stored value and it is never
+    moved once set.
+
+    `last_synced_at` is PostIMAP's own clock, and unlike `updated_at` it
+    is not touched by the per-message trigger that maintains
+    `total_count`/`unread_count` on every message insert -- PostIMAP sets
+    it once per sync cycle, in `updateFolderState`, before the
+    `initial_sync_done` flip that fires this event, and not again until
+    the folder's next periodic cycle. A live message landing in the gap
+    this handler is racing against therefore cannot have already pushed
+    the watermark forward to its own arrival time the way `updated_at`
+    would.
     """
     if not event.backfill:
         return
@@ -228,7 +249,9 @@ async def record_folder_watermark(db: DatabaseConnection, event: PostimapEvent) 
             text(
                 """
                 INSERT INTO pipeline_folder_state (folder_id, account_id, backfill_completed_at)
-                VALUES (:folder_id, :account_id, now())
+                SELECT f.id, f.account_id, f.last_synced_at
+                FROM folders f
+                WHERE f.id = :folder_id AND f.account_id = :account_id
                 ON CONFLICT (folder_id) DO UPDATE
                     SET backfill_completed_at = COALESCE(
                         pipeline_folder_state.backfill_completed_at, EXCLUDED.backfill_completed_at
