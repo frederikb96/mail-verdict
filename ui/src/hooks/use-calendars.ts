@@ -37,7 +37,8 @@ export function useUpdateCalendar() {
 export function useDeleteCalendar() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.calendars.delete(id),
+    mutationFn: ({ id, eventCount }: { id: string; eventCount: number }) =>
+      api.calendars.delete(id, eventCount),
     onSuccess: () => qc.invalidateQueries({ queryKey: calendarKeys.list }),
   });
 }

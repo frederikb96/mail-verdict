@@ -33,8 +33,7 @@ import type { Calendar, CalendarIntake } from "@/types/api";
 
 const INTAKE_LABELS: Record<CalendarIntake, string> = {
   none: "Do nothing with invitations",
-  import: "Import invitations",
-  import_and_link: "Import and remember for this address",
+  import_and_link: "Import invitations automatically",
 };
 
 function CalendarRow({ calendar }: { calendar: Calendar }) {
@@ -124,9 +123,17 @@ function CalendarRow({ calendar }: { calendar: Calendar }) {
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title={`Delete "${calendar.display_name}"?`}
-        description="This removes the calendar and every event in it from the mail server. It cannot be undone."
+        description={
+          `This destroys ${calendar.total_count} event${calendar.total_count === 1 ? "" : "s"} ` +
+          "on the mail server. It cannot be undone."
+        }
         isConfirming={deleteCalendar.isPending}
-        onConfirm={() => deleteCalendar.mutate(calendar.id, { onSuccess: () => setConfirmDelete(false) })}
+        onConfirm={() =>
+          deleteCalendar.mutate(
+            { id: calendar.id, eventCount: calendar.total_count },
+            { onSuccess: () => setConfirmDelete(false) },
+          )
+        }
       />
     </div>
   );

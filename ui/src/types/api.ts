@@ -698,7 +698,11 @@ export interface DavAccountUpdateRequest {
   is_active?: boolean;
 }
 
-export type CalendarIntake = "none" | "import" | "import_and_link";
+/** calendar_prefs.intake is a plain database bool -- "not the intake
+ * calendar" or "the intake calendar" -- so the wire type carries only
+ * those two states. "Import without linking" is not a third calendar
+ * state; it is per-message, ImportInvitationRequest's own `link` flag. */
+export type CalendarIntake = "none" | "import_and_link";
 
 export interface Calendar {
   id: string;

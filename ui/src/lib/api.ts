@@ -606,8 +606,16 @@ export const api = {
     update(id: string, data: CalendarUpdateRequest): Promise<Calendar> {
       return request(`/calendars/${id}`, { method: "PATCH", body: JSON.stringify(data) });
     },
-    delete(id: string): Promise<void> {
-      return request(`/calendars/${id}`, { method: "DELETE" });
+    /**
+     * Destroys every event in the calendar on the mail server. Irreversible.
+     *
+     * eventCount has to match what the server currently counts in the
+     * calendar, so the caller can only delete one whose contents it has
+     * actually seen -- a mismatch comes back as a 409 naming the real count.
+     */
+    delete(id: string, eventCount: number): Promise<void> {
+      const query = `?confirm_event_count=${eventCount}`;
+      return request(`/calendars/${id}${query}`, { method: "DELETE" });
     },
     links: {
       get(): Promise<CalendarLinks> {
