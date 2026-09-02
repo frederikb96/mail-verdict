@@ -192,8 +192,13 @@ async def _run_worker(
             # record_success in _handle_one, the ordinary success path --
             # there is no separate probe call.
 
+        # Read fresh on every iteration rather than once at worker
+        # startup, the same as _handle_one's own read -- a live setting
+        # change takes effect on the next claim, not on a restart.
+        max_attempts = int(settings_service.get("semantic").get("max_attempts", 5))
         claimed = await work_queue.claim_batch(
             worker_id=worker_id, batch_size=1, lease_seconds=LEASE_SECONDS,
+            max_attempts=max_attempts,
         )
         if not claimed:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)

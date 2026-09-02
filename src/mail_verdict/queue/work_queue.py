@@ -79,6 +79,7 @@ class WorkQueue:
 
     async def claim_batch(
         self, *, worker_id: str, batch_size: int, lease_seconds: float,
+        max_attempts: int | None = None,
     ) -> list[Mapping[str, Any]]:
         """
         Claim up to `batch_size` pending, due rows, skipping locked ones.
@@ -94,6 +95,17 @@ class WorkQueue:
             batch_size: Maximum rows to claim in this call
             lease_seconds: How long this worker holds the claim before a
                 reconciliation pass may reclaim it
+            max_attempts: When given, a row already at or past this many
+                attempts is never claimed again. `attempts` alone does not
+                stop a row from being reclaimed forever: the ordinary
+                retry-vs-fail decision is the caller's own, checked only
+                once a claimed row actually reaches that code -- a row
+                that instead crashes the worker process itself, every
+                time, before ever getting there is reclaimed on lease
+                expiry (`reclaim_expired` deliberately leaves `attempts`
+                alone) and claimed again with nothing to stop it. This is
+                the one place attempts are checked against a cap for a
+                row that never gets the chance to fail itself.
 
         Returns:
             One mapping per claimed row, with every column of the table
@@ -105,6 +117,10 @@ class WorkQueue:
                     WITH candidate AS (
                         SELECT id FROM {self._table_name}
                         WHERE status = 'pending' AND next_attempt_at <= now()
+                          AND (
+                              CAST(:max_attempts AS integer) IS NULL
+                              OR attempts < CAST(:max_attempts AS integer)
+                          )
                         ORDER BY priority, next_attempt_at, created_at
                         FOR UPDATE SKIP LOCKED
                         LIMIT :batch_size
@@ -118,7 +134,10 @@ class WorkQueue:
                     RETURNING t.*
                     """
                 ),
-                {"batch_size": batch_size, "worker_id": worker_id, "lease_seconds": lease_seconds},
+                {
+                    "batch_size": batch_size, "worker_id": worker_id,
+                    "lease_seconds": lease_seconds, "max_attempts": max_attempts,
+                },
             )
             rows: list[Mapping[str, Any]] = [dict(row._mapping) for row in result.all()]
             return rows

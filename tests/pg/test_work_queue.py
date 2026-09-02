@@ -129,6 +129,72 @@ class TestClaimBatch:
         assert sorted(claimed_ids) == sorted(ids)
         assert len(claimed_ids) == len(set(claimed_ids))
 
+    @pytest.mark.asyncio
+    async def test_max_attempts_stops_a_row_that_never_reaches_its_own_fail_path(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """attempts alone does not stop reclaim from handing a row back out
+        forever: the ordinary retry-vs-fail cap only runs once a claimed
+        row reaches the caller's own handler, and a row that instead
+        crashes the worker process itself, every time, never gets there --
+        it is reclaimed on lease expiry (which deliberately never touches
+        attempts) and claimed again with nothing to stop it. max_attempts
+        at claim time is what closes that, independently of whether the
+        caller's own handler ever runs."""
+        [row_id] = await _seed_rows(migrated_db, throwaway_queue_table, 1)
+        queue = WorkQueue(migrated_db, throwaway_queue_table)
+
+        # Simulate five prior claims that each crashed the worker before
+        # ever reaching a retry/fail decision: reclaim_expired would have
+        # put the row back to 'pending' each time, attempts intact.
+        async with migrated_db.session() as session:
+            await session.execute(
+                text(f"UPDATE {throwaway_queue_table.name} SET attempts = 5 WHERE id = :id"),
+                {"id": row_id},
+            )
+
+        claimed = await queue.claim_batch(
+            worker_id="w1", batch_size=10, lease_seconds=30, max_attempts=5,
+        )
+
+        assert claimed == []
+
+    @pytest.mark.asyncio
+    async def test_max_attempts_still_allows_a_row_below_the_cap(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        [row_id] = await _seed_rows(migrated_db, throwaway_queue_table, 1)
+        async with migrated_db.session() as session:
+            await session.execute(
+                text(f"UPDATE {throwaway_queue_table.name} SET attempts = 4 WHERE id = :id"),
+                {"id": row_id},
+            )
+        queue = WorkQueue(migrated_db, throwaway_queue_table)
+
+        claimed = await queue.claim_batch(
+            worker_id="w1", batch_size=10, lease_seconds=30, max_attempts=5,
+        )
+
+        assert [row["id"] for row in claimed] == [row_id]
+
+    @pytest.mark.asyncio
+    async def test_no_max_attempts_preserves_the_unbounded_default(
+        self, migrated_db: DatabaseConnection, throwaway_queue_table: Table,
+    ) -> None:
+        """Omitting max_attempts must not newly exclude anything -- every
+        existing caller that does not pass it keeps today's behavior."""
+        [row_id] = await _seed_rows(migrated_db, throwaway_queue_table, 1)
+        async with migrated_db.session() as session:
+            await session.execute(
+                text(f"UPDATE {throwaway_queue_table.name} SET attempts = 999 WHERE id = :id"),
+                {"id": row_id},
+            )
+        queue = WorkQueue(migrated_db, throwaway_queue_table)
+
+        claimed = await queue.claim_batch(worker_id="w1", batch_size=10, lease_seconds=30)
+
+        assert [row["id"] for row in claimed] == [row_id]
+
 
 class TestHeartbeat:
     @pytest.mark.asyncio

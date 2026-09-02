@@ -99,6 +99,7 @@ async def default_worker_loop(
     handle_item: ItemHandler,
     wake_event: asyncio.Event | None = None,
     poll_interval: float = 1.0,
+    max_attempts: int | None = None,
 ) -> None:
     """
     Claim a batch, hand each row to `handle_item`, repeat until stopped.
@@ -139,10 +140,15 @@ async def default_worker_loop(
         wake_event: If given, waited on (with `poll_interval` fallback) when
             a claim comes back empty, instead of a plain sleep
         poll_interval: Fallback wait when there is nothing to claim
+        max_attempts: Passed straight through to `claim_batch` -- without
+            it, a row that crashes the worker process itself before
+            `handle_item` ever gets to apply its own retry-vs-fail cap is
+            reclaimed and re-claimed forever
     """
     while not stop_event.is_set():
         claimed = await work_queue.claim_batch(
             worker_id=worker_id, batch_size=batch_size, lease_seconds=lease_seconds,
+            max_attempts=max_attempts,
         )
         if not claimed:
             if wake_event is not None:
