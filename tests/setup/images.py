@@ -17,3 +17,6 @@ DOVECOT_IMAGE = "dovecot/dovecot:2.4.5"
 
 # renovate: datasource=docker depName=axllent/mailpit versioning=docker
 MAILPIT_IMAGE = "axllent/mailpit:v1.28.3"
+
+# renovate: datasource=docker depName=tomsquest/docker-radicale versioning=docker
+RADICALE_IMAGE = "tomsquest/docker-radicale:3.7.6.0"

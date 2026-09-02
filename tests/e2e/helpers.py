@@ -119,6 +119,62 @@ def wait_for_folder(
     return wait_for(_check, timeout_s=timeout_s, description=f"Folder {imap_name!r} discovered")
 
 
+def wait_for_dav_account_active(
+    client: TestClient, dav_account_id: str, timeout_s: float = 30.0,
+) -> dict[str, Any]:
+    """Poll a DAV account until PostIMAP reports it `active` -- the CalDAV/CardDAV
+    counterpart of wait_for_account_active."""
+    deadline = time.monotonic() + timeout_s
+    last_state = "unknown"
+    while time.monotonic() < deadline:
+        resp = client.get(f"/api/dav-accounts/{dav_account_id}")
+        assert resp.status_code == 200, resp.text
+        account = resp.json()
+        last_state = account["state"]
+        if last_state == "active":
+            return account
+        if last_state == "error":
+            raise AssertionError(f"DAV account entered error state: {account['state_error']}")
+        time.sleep(1)
+    raise TimeoutError(
+        f"DAV account {dav_account_id} did not reach 'active' within {timeout_s}s "
+        f"(last state: {last_state!r})"
+    )
+
+
+def wait_for_dav_collection(
+    client: TestClient, dav_account_id: str, display_name: str, timeout_s: float = 30.0,
+) -> dict[str, Any]:
+    """Poll a DAV account's collections until one with the given display_name appears --
+    proves PostIMAP's own backfill discovered a calendar or address book that was
+    created directly on the server, before the account existed."""
+    def _check() -> dict[str, Any] | None:
+        resp = client.get(f"/api/dav-accounts/{dav_account_id}")
+        assert resp.status_code == 200, resp.text
+        for collection in resp.json()["collections"]:
+            if collection["display_name"] == display_name:
+                return collection
+        return None
+
+    return wait_for(
+        _check, timeout_s=timeout_s, description=f"Collection {display_name!r} discovered",
+    )
+
+
+def wait_for_event_synced(
+    client: TestClient, object_id: str, timeout_s: float = 20.0,
+) -> dict[str, Any]:
+    """Poll one calendar event until `pending` clears -- `etag` set means the create
+    or edit actually reached the real server, not just this row."""
+    def _check() -> dict[str, Any] | None:
+        resp = client.get(f"/api/calendar/events/{object_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        return None if body["pending"] else body
+
+    return wait_for(_check, timeout_s=timeout_s, description=f"Event {object_id} synced")
+
+
 def wait_for_mailpit_message(
     base_url: str, subject: str, timeout_s: float = 20.0,
 ) -> dict[str, Any]:

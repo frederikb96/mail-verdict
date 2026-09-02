@@ -120,3 +120,17 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
     restart: "no"
+
+  # Throwaway CalDAV/CardDAV server for local dev, the same image
+  # PostIMAP's own test suite runs. Its default auth.type = none accepts
+  # any Basic auth and auto-creates the principal (and its collections)
+  # on first request -- there is no account-provisioning step here
+  # either. scripts/seed_dev.py speaks CalDAV/CardDAV to it directly to
+  # seed a calendar and an address book before any dav_account exists,
+  # the same role LMTP delivery plays for mail.
+  radicale:
+    image: docker.io/tomsquest/docker-radicale:3.7.6.0
+    container_name: mv-radicale-dev
+    ports:
+      - "15232:5232"
+    restart: "no"

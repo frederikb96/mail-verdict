@@ -21,7 +21,13 @@ from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 from testcontainers.core.network import Network
 
-from tests.setup.images import DOVECOT_IMAGE, MAILPIT_IMAGE, POSTGRES_IMAGE, POSTIMAP_IMAGE
+from tests.setup.images import (
+    DOVECOT_IMAGE,
+    MAILPIT_IMAGE,
+    POSTGRES_IMAGE,
+    POSTIMAP_IMAGE,
+    RADICALE_IMAGE,
+)
 from tests.setup.runtime import bootstrap_container_runtime
 
 POSTGRES_ALIAS = "postgres"
@@ -45,6 +51,16 @@ MAILPIT_ALIAS = "mailpit"
 MAILPIT_SMTP_PORT = 1025
 MAILPIT_HTTP_PORT = 8025
 MAILPIT_READY_TIMEOUT_S = 60
+
+# CalDAV/CardDAV server for calendar and contact tests. Its default
+# auth.type = none accepts any Basic auth and auto-creates the principal
+# (and therefore an isolated set of collections) on first request -- a
+# unique username is all the isolation a test needs, the same role a
+# unique mailbox plays on the IMAP side. No env vars needed; this matches
+# how PostIMAP's own test suite runs the same image.
+RADICALE_ALIAS = "radicale"
+RADICALE_PORT = 5232
+RADICALE_READY_TIMEOUT_S = 30
 
 
 def _wait_for_http_ready(host: str, port: int, path: str, timeout_s: float, what: str) -> None:
@@ -168,6 +184,36 @@ def wait_mailpit_ready(mailpit: DockerContainer) -> None:
     _wait_for_http_ready(host, port, "/readyz", MAILPIT_READY_TIMEOUT_S, "Mailpit")
 
 
+def build_radicale_container(network: Network) -> DockerContainer:
+    """A throwaway Radicale server, network-aliased as `radicale`, not yet started."""
+    return (
+        DockerContainer(RADICALE_IMAGE)
+        .with_network(network)
+        .with_network_aliases(RADICALE_ALIAS)
+        .with_exposed_ports(RADICALE_PORT)
+    )
+
+
+def wait_radicale_ready(radicale: DockerContainer) -> None:
+    """Poll until Radicale answers -- "/" redirects to "/.web", so 302 is the ready signal
+    rather than 200."""
+    host = radicale.get_container_host_ip()
+    port = int(radicale.get_exposed_port(RADICALE_PORT))
+    deadline = time.monotonic() + RADICALE_READY_TIMEOUT_S
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            resp = httpx.get(f"http://{host}:{port}/", timeout=2.0, follow_redirects=False)
+            if resp.status_code == 302:
+                return
+        except httpx.HTTPError as exc:
+            last_error = exc
+        time.sleep(1)
+    raise TimeoutError(
+        f"Radicale did not become ready within {RADICALE_READY_TIMEOUT_S}s: {last_error}"
+    )
+
+
 def postgres_url_for(postgres: PostgresContainer) -> str:
     """asyncpg-format connection URL for a started Postgres, from the host side."""
     host = postgres.get_container_host_ip()
@@ -233,6 +279,13 @@ def mailpit_container(test_network: Network) -> Iterator[DockerContainer]:
 
 
 @pytest.fixture(scope="session")
+def radicale_container(test_network: Network) -> Iterator[DockerContainer]:
+    with build_radicale_container(test_network) as radicale:
+        wait_radicale_ready(radicale)
+        yield radicale
+
+
+@pytest.fixture(scope="session")
 def postgres_url(postgres_container: PostgresContainer) -> str:
     return postgres_url_for(postgres_container)
 
@@ -252,3 +305,11 @@ def mailpit_http_url(mailpit_container: DockerContainer) -> str:
     host = mailpit_container.get_container_host_ip()
     port = int(mailpit_container.get_exposed_port(MAILPIT_HTTP_PORT))
     return f"http://{host}:{port}"
+
+
+@pytest.fixture(scope="session")
+def radicale_endpoint(radicale_container: DockerContainer) -> tuple[str, int]:
+    """Host-mapped (host, port) for connecting to Radicale from the test process."""
+    host = radicale_container.get_container_host_ip()
+    port = int(radicale_container.get_exposed_port(RADICALE_PORT))
+    return host, port

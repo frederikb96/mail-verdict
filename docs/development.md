@@ -53,7 +53,7 @@ dominate the run otherwise.
 |---|---|---|
 | `unit` | Pure logic: rules, config loading, sanitizers, prompt rendering, cursors | Nothing |
 | `pg` | Migrations alongside PostIMAP's schema, the contract version gate, the notification listener, and every write the contract permits | PostgreSQL, PostIMAP |
-| `e2e` | Whole flows with the application running in-process: accounts, mail actions, sending, spam, rules, search | The above plus Dovecot and Mailpit |
+| `e2e` | Whole flows with the application running in-process: accounts, mail actions, sending, spam, rules, search, calendars and contacts | The above plus Dovecot, Mailpit and Radicale |
 | `ui` | What the browser does with state: row/reading-pane/keyboard/bulk/drag controls, compose, drafts, SSE-driven refresh, mobile layout | The above plus a built `ui/` and Playwright's Chromium |
 | `llm` | Classification against the real model, both providers | `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Excluded from CI (`pytest tests/unit/ -m "not llm"`); run it deliberately |
 
@@ -102,17 +102,22 @@ without needing a real mailbox anywhere.
 
 ### Calendars and contacts
 
-There is no throwaway CalDAV/CardDAV server in the dev stack, unlike Dovecot for mail — the `pg`
-tests cover the whole subsystem against the mirror tables directly, the same way PostIMAP would
-leave them after a real sync, so nothing needs to actually speak the protocol. To see real data in
-the running application, add a DAV account through the interface (or `POST /api/dav-accounts`
-directly) pointing at a real CalDAV/CardDAV server; PostIMAP mirrors it the same way it mirrors
-mail, and needs `service_version >= 1.6.0` to do so, which is what `compose.dev.yaml` and
-`tests/setup/images.py` both pin.
+The dev stack runs Radicale as a throwaway CalDAV/CardDAV server, the same role Dovecot plays for
+mail — no provisioning step: any Basic auth is accepted and the principal is auto-created on first
+request. `python scripts/seed_dev.py` seeds a calendar and an address book on it directly, the same
+"talk to the throwaway server before any account exists" approach it already uses for mail over
+LMTP, and prints what to do next. Then add a DAV account through the interface (or `POST
+/api/dav-accounts` directly) with `url` set to `http://radicale:5232/` — the container's own network
+alias, since PostIMAP (not this host) is what connects to it — and the username the script seeded
+under. PostIMAP mirrors it the same way it mirrors mail, and needs `service_version >= 1.6.0` to do
+so, which is what `compose.dev.yaml` and `tests/setup/images.py` both pin.
+
+Pointing a DAV account at a real server instead (Nextcloud, or anything else) still works exactly
+as before — Radicale is additive, not a requirement.
 
 ### Running more than one stack at once
 
-`compose.dev.yaml` has one fixed name, five fixed host ports, and one fixed pgdata directory, so
+`compose.dev.yaml` has one fixed name, six fixed host ports, and one fixed pgdata directory, so
 only one instance of it can exist on a machine — and two checkouts on different Alembic revisions
 can never share its one database, since the application runs `alembic upgrade head` at startup and
 refuses to start against two heads. Working in more than one checkout at a time (a second worktree,

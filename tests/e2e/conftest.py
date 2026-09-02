@@ -30,17 +30,24 @@ def app_client(
     postgres_url: str,
     dovecot_container: DockerContainer,
     mailpit_container: DockerContainer,
+    radicale_container: DockerContainer,
     postimap_container: DockerContainer,
 ) -> Iterator[TestClient]:
     """
     The MailVerdict ASGI app, migrated and started in-process for one test
     module, reused by every test in that module.
 
-    dovecot_container and mailpit_container are requested before
-    postimap_container (fixtures of equal, independent scope come up in
-    the order they're first requested) so both network aliases have
-    strictly more time to propagate through the shared network's DNS
-    before any account gets inserted and PostIMAP resolves them for real.
+    dovecot_container, mailpit_container and radicale_container are
+    requested before postimap_container (fixtures of equal, independent
+    scope come up in the order they're first requested) so every network
+    alias has strictly more time to propagate through the shared
+    network's DNS before any account gets inserted and PostIMAP resolves
+    them for real. Without this, whichever e2e module happens to run
+    first builds postimap_container long before a later module's own
+    fixtures first reach for radicale_container -- PostIMAP is already
+    running by the time Radicale joins the network, and a DAV account
+    created moments later can lose the DNS propagation race PostIMAP's
+    own retries would otherwise paper over silently.
 
     TestClient's context manager drives the ASGI lifespan protocol (the
     same startup/shutdown server.py wires for uvicorn), so init_database,
@@ -81,6 +88,7 @@ async def db(postgres_url: str) -> AsyncIterator[DatabaseConnection]:
         await connection.close()
 
 
-# dovecot_endpoint and mailpit_http_url come from tests.setup.containers, the
-# same session-scoped plugin fixtures tests/ui/ reuses -- see that module's
-# docstring for why they live there rather than in this e2e-only conftest.
+# dovecot_endpoint, mailpit_http_url and radicale_endpoint come from
+# tests.setup.containers, the same session-scoped plugin fixtures tests/ui/
+# reuses -- see that module's docstring for why they live there rather than
+# in this e2e-only conftest.

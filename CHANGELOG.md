@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The development stack runs Radicale, a throwaway CalDAV/CardDAV server, alongside the
+  mail server -- `scripts/seed_dev.py` seeds a calendar and an address book on it directly,
+  so a fresh checkout shows real calendar data once a DAV account is added, the same as it
+  already does for mail
+- `tests/e2e/test_calendar_flow.py` and `tests/e2e/test_contacts_flow.py` drive the same
+  real chain -- an object created through the API is verified to actually reach the server,
+  and one added directly on the server is verified to reach the API after a sync. The `pg`
+  layer's calendar and contact tests write PostIMAP's own parsed columns directly, since no
+  live server ran in their world; these prove the assumption underneath that choice for the
+  first time -- that a real sync produces those columns in that shape
+
 ### Fixed
 
 - The month view now reads only what its window could contain -- a SQL predicate on

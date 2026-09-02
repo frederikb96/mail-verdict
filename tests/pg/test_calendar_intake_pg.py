@@ -13,7 +13,9 @@ find_by_uid_anywhere(). Wherever a test needs an "already imported"
 object to exist, it seeds one directly with `uid` set, the same pattern
 those two files use for the parsed columns they need read back --
 proving intake's own query and decision logic, not that a real server
-round-trip fills in `uid` the way it does in production.
+round-trip fills in `uid` the way it does in production. That assumption
+is what tests/e2e/test_calendar_flow.py and test_contacts_flow.py prove,
+against an actual Radicale server rather than seeded columns.
 """
 
 from __future__ import annotations
