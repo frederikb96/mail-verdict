@@ -13,9 +13,10 @@ calendar_replies).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -188,18 +189,41 @@ class DavObjectRepository:
 
     async def list_in_collections(
         self, collection_ids: list[uuid.UUID],
+        window_start: datetime | None = None, window_end: datetime | None = None,
     ) -> list[DavObject]:
-        """Every live object across a set of visible calendars -- the raw
-        material calendar/ical.py's expand_instances() then windows."""
+        """Live objects across a set of visible calendars -- the raw
+        material calendar/ical.py's expand_instances() then windows.
+
+        Filtered in SQL to what a window could actually contain when one
+        is given: a recurring master (any occurrence could fall inside
+        the window, so it always qualifies) or a non-recurring object
+        whose own [dtstart, dtend) overlaps it. dtstart/dtend/is_recurring
+        are PostIMAP's own read-only parse of `data`
+        (idx_dav_objects_collection_dtstart indexes exactly this), so this
+        never touches recurrence rules itself. Without a window, every
+        live object is returned -- a NULL dtstart/is_recurring (an insert
+        or move still pending its outbound sync) is also kept in that
+        case, since parsed columns lag the write by milliseconds and a
+        just-created event should still render.
+        """
         if not collection_ids:
             return []
         async with self._db.session() as session:
-            result = await session.execute(
-                select(DavObject).where(
-                    DavObject.collection_id.in_(collection_ids),
-                    DavObject.deleted_at.is_(None),
-                )
+            stmt = select(DavObject).where(
+                DavObject.collection_id.in_(collection_ids),
+                DavObject.deleted_at.is_(None),
             )
+            if window_start is not None and window_end is not None:
+                stmt = stmt.where(
+                    or_(
+                        DavObject.is_recurring.is_(True),
+                        DavObject.dtstart.is_(None),
+                        and_(
+                            DavObject.dtstart < window_end, DavObject.dtend > window_start,
+                        ),
+                    )
+                )
+            result = await session.execute(stmt)
             return list(result.scalars().all())
 
     async def search_contacts(

@@ -17,14 +17,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Account, Folder, Message, Outbox, Verdict, VerdictSource
+from mail_verdict.database.models import (
+    Account,
+    DavAccount,
+    Folder,
+    Message,
+    Outbox,
+    Verdict,
+    VerdictSource,
+)
 from mail_verdict.postimap.actions import (
     create_account,
+    create_dav_account,
     create_folder,
     delete_account,
     delete_folder,
     expunge,
     force_reconnect,
+    force_reconnect_dav_account,
     format_credential,
     insert_outbox,
     move_message,
@@ -402,6 +412,33 @@ class TestForceReconnect:
 
         async with migrated_db.session() as session:
             result = await session.execute(select(Account).where(Account.id == account.id))
+            row = result.scalar_one()
+
+        assert row.is_active is True
+        assert row.updated_at > before_updated_at
+
+
+class TestForceReconnectDavAccount:
+    """The DavAccount counterpart -- row 112: correcting a wrong CalDAV
+    password on an active account has to actually take effect."""
+
+    @pytest.mark.asyncio
+    async def test_bounces_back_to_active_and_actually_writes(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account = await create_dav_account(
+                session, name=f"dav-reconnect-{uuid.uuid4()}",
+                url="https://dav.example.com/", username="user@example.com",
+                password="hunter2", is_active=True,
+            )
+            await session.commit()
+            before_updated_at = account.updated_at
+
+        await force_reconnect_dav_account(migrated_db, account.id)
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(DavAccount).where(DavAccount.id == account.id))
             row = result.scalar_one()
 
         assert row.is_active is True

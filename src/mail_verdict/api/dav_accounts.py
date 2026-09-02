@@ -29,6 +29,7 @@ from mail_verdict.database.models import DavAccount, DavCollection
 from mail_verdict.postimap.actions import (
     create_dav_account,
     delete_dav_account,
+    force_reconnect_dav_account,
     update_dav_account,
 )
 from mail_verdict.postimap.commands import request_sync_now
@@ -131,9 +132,19 @@ async def update_dav_account_endpoint(
     existing = await repo.get_by_id(dav_account_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="DAV account not found")
+    credentials_changed = "password" in values
+    was_active = existing.is_active
 
     async with db.session() as session:
         await update_dav_account(session, dav_account_id, **values)
+
+    if credentials_changed and was_active:
+        # A credential rewritten on an already-running account is not
+        # re-encrypted or used to reconnect until that account restarts --
+        # the same trap api/accounts.py's update_account() documents for
+        # mail. Without this, a corrected Nextcloud app password shows no
+        # error and nothing changes, reading as the app ignoring the user.
+        await force_reconnect_dav_account(db, dav_account_id)
 
     account = await repo.get_by_id(dav_account_id)
     assert account is not None

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The month view now reads only what its window could contain -- a SQL predicate on
+  `dav_objects.dtstart`/`dtend`/`is_recurring` instead of parsing and expanding every object in
+  every visible calendar on every request, which cost seconds of blocking, single-threaded CPU
+  (stalling mail with it) against a calendar of a few thousand events
+- Editing an event with attendees now sends a `REQUEST`, the way creating one sends a `REQUEST`
+  and deleting one sends a `CANCEL`. An edit previously notified nobody, so moving a meeting's
+  time left every attendee's own calendar silently wrong
+- Correcting a wrong CalDAV password on an already-running DAV account now reconnects it, the
+  same `is_active` bounce mail accounts already get. Previously the account kept retrying the old
+  credential until something else restarted it, so fixing a mistyped app password appeared to do
+  nothing
+
 ### Security
 
 - An emailed `METHOD:REQUEST`/`CANCEL`/`REPLY` no longer touches a stored calendar object unless

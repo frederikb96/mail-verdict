@@ -193,7 +193,7 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
         visible.append((collection, identity_email))
 
     collection_ids = [c.id for c, _ in visible]
-    objects = await object_repo.list_in_collections(collection_ids)
+    objects = await object_repo.list_in_collections(collection_ids, window_start, window_end)
     errors = await object_repo.get_unresolved_errors([o.id for o in objects])
     identity_by_collection = {c.id: email for c, email in visible}
     read_only_by_collection = {c.id: c.read_only for c, _ in visible}
@@ -410,6 +410,29 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
             identity_email = await session.scalar(
                 select(Identity.email).where(Identity.id == prefs.identity_id)
             )
+
+    # Create sends a REQUEST and delete sends a CANCEL -- an edit that
+    # sent nothing taught the wrong lesson: an attendee's calendar still
+    # says the old time, with nothing telling them it moved. Gated
+    # exactly as delete_event gates its CANCEL, below.
+    if (
+        prefs is not None and prefs.identity_id is not None
+        and master.organizer and master.attendees
+    ):
+        async with db.session() as session:
+            organizer_identity = await session.scalar(
+                select(Identity).where(
+                    Identity.id == prefs.identity_id,
+                    Identity.email.ilike(master.organizer.email),
+                )
+            )
+        if organizer_identity is not None:
+            await _send_itip(
+                organizer_identity, refreshed.data, method="REQUEST",
+                to_addrs=[a.email for a in master.attendees],
+                subject=f"Updated: {master.summary}",
+            )
+
     return await _to_instance(
         parsed, refreshed, own_identity_email=identity_email,
         read_only=collection.read_only if collection else False, sync_error=None,

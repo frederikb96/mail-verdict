@@ -76,6 +76,22 @@ async def _seed(db: DatabaseConnection) -> uuid.UUID:
     return collection_id
 
 
+async def _seed_identity_and_link(
+    db: DatabaseConnection, calendar_id: uuid.UUID, email: str = "freddy@work.example",
+) -> uuid.UUID:
+    async with db.session() as session:
+        _account_id, identity_id = await _seed_mail_account_and_identity(session, email)
+        await session.execute(
+            text(
+                "INSERT INTO calendar_prefs (collection_id, identity_id) "
+                "VALUES (:collection_id, :identity_id)"
+            ),
+            {"collection_id": calendar_id, "identity_id": identity_id},
+        )
+        await session.commit()
+    return identity_id
+
+
 class TestCreateAndList:
     def test_create_and_list_a_simple_event(
         self, client: TestClient, migrated_db: DatabaseConnection,
@@ -136,23 +152,6 @@ class TestCreateAndList:
 
 
 class TestCreateWithAttendees:
-    async def _seed_identity_and_link(
-        self, db: DatabaseConnection, calendar_id: uuid.UUID,
-    ) -> uuid.UUID:
-        async with db.session() as session:
-            _account_id, identity_id = await _seed_mail_account_and_identity(
-                session, "freddy@work.example",
-            )
-            await session.execute(
-                text(
-                    "INSERT INTO calendar_prefs (collection_id, identity_id) "
-                    "VALUES (:collection_id, :identity_id)"
-                ),
-                {"collection_id": calendar_id, "identity_id": identity_id},
-            )
-            await session.commit()
-        return identity_id
-
     def test_create_with_attendees_requires_a_linked_identity(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
@@ -173,7 +172,7 @@ class TestCreateWithAttendees:
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         calendar_id = client.portal.call(_seed, migrated_db)
-        identity_id = client.portal.call(self._seed_identity_and_link, migrated_db, calendar_id)
+        identity_id = client.portal.call(_seed_identity_and_link, migrated_db, calendar_id)
 
         with patch(_TARGET, return_value=migrated_db):
             created = client.post(
@@ -227,6 +226,77 @@ class TestUpdateAndDelete:
         assert updated.status_code == 200, updated.text
         assert updated.json()["summary"] == "Renamed"
         assert updated.json()["sequence"] == 1
+
+    def test_update_with_attendees_sends_a_request(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 111: create notifies, delete notifies -- an edit that
+        moves the time has to as well, or an attendee's calendar is
+        simply wrong with nothing telling them."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        client.portal.call(_seed_identity_and_link, migrated_db, calendar_id)
+
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Kickoff",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "attendees": [{"email": "anna@example.com", "cn": "Anna"}],
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"dtstart": "2026-09-10T12:00:00+00:00",
+                      "dtend": "2026-09-10T13:00:00+00:00", "scope": "all"},
+            )
+        assert updated.status_code == 200, updated.text
+
+        async def _count_update_requests(db: DatabaseConnection) -> int:
+            async with db.session() as session:
+                result = await session.execute(
+                    text(
+                        "SELECT count(*) FROM outbox WHERE from_addr = 'freddy@work.example' "
+                        "AND subject LIKE 'Updated:%' "
+                        "AND 'anna@example.com' = ANY(SELECT jsonb_array_elements_text(to_addrs))"
+                    ),
+                )
+                return result.scalar_one()
+
+        assert client.portal.call(_count_update_requests, migrated_db) == 1
+
+    def test_update_without_attendees_sends_nothing(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Solo focus block",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"summary": "Renamed", "scope": "all"},
+            )
+        assert updated.status_code == 200, updated.text
+
+        async def _outbox_count(db: DatabaseConnection) -> int:
+            async with db.session() as session:
+                result = await session.execute(
+                    text("SELECT count(*) FROM outbox WHERE subject = 'Updated: Renamed'"),
+                )
+                return result.scalar_one()
+
+        assert client.portal.call(_outbox_count, migrated_db) == 0
 
     def test_update_scope_this_edits_one_occurrence_only(
         self, client: TestClient, migrated_db: DatabaseConnection,

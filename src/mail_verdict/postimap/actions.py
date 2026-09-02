@@ -176,6 +176,33 @@ async def force_reconnect(db: DatabaseConnection, account_id: uuid.UUID) -> None
         )
 
 
+async def force_reconnect_dav_account(db: DatabaseConnection, dav_account_id: uuid.UUID) -> None:
+    """
+    Bounce a DAV account's sync connection by toggling is_active off then
+    on -- the DavAccount counterpart of force_reconnect() above.
+
+    A credential rewritten on an account that is already running is not
+    re-encrypted, and not used to reconnect, until that account restarts.
+    Call this after updating password on a DAV account that was active,
+    or the user sees no error and nothing changes -- which reads as the
+    app silently ignoring the corrected password. The two phases are
+    separate committed transactions (not one UPDATE toggling back and
+    forth) so PostIMAP actually observes both transitions.
+
+    Args:
+        db: Database connection (each phase gets its own committed session)
+        dav_account_id: DAV account to bounce
+    """
+    async with db.session() as session:
+        await session.execute(
+            update(DavAccount).where(DavAccount.id == dav_account_id).values(is_active=False)
+        )
+    async with db.session() as session:
+        await session.execute(
+            update(DavAccount).where(DavAccount.id == dav_account_id).values(is_active=True)
+        )
+
+
 async def set_flags(
     session: AsyncSession,
     message_id: uuid.UUID,

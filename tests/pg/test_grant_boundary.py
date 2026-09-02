@@ -539,7 +539,9 @@ async def test_every_contract_write_survives_the_restricted_grant(
 
 # Helpers in postimap/actions.py that issue no write of their own, so a grant
 # has nothing to refuse. Everything else has to appear in the sweep above.
-_NON_WRITING_HELPERS = frozenset({"format_credential", "force_reconnect"})
+_NON_WRITING_HELPERS = frozenset(
+    {"format_credential", "force_reconnect", "force_reconnect_dav_account"},
+)
 
 
 def _assert_sweep_covers_every_write_helper(covered: set[str]) -> None:
@@ -550,9 +552,12 @@ def _assert_sweep_covers_every_write_helper(covered: set[str]) -> None:
     nothing says so. Deriving the expected set from the module means the
     next helper is caught here rather than in a deployment.
 
-    `force_reconnect` sends a NOTIFY over its own connection rather than
-    writing a row, so it belongs to the command channel, not the write
-    surface.
+    `force_reconnect`/`force_reconnect_dav_account` each take a
+    DatabaseConnection and run two separately committed transactions of
+    their own rather than a single write inside a caller-supplied
+    session, so they do not fit the sweep's one-session-per-write shape.
+    The column each writes (accounts.is_active / dav_accounts.is_active)
+    is already exercised by update_account/update_dav_account above.
     """
     import inspect
 

@@ -22,6 +22,7 @@ from mail_verdict.api.dav_accounts import router as dav_accounts_router
 from mail_verdict.api.identities import router as identities_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
+from mail_verdict.postimap.actions import force_reconnect_dav_account
 
 
 @pytest.fixture()
@@ -124,6 +125,65 @@ class TestDavAccounts:
         with patch(_DAV_ACCOUNTS_TARGET, return_value=migrated_db):
             resp = client.get(f"/dav-accounts/{uuid.uuid4()}")
         assert resp.status_code == 404
+
+    def test_password_change_on_an_active_account_forces_reconnect(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 112: correcting a wrong password on an already-running
+        account has to actually reconnect PostIMAP to it -- the
+        documented mail-side trap (api/accounts.py's own
+        credentials_changed/was_active dance), not carried across to DAV
+        accounts until this."""
+        with patch(_DAV_ACCOUNTS_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/dav-accounts",
+                json={
+                    "name": f"Nextcloud-{uuid.uuid4()}",
+                    "discovery_url": "https://cloud.example.org/dav/",
+                    "username": "alice", "password": "wrong-password",
+                },
+            )
+            dav_account_id = created.json()["id"]
+            assert created.json()["is_active"] is True
+
+            with patch(
+                "mail_verdict.api.dav_accounts.force_reconnect_dav_account",
+                wraps=force_reconnect_dav_account,
+            ) as spy:
+                updated = client.patch(
+                    f"/dav-accounts/{dav_account_id}", json={"password": "correct-password"},
+                )
+            assert updated.status_code == 200
+            spy.assert_called_once()
+
+            after = client.get(f"/dav-accounts/{dav_account_id}")
+        assert after.status_code == 200
+        # The bounce ends the account active again, not stuck off.
+        assert after.json()["is_active"] is True
+
+    def test_renaming_does_not_force_reconnect(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        with patch(_DAV_ACCOUNTS_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/dav-accounts",
+                json={
+                    "name": f"Nextcloud-{uuid.uuid4()}",
+                    "discovery_url": "https://cloud.example.org/dav/",
+                    "username": "alice", "password": "pw",
+                },
+            )
+            dav_account_id = created.json()["id"]
+
+            with patch(
+                "mail_verdict.api.dav_accounts.force_reconnect_dav_account",
+                wraps=force_reconnect_dav_account,
+            ) as spy:
+                updated = client.patch(
+                    f"/dav-accounts/{dav_account_id}", json={"name": "Renamed"},
+                )
+            assert updated.status_code == 200
+        spy.assert_not_called()
 
 
 class TestCalendars:
