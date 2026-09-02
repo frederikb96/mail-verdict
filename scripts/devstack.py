@@ -17,6 +17,20 @@ to reach it. Run one per worktree; nothing is shared between them.
 Delivers the test corpus, creates and waits for the account, then blocks
 until interrupted (Ctrl-C, or a `kill` of this process) -- both stop the
 uvicorn server and tear down every container, cleanly and completely.
+
+The signal has to reach *this* process. Running it through a pipe (`python
+scripts/devstack.py | tee log`) or any other wrapper and then killing the
+wrapper leaves this process an orphan, still running with its containers
+still up -- a wrapper shell has no reason to forward a signal to a child
+it never waited on. Find the actual `python scripts/devstack.py` PID
+(`pgrep -f scripts/devstack.py`) and signal that one directly.
+
+Teardown verifies its own work: every container this run started is
+checked again, by ID, against the container runtime after the exit stack
+has unwound, and force-removed if it is somehow still there. A run that
+cannot confirm every container gone says so and exits non-zero instead of
+printing "stopped" -- a stop that leaves a container running is not a
+successful stop.
 """
 
 from __future__ import annotations
@@ -84,6 +98,39 @@ def _wait_until(condition: object, description: str, timeout_s: float) -> None:
     raise TimeoutError(f"{description} did not happen within {timeout_s}s")
 
 
+def _verify_torn_down(container_ids: dict[str, str]) -> list[str]:
+    """Confirm every container this run started is actually gone, by asking the
+    container runtime directly rather than trusting that the exit stack's own
+    __exit__ calls landed. Force-removes anything still there and returns the
+    names of whatever could not be removed even then -- empty means clean.
+
+    This is the check the exit code alone cannot stand in for: a container
+    whose stop() call itself raised (podman quirk, a runtime that was already
+    gone, anything) does not stop the rest of the stack unwinding, so a run
+    can print every "Starting ..." line, reach `stop.wait()`, and still leave
+    a container running with nothing about the process's own exit revealing
+    it.
+    """
+    from docker.errors import NotFound
+
+    import docker
+
+    client = docker.from_env()
+    survivors = []
+    for name, container_id in container_ids.items():
+        try:
+            container = client.containers.get(container_id)
+        except NotFound:
+            continue
+        try:
+            container.remove(force=True)
+        except NotFound:
+            continue
+        except Exception:  # deliberately broad: any removal failure counts as a survivor
+            survivors.append(name)
+    return survivors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -110,6 +157,34 @@ def main() -> int:
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    # Populated as each container starts, read again after the exit stack has
+    # unwound -- see _verify_torn_down.
+    container_ids: dict[str, str] = {}
+
+    try:
+        _run(container_ids, args, stop)
+    finally:
+        # Runs whether the stack above unwound on Ctrl-C or on an exception
+        # partway through startup -- a container that started before a later
+        # one failed to come up is exactly the case most likely to leak, and
+        # is also the case an exception propagating straight out of main()
+        # would otherwise skip this check for entirely.
+        survivors = _verify_torn_down(container_ids)
+        if survivors:
+            print(
+                f"warning: {', '.join(survivors)} could not be confirmed removed -- check "
+                "`podman ps` and remove manually.",
+                file=sys.stderr,
+            )
+        else:
+            print("Every container this run started is confirmed gone.")
+
+    return 1 if survivors else 0
+
+
+def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threading.Event) -> None:
+    """The stack's actual startup, seeding and run -- factored out of main()
+    so its `finally` can verify teardown regardless of how this returns."""
     with contextlib.ExitStack() as stack:
         from testcontainers.core.network import Network
 
@@ -117,15 +192,19 @@ def main() -> int:
 
         print("Starting Postgres ...")
         postgres = stack.enter_context(build_postgres_container(network))
+        container_ids["postgres"] = postgres.get_container_id()
 
         print("Starting Dovecot and Mailpit ...")
         dovecot = stack.enter_context(build_dovecot_container(network))
+        container_ids["dovecot"] = dovecot.get_container_id()
         wait_dovecot_ready(dovecot)
         mailpit = stack.enter_context(build_mailpit_container(network))
+        container_ids["mailpit"] = mailpit.get_container_id()
         wait_mailpit_ready(mailpit)
 
         print("Starting PostIMAP ...")
         postimap = stack.enter_context(build_postimap_container(network))
+        container_ids["postimap"] = postimap.get_container_id()
         wait_postimap_ready(postimap)
 
         postgres_url = postgres_url_for(postgres)
@@ -210,8 +289,6 @@ def main() -> int:
 
         stop.wait()
         print("Stopping ...")
-
-    return 0
 
 
 if __name__ == "__main__":

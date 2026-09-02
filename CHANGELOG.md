@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `scripts/devstack.py` now verifies its own teardown against the container runtime instead
+  of trusting that its cleanup calls landed, and refuses to report a clean stop while any of
+  its own containers are still running. A container whose own stop call raised previously
+  unwound the rest of the stack without leaking visibly -- the process still exited zero,
+  nothing printed a warning, and the container just sat there
 - The month view now reads only what its window could contain -- a SQL predicate on
   `dav_objects.dtstart`/`dtend`/`is_recurring` instead of parsing and expanding every object in
   every visible calendar on every request, which cost seconds of blocking, single-threaded CPU
