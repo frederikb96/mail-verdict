@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   layer's calendar and contact tests write PostIMAP's own parsed columns directly, since no
   live server ran in their world; these prove the assumption underneath that choice for the
   first time -- that a real sync produces those columns in that shape
+- Every test/dev container this project's own tooling starts is now labelled with the PID and a
+  liveness fingerprint of the process that started it, and every test session and
+  `scripts/devstack.py` run sweeps and removes anything so labelled whose owner is confirmed
+  dead -- never by age -- before starting anything of its own. Rootless Podman has no
+  Ryuk-compatible reaper, so a run killed rather than exited cleanly previously left its
+  containers running forever with nothing watching for them. `scripts/prune_orphaned_containers.py`
+  runs the same sweep standalone
 
 ### Fixed
 

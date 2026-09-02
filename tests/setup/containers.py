@@ -7,6 +7,11 @@ directly to bring up an equivalent, ephemeral world outside pytest.
 All containers share one testcontainers Network so PostIMAP can reach
 Postgres, Dovecot, and Mailpit by hostname the way it would in compose or
 a Kubernetes Pod -- never by a host-mapped port.
+
+Every build_*_container function labels its container with
+tests.setup.runtime.owner_labels() -- see that module for why (Ryuk is
+disabled here, so nothing else would ever find one of these again if the
+process that started it got killed rather than exiting cleanly).
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from tests.setup.images import (
     POSTIMAP_IMAGE,
     RADICALE_IMAGE,
 )
-from tests.setup.runtime import bootstrap_container_runtime
+from tests.setup.runtime import bootstrap_container_runtime, owner_labels
 
 POSTGRES_ALIAS = "postgres"
 POSTGRES_DB = "postimap"
@@ -104,6 +109,7 @@ def build_postgres_container(network: Network) -> PostgresContainer:
         )
         .with_network(network)
         .with_network_aliases(POSTGRES_ALIAS)
+        .with_kwargs(labels=owner_labels())
     )
 
 
@@ -128,6 +134,7 @@ def build_postimap_container(network: Network) -> DockerContainer:
         .with_env("POSTIMAP_DATABASE_USER", POSTGRES_USER)
         .with_env("POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED", "false")
         .with_exposed_ports(POSTIMAP_HEALTH_PORT)
+        .with_kwargs(labels=owner_labels())
     )
 
 
@@ -151,6 +158,7 @@ def build_dovecot_container(network: Network) -> DockerContainer:
         .with_network_aliases(DOVECOT_ALIAS)
         .with_env("USER_PASSWORD", DOVECOT_PASSWORD)
         .with_exposed_ports(DOVECOT_IMAP_PORT, DOVECOT_LMTP_PORT)
+        .with_kwargs(labels=owner_labels())
     )
 
 
@@ -175,6 +183,7 @@ def build_mailpit_container(network: Network) -> DockerContainer:
         .with_env("MP_SMTP_AUTH_ACCEPT_ANY", "1")
         .with_env("MP_SMTP_AUTH_ALLOW_INSECURE", "1")
         .with_exposed_ports(MAILPIT_SMTP_PORT, MAILPIT_HTTP_PORT)
+        .with_kwargs(labels=owner_labels())
     )
 
 
@@ -191,6 +200,7 @@ def build_radicale_container(network: Network) -> DockerContainer:
         .with_network(network)
         .with_network_aliases(RADICALE_ALIAS)
         .with_exposed_ports(RADICALE_PORT)
+        .with_kwargs(labels=owner_labels())
     )
 
 

@@ -47,6 +47,16 @@ project does not have any.
 Containers are started once per session, not per test, because starting them is slow enough to
 dominate the run otherwise.
 
+Rootless Podman has no Ryuk-compatible reaper, so a run that gets killed rather than exiting
+cleanly (a timeout, a stopped agent, this machine under load) leaves its containers running with
+nothing else watching for them. Every container this project's own tooling starts is labelled
+with the PID and a liveness fingerprint of the process that started it, and every test session
+and `scripts/devstack.py` run sweeps and removes anything so labelled whose owning process is
+confirmed dead before starting anything of its own -- never by age, since a genuine orphan and a
+`scripts/devstack.py` instance someone is still using accumulate age identically.
+`scripts/prune_orphaned_containers.py` runs the same sweep standalone, for whenever containers are
+suspected to have accumulated and nothing is about to start a session anyway.
+
 ### The layers
 
 | Marker | What it covers | What it needs |
