@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 _postimap_listener: PostimapListener | None = None
 _spam_processor: Any | None = None
+_calendar_intake_handler: Any | None = None
 _queue_manager: Any | None = None
 _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
@@ -73,7 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Lifespan context manager -- initializes all components via DI."""
     global _postimap_listener, _spam_processor, _contract_ok
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
-    global _embedding_components
+    global _embedding_components, _calendar_intake_handler
 
     config = get_config()
 
@@ -132,6 +133,24 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _spam_processor = SpamFeedbackListener(feedback=feedback, folder_repo=folder_repo)
     logger.info("Spam feedback listener initialized")
 
+    # Constructed unconditionally too, the same reasoning as the spam
+    # feedback listener -- calendar/intake.py's own message/insert gate
+    # is what decides whether anything gets imported, not a setting here.
+    from mail_verdict.calendar.intake import CalendarIntakeHandler
+    from mail_verdict.calendar.repository import (
+        CalendarIntakeRepository,
+        CalendarPrefsRepository,
+        CollectionRepository,
+        DavAccountRepository,
+        DavObjectRepository,
+    )
+
+    _calendar_intake_handler = CalendarIntakeHandler(
+        db, CalendarIntakeRepository(db), DavObjectRepository(db),
+        CalendarPrefsRepository(db), CollectionRepository(db), DavAccountRepository(db),
+    )
+    logger.info("Calendar intake handler initialized")
+
     dsn = parse_dsn_from_sqlalchemy_url(config.database.url)
     _pipeline_notifier = WorkQueueNotifier(dsn)
     await _pipeline_notifier.start()
@@ -177,6 +196,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await event_ring.add(account_uuid, "mail.new", sse_data)
                 if event.origin == "sync":
                     await enqueue_live_arrival(db, event, settings_service)
+                    if _calendar_intake_handler:
+                        await _calendar_intake_handler.handle_message_event(event)
             elif event.op == "update":
                 await event_ring.add(
                     account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},
