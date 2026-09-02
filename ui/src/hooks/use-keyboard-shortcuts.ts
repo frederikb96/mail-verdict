@@ -12,19 +12,8 @@ import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import { selectedMailIdAtom, selectedAccountIdAtom } from "@/lib/atoms";
 import { useMailAction } from "@/hooks/use-mails";
 import { useToggleSelection } from "@/hooks/use-selection";
+import { isEditableElement } from "@/lib/utils";
 import type { MessageSummary } from "@/types/api";
-
-/** Whether an element is an interactive input that should suppress shortcuts. */
-function isEditableElement(el: EventTarget | null): boolean {
-  if (!el || !(el instanceof HTMLElement)) return false;
-  const tag = el.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    tag === "SELECT" ||
-    el.isContentEditable
-  );
-}
 
 interface UseKeyboardShortcutsOptions {
   /** Current visible mail list. */

@@ -246,6 +246,11 @@ export type SSEEventType =
   | "verdict.issued"
   | "notification.new"
   | "pipeline.run_finished"
+  | "calendar.object"
+  | "calendar.collection"
+  | "calendar.account"
+  | "contact.object"
+  | "contact.collection"
   | "resync";
 
 export interface SSEEvent {
@@ -276,6 +281,12 @@ export interface SSEEvent {
   backfill?: boolean;
   timestamp: string;
   old_folder_id?: string;
+  /** Present on calendar.* and contact.* events. */
+  calendar_id?: string;
+  dav_account_id?: string;
+  addressbook_id?: string;
+  /** Present on outbox.updated when the row is an iTIP reply, not a mail send. */
+  itip?: "reply";
 }
 
 export interface ImageExceptionResponse {
@@ -629,4 +640,306 @@ export interface QueueResponse {
 export interface QueuePatchRequest {
   state?: "running" | "paused";
   concurrency?: number;
+}
+
+// --- Calendar and contacts ---
+//
+// The backend that serves these is being built in parallel; the shapes below
+// follow the design's specified surface so the UI can be wired up as soon as
+// the endpoints answer.
+
+/** A named sending address on a mail account -- distinct from the account
+ * itself, since one mailbox can send as several addresses. */
+export interface Identity {
+  id: string;
+  account_id: string;
+  address: string;
+  display_name: string | null;
+  is_default: boolean;
+}
+
+export type DavAccountState = "created" | "syncing" | "active" | "error" | "disabled";
+
+export interface DavCollectionSummary {
+  id: string;
+  kind: "calendar" | "addressbook";
+  display_name: string | null;
+  sync_tier: string | null;
+  initial_sync_done: boolean;
+  total_count: number;
+  backfill_total: number | null;
+  last_synced_at: string | null;
+}
+
+export interface DavAccountResponse {
+  id: string;
+  name: string;
+  discovery_url: string;
+  username: string;
+  is_active: boolean;
+  state: DavAccountState;
+  state_error: string | null;
+  last_polled_at: string | null;
+  collections: DavCollectionSummary[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DavAccountCreateRequest {
+  name: string;
+  discovery_url: string;
+  username: string;
+  password: string;
+}
+
+export interface DavAccountUpdateRequest {
+  name?: string;
+  password?: string;
+  is_active?: boolean;
+}
+
+export type CalendarIntake = "none" | "import" | "import_and_link";
+
+export interface Calendar {
+  id: string;
+  dav_account_id: string;
+  dav_account_name: string;
+  display_name: string;
+  /** The collection's own colour. */
+  color: string;
+  /** A per-user override; when set, this is what every surface renders. */
+  color_override: string | null;
+  is_visible: boolean;
+  read_only: boolean;
+  /** The identity invitations addressed to it are attributed to and replied from. */
+  identity_id: string | null;
+  intake: CalendarIntake;
+  supported_components: ("VEVENT" | "VTODO")[];
+  sync_error: string | null;
+  initial_sync_done: boolean;
+  total_count: number;
+}
+
+export interface CalendarCreateRequest {
+  dav_account_id: string;
+  display_name: string;
+  color?: string;
+}
+
+export interface CalendarUpdateRequest {
+  display_name?: string;
+  color_override?: string | null;
+  is_visible?: boolean;
+  identity_id?: string | null;
+  intake?: CalendarIntake;
+}
+
+export type Partstat = "needs-action" | "accepted" | "declined" | "tentative";
+export type AttendeeRole = "chair" | "req-participant" | "opt-participant" | "non-participant";
+export type EventStatus = "confirmed" | "tentative" | "cancelled";
+export type OutboxItipStatus = OutboxStatus;
+
+export interface EventAttendee {
+  email: string;
+  cn: string | null;
+  partstat: Partstat;
+  role: AttendeeRole;
+}
+
+/** The last outbox row this identity's `respond` produced for this object --
+ * null until an RSVP has ever been sent, so a reply that never reaches the
+ * organizer can be told apart from one that was never attempted. */
+export interface OwnReply {
+  partstat: Partstat;
+  outbox_id: string;
+  outbox_status: OutboxItipStatus;
+  error: string | null;
+  updated_at: string;
+}
+
+export interface EventInstance {
+  object_id: string;
+  /** Set on a modified occurrence of a recurring series; null on the master. */
+  recurrence_id: string | null;
+  calendar_id: string;
+  uid: string;
+  summary: string;
+  dtstart: string;
+  dtend: string;
+  tz: string | null;
+  all_day: boolean;
+  location: string | null;
+  description: string | null;
+  status: EventStatus;
+  sequence: number;
+  organizer: { email: string; cn: string | null } | null;
+  attendees: EventAttendee[];
+  /** This identity's own partstat on the event, when it is an attendee. */
+  partstat: Partstat | null;
+  is_recurring: boolean;
+  is_exception: boolean;
+  /** True while the write has not been confirmed by the server yet (etag IS NULL). */
+  pending: boolean;
+  sync_error: string | null;
+  own_reply: OwnReply | null;
+  source_message_id: string | null;
+  read_only: boolean;
+}
+
+export type RecurrenceScope = "this" | "following" | "all";
+
+export interface EventCreateRequest {
+  calendar_id: string;
+  summary: string;
+  dtstart: string;
+  dtend: string;
+  tz?: string;
+  all_day?: boolean;
+  location?: string;
+  description?: string;
+  rrule?: string;
+  attendees?: { email: string; cn?: string }[];
+}
+
+export interface EventUpdateRequest {
+  calendar_id?: string;
+  summary?: string;
+  dtstart?: string;
+  dtend?: string;
+  tz?: string;
+  all_day?: boolean;
+  location?: string;
+  description?: string;
+  rrule?: string;
+  attendees?: { email: string; cn?: string }[];
+  /** Required when the object is a recurring instance. */
+  scope?: RecurrenceScope;
+  recurrence_id?: string;
+}
+
+export interface EventDeleteRequest {
+  scope?: RecurrenceScope;
+  recurrence_id?: string;
+}
+
+export interface EventListResponse {
+  events: EventInstance[];
+}
+
+export interface RespondRequest {
+  identity_id: string;
+  partstat: "accepted" | "declined" | "tentative";
+  comment?: string;
+}
+
+export type InvitationStatus =
+  | "imported"
+  | "updated"
+  | "unlinked"
+  | "cancelled"
+  | "ignored_stale"
+  | "failed";
+
+export interface Invitation {
+  message_id: string;
+  method: "REQUEST" | "REPLY" | "CANCEL" | "COUNTER";
+  status: InvitationStatus;
+  uid: string;
+  summary: string;
+  dtstart: string;
+  dtend: string;
+  all_day: boolean;
+  location: string | null;
+  organizer: { email: string; cn: string | null } | null;
+  attendees: EventAttendee[];
+  /** The address of the identity this invitation was addressed to, when found among the attendees. */
+  own_address: string | null;
+  sequence: number;
+  calendar_id: string | null;
+  calendar_name: string | null;
+  object_id: string | null;
+  error: string | null;
+  own_reply: OwnReply | null;
+}
+
+export interface ImportInvitationRequest {
+  calendar_id: string;
+  /** Persist this calendar as the identity's default for future invitations from this address. */
+  link?: boolean;
+}
+
+export interface CalendarLinkRow {
+  identity_id: string;
+  identity_address: string;
+  account_id: string;
+  calendar_ids: string[];
+  receives_invitations_calendar_id: string | null;
+}
+
+export interface CalendarLinks {
+  base_revision: number;
+  rows: CalendarLinkRow[];
+}
+
+export interface CalendarLinksUpdate {
+  base_revision: number;
+  rows: { identity_id: string; calendar_ids: string[]; receives_invitations_calendar_id: string | null }[];
+}
+
+export interface ContactEmail {
+  email: string;
+  type: string | null;
+}
+
+export interface Contact {
+  id: string;
+  addressbook_id: string;
+  addressbook_name: string;
+  read_only: boolean;
+  summary: string;
+  emails: ContactEmail[];
+  organization: string | null;
+  title: string | null;
+  phones: { number: string; type: string | null }[];
+  addresses: { label: string | null; text: string }[];
+  birthday: string | null;
+  url: string | null;
+  notes: string | null;
+}
+
+export interface ContactListResponse {
+  contacts: Contact[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface ContactSearchHit {
+  contact_id: string;
+  name: string;
+  email: string;
+  source: "contact" | "recent" | "typed";
+}
+
+export interface ContactCreateRequest {
+  addressbook_id: string;
+  summary: string;
+  emails: ContactEmail[];
+  organization?: string;
+  title?: string;
+  phones?: { number: string; type?: string }[];
+  addresses?: { label?: string; text: string }[];
+  birthday?: string;
+  url?: string;
+  notes?: string;
+}
+
+export type ContactUpdateRequest = Partial<Omit<ContactCreateRequest, "addressbook_id">>;
+
+export interface AddressbookSummary {
+  id: string;
+  dav_account_id: string;
+  dav_account_name: string;
+  display_name: string;
+  read_only: boolean;
+  total_count: number;
 }
