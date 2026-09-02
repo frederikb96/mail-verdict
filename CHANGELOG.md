@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `/api/contacts` plus `/api/contacts/search` for the compose autocomplete. Every write to the
   calendars/contacts tables PostIMAP mirrors goes through `postimap/actions.py`, proven against
   the real `postimap_app` role, not just an owner connection
+- **Invitation intake** — an emailed `.ics` attachment becomes a calendar entry on its own:
+  `calendar/intake.py` reacts to a message arriving the same way the spam feedback listener does,
+  resolves the recipient identity from the ATTENDEE list (falling back to To/Cc), and imports,
+  updates, cancels or records a reply against the calendar_intake table's never-classify-twice
+  gate. A UID already held anywhere is always updated in place rather than duplicated — the
+  hand-imported case, and what keeps two of an identity's own addresses invited to the same event
+  from producing two copies. `GET`/`POST /api/calendar/invitations` reads a parsed invitation with
+  its intake status and candidate calendars, and imports one manually (optionally linking the
+  calendar to the identity), for anything intake left unlinked or that dead-lettered
 
 ### Fixed
 

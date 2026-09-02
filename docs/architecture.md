@@ -342,8 +342,34 @@ outbox attempt, the same "retry never destroys history" shape sending mail alrea
 Creating an event with attendees requires its calendar to have a linked identity — there is nothing
 else to send the `METHOD:REQUEST` invitation from — and is refused with `409` otherwise.
 
-Inbound invitation intake (turning an emailed `.ics` attachment into a calendar entry
-automatically) is not implemented yet.
+**Invitation intake** turns an emailed `.ics` attachment into a calendar entry automatically.
+`calendar/intake.py` is a listener like `spam/feedback.py`, not a pipeline stage: it reacts to
+`message`/`insert` with `origin = "sync"`, and for the same reason backfilled mail is never
+classified, backfilled mail is never imported either — the contract's backfill suppression means
+no per-row `message` event fires at all while a folder's first sync is in progress, so an arrival
+this listener ever sees is live mail by construction, with no separate watermark needed.
+
+`CalendarIntakeHandler.decide()` is a pure read — given a message and its parsed invitation, it
+works out the outcome (which calendar, which existing object, which `calendar_intake` status)
+without writing anything. `handle_message_event()` writes the `calendar_intake` row first, gated
+on its own uniqueness on `(account_id, msg_key)`, and only then applies the outcome — so a
+redelivered or resynced message finds the row already there and applies nothing a second time.
+`api/invitations.py`'s `GET` reuses `decide()` for a message the listener never saw (backfilled
+mail, or one that arrived before intake was wired up) to render the same view without ever writing
+`calendar_intake` itself; only the explicit `POST .../import` writes for that case, which is what
+keeps "backfilled mail is never imported automatically" true while still letting a person choose
+"add to calendar" for it.
+
+A `REQUEST` whose UID is already held by any `dav_objects` row, in any DAV account, is updated in
+place wherever it lives rather than imported a second time — the hand-imported case, and what
+keeps two of an identity's own addresses invited to the same event from producing two copies. A
+lower `SEQUENCE` than the held object's own is stale and ignored. A `CANCEL` sets the event
+`STATUS:CANCELLED` rather than deleting it, so it stays visible until the user removes it. A
+`REPLY` updates the matching `ATTENDEE`'s `PARTSTAT` on the held object. Identity resolution
+intersects the `ATTENDEE` list against the mail account's `identities`, falling back to
+`to_addrs`/`cc_addrs` — an invitation to an address linked to no calendar (`calendar_prefs.intake`)
+is left `unlinked`, surfaced by `GET /api/calendar/invitations/{message_id}` with the candidate
+calendars to import into.
 
 ## Configuration and settings
 
