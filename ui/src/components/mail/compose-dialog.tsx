@@ -1,6 +1,7 @@
 "use client";
 
-import { useAtomValue } from "jotai";
+import { useEffect, useState } from "react";
+import { useAtom, useAtomValue } from "jotai";
 import { PenSquare } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -20,23 +21,45 @@ import {
 } from "@/components/ui/select";
 import { ComposeForm } from "@/components/mail/compose-form";
 import { useAccounts } from "@/hooks/use-accounts";
-import { selectedAccountIdAtom } from "@/lib/atoms";
-import { useState } from "react";
+import { composeIntentAtom, selectedAccountIdAtom } from "@/lib/atoms";
 
-/** New-mail dialog, reachable from the sidebar. */
+/**
+ * New-mail dialog, reachable from the sidebar and also opened from anywhere
+ * else in the app through `composeIntentAtom` (a contact's email, an
+ * event's "email the attendees") without owning its own trigger there.
+ */
 export function ComposeDialog() {
   const { data: accounts } = useAccounts();
   const currentAccountId = useAtomValue(selectedAccountIdAtom);
   const [open, setOpen] = useState(false);
   const [accountId, setAccountId] = useState<string | undefined>(undefined);
+  const [composeIntent, setComposeIntent] = useAtom(composeIntentAtom);
+
+  useEffect(() => {
+    if (composeIntent) {
+      setAccountId(composeIntent.accountId);
+      setOpen(true);
+    }
+  }, [composeIntent]);
 
   const effectiveAccountId =
     accountId ??
     (currentAccountId && currentAccountId !== "unified" ? currentAccountId : undefined) ??
     accounts?.[0]?.id;
 
+  const closeAndClearIntent = () => {
+    setOpen(false);
+    setComposeIntent(null);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) setComposeIntent(null);
+      }}
+    >
       <DialogTrigger render={<Button className="w-full justify-start gap-2" />}>
         <PenSquare className="h-4 w-4" />
         Compose
@@ -64,8 +87,11 @@ export function ComposeDialog() {
         )}
         {effectiveAccountId && (
           <ComposeForm
+            key={open ? "open" : "closed"}
             accountId={effectiveAccountId}
-            onDone={() => setOpen(false)}
+            defaultTo={composeIntent?.to}
+            defaultSubject={composeIntent?.subject}
+            onDone={closeAndClearIntent}
           />
         )}
         {!effectiveAccountId && (
