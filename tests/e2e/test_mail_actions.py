@@ -78,6 +78,18 @@ def trash_folder(app_client: TestClient, synced_account: dict[str, Any]) -> dict
     return wait_for_folder(app_client, str(synced_account["id"]), "Trash")
 
 
+@pytest.fixture(scope="class")
+def archive_folder(app_client: TestClient, synced_account: dict[str, Any]) -> dict[str, Any]:
+    """A plain folder created through the API, not one Dovecot ships -- it carries no
+    special_use flag at all, the same shape a real server with no \\Archive support leaves
+    behind. Only the archive action's name fallback can resolve it."""
+    resp = app_client.post(
+        f"/api/accounts/{synced_account['id']}/folders", json={"name": "Archive"},
+    )
+    assert resp.status_code == 201, resp.text
+    return wait_for_folder(app_client, str(synced_account["id"]), "Archive")
+
+
 def _list_inbox(
     app_client: TestClient, account_id: str, inbox_folder: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -248,3 +260,26 @@ class TestMailActions:
                 select(Message.folder_id).where(Message.id == uuid.UUID(target["id"]))
             )
             assert result.scalar_one() == uuid.UUID(trash_folder["id"])
+
+    @pytest.mark.asyncio
+    async def test_archive_resolves_an_unflagged_folder_by_name(
+        self,
+        app_client: TestClient,
+        synced_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        archive_folder: dict[str, Any],
+        db: DatabaseConnection,
+    ) -> None:
+        """No folder on this account advertises special_use='archive' -- the archive action
+        only succeeds by falling back to matching the folder named 'Archive'."""
+        assert not archive_folder.get("special_use"), "fixture must stay unflagged for this test"
+        target = _list_inbox(app_client, synced_account["id"], inbox_folder)[0]
+
+        resp = app_client.post(f"/api/messages/{target['id']}/action", json={"action": "archive"})
+        assert resp.status_code == 200, resp.text
+
+        async with db.session() as session:
+            result = await session.execute(
+                select(Message.folder_id).where(Message.id == uuid.UUID(target["id"]))
+            )
+            assert result.scalar_one() == uuid.UUID(archive_folder["id"])

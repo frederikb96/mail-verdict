@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `pipeline.live_max_age_days` and was never classified — the development stack came up with
   spam detection apparently dead. A repeated Message-ID had the same effect on a second run.
   `--keep-dates` delivers the fixtures verbatim
+- Archiving a message returned "No archive folder found for this account" on any server that
+  never advertises IMAP SPECIAL-USE, even with a folder literally named Archive present.
+  Resolving trash/archive/junk/inbox now falls back to matching a well-known name for the role
+  when no folder carries the flag
 
 ## [3.0.0] - 2026-08-30
 
