@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The development stack runs Radicale, a throwaway CalDAV/CardDAV server, alongside the
   mail server -- `scripts/seed_dev.py` seeds a calendar and an address book on it directly,
   so a fresh checkout shows real calendar data once a DAV account is added, the same as it
-  already does for mail
+  already does for mail. `scripts/devstack.py`, the per-worktree equivalent, gained the same
+  container and now seeds and links its own DAV account automatically, so a worktree has a
+  real calendar to verify against without a manual step
 - `tests/e2e/test_calendar_flow.py` and `tests/e2e/test_contacts_flow.py` drive the same
   real chain -- an object created through the API is verified to actually reach the server,
   and one added directly on the server is verified to reach the API after a sync. The `pg`

@@ -5,11 +5,12 @@ compose.dev.yaml's fixed container names, host ports, and pgdata bind mount
 mean only one instance of it can exist on a machine at a time, and two
 worktrees on different Alembic revisions cannot share its one database at
 all -- the app runs `alembic upgrade head` at startup and refuses on two
-heads. This script solves both by building the same four containers
+heads. This script solves both by building the same five containers
 tests/setup/containers.py already gives the test suite (Postgres, Dovecot,
-Mailpit, PostIMAP) on a private network with random host ports, migrating
-and starting *this worktree's* application against them, and printing where
-to reach it. Run one per worktree; nothing is shared between them.
+Mailpit, Radicale, PostIMAP) on a private network with random host ports,
+migrating and starting *this worktree's* application against them, and
+printing where to reach it. Run one per worktree; nothing is shared
+between them.
 
     python scripts/devstack.py
     python scripts/devstack.py --to bob@test.local
@@ -52,6 +53,7 @@ import uvicorn
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.seed_dev import DEFAULT_DAV_USER, seed_calendar  # noqa: E402
 from tests.setup.containers import (  # noqa: E402
     DOVECOT_ALIAS,
     DOVECOT_IMAP_PORT,
@@ -60,14 +62,18 @@ from tests.setup.containers import (  # noqa: E402
     MAILPIT_ALIAS,
     MAILPIT_HTTP_PORT,
     MAILPIT_SMTP_PORT,
+    RADICALE_ALIAS,
+    RADICALE_PORT,
     build_dovecot_container,
     build_mailpit_container,
     build_postgres_container,
     build_postimap_container,
+    build_radicale_container,
     postgres_url_for,
     wait_dovecot_ready,
     wait_mailpit_ready,
     wait_postimap_ready,
+    wait_radicale_ready,
 )
 from tests.setup.mail_delivery import deliver_message, load_corpus  # noqa: E402
 from tests.setup.migrations import run_migrations  # noqa: E402
@@ -194,13 +200,16 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         postgres = stack.enter_context(build_postgres_container(network))
         container_ids["postgres"] = postgres.get_container_id()
 
-        print("Starting Dovecot and Mailpit ...")
+        print("Starting Dovecot, Mailpit and Radicale ...")
         dovecot = stack.enter_context(build_dovecot_container(network))
         container_ids["dovecot"] = dovecot.get_container_id()
         wait_dovecot_ready(dovecot)
         mailpit = stack.enter_context(build_mailpit_container(network))
         container_ids["mailpit"] = mailpit.get_container_id()
         wait_mailpit_ready(mailpit)
+        radicale = stack.enter_context(build_radicale_container(network))
+        container_ids["radicale"] = radicale.get_container_id()
+        wait_radicale_ready(radicale)
 
         print("Starting PostIMAP ...")
         postimap = stack.enter_context(build_postimap_container(network))
@@ -278,12 +287,42 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
 
         _wait_until(_account_settled, "the account reaching 'active'", ACCOUNT_ACTIVE_TIMEOUT_S)
 
+        radicale_host = radicale.get_container_host_ip()
+        radicale_port = int(radicale.get_exposed_port(RADICALE_PORT))
+        print("Seeding a calendar and address book on Radicale ...")
+        seed_calendar(radicale_host, radicale_port, DEFAULT_DAV_USER)
+
+        resp = api.post(
+            "/api/dav-accounts",
+            json={
+                "name": DEFAULT_DAV_USER,
+                "discovery_url": f"http://{RADICALE_ALIAS}:{RADICALE_PORT}/",
+                "username": DEFAULT_DAV_USER,
+                "password": "unused",  # noqa: S106
+            },
+        )
+        resp.raise_for_status()
+        dav_account_id = resp.json()["id"]
+
+        print("Waiting for the DAV account to sync ...")
+
+        def _dav_account_settled() -> bool:
+            account = api.get(f"/api/dav-accounts/{dav_account_id}").json()
+            if account["state"] == "error":
+                raise RuntimeError(f"DAV account entered error state: {account['state_error']}")
+            return bool(account["state"] == "active")
+
+        _wait_until(
+            _dav_account_settled, "the DAV account reaching 'active'", ACCOUNT_ACTIVE_TIMEOUT_S,
+        )
+
         mailpit_port = int(mailpit.get_exposed_port(MAILPIT_HTTP_PORT))
         mailpit_url = f"http://{mailpit.get_container_host_ip()}:{mailpit_port}"
 
         print()
         print(f"MailVerdict:  {base_url}")
         print(f"Mailpit:      {mailpit_url}")
+        print(f"Calendar:     {DEFAULT_DAV_USER!r}'s Personal calendar and Contacts address book")
         print()
         print("Ctrl-C, or a `kill` of this process, stops the stack and removes its containers.")
 
