@@ -57,7 +57,9 @@ export function CalendarToolbar() {
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>
-      <span className="text-sm font-medium">{titleFor(view, date)}</span>
+      <span className="text-sm font-medium" data-testid="calendar-toolbar-title">
+        {titleFor(view, date)}
+      </span>
 
       <div className="ml-auto flex items-center gap-2">
         <Tabs value={view} onValueChange={(v) => v && setView(v as CalendarViewMode)}>

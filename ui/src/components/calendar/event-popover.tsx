@@ -20,7 +20,8 @@ import { RsvpControl } from "@/components/calendar/rsvp-control";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useDeleteEvent, useEventDetail } from "@/hooks/use-events";
 import { resolveCalendarColor } from "@/components/calendar/colors";
-import { deriveEventLook } from "@/components/calendar/layout";
+import { deriveEventLook, isEventOrganizedBySelf } from "@/components/calendar/layout";
+import { useIdentities } from "@/hooks/use-identities";
 import {
   eventDeleteRequestAtom,
   eventPopoverAnchorAtom,
@@ -47,9 +48,15 @@ export function EventPopover() {
     selected?.recurrenceId ?? null,
   );
   const { data: calendars } = useCalendars();
+  const { data: identities } = useIdentities();
   const deleteEvent = useDeleteEvent();
   const calendar = calendars?.find((c) => c.id === event?.calendar_id);
+  const calendarIdentityEmail = identities?.find((i) => i.id === calendar?.identity_id)?.address;
   const isRecurring = event?.is_recurring ?? false;
+  const cancellationGuestCount =
+    event && isEventOrganizedBySelf(event.organizer, calendarIdentityEmail) && event.attendees.length > 0
+      ? event.attendees.length
+      : undefined;
 
   const requestDelete = useCallback(() => {
     if (isRecurring) setScopeOpen(true);
@@ -236,11 +243,7 @@ export function EventPopover() {
       <RecurrenceScopeDialog
         open={scopeOpen}
         onOpenChange={setScopeOpen}
-        cancellationNoticeCount={
-          event && event.organizer === null && event.attendees.length > 0
-            ? event.attendees.length
-            : undefined
-        }
+        cancellationNoticeCount={cancellationGuestCount}
         onConfirm={(scope) => {
           setScopeOpen(false);
           doDelete(scope);
@@ -252,8 +255,8 @@ export function EventPopover() {
         onOpenChange={setConfirmDelete}
         title="Delete this event?"
         description={
-          event && event.organizer === null && event.attendees.length > 0
-            ? `A cancellation will be sent to ${event.attendees.length} guest${event.attendees.length === 1 ? "" : "s"}.`
+          cancellationGuestCount !== undefined
+            ? `A cancellation will be sent to ${cancellationGuestCount} guest${cancellationGuestCount === 1 ? "" : "s"}. This cannot be undone.`
             : "This cannot be undone."
         }
         isConfirming={deleteEvent.isPending}

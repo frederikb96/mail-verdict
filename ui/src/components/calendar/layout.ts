@@ -8,6 +8,22 @@
 import type { MouseEvent } from "react";
 import type { EventInstance } from "@/types/api";
 
+/** Whether the viewer organises this event, for the calendar identity given.
+ *
+ * An event with no ORGANIZER at all is a purely local one -- always the
+ * viewer's own. Otherwise, organising it means the ORGANIZER address matches
+ * the identity the calendar itself is linked to, not merely that a field is
+ * absent -- an event you were invited to also carries an ORGANIZER, and
+ * comparing it against nothing would call every guest the organiser. */
+export function isEventOrganizedBySelf(
+  organizer: EventInstance["organizer"],
+  identityEmail: string | null | undefined,
+): boolean {
+  if (organizer === null) return true;
+  if (!identityEmail) return false;
+  return organizer.email.toLowerCase() === identityEmail.toLowerCase();
+}
+
 /** Shared by every view that can open the event popover -- the click event
  * is optional so a keyboard activation or a programmatic selection can omit
  * it, falling back to whatever anchor the caller already knows. */

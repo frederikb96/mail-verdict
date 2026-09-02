@@ -145,6 +145,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `GET` on the same message now describes what that confirmation would actually do rather than
   what the automatic listener's own narrower reachability scope alone would see, so the two no
   longer disagree about which object a confirmation targets
+- Creating a contact from the interface now actually works. The default address book was read
+  on first mount, before address books had loaded, so every create sent an empty
+  `addressbook_id` and was rejected -- the sheet stayed open with no error at all. It is now
+  resolved once the sheet opens, and a failed create shows why, the same way the event editor
+  already does
+- Deleting an event from its popover, when you organise it and it has guests, now names how
+  many will be told a cancellation is being sent, instead of the generic "cannot be undone"
+  warning while silently mailing them anyway. Organiser detection compared the event's
+  `ORGANIZER` against nothing at all -- true only for a purely local event with none -- rather
+  than against the calendar's own linked identity
+- The identity, invitations and server selects in Manage calendars now show a name instead of
+  a raw stored value: an account UUID, an identity UUID, or the intake enum's own member name
+  (`none`). Every `Select` there rendered its value verbatim with no label lookup. The Server
+  select also never actually applied a value chosen from a still-loading account list -- a
+  `Select` decides once, on its first render, whether it is controlled, and treats `undefined`
+  then as "never controlled", so setting a real id once the list arrived changed the state
+  without the trigger ever showing it
+- Today, after navigating away in month view, now reliably returns to today's own weekday
+  instead of landing on some other week's Monday, and the toolbar, the month grid's own header
+  and the sidebar mini-month all agree on which month that is. The scroll listener wrote
+  whatever week was passing under the viewport's top edge back into the shared date during
+  Today's own animated scroll, repeatedly, overwriting the anchor date it had just been given
+  before the animation settled; the mini-month, seeded once from that anchor, never followed
+  it again afterwards
+- The recipient field's arrow-down-then-enter now commits the highlighted suggestion instead
+  of the raw typed text. Enter always turned whatever was typed into a chip regardless of
+  whether a suggestion was highlighted, so a keyboard selection silently queued a nonexistent
+  address that only failed once sent. Text that doesn't parse as an address is now named in a
+  toast rather than either silently accepted as one or silently dropped
+- Manage folders no longer offers Delete on a special-use folder (Sent, Trash, Junk, Drafts) --
+  only INBOX, absent from that list entirely, was ever protected there; the rest showed the
+  same destructive control and confirmation as any folder created by hand
 
 ### Security
 
