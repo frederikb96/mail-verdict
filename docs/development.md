@@ -100,6 +100,16 @@ interface. PostIMAP picks up a new account without a restart.
 Mailpit's own interface shows everything the application sends, so you can check a send worked
 without needing a real mailbox anywhere.
 
+### Calendars and contacts
+
+There is no throwaway CalDAV/CardDAV server in the dev stack, unlike Dovecot for mail — the `pg`
+tests cover the whole subsystem against the mirror tables directly, the same way PostIMAP would
+leave them after a real sync, so nothing needs to actually speak the protocol. To see real data in
+the running application, add a DAV account through the interface (or `POST /api/dav-accounts`
+directly) pointing at a real CalDAV/CardDAV server; PostIMAP mirrors it the same way it mirrors
+mail, and needs `service_version >= 1.6.0` to do so, which is what `compose.dev.yaml` and
+`tests/setup/images.py` both pin.
+
 ### Running more than one stack at once
 
 `compose.dev.yaml` has one fixed name, five fixed host ports, and one fixed pgdata directory, so

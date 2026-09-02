@@ -32,6 +32,10 @@ mirror, which is what keeps it simple.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
 - **Search** — full text across subject, sender and body, plus semantic search over an embedding
   of every message for finding mail by meaning rather than exact words.
+- **Calendars and contacts** — CalDAV and CardDAV servers mirrored the same way mail is: calendars
+  with recurring events, RSVPs and per-occurrence editing, and address books with compose
+  autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply
+  goes back over the identity's own outbox rather than the server's scheduling engine.
 - **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
   Message HTML is sanitized on the server and rendered in an isolated shadow root.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail.
