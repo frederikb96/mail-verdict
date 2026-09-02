@@ -60,6 +60,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   event with no editor to fill it in. The grid surface compared the pointer's target against
   itself by strict identity, so a press anywhere except its own four edges -- which is everywhere,
   since the hour lines are its children -- never started a create-drag at all
+- The event editor now sends `tz` (the browser's own IANA zone) when creating a timed event, so a
+  recurring series created from the interface keeps its wall-clock reading across a DST change
+  instead of drifting an hour -- the API has honoured `tz` since it was added, but the editor
+  never sent it
+- An all-day event created from the editor is no longer stored zero-length. The editor's date
+  fields show the *inclusive* last day (matching how a person picks an end date), converted to the
+  exclusive `dtend` RFC 5545 requires only where the request is actually built; toggling All day
+  now seeds that day from the browser's own local time rather than the instant's UTC date, which
+  could be a day off late in the evening in a positive offset
+- The editor now shows a recurring event's actual repeat, and can remove it. `GET
+  /calendar/events` and `/calendar/events/{id}` gained an `rrule` field the editor reads to
+  initialise the Repeats select -- previously every event read "Does not repeat" regardless, and
+  choosing it sent nothing, so an existing series could never be turned back into a single event.
+  Removing a repeat now sends `rrule: ""`, distinct from omitting the field entirely (which
+  `ical.py` already read as "leave the existing rule alone")
 - Editing an event from the interface now actually saves. The editor sent an `attendees` array on
   every update -- an empty one when there were none -- and the backend's own guard against
   changing attendees rejected it outright, so renaming, moving or retiming an event from the

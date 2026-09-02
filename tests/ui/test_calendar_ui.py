@@ -314,3 +314,64 @@ class TestCalendarUi:
             return next((e for e in listed if e["summary"] == summary), None)
 
         wait_for(_created, description="Event created via the drag-opened editor")
+
+    def test_creating_a_timed_event_binds_the_browsers_own_timezone(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the editor never sent `tz` on
+        create, so a timed event lost its named zone regardless of what
+        the API itself could do with one -- the API's own binding
+        behaviour for a given zone (kept wall-clock reading, moved
+        instant) is proven directly in
+        TestCreateWithTimezone in the pg layer; this only has to show the
+        editor actually sends the field at all. Pinning the browser to a
+        specific zone via `browser_context_args`/the marker was tried and
+        dropped: this app's SSR renders with the server's own (host) zone,
+        so a client pinned to a different one hydrates mismatched
+        (React error #418) and the toolbar's click handlers go missing --
+        a real bug, but not one this row owns. Reading the browser's own
+        zone back keeps the assertion meaningful without touching it."""
+        summary = f"DST check {uuid.uuid4()}"
+
+        page.goto(f"{app_server}/calendar")
+        browser_tz = page.evaluate("Intl.DateTimeFormat().resolvedOptions().timeZone")
+        # The editor seeds its Calendar field from useCalendars() at the
+        # moment it mounts and never re-reads it once that query resolves
+        # later -- opening it before the sidebar's own calendar list has
+        # loaded leaves Save permanently disabled.
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event").click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(summary)
+
+        # fill() on a datetime-local input sets the DOM value without
+        # React ever seeing it -- go through the input's own native
+        # setter and fire the event React listens for instead.
+        starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
+        for locator, value in (
+            (starts_input, "2026-09-10T10:00"), (ends_input, "2026-09-10T11:00"),
+        ):
+            locator.evaluate(
+                "(el, value) => {"
+                "  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')"
+                "    .set.call(el, value);"
+                "  el.dispatchEvent(new Event('input', { bubbles: true }));"
+                "}",
+                value,
+            )
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+
+        def _created() -> dict[str, Any] | None:
+            listed = api_client.get("/api/calendar/events", params={"month": "2026-09"}).json()
+            return next((e for e in listed["events"] if e["summary"] == summary), None)
+
+        event = wait_for(_created, description="Created event synced back")
+        assert event["tz"] == browser_tz

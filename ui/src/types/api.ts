@@ -779,6 +779,8 @@ export interface EventInstance {
   description: string | null;
   status: EventStatus;
   sequence: number;
+  /** null when the event does not repeat. */
+  rrule: string | null;
   organizer: { email: string; cn: string | null } | null;
   attendees: EventAttendee[];
   /** This identity's own partstat on the event, when it is an attendee. */
