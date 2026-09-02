@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { CalendarToolbar } from "@/components/calendar/calendar-toolbar";
 import { MonthScroller } from "@/components/calendar/month-scroller";
 import { TimeGrid } from "@/components/calendar/time-grid";
@@ -17,7 +17,7 @@ import {
 } from "@/lib/atoms";
 
 export function CalendarPage() {
-  const view = useAtomValue(calendarViewAtom);
+  const [view, setView] = useAtom(calendarViewAtom);
   const setCalendarDate = useSetAtom(calendarDateAtom);
   const setSelectedEvent = useSetAtom(selectedEventAtom);
   const setAnchor = useSetAtom(eventPopoverAnchorAtom);
@@ -38,8 +38,17 @@ export function CalendarPage() {
   const handleSelectDay = useCallback(
     (date: Date) => {
       setCalendarDate(date);
+      setView("day");
     },
-    [setCalendarDate],
+    [setCalendarDate, setView],
+  );
+
+  const handleSelectWeek = useCallback(
+    (date: Date) => {
+      setCalendarDate(date);
+      setView("week");
+    },
+    [setCalendarDate, setView],
   );
 
   const effectiveView = isMobile && view === "week" ? "day" : view;
@@ -53,6 +62,7 @@ export function CalendarPage() {
             compact={isMobile}
             onSelectEvent={handleSelectEvent}
             onSelectDay={handleSelectDay}
+            onSelectWeek={handleSelectWeek}
           />
         )}
         {effectiveView === "week" && <TimeGrid dayCount={7} onSelectEvent={handleSelectEvent} />}

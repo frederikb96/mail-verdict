@@ -9,8 +9,13 @@
 
 import { useMemo, useState } from "react";
 import { useAtomValue } from "jotai";
-import { format, isSameDay, isToday, isWeekend, weekDays } from "@/lib/dates";
-import { assignLanes, type SelectEventHandler, type SpanningItem } from "@/components/calendar/layout";
+import { format, isSameDay, isToday, isWeekend, weekDays, weekNumber } from "@/lib/dates";
+import {
+  assignLanes,
+  WEEK_NUMBER_GUTTER_WIDTH,
+  type SelectEventHandler,
+  type SpanningItem,
+} from "@/components/calendar/layout";
 import { EventChip } from "@/components/calendar/event-chip";
 import { DayEventsPopover } from "@/components/calendar/day-events-popover";
 import { useWeekEvents } from "@/hooks/use-events";
@@ -32,6 +37,7 @@ interface MonthWeekRowProps {
   compact: boolean;
   onSelectEvent: SelectEventHandler;
   onSelectDay: (date: Date) => void;
+  onSelectWeek: (date: Date) => void;
 }
 
 export function MonthWeekRow({
@@ -40,6 +46,7 @@ export function MonthWeekRow({
   compact,
   onSelectEvent,
   onSelectDay,
+  onSelectWeek,
 }: MonthWeekRowProps) {
   const days = useMemo(() => weekDays(weekIndex), [weekIndex]);
   const events = useWeekEvents(weekIndex);
@@ -115,117 +122,134 @@ export function MonthWeekRow({
       className="relative flex border-b"
       style={{ height: rowHeight }}
     >
-      {days.map((day, col) => {
-        const dayEvents = timedByDay[col].slice(0, compact ? 0 : timedCapacity);
-        const hidden = hiddenCountForCol(col);
-        const dotCount = compact
-          ? spanningLaned.filter((l) => l.item.startCol <= col && col <= l.item.endCol).length +
-            timedByDay[col].length
-          : 0;
+      {!compact && (
+        <button
+          type="button"
+          data-testid="week-number"
+          aria-label={`Open week of ${format(weekStart, "MMM d, yyyy")}`}
+          onClick={() => onSelectWeek(weekStart)}
+          style={{ width: WEEK_NUMBER_GUTTER_WIDTH }}
+          className="shrink-0 border-r pt-0.5 text-center text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          {weekNumber(weekStart)}
+        </button>
+      )}
+      {/* Its own relative container so the spanning-bar percentages below are
+          computed against the 7-day area alone, not the row including the
+          week-number gutter. */}
+      <div className="relative flex min-w-0 flex-1">
+        {days.map((day, col) => {
+          const dayEvents = timedByDay[col].slice(0, compact ? 0 : timedCapacity);
+          const hidden = hiddenCountForCol(col);
+          const dotCount = compact
+            ? spanningLaned.filter((l) => l.item.startCol <= col && col <= l.item.endCol).length +
+              timedByDay[col].length
+            : 0;
 
-        return (
-          <button
-            key={isoKey(day)}
-            type="button"
-            data-date={isoKey(day)}
-            onClick={() => onSelectDay(day)}
-            className={cn(
-              "relative flex min-w-0 flex-1 flex-col overflow-hidden border-r px-1 pt-0.5 text-left last:border-r-0",
-              // Alternating by month (not by "current" month -- there is no
-              // such thing in a continuous scroll) is what makes a month
-              // boundary read as a colour change mid-row.
-              day.getMonth() % 2 === 0 ? "bg-background" : "bg-muted/40",
-            )}
+          return (
+            <button
+              key={isoKey(day)}
+              type="button"
+              data-date={isoKey(day)}
+              onClick={() => onSelectDay(day)}
+              className={cn(
+                "relative flex min-w-0 flex-1 flex-col overflow-hidden border-r px-1 pt-0.5 text-left last:border-r-0 hover:bg-accent/50",
+                // Alternating by month (not by "current" month -- there is no
+                // such thing in a continuous scroll) is what makes a month
+                // boundary read as a colour change mid-row.
+                day.getMonth() % 2 === 0 ? "bg-background" : "bg-muted/40",
+              )}
+            >
+              <div className="flex h-5 items-center gap-1">
+                <span
+                  className={cn(
+                    "flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs",
+                    isToday(day) && "bg-primary font-medium text-primary-foreground",
+                    !isToday(day) && isWeekend(day) && "text-muted-foreground",
+                  )}
+                >
+                  {day.getDate() === 1 ? format(day, "MMM d") : day.getDate()}
+                </span>
+              </div>
+
+              {!compact && (
+                <div
+                  style={{ marginTop: visibleSpanningLanes * LANE_HEIGHT }}
+                  className="flex flex-col gap-0.5"
+                >
+                  {dayEvents.map((e) => (
+                    <EventChip
+                      key={`${e.object_id}:${e.recurrence_id ?? "master"}`}
+                      event={e}
+                      calendar={calendarById.get(e.calendar_id)}
+                      variant="month"
+                      timeLabel={e.all_day ? undefined : format(new Date(e.dtstart), "HH:mm")}
+                      selected={selected?.objectId === e.object_id}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        onSelectEvent(e.object_id, e.recurrence_id, ev);
+                      }}
+                    />
+                  ))}
+                  {hidden > 0 && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setPopoverDay(day);
+                      }}
+                      className="w-fit cursor-pointer px-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                      +{hidden} more
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {compact && dotCount > 0 && (
+                <div className="mt-1 flex flex-wrap justify-center gap-0.5">
+                  {Array.from({ length: Math.min(dotCount, 4) }).map((_, i) => (
+                    <span key={i} className="h-1 w-1 rounded-full bg-[var(--cal-color,var(--muted-foreground))]" />
+                  ))}
+                </div>
+              )}
+            </button>
+          );
+        })}
+
+        {!compact && visibleSpanningLanes > 0 && (
+          <div
+            className="pointer-events-none absolute inset-x-0"
+            style={{ top: DAY_HEADER_HEIGHT }}
           >
-            <div className="flex h-5 items-center gap-1">
-              <span
-                className={cn(
-                  "flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs",
-                  isToday(day) && "bg-primary font-medium text-primary-foreground",
-                  !isToday(day) && isWeekend(day) && "text-muted-foreground",
-                )}
-              >
-                {day.getDate() === 1 ? format(day, "MMM d") : day.getDate()}
-              </span>
-            </div>
-
-            {!compact && (
-              <div
-                style={{ marginTop: visibleSpanningLanes * LANE_HEIGHT }}
-                className="flex flex-col gap-0.5"
-              >
-                {dayEvents.map((e) => (
+            {spanningLaned
+              .filter((l) => l.lane < visibleSpanningLanes)
+              .map(({ item, lane }) => (
+                <div
+                  key={item.key}
+                  className="pointer-events-auto absolute px-0.5"
+                  style={{
+                    left: `${(item.startCol / 7) * 100}%`,
+                    width: `${((item.endCol - item.startCol + 1) / 7) * 100}%`,
+                    top: lane * LANE_HEIGHT,
+                  }}
+                >
                   <EventChip
-                    key={`${e.object_id}:${e.recurrence_id ?? "master"}`}
-                    event={e}
-                    calendar={calendarById.get(e.calendar_id)}
-                    variant="month"
-                    timeLabel={e.all_day ? undefined : format(new Date(e.dtstart), "HH:mm")}
-                    selected={selected?.objectId === e.object_id}
+                    event={item.event}
+                    calendar={calendarById.get(item.event.calendar_id)}
+                    variant="allday"
+                    selected={selected?.objectId === item.event.object_id}
                     onClick={(ev) => {
                       ev.stopPropagation();
-                      onSelectEvent(e.object_id, e.recurrence_id, ev);
+                      onSelectEvent(item.event.object_id, item.event.recurrence_id, ev);
                     }}
                   />
-                ))}
-                {hidden > 0 && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      setPopoverDay(day);
-                    }}
-                    className="w-fit cursor-pointer px-1 text-[11px] text-muted-foreground hover:text-foreground"
-                  >
-                    +{hidden} more
-                  </span>
-                )}
-              </div>
-            )}
-
-            {compact && dotCount > 0 && (
-              <div className="mt-1 flex flex-wrap justify-center gap-0.5">
-                {Array.from({ length: Math.min(dotCount, 4) }).map((_, i) => (
-                  <span key={i} className="h-1 w-1 rounded-full bg-[var(--cal-color,var(--muted-foreground))]" />
-                ))}
-              </div>
-            )}
-          </button>
-        );
-      })}
-
-      {!compact && visibleSpanningLanes > 0 && (
-        <div
-          className="pointer-events-none absolute inset-x-0"
-          style={{ top: DAY_HEADER_HEIGHT }}
-        >
-          {spanningLaned
-            .filter((l) => l.lane < visibleSpanningLanes)
-            .map(({ item, lane }) => (
-              <div
-                key={item.key}
-                className="pointer-events-auto absolute px-0.5"
-                style={{
-                  left: `${(item.startCol / 7) * 100}%`,
-                  width: `${((item.endCol - item.startCol + 1) / 7) * 100}%`,
-                  top: lane * LANE_HEIGHT,
-                }}
-              >
-                <EventChip
-                  event={item.event}
-                  calendar={calendarById.get(item.event.calendar_id)}
-                  variant="allday"
-                  selected={selected?.objectId === item.event.object_id}
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    onSelectEvent(item.event.object_id, item.event.recurrence_id, ev);
-                  }}
-                />
-              </div>
-            ))}
-        </div>
-      )}
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
 
       {popoverDay && (
         <DayEventsPopover

@@ -9,10 +9,12 @@
  * component alone controls, and `scrollTop` needs exactly one writer.
  *
  * Position is identity, never pixels: `calendarDateAtom` holds the anchor
- * date, and `scrollToWeek` is the only function that ever writes
- * `scrollTop`. The scroll listener writes the week at the top back into the
- * atom, comparing against `currentWeekRef` so its own programmatic writes
- * never re-trigger a second scroll.
+ * date. `scrollToWeek` writes `scrollTop` for external navigation (Today,
+ * the mini-month, the toolbar arrows); `applyMeasurement` writes it for a
+ * mount or a resize, correcting for whatever rowHeight just became. The
+ * scroll listener writes the week at the top back into the atom, comparing
+ * against `currentWeekRef` so its own programmatic writes never re-trigger
+ * a second scroll.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -27,7 +29,7 @@ import {
   weekIndexToDate,
 } from "@/lib/dates";
 import { MonthWeekRow } from "@/components/calendar/month-week-row";
-import type { SelectEventHandler } from "@/components/calendar/layout";
+import { WEEK_NUMBER_GUTTER_WIDTH, type SelectEventHandler } from "@/components/calendar/layout";
 
 const ROWS_PER_SCREEN_DESKTOP = 6;
 const ROWS_PER_SCREEN_COMPACT = 8;
@@ -43,9 +45,11 @@ interface MonthScrollerProps {
   compact?: boolean;
   onSelectEvent: SelectEventHandler;
   onSelectDay: (date: Date) => void;
+  /** A week number was clicked -- opens the week view on that week. */
+  onSelectWeek: (date: Date) => void;
 }
 
-export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: MonthScrollerProps) {
+export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onSelectWeek }: MonthScrollerProps) {
   const [calendarDate, setCalendarDate] = useAtom(calendarDateAtom);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -82,48 +86,67 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: M
   // always computed, so every row is exactly the height the viewport
   // implies. A ResizeObserver (not just `window.resize`) so a sidebar
   // toggle or panel resize is caught too.
+  //
+  // Measuring and correcting scrollTop happen in the same synchronous call,
+  // both against the value `applyMeasurement` just computed -- never against
+  // the `rowHeight` state, which cannot reflect it until a later render.
+  // React runs every layout effect for a commit against that commit's own
+  // state, so a `setRowHeight` queued by the *first* layout effect is not
+  // yet visible to a *second* one in the same commit; a scroll correction
+  // that read `rowHeight` from its own effect's dependency landed one
+  // render too early, against the old scale, and by the time the corrected
+  // rowHeight actually rendered there was nothing left in pendingScrollRef
+  // to correct it with -- the exact mismatch this component exists to
+  // prevent, silently reintroduced by routing the correction through state.
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
     const rowsPerScreen = compact ? ROWS_PER_SCREEN_COMPACT : ROWS_PER_SCREEN_DESKTOP;
 
+    // Snapshot which week is at the top and how far through it the reader
+    // is, before rowHeight changes under them -- an absolute value computed
+    // from a pre-mutation snapshot. Skipped on the true first mount only:
+    // pendingScrollRef's own useRef initializer already holds the right
+    // target then, and the container has not been positioned yet to
+    // snapshot from.
+    function snapshotPending() {
+      const prevRowHeight = rowHeightRef.current;
+      const week = currentWeekRef.current;
+      const rowTop = (week - WEEK_INDEX_MIN) * prevRowHeight;
+      const fraction = prevRowHeight > 0 ? (container!.scrollTop - rowTop) / prevRowHeight : 0;
+      pendingScrollRef.current = { week, fraction };
+    }
+
     function applyMeasurement() {
       const h = container!.clientHeight;
       setViewportHeight(h);
       const next = Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, Math.floor(h / rowsPerScreen) || MIN_ROW_HEIGHT));
+      rowHeightRef.current = next;
       setRowHeight(next);
+
+      const pending = pendingScrollRef.current;
+      if (!pending) return;
+      const top = (pending.week - WEEK_INDEX_MIN) * next + pending.fraction * next;
+      container!.scrollTop = top;
+      pendingScrollRef.current = null;
+      setScrollTop(top);
+      updateMonthLabel(top, next);
+      mountedRef.current = true;
     }
 
+    if (mountedRef.current) snapshotPending();
     applyMeasurement();
 
     const observer = new ResizeObserver(() => {
       const el = containerRef.current;
       if (!el) return;
-      const prevRowHeight = rowHeightRef.current;
-      const week = currentWeekRef.current;
-      const rowTop = (week - WEEK_INDEX_MIN) * prevRowHeight;
-      const fraction = prevRowHeight > 0 ? (el.scrollTop - rowTop) / prevRowHeight : 0;
-      pendingScrollRef.current = { week, fraction };
+      snapshotPending();
       applyMeasurement();
     });
     observer.observe(container);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compact]);
-
-  // Apply whatever mount/resize left pending, now that rowHeight has landed
-  // at the value it will be written against.
-  useLayoutEffect(() => {
-    const container = containerRef.current;
-    const pending = pendingScrollRef.current;
-    if (!container || !pending) return;
-    const top = (pending.week - WEEK_INDEX_MIN) * rowHeight + pending.fraction * rowHeight;
-    container.scrollTop = top;
-    pendingScrollRef.current = null;
-    setScrollTop(top);
-    updateMonthLabel(top, rowHeight);
-    mountedRef.current = true;
-  }, [rowHeight, updateMonthLabel]);
+  }, [compact, updateMonthLabel]);
 
   const scrollToWeek = useCallback(
     (week: number, behavior: ScrollBehavior) => {
@@ -173,6 +196,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: M
         </div>
       )}
       <div className="flex border-b bg-muted/20 text-xs text-muted-foreground">
+        {!compact && <div style={{ width: WEEK_NUMBER_GUTTER_WIDTH }} className="shrink-0" />}
         {WEEKDAY_LABELS.map((label) => (
           <div key={label} className="flex-1 px-1 py-1 text-center">
             {label}
@@ -198,6 +222,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: M
                 compact={compact}
                 onSelectEvent={onSelectEvent}
                 onSelectDay={onSelectDay}
+                onSelectWeek={onSelectWeek}
               />
             </div>
           ))}

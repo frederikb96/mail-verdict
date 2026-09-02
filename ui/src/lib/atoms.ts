@@ -62,6 +62,16 @@ export const selectedEventAtom = atom<{
  * rect, captured at click time since chips live in many different views. */
 export const eventPopoverAnchorAtom = atom<DOMRect | null>(null);
 
+/** A Delete/Backspace press asks the popover to open its own delete
+ * confirmation for the selected event -- the key handler and the popover's
+ * confirmation state are not siblings, so this carries the request across
+ * without either owning the other. A fresh object each press so the same
+ * event can be requested twice in a row. */
+export const eventDeleteRequestAtom = atom<{
+  objectId: string;
+  recurrenceId: string | null;
+} | null>(null);
+
 // --- Contacts ---
 
 export const selectedContactIdAtom = atom<string | null>(null);

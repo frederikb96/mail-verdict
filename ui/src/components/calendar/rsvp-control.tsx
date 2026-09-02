@@ -8,7 +8,7 @@
  * not optimistic in the risky sense.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, HelpCircle, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,6 +24,17 @@ const OPTIONS: { value: "accepted" | "tentative" | "declined"; label: string; ic
   { value: "declined", label: "Decline", icon: X },
 ];
 
+/**
+ * An outbox row this old is past any real send attempt -- the backend
+ * reports "pending" as its fallback once the row itself has aged out of
+ * retention, since it has nothing else to report at that point. Past this
+ * age, "still sending" has stopped being a claim worth making; treat it as
+ * unknown instead of leaving the spinner running forever.
+ */
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+/** How often a reply sitting open long enough re-checks its own age. */
+const STALE_RECHECK_MS = 5 * 60 * 1000;
+
 interface RsvpControlProps {
   event: EventInstance;
 }
@@ -34,11 +45,23 @@ export function RsvpControl({ event }: RsvpControlProps) {
   const { data: identities } = useIdentities();
   const [showComment, setShowComment] = useState(false);
   const [comment, setComment] = useState("");
+  const [, forceRecheck] = useState(0);
 
   const calendar = calendars?.find((c) => c.id === event.calendar_id);
   const identity = identities?.find((i) => i.id === calendar?.identity_id);
   const partstat: Partstat | null = event.partstat;
   const ownReply = event.own_reply;
+  const replyAge = ownReply ? Date.now() - new Date(ownReply.updated_at).getTime() : 0;
+  const replyStale = replyAge > STALE_AFTER_MS;
+
+  // A reply that stays "pending" while this control stays mounted needs to
+  // re-cross the staleness threshold on its own -- nothing else re-renders
+  // this component while the underlying data hasn't changed.
+  useEffect(() => {
+    if (!ownReply || replyStale) return;
+    const id = setInterval(() => forceRecheck((n) => n + 1), STALE_RECHECK_MS);
+    return () => clearInterval(id);
+  }, [ownReply, replyStale]);
 
   const send = (value: "accepted" | "tentative" | "declined") => {
     if (!identity) return;
@@ -77,12 +100,19 @@ export function RsvpControl({ event }: RsvpControlProps) {
         </span>
       )}
 
-      {identity && ownReply?.outbox_status && (ownReply.outbox_status === "pending" || ownReply.outbox_status === "processing") && (
-        <span className="flex items-center gap-1 text-xs text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          Sending reply from {identity.address}…
-        </span>
-      )}
+      {identity &&
+        !replyStale &&
+        ownReply?.outbox_status &&
+        (ownReply.outbox_status === "pending" || ownReply.outbox_status === "processing") && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Sending reply from {identity.address}…
+          </span>
+        )}
+      {replyStale &&
+        (ownReply?.outbox_status === "pending" || ownReply?.outbox_status === "processing") && (
+          <span className="text-xs text-muted-foreground">Reply status unknown</span>
+        )}
       {ownReply?.outbox_status === "sent" && (
         <span className="text-xs text-muted-foreground">Reply sent</span>
       )}
