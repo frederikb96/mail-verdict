@@ -22,12 +22,12 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
+from mail_verdict.api.calendar_events import resolve_own_reply
 from mail_verdict.api.schemas import (
     EventAttendeeOut,
     EventOrganizerOut,
     ImportInvitationRequest,
     InvitationResponse,
-    OwnReplyOut,
 )
 from mail_verdict.calendar import ical
 from mail_verdict.calendar.intake import CalendarIntakeHandler
@@ -40,7 +40,7 @@ from mail_verdict.calendar.repository import (
     DavObjectRepository,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Message, Outbox
+from mail_verdict.database.models import Message
 from mail_verdict.database.msg_key import compute_msg_key
 from mail_verdict.postimap.actions import create_object, replace_object_data
 from mail_verdict.postimap.contract import read_postimap_info, supports_dav
@@ -95,27 +95,6 @@ async def _parsed_invitation(message: Message) -> tuple[str, ical.ParsedInvitati
         raise HTTPException(
             status_code=404, detail=f"Not a parseable calendar invitation: {exc}",
         ) from exc
-
-
-async def _resolve_own_reply(
-    reply_repo: CalendarReplyRepository, object_id: uuid.UUID, recurrence_id: str | None,
-) -> OwnReplyOut | None:
-    reply = await reply_repo.get_latest(object_id, recurrence_id)
-    if reply is None:
-        return None
-    db = get_db_connection()
-    async with db.session() as session:
-        outbox_result = await session.execute(
-            select(Outbox.status, Outbox.error).where(Outbox.id == reply.outbox_id)
-        )
-        row = outbox_result.one_or_none()
-    return OwnReplyOut(
-        partstat=reply.partstat,  # type: ignore[arg-type]
-        outbox_id=reply.outbox_id,
-        outbox_status=row.status if row else "pending",
-        error=row.error if row else None,
-        updated_at=reply.created_at,
-    )
 
 
 async def _calendar_name(collection_id: uuid.UUID | None) -> str | None:
@@ -200,7 +179,7 @@ async def _build_response(
     attendee_identity = await handler.resolve_attendee_identity(message.account_id, invitation)
 
     own_reply = (
-        await _resolve_own_reply(reply_repo, object_id, invitation.master.recurrence_id)
+        await resolve_own_reply(reply_repo, object_id, invitation.master.recurrence_id)
         if object_id is not None
         else None
     )

@@ -746,6 +746,56 @@ class TestRespond:
             )
         assert resp.status_code == 409
 
+    def test_a_purged_outbox_row_reports_unknown_not_pending(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """An outbox row that has aged out of retention is a different
+        fact from one genuinely still in flight, and has to read as one:
+        "pending" is a claim that stops being true once the send lands,
+        and a row that no longer exists can never revisit it."""
+        _calendar_id, object_id, identity_id = client.portal.call(
+            self._seed_invitation, migrated_db,
+        )
+        with patch(_TARGET, return_value=migrated_db):
+            responded = client.post(
+                f"/calendar/events/{object_id}/respond",
+                json={"identity_id": str(identity_id), "partstat": "accepted"},
+            )
+        assert responded.status_code == 200, responded.text
+        # Still in flight: the row exists, and its own live status shows.
+        assert responded.json()["own_reply"]["outbox_status"] == "pending"
+        outbox_id = uuid.UUID(responded.json()["own_reply"]["outbox_id"])
+
+        async def _purge_outbox_row_and_link_identity(db: DatabaseConnection) -> None:
+            # GET's own own_reply resolution reads the identity from
+            # calendar_prefs (unlike respond_to_event's response, which
+            # already knows it from the request) -- the link this test
+            # needs to see own_reply at all on a plain GET, not just the
+            # respond call's own echo of what it was just given.
+            async with db.session() as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO calendar_prefs (collection_id, identity_id) "
+                        "VALUES (:collection_id, :identity_id)"
+                    ),
+                    {"collection_id": _calendar_id, "identity_id": identity_id},
+                )
+                await session.execute(
+                    text("DELETE FROM outbox WHERE id = :id"), {"id": outbox_id},
+                )
+                await session.commit()
+
+        client.portal.call(_purge_outbox_row_and_link_identity, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            refetched = client.get(f"/calendar/events/{object_id}")
+        assert refetched.status_code == 200, refetched.text
+        own_reply = refetched.json()["own_reply"]
+        assert own_reply is not None
+        assert own_reply["outbox_status"] == "unknown"
+        assert own_reply["outbox_status"] != "pending"
+        assert own_reply["partstat"] == "accepted"
+
 
 class TestRecurrenceRoundTrip:
     """Row 125: an object shaped like something a real CalDAV server

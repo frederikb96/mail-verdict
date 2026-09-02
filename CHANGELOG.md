@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An RSVP whose outbox row has aged out of retention now reports `outbox_status: "unknown"`
+  rather than `"pending"` -- the status an active, in-flight send uses. A genuinely pending row
+  can become `"sent"` or `"failed"` on its own; a row that no longer exists never will, so
+  reusing `"pending"` for it was a claim that stayed wrong forever once made, and the interface
+  read it as "still sending" indefinitely. `api/invitations.py` carried an identical copy of the
+  same resolution logic and the same bug; it now calls the one definition in
+  `api/calendar_events.py` instead
 - The month view now reads only what its window could contain -- a SQL predicate on
   `dav_objects.dtstart`/`dtend`/`is_recurring` instead of parsing and expanding every object in
   every visible calendar on every request, which cost seconds of blocking, single-threaded CPU

@@ -96,9 +96,23 @@ def _parse_month(month: str) -> tuple[datetime, datetime]:
     return start, end
 
 
-async def _resolve_own_reply(
+async def resolve_own_reply(
     reply_repo: CalendarReplyRepository, object_id: uuid.UUID, recurrence_id: str | None,
 ) -> OwnReplyOut | None:
+    """
+    The identity's own RSVP reply for this event, if it has replied at
+    all -- shared with api/invitations.py's own invitation-detail view,
+    which needs the identical answer to the identical question rather
+    than a second copy of it.
+
+    outbox_status reads the outbox row's live status while it still
+    exists. Once retention has purged that row, "unknown" is reported --
+    never "pending", which is the status an active, in-flight send uses
+    and would otherwise claim the reply is still sending forever: a row
+    genuinely still pending can become "sent" or "failed" on its own, but
+    a row that is simply gone never will, so reusing "pending" for it is
+    a claim that can never stop being wrong once made.
+    """
     reply = await reply_repo.get_latest(object_id, recurrence_id)
     if reply is None:
         return None
@@ -111,7 +125,7 @@ async def _resolve_own_reply(
     return OwnReplyOut(
         partstat=reply.partstat,  # type: ignore[arg-type]
         outbox_id=reply.outbox_id,
-        outbox_status=row.status if row else "pending",
+        outbox_status=row.status if row else "unknown",
         error=row.error if row else None,
         updated_at=reply.created_at,
     )
@@ -128,7 +142,7 @@ async def _to_instance(
     )
     own_reply = None
     if own_attendee is not None:
-        own_reply = await _resolve_own_reply(reply_repo, obj.id, parsed.recurrence_id)
+        own_reply = await resolve_own_reply(reply_repo, obj.id, parsed.recurrence_id)
 
     return EventInstanceOut(
         object_id=obj.id,
