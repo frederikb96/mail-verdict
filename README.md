@@ -116,6 +116,15 @@ to be classified twice.
 Built with FastAPI, SQLAlchemy and Alembic on the server, React and Next.js on the client, and
 FastMCP for the tool interface.
 
+## Known limitations, deliberately
+
+- **Folders can be created and deleted, never renamed or re-nested.** IMAP's rename operation
+  renames every child folder along with it, so it can't be mirrored as a single-row update; faking
+  it by creating a new folder, moving the mail and deleting the old one would lose flags and
+  dates. Deleting a folder destroys every message in it on the server with no undo, so it always
+  asks for confirmation naming the message count.
+- No multi-user isolation, no offline mode, no PGP.
+
 ## License
 
 [MIT](LICENSE) — Frederik Berg
