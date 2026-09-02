@@ -5,7 +5,17 @@
  * disagree about what an event is.
  */
 
+import type { MouseEvent } from "react";
 import type { EventInstance } from "@/types/api";
+
+/** Shared by every view that can open the event popover -- the click event
+ * is optional so a keyboard activation or a programmatic selection can omit
+ * it, falling back to whatever anchor the caller already knows. */
+export type SelectEventHandler = (
+  objectId: string,
+  recurrenceId: string | null,
+  evt?: MouseEvent,
+) => void;
 
 // --- Month view: spanning-bar lane assignment ---
 

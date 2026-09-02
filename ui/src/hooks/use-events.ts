@@ -16,7 +16,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { monthChunkKey } from "@/lib/dates";
+import { monthChunkKey, monthChunksForWeek, weekDays } from "@/lib/dates";
 import type {
   EventCreateRequest,
   EventDeleteRequest,
@@ -43,6 +43,17 @@ export function useEventChunk(month: string) {
     queryFn: () => api.events.list({ month }),
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** The full instance for the popover/editor -- fetched directly rather than
+ * read from a chunk, since the chunk list may carry an abbreviated shape. */
+export function useEventDetail(objectId: string | null, recurrenceId: string | null) {
+  return useQuery({
+    queryKey: ["calendar-event", objectId, recurrenceId] as const,
+    queryFn: () => api.events.get(objectId!, recurrenceId ?? undefined),
+    enabled: !!objectId,
+    staleTime: 30_000,
   });
 }
 
@@ -74,6 +85,37 @@ export function useEventsForRange(from: Date, to: Date) {
   });
 
   return { events, isLoading };
+}
+
+/** Events touching a given week, read from whichever month chunks the week's
+ * days fall into (a week can touch two, at a month boundary). An unloaded
+ * chunk simply contributes nothing -- the row renders empty rather than a
+ * skeleton, which is what keeps a fixed-height row's loading state
+ * invisible to layout. */
+export function useWeekEvents(weekIndex: number): EventInstance[] {
+  const months = monthChunksForWeek(weekIndex);
+  const results = useQueries({
+    queries: months.map((month) => ({
+      queryKey: eventKeys.chunk(month),
+      queryFn: () => api.events.list({ month }),
+      staleTime: 5 * 60_000,
+      placeholderData: keepPreviousData,
+    })),
+  });
+
+  const days = weekDays(weekIndex);
+  const weekStart = days[0].getTime();
+  const weekEnd = days[6].getTime() + 24 * 60 * 60 * 1000;
+
+  const byKey = new Map<string, EventInstance>();
+  for (const r of results) {
+    for (const e of r.data?.events ?? []) {
+      const start = new Date(e.dtstart).getTime();
+      const end = new Date(e.dtend).getTime();
+      if (end >= weekStart && start < weekEnd) byKey.set(instanceKey(e), e);
+    }
+  }
+  return Array.from(byKey.values());
 }
 
 function monthsBetween(from: Date, to: Date): string[] {
@@ -154,7 +196,10 @@ export function useUpdateEvent() {
       for (const [key, data] of ctx.prev) qc.setQueryData(key, data);
     },
 
-    onSettled: () => qc.invalidateQueries({ queryKey: ["calendar-events"] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["calendar-events"] });
+      qc.invalidateQueries({ queryKey: ["calendar-event"] });
+    },
   });
 }
 
@@ -163,7 +208,10 @@ export function useDeleteEvent() {
   return useMutation({
     mutationFn: ({ objectId, data }: { objectId: string; data?: EventDeleteRequest }) =>
       api.events.delete(objectId, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["calendar-events"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["calendar-events"] });
+      qc.invalidateQueries({ queryKey: ["calendar-event"] });
+    },
   });
 }
 
@@ -200,6 +248,9 @@ export function useRespond() {
       for (const [key, data] of ctx.prev) qc.setQueryData(key, data);
     },
 
-    onSettled: () => qc.invalidateQueries({ queryKey: ["calendar-events"] }),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["calendar-events"] });
+      qc.invalidateQueries({ queryKey: ["calendar-event"] });
+    },
   });
 }

@@ -57,3 +57,7 @@ export const selectedEventAtom = atom<{
   objectId: string;
   recurrenceId: string | null;
 } | null>(null);
+
+/** Where the quick-view popover anchors -- the clicked chip's bounding
+ * rect, captured at click time since chips live in many different views. */
+export const eventPopoverAnchorAtom = atom<DOMRect | null>(null);
