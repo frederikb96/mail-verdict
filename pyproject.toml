@@ -1,6 +1,6 @@
 [project]
 name = "mail-verdict"
-version = "3.0.0"
+version = "3.1.0"
 description = "AI-powered email management: spam detection, smart rules, and vector search"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -45,6 +45,7 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     "types-PyYAML>=6.0.0",
+    "types-icalendar>=6.0.0",
 ]
 
 [build-system]

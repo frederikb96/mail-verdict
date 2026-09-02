@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-02
+
 ### Added
 
 - Trash, archive and spam offer an "Undo" on their success toast, both from a single row and

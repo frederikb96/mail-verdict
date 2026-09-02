@@ -32,6 +32,14 @@ def _serialize(component: Any) -> str:
     return cast(str, component.to_ical().decode("utf-8"))
 
 
+def _parse_calendar(data: str) -> Calendar:
+    """Calendar.from_ical() is inherited from Component and its stub
+    returns Component even when called on Calendar -- this is the one
+    place that casts back to what every VCALENDAR parse here actually
+    is."""
+    return cast(Calendar, Calendar.from_ical(data))
+
+
 def _set(component: Component, name: str, value: Any) -> None:
     """
     Replace a singular property with a properly-typed value.
@@ -227,13 +235,13 @@ def _parse_component(
 
 
 def _components(data: str) -> list[Component]:
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     return [c for c in cal.walk() if c.name == "VEVENT"]
 
 
 def get_method(data: str) -> str | None:
     """The METHOD property of a VCALENDAR body, or None if absent."""
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     method = cal.get("METHOD")
     return str(method) if method is not None else None
 
@@ -326,7 +334,7 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
     Returns:
         One ParsedEvent per occurrence in range, dtstart-ordered
     """
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     is_recurring = any(
         c.get("RRULE") or c.get("RDATE") for c in cal.walk() if c.name == "VEVENT"
     )
@@ -345,7 +353,7 @@ def strip_method(data: str) -> str:
     """Remove METHOD -- a calendar object stored on a server must not
     carry it (Nextcloud refuses it with 415; see the contract's "Do not
     store METHOD")."""
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     if "METHOD" in cal:
         del cal["METHOD"]
     return _serialize(cal)
@@ -355,7 +363,7 @@ def with_method(data: str, method: str) -> str:
     """The inverse of strip_method() -- for the .ics attachment mailed
     alongside a REQUEST/CANCEL, which does need METHOD, unlike the copy
     this application stores."""
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     _set(cal, "METHOD", method)
     return _serialize(cal)
 
@@ -365,7 +373,7 @@ def set_schedule_agent_client_on_organizer(data: str) -> str:
     invitation as an attendee: the ORGANIZER line carries
     SCHEDULE-AGENT=CLIENT, so the server never tries to relay our
     PARTSTAT changes itself -- MailVerdict sends the REPLY."""
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     for component in cal.walk():
         if component.name != "VEVENT":
             continue
@@ -379,7 +387,7 @@ def set_schedule_agent_client_on_attendees(data: str) -> str:
     """The organizer-side counterpart: every ATTENDEE carries
     SCHEDULE-AGENT=CLIENT, so the server never emails invitations or
     cancellations itself -- MailVerdict sends the REQUEST/CANCEL."""
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     for component in cal.walk():
         if component.name != "VEVENT":
             continue
@@ -522,7 +530,7 @@ def replace_master_fields(
     are unchanged; SEQUENCE is bumped, which is what tells an external
     organizer's calendar this is a newer version.
     """
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     master = next(
         (c for c in cal.walk() if c.name == "VEVENT" and c.get("RECURRENCE-ID") is None), None,
     )
@@ -584,7 +592,7 @@ def edit_occurrence(
     one, otherwise clones the master as a new exception carrying the
     overrides.
     """
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     target = _get_or_clone_exception(cal, recurrence_id)
     _apply_field_overrides(
         target, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
@@ -601,7 +609,7 @@ def set_partstat(
     on the exception matching recurrence_id -- responding to an
     invitation.
     """
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     target = _find_component(cal, recurrence_id)
     attendee_lower = attendee_email.lower()
     found = False
@@ -637,7 +645,7 @@ def mark_cancelled(data: str, *, recurrence_id: str | None = None) -> str:
     user removes it (the intake design's CANCEL handling). Cancelling one
     occurrence of a series that has no stored exception there yet clones
     the master as a cancelled exception, the same as edit_occurrence()."""
-    cal = Calendar.from_ical(data)
+    cal = _parse_calendar(data)
     target = (
         _get_or_clone_exception(cal, recurrence_id)
         if recurrence_id is not None
@@ -653,8 +661,8 @@ def merge_exception(existing_data: str, exception_data: str, recurrence_id: str)
     Merge an incoming RECURRENCE-ID component into an already-held
     series, replacing an existing exception with the same RECURRENCE-ID.
     """
-    existing = Calendar.from_ical(existing_data)
-    incoming = Calendar.from_ical(exception_data)
+    existing = _parse_calendar(existing_data)
+    incoming = _parse_calendar(exception_data)
     incoming_component = next(
         (c for c in incoming.walk() if c.name == "VEVENT"), None,
     )
@@ -677,7 +685,7 @@ def replace_exception_partstat_or_add(
     """REPLY intake for one occurrence of a series: update the exception's
     PARTSTAT if one already exists for recurrence_id, otherwise clone the
     master as a new exception carrying the updated PARTSTAT."""
-    cal = Calendar.from_ical(existing_data)
+    cal = _parse_calendar(existing_data)
     exception = _get_or_clone_exception(cal, recurrence_id)
     for attendee in _as_list(exception.get("ATTENDEE")):
         if _addr_email(attendee).lower() == attendee_email.lower():
@@ -695,7 +703,7 @@ def build_reply_ics(
     server's scheduling engine (which is silenced by
     SCHEDULE-AGENT=CLIENT on every object this application stores).
     """
-    source = Calendar.from_ical(data)
+    source = _parse_calendar(data)
     component = _find_component(source, recurrence_id)
     organizer_prop = component.get("ORGANIZER")
     if organizer_prop is None:
