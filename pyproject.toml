@@ -24,6 +24,9 @@ dependencies = [
     "jinja2>=3.1.0",
     "python-multipart>=0.0.20",
     "pgvector>=0.3.6",
+    "icalendar>=6.0.0",
+    "recurring-ical-events>=3.0.0",
+    "vobject>=0.9.6.1",
 ]
 
 [project.urls]
@@ -80,5 +83,8 @@ disallow_untyped_defs = true
 plugins = ["sqlalchemy.ext.mypy.plugin"]
 
 [[tool.mypy.overrides]]
-module = ["fastmcp.*", "jinja2.*", "asyncpg", "nh3.*", "tinycss2.*"]
+module = [
+    "fastmcp.*", "jinja2.*", "asyncpg", "nh3.*", "tinycss2.*",
+    "recurring_ical_events.*", "vobject.*",
+]
 ignore_missing_imports = true
