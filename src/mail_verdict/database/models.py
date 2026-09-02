@@ -963,6 +963,11 @@ class CalendarReply(Base):
     own_reply reports: outbox_status is read live by joining outbox_id at
     response time, never copied here, since it changes as PostIMAP
     processes the send.
+
+    identity_id is nullable and ON DELETE SET NULL, not CASCADE: deleting
+    an identity un-links its replies the same way it un-links
+    calendar_prefs, rather than destroying the RSVP history this table
+    exists to keep.
     """
 
     __tablename__ = "calendar_replies"
@@ -970,7 +975,7 @@ class CalendarReply(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     object_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     recurrence_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    identity_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    identity_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     partstat: Mapped[str] = mapped_column(Text, nullable=False)
     outbox_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`INBOX.Archive`, `INBOX/Archive`) by its last path segment instead of only the full name, and
   picks the same folder every time when more than one candidate name is present (`Junk` and
   `Spam` both existing, for instance) instead of whatever order the database happened to return
+- Deleting an identity no longer destroys the RSVP history it left behind: `calendar_replies`
+  un-links the identity (`ON DELETE SET NULL`) the same way `calendar_prefs` already does,
+  instead of cascading the delete onto every reply that identity ever sent
 
 ### Security
 

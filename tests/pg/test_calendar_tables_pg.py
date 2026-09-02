@@ -181,3 +181,38 @@ async def test_calendar_replies_records_every_attempt(
             select(CalendarReply).where(CalendarReply.object_id == object_id)
         )
         assert len(list(result.scalars().all())) == 2
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_identity_unlinks_its_replies(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Row 114: identity_id's ON DELETE SET NULL -- the reply survives
+    its identity being deleted, the same as calendar_prefs above,
+    instead of the RSVP history the table exists to keep being deleted
+    along with the identity that sent it."""
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        identity_id = await _seed_identity(session, account_id, "gone2@work.example")
+        object_id = uuid.uuid4()
+        session.add(CalendarReply(
+            object_id=object_id, identity_id=identity_id,
+            partstat="accepted", outbox_id=uuid.uuid4(),
+        ))
+        await session.flush()
+        await session.commit()
+
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("DELETE FROM identities WHERE id = :id"), {"id": identity_id},
+        )
+        await session.commit()
+
+    async with migrated_db.session() as session:
+        result = await session.execute(
+            select(CalendarReply.identity_id, CalendarReply.partstat)
+            .where(CalendarReply.object_id == object_id)
+        )
+        row = result.one()
+        assert row.identity_id is None
+        assert row.partstat == "accepted"
