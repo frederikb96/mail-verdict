@@ -31,6 +31,17 @@ export function ToastContainer() {
           )}
         >
           <span className="max-w-80">{toast.message}</span>
+          {toast.action && (
+            <button
+              onClick={() => {
+                toast.action!.onClick();
+                dismiss(toast.id);
+              }}
+              className="shrink-0 font-medium underline underline-offset-2"
+            >
+              {toast.action.label}
+            </button>
+          )}
           <button
             onClick={() => dismiss(toast.id)}
             className="opacity-70 hover:opacity-100"

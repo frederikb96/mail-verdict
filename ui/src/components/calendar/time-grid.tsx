@@ -91,6 +91,9 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
       start.setHours(0, ghost.startMin, 0, 0);
       const end = new Date(day);
       end.setHours(0, ghost.endMin, 0, 0);
+      const original = events.find(
+        (e) => e.object_id === ghost.objectId && e.recurrence_id === ghost.recurrenceId,
+      );
       updateEvent.mutate(
         {
           objectId: ghost.objectId,
@@ -98,7 +101,24 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
           data: { dtstart: start.toISOString(), dtend: end.toISOString() },
         },
         {
-          onSuccess: () => pushToast("Event moved", "success", 4000),
+          onSuccess: () => {
+            pushToast(
+              "Event moved",
+              "success",
+              6000,
+              original
+                ? {
+                    label: "Undo",
+                    onClick: () =>
+                      updateEvent.mutate({
+                        objectId: ghost.objectId,
+                        recurrenceId: ghost.recurrenceId,
+                        data: { dtstart: original.dtstart, dtend: original.dtend },
+                      }),
+                  }
+                : undefined,
+            );
+          },
           onError: (err) => pushToast(`Could not move event: ${err.message}`, "error", 0),
         },
       );

@@ -8,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
 import { addDays, addMonths, addWeeks, format, startOfWeek } from "@/lib/dates";
+import { useCalendarShortcuts } from "@/hooks/use-calendar-shortcuts";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const VIEWS: { value: CalendarViewMode; label: string }[] = [
@@ -40,6 +41,8 @@ export function CalendarToolbar() {
   };
 
   const visibleViews = isMobile ? VIEWS.filter((v) => v.value !== "week") : VIEWS;
+
+  useCalendarShortcuts({ onCreate: () => setCreateOpen(true) });
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5">
