@@ -142,15 +142,19 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
                 className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
               >
                 <span className="truncate">{f.display_name || f.imap_name}</span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0 text-destructive"
-                  title="Delete folder"
-                  onClick={() => setPendingDelete(f)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                {f.special_use ? (
+                  <span className="shrink-0 text-xs text-muted-foreground">Cannot be deleted</span>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-destructive"
+                    title="Delete folder"
+                    onClick={() => setPendingDelete(f)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
               </div>
             ))}
           </div>

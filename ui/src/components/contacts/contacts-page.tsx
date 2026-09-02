@@ -41,7 +41,7 @@ export function ContactsPage() {
       <div className="flex h-full w-[360px] min-w-[280px] max-w-[480px] flex-shrink-0 flex-col overflow-hidden border-r">
         <div className="flex items-center justify-between border-b px-3 py-1.5">
           <span className="text-sm font-medium">Contacts</span>
-          <Button variant="ghost" size="icon-sm" onClick={() => setNewOpen(true)}>
+          <Button variant="ghost" size="icon-sm" aria-label="New contact" onClick={() => setNewOpen(true)}>
             <Plus className="h-4 w-4" />
           </Button>
         </div>

@@ -6,7 +6,7 @@
  * 5-6 rows is not a scale problem.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSetAtom } from "jotai";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,13 @@ export function MiniMonth({ anchor }: { anchor: Date }) {
   const setCalendarDate = useSetAtom(calendarDateAtom);
   const [displayMonth, setDisplayMonth] = useState(() => startOfMonth(anchor));
 
+  // The chevrons browse displayMonth on its own, ahead of the main view --
+  // but once the anchor itself moves (Today, the toolbar arrows, the main
+  // scroller), the mini-month follows it rather than being left behind.
+  useEffect(() => {
+    setDisplayMonth(startOfMonth(anchor));
+  }, [anchor]);
+
   const gridStart = startOfWeek(startOfMonth(displayMonth), { weekStartsOn: 1 });
   const gridEnd = endOfWeek(new Date(displayMonth.getFullYear(), displayMonth.getMonth() + 1, 0), {
     weekStartsOn: 1,
@@ -38,7 +45,9 @@ export function MiniMonth({ anchor }: { anchor: Date }) {
   return (
     <div className="px-2 py-1">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs font-medium">{format(displayMonth, "MMMM yyyy")}</span>
+        <span className="text-xs font-medium" data-testid="mini-month-title">
+          {format(displayMonth, "MMMM yyyy")}
+        </span>
         <div className="flex items-center gap-0.5">
           <Button
             variant="ghost"

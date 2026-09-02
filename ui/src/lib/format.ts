@@ -82,10 +82,21 @@ export function formatAddresses(
   return addrs;
 }
 
-/** Parse a comma/semicolon-separated address field into a list. */
+/** Parse a comma/semicolon-separated address field into a list. This does
+ * not validate the individual addresses -- a caller that turns free text
+ * into recipients checks each one with `isValidEmail` before sending it
+ * anywhere, since a send that never leaves reports its failure much later
+ * than the field it was typed into. */
 export function parseAddressList(value: string): string[] {
   return value
     .split(/[,;]/)
     .map((a) => a.trim())
     .filter(Boolean);
+}
+
+/** A permissive shape check -- one @ with something on each side, no
+ * whitespace -- not full RFC 5322 validation. Good enough to catch a plain
+ * word typed and committed by mistake before it reaches the outbox. */
+export function isValidEmail(address: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address);
 }

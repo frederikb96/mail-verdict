@@ -63,6 +63,14 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
 
   const currentWeekRef = useRef<number>(dateToWeekIndex(calendarDate));
   const mountedRef = useRef(false);
+  /** True from the moment `scrollToWeek` issues a programmatic scroll until
+   * it settles. While true, `handleScroll` still tracks the viewport for
+   * rendering (the header label, which rows to render) but does not write
+   * `calendarDateAtom` back -- the anchor `scrollToWeek` is animating
+   * towards (e.g. today's own weekday) is already correct, and the scroll
+   * events fired mid-animation only ever see the top row passing underneath
+   * it, which is not the same date. */
+  const programmaticScrollRef = useRef(false);
   /** Set before a rowHeight change lands (initial mount, or a resize), so
    * the effect that applies it knows which week to restore and how far
    * through that row the reader was -- an absolute value computed from a
@@ -153,11 +161,16 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       currentWeekRef.current = week;
       const container = containerRef.current;
       if (!container) return;
+      programmaticScrollRef.current = true;
       const top = (week - WEEK_INDEX_MIN) * rowHeightRef.current;
       container.scrollTo({ top, behavior });
     },
     [],
   );
+
+  const handleScrollEnd = useCallback(() => {
+    programmaticScrollRef.current = false;
+  }, []);
 
   // External navigation (Today, the mini-month, the toolbar arrows) writes
   // calendarDateAtom; this is the one place that turns that into a scroll.
@@ -173,6 +186,8 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     const top = container.scrollTop;
     setScrollTop(top);
     updateMonthLabel(top, rowHeightRef.current);
+
+    if (programmaticScrollRef.current) return;
 
     const week = Math.floor(top / rowHeightRef.current) + WEEK_INDEX_MIN;
     if (week !== currentWeekRef.current) {
@@ -192,7 +207,9 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     <div className="flex h-full min-h-0 flex-col">
       {!compact && (
         <div className="flex items-center justify-between border-b px-3 py-1.5">
-          <span className="text-sm font-medium">{monthLabel}</span>
+          <span className="text-sm font-medium" data-testid="month-grid-title">
+            {monthLabel}
+          </span>
         </div>
       )}
       <div className="flex border-b bg-muted/20 text-xs text-muted-foreground">
@@ -206,6 +223,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       <div
         ref={containerRef}
         onScroll={handleScroll}
+        onScrollEnd={handleScrollEnd}
         className="min-h-0 flex-1 overflow-y-auto"
         style={{ overflowAnchor: "none" }}
       >

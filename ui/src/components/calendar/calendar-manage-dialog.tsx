@@ -4,7 +4,7 @@
  * and invitation intake -- the same facts calendar-links.tsx edits per
  * identity, here edited per calendar. */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Plus, Settings2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -85,7 +85,9 @@ function CalendarRow({ calendar }: { calendar: Calendar }) {
             }
           >
             <SelectTrigger size="sm">
-              <SelectValue />
+              <SelectValue>
+                {(v: string) => (v === "none" ? "None" : (identities?.find((i) => i.id === v)?.address ?? v))}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">None</SelectItem>
@@ -106,7 +108,7 @@ function CalendarRow({ calendar }: { calendar: Calendar }) {
             }
           >
             <SelectTrigger size="sm">
-              <SelectValue />
+              <SelectValue>{(v: CalendarIntake) => INTAKE_LABELS[v] ?? v}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               {(Object.keys(INTAKE_LABELS) as CalendarIntake[]).map((k) => (
@@ -143,7 +145,19 @@ function NewCalendarForm() {
   const { data: davAccounts } = useDavAccounts();
   const createCalendar = useCreateCalendar();
   const [name, setName] = useState("");
-  const [davAccountId, setDavAccountId] = useState<string | undefined>(davAccounts?.[0]?.id);
+  // A defined string from the first render on, never `undefined`: a
+  // base-ui Select decides controlled-vs-uncontrolled once, on mount, from
+  // whether `value` is `undefined` then -- and never looks again. Passing
+  // `undefined` here because davAccounts hasn't loaded yet would lock the
+  // trigger into uncontrolled mode, so setting a real id once it loads
+  // would update this state without the Select ever rendering it.
+  const [davAccountId, setDavAccountId] = useState<string>(davAccounts?.[0]?.id ?? "");
+
+  // davAccounts is still empty on first mount -- re-resolve once it loads,
+  // the same fix contact-editor.tsx's own default address book needed.
+  useEffect(() => {
+    setDavAccountId((current) => current || davAccounts?.[0]?.id || "");
+  }, [davAccounts]);
 
   return (
     <form
@@ -165,7 +179,9 @@ function NewCalendarForm() {
         <Label className="text-xs">Server</Label>
         <Select value={davAccountId} onValueChange={(v) => v && setDavAccountId(v)}>
           <SelectTrigger className="w-40">
-            <SelectValue placeholder="Choose" />
+            <SelectValue placeholder="Choose">
+              {(v: string) => davAccounts?.find((a) => a.id === v)?.name ?? "Choose"}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {davAccounts?.map((a) => (

@@ -366,7 +366,7 @@ class TestMailActionsUi:
         dialog = page.get_by_role("dialog", name="New Message")
         expect(dialog).to_be_visible()
 
-        dialog.get_by_role("textbox", name="To").fill("recipient@example.com")
+        dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
         dialog.get_by_role("textbox", name="Subject").fill(subject)
         dialog.get_by_role("textbox", name="Write your message...").fill(
             "Sent from the UI test.",
@@ -389,7 +389,7 @@ class TestMailActionsUi:
         page.goto(app_server)
         page.get_by_role("button", name="Compose").click()
         dialog = page.get_by_role("dialog", name="New Message")
-        dialog.get_by_role("textbox", name="To").fill("recipient@example.com")
+        dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
         dialog.get_by_role("textbox", name="Subject").fill(subject)
         dialog.get_by_role("textbox", name="Write your message...").fill(
             "A draft the UI test will reopen and send.",
@@ -466,6 +466,35 @@ class TestMailActionsUi:
         back.click()
         expect(row).to_be_visible(timeout=10_000)
         expect(back).not_to_be_visible()
+
+    def test_manage_folders_offers_no_delete_for_special_use_folders(
+        self,
+        page: Page,
+        app_server: str,
+        junk_folder: dict[str, Any],
+        trash_folder: dict[str, Any],
+        drafts_folder: dict[str, Any],
+    ) -> None:
+        """The regression this guards: Manage folders listed every folder
+        with a Delete button, special-use ones included -- so Junk, Trash
+        and Drafts, which a person should never destroy from here, offered
+        exactly the same irreversible action as any folder they created
+        themselves."""
+        page.goto(app_server)
+        page.get_by_role("button", name="Manage folders", exact=True).click()
+
+        dialog = page.get_by_role("dialog", name="Manage folders")
+        expect(dialog).to_be_visible(timeout=15_000)
+
+        for special_folder in (junk_folder, trash_folder, drafts_folder):
+            label = special_folder["display_name"] or special_folder["imap_name"]
+            expect(dialog.get_by_text(label, exact=True)).to_be_visible(timeout=10_000)
+
+        # Every folder this account has is special-use (INBOX isn't listed
+        # here at all, and none of the others were created by hand) -- so
+        # the whole dialog offers no Delete button, not just the three
+        # checked by name above.
+        expect(dialog.get_by_role("button", name="Delete folder")).to_have_count(0)
 
 
 def _trigger_sync(api_client: httpx.Client, account_id: str) -> None:
