@@ -47,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   never advertises IMAP SPECIAL-USE, even with a folder literally named Archive present.
   Resolving trash/archive/junk/inbox now falls back to matching a well-known name for the role
   when no folder carries the flag
+- The pipeline queue's worker loop never passed its own `max_attempts` setting down to
+  `claim_batch`, so a row that crashed the worker process itself before ever reaching the
+  retry-vs-fail decision was reclaimed and re-claimed forever instead of eventually stopping
 
 ## [3.0.0] - 2026-08-30
 

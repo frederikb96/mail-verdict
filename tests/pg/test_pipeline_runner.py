@@ -19,6 +19,7 @@ other definitions to this same table.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -291,3 +292,51 @@ async def test_the_queue_reports_the_breaker_a_classify_call_actually_trips(
     assert (await manager.summary(QUEUE_NAME)).circuit.state == CircuitState.CLOSED
     await runner._settings.update("ai", {"provider": "anthropic"})
     assert (await manager.summary(QUEUE_NAME)).circuit.state == CircuitState.SUSPENDED
+
+
+@pytest.mark.asyncio
+async def test_a_row_at_max_attempts_is_never_reclaimed_by_the_worker_loop(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A row that crashes the worker process itself, every time, before
+    ever reaching _retry_transient's own cap is only stopped by
+    max_attempts reaching claim_batch -- proving _worker_body actually
+    passes the pipeline's own setting through to default_worker_loop,
+    not just that claim_batch honours the argument when given one."""
+    runner = await _make_runner(migrated_db)
+    await runner._settings.update(
+        "pipeline", {"poll_interval_seconds": 0.05, "max_attempts": 2},
+    )
+
+    async with migrated_db.session() as session:
+        account_id, inbox_id, _junk_id = await _seed_account_and_folders(session)
+        mail_id, header = await _seed_message(session, account_id=account_id, folder_id=inbox_id)
+
+    async with migrated_db.session() as session:
+        result = await session.execute(
+            text(
+                "INSERT INTO pipeline_runs "
+                "(account_id, msg_key, message_id, dedup_key, origin, status, attempts) "
+                "VALUES (:account_id, :msg_key, :message_id, 'live', 'live', 'pending', 2) "
+                "RETURNING id"
+            ),
+            {"account_id": account_id, "msg_key": header, "message_id": mail_id},
+        )
+        run_id = result.scalar_one()
+
+    stop_event = asyncio.Event()
+    worker_task = asyncio.create_task(runner._worker_body("test-cap-worker", stop_event))
+    await asyncio.sleep(0.3)
+    stop_event.set()
+    await asyncio.wait_for(worker_task, timeout=5)
+
+    async with migrated_db.session() as session:
+        row = (
+            await session.execute(
+                text("SELECT status, attempts, claimed_by FROM pipeline_runs WHERE id = :id"),
+                {"id": run_id},
+            )
+        ).one()
+    assert row.status == "pending"
+    assert row.attempts == 2
+    assert row.claimed_by is None

@@ -235,10 +235,12 @@ class PipelineRunner:
         poll_interval = float(settings.get("poll_interval_seconds", 2.0))
         wake_event = self._notifier.event_for(QUEUE_NAME) if self._notifier else None
 
+        max_attempts = int(settings.get("max_attempts", 5))
         await default_worker_loop(
             self._work_queue, worker_id=worker_id, stop_event=stop_event,
             batch_size=1, lease_seconds=lease_seconds,
             handle_item=self._handle_item, wake_event=wake_event, poll_interval=poll_interval,
+            max_attempts=max_attempts,
         )
 
     async def _handle_item(self, row: Mapping[str, Any]) -> None:
