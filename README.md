@@ -38,7 +38,8 @@ mirror, which is what keeps it simple.
   goes back over the identity's own outbox rather than the server's scheduling engine.
 - **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
   Message HTML is sanitized on the server and rendered in an isolated shadow root.
-- **MCP server** — connect an MCP client and let it search, read, organise and send mail.
+- **MCP server** — connect an MCP client and let it search, read, organise and send mail, and
+  read, create, edit and delete calendar events and contacts.
 
 ## Running it
 

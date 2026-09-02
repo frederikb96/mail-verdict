@@ -2,10 +2,21 @@
 MCP server tools for MailVerdict.
 
 Reads from Postgres, writes through postimap/actions.py -- never touches
-IMAP/SMTP directly. Tools: search_mail, list_mails, get_mail, get_thread,
-list_folders, list_accounts, move_mail, mark_mail, tag_mail, get_verdict,
-submit_spam_feedback, send_mail, draft_mail, get_stats,
-semantic_search_mail, get_semantic_status.
+IMAP/SMTP directly. Mail tools: search_mail, list_mails, get_mail,
+get_thread, list_folders, list_accounts, move_mail, mark_mail, tag_mail,
+get_verdict, submit_spam_feedback, send_mail, draft_mail, get_stats,
+semantic_search_mail, get_semantic_status. Calendar and contact tools:
+list_calendars, list_events, get_event, create_event, update_event,
+delete_event, respond_to_event, list_addressbooks, list_contacts,
+search_contacts, get_contact, create_contact, update_contact,
+delete_contact.
+
+The calendar and contact tools wrap the same api/calendar_events.py,
+api/calendars.py and api/contacts.py functions the REST endpoints call --
+never a second copy of that logic. Each is called directly as a plain
+async function (the @router decorator does not wrap it), with its
+HTTPException translated into the {"error": ...} shape these tools use
+instead of raising.
 """
 
 from __future__ import annotations
@@ -13,10 +24,65 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from fastapi import HTTPException
 from fastmcp import FastMCP
 from sqlalchemy import desc, select
 
+from mail_verdict.api.calendar_events import (
+    create_event as _create_calendar_event,
+)
+from mail_verdict.api.calendar_events import (
+    delete_event as _delete_calendar_event,
+)
+from mail_verdict.api.calendar_events import (
+    get_event as _get_calendar_event,
+)
+from mail_verdict.api.calendar_events import (
+    list_events as _list_calendar_events,
+)
+from mail_verdict.api.calendar_events import (
+    respond_to_event as _respond_to_calendar_event,
+)
+from mail_verdict.api.calendar_events import (
+    update_event as _update_calendar_event,
+)
+from mail_verdict.api.calendars import (
+    list_addressbooks as _list_addressbooks,
+)
+from mail_verdict.api.calendars import (
+    list_calendars as _list_calendars,
+)
+from mail_verdict.api.contacts import (
+    create_contact as _create_contact,
+)
+from mail_verdict.api.contacts import (
+    delete_contact as _delete_contact,
+)
+from mail_verdict.api.contacts import (
+    get_contact as _get_contact,
+)
+from mail_verdict.api.contacts import (
+    list_contacts as _list_contacts,
+)
+from mail_verdict.api.contacts import (
+    search_contacts as _search_contacts,
+)
+from mail_verdict.api.contacts import (
+    update_contact as _update_contact,
+)
 from mail_verdict.api.identities import resolve_send_from_addr
+from mail_verdict.api.schemas import (
+    ContactAddressIO,
+    ContactCreateRequest,
+    ContactEmailIO,
+    ContactPhoneIO,
+    ContactUpdateRequest,
+    EventAttendeeIn,
+    EventCreateRequest,
+    EventDeleteRequest,
+    EventUpdateRequest,
+    RespondRequest,
+)
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, Message, TagSource
 from mail_verdict.database.repository import (
@@ -770,3 +836,591 @@ async def get_semantic_status(account_id: str | None = None) -> dict[str, Any]:
         "model": status.model, "in_scope": status.in_scope, "encoded": status.encoded,
         "pending": status.pending, "failed": status.failed, "coverage": status.coverage,
     }
+
+
+def _endpoint_error(exc: HTTPException) -> dict[str, Any]:
+    """An api/ router's HTTPException, in the {"error": ...} shape these
+    tools return instead of letting it surface as a raised exception."""
+    return {"error": str(exc.detail)}
+
+
+@mcp.tool(
+    name="list_calendars",
+    annotations={
+        "title": "List Calendars",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def list_calendars() -> list[dict[str, Any]] | dict[str, Any]:
+    """
+    List every calendar across every DAV account.
+
+    Returns:
+        List of calendars with id, display_name, dav_account_name, color,
+        is_visible, read_only, identity_id, intake, supported_components,
+        total_count -- or {"error": ...} if calendars are unsupported
+    """
+    try:
+        calendars = await _list_calendars()
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return [c.model_dump(mode="json") for c in calendars]
+
+
+@mcp.tool(
+    name="list_events",
+    annotations={
+        "title": "List Calendar Events",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def list_events(
+    month: str, calendar_ids: str | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """
+    List every event instance in one calendar-month window, recurring
+    series expanded, across every visible calendar unless calendar_ids
+    narrows it.
+
+    Args:
+        month: The window to list, "YYYY-MM"
+        calendar_ids: Optional comma-separated calendar UUIDs to scope to
+
+    Returns:
+        List of event instances (see get_event for the shape), or
+        {"error": ...} on an invalid month or an unsupported server
+    """
+    try:
+        result = await _list_calendar_events(month, calendar_ids)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return [e.model_dump(mode="json") for e in result.events]
+
+
+@mcp.tool(
+    name="get_event",
+    annotations={
+        "title": "Get Calendar Event",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_event(event_id: str, recurrence_id: str | None = None) -> dict[str, Any]:
+    """
+    Get one event instance -- the master, or one named occurrence of a
+    recurring series.
+
+    Args:
+        event_id: Event UUID (see list_events)
+        recurrence_id: Occurrence to fetch, or omit for the master
+
+    Returns:
+        summary, dtstart, dtend, all_day, location, description, status,
+        sequence, organizer, attendees, own partstat, rrule expressed as
+        is_recurring/is_exception, and read_only -- or {"error": ...}
+    """
+    try:
+        instance = await _get_calendar_event(uuid.UUID(event_id), recurrence_id)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return instance.model_dump(mode="json")
+
+
+@mcp.tool(
+    name="create_event",
+    annotations={
+        "title": "Create Calendar Event",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def create_event(
+    calendar_id: str,
+    summary: str,
+    dtstart: str,
+    dtend: str,
+    all_day: bool = False,
+    location: str | None = None,
+    description: str | None = None,
+    rrule: str | None = None,
+    tz: str | None = None,
+    attendee_emails: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Create an event. With attendees, the calendar needs a linked identity
+    -- MailVerdict sends the invitations itself over its outbox rather
+    than the server's own scheduling engine.
+
+    Args:
+        calendar_id: Calendar UUID to create the event in (see list_calendars)
+        summary: Event title
+        dtstart: Start time, ISO 8601 (a bare date if all_day)
+        dtend: End time, ISO 8601, exclusive if all_day
+        all_day: Whether dtstart/dtend are dates rather than datetimes
+        location: Location text, optional
+        description: Description text, optional
+        rrule: A raw RRULE value (e.g. "FREQ=WEEKLY;INTERVAL=2;COUNT=6" or
+            "FREQ=DAILY;UNTIL=20261231T000000Z") -- the full RFC 5545
+            vocabulary, not a fixed preset
+        tz: An IANA zone name (e.g. "Europe/Berlin") to bind dtstart/dtend
+            to, so the stored event carries a named zone rather than only
+            a fixed UTC offset -- correct across a DST change a fixed
+            offset is not. dtstart/dtend's own wall-clock reading is kept;
+            only the zone they resolve against changes. Not valid with
+            all_day, which has no time-of-day to bind
+        attendee_emails: Email addresses to invite, optional
+
+    Returns:
+        The created event instance, or {"error": ...} on failure -- e.g.
+        attendees given but the calendar has no linked identity, or an
+        unrecognised tz
+    """
+    request = EventCreateRequest(
+        calendar_id=calendar_id,  # type: ignore[arg-type]
+        summary=summary, dtstart=dtstart, dtend=dtend,  # type: ignore[arg-type]
+        all_day=all_day, location=location, description=description, rrule=rrule, tz=tz,
+        attendees=(
+            [EventAttendeeIn(email=e) for e in attendee_emails] if attendee_emails else None
+        ),
+    )
+    try:
+        instance = await _create_calendar_event(request)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return instance.model_dump(mode="json")
+
+
+@mcp.tool(
+    name="update_event",
+    annotations={
+        "title": "Update Calendar Event",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def update_event(
+    event_id: str,
+    calendar_id: str | None = None,
+    summary: str | None = None,
+    dtstart: str | None = None,
+    dtend: str | None = None,
+    all_day: bool | None = None,
+    location: str | None = None,
+    description: str | None = None,
+    rrule: str | None = None,
+    scope: str = "all",
+    recurrence_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Edit an event. Fields left unset are unchanged. scope="all" edits the
+    whole series (or the only edit path for a non-recurring event);
+    scope="this" edits one occurrence without touching the others and
+    needs recurrence_id; scope="following" is not implemented and is
+    refused. An event this identity organizes with attendees sends an
+    updated invitation.
+
+    Args:
+        event_id: Event UUID to edit
+        calendar_id: Move the event to a different calendar, optional
+        summary: New title, optional
+        dtstart: New start time, ISO 8601, optional
+        dtend: New end time, ISO 8601, optional
+        all_day: New all_day flag, optional
+        location: New location text, optional
+        description: New description text, optional
+        rrule: New raw RRULE value, or "" to remove recurrence -- scope="all" only
+        scope: "this" or "all" (default)
+        recurrence_id: Required with scope="this"
+
+    Returns:
+        The updated event instance, or {"error": ...} on failure
+    """
+    request = EventUpdateRequest(
+        calendar_id=calendar_id,  # type: ignore[arg-type]
+        summary=summary, dtstart=dtstart, dtend=dtend,  # type: ignore[arg-type]
+        all_day=all_day, location=location, description=description, rrule=rrule,
+        scope=scope,  # type: ignore[arg-type]
+        recurrence_id=recurrence_id,
+    )
+    try:
+        instance = await _update_calendar_event(uuid.UUID(event_id), request)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return instance.model_dump(mode="json")
+
+
+@mcp.tool(
+    name="delete_event",
+    annotations={
+        "title": "Delete Calendar Event",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def delete_event(
+    event_id: str, scope: str | None = None, recurrence_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Delete an event. scope="all" (default, or the only path for a
+    non-recurring event) removes it from the calendar; scope="this"
+    cancels that one occurrence instead, since the series still exists
+    for every other occurrence. An event this identity organizes with
+    attendees sends a cancellation first.
+
+    Args:
+        event_id: Event UUID to delete
+        scope: "this" or "all" (default); "following" is refused
+        recurrence_id: Required with scope="this"
+
+    Returns:
+        {"success": bool, "error": str} on failure
+    """
+    request = (
+        EventDeleteRequest(scope=scope, recurrence_id=recurrence_id)  # type: ignore[arg-type]
+        if scope is not None or recurrence_id is not None
+        else None
+    )
+    try:
+        await _delete_calendar_event(uuid.UUID(event_id), request)
+    except HTTPException as exc:
+        return {"success": False, **_endpoint_error(exc)}
+    return {"success": True}
+
+
+@mcp.tool(
+    name="respond_to_event",
+    annotations={
+        "title": "Respond To Calendar Invitation",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def respond_to_event(
+    event_id: str,
+    identity_id: str,
+    partstat: str,
+    comment: str | None = None,
+    recurrence_id: str | None = None,
+) -> dict[str, Any]:
+    """
+    Accept, decline or tentatively accept an invitation: updates this
+    identity's own attendance status immediately, and sends the reply
+    over its outbox.
+
+    Args:
+        event_id: Event UUID
+        identity_id: Identity UUID responding (must be an attendee)
+        partstat: "accepted", "declined" or "tentative"
+        comment: Optional comment included in the reply
+        recurrence_id: Required to respond to one occurrence of a series
+
+    Returns:
+        The updated event instance, or {"error": ...} on failure
+    """
+    request = RespondRequest(
+        identity_id=identity_id,  # type: ignore[arg-type]
+        partstat=partstat,  # type: ignore[arg-type]
+        comment=comment, recurrence_id=recurrence_id,
+    )
+    try:
+        instance = await _respond_to_calendar_event(uuid.UUID(event_id), request)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return instance.model_dump(mode="json")
+
+
+@mcp.tool(
+    name="list_addressbooks",
+    annotations={
+        "title": "List Address Books",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def list_addressbooks() -> list[dict[str, Any]] | dict[str, Any]:
+    """
+    List every address book across every DAV account.
+
+    Returns:
+        List of address books with id, display_name, dav_account_name,
+        read_only, total_count -- or {"error": ...} if unsupported
+    """
+    try:
+        addressbooks = await _list_addressbooks()
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return [a.model_dump(mode="json") for a in addressbooks]
+
+
+@mcp.tool(
+    name="list_contacts",
+    annotations={
+        "title": "List Contacts",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def list_contacts(
+    addressbook_id: str | None = None, q: str | None = None, limit: int = 50,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """
+    List contacts, optionally scoped to one address book or filtered by a
+    text query. Always paged -- an address book can hold thousands of rows.
+
+    Args:
+        addressbook_id: Optional address book UUID to scope to
+        q: Optional text filter over name and email
+        limit: Max results, 1-200 (default 50)
+
+    Returns:
+        List of contacts (see get_contact for the shape), or
+        {"error": ...} if unsupported
+    """
+    try:
+        result = await _list_contacts(
+            uuid.UUID(addressbook_id) if addressbook_id else None, q, min(limit, 200), None,
+        )
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return [c.model_dump(mode="json") for c in result.contacts]
+
+
+@mcp.tool(
+    name="search_contacts",
+    annotations={
+        "title": "Search Contacts",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def search_contacts(q: str) -> list[dict[str, Any]] | dict[str, Any]:
+    """
+    Find contacts by name or email -- one row per email address, matching
+    what the compose autocomplete searches.
+
+    Args:
+        q: Search text, at least one character
+
+    Returns:
+        List of {contact_id, name, email, source}, or {"error": ...}
+    """
+    try:
+        hits = await _search_contacts(q)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return [h.model_dump(mode="json") for h in hits]
+
+
+@mcp.tool(
+    name="get_contact",
+    annotations={
+        "title": "Get Contact",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_contact(contact_id: str) -> dict[str, Any]:
+    """
+    Get full contact detail, parsed from the stored vCard.
+
+    Args:
+        contact_id: Contact UUID
+
+    Returns:
+        summary, emails, organization, title, phones, addresses,
+        birthday, url, notes -- or {"error": ...} if not found
+    """
+    try:
+        contact = await _get_contact(uuid.UUID(contact_id))
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return contact.model_dump(mode="json")
+
+
+def _contact_emails(emails: list[dict[str, Any]] | None) -> list[ContactEmailIO]:
+    return [ContactEmailIO(email=e["email"], type=e.get("type")) for e in emails or []]
+
+
+def _contact_phones(phones: list[dict[str, Any]] | None) -> list[ContactPhoneIO]:
+    return [ContactPhoneIO(number=p["number"], type=p.get("type")) for p in phones or []]
+
+
+def _contact_addresses(addresses: list[dict[str, Any]] | None) -> list[ContactAddressIO]:
+    return [ContactAddressIO(label=a.get("label"), text=a["text"]) for a in addresses or []]
+
+
+@mcp.tool(
+    name="create_contact",
+    annotations={
+        "title": "Create Contact",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def create_contact(
+    addressbook_id: str,
+    summary: str,
+    emails: list[dict[str, Any]] | None = None,
+    organization: str | None = None,
+    title: str | None = None,
+    phones: list[dict[str, Any]] | None = None,
+    addresses: list[dict[str, Any]] | None = None,
+    birthday: str | None = None,
+    url: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """
+    Create a contact in an address book.
+
+    Args:
+        addressbook_id: Address book UUID (see list_addressbooks)
+        summary: Display name
+        emails: [{"email": str, "type": str | None}, ...], optional
+        organization: Organization name, optional
+        title: Job title, optional
+        phones: [{"number": str, "type": str | None}, ...], optional
+        addresses: [{"label": str | None, "text": str}, ...], optional
+        birthday: Birthday, optional
+        url: Website, optional
+        notes: Free text notes, optional
+
+    Returns:
+        The created contact, or {"error": ...} on failure
+    """
+    request = ContactCreateRequest(
+        addressbook_id=addressbook_id,  # type: ignore[arg-type]
+        summary=summary, emails=_contact_emails(emails), organization=organization, title=title,
+        phones=_contact_phones(phones), addresses=_contact_addresses(addresses),
+        birthday=birthday, url=url, notes=notes,
+    )
+    try:
+        contact = await _create_contact(request)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return contact.model_dump(mode="json")
+
+
+@mcp.tool(
+    name="update_contact",
+    annotations={
+        "title": "Update Contact",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def update_contact(
+    contact_id: str,
+    summary: str | None = None,
+    emails: list[dict[str, Any]] | None = None,
+    organization: str | None = None,
+    title: str | None = None,
+    phones: list[dict[str, Any]] | None = None,
+    addresses: list[dict[str, Any]] | None = None,
+    birthday: str | None = None,
+    url: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    """
+    Edit a contact. Every field given is a full replacement of that
+    property -- e.g. giving emails replaces the whole email list, it does
+    not append to it. Fields left unset are unchanged.
+
+    Args:
+        contact_id: Contact UUID
+        summary: New display name, optional
+        emails: New [{"email": str, "type": str | None}, ...], optional
+        organization: New organization name, optional
+        title: New job title, optional
+        phones: New [{"number": str, "type": str | None}, ...], optional
+        addresses: New [{"label": str | None, "text": str}, ...], optional
+        birthday: New birthday, optional
+        url: New website, optional
+        notes: New free text notes, optional
+
+    Returns:
+        The updated contact, or {"error": ...} on failure
+    """
+    # update_contact's own endpoint reads request.model_dump(exclude_unset=True)
+    # -- a field passed explicitly as None here would still count as "set"
+    # and be read back as "clear this field", not "leave it unchanged". Only
+    # fields actually given are included, exactly as mark_mail does above.
+    fields: dict[str, Any] = {}
+    if summary is not None:
+        fields["summary"] = summary
+    if emails is not None:
+        fields["emails"] = _contact_emails(emails)
+    if organization is not None:
+        fields["organization"] = organization
+    if title is not None:
+        fields["title"] = title
+    if phones is not None:
+        fields["phones"] = _contact_phones(phones)
+    if addresses is not None:
+        fields["addresses"] = _contact_addresses(addresses)
+    if birthday is not None:
+        fields["birthday"] = birthday
+    if url is not None:
+        fields["url"] = url
+    if notes is not None:
+        fields["notes"] = notes
+    request = ContactUpdateRequest(**fields)
+    try:
+        contact = await _update_contact(uuid.UUID(contact_id), request)
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return contact.model_dump(mode="json")
+
+
+@mcp.tool(
+    name="delete_contact",
+    annotations={
+        "title": "Delete Contact",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def delete_contact(contact_id: str) -> dict[str, Any]:
+    """
+    Delete a contact.
+
+    Args:
+        contact_id: Contact UUID
+
+    Returns:
+        {"success": bool, "error": str} on failure
+    """
+    try:
+        await _delete_contact(uuid.UUID(contact_id))
+    except HTTPException as exc:
+        return {"success": False, **_endpoint_error(exc)}
+    return {"success": True}

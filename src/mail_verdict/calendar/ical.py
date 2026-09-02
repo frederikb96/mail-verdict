@@ -496,6 +496,34 @@ def set_schedule_agent_client_on_attendees(data: str) -> str:
     return _serialize(cal)
 
 
+def _bind_to_zone(dtstart: datetime, dtend: datetime, tz: str) -> tuple[datetime, datetime]:
+    """
+    Reattach dtstart/dtend to the named IANA zone, keeping their wall-clock
+    reading -- the same thing a CalDAV `DTSTART;TZID=<tz>:<local time>`
+    property means: a floating local time, resolved against that zone,
+    not the fixed UTC offset the caller's ISO string happened to carry.
+
+    Args:
+        dtstart: Start time, any tzinfo (its offset is discarded, not its
+            year/month/day/hour/minute/second)
+        dtend: End time, same treatment
+        tz: An IANA zone name, e.g. "Europe/Berlin"
+
+    Returns:
+        (dtstart, dtend) reattached to ZoneInfo(tz)
+
+    Raises:
+        ValueError: tz is not a recognised IANA zone name
+    """
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        zone = ZoneInfo(tz)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Unknown timezone: {tz!r}") from exc
+    return dtstart.replace(tzinfo=zone), dtend.replace(tzinfo=zone)
+
+
 def build_new_event(
     *,
     summary: str,
@@ -505,6 +533,7 @@ def build_new_event(
     location: str | None = None,
     description: str | None = None,
     rrule: str | None = None,
+    tz: str | None = None,
     organizer_email: str | None = None,
     organizer_cn: str | None = None,
     attendees: list[tuple[str, str | None]] | None = None,
@@ -520,6 +549,12 @@ def build_new_event(
         location: Location text
         description: Description text
         rrule: A raw RRULE value (e.g. "FREQ=WEEKLY;BYDAY=MO"), or None
+        tz: An IANA zone name (e.g. "Europe/Berlin") to bind DTSTART/DTEND
+            to, so the stored object carries a named-zone TZID rather
+            than only a fixed UTC offset -- correct across a DST change a
+            fixed offset is not. dtstart/dtend's own wall-clock reading
+            is kept; only the zone they resolve against changes. Not
+            valid with all_day, which has no time-of-day to bind
         organizer_email: This calendar's identity, if attendees are given
         organizer_cn: Display name for the organizer
         attendees: (email, cn) pairs; SCHEDULE-AGENT=CLIENT is set on each
@@ -527,7 +562,16 @@ def build_new_event(
 
     Returns:
         A new VCALENDAR body with a freshly generated UID
+
+    Raises:
+        ValueError: tz is given with all_day, or is not a recognised
+            IANA zone name
     """
+    if tz is not None:
+        if all_day:
+            raise ValueError("tz cannot be given for an all-day event")
+        dtstart, dtend = _bind_to_zone(dtstart, dtend, tz)
+
     cal = Calendar()
     cal.add("VERSION", "2.0")
     cal.add("PRODID", "-//MailVerdict//Calendar//EN")

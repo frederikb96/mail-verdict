@@ -15,6 +15,16 @@ RANGE=THISANDFUTURE) is not implemented -- rejected with 422 rather than
 silently treated as scope="this", per the design's own rule that an
 unsupported scope must never be accepted and ignored.
 
+POST honours tz -- an IANA zone name (e.g. "Europe/Berlin") DTSTART/DTEND
+are bound to, so the stored event carries a named-zone TZID rather than
+only a fixed UTC offset. PATCH rejects both attendees and tz outright
+(422) rather than accept and silently drop them -- neither is applied
+by update_event. Changing who is invited on an already-sent invitation
+needs its own REQUEST/CANCEL sends, the way create_event/delete_event
+already give attendees; re-timezoning an existing event without also
+moving dtstart/dtend has no settled meaning here, unlike a fresh create,
+where there is no existing wall-clock reading to reconcile against.
+
 source_message_id (which invitation email an event came from) is left
 null throughout: resolving it needs a join from calendar_intake.msg_key
 back to messages.message_id, which only works for the common case where
@@ -96,9 +106,23 @@ def _parse_month(month: str) -> tuple[datetime, datetime]:
     return start, end
 
 
-async def _resolve_own_reply(
+async def resolve_own_reply(
     reply_repo: CalendarReplyRepository, object_id: uuid.UUID, recurrence_id: str | None,
 ) -> OwnReplyOut | None:
+    """
+    The identity's own RSVP reply for this event, if it has replied at
+    all -- shared with api/invitations.py's own invitation-detail view,
+    which needs the identical answer to the identical question rather
+    than a second copy of it.
+
+    outbox_status reads the outbox row's live status while it still
+    exists. Once retention has purged that row, "unknown" is reported --
+    never "pending", which is the status an active, in-flight send uses
+    and would otherwise claim the reply is still sending forever: a row
+    genuinely still pending can become "sent" or "failed" on its own, but
+    a row that is simply gone never will, so reusing "pending" for it is
+    a claim that can never stop being wrong once made.
+    """
     reply = await reply_repo.get_latest(object_id, recurrence_id)
     if reply is None:
         return None
@@ -111,7 +135,7 @@ async def _resolve_own_reply(
     return OwnReplyOut(
         partstat=reply.partstat,  # type: ignore[arg-type]
         outbox_id=reply.outbox_id,
-        outbox_status=row.status if row else "pending",
+        outbox_status=row.status if row else "unknown",
         error=row.error if row else None,
         updated_at=reply.created_at,
     )
@@ -128,7 +152,7 @@ async def _to_instance(
     )
     own_reply = None
     if own_attendee is not None:
-        own_reply = await _resolve_own_reply(reply_repo, obj.id, parsed.recurrence_id)
+        own_reply = await resolve_own_reply(reply_repo, obj.id, parsed.recurrence_id)
 
     return EventInstanceOut(
         object_id=obj.id,
@@ -309,7 +333,7 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
         data = ical.build_new_event(
             summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
             all_day=request.all_day, location=request.location, description=request.description,
-            rrule=request.rrule, organizer_email=organizer_email,
+            rrule=request.rrule, tz=request.tz, organizer_email=organizer_email,
             organizer_cn=organizer_identity.display_name if organizer_identity else None,
             attendees=[(a.email, a.cn) for a in request.attendees] if request.attendees else None,
         )
@@ -358,11 +382,28 @@ async def _send_itip(
 async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> EventInstanceOut:
     """Edit an event. scope="all" edits the whole series (or the only edit
     path for a non-recurring event); scope="this" edits one occurrence
-    without touching the others; scope="following" is not implemented."""
+    without touching the others; scope="following" is not implemented.
+    attendees and tz are refused outright (422) rather than accepted and
+    silently dropped -- neither is applied by this endpoint."""
     await _require_support()
     if request.scope == "following":
         raise HTTPException(
             status_code=422, detail="scope=following (splitting a series) is not implemented",
+        )
+    # Neither field is applied below -- changing who is invited needs its
+    # own REQUEST/CANCEL sends the way create_event/delete_event already
+    # give attendees, which this endpoint does not do, and tz has no
+    # settled meaning apart from dtstart/dtend, which already carry their
+    # own instant. Rejecting outright is the one option that rules out a
+    # write reporting success for a field it never touched.
+    if request.attendees is not None:
+        raise HTTPException(
+            status_code=422, detail="changing attendees on an existing event is not supported",
+        )
+    if request.tz is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="tz cannot be set on an existing event; dtstart/dtend already carry the instant",
         )
 
     db = get_db_connection()

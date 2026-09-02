@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Ryuk-compatible reaper, so a run killed rather than exited cleanly previously left its
   containers running forever with nothing watching for them. `scripts/prune_orphaned_containers.py`
   runs the same sweep standalone
+- The MCP server gains fifteen calendar and contact tools, mirroring the fifteen existing mail
+  ones: `list_calendars`, `list_events`, `get_event`, `create_event`, `update_event`,
+  `delete_event`, `respond_to_event`, `list_addressbooks`, `list_contacts`, `search_contacts`,
+  `get_contact`, `create_contact`, `update_contact`, `delete_contact`. Each wraps the same
+  `api/calendar_events.py`, `api/calendars.py` and `api/contacts.py` functions the REST endpoints
+  call, so there is one definition of what creating or editing an event does. `create_event` and
+  `update_event` accept a raw `RRULE` value, the full RFC 5545 vocabulary rather than a fixed
+  preset, so an agent can express an interval, a weekday set, a count or an end date the same way
+  the REST API already could
 
 ### Fixed
 
@@ -34,6 +43,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   its own containers are still running. A container whose own stop call raised previously
   unwound the rest of the stack without leaking visibly -- the process still exited zero,
   nothing printed a warning, and the container just sat there
+- Creating an event with `tz` now actually binds `dtstart`/`dtend` to that named IANA zone --
+  previously the field was declared on the request and silently discarded, so the stored event
+  only ever carried a fixed UTC offset regardless of what `tz` said. The given wall-clock reading
+  is kept; only the zone it resolves against changes, the same way `DTSTART;TZID=...` behaves on
+  every other CalDAV client. `all_day` and an unrecognised zone name are both refused with `400`
+  rather than silently ignored or accepted into a nonsensical object
+- Editing an event's `attendees` or `tz` now answers `422` instead of a `200` that reports
+  success while changing neither. `PATCH /calendar/events/{id}` never applied either field --
+  a caller renaming the attendee list, or setting a timezone, got a confirmed write back with
+  nothing actually different underneath. Changing who is invited needs its own `REQUEST`/`CANCEL`
+  sends, the way create and delete already give attendees, and `tz` has no settled meaning apart
+  from `dtstart`/`dtend`, which already carry the instant -- rejecting outright rules out the one
+  shape that must never happen, the same way `scope=following` already is rather than silently
+  treated as `scope=this`
+- An RSVP whose outbox row has aged out of retention now reports `outbox_status: "unknown"`
+  rather than `"pending"` -- the status an active, in-flight send uses. A genuinely pending row
+  can become `"sent"` or `"failed"` on its own; a row that no longer exists never will, so
+  reusing `"pending"` for it was a claim that stayed wrong forever once made, and the interface
+  read it as "still sending" indefinitely. `api/invitations.py` carried an identical copy of the
+  same resolution logic and the same bug; it now calls the one definition in
+  `api/calendar_events.py` instead
 - The month view now reads only what its window could contain -- a SQL predicate on
   `dav_objects.dtstart`/`dtend`/`is_recurring` instead of parsing and expanding every object in
   every visible calendar on every request, which cost seconds of blocking, single-threaded CPU

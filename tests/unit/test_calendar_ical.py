@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from icalendar import Calendar, Event
+from icalendar import Calendar, Component, Event
 
 from mail_verdict.calendar import ical
 
@@ -74,6 +74,77 @@ _RECURRING_EVENT = (
     "DTEND:20260908T120000Z\r\n"
     "SUMMARY:Weekly standup (moved)\r\n"
     "SEQUENCE:1\r\n"
+    "END:VEVENT\r\n"
+    "END:VCALENDAR\r\n"
+)
+
+
+# A body shaped like what a real CalDAV server (Nextcloud, or an Outlook
+# invitation) actually emits for a recurring series with a timezone-bound
+# repeat: a VTIMEZONE component, an RRULE narrowed by two EXDATE
+# properties (one holding a single date, one holding a comma-separated
+# pair -- both forms RFC 5545 allows), an RDATE adding an extra one-off
+# occurrence, an exception overriding one occurrence, and a scattering of
+# properties this codebase has never modeled (CATEGORIES, CLASS, TRANSP,
+# an X- property, a VALARM subcomponent). Row 125's round-trip proof: none
+# of this may be narrowed, dropped or rewritten by an edit that only
+# means to change one field.
+_EXOTIC_RECURRING_EVENT = (
+    "BEGIN:VCALENDAR\r\n"
+    "VERSION:2.0\r\n"
+    "PRODID:-//Test//EN\r\n"
+    "X-WR-CALNAME:Personal\r\n"
+    "BEGIN:VTIMEZONE\r\n"
+    "TZID:Europe/Berlin\r\n"
+    "X-LIC-LOCATION:Europe/Berlin\r\n"
+    "BEGIN:DAYLIGHT\r\n"
+    "TZOFFSETFROM:+0100\r\n"
+    "TZOFFSETTO:+0200\r\n"
+    "TZNAME:CEST\r\n"
+    "DTSTART:19700329T020000\r\n"
+    "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU\r\n"
+    "END:DAYLIGHT\r\n"
+    "BEGIN:STANDARD\r\n"
+    "TZOFFSETFROM:+0200\r\n"
+    "TZOFFSETTO:+0100\r\n"
+    "TZNAME:CET\r\n"
+    "DTSTART:19701025T030000\r\n"
+    "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU\r\n"
+    "END:STANDARD\r\n"
+    "END:VTIMEZONE\r\n"
+    "BEGIN:VEVENT\r\n"
+    "UID:exotic-1@example.com\r\n"
+    "DTSTAMP:20260901T120000Z\r\n"
+    "DTSTART;TZID=Europe/Berlin:20260907T090000\r\n"
+    "DTEND;TZID=Europe/Berlin:20260907T100000\r\n"
+    "SUMMARY:Weekly standup\r\n"
+    "DESCRIPTION:Sync with the whole team\r\n"
+    "LOCATION:Room 4\r\n"
+    "CATEGORIES:WORK,PLANNING\r\n"
+    "CLASS:PRIVATE\r\n"
+    "TRANSP:OPAQUE\r\n"
+    "SEQUENCE:0\r\n"
+    "X-CUSTOM-CLIENT-ID:abc-123\r\n"
+    "RRULE:FREQ=WEEKLY;COUNT=6\r\n"
+    "EXDATE;TZID=Europe/Berlin:20260914T090000\r\n"
+    "EXDATE;TZID=Europe/Berlin:20260928T090000,20261005T090000\r\n"
+    "RDATE;TZID=Europe/Berlin:20261020T130000\r\n"
+    "BEGIN:VALARM\r\n"
+    "ACTION:DISPLAY\r\n"
+    "DESCRIPTION:Reminder\r\n"
+    "TRIGGER:-PT15M\r\n"
+    "END:VALARM\r\n"
+    "END:VEVENT\r\n"
+    "BEGIN:VEVENT\r\n"
+    "UID:exotic-1@example.com\r\n"
+    "RECURRENCE-ID;TZID=Europe/Berlin:20260921T090000\r\n"
+    "DTSTAMP:20260901T120000Z\r\n"
+    "DTSTART;TZID=Europe/Berlin:20260921T100000\r\n"
+    "DTEND;TZID=Europe/Berlin:20260921T110000\r\n"
+    "SUMMARY:Weekly standup (moved)\r\n"
+    "CATEGORIES:WORK,PLANNING\r\n"
+    "SEQUENCE:1\r\n"
+    "X-CUSTOM-CLIENT-ID:abc-123\r\n"
     "END:VEVENT\r\n"
     "END:VCALENDAR\r\n"
 )
@@ -421,6 +492,41 @@ class TestBuildAndEdit:
                 attendees=[("anna@example.com", "Anna")],
             )
 
+    def test_build_new_event_with_tz_binds_a_named_zone_not_a_fixed_offset(self) -> None:
+        """Row 146: the wall-clock reading given (10:00, 11:00) is kept --
+        only the zone it resolves against changes, from the fixed +00:00
+        the caller's ISO string carried to Europe/Berlin's own (CEST,
+        +02:00 in September)."""
+        data = ical.build_new_event(
+            summary="Standup",
+            dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+            tz="Europe/Berlin",
+        )
+        assert "DTSTART;TZID=Europe/Berlin:20260910T100000" in _unfolded(data)
+        master, _ = ical.parse_master_and_exceptions(data)
+        assert master.tz == "Europe/Berlin"
+        assert master.dtstart == datetime(2026, 9, 10, 8, 0, tzinfo=timezone.utc)
+
+    def test_build_new_event_with_tz_and_all_day_raises(self) -> None:
+        with pytest.raises(ValueError, match="all-day"):
+            ical.build_new_event(
+                summary="Holiday",
+                dtstart=datetime(2026, 9, 10, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 11, tzinfo=timezone.utc),
+                all_day=True,
+                tz="Europe/Berlin",
+            )
+
+    def test_build_new_event_with_an_unknown_tz_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown timezone"):
+            ical.build_new_event(
+                summary="Standup",
+                dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+                tz="Not/AZone",
+            )
+
     def test_replace_master_fields_bumps_sequence(self) -> None:
         updated = ical.replace_master_fields(_SIMPLE_EVENT, summary="Team sync (renamed)")
         master, _ = ical.parse_master_and_exceptions(updated)
@@ -642,3 +748,134 @@ class TestParseItipMessage:
 
         with pytest.raises(ValueError, match="METHOD"):
             ical.parse_itip_message(_SIMPLE_EVENT)
+
+
+def _vtimezones(data: str) -> list[Component]:
+    return [c for c in Calendar.from_ical(data).walk() if c.name == "VTIMEZONE"]
+
+
+def _master_component(data: str) -> Component:
+    return next(
+        c for c in Calendar.from_ical(data).walk()
+        if c.name == "VEVENT" and c.get("RECURRENCE-ID") is None
+    )
+
+
+def _exception_components(data: str) -> list[Component]:
+    return [
+        c for c in Calendar.from_ical(data).walk()
+        if c.name == "VEVENT" and c.get("RECURRENCE-ID") is not None
+    ]
+
+
+class TestPropertyPreservation:
+    """Row 125: a complex object read from elsewhere must not be narrowed,
+    dropped or rewritten by an edit that only means to change one field --
+    everything _EXOTIC_RECURRING_EVENT carries that this codebase never
+    models has to survive every edit path unchanged."""
+
+    def test_the_exotic_body_expands_exactly_as_its_own_rules_say(self) -> None:
+        """Functional proof that EXDATE, RDATE and the exception are all
+        actually honoured, not just present in the text: two of the six
+        RRULE occurrences are excluded (one from a single-date EXDATE, one
+        from a comma-separated pair on a second EXDATE), one is moved by
+        the exception, and RDATE adds a seventh instance outside the rule
+        entirely."""
+        instances = ical.expand_instances(
+            _EXOTIC_RECURRING_EVENT,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 11, 1, tzinfo=timezone.utc),
+        )
+        starts = sorted(i.dtstart for i in instances)
+        assert starts == [
+            datetime(2026, 9, 7, 7, 0, tzinfo=timezone.utc),   # 09:00 CEST
+            datetime(2026, 9, 21, 8, 0, tzinfo=timezone.utc),  # moved to 10:00 CEST
+            datetime(2026, 10, 12, 7, 0, tzinfo=timezone.utc),
+            datetime(2026, 10, 20, 11, 0, tzinfo=timezone.utc),  # 13:00 CEST, from RDATE
+        ]
+        moved = next(i for i in instances if i.dtstart.day == 21)
+        assert moved.summary == "Weekly standup (moved)"
+
+    def test_replace_master_fields_preserves_everything_it_does_not_touch(self) -> None:
+        updated = ical.replace_master_fields(_EXOTIC_RECURRING_EVENT, summary="Renamed standup")
+
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.summary == "Renamed standup"
+        assert master.sequence == 1
+
+        # The VTIMEZONE, the exception, and the calendar-level X- property
+        # this codebase has never modeled all survive.
+        assert len(_vtimezones(updated)) == 1
+        assert str(_vtimezones(updated)[0]["TZID"]) == "Europe/Berlin"
+        assert "X-WR-CALNAME:Personal" in _unfolded(updated)
+        assert len(_exception_components(updated)) == 1
+
+        component = _master_component(updated)
+        assert "EXDATE" in component
+        assert "RDATE" in component
+        assert component.get("CATEGORIES").to_ical() == b"WORK,PLANNING"
+        assert str(component.get("CLASS")) == "PRIVATE"
+        assert str(component.get("TRANSP")) == "OPAQUE"
+        assert str(component.get("X-CUSTOM-CLIENT-ID")) == "abc-123"
+        assert [c.name for c in component.subcomponents] == ["VALARM"]
+
+        # Excluding the two EXDATE-covered dates and honouring the moved
+        # exception and the RDATE addition still holds after the edit.
+        instances = ical.expand_instances(
+            updated,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 11, 1, tzinfo=timezone.utc),
+        )
+        assert len(instances) == 4
+        assert not any(i.dtstart.month == 9 and i.dtstart.day in (14, 28) for i in instances)
+        assert not any(i.dtstart.month == 10 and i.dtstart.day == 5 for i in instances)
+        unmoved = next(i for i in instances if i.dtstart.day == 7)
+        assert unmoved.summary == "Renamed standup"
+
+    def test_edit_occurrence_preserves_the_master_and_the_other_properties(self) -> None:
+        """scope=this touches only the exception at the named
+        RECURRENCE-ID -- the master's own RRULE/EXDATE/RDATE/VTIMEZONE and
+        the exception's own untouched fields must survive."""
+        updated = ical.edit_occurrence(
+            _EXOTIC_RECURRING_EVENT, "20260921T090000", summary="Standup (moved again)",
+        )
+
+        master, exceptions = ical.parse_master_and_exceptions(updated)
+        assert master.summary == "Weekly standup"
+        assert master.sequence == 0
+
+        master_component = _master_component(updated)
+        assert "EXDATE" in master_component
+        assert "RDATE" in master_component
+        assert len(_vtimezones(updated)) == 1
+
+        assert len(exceptions) == 1
+        assert exceptions[0].summary == "Standup (moved again)"
+        # category (never touched by edit_occurrence) survives the edit.
+        exception_component = _exception_components(updated)[0]
+        assert exception_component.get("CATEGORIES").to_ical() == b"WORK,PLANNING"
+        assert str(exception_component.get("X-CUSTOM-CLIENT-ID")) == "abc-123"
+
+    def test_merge_exception_preserves_the_vtimezone_and_master(self) -> None:
+        """calendar/intake.py's own path for an incoming REQUEST about one
+        occurrence -- the VTIMEZONE and the master (and its own EXDATE)
+        must survive a merge same as they survive a direct edit."""
+        replacement = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            "UID:exotic-1@example.com\r\n"
+            "RECURRENCE-ID;TZID=Europe/Berlin:20260921T090000\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART;TZID=Europe/Berlin:20260921T140000\r\n"
+            "DTEND;TZID=Europe/Berlin:20260921T150000\r\n"
+            "SUMMARY:Weekly standup (moved once more)\r\n"
+            "SEQUENCE:2\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        merged = ical.merge_exception(_EXOTIC_RECURRING_EVENT, replacement, "20260921T090000")
+
+        assert len(_vtimezones(merged)) == 1
+        master, exceptions = ical.parse_master_and_exceptions(merged)
+        assert master.summary == "Weekly standup"
+        assert "EXDATE" in _master_component(merged)
+        assert len(exceptions) == 1
+        assert exceptions[0].summary == "Weekly standup (moved once more)"
