@@ -13,6 +13,7 @@ import { useAtom, useSetAtom } from "jotai";
 import {
   calendarDateAtom,
   calendarViewAtom,
+  eventDeleteRequestAtom,
   selectedEventAtom,
   type CalendarViewMode,
 } from "@/lib/atoms";
@@ -22,14 +23,13 @@ import { isEditableElement } from "@/lib/utils";
 interface UseCalendarShortcutsOptions {
   /** Called on "n" to open the create-event editor. */
   onCreate?: () => void;
-  /** Called on Delete/Backspace with an event selected. */
-  onRequestDelete?: (objectId: string, recurrenceId: string | null) => void;
 }
 
-export function useCalendarShortcuts({ onCreate, onRequestDelete }: UseCalendarShortcutsOptions = {}) {
+export function useCalendarShortcuts({ onCreate }: UseCalendarShortcutsOptions = {}) {
   const [view, setView] = useAtom(calendarViewAtom);
   const setDate = useSetAtom(calendarDateAtom);
   const [selected, setSelected] = useAtom(selectedEventAtom);
+  const setDeleteRequest = useSetAtom(eventDeleteRequestAtom);
 
   useEffect(() => {
     function step(dir: 1 | -1) {
@@ -73,7 +73,7 @@ export function useCalendarShortcuts({ onCreate, onRequestDelete }: UseCalendarS
           break;
         case "Delete":
         case "Backspace":
-          if (selected) onRequestDelete?.(selected.objectId, selected.recurrenceId);
+          if (selected) setDeleteRequest({ ...selected });
           break;
         default:
           return;
@@ -82,5 +82,5 @@ export function useCalendarShortcuts({ onCreate, onRequestDelete }: UseCalendarS
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [view, selected, setDate, setView, setSelected, onCreate, onRequestDelete]);
+  }, [view, selected, setDate, setView, setSelected, setDeleteRequest, onCreate]);
 }

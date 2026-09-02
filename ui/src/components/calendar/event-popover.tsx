@@ -7,7 +7,7 @@
  * chips live in several different views.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { useRouter } from "next/navigation";
 import { Loader2, MapPin, Pencil, Trash2, Users, X } from "lucide-react";
@@ -21,7 +21,12 @@ import { useCalendars } from "@/hooks/use-calendars";
 import { useDeleteEvent, useEventDetail } from "@/hooks/use-events";
 import { resolveCalendarColor } from "@/components/calendar/colors";
 import { deriveEventLook } from "@/components/calendar/layout";
-import { eventPopoverAnchorAtom, selectedEventAtom, selectedMailIdAtom } from "@/lib/atoms";
+import {
+  eventDeleteRequestAtom,
+  eventPopoverAnchorAtom,
+  selectedEventAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
 import { format } from "@/lib/dates";
 import { getInitials } from "@/lib/format";
 import type { RecurrenceScope } from "@/types/api";
@@ -31,6 +36,7 @@ export function EventPopover() {
   const [selected, setSelected] = useAtom(selectedEventAtom);
   const [, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const anchor = useAtomValue(eventPopoverAnchorAtom);
+  const [deleteRequest, setDeleteRequest] = useAtom(eventDeleteRequestAtom);
   const ref = useRef<HTMLDivElement>(null);
   const [editorOpen, setEditorOpen] = useState(false);
   const [scopeOpen, setScopeOpen] = useState(false);
@@ -43,6 +49,12 @@ export function EventPopover() {
   const { data: calendars } = useCalendars();
   const deleteEvent = useDeleteEvent();
   const calendar = calendars?.find((c) => c.id === event?.calendar_id);
+  const isRecurring = event?.is_recurring ?? false;
+
+  const requestDelete = useCallback(() => {
+    if (isRecurring) setScopeOpen(true);
+    else setConfirmDelete(true);
+  }, [isRecurring]);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -59,6 +71,18 @@ export function EventPopover() {
     };
   }, [setSelected]);
 
+  // The Delete key has no direct handle on this popover's own confirmation
+  // state, so it comes in as an atom instead -- only acted on once the event
+  // it named is the one actually loaded here, and only if it can be deleted
+  // at all (the Delete button itself is hidden for a read-only event).
+  useEffect(() => {
+    if (!deleteRequest || !event || event.read_only) return;
+    if (deleteRequest.objectId !== event.object_id) return;
+    if (deleteRequest.recurrenceId !== (event.recurrence_id ?? null)) return;
+    requestDelete();
+    setDeleteRequest(null);
+  }, [deleteRequest, event, requestDelete, setDeleteRequest]);
+
   if (!selected) return null;
 
   const style: React.CSSProperties = anchor
@@ -68,13 +92,6 @@ export function EventPopover() {
         left: Math.min(anchor.left, window.innerWidth - 340),
       }
     : { position: "fixed", top: "20%", left: "50%", transform: "translateX(-50%)" };
-
-  const isRecurring = event?.is_recurring ?? false;
-
-  const requestDelete = () => {
-    if (isRecurring) setScopeOpen(true);
-    else setConfirmDelete(true);
-  };
 
   const doDelete = (scope?: RecurrenceScope) => {
     if (!event) return;
