@@ -18,11 +18,11 @@ from __future__ import annotations
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, cast
 
 import recurring_ical_events
-from icalendar import Calendar, Component, Event, vCalAddress, vDDDTypes, vText
+from icalendar import Calendar, Component, Event, Timezone, vCalAddress, vDDDTypes, vText
 
 # A window this wide could contain more occurrences than a caller ever
 # means to render, and expand_instances() refuses rather than letting
@@ -575,6 +575,14 @@ def build_new_event(
     cal = Calendar()
     cal.add("VERSION", "2.0")
     cal.add("PRODID", "-//MailVerdict//Calendar//EN")
+
+    if tz is not None:
+        # RFC 5545 requires the VTIMEZONE definition to travel in the same
+        # object as any TZID that references it -- without it, the object
+        # is malformed for every recipient but this application, which
+        # resolves the TZID against its own zone data regardless.
+        # dtstart.tzinfo is the ZoneInfo _bind_to_zone just attached above.
+        cal.add_component(Timezone.from_tzinfo(cast(tzinfo, dtstart.tzinfo), tzid=tz))
 
     event = Event()
     event.add("UID", str(uuid.uuid4()))

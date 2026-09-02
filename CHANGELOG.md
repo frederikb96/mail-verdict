@@ -43,6 +43,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Editing an event from the interface now actually saves. The editor sent an `attendees` array on
+  every update -- an empty one when there were none -- and the backend's own guard against
+  changing attendees rejected it outright, so renaming, moving or retiming an event from the
+  editor always came back a `422`; the attendees field is no longer editable there, matching the
+  API. Every occurrence carries its own `recurrence_id` once expanded for display, recurring or
+  not, so a non-recurring event's edit was also sent with a populated `recurrence_id` and no
+  `scope`, which the backend rejects independently of the attendees fix -- `recurrence_id` is now
+  only sent alongside `scope=this`. And clicking Save closed the event popover before the click
+  could complete, because the popover treats any pointer press outside its own DOM subtree as a
+  request to close, and the editor's own sheet renders into a portal outside that subtree
+- An event created with a named timezone now carries the `VTIMEZONE` definition RFC 5545 requires
+  alongside any `TZID` that references it. Previously only the reference was written -- this
+  application resolves it against its own zone data regardless, so the gap round-tripped silently
+  here, but the object went to a real CalDAV server and into invitation mail exactly as malformed,
+  where another client may reject it or fall back to a different zone
 - `scripts/devstack.py` now verifies its own teardown against the container runtime instead
   of trusting that its cleanup calls landed, and refuses to report a clean stop while any of
   its own containers are still running. A container whose own stop call raised previously

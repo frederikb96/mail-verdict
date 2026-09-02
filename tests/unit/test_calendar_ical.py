@@ -508,6 +508,33 @@ class TestBuildAndEdit:
         assert master.tz == "Europe/Berlin"
         assert master.dtstart == datetime(2026, 9, 10, 8, 0, tzinfo=timezone.utc)
 
+    def test_build_new_event_with_tz_carries_its_own_vtimezone_definition(self) -> None:
+        """RFC 5545 requires a VTIMEZONE for every TZID a component
+        references, in the same object -- otherwise a real CalDAV client
+        (as opposed to this application, which resolves the name through
+        its own zone data) has nothing telling it what Europe/Berlin means
+        or when it observes daylight saving."""
+        data = ical.build_new_event(
+            summary="Standup",
+            dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+            tz="Europe/Berlin",
+        )
+        vtimezones = _vtimezones(data)
+        assert len(vtimezones) == 1
+        vtz = vtimezones[0]
+        assert str(vtz["TZID"]) == "Europe/Berlin"
+        subcomponent_names = {c.name for c in vtz.subcomponents}
+        assert subcomponent_names == {"STANDARD", "DAYLIGHT"}
+
+    def test_build_new_event_without_tz_carries_no_vtimezone(self) -> None:
+        data = ical.build_new_event(
+            summary="Standup",
+            dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+        )
+        assert _vtimezones(data) == []
+
     def test_build_new_event_with_tz_and_all_day_raises(self) -> None:
         with pytest.raises(ValueError, match="all-day"):
             ical.build_new_event(
