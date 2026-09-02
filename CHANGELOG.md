@@ -95,11 +95,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Delete/Backspace with an event selected now opens its delete confirmation. The key handler and
   the popover owning that confirmation were not siblings in the component tree, so the key press
   reached a callback nothing was ever wired to and silently did nothing
-- An RSVP reply stops claiming to still be sending once it has been `pending` or `processing` long
-  enough that the claim is no longer credible, rather than reporting it forever. The backend falls
-  back to `pending` once the reply's outbox record has aged out of retention, since it has nothing
-  else to report at that point -- past a day, the calendar now says the status is unknown instead
-  of repeating a claim that has stopped being true
 - The month view now reads only what its window could contain -- a SQL predicate on
   `dav_objects.dtstart`/`dtend`/`is_recurring` instead of parsing and expanding every object in
   every visible calendar on every request, which cost seconds of blocking, single-threaded CPU

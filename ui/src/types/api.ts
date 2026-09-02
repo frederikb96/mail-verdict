@@ -741,7 +741,10 @@ export interface CalendarUpdateRequest {
 export type Partstat = "needs-action" | "accepted" | "declined" | "tentative";
 export type AttendeeRole = "chair" | "req-participant" | "opt-participant" | "non-participant";
 export type EventStatus = "confirmed" | "tentative" | "cancelled";
-export type OutboxItipStatus = OutboxStatus;
+/** "unknown" is the ITIP-reply-summary's own fallback once the outbox row
+ * it points at has aged out of retention -- not a status a real outbox row
+ * ever carries, so it lives here rather than on OutboxStatus itself. */
+export type OutboxItipStatus = OutboxStatus | "unknown";
 
 export interface EventAttendee {
   email: string;
