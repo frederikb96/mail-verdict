@@ -7,6 +7,9 @@ import {
   pointerWithin,
   useSensor,
   useSensors,
+  type Active,
+  type Announcements,
+  type Over,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -95,10 +98,31 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
     }
   }
 
+  // dnd-kit's default announcements read out its internal draggable/droppable
+  // ids ("Draggable item mail-<uuid> was dropped over droppable area
+  // folder-<uuid>"). Replace them with the message count and folder name a
+  // screen reader user actually needs.
+  const mailLabel = (count: number) => (count === 1 ? "1 message" : `${count} messages`);
+  const activeCount = (active: Active) => (active.data.current?.count as number | undefined) ?? 1;
+  const folderLabel = (over: Over) =>
+    (over.data.current?.folderName as string | undefined) ?? "the folder";
+
+  const announcements: Announcements = {
+    onDragStart: ({ active }) => `Picked up ${mailLabel(activeCount(active))}.`,
+    onDragOver: ({ active, over }) =>
+      over ? `${mailLabel(activeCount(active))} is over ${folderLabel(over)}.` : undefined,
+    onDragEnd: ({ active, over }) =>
+      over
+        ? `${mailLabel(activeCount(active))} moved to ${folderLabel(over)}.`
+        : `${mailLabel(activeCount(active))} dropped, no folder targeted.`,
+    onDragCancel: ({ active }) => `Moving ${mailLabel(activeCount(active))} cancelled.`,
+  };
+
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={pointerWithin}
+      accessibility={{ announcements }}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >

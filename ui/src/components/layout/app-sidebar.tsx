@@ -294,6 +294,7 @@ export function AppSidebar() {
                       <DroppableFolder
                         key={uf.unified_name}
                         folderId={folderMapping[0]?.folder_id ?? uf.unified_name}
+                        folderName={uf.unified_name}
                         folderMapping={folderMapping}
                       >
                         <SidebarMenuItem>
@@ -328,6 +329,7 @@ export function AppSidebar() {
                         <DroppableFolder
                           key={folder.folder_id}
                           folderId={folder.folder_id}
+                          folderName={folder.display_name || folder.imap_name}
                         >
                           <SidebarMenuItem>
                             <SidebarMenuButton
@@ -359,6 +361,7 @@ export function AppSidebar() {
                         <DroppableFolder
                           key={folder.id}
                           folderId={folder.id}
+                          folderName={getFolderDisplayName(folder)}
                         >
                           <SidebarMenuItem>
                             <SidebarMenuButton

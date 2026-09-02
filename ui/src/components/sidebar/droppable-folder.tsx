@@ -10,6 +10,7 @@ interface FolderMapping {
 
 interface DroppableFolderProps {
   folderId: string;
+  folderName: string;
   folderMapping?: FolderMapping[];
   children: React.ReactNode;
 }
@@ -18,12 +19,18 @@ interface DroppableFolderProps {
  * Droppable wrapper for a sidebar folder item.
  * Supports both single-account folders and unified folders with per-account mapping.
  */
-export function DroppableFolder({ folderId, folderMapping, children }: DroppableFolderProps) {
+export function DroppableFolder({
+  folderId,
+  folderName,
+  folderMapping,
+  children,
+}: DroppableFolderProps) {
   const { isOver, setNodeRef } = useDroppable({
     id: `folder-${folderId}`,
     data: {
       type: "folder",
       folderId,
+      folderName,
       folderMapping,
     },
   });
