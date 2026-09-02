@@ -44,8 +44,58 @@ def folder(page: Page, folder_id: str) -> Locator:
 
 def event_chip(page: Page, object_id: str) -> Locator:
     """The clickable calendar event chip, by its object id -- month cell,
-    time grid block or agenda row, whichever view is rendering it."""
+    time grid block or agenda row, whichever view is rendering it.
+
+    A recurring series renders one chip per visible occurrence sharing this
+    same object id, so this matches more than one element for it -- use
+    event_occurrence_chip() instead once occurrences are involved."""
     return page.locator(f'[data-testid="event"][data-event-id="{object_id}"]')
+
+
+def event_occurrence_chip(page: Page, object_id: str, recurrence_id: str) -> Locator:
+    """One specific occurrence of a (possibly recurring) event, by both the
+    object id every occurrence shares and the recurrence id that is unique
+    to this one."""
+    return page.locator(
+        f'[data-testid="event"][data-event-id="{object_id}"][data-recurrence-id="{recurrence_id}"]'
+    )
+
+
+def center_in_grid_viewport(page: Page, chip: Locator) -> None:
+    """Scroll the time grid so the given chip sits in the middle of the
+    scrollable viewport, leaving headroom on both sides for a pointer drag
+    that starts on it -- scroll_into_view_if_needed() alone can leave it
+    flush against an edge, with no room to drag further that way."""
+    chip_id = chip.evaluate("(el) => el.getAttribute('data-event-id')")
+    recurrence_id = chip.evaluate("(el) => el.getAttribute('data-recurrence-id')")
+    page.evaluate(
+        """([objectId, recurrenceId]) => {
+            const chip = document.querySelector(
+                `[data-testid="event"][data-event-id="${objectId}"][data-recurrence-id="${recurrenceId}"]`,
+            );
+            const scroller = document.querySelector('[data-testid="time-grid-scroll"]');
+            const chipTop = chip.getBoundingClientRect().top
+                - scroller.getBoundingClientRect().top + scroller.scrollTop;
+            scroller.scrollTop = Math.max(0, chipTop - scroller.clientHeight / 2);
+        }""",
+        [chip_id, recurrence_id],
+    )
+
+
+def drag_by_pixels(page: Page, from_x: float, from_y: float, to_x: float, to_y: float) -> None:
+    """A raw pointer drag between two viewport-relative points -- the time
+    grid's drag hook listens for pointer events directly rather than
+    through dnd-kit, so unlike drag_row_to_folder() this needs no
+    activation-distance move first, only real intermediate pointermoves."""
+    steps = 12
+    page.mouse.move(from_x, from_y)
+    page.mouse.down()
+    for step in range(1, steps + 1):
+        fraction = step / steps
+        page.mouse.move(
+            from_x + (to_x - from_x) * fraction, from_y + (to_y - from_y) * fraction,
+        )
+    page.mouse.up()
 
 
 def drag_row_to_folder(page: Page, row: Locator, target: Locator) -> None:

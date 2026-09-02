@@ -7,16 +7,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { EventChip } from "@/components/calendar/event-chip";
+import { EventEditor } from "@/components/calendar/event-editor";
+import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
 import { TimeGridColumn } from "@/components/calendar/time-grid-column";
 import { assignLanes, type SelectEventHandler, type SpanningItem } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
-import { useCreateEvent, useEventsForRange, useUpdateEvent } from "@/hooks/use-events";
-import { useGridDrag } from "@/hooks/use-grid-drag";
+import { useEventsForRange, useUpdateEvent } from "@/hooks/use-events";
+import { useGridDrag, type GridGhost } from "@/hooks/use-grid-drag";
 import { useToast } from "@/hooks/use-toast";
 import { calendarDateAtom } from "@/lib/atoms";
 import { addDays, format, isSameDay, isToday, startOfWeek } from "@/lib/dates";
 import { cn } from "@/lib/utils";
-import type { EventInstance } from "@/types/api";
+import type { EventInstance, RecurrenceScope } from "@/types/api";
 
 const HOUR_HEIGHT = 56;
 
@@ -37,7 +39,15 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
   const { data: calendars } = useCalendars();
   const calendarById = useMemo(() => new Map((calendars ?? []).map((c) => [c.id, c])), [calendars]);
   const updateEvent = useUpdateEvent();
-  const createEvent = useCreateEvent();
+  const [pendingScope, setPendingScope] = useState<{
+    ghost: GridGhost;
+    start: string;
+    end: string;
+    original: EventInstance | undefined;
+  } | null>(null);
+  const [createDefaults, setCreateDefaults] = useState<{ date: Date; calendarId: string } | null>(
+    null,
+  );
 
   const days = useMemo(() => {
     if (dayCount === 1) return [anchor];
@@ -82,23 +92,22 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
   const [showAllDay, setShowAllDay] = useState(false);
   const displayedAllDayLanes = showAllDay ? allDayLaneCount : Math.min(allDayLaneCount, 3);
 
-  const drag = useGridDrag({
-    columns: days.length,
-    pixelsPerMinute: HOUR_HEIGHT / 60,
-    onCommitMove: (ghost) => {
-      const day = days[ghost.column];
-      const start = new Date(day);
-      start.setHours(0, ghost.startMin, 0, 0);
-      const end = new Date(day);
-      end.setHours(0, ghost.endMin, 0, 0);
-      const original = events.find(
-        (e) => e.object_id === ghost.objectId && e.recurrence_id === ghost.recurrenceId,
-      );
+  const commitMove = useCallback(
+    (
+      ghost: GridGhost,
+      start: string,
+      end: string,
+      original: EventInstance | undefined,
+      scope?: RecurrenceScope,
+    ) => {
+      const recurrenceFields = scope
+        ? { scope, recurrence_id: scope === "this" ? (ghost.recurrenceId ?? undefined) : undefined }
+        : {};
       updateEvent.mutate(
         {
           objectId: ghost.objectId,
           recurrenceId: ghost.recurrenceId,
-          data: { dtstart: start.toISOString(), dtend: end.toISOString() },
+          data: { dtstart: start, dtend: end, ...recurrenceFields },
         },
         {
           onSuccess: () => {
@@ -113,7 +122,11 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
                       updateEvent.mutate({
                         objectId: ghost.objectId,
                         recurrenceId: ghost.recurrenceId,
-                        data: { dtstart: original.dtstart, dtend: original.dtend },
+                        data: {
+                          dtstart: original.dtstart,
+                          dtend: original.dtend,
+                          ...recurrenceFields,
+                        },
                       }),
                   }
                 : undefined,
@@ -123,23 +136,41 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
         },
       );
     },
-    onCommitCreate: (ghost) => {
+    [updateEvent, pushToast],
+  );
+
+  const drag = useGridDrag({
+    columns: days.length,
+    pixelsPerMinute: HOUR_HEIGHT / 60,
+    onCommitMove: (ghost) => {
       const day = days[ghost.column];
       const start = new Date(day);
       start.setHours(0, ghost.startMin, 0, 0);
       const end = new Date(day);
       end.setHours(0, ghost.endMin, 0, 0);
+      const original = events.find(
+        (e) => e.object_id === ghost.objectId && e.recurrence_id === ghost.recurrenceId,
+      );
+      // A drag never silently rewrites a whole series -- an occurrence of
+      // one asks which occurrences the move applies to first.
+      if (original?.is_recurring) {
+        setPendingScope({ ghost, start: start.toISOString(), end: end.toISOString(), original });
+        return;
+      }
+      commitMove(ghost, start.toISOString(), end.toISOString(), original);
+    },
+    onCommitCreate: (ghost) => {
+      const day = days[ghost.column];
+      const start = new Date(day);
+      start.setHours(0, ghost.startMin, 0, 0);
       const defaultCalendar = calendars?.find((c) => !c.read_only);
       if (!defaultCalendar) {
         pushToast("Add a calendar before creating events", "warning");
         return;
       }
-      createEvent.mutate({
-        calendar_id: defaultCalendar.id,
-        summary: "",
-        dtstart: start.toISOString(),
-        dtend: end.toISOString(),
-      });
+      // Nothing is created here -- the editor opens prefilled and the user
+      // still has to press Save, same as the toolbar's New event button.
+      setCreateDefaults({ date: start, calendarId: defaultCalendar.id });
     },
   });
 
@@ -233,6 +264,7 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
 
       <div
         ref={scrollRef}
+        data-testid="time-grid-scroll"
         className="min-h-0 flex-1 overflow-y-auto"
         style={{ overflowAnchor: "none" }}
         onPointerMove={handlePointerMove}
@@ -272,6 +304,29 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
           ))}
         </div>
       </div>
+
+      {pendingScope && (
+        <RecurrenceScopeDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPendingScope(null);
+          }}
+          onConfirm={(scope) => {
+            commitMove(pendingScope.ghost, pendingScope.start, pendingScope.end, pendingScope.original, scope);
+            setPendingScope(null);
+          }}
+        />
+      )}
+
+      <EventEditor
+        open={createDefaults !== null}
+        onOpenChange={(open) => {
+          if (!open) setCreateDefaults(null);
+        }}
+        mode="create"
+        defaultDate={createDefaults?.date}
+        defaultCalendarId={createDefaults?.calendarId}
+      />
     </div>
   );
 }

@@ -68,8 +68,15 @@ export function TimeGridColumn({
     <div
       className="relative flex-1 border-r last:border-r-0"
       data-grid-surface
+      data-date={format(date, "yyyy-MM-dd")}
       onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onPointerDownCreate(e);
+        // The hour lines are plain children of this surface, so a press on
+        // one of them has to walk up to find the marker rather than being
+        // compared against this element by identity -- an event chip has no
+        // such marker on itself, so this still excludes chip presses.
+        if ((e.target as HTMLElement).closest("[data-grid-surface]") === e.currentTarget) {
+          onPointerDownCreate(e);
+        }
       }}
     >
       {Array.from({ length: 24 }).map((_, h) => (
@@ -100,6 +107,10 @@ export function TimeGridColumn({
               onSelectEvent(item.event.object_id, item.event.recurrence_id, ev);
             }}
             onPointerDown={(ev) => {
+              // Otherwise this bubbles to the surface's own onPointerDown
+              // above, which would start a create-by-drag underneath the
+              // chip being pressed.
+              ev.stopPropagation();
               const target = ev.target as HTMLElement;
               const rect = ev.currentTarget.getBoundingClientRect();
               const offsetY = ev.clientY - rect.top;

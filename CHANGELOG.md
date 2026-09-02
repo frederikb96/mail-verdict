@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Clicking an event in the day or week grid no longer writes to it. The drag hook committed a
+  move on every pointer press-and-release with no check that anything moved, so a plain click
+  bumped the event's version and truncated its stored seconds -- and for an organized event, sent
+  an "Updated:" notice to every guest on every click. A release is only committed as a move when
+  the position actually changed
+- Dragging one occurrence of a recurring series in the time grid no longer silently moves the
+  whole series. The drag never asked which occurrences the change applies to, so the master's
+  start moved and every occurrence followed it, with the dragged occurrence itself vanishing from
+  where it had been. A drag on a recurring occurrence now opens the same scope prompt an edit from
+  the popover already asks
+- Pressing and dragging on empty time-grid space now opens the event editor prefilled for that
+  range instead of doing nothing, or, had the surface actually been hit, creating an untitled
+  event with no editor to fill it in. The grid surface compared the pointer's target against
+  itself by strict identity, so a press anywhere except its own four edges -- which is everywhere,
+  since the hour lines are its children -- never started a create-drag at all
 - Editing an event from the interface now actually saves. The editor sent an `attendees` array on
   every update -- an empty one when there were none -- and the backend's own guard against
   changing attendees rejected it outright, so renaming, moving or retiming an event from the

@@ -129,11 +129,19 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
   );
 
   const commit = useCallback(() => {
-    if (!ghost) return;
-    if (ghost.kind === "create") {
-      onCommitCreate?.(ghost);
-    } else {
-      onCommitMove?.(ghost);
+    const origin = originRef.current;
+    if (ghost && origin) {
+      if (ghost.kind === "create") {
+        onCommitCreate?.(ghost);
+      } else {
+        // A release at the same slot and column it started from is a click,
+        // not a drag -- committing it anyway would write on every click.
+        const moved =
+          ghost.startMin !== origin.startMin ||
+          ghost.endMin !== origin.endMin ||
+          ghost.column !== origin.column;
+        if (moved) onCommitMove?.(ghost);
+      }
     }
     setGhost(null);
     originRef.current = null;
