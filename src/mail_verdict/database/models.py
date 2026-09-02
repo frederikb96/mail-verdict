@@ -10,8 +10,8 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
 
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
-  identities, calendar_prefs, calendar_intake, calendar_replies
-  (created by Alembic, fully managed by MailVerdict)
+  identities, calendar_prefs, calendar_intake, calendar_replies,
+  calendar_links_revision (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
 consumer database role has no REFERENCES grant on those tables, and
@@ -983,6 +983,17 @@ class CalendarReply(Base):
             "object_id", "recurrence_id", "identity_id", created_at.desc(),
         ),
     )
+
+
+class CalendarLinksRevision(Base):
+    """Single-row optimistic-concurrency counter for PUT /api/calendar/links,
+    the same base_revision idea GET/PUT /api/pipeline uses -- see api/calendars.py.
+    """
+
+    __tablename__ = "calendar_links_revision"
+
+    singleton: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
 
 class QueueState(Base):
