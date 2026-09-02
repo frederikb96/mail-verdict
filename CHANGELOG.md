@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The month view's header now always names the month the grid beneath it is actually showing, and
+  `Today` reliably returns to today. Both could land on a date years away from what was on screen
+  after a resize (a viewport change, a sidebar toggle, the phone/desktop layout switching):
+  measuring the viewport and correcting the scroll position for the new row height were split
+  across two effects, one reading `rowHeight` from React state rather than from the value the
+  other had just computed -- state a layout effect cannot see until a later render. The correction
+  landed against the *old* row height, and by the time the *new* one actually rendered there was
+  nothing left recorded to correct it with
 - Delete/Backspace with an event selected now opens its delete confirmation. The key handler and
   the popover owning that confirmation were not siblings in the component tree, so the key press
   reached a callback nothing was ever wired to and silently did nothing
