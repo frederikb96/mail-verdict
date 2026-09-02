@@ -892,6 +892,99 @@ class Identity(Base):
     __table_args__ = (Index("idx_identities_account_id", "account_id"),)
 
 
+class CalendarPrefs(Base):
+    """One row per calendar (dav_collections.id, not FK'd -- PostIMAP-owned):
+    the identity invitations addressed to it are attributed to and replied
+    from, whether it is the one that receives new invitations
+    automatically, visibility, and a per-user colour override distinct
+    from the collection's own server-side colour.
+
+    At most one calendar per identity has intake=true, enforced by the
+    partial unique index uq_calendar_prefs_intake (identity_id) WHERE
+    intake, the same shape as Identity.is_default.
+    """
+
+    __tablename__ = "calendar_prefs"
+
+    collection_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    identity_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    intake: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    color_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("idx_calendar_prefs_identity", "identity_id"),)
+
+
+class CalendarIntake(Base):
+    """The durable record of one invitation email processed -- the
+    never-classify-twice gate's calendar counterpart (see msg_key.py and
+    docs/architecture.md). Unique on (account_id, msg_key): every intake
+    branch writes this row first, so a redelivered or resynced message is
+    a no-op. account_id is the mail account (accounts.id, not FK'd);
+    dav_account_id/collection_id/object_id name where the event ended up,
+    when it did.
+    """
+
+    __tablename__ = "calendar_intake"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    ical_uid: Mapped[str] = mapped_column(Text, nullable=False)
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recurrence_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dav_account_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    collection_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "msg_key", name="uq_calendar_intake_account_msg_key"),
+        Index("idx_calendar_intake_object", "object_id"),
+    )
+
+
+class CalendarReply(Base):
+    """One RSVP attempt -- insert-only, never updated in place, so calling
+    respond() again after a failed send simply adds a fresh row. The
+    latest row for (object_id, recurrence_id, identity_id) is what
+    own_reply reports: outbox_status is read live by joining outbox_id at
+    response time, never copied here, since it changes as PostIMAP
+    processes the send.
+    """
+
+    __tablename__ = "calendar_replies"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    object_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    recurrence_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    identity_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    partstat: Mapped[str] = mapped_column(Text, nullable=False)
+    outbox_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_calendar_replies_object",
+            "object_id", "recurrence_id", "identity_id", created_at.desc(),
+        ),
+    )
+
+
 class QueueState(Base):
     """Operator-controlled lifecycle for one named work queue (queue/manager.py).
 
