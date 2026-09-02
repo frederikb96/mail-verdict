@@ -32,6 +32,19 @@ from mail_verdict.database.msg_key import compute_msg_key
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
 
+# Candidate imap_name values for a role, tried by case-insensitive exact
+# match when no folder advertises the role's special_use flag (and no
+# folder_prefs.special_use_override names it either). Archive is the role
+# this matters for in practice -- RFC 6154's \Archive is optional and many
+# real servers never send it, unlike \Trash and \Junk which are close to
+# universal.
+_ROLE_NAME_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "archive": ("archive", "archives"),
+    "trash": ("trash", "deleted items", "deleted messages"),
+    "junk": ("junk", "spam", "junk e-mail", "bulk mail"),
+    "inbox": ("inbox",),
+}
+
 
 class AccountRepository:
     """Repository for Account queries."""
@@ -815,14 +828,21 @@ class FolderRepository:
         self, account_id: uuid.UUID, role: str,
     ) -> uuid.UUID | None:
         """
-        Resolve a folder by its effective special_use (override or raw).
+        Resolve a folder by its effective special_use (override or raw),
+        falling back to matching a well-known name for the role when no
+        folder carries the flag at all.
+
+        The name fallback only runs when the flag match finds nothing --
+        a folder correctly flagged always wins, so this can only add a
+        result, never redirect one away from a server-declared folder.
 
         Args:
             account_id: Account to look up
             role: Folder role key (e.g., "archive", "junk", "trash", "inbox")
 
         Returns:
-            Folder UUID or None if no folder has that effective role
+            Folder UUID or None if no folder has that effective role and
+            none matches a name fallback for it
         """
         async with self._db.session() as session:
             result = await session.execute(
@@ -831,6 +851,22 @@ class FolderRepository:
                 .where(
                     Folder.account_id == account_id,
                     func.coalesce(FolderPrefs.special_use_override, Folder.special_use) == role,
+                )
+                .limit(1)
+            )
+            folder_id = result.scalar_one_or_none()
+            if folder_id is not None:
+                return folder_id
+
+            names = _ROLE_NAME_FALLBACKS.get(role)
+            if not names:
+                return None
+            result = await session.execute(
+                select(Folder.id)
+                .where(
+                    Folder.account_id == account_id,
+                    Folder.deleted_at.is_(None),
+                    func.lower(Folder.imap_name).in_(names),
                 )
                 .limit(1)
             )

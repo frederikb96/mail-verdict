@@ -12,7 +12,7 @@ import { type InfiniteData, useMutation, useQueryClient } from "@tanstack/react-
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import { ACTION_LABELS, updateFolderCounts } from "@/hooks/use-mails";
+import { ACTION_LABELS, UNDOABLE_ACTIONS, updateFolderCounts } from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
 import { selectedMailIdAtom } from "@/lib/atoms";
 import {
@@ -22,6 +22,13 @@ import {
   selectionScopeAtom,
 } from "@/store/selection-atom";
 import type { BulkActionTarget, BulkActionType, MessageListResponse } from "@/types/api";
+
+/** Bulk phrasing for the success toast an undoable bulk action shows. */
+const BULK_UNDO_PHRASING: Record<string, string> = {
+  trash: "moved to trash",
+  archive: "archived",
+  spam: "marked as spam",
+};
 
 /** Read current selection state. */
 export function useSelection() {
@@ -163,6 +170,13 @@ export function useBulkAction() {
       );
       if (wasSelected) setSelectedMailId(null);
 
+      // Captured alongside folderCounts so an undoable action can move each
+      // id straight back to the folder it came from -- only meaningful for
+      // the explicit-id case: a scope can span far more messages than are
+      // loaded client-side, so there is nothing here to reconstruct an undo
+      // from.
+      const mailIdsByFolder = new Map<string, string[]>();
+
       if (removesFromList && !scope) {
         const folderCounts = new Map<string, { total: number; unread: number }>();
 
@@ -180,6 +194,9 @@ export function useBulkAction() {
                   counts.total++;
                   if (!m.is_seen) counts.unread++;
                   folderCounts.set(m.folder_id, counts);
+                  const ids = mailIdsByFolder.get(m.folder_id) ?? [];
+                  ids.push(m.id);
+                  mailIdsByFolder.set(m.folder_id, ids);
                   return false;
                 }),
               })),
@@ -192,7 +209,36 @@ export function useBulkAction() {
         }
       }
 
-      return { prevMailQueries, prevFolders, prevFolderOrder, accountId, wasSelected, selectedMailId };
+      return {
+        prevMailQueries, prevFolders, prevFolderOrder, accountId, wasSelected, selectedMailId,
+        mailIdsByFolder,
+      };
+    },
+
+    onSuccess: (_data, { accountId, action }, ctx) => {
+      if (!UNDOABLE_ACTIONS.includes(action) || ctx.mailIdsByFolder.size === 0) return;
+      const mailIdsByFolder = ctx.mailIdsByFolder;
+      const count = [...mailIdsByFolder.values()].reduce((n, ids) => n + ids.length, 0);
+      pushToast(
+        `${count} message${count === 1 ? "" : "s"} ${BULK_UNDO_PHRASING[action]}`,
+        "success",
+        6000,
+        {
+          label: "Undo",
+          onClick: async () => {
+            await Promise.all(
+              [...mailIdsByFolder.entries()].map(([folderId, ids]) =>
+                api.messages.bulkAction(accountId, {
+                  action: "move", target_folder_id: folderId, ids,
+                }),
+              ),
+            );
+            qc.invalidateQueries({ queryKey: ["mails"] });
+            qc.invalidateQueries({ queryKey: ["mail"] });
+            invalidateAllFolderCaches(qc);
+          },
+        },
+      );
     },
 
     onError: (err, vars, ctx) => {

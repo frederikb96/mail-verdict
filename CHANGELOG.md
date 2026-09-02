@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Trash, archive and spam offer an "Undo" on their success toast, both from a single row and
+  from the bulk toolbar, moving the affected message(s) straight back to the folder they were
+  in — a compensating action rather than a delayed commit, the same shape a failed mutation's
+  own optimistic rollback already uses
 - A `ui` test layer (`tests/ui/`, `pytest -m ui`) drives the application through a real browser
   with Playwright, reusing the same testcontainers world the `e2e` layer builds for itself, plus
   `scripts/devstack.py` for running an independent, compose-less development stack per checkout
@@ -52,6 +56,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `pipeline.live_max_age_days` and was never classified — the development stack came up with
   spam detection apparently dead. A repeated Message-ID had the same effect on a second run.
   `--keep-dates` delivers the fixtures verbatim
+- Archiving a message returned "No archive folder found for this account" on any server that
+  never advertises IMAP SPECIAL-USE, even with a folder literally named Archive present.
+  Resolving trash/archive/junk/inbox now falls back to matching a well-known name for the role
+  when no folder carries the flag
+- The pipeline queue's worker loop never passed its own `max_attempts` setting down to
+  `claim_batch`, so a row that crashed the worker process itself before ever reaching the
+  retry-vs-fail decision was reclaimed and re-claimed forever instead of eventually stopping
+- The dev image's `/api/health` check could report the container healthy for minutes after a
+  file-watcher reload crashed at startup. `--reload` pre-binds the listening socket once and
+  reuses it across every worker generation, so a dead worker still leaves 8080 accepting
+  connections; a plain `curl -sf` with no timeout of its own can hang on a response that never
+  comes rather than failing. The check now bounds curl with `--max-time` and checks more often,
+  so a dead worker is reported unhealthy within seconds instead of minutes
 
 ## [3.0.0] - 2026-08-30
 
