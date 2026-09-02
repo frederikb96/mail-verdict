@@ -3,7 +3,7 @@
 /** The contact edit form, in a Sheet. Sends the structured fields back;
  * the server rewrites the vCard `data`. */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +43,12 @@ export function ContactEditor({ open, onOpenChange, contact }: ContactEditorProp
   const [notes, setNotes] = useState(contact?.notes ?? "");
   const [addressbookId, setAddressbookId] = useState(writableAddressbooks[0]?.id ?? "");
 
+  useEffect(() => {
+    if (!open || isEditing) return;
+    setAddressbookId((current) => current || writableAddressbooks[0]?.id || "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, isEditing, addressbooks]);
+
   const isPending = createContact.isPending || updateContact.isPending;
 
   const handleSave = () => {
@@ -63,7 +69,10 @@ export function ContactEditor({ open, onOpenChange, contact }: ContactEditorProp
             notes: notes || undefined,
           },
         },
-        { onSuccess: () => onOpenChange(false) },
+        {
+          onSuccess: () => onOpenChange(false),
+          onError: (err) => pushToast(`Could not update contact: ${err.message}`, "error", 0),
+        },
       );
     } else {
       createContact.mutate(
@@ -75,7 +84,10 @@ export function ContactEditor({ open, onOpenChange, contact }: ContactEditorProp
           title: title || undefined,
           notes: notes || undefined,
         },
-        { onSuccess: () => onOpenChange(false) },
+        {
+          onSuccess: () => onOpenChange(false),
+          onError: (err) => pushToast(`Could not create contact: ${err.message}`, "error", 0),
+        },
       );
     }
   };
@@ -88,15 +100,21 @@ export function ContactEditor({ open, onOpenChange, contact }: ContactEditorProp
         </SheetHeader>
         <div className="flex flex-col gap-3 overflow-y-auto px-4 pb-4">
           <div className="grid gap-1.5">
-            <Label>Name</Label>
-            <Input value={summary} onChange={(e) => setSummary(e.target.value)} autoFocus />
+            <Label htmlFor="contact-name">Name</Label>
+            <Input
+              id="contact-name"
+              value={summary}
+              onChange={(e) => setSummary(e.target.value)}
+              autoFocus
+            />
           </div>
 
           <div className="grid gap-1.5">
-            <Label>Email</Label>
+            <Label htmlFor="contact-email-0">Email</Label>
             {emails.map((e, i) => (
               <div key={i} className="flex items-center gap-1">
                 <Input
+                  id={i === 0 ? "contact-email-0" : undefined}
                   type="email"
                   value={e.email}
                   onChange={(ev) =>

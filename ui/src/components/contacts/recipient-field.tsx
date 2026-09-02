@@ -20,7 +20,8 @@ import {
 } from "@/components/ui/combobox";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useContactSearch } from "@/hooks/use-contacts";
-import { getInitials, parseAddressList } from "@/lib/format";
+import { useToast } from "@/hooks/use-toast";
+import { getInitials, isValidEmail, parseAddressList } from "@/lib/format";
 
 interface RecipientFieldProps {
   value: string[];
@@ -30,16 +31,33 @@ interface RecipientFieldProps {
 
 export function RecipientField({ value, onChange, placeholder }: RecipientFieldProps) {
   const [query, setQuery] = useState("");
+  // Which suggestion, if any, the list is currently highlighting -- while
+  // one is, Enter belongs to the combobox itself (commit that suggestion),
+  // not to the free-text path below.
+  const [highlighted, setHighlighted] = useState<string | undefined>(undefined);
   const { results } = useContactSearch(query);
+  const { push: pushToast } = useToast();
 
   const items = results.map((r) => r.email);
 
   const addAddresses = (raw: string) => {
     const parsed = parseAddressList(raw);
     if (parsed.length === 0) return;
-    const merged = Array.from(new Set([...value, ...parsed]));
-    onChange(merged);
-    setQuery("");
+    const valid = parsed.filter(isValidEmail);
+    const invalid = parsed.filter((a) => !isValidEmail(a));
+    if (valid.length > 0) {
+      onChange(Array.from(new Set([...value, ...valid])));
+    }
+    if (invalid.length > 0) {
+      // Neither silently accepted nor silently dropped: named in a toast
+      // rather than turned into a chip. The combobox clears the typed
+      // text itself once the popup closes with nothing selected, the same
+      // way it already does for a query that matched no suggestion.
+      pushToast(
+        `Not a valid email address: ${invalid.join(", ")}`,
+        "warning",
+      );
+    }
   };
 
   return (
@@ -50,6 +68,7 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
       onValueChange={(next) => onChange(next as string[])}
       inputValue={query}
       onInputValueChange={setQuery}
+      onItemHighlighted={(v) => setHighlighted(v as string | undefined)}
       filter={null}
     >
       <ComboboxChips>
@@ -62,6 +81,15 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
         <ComboboxInput
           placeholder={value.length === 0 ? placeholder : undefined}
           onKeyDown={(e) => {
+            // A highlighted suggestion owns Enter/Tab/comma -- let the
+            // combobox's own selection commit it rather than racing it
+            // with the raw text underneath. Clearing the query ourselves
+            // is still ours to do: the combobox only clears it on a mouse
+            // click, not on this keyboard path.
+            if (highlighted) {
+              if (e.key === "Enter" || e.key === "," || e.key === "Tab") setQuery("");
+              return;
+            }
             if (e.key === "Enter" || e.key === "," || e.key === "Tab") {
               if (query.trim()) {
                 e.preventDefault();
