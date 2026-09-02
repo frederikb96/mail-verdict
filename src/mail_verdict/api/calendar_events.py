@@ -370,6 +370,32 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
             status_code=400, detail="recurrence_id requires scope=this",
         )
 
+    current_master, _ = ical.parse_master_and_exceptions(obj.data)
+    prefs = await CalendarPrefsRepository(db).get(obj.collection_id)
+    identity_email = None
+    organizer_identity: Identity | None = None
+    if prefs is not None and prefs.identity_id is not None:
+        async with db.session() as session:
+            identity = await session.scalar(
+                select(Identity).where(Identity.id == prefs.identity_id)
+            )
+        if identity is not None:
+            identity_email = identity.email
+            if current_master.organizer and identity.email.lower() == (
+                current_master.organizer.email.lower()
+            ):
+                organizer_identity = identity
+
+    # SEQUENCE is the ORGANIZER's own version counter (RFC 5545) --
+    # bumping it on an edit to an event this calendar does not organize
+    # makes the real organizer's next genuine update look stale by
+    # comparison to calendar/intake.py's own staleness check, and lose
+    # silently. A purely local event (no ORGANIZER at all -- nothing
+    # created it as an invitation) has no such external version to
+    # collide with, so it keeps advancing as before; only an event
+    # organized by someone else is held back.
+    bump_sequence = current_master.organizer is None or organizer_identity is not None
+
     if request.scope == "this":
         if request.recurrence_id is None:
             raise HTTPException(status_code=400, detail="scope=this requires recurrence_id")
@@ -377,7 +403,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
             obj.data, request.recurrence_id,
             summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
             all_day=request.all_day, location=request.location,
-            description=request.description,
+            description=request.description, bump_sequence=bump_sequence,
         )
     else:
         try:
@@ -386,6 +412,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
                 summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
                 all_day=request.all_day, location=request.location,
                 description=request.description, rrule=request.rrule,
+                bump_sequence=bump_sequence,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -403,35 +430,17 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
         parsed = next(
             (e for e in exceptions if e.recurrence_id == request.recurrence_id), master,
         )
-    prefs = await CalendarPrefsRepository(db).get(refreshed.collection_id)
-    identity_email = None
-    if prefs is not None and prefs.identity_id is not None:
-        async with db.session() as session:
-            identity_email = await session.scalar(
-                select(Identity.email).where(Identity.id == prefs.identity_id)
-            )
 
     # Create sends a REQUEST and delete sends a CANCEL -- an edit that
     # sent nothing taught the wrong lesson: an attendee's calendar still
     # says the old time, with nothing telling them it moved. Gated
     # exactly as delete_event gates its CANCEL, below.
-    if (
-        prefs is not None and prefs.identity_id is not None
-        and master.organizer and master.attendees
-    ):
-        async with db.session() as session:
-            organizer_identity = await session.scalar(
-                select(Identity).where(
-                    Identity.id == prefs.identity_id,
-                    Identity.email.ilike(master.organizer.email),
-                )
-            )
-        if organizer_identity is not None:
-            await _send_itip(
-                organizer_identity, refreshed.data, method="REQUEST",
-                to_addrs=[a.email for a in master.attendees],
-                subject=f"Updated: {master.summary}",
-            )
+    if organizer_identity is not None and master.attendees:
+        await _send_itip(
+            organizer_identity, refreshed.data, method="REQUEST",
+            to_addrs=[a.email for a in master.attendees],
+            subject=f"Updated: {master.summary}",
+        )
 
     return await _to_instance(
         parsed, refreshed, own_identity_email=identity_email,
@@ -477,7 +486,14 @@ async def delete_event(object_id: uuid.UUID, request: EventDeleteRequest | None 
     if scope == "this":
         if recurrence_id is None:
             raise HTTPException(status_code=400, detail="scope=this requires recurrence_id")
-        updated_data = ical.mark_cancelled(obj.data, recurrence_id=recurrence_id)
+        # See update_event's own comment: SEQUENCE only advances for a
+        # purely local event or one this calendar organizes, or the
+        # organizer's next genuine update to this occurrence looks stale
+        # by comparison.
+        bump_sequence = master.organizer is None or organizer_identity is not None
+        updated_data = ical.mark_cancelled(
+            obj.data, recurrence_id=recurrence_id, bump_sequence=bump_sequence,
+        )
         async with db.session() as session:
             await replace_object_data(session, object_id, updated_data)
         if organizer_identity is not None and master.attendees:

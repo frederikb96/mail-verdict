@@ -37,6 +37,7 @@ from mail_verdict.calendar.repository import (
 )
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
+from mail_verdict.database.msg_key import compute_msg_key
 from mail_verdict.database.repository import MessageRepository
 from mail_verdict.postimap.listener import PostimapEvent
 
@@ -949,6 +950,156 @@ class TestAuthentication:
         # own), and the other account's object is untouched.
         assert status == "unlinked"
         assert stored == original_data
+
+
+class TestPendingRetry:
+    """Row 114: calendar_intake's gate row is written before _apply()
+    writes anything, but never with a terminal status _apply() has not
+    actually reached -- a decision that writes something is inserted as
+    'pending' and only promoted once that write lands."""
+
+    @pytest.mark.asyncio
+    async def test_a_stuck_pending_row_is_retried_and_promoted(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Simulates the crash the finding describes: the gate row exists
+        at 'pending', the object write it describes never happened. A
+        later call for the same message must apply it and promote the
+        row, not treat the gate as already closed."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            _dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            message_id_hdr = "<pending1@example.com>"
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid), message_id_hdr=message_id_hdr,
+            )
+            # compute_msg_key() returns the header verbatim whenever one
+            # is present, so the literal passed to _seed_message_with_ics
+            # above already is the key -- no need to round-trip through a
+            # second session to read the row back before it is committed.
+            msg_key = compute_msg_key(
+                account_id=account_id, message_id_hdr=message_id_hdr,
+                from_addr=None, subject=None, received_at=None, size_bytes=None,
+            )
+            assert msg_key == message_id_hdr
+            await session.execute(
+                text(
+                    "INSERT INTO calendar_intake "
+                    "(account_id, msg_key, ical_uid, method, sequence, status) "
+                    "VALUES (:account_id, :msg_key, :uid, 'REQUEST', 0, 'pending')"
+                ),
+                {"account_id": account_id, "msg_key": msg_key, "uid": uid},
+            )
+            await session.commit()
+
+        await _handler(migrated_db).process_arrival(mail_id, account_id)
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text("SELECT status, object_id FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).one()
+            object_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                    {"c": collection_id},
+                )
+            ).scalar_one()
+        assert row.status == "imported"
+        assert row.object_id is not None
+        assert object_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_terminal_row_is_never_reapplied(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The never-classify-twice gate still holds for anything that
+        actually finished -- only 'pending' is retryable."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            _dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid), message_id_hdr="<pending2@example.com>",
+            )
+
+        handler = _handler(migrated_db)
+        event = _insert_event(mail_id, account_id)
+        await handler.handle_message_event(event)
+        await handler.handle_message_event(event)
+
+        async with migrated_db.session() as session:
+            object_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                    {"c": collection_id},
+                )
+            ).scalar_one()
+        assert object_count == 1
+
+
+class TestReadOnlyIntakeCalendar:
+    @pytest.mark.asyncio
+    async def test_read_only_intake_calendar_is_not_auto_imported(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 114: manual import already refuses a read-only calendar
+        with 400 -- automatic import silently skipped this check, so the
+        write dead-lettered on the server with nothing telling anyone."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            _dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            await session.execute(
+                text("UPDATE dav_collections SET read_only = true WHERE id = :id"),
+                {"id": collection_id},
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid), message_id_hdr="<readonly1@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text("SELECT status, object_id FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).one()
+            object_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                    {"c": collection_id},
+                )
+            ).scalar_one()
+        assert row.status == "unlinked"
+        assert row.object_id is None
+        assert object_count == 0
 
 
 class TestDecideIsPure:

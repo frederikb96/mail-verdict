@@ -575,6 +575,7 @@ def _apply_field_overrides(
     location: str | None,
     description: str | None,
     rrule: str | None,
+    bump_sequence: bool,
 ) -> None:
     """Mutate one VEVENT component in place -- fields left as None are
     unchanged. Shared by replace_master_fields() (scope="all") and
@@ -601,7 +602,8 @@ def _apply_field_overrides(
         if rrule:
             validate_rrule_frequency(rrule)
             component.add("RRULE", _parse_rrule_value(rrule))
-    _set(component, "SEQUENCE", int(component.get("SEQUENCE", 0)) + 1)
+    if bump_sequence:
+        _set(component, "SEQUENCE", int(component.get("SEQUENCE", 0)) + 1)
 
 
 def replace_master_fields(
@@ -614,12 +616,19 @@ def replace_master_fields(
     location: str | None = None,
     description: str | None = None,
     rrule: str | None = None,
+    bump_sequence: bool = True,
 ) -> str:
     """
     Edit the master VEVENT in place -- scope="all" on a recurring series,
     or the only edit path for a non-recurring event. Fields left as None
-    are unchanged; SEQUENCE is bumped, which is what tells an external
-    organizer's calendar this is a newer version.
+    are unchanged.
+
+    SEQUENCE is the ORGANIZER's own version counter (RFC 5545) --
+    bump_sequence defaults to True for a caller that already knows this
+    calendar organizes the event, and must be passed False otherwise:
+    advancing SEQUENCE on an event held only as an attendee makes the
+    next genuine update from the real organizer look stale by comparison
+    to calendar/intake.py's own staleness check, and lose silently.
     """
     cal = _parse_calendar(data)
     master = next(
@@ -630,7 +639,7 @@ def replace_master_fields(
 
     _apply_field_overrides(
         master, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
-        location=location, description=description, rrule=rrule,
+        location=location, description=description, rrule=rrule, bump_sequence=bump_sequence,
     )
     return _serialize(cal)
 
@@ -676,18 +685,20 @@ def edit_occurrence(
     all_day: bool | None = None,
     location: str | None = None,
     description: str | None = None,
+    bump_sequence: bool = True,
 ) -> str:
     """
     scope="this": edit one occurrence of a series without touching the
     others. Updates the existing exception at recurrence_id if there is
     one, otherwise clones the master as a new exception carrying the
-    overrides.
+    overrides. See replace_master_fields() for what bump_sequence gates
+    and why it must be False for anything held only as an attendee.
     """
     cal = _parse_calendar(data)
     target = _get_or_clone_exception(cal, recurrence_id)
     _apply_field_overrides(
         target, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
-        location=location, description=description, rrule=None,
+        location=location, description=description, rrule=None, bump_sequence=bump_sequence,
     )
     return _serialize(cal)
 
@@ -730,12 +741,15 @@ def _find_component(cal: Calendar, recurrence_id: str | None) -> Component:
     )
 
 
-def mark_cancelled(data: str, *, recurrence_id: str | None = None) -> str:
+def mark_cancelled(
+    data: str, *, recurrence_id: str | None = None, bump_sequence: bool = True,
+) -> str:
     """Set STATUS:CANCELLED on the whole series (recurrence_id=None) or
     on one occurrence -- the event stays visible, cancelled, until the
     user removes it (the intake design's CANCEL handling). Cancelling one
     occurrence of a series that has no stored exception there yet clones
-    the master as a cancelled exception, the same as edit_occurrence()."""
+    the master as a cancelled exception, the same as edit_occurrence().
+    See replace_master_fields() for what bump_sequence gates."""
     cal = _parse_calendar(data)
     target = (
         _get_or_clone_exception(cal, recurrence_id)
@@ -743,7 +757,8 @@ def mark_cancelled(data: str, *, recurrence_id: str | None = None) -> str:
         else _find_component(cal, None)
     )
     _set(target, "STATUS", "CANCELLED")
-    _set(target, "SEQUENCE", int(target.get("SEQUENCE", 0)) + 1)
+    if bump_sequence:
+        _set(target, "SEQUENCE", int(target.get("SEQUENCE", 0)) + 1)
     return _serialize(cal)
 
 

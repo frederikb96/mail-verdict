@@ -303,6 +303,34 @@ class TestBuildAndEdit:
         # Untouched fields survive.
         assert master.location == "Room 4"
 
+    def test_replace_master_fields_with_bump_sequence_false_leaves_it(self) -> None:
+        """Row 114: editing an event this calendar does not organize must
+        not advance SEQUENCE -- it belongs to the organizer's own version
+        counter (RFC 5545), and bumping it locally makes the organizer's
+        next genuine update look stale by comparison."""
+        updated = ical.replace_master_fields(
+            _SIMPLE_EVENT, summary="Team sync (renamed)", bump_sequence=False,
+        )
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.summary == "Team sync (renamed)"
+        assert master.sequence == 0
+
+    def test_edit_occurrence_with_bump_sequence_false_leaves_it(self) -> None:
+        updated = ical.edit_occurrence(
+            _RECURRING_EVENT, "20260901T090000Z",
+            summary="Standup (renamed)", bump_sequence=False,
+        )
+        _master, exceptions = ical.parse_master_and_exceptions(updated)
+        exception = next(e for e in exceptions if e.recurrence_id == "20260901T090000Z")
+        assert exception.summary == "Standup (renamed)"
+        assert exception.sequence == 0
+
+    def test_mark_cancelled_with_bump_sequence_false_leaves_it(self) -> None:
+        updated = ical.mark_cancelled(_SIMPLE_EVENT, bump_sequence=False)
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.status == "cancelled"
+        assert master.sequence == 0
+
     def test_replace_master_fields_moves_the_time(self) -> None:
         """A raw datetime dict-assigned onto a Component serializes with
         Python's str() rather than the RFC 5545 wire format unless it goes

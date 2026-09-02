@@ -301,6 +301,52 @@ class TestUpdateAndDelete:
         assert updated.json()["summary"] == "Renamed"
         assert updated.json()["sequence"] == 1
 
+    def test_update_as_attendee_does_not_bump_sequence(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 114: SEQUENCE is the organizer's own version counter --
+        editing an event this calendar was only invited to, not created,
+        must not advance it, or the real organizer's next genuine update
+        loses to it as stale."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        client.portal.call(_seed_identity_and_link, migrated_db, calendar_id)
+
+        async def _seed_received_invitation(db: DatabaseConnection) -> uuid.UUID:
+            async with db.session() as session:
+                dav_account_id = (
+                    await session.execute(
+                        text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                        {"id": calendar_id},
+                    )
+                ).scalar_one()
+                object_id = uuid.uuid4()
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                        "VALUES (:id, :account_id, :collection_id, 'calendar', "
+                        "'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:received-1\r\n"
+                        "DTSTART:20260910T090000Z\r\nDTEND:20260910T100000Z\r\nSUMMARY:Kickoff\r\n"
+                        "SEQUENCE:0\r\nORGANIZER:mailto:anna@example.com\r\n"
+                        "ATTENDEE:mailto:freddy@work.example\r\nEND:VEVENT\r\nEND:VCALENDAR')"
+                    ),
+                    {
+                        "id": object_id, "account_id": dav_account_id,
+                        "collection_id": calendar_id,
+                    },
+                )
+                await session.commit()
+            return object_id
+
+        object_id = client.portal.call(_seed_received_invitation, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"summary": "My own note on this", "scope": "all"},
+            )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["summary"] == "My own note on this"
+        assert updated.json()["sequence"] == 0
+
     def test_update_with_attendees_sends_a_request(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:

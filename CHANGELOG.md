@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead of being filtered out of the event-level error entirely. A `412` conflict means the
   server's version already overwrote the one just written -- the single case where an edit was
   silently discarded was previously the one case excluded from view
+- Invitation import now records a `pending` intake row before writing the calendar object it
+  describes, promoted only once that write lands. Previously the row was written with its
+  terminal status first, so anything interrupting between the two left a row saying e.g.
+  `imported` with no object behind it -- and the never-classify-twice gate then made that message
+  permanently unprocessable, while the UI read the row as a completed import
+- Automatic import into a read-only calendar is now refused the same way the manual "add to
+  calendar" flow already was, instead of silently dead-lettering on the server
+- Editing an event as an attendee (not this calendar's own event) no longer advances `SEQUENCE`.
+  `SEQUENCE` is the organizer's own version counter; bumping it locally made the organizer's next
+  genuine update to the same event lose to it as stale and get silently discarded
 
 ### Security
 

@@ -16,7 +16,11 @@ anything. handle_message_event() is the only caller that turns a
 decision into a write, and it does so gated by CalendarIntakeRepository's
 own uniqueness on (account_id, msg_key): the calendar_intake row is
 always written first, so a redelivered or resynced message finds the row
-already there and applies nothing a second time. api/invitations.py's
+already there and applies nothing a second time -- unless that row is
+still "pending", meaning an earlier attempt wrote the gate but never
+reached the object write it describes, in which case _apply() is given
+another chance rather than the message being silently unprocessable
+forever. api/invitations.py's
 GET reuses decide() for a message that never went through this listener
 (backfilled mail, or a message that arrived before intake was wired up)
 to render the same "here is what this invitation is" view without ever
@@ -65,6 +69,11 @@ CALENDAR_CONTENT_TYPES = ("text/calendar", "application/ics")
 # future counter-proposal flow -- nothing here handles it yet, so a
 # COUNTER message is left alone rather than guessed at.
 _HANDLED_METHODS = frozenset({"REQUEST", "CANCEL", "REPLY"})
+
+# decide() outcomes _apply() actually writes something for. The intake
+# row for any of these is inserted as "pending" first and promoted only
+# once that write lands -- see _write_intake_row()'s docstring.
+_WRITING_STATUSES = frozenset({"imported", "updated", "cancelled"})
 
 
 @dataclass
@@ -135,6 +144,14 @@ class CalendarIntakeHandler:
         decision = await self.decide(account_id, message, invitation)
         row, created = await self._write_intake_row(account_id, message, invitation, decision)
         if not created:
+            # A redelivery of the same message finds a row already
+            # sitting at the gate. "pending" means an earlier attempt
+            # wrote the gate row but never got as far as applying it --
+            # retryable, not a closed gate. Anything else is a genuine
+            # terminal outcome already recorded; the never-classify-twice
+            # gate does its job and this is a no-op.
+            if row.status == "pending":
+                await self._apply(row, decision, invitation, data)
             return
         await self._apply(row, decision, invitation, data)
 
@@ -207,6 +224,15 @@ class CalendarIntakeHandler:
             return IntakeDecision(
                 status="unlinked", reason="the intake calendar no longer exists", identity=identity,
             )
+        if collection.read_only:
+            # Manual import (api/invitations.py) already refuses a
+            # read-only calendar with 400 -- automatic import silently
+            # skipped this, so the write dead-lettered on the server and
+            # (per the reverted-write fix above) said nothing about why.
+            return IntakeDecision(
+                status="unlinked", identity=identity,
+                reason=f"{identity.email}'s intake calendar is read-only",
+            )
         dav_account = await self._dav_account_repo.get_by_id(collection.account_id)
         if dav_account is None or not dav_account.is_active:
             return IntakeDecision(
@@ -231,12 +257,22 @@ class CalendarIntakeHandler:
             )
             async with self._db.session() as session:
                 await replace_object_data(session, decision.existing.id, new_data)
+            await self._intake_repo.update_status(
+                row.id, status="cancelled", object_id=decision.existing.id,
+            )
             return
 
         if decision.status == "updated" and invitation.method == "REPLY":
             assert decision.existing is not None
             attendee = invitation.master.attendees[0] if invitation.master.attendees else None
             if attendee is None:
+                # Unreachable given decide()'s own authorization check
+                # above, which requires a matching attendee before ever
+                # returning "updated" for a REPLY -- promoted directly
+                # rather than left stuck at "pending" regardless.
+                await self._intake_repo.update_status(
+                    row.id, status="ignored", object_id=decision.existing.id,
+                )
                 return
             new_data = (
                 ical.replace_exception_partstat_or_add(
@@ -248,6 +284,9 @@ class CalendarIntakeHandler:
             )
             async with self._db.session() as session:
                 await replace_object_data(session, decision.existing.id, new_data)
+            await self._intake_repo.update_status(
+                row.id, status="updated", object_id=decision.existing.id,
+            )
             return
 
         if decision.status == "updated" and invitation.method == "REQUEST":
@@ -260,6 +299,9 @@ class CalendarIntakeHandler:
             )
             async with self._db.session() as session:
                 await replace_object_data(session, decision.existing.id, new_data)
+            await self._intake_repo.update_status(
+                row.id, status="updated", object_id=decision.existing.id,
+            )
             return
 
         if decision.status == "imported":
@@ -394,16 +436,30 @@ class CalendarIntakeHandler:
         self, account_id: uuid.UUID, message: Message,
         invitation: ical.ParsedInvitation, decision: IntakeDecision,
     ) -> tuple[CalendarIntake, bool]:
+        """
+        The never-classify-twice gate, written before _apply() writes
+        anything -- but never with a terminal status _apply() has not
+        actually reached yet. A decision _apply() will write something
+        for (imported/updated/cancelled) is inserted as "pending" and
+        promoted by _apply() itself once that write lands; anything
+        interrupting between the two now leaves a row correctly saying
+        "still in progress" rather than a terminal status with a NULL
+        object_id that looked exactly like a completed import. A
+        decision _apply() is a no-op for (ignored/ignored_stale/unlinked/
+        unauthorized) has nothing left to promote, so it is written with
+        its real status directly.
+        """
         msg_key = compute_msg_key(
             account_id=account_id, message_id_hdr=message.message_id,
             from_addr=message.from_addr, subject=message.subject,
             received_at=message.received_at, size_bytes=message.size_bytes,
         )
+        initial_status = "pending" if decision.status in _WRITING_STATUSES else decision.status
         return await self._intake_repo.create_if_absent(
             account_id=account_id, msg_key=msg_key, ical_uid=invitation.master.uid,
             method=invitation.method, sequence=invitation.master.sequence,
             recurrence_id=invitation.master.recurrence_id,
             dav_account_id=decision.dav_account_id, collection_id=decision.collection_id,
             object_id=decision.existing.id if decision.existing is not None else None,
-            status=decision.status, reason=decision.reason,
+            status=initial_status, reason=decision.reason,
         )

@@ -1140,9 +1140,16 @@ class RespondRequest(BaseModel):
 # ATTENDEE does not match the message's own sender (REPLY). Left
 # unapplied; the object_id/calendar_id still name what it claims to be
 # about, so a person can go look.
+#
+# "pending" -- calendar/intake.py wrote the never-classify-twice gate row
+# before attempting the object write it describes, and the process did
+# not get as far as promoting it -- momentary in the ordinary case (the
+# listener retries it), like "ignored" not carried by the UI's own type,
+# so a message caught mid-write simply renders nothing below its header
+# rather than a status the UI does not otherwise show.
 InvitationStatus = Literal[
     "imported", "updated", "unlinked", "cancelled", "ignored_stale", "failed", "ignored",
-    "unauthorized",
+    "unauthorized", "pending",
 ]
 
 
