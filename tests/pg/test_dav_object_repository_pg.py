@@ -132,6 +132,50 @@ class TestWindowFilter:
         assert {o.id for o in objects} == {pending_id}
 
     @pytest.mark.asyncio
+    async def test_dtstart_only_event_with_null_dtend_is_kept(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 109 re-verification: PostIMAP only ever writes dtend from
+        an explicit DTEND property -- a DURATION-only event, a
+        DTSTART-only one, and the canonical single-day all-day
+        `DTSTART;VALUE=DATE` with neither all leave dtend NULL. Without
+        COALESCE, `dtend > window_start` is NULL under three-valued
+        logic and the row is silently excluded, even though dtstart sits
+        inside the window and the event is present on the server."""
+        async with migrated_db.session() as session:
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            all_day_id = await _seed_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                dtstart=datetime(2026, 9, 10, tzinfo=timezone.utc), dtend=None,
+            )
+
+        objects = await DavObjectRepository(migrated_db).list_in_collections(
+            [collection_id],
+            datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert {o.id for o in objects} == {all_day_id}
+
+    @pytest.mark.asyncio
+    async def test_dtstart_only_event_before_the_window_is_still_excluded(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """COALESCE must not turn the NULL-dtend fix into a fix that never
+        excludes anything -- an old dtstart-only event still has to fall
+        outside a window that starts after it ends."""
+        async with migrated_db.session() as session:
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _seed_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                dtstart=datetime(2024, 1, 1, tzinfo=timezone.utc), dtend=None,
+            )
+
+        objects = await DavObjectRepository(migrated_db).list_in_collections(
+            [collection_id],
+            datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert objects == []
+
+    @pytest.mark.asyncio
     async def test_no_window_returns_everything(self, migrated_db: DatabaseConnection) -> None:
         async with migrated_db.session() as session:
             dav_account_id, collection_id = await _seed_dav_calendar(session)

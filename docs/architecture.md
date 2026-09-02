@@ -319,8 +319,12 @@ expanded in storage. `calendar/ical.py` is where a body is parsed, expanded over
 
 The month view reads only what its window could contain: `list_in_collections()` filters in SQL to
 a recurring master (any occurrence could fall inside the window) or a non-recurring object whose
-own `[dtstart, dtend)` overlaps it, using PostIMAP's own parsed `dtstart`/`dtend`/`is_recurring`
-columns rather than parsing and expanding every object in every visible calendar on every request.
+own `[dtstart, COALESCE(dtend, dtstart))` overlaps it, using PostIMAP's own parsed
+`dtstart`/`dtend`/`is_recurring` columns rather than parsing and expanding every object in every
+visible calendar on every request. The `COALESCE` matters: PostIMAP only ever writes `dtend` from
+an explicit `DTEND` property, so a `DURATION`-only event or an all-day `DTSTART;VALUE=DATE` with
+neither leaves it `NULL`, and comparing a `NULL` `dtend` directly would silently drop the row under
+SQL's three-valued logic.
 Updating an event with attendees sends a `METHOD:REQUEST`, the same as creating one and the same as
 deleting one sends `METHOD:CANCEL`, whenever the calendar's own identity is the `ORGANIZER`.
 Correcting a wrong password on an already-running `dav_accounts` row force-reconnects it the same

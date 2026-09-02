@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The month view now reads only what its window could contain -- a SQL predicate on
   `dav_objects.dtstart`/`dtend`/`is_recurring` instead of parsing and expanding every object in
   every visible calendar on every request, which cost seconds of blocking, single-threaded CPU
-  (stalling mail with it) against a calendar of a few thousand events
+  (stalling mail with it) against a calendar of a few thousand events. `dtend` is `COALESCE`d to
+  `dtstart` in that predicate, since PostIMAP only ever writes `dtend` from an explicit `DTEND`
+  property -- a `DURATION`-only event, or the canonical single-day all-day
+  `DTSTART;VALUE=DATE` with neither, would otherwise vanish from the calendar entirely, silently
 - Editing an event with attendees now sends a `REQUEST`, the way creating one sends a `REQUEST`
   and deleting one sends a `CANCEL`. An edit previously notified nobody, so moving a meeting's
   time left every attendee's own calendar silently wrong

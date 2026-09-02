@@ -227,6 +227,18 @@ class DavObjectRepository:
         or move still pending its outbound sync) is also kept in that
         case, since parsed columns lag the write by milliseconds and a
         just-created event should still render.
+
+        dtend is COALESCEd to dtstart because PostIMAP only ever writes it
+        from an explicit DTEND property (codec.ts reads
+        getFirstProperty("dtend") and nothing else) -- a DURATION-only
+        event, a DTSTART-only one, or the canonical single-day all-day
+        `DTSTART;VALUE=DATE` with neither, all leave dtend NULL. Comparing
+        a NULL dtend directly (`dtend > window_start`) is NULL under SQL's
+        three-valued logic, so the row is silently excluded -- the
+        `dtstart IS NULL` branch above does not rescue it either, since
+        dtstart is set. Every one of those shapes vanished from the
+        calendar entirely, still present on the server and in this very
+        table, before COALESCE.
         """
         if not collection_ids:
             return []
@@ -236,12 +248,13 @@ class DavObjectRepository:
                 DavObject.deleted_at.is_(None),
             )
             if window_start is not None and window_end is not None:
+                effective_dtend = func.coalesce(DavObject.dtend, DavObject.dtstart)
                 stmt = stmt.where(
                     or_(
                         DavObject.is_recurring.is_(True),
                         DavObject.dtstart.is_(None),
                         and_(
-                            DavObject.dtstart < window_end, DavObject.dtend > window_start,
+                            DavObject.dtstart < window_end, effective_dtend >= window_start,
                         ),
                     )
                 )
