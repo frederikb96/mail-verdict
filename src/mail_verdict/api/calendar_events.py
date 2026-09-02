@@ -168,6 +168,7 @@ async def _to_instance(
         description=parsed.description,
         status=parsed.status,  # type: ignore[arg-type]
         sequence=parsed.sequence,
+        rrule=parsed.rrule,
         organizer=(
             EventOrganizerOut(email=parsed.organizer.email, cn=parsed.organizer.cn)
             if parsed.organizer else None

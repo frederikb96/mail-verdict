@@ -210,6 +210,92 @@ class TestCreateAndList:
         assert resp.status_code == 404
 
 
+class TestRruleField:
+    """The editor reopens an event to show its own recurrence, and needs a
+    way to drop it -- both go through this field, not just ical.py."""
+
+    def test_get_reports_the_recurring_events_own_rrule(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-01T09:00:00+00:00",
+                    "dtend": "2026-09-01T09:15:00+00:00",
+                    "rrule": "FREQ=WEEKLY;COUNT=4",
+                },
+            )
+            assert created.json()["rrule"] == "FREQ=WEEKLY;COUNT=4"
+
+            fetched = client.get(f"/calendar/events/{created.json()['object_id']}")
+        assert fetched.json()["rrule"] == "FREQ=WEEKLY;COUNT=4"
+
+    def test_get_reports_none_for_a_non_recurring_event(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Solo focus block",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                },
+            )
+        assert created.json()["rrule"] is None
+
+    def test_patch_with_an_empty_rrule_removes_the_recurrence(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-01T09:00:00+00:00",
+                    "dtend": "2026-09-01T09:15:00+00:00",
+                    "rrule": "FREQ=WEEKLY;COUNT=4",
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"rrule": "", "scope": "all"},
+            )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["rrule"] is None
+        assert updated.json()["is_recurring"] is False
+
+    def test_patch_with_no_rrule_field_leaves_it_unchanged(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-01T09:00:00+00:00",
+                    "dtend": "2026-09-01T09:15:00+00:00",
+                    "rrule": "FREQ=WEEKLY;COUNT=4",
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"summary": "Renamed", "scope": "all"},
+            )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["rrule"] == "FREQ=WEEKLY;COUNT=4"
+
+
 class TestCreateWithTimezone:
     """Creating an event with tz either honours it or refuses
     it -- through the actual POST endpoint, not just ical.build_new_event

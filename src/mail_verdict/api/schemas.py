@@ -1066,6 +1066,7 @@ class EventInstanceOut(BaseModel):
     description: str | None
     status: EventStatus
     sequence: int
+    rrule: str | None
     organizer: EventOrganizerOut | None
     attendees: list[EventAttendeeOut]
     partstat: Partstat | None

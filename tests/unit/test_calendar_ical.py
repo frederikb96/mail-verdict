@@ -180,6 +180,10 @@ class TestParsing:
         assert len(exceptions) == 1
         assert exceptions[0].is_exception is True
         assert exceptions[0].summary == "Weekly standup (moved)"
+        # The exception's own component never carries RRULE (it does not
+        # recur its own series) -- what it reports here is the series it
+        # belongs to, not its own component's absence of one.
+        assert exceptions[0].rrule == "FREQ=WEEKLY;COUNT=4"
 
 
 class TestExpansion:
@@ -201,6 +205,32 @@ class TestExpansion:
             datetime(2027, 2, 1, tzinfo=timezone.utc),
         )
         assert instances == []
+
+    def test_expanded_occurrences_carry_the_masters_rrule(self) -> None:
+        """recurring-ical-events does not put RRULE on the occurrences it
+        generates -- each is one instant, not itself a recurring
+        component -- so every occurrence the month view renders would
+        otherwise report no repeat despite is_recurring being true."""
+        instances = ical.expand_instances(
+            _RECURRING_EVENT,
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert len(instances) == 4
+        assert all(i.rrule == "FREQ=WEEKLY;COUNT=4" for i in instances)
+        # The moved occurrence is an exception (recurring_ical_events
+        # returns the stored exception component for it) -- it too.
+        assert instances[1].is_exception is True
+        assert instances[1].rrule == "FREQ=WEEKLY;COUNT=4"
+
+    def test_a_non_recurring_events_occurrence_carries_no_rrule(self) -> None:
+        instances = ical.expand_instances(
+            _SIMPLE_EVENT,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 9, 10, tzinfo=timezone.utc),
+        )
+        assert len(instances) == 1
+        assert instances[0].rrule is None
 
 
 class TestOccurrenceBound:
@@ -390,6 +420,12 @@ class TestOccurrenceBound:
             datetime(2026, 9, 8, tzinfo=timezone.utc),
         )
 
+        # The same tolerance applies reading the master directly (not
+        # just expanding it) -- component.get("RRULE") is a list here,
+        # not a bare vRecur, and .rrule reading it must not crash either.
+        master, _ = ical.parse_master_and_exceptions(data)
+        assert master.rrule == "FREQ=DAILY"
+
     def test_count_over_a_wide_window_is_not_a_false_positive(self) -> None:
         """The old text-based guard ignored COUNT and UNTIL entirely, so
         a legitimate short-lived series over a wide window was refused
@@ -562,6 +598,19 @@ class TestBuildAndEdit:
         # Untouched fields survive.
         assert master.location == "Room 4"
 
+    def test_replace_master_fields_with_empty_rrule_removes_it(self) -> None:
+        """rrule="" is distinct from omitting the argument (None, the
+        default) -- the caller's way of saying a series should stop
+        recurring, since None already means "leave whatever is there"."""
+        updated = ical.replace_master_fields(_RECURRING_EVENT, rrule="")
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.rrule is None
+
+    def test_replace_master_fields_with_no_rrule_argument_leaves_it(self) -> None:
+        updated = ical.replace_master_fields(_RECURRING_EVENT, summary="Renamed")
+        master, _ = ical.parse_master_and_exceptions(updated)
+        assert master.rrule == "FREQ=WEEKLY;COUNT=4"
+
     def test_replace_master_fields_with_bump_sequence_false_leaves_it(self) -> None:
         """Editing an event this calendar does not organize must
         not advance SEQUENCE -- it belongs to the organizer's own version
@@ -705,9 +754,11 @@ class TestEditOccurrence:
         assert len(exceptions) == 2
         new_exception = next(e for e in exceptions if e.summary == "Standup (special)")
         assert new_exception.recurrence_id == "20260915T090000Z"
-        # The exception does not carry its own RRULE (it would recurse a
-        # second series from one occurrence otherwise).
-        assert new_exception.rrule is None
+        # The exception's own component carries no RRULE (it would
+        # recurse a second series from one occurrence otherwise), but it
+        # reports the series it belongs to -- see
+        # test_recurring_master_carries_exception.
+        assert new_exception.rrule == "FREQ=WEEKLY;COUNT=4"
 
 
 class TestParseItipMessage:

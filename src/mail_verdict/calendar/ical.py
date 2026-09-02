@@ -305,6 +305,14 @@ def _parse_component(
 
     status_raw = str(component.get("STATUS", "CONFIRMED")).lower()
 
+    # icalendar returns a bare vRecur for one RRULE, a list for a
+    # repeated property (RFC 5545 allows at most one, but real-world
+    # data doesn't always) -- _as_list() normalises both, the same
+    # tolerance test_two_rrule_lines_do_not_crash already proves for the
+    # occurrence bound. The first is as good a representative as any.
+    rrule_props = _as_list(component.get("RRULE"))
+    rrule = rrule_props[0].to_ical().decode("utf-8") if rrule_props else None
+
     return ParsedEvent(
         uid=str(component.get("UID", "")),
         summary=str(component.get("SUMMARY", "")),
@@ -319,7 +327,7 @@ def _parse_component(
         organizer=organizer,
         attendees=attendees,
         recurrence_id=recurrence_id,
-        rrule=component.get("RRULE").to_ical().decode("utf-8") if component.get("RRULE") else None,
+        rrule=rrule,
         is_recurring=is_recurring,
         is_exception=is_exception,
     )
@@ -361,6 +369,13 @@ def parse_master_and_exceptions(data: str) -> tuple[ParsedEvent, list[ParsedEven
         for c in components
         if c.get("RECURRENCE-ID") is not None
     ]
+    # An exception's own component never carries RRULE -- it does not
+    # recur its own series, and _get_or_clone_exception() strips it when
+    # cloning one from the master. "What does this occurrence's event
+    # repeat as" is a series-level question, though, so it reports the
+    # master's own rule rather than the None its own component would give.
+    for exception in exceptions:
+        exception.rrule = master.rrule
     return master, exceptions
 
 
@@ -446,6 +461,21 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
         )
         for occ in occurrences
     ]
+    if is_recurring:
+        # recurring-ical-events does not carry RRULE onto the occurrences
+        # it generates -- each is one instant, not itself a recurring
+        # component -- so it is restored here from the master's own text,
+        # the same fix parse_master_and_exceptions() makes for a stored
+        # exception. Without it, every expanded occurrence (which is all
+        # this application's month view ever returns) reports no repeat
+        # at all despite is_recurring being true.
+        master_component = next((c for c in vevents if c.get("RECURRENCE-ID") is None), None)
+        master_rrule = (
+            _parse_component(master_component, is_recurring=True, is_exception=False).rrule
+            if master_component is not None else None
+        )
+        for occurrence in parsed:
+            occurrence.rrule = master_rrule
     return sorted(parsed, key=lambda e: e.dtstart)
 
 
