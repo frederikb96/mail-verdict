@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Editing an event's `attendees` or `tz` now answers `422` instead of a `200` that reports
+  success while changing neither. `PATCH /calendar/events/{id}` never applied either field --
+  a caller renaming the attendee list, or setting a timezone, got a confirmed write back with
+  nothing actually different underneath. Changing who is invited needs its own `REQUEST`/`CANCEL`
+  sends, the way create and delete already give attendees, and `tz` has no settled meaning apart
+  from `dtstart`/`dtend`, which already carry the instant -- rejecting outright rules out the one
+  shape that must never happen, the same way `scope=following` already is rather than silently
+  treated as `scope=this`
 - An RSVP whose outbox row has aged out of retention now reports `outbox_status: "unknown"`
   rather than `"pending"` -- the status an active, in-flight send uses. A genuinely pending row
   can become `"sent"` or `"failed"` on its own; a row that no longer exists never will, so

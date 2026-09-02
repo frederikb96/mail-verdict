@@ -15,6 +15,12 @@ RANGE=THISANDFUTURE) is not implemented -- rejected with 422 rather than
 silently treated as scope="this", per the design's own rule that an
 unsupported scope must never be accepted and ignored.
 
+PATCH also rejects attendees and tz outright (422) rather than accept
+and silently drop them -- neither is applied by update_event. Changing
+who is invited needs its own REQUEST/CANCEL sends, the way
+create_event/delete_event already give attendees; tz has no settled
+meaning apart from dtstart/dtend, which already carry the instant.
+
 source_message_id (which invitation email an event came from) is left
 null throughout: resolving it needs a join from calendar_intake.msg_key
 back to messages.message_id, which only works for the common case where
@@ -372,11 +378,28 @@ async def _send_itip(
 async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> EventInstanceOut:
     """Edit an event. scope="all" edits the whole series (or the only edit
     path for a non-recurring event); scope="this" edits one occurrence
-    without touching the others; scope="following" is not implemented."""
+    without touching the others; scope="following" is not implemented.
+    attendees and tz are refused outright (422) rather than accepted and
+    silently dropped -- neither is applied by this endpoint."""
     await _require_support()
     if request.scope == "following":
         raise HTTPException(
             status_code=422, detail="scope=following (splitting a series) is not implemented",
+        )
+    # Neither field is applied below -- changing who is invited needs its
+    # own REQUEST/CANCEL sends the way create_event/delete_event already
+    # give attendees, which this endpoint does not do, and tz has no
+    # settled meaning apart from dtstart/dtend, which already carry their
+    # own instant. Rejecting outright is the one option that rules out a
+    # write reporting success for a field it never touched.
+    if request.attendees is not None:
+        raise HTTPException(
+            status_code=422, detail="changing attendees on an existing event is not supported",
+        )
+    if request.tz is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="tz cannot be set on an existing event; dtstart/dtend already carry the instant",
         )
 
     db = get_db_connection()

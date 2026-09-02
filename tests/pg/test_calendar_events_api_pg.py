@@ -597,6 +597,55 @@ class TestUpdateAndDelete:
             )
         assert resp.status_code == 422
 
+    def test_update_naming_attendees_is_refused_not_silently_dropped(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 143: the endpoint reads neither attendees nor tz -- a
+        caller naming either must get an error, not a 200 that reports
+        success for a field it never touched."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-01T09:00:00+00:00",
+                    "dtend": "2026-09-01T09:15:00+00:00",
+                },
+            )
+            object_id = created.json()["object_id"]
+            before = client.get(f"/calendar/events/{object_id}")
+
+            resp = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"attendees": [{"email": "anna@example.com"}]},
+            )
+            assert resp.status_code == 422, resp.text
+
+            after = client.get(f"/calendar/events/{object_id}")
+        # Refused, not silently accepted with nothing changed underneath.
+        assert after.json()["attendees"] == before.json()["attendees"] == []
+        assert after.json()["sequence"] == before.json()["sequence"]
+
+    def test_update_naming_tz_is_refused_not_silently_dropped(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-01T09:00:00+00:00",
+                    "dtend": "2026-09-01T09:15:00+00:00",
+                },
+            )
+            object_id = created.json()["object_id"]
+            resp = client.patch(
+                f"/calendar/events/{object_id}", json={"tz": "Europe/Berlin"},
+            )
+        assert resp.status_code == 422, resp.text
+
     def test_delete_removes_the_event(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
