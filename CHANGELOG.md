@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   same `is_active` bounce mail accounts already get. Previously the account kept retrying the old
   credential until something else restarted it, so fixing a mistyped app password appeared to do
   nothing
+- A calendar edit the server rejected in favour of a newer copy now shows as such on the event,
+  instead of being filtered out of the event-level error entirely. A `412` conflict means the
+  server's version already overwrote the one just written -- the single case where an edit was
+  silently discarded was previously the one case excluded from view
 
 ### Security
 

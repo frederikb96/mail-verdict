@@ -194,7 +194,7 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
 
     collection_ids = [c.id for c, _ in visible]
     objects = await object_repo.list_in_collections(collection_ids, window_start, window_end)
-    errors = await object_repo.get_unresolved_errors([o.id for o in objects])
+    errors = await object_repo.get_write_errors([o.id for o in objects])
     identity_by_collection = {c.id: email for c, email in visible}
     read_only_by_collection = {c.id: c.read_only for c, _ in visible}
 
@@ -260,7 +260,7 @@ async def get_event(object_id: uuid.UUID, recurrence_id: str | None = None) -> E
             identity_email = await session.scalar(
                 select(Identity.email).where(Identity.id == prefs.identity_id)
             )
-    errors = await object_repo.get_unresolved_errors([obj.id])
+    errors = await object_repo.get_write_errors([obj.id])
     return await _to_instance(
         parsed, obj, own_identity_email=identity_email,
         read_only=collection.read_only if collection else False,

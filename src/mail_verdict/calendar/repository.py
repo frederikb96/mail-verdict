@@ -305,7 +305,10 @@ class DavObjectRepository:
         same "may still be sitting in the column looking applied" state
         the contract's Pending writes and conflicts section describes.
         Batched over the whole visible set rather than one query per
-        object.
+        object. api/invitations.py is the one caller: whether a manual
+        import dead-lettered, which is genuinely still wrong until
+        retried -- not the reverted case get_write_errors() below also
+        covers, which is a conflict PostIMAP already resolved.
         """
         if not object_ids:
             return {}
@@ -320,6 +323,45 @@ class DavObjectRepository:
             )
             # Last write wins if an object has more than one unresolved row.
             return {row.object_id: row.error for row in result.all() if row.object_id is not None}
+
+    async def get_write_errors(
+        self, object_ids: list[uuid.UUID],
+    ) -> dict[uuid.UUID, str]:
+        """
+        object_id -> a message worth surfacing at the event level, for
+        every object with a dav_notifications row -- both an unresolved
+        failure (reverted_at IS NULL, the write may still be sitting in
+        the column) and a 412 conflict PostIMAP already resolved by
+        re-reading the server's copy over it (reverted_at IS NOT NULL).
+
+        Per the contract's "Pending writes and conflicts", a 412 means
+        the server won and the row's own edit is gone -- silently, unless
+        something says so. get_unresolved_errors() above excludes exactly
+        that case, which is the one case a user's edit was actually
+        thrown away rather than merely still pending. Batched over the
+        whole visible set rather than one query per object.
+        """
+        if not object_ids:
+            return {}
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(
+                    DavNotification.object_id, DavNotification.error,
+                    DavNotification.reverted_at,
+                )
+                .where(DavNotification.object_id.in_(object_ids))
+                .order_by(DavNotification.created_at)
+            )
+            # Last write wins if an object has more than one notification.
+            messages: dict[uuid.UUID, str] = {}
+            for row in result.all():
+                if row.object_id is None:
+                    continue
+                messages[row.object_id] = (
+                    "Your last change to this event was replaced by the server's own version."
+                    if row.reverted_at is not None else row.error
+                )
+            return messages
 
 
 class CalendarPrefsRepository:

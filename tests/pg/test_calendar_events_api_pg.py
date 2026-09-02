@@ -151,6 +151,80 @@ class TestCreateAndList:
         assert resp.status_code == 404
 
 
+class TestWriteErrors:
+    """Row 110: a reverted write -- the server's copy already overwrote
+    the user's edit -- has to say so, not read as "nothing happened"."""
+
+    def test_reverted_write_is_surfaced_with_its_own_wording(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        async def _seed(db: DatabaseConnection) -> uuid.UUID:
+            async with db.session() as session:
+                dav_account_id, collection_id = await _seed_calendar(session)
+                object_id = uuid.uuid4()
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                        "VALUES (:id, :account_id, :collection_id, 'calendar', "
+                        "'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:reverted-1\r\n"
+                        "DTSTART:20260910T090000Z\r\nDTEND:20260910T100000Z\r\nSUMMARY:Kickoff\r\n"
+                        "END:VEVENT\r\nEND:VCALENDAR')"
+                    ),
+                    {"id": object_id, "account_id": dav_account_id, "collection_id": collection_id},
+                )
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_notifications "
+                        "(account_id, action, object_id, error, reverted_at) "
+                        "VALUES (:account_id, 'put', :object_id, 'stale etag', now())"
+                    ),
+                    {"account_id": dav_account_id, "object_id": object_id},
+                )
+                await session.commit()
+            return object_id
+
+        object_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.get(f"/calendar/events/{object_id}")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["sync_error"] is not None
+        assert "replaced" in resp.json()["sync_error"].lower()
+
+    def test_unresolved_write_keeps_the_servers_own_error(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        async def _seed(db: DatabaseConnection) -> uuid.UUID:
+            async with db.session() as session:
+                dav_account_id, collection_id = await _seed_calendar(session)
+                object_id = uuid.uuid4()
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                        "VALUES (:id, :account_id, :collection_id, 'calendar', "
+                        "'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:unresolved-1\r\n"
+                        "DTSTART:20260910T090000Z\r\nDTEND:20260910T100000Z\r\nSUMMARY:Kickoff\r\n"
+                        "END:VEVENT\r\nEND:VCALENDAR')"
+                    ),
+                    {"id": object_id, "account_id": dav_account_id, "collection_id": collection_id},
+                )
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_notifications "
+                        "(account_id, action, object_id, error) "
+                        "VALUES (:account_id, 'put', :object_id, 'connection refused')"
+                    ),
+                    {"account_id": dav_account_id, "object_id": object_id},
+                )
+                await session.commit()
+            return object_id
+
+        object_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.get(f"/calendar/events/{object_id}")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["sync_error"] == "connection refused"
+
+
 class TestCreateWithAttendees:
     def test_create_with_attendees_requires_a_linked_identity(
         self, client: TestClient, migrated_db: DatabaseConnection,
