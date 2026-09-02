@@ -9,10 +9,12 @@
 
 import { useCallback } from "react";
 import { type InfiniteData, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import { updateFolderCounts } from "@/hooks/use-mails";
+import { ACTION_LABELS, updateFolderCounts } from "@/hooks/use-mails";
+import { useToast } from "@/hooks/use-toast";
+import { selectedMailIdAtom } from "@/lib/atoms";
 import {
   lastClickedMailIdAtom,
   selectedMailIdsAtom,
@@ -117,6 +119,10 @@ export function useBulkAction() {
   const selectedIds = useAtomValue(selectedMailIdsAtom);
   const scope = useAtomValue(selectionScopeAtom);
   const clearSelection = useClearSelection();
+  // Same reasoning as useMailAction: a bulk action that carries the open
+  // message out of its folder must not leave the reading pane pointed at it.
+  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const { push: pushToast } = useToast();
 
   return useMutation({
     mutationFn: ({
@@ -149,6 +155,14 @@ export function useBulkAction() {
       // only optimistically update the explicit-id case, invalidate for scope.
       const removesFromList = ["move", "trash", "expunge", "archive", "spam"].includes(action);
 
+      const wasSelected = removesFromList && selectedMailId != null && (
+        scope
+          ? qc.getQueryData<{ folder_id?: string }>(["mail", selectedMailId])?.folder_id ===
+            scope.folderId
+          : selectedIds.has(selectedMailId)
+      );
+      if (wasSelected) setSelectedMailId(null);
+
       if (removesFromList && !scope) {
         const folderCounts = new Map<string, { total: number; unread: number }>();
 
@@ -178,10 +192,13 @@ export function useBulkAction() {
         }
       }
 
-      return { prevMailQueries, prevFolders, prevFolderOrder, accountId };
+      return { prevMailQueries, prevFolders, prevFolderOrder, accountId, wasSelected, selectedMailId };
     },
 
-    onError: (_err, _vars, ctx) => {
+    onError: (err, vars, ctx) => {
+      const label = ACTION_LABELS[vars.action] ?? vars.action;
+      pushToast(`Could not ${label}: ${err.message}`, "error", 0);
+
       if (!ctx) return;
       if (ctx.prevMailQueries) {
         for (const [key, data] of ctx.prevMailQueries as Array<[readonly unknown[], unknown]>) {
@@ -193,6 +210,9 @@ export function useBulkAction() {
       }
       if (ctx.prevFolderOrder && ctx.accountId) {
         qc.setQueryData(["folder-order", ctx.accountId], ctx.prevFolderOrder);
+      }
+      if (ctx.wasSelected && ctx.selectedMailId) {
+        setSelectedMailId(ctx.selectedMailId);
       }
     },
 

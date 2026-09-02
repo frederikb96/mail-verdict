@@ -19,7 +19,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useBulkAction, useClearSelection, useSelectAll } from "@/hooks/use-selection";
-import { selectionCountAtom } from "@/store/selection-atom";
+import { selectionCountAtom, selectionModeAtom, selectionScopeAtom } from "@/store/selection-atom";
 import { selectedAccountIdAtom } from "@/lib/atoms";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 
@@ -29,25 +29,30 @@ interface BulkToolbarProps {
 }
 
 /**
- * Toolbar that appears above the mail list when mails are selected.
+ * Toolbar that appears above the mail list when mails are selected, either
+ * as an explicit id list or as a folder-wide scope from "Select all".
  * Provides bulk action buttons for move, archive, star, spam, trash.
  */
 export function BulkToolbar({ folderId, visibleIds }: BulkToolbarProps) {
   const count = useAtomValue(selectionCountAtom);
+  const scope = useAtomValue(selectionScopeAtom);
+  const selectionMode = useAtomValue(selectionModeAtom);
   const accountId = useAtomValue(selectedAccountIdAtom);
   const bulkAction = useBulkAction();
   const clearSelection = useClearSelection();
   const { selectFetched, selectFolderScope } = useSelectAll();
   const { data: orderData } = useFolderOrder(accountId);
 
-  if (count === 0 || !accountId) return null;
+  if (!selectionMode || !accountId) return null;
 
   const folders = orderData?.folders ?? [];
+  const scopeLabel =
+    scope?.filter === "unread" ? "Every unread message" : "Every message";
 
   return (
     <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2">
       <Badge variant="secondary" className="mr-1">
-        {count} selected
+        {scope ? scopeLabel : `${count} selected`}
       </Badge>
 
       {folderId && (

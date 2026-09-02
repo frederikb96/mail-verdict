@@ -69,7 +69,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new ApiError(res.status, text);
+    // FastAPI error bodies are `{"detail": "..."}` -- surface that string
+    // directly rather than the raw JSON envelope, wherever it's parseable.
+    let message = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed?.detail === "string") message = parsed.detail;
+    } catch {
+      // Not JSON -- use the raw body as-is.
+    }
+    throw new ApiError(res.status, message);
   }
   if (res.status === 204) return undefined as T;
   return res.json();

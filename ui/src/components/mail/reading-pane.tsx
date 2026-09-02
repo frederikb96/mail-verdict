@@ -199,6 +199,8 @@ function ThreadMessage({
               action: { action: mail.is_seen ? "mark_unread" : "mark_read" },
             })
           }
+          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
+          aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
         >
           {mail.is_seen ? (
             <MailIcon className="h-3.5 w-3.5" />
@@ -217,6 +219,8 @@ function ThreadMessage({
               action: { action: mail.is_flagged ? "unflag" : "flag" },
             })
           }
+          title={mail.is_flagged ? "Unflag" : "Star"}
+          aria-label={mail.is_flagged ? "Unflag" : "Star"}
         >
           <Star
             className={
@@ -231,6 +235,7 @@ function ThreadMessage({
           download={`${mail.subject ?? "message"}.eml`}
           className="flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
           title="Download as .eml"
+          aria-label="Download as .eml"
         >
           <FileDown className="h-3.5 w-3.5" />
         </a>
@@ -239,14 +244,22 @@ function ThreadMessage({
             variant="ghost"
             size="sm"
             className="h-7 gap-1 px-2"
-            onClick={() =>
+            onClick={() => {
+              // Records the correction for the classifier and moves the
+              // message out of Junk -- two distinct writes, both needed.
               verdictFeedback.mutate({
                 mailId: mail.id,
                 accountId: mail.account_id,
                 isSpam: false,
-              })
-            }
+              });
+              mailAction.mutate({
+                mailId: mail.id,
+                accountId: mail.account_id,
+                action: { action: "not_spam" },
+              });
+            }}
             title="Mark as not spam"
+            aria-label="Mark as not spam"
           >
             <ThumbsUp className="h-3.5 w-3.5" />
           </Button>
@@ -264,6 +277,7 @@ function ThreadMessage({
               })
             }
             title="Mark as spam"
+            aria-label="Mark as spam"
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </Button>
