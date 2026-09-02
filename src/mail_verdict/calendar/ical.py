@@ -25,61 +25,72 @@ import recurring_ical_events
 from icalendar import Calendar, Component, Event, vCalAddress, vDDDTypes, vText
 
 # A window this wide could contain more occurrences than a caller ever
-# means to render, and expand_instances() refuses rather than asking
-# recurring-ical-events to actually generate them -- see
-# TooManyOccurrencesError.
+# means to render, and expand_instances() refuses rather than letting
+# recurring-ical-events actually generate them all in one call -- see
+# TooManyOccurrencesError and _bounded_between().
 MAX_EXPANDED_OCCURRENCES = 3000
 
-# The shortest possible gap, in seconds, between two occurrences at each
-# RRULE FREQ -- deliberately conservative (a month is never shorter than
-# 28 days, a year never shorter than 365), since BYDAY/BYSETPOS and
-# similar only ever narrow a series further, never widen it. Used to
-# reject a series before asking recurring-ical-events to expand it, not
-# to size the result.
-_FREQ_MIN_SECONDS = {
-    "SECONDLY": 1,
-    "MINUTELY": 60,
-    "HOURLY": 3600,
-    "DAILY": 86400,
-    "WEEKLY": 7 * 86400,
-    "MONTHLY": 28 * 86400,
-    "YEARLY": 365 * 86400,
-}
+# _bounded_between()'s first probe width, then doubled each round -- 15
+# minutes is recurring-ical-events' own choice of granularity floor for
+# its `after()` binary search (query.py's `min_time_span`), so a probe
+# this wide already catches FREQ=SECONDLY/MINUTELY within the first
+# round or two while costing little for an ordinary calendar.
+_PROBE_INITIAL_STEP = timedelta(minutes=15)
 
 
 class TooManyOccurrencesError(ValueError):
-    """A series whose RRULE could produce more than MAX_EXPANDED_OCCURRENCES
-    occurrences inside the requested window -- raised before
-    recurring-ical-events is ever asked to expand it, since that call
-    itself is what a FREQ=SECONDLY series over even a one-day window
-    measures at tens of seconds and hundreds of MB, synchronously, on the
-    process's only event loop."""
+    """A series that could produce more than MAX_EXPANDED_OCCURRENCES
+    occurrences inside the requested window -- raised once
+    _bounded_between() has actually measured that many real occurrences,
+    never predicted from the RRULE's own text. Asking recurring-ical-events
+    to expand a FREQ=SECONDLY series over even a one-day window measures
+    at tens of seconds and hundreds of MB, synchronously, on the
+    process's only event loop -- and that One Big Call is what this
+    exists to avoid making at all."""
 
 
-def _would_exceed_window(
-    component: Component, window_start: datetime, window_end: datetime,
-) -> bool:
-    """A cheap upper bound on how many occurrences this component's RRULE
-    could produce inside [window_start, window_end) -- window duration
-    divided by the shortest possible gap at this FREQ/INTERVAL. Never
-    calls recurring-ical-events, since that call is the one this exists
-    to guard; a component with no RRULE, or an unrecognised FREQ, is
-    never flagged here."""
-    rrule_prop = component.get("RRULE")
-    if rrule_prop is None:
-        return False
-    freq_values = rrule_prop.get("FREQ")
-    freq = str(freq_values[0]).upper() if freq_values else ""
-    min_seconds = _FREQ_MIN_SECONDS.get(freq)
-    if min_seconds is None:
-        return False
-    interval_values = rrule_prop.get("INTERVAL")
-    interval = int(interval_values[0]) if interval_values else 1
-    window_seconds = (window_end - window_start).total_seconds()
-    if window_seconds <= 0:
-        return False
-    max_possible = window_seconds / (min_seconds * max(interval, 1))
-    return max_possible > MAX_EXPANDED_OCCURRENCES
+def _bounded_between(
+    query: Any, window_start: datetime, window_end: datetime,
+) -> list[Any]:
+    """Every occurrence in [window_start, window_end), refusing once more
+    than MAX_EXPANDED_OCCURRENCES real ones have been produced.
+
+    A pre-check on the RRULE's own text was tried and abandoned: getting
+    every RFC 5545 expansion rule right -- COUNT, UNTIL, RDATE, EXDATE,
+    repeated properties, and BYHOUR/BYMINUTE/BYSECOND (which *widen* a
+    series when FREQ is coarser than they are, not narrow it) -- is a lot
+    of surface for something whose failure mode is either a bypass (the
+    original attack, respelled) or a false positive (a legitimate event
+    silently absent). This instead measures what the library actually
+    produces, a bounded slice of the window at a time, so it is immune to
+    how the danger is spelled: query.between() is called on a small
+    sub-window first, doubling each round only while the running total
+    stays under the cap, so a call expensive enough to matter is never
+    made in the first place. Worst case computes on the order of
+    2 x MAX_EXPANDED_OCCURRENCES before giving up, however the series
+    that produced them is written.
+
+    query.between()'s own bounds are inclusive on both ends, so each
+    probe's query end is nudged a microsecond short of the next probe's
+    start -- otherwise an occurrence landing exactly on a probe boundary
+    would be counted, and rendered, twice.
+    """
+    collected: list[Any] = []
+    probe_start = window_start
+    step = _PROBE_INITIAL_STEP
+    while probe_start < window_end:
+        probe_end = min(probe_start + step, window_end)
+        query_end = probe_end - timedelta(microseconds=1)
+        if query_end >= probe_start:
+            collected.extend(query.between(probe_start, query_end))
+        if len(collected) > MAX_EXPANDED_OCCURRENCES:
+            raise TooManyOccurrencesError(
+                f"more than {MAX_EXPANDED_OCCURRENCES} occurrences "
+                f"between {window_start.isoformat()} and {window_end.isoformat()}",
+            )
+        probe_start = probe_end
+        step = step * 2
+    return collected
 
 
 def validate_rrule_frequency(rrule: str) -> None:
@@ -415,19 +426,19 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
         One ParsedEvent per occurrence in range, dtstart-ordered
 
     Raises:
-        TooManyOccurrencesError: the RRULE could produce more than
-            MAX_EXPANDED_OCCURRENCES occurrences in this window -- never
-            actually attempted, see _would_exceed_window().
+        TooManyOccurrencesError: the series actually produced more than
+            MAX_EXPANDED_OCCURRENCES occurrences in this window -- see
+            _bounded_between().
     """
     cal = _parse_calendar(data)
     vevents = [c for c in cal.walk() if c.name == "VEVENT"]
-    if any(_would_exceed_window(c, window_start, window_end) for c in vevents):
-        raise TooManyOccurrencesError(
-            f"RRULE would produce more than {MAX_EXPANDED_OCCURRENCES} occurrences "
-            f"between {window_start.isoformat()} and {window_end.isoformat()}",
-        )
     is_recurring = any(c.get("RRULE") or c.get("RDATE") for c in vevents)
-    occurrences = recurring_ical_events.of(cal).between(window_start, window_end)
+    query = recurring_ical_events.of(cal)
+    occurrences = (
+        _bounded_between(query, window_start, window_end)
+        if is_recurring
+        else query.between(window_start, window_end)
+    )
     parsed = [
         _parse_component(
             occ, is_recurring=is_recurring,

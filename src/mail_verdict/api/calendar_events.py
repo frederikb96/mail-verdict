@@ -24,6 +24,7 @@ implemented here -- flagged in the report as unfinished.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -60,6 +61,8 @@ from mail_verdict.postimap.actions import (
 from mail_verdict.postimap.contract import read_postimap_info, supports_dav
 
 router = APIRouter(prefix="/calendar/events", tags=["calendar"])
+
+logger = logging.getLogger(__name__)
 
 _UNSUPPORTED_DETAIL = (
     "Calendars and contacts require PostIMAP service_version >= 1.6.0; "
@@ -202,7 +205,15 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
     for obj in objects:
         try:
             instances = ical.expand_instances(obj.data, window_start, window_end)
-        except ValueError:
+        except Exception:
+            # A single malformed or pathological object (an unparseable
+            # body, or one that would expand past the occurrence bound)
+            # must never take the whole month view down with it -- catch
+            # broadly rather than ValueError alone, since a library-level
+            # parse failure is not guaranteed to be one.
+            logger.warning(
+                "Skipping calendar object %s in month view", obj.id, exc_info=True,
+            )
             continue
         for parsed in instances:
             events.append(

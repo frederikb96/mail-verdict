@@ -4,9 +4,10 @@ dataclass out."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
+from icalendar import Calendar, Event
 
 from mail_verdict.calendar import ical
 
@@ -220,6 +221,131 @@ class TestOccurrenceBound:
         assert ical.recurrence_id_to_datetime("20260908T090000Z") == datetime(
             2026, 9, 8, 9, 0, tzinfo=timezone.utc,
         )
+
+    def test_byhour_byminute_bysecond_widening_is_refused(self) -> None:
+        """A re-verification found the frequency-text guard this replaced
+        waved this through: FREQ=DAILY with BYHOUR/BYMINUTE/BYSECOND all
+        enumerated is one occurrence per second wearing a DAILY hat --
+        those parts widen a series when FREQ is coarser than they are,
+        they do not narrow it. The bound now measures real output, so
+        the RRULE's own spelling cannot walk around it."""
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:bomb-3@example.com\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260901T000000Z\r\n"
+            "DTEND:20260901T000001Z\r\n"
+            "SUMMARY:Tick\r\n"
+            "SEQUENCE:0\r\n"
+            "RRULE:FREQ=DAILY;BYHOUR=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,"
+            "20,21,22,23;BYMINUTE=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,"
+            "21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,"
+            "46,47,48,49,50,51,52,53,54,55,56,57,58,59;BYSECOND=0,10,20,30,40,50\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        with pytest.raises(ical.TooManyOccurrencesError):
+            ical.expand_instances(
+                data,
+                datetime(2026, 9, 1, tzinfo=timezone.utc),
+                datetime(2026, 9, 2, tzinfo=timezone.utc),
+            )
+
+    def test_rdate_only_bomb_is_refused(self) -> None:
+        """RDATE with no RRULE at all was never inspected by the old
+        text-based guard -- the new bound has no such blind spot, since
+        it measures what the library actually returns regardless of
+        which mechanism produced it. One-per-second for two hours is
+        well past the 3000-occurrence cap while staying a fraction of
+        what an attacker's RDATE list could actually hold."""
+        base = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        rdates = ",".join(
+            (base + timedelta(seconds=offset)).strftime("%Y%m%dT%H%M%SZ")
+            for offset in range(7200)
+        )
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:bomb-4@example.com\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260901T000000Z\r\n"
+            "DTEND:20260901T000001Z\r\n"
+            "SUMMARY:Tick\r\n"
+            "SEQUENCE:0\r\n"
+            f"RDATE:{rdates}\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        with pytest.raises(ical.TooManyOccurrencesError):
+            ical.expand_instances(
+                data,
+                datetime(2026, 9, 1, tzinfo=timezone.utc),
+                datetime(2026, 9, 2, tzinfo=timezone.utc),
+            )
+
+    def test_two_rrule_lines_do_not_crash(self) -> None:
+        """A regression the old guard introduced: icalendar returns a
+        list for a repeated property, and the old code called .get() on
+        the RRULE value directly, raising AttributeError -- uncaught by
+        list_events' `except ValueError`, so the whole month view 500'd.
+        The bound never inspects RRULE text at all, so this is just two
+        ordinary (harmless) rules to expand."""
+        cal = Calendar()
+        cal.add("VERSION", "2.0")
+        cal.add("PRODID", "-//Test//EN")
+        event = Event()
+        event.add("UID", "two-rrules@example.com")
+        event.add("DTSTAMP", datetime(2026, 9, 1, 12, tzinfo=timezone.utc))
+        event.add("DTSTART", datetime(2026, 9, 1, tzinfo=timezone.utc))
+        event.add("DTEND", datetime(2026, 9, 1, 1, tzinfo=timezone.utc))
+        event.add("SUMMARY", "Double-ruled")
+        event.add("SEQUENCE", 0)
+        event.add("RRULE", {"FREQ": ["DAILY"]})
+        event.add("RRULE", {"FREQ": ["WEEKLY"]})
+        cal.add_component(event)
+        data = cal.to_ical().decode("utf-8")
+
+        # Must not raise AttributeError -- whatever recurring-ical-events
+        # itself makes of two RRULE lines is between it and RFC 5545;
+        # this only asserts the bound doesn't crash reading them.
+        ical.expand_instances(
+            data,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 9, 8, tzinfo=timezone.utc),
+        )
+
+    def test_count_over_a_wide_window_is_not_a_false_positive(self) -> None:
+        """The old text-based guard ignored COUNT and UNTIL entirely, so
+        a legitimate short-lived series over a wide window was refused
+        and silently dropped by list_events. The bound measures real
+        output, so ten real occurrences never trips a 3000-occurrence
+        cap regardless of window width."""
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:short-lived@example.com\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260901T090000Z\r\n"
+            "DTEND:20260901T093000Z\r\n"
+            "SUMMARY:Daily check-in\r\n"
+            "SEQUENCE:0\r\n"
+            "RRULE:FREQ=MINUTELY;COUNT=10\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        instances = ical.expand_instances(
+            data,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert len(instances) == 10
 
 
 class TestMethodAndScheduleAgent:

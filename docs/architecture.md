@@ -398,18 +398,23 @@ removes it.
 Identity resolution for automatic import requires the identity to actually appear in the
 `ATTENDEE` list — being a `to_addrs`/`cc_addrs` recipient is not being invited, and that fallback
 was also how a spam invitation (or an unbounded `RRULE`, see below) reached the calendar before the
-message was ever classified. The to/cc fallback stays available to `resolve_attendee_identity()`'s
-other callers, such as the manual "add to calendar" flow, where a person is choosing. An invitation
-to an address linked to no calendar (`calendar_prefs.intake`), or whose intake calendar is
-`read_only`, is left `unlinked`, surfaced by `GET /api/calendar/invitations/{message_id}` with the
-candidate calendars to import into.
+message was ever classified. `resolve_attendee_identity()` never falls back to to/cc for anyone —
+the manual "add to calendar" flow needs no identity resolution at all, since the person doing it
+names the calendar directly. An invitation to an address linked to no calendar
+(`calendar_prefs.intake`), or whose intake calendar is `read_only`, is left `unlinked`, surfaced by
+`GET /api/calendar/invitations/{message_id}` with the candidate calendars to import into.
 
-`ical.expand_instances()` refuses to expand a series whose `RRULE` could produce more than a few
-thousand occurrences in the requested window, rather than asking `recurring-ical-events` to
-generate them — a `FREQ=SECONDLY` series handed to that library, even over a one-day window,
-blocks the process for tens of seconds at hundreds of MB, synchronously, on the same event loop as
-mail sync and health checks. Creating or editing an event refuses `FREQ=SECONDLY`/`MINUTELY`
-outright. `SEQUENCE` only advances when the calendar's own identity organizes the event (or the
+`ical.expand_instances()` bounds a recurring series' expansion regardless of how the RRULE (or
+RDATE) that produces it is spelled: it walks the requested window in progressively wider slices,
+counting the real occurrences `recurring-ical-events` returns for each slice, and refuses once more
+than a few thousand have come back — rather than asking the library for the whole window in one
+call, which is what a `FREQ=SECONDLY` series, or one whose `BYHOUR`/`BYMINUTE`/`BYSECOND` widen a
+coarser `FREQ` to the same effect, or a large `RDATE` list, turns into tens of seconds and hundreds
+of MB, synchronously, on the same event loop as mail sync and health checks — inspecting the
+RRULE's own text first was tried and does not reliably catch any of those. Creating or editing an
+event refuses `FREQ=SECONDLY`/`MINUTELY` outright, as a cheap first line rather than the only one.
+`list_events` skips an object it cannot expand or parse rather than failing the whole request.
+`SEQUENCE` only advances when the calendar's own identity organizes the event (or the
 event has no `ORGANIZER` at all) — bumping it on an edit to an event held only as an attendee would
 make the real organizer's next genuine update compare as stale against the check above and be
 silently discarded.

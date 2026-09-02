@@ -151,6 +151,68 @@ class TestCreateAndList:
         assert resp.status_code == 404
 
 
+class TestMalformedObjectResilience:
+    """A re-verification found the RRULE occurrence guard's own bug: two
+    RRULE lines on one VEVENT raised AttributeError, uncaught by
+    list_events' `except ValueError`, so the whole month view 500'd for
+    every visible calendar rather than just excluding the one object."""
+
+    def test_an_unparseable_object_does_not_500_the_month_view(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+
+        async def _seed_two_rrule_object(db: DatabaseConnection) -> uuid.UUID:
+            async with db.session() as session:
+                dav_account_id = (
+                    await session.execute(
+                        text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                        {"id": calendar_id},
+                    )
+                ).scalar_one()
+                object_id = uuid.uuid4()
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                        "VALUES (:id, :account_id, :collection_id, 'calendar', "
+                        "'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:two-rrules\r\n"
+                        "DTSTART:20260901T090000Z\r\nDTEND:20260901T100000Z\r\n"
+                        "SUMMARY:Double-ruled\r\nSEQUENCE:0\r\n"
+                        "RRULE:FREQ=DAILY\r\nRRULE:FREQ=WEEKLY\r\n"
+                        "END:VEVENT\r\nEND:VCALENDAR')"
+                    ),
+                    {
+                        "id": object_id, "account_id": dav_account_id,
+                        "collection_id": calendar_id,
+                    },
+                )
+                await session.commit()
+            return object_id
+
+        client.portal.call(_seed_two_rrule_object, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Ordinary",
+                    "dtstart": "2026-09-15T10:00:00+00:00",
+                    "dtend": "2026-09-15T11:00:00+00:00",
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            listed = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+        # The point is only that the request survives an object the
+        # occurrence bound has to interpret two RRULE lines for --
+        # whatever recurring-ical-events itself makes of that is between
+        # it and RFC 5545, not something this test judges.
+        assert listed.status_code == 200, listed.text
+        summaries = [e["summary"] for e in listed.json()["events"]]
+        assert "Ordinary" in summaries
+
+
 class TestWriteErrors:
     """Row 110: a reverted write -- the server's copy already overwrote
     the user's edit -- has to say so, not read as "nothing happened"."""

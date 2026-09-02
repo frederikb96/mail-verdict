@@ -62,14 +62,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   place, since intake runs before the message is ever classified. The manual "add to calendar"
   flow is unaffected -- a person choosing to import a specific message needs no identity
   resolution to know which calendar to use
-- A recurring event's RRULE is bounded before it is ever expanded: a series that could produce
-  more than a few thousand occurrences in the requested window is refused outright rather than
-  handed to the expansion library, which previously ran synchronously on the same process as
-  mail sync, SSE and health checks — a single emailed `FREQ=SECONDLY` invitation could freeze and
-  OOM-kill the whole application for as long as the event stayed in the calendar. Creating or
-  editing an event through the API refuses `FREQ=SECONDLY`/`MINUTELY` outright, and looking up a
-  single occurrence by `RECURRENCE-ID` now searches a one-day window around that occurrence's own
-  timestamp instead of a six-year span
+- A recurring event's expansion is bounded regardless of how its RRULE (or RDATE) is spelled: a
+  window is walked in progressively wider slices, counting real occurrences as they come back from
+  the expansion library, and refused the moment more than a few thousand have been produced —
+  rather than asking the library for the whole window in one call, which previously ran
+  synchronously on the same process as mail sync, SSE and health checks. A single emailed
+  `FREQ=SECONDLY` invitation, or one whose `BYHOUR`/`BYMINUTE`/`BYSECOND` widen a coarser `FREQ`
+  to the same effect, or a large `RDATE` list, could freeze and OOM-kill the whole application for
+  as long as the event stayed in the calendar; an earlier version of this fix inspected the
+  RRULE's own text before expanding and missed exactly those cases (and introduced its own crash
+  on a malformed body with a repeated `RRULE` line) — this measures actual output instead, so it
+  is immune to how the danger is spelled. Creating or editing an event through the API still
+  refuses `FREQ=SECONDLY`/`MINUTELY` outright as a cheap first line, and looking up a single
+  occurrence by `RECURRENCE-ID` searches a one-day window around that occurrence's own timestamp
+  instead of a six-year span. The month view also no longer fails as a whole when one calendar
+  object cannot be expanded or parsed -- that object is skipped, not every visible calendar
 
 ## [3.1.0] - 2026-09-02
 
