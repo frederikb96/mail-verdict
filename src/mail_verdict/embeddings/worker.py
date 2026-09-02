@@ -56,8 +56,11 @@ PROBE_INTERVAL = timedelta(minutes=5)
 
 # Arbitrary, stable advisory lock key for the backfill reconciler -- must
 # not collide with queue/manager.py's own reclaim-timer key or any other
-# reconciliation timer sharing this database.
-_BACKFILL_LOCK_KEY = 761_034_222
+# reconciliation timer sharing this database. tests/unit/test_lock_keys.py
+# derives every *_LOCK_KEY constant in the package and asserts they are
+# pairwise distinct, so a future collision fails a test rather than
+# blocking a pause/resume behind an unrelated backfill batch.
+_BACKFILL_LOCK_KEY = 761_034_223
 
 
 class EmbeddingComponents:
