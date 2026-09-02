@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Editing an event as an attendee (not this calendar's own event) no longer advances `SEQUENCE`.
   `SEQUENCE` is the organizer's own version counter; bumping it locally made the organizer's next
   genuine update to the same event lose to it as stale and get silently discarded
+- An invitation carrying both a `text/calendar` and an `application/ics` part now always picks
+  the same one, instead of whichever an unordered read happened to return
+- The archive/junk/trash folder name fallback now matches a namespaced mailbox
+  (`INBOX.Archive`, `INBOX/Archive`) by its last path segment instead of only the full name, and
+  picks the same folder every time when more than one candidate name is present (`Junk` and
+  `Spam` both existing, for instance) instead of whatever order the database happened to return
 
 ### Security
 

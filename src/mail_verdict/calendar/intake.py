@@ -38,7 +38,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 
 from mail_verdict.calendar import ical
 from mail_verdict.database.models import Attachment, Identity, Message
@@ -402,15 +402,30 @@ class CalendarIntakeHandler:
         return None
 
     async def find_calendar_attachment(self, message_id: uuid.UUID) -> str | None:
-        """The first text/calendar or application/ics attachment's body,
-        decoded -- None if the message carries none, or if it carries one
-        with no bytes fetched yet (a truncated message)."""
+        """The best calendar attachment's body, decoded -- None if the
+        message carries none, or if it carries one with no bytes fetched
+        yet (a truncated message).
+
+        A Google-shaped invitation carries both a bare text/calendar part
+        and an application/ics one named invite.ics -- picked in
+        CALENDAR_CONTENT_TYPES's own order (text/calendar first) rather
+        than however Postgres happens to return an unordered `.first()`,
+        which is not guaranteed stable across calls."""
         async with self._db.session() as session:
+            priority = case(
+                *[
+                    (Attachment.content_type == ct, i)
+                    for i, ct in enumerate(CALENDAR_CONTENT_TYPES)
+                ],
+                else_=len(CALENDAR_CONTENT_TYPES),
+            )
             result = await session.execute(
-                select(Attachment).where(
+                select(Attachment)
+                .where(
                     Attachment.message_id == message_id,
                     Attachment.content_type.in_(CALENDAR_CONTENT_TYPES),
                 )
+                .order_by(priority, Attachment.id)
             )
             attachment = result.scalars().first()
         if attachment is None or attachment.data is None:

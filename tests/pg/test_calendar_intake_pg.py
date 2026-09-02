@@ -1102,6 +1102,52 @@ class TestReadOnlyIntakeCalendar:
         assert object_count == 0
 
 
+class TestFindCalendarAttachment:
+    """Row 114: a Google-shaped invitation carries both a bare
+    text/calendar part and an application/ics one -- picking between them
+    has to be deterministic, not whatever an unordered `.first()` returns."""
+
+    @pytest.mark.asyncio
+    async def test_text_calendar_wins_over_application_ics_regardless_of_insert_order(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid_text = _new_uid()
+        uid_ics = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, _identity_id = await _seed_mail_account_folder_and_identity(
+                session, email=None,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=_request_ics(uid_ics), message_id_hdr="<multi-part@example.com>",
+            )
+            # _seed_message_with_ics already inserted the application/ics
+            # part (content_type='text/calendar' in its own helper --
+            # add the other content type here) with a lower id (inserted
+            # first); text/calendar must still win despite that.
+            await session.execute(
+                text(
+                    "UPDATE attachments SET content_type = 'application/ics' "
+                    "WHERE message_id = :message_id"
+                ),
+                {"message_id": mail_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO attachments (id, message_id, filename, content_type, data) "
+                    "VALUES (:id, :message_id, NULL, 'text/calendar', :data)"
+                ),
+                {
+                    "id": uuid.uuid4(), "message_id": mail_id,
+                    "data": _request_ics(uid_text).encode("utf-8"),
+                },
+            )
+
+        found = await _handler(migrated_db).find_calendar_attachment(mail_id)
+        assert found is not None
+        assert ical.get_uid(found) == uid_text
+
+
 class TestDecideIsPure:
     @pytest.mark.asyncio
     async def test_decide_writes_nothing(self, migrated_db: DatabaseConnection) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, desc, func, select
+from sqlalchemy import case, delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mail_verdict.database.models import (
@@ -861,13 +861,30 @@ class FolderRepository:
             names = _ROLE_NAME_FALLBACKS.get(role)
             if not names:
                 return None
+            # imap_name is the full IMAP path (contract: "insert-only"),
+            # so a namespaced mailbox -- INBOX.Archive on a Dovecot with
+            # an INBOX namespace, INBOX/Archive elsewhere -- never matched
+            # the bare candidate names above; match the last path segment
+            # instead, whichever of the two common delimiters produced
+            # it. Ordered by the tuple's own preference (first name
+            # wins), then by id, so two matching folders (Junk and Spam
+            # both present) resolve the same way on every call rather
+            # than whatever the planner returns.
+            last_segment = func.regexp_replace(
+                func.lower(Folder.imap_name), r"^.*[./]", "",
+            )
+            priority = case(
+                *[(last_segment == name, i) for i, name in enumerate(names)],
+                else_=len(names),
+            )
             result = await session.execute(
                 select(Folder.id)
                 .where(
                     Folder.account_id == account_id,
                     Folder.deleted_at.is_(None),
-                    func.lower(Folder.imap_name).in_(names),
+                    last_segment.in_(names),
                 )
+                .order_by(priority, Folder.id)
                 .limit(1)
             )
             return result.scalar_one_or_none()
