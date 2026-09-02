@@ -136,7 +136,7 @@ function ThreadMessage({
           accountId={mail.account_id}
           senderEmail={senderEmail}
           senderDomain={senderEmail?.split("@")[1] ?? null}
-          imagesAllowed={mail.images_allowed}
+          imagesAllowed={mail.images_allowed || imagesAllowedOverride}
           hasBlockedImages={mail.has_blocked_images}
           onLoadForMessage={onLoadImages}
         />
