@@ -58,6 +58,25 @@ def _request_ics(uid: str, *, attendee: str = "freddy@work.example") -> str:
     )
 
 
+def _cancel_ics(uid: str, *, sequence: int = 1) -> str:
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//Test//EN\r\n"
+        "METHOD:CANCEL\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        "DTSTAMP:20260902T120000Z\r\n"
+        "DTSTART:20260910T090000Z\r\n"
+        "DTEND:20260910T100000Z\r\n"
+        "SUMMARY:Kickoff\r\n"
+        f"SEQUENCE:{sequence}\r\n"
+        "ORGANIZER;CN=Anna Mueller:mailto:anna@example.com\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+
 async def _seed_mail_account_folder_and_identity(
     session: AsyncSession, *, email: str | None,
 ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID | None]:
@@ -258,6 +277,51 @@ class TestGetInvitation:
         assert body["status"] == "imported"
         assert body["calendar_id"] == str(collection_id)
         assert body["object_id"] == str(object_id)
+
+    def test_request_against_a_known_uid_is_pending_review_with_from_addr(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 107 v2: a REQUEST naming a UID already held is never
+        applied automatically -- the card shows pending_review with the
+        message's own envelope sender next to the ORGANIZER it claims,
+        so a mismatch is obvious without any header authentication."""
+        uid = _new_uid()
+
+        async def _seed(db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+            async with db.session() as session:
+                account_id, folder_id, _identity_id = await _seed_mail_account_folder_and_identity(
+                    session, email=None,
+                )
+                dav_account_id, collection_id = await _seed_dav_calendar(session)
+                mail_id = await _seed_message_with_ics(
+                    session, account_id=account_id, folder_id=folder_id, data=_request_ics(uid),
+                )
+                object_id = uuid.uuid4()
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects (id, account_id, collection_id, kind, data, uid) "
+                        "VALUES (:id, :account_id, :collection_id, 'calendar', :data, :uid)"
+                    ),
+                    {
+                        "id": object_id, "account_id": dav_account_id,
+                        "collection_id": collection_id,
+                        "data": ical.strip_method(_request_ics(uid)), "uid": uid,
+                    },
+                )
+                await session.commit()
+            return mail_id, collection_id, object_id
+
+        mail_id, collection_id, object_id = client.portal.call(_seed, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.get(f"/calendar/invitations/{mail_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "pending_review"
+        assert body["calendar_id"] == str(collection_id)
+        assert body["object_id"] == str(object_id)
+        assert body["from_addr"] == "anna@example.com"
+        assert body["organizer"]["email"] == "anna@example.com"
 
 
 class TestImportInvitation:
@@ -501,3 +565,171 @@ class TestImportInvitation:
                 return int(result.scalar_one())
 
         assert client.portal.call(_other_collection_count, migrated_db) == 0
+
+    async def _seed_existing_object_and_message(
+        self, db: DatabaseConnection, data: str, uid: str,
+    ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+        async with db.session() as session:
+            account_id, folder_id, _identity_id = await _seed_mail_account_folder_and_identity(
+                session, email=None,
+            )
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id, data=data,
+            )
+            object_id = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO dav_objects (id, account_id, collection_id, kind, data, uid) "
+                    "VALUES (:id, :account_id, :collection_id, 'calendar', :data, :uid)"
+                ),
+                {
+                    "id": object_id, "account_id": dav_account_id, "collection_id": collection_id,
+                    "data": ical.strip_method(_request_ics(uid)), "uid": uid,
+                },
+            )
+            await session.commit()
+        return mail_id, collection_id, object_id
+
+    def test_confirming_a_pending_review_request_updates_the_object(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 107 v2: confirming a pending_review REQUEST needs no
+        calendar_id -- the target is the existing object itself."""
+        uid = _new_uid()
+        mail_id, collection_id, object_id = client.portal.call(
+            self._seed_existing_object_and_message, migrated_db,
+            _request_ics(uid), uid,
+        )
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(f"/calendar/invitations/{mail_id}/import", json={})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "updated"
+        assert body["object_id"] == str(object_id)
+        assert body["calendar_id"] == str(collection_id)
+
+    def test_confirming_a_pending_review_cancel_marks_it_cancelled(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid = _new_uid()
+        mail_id, collection_id, object_id = client.portal.call(
+            self._seed_existing_object_and_message, migrated_db,
+            _cancel_ics(uid), uid,
+        )
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(f"/calendar/invitations/{mail_id}/import", json={})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "cancelled"
+        assert body["object_id"] == str(object_id)
+        assert body["calendar_id"] == str(collection_id)
+
+        async def _stored_status(db: DatabaseConnection) -> str:
+            async with db.session() as session:
+                data = (
+                    await session.execute(
+                        text("SELECT data FROM dav_objects WHERE id = :id"), {"id": object_id},
+                    )
+                ).scalar_one()
+            master, _ = ical.parse_master_and_exceptions(data)
+            return master.status
+
+        assert client.portal.call(_stored_status, migrated_db) == "cancelled"
+
+    def test_cancel_of_an_unknown_uid_via_import_is_404(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid = _new_uid()
+
+        async def _seed(db: DatabaseConnection) -> uuid.UUID:
+            async with db.session() as session:
+                account_id, folder_id, _identity_id = (
+                    await _seed_mail_account_folder_and_identity(session, email=None)
+                )
+                mail_id = await _seed_message_with_ics(
+                    session, account_id=account_id, folder_id=folder_id, data=_cancel_ics(uid),
+                )
+                await session.commit()
+            return mail_id
+
+        mail_id = client.portal.call(_seed, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(f"/calendar/invitations/{mail_id}/import", json={})
+        assert resp.status_code == 404
+
+    def test_new_invitation_without_calendar_id_is_400(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        uid = _new_uid()
+
+        async def _seed(db: DatabaseConnection) -> uuid.UUID:
+            async with db.session() as session:
+                account_id, folder_id, _identity_id = (
+                    await _seed_mail_account_folder_and_identity(session, email=None)
+                )
+                mail_id = await _seed_message_with_ics(
+                    session, account_id=account_id, folder_id=folder_id, data=_request_ics(uid),
+                )
+                await session.commit()
+            return mail_id
+
+        mail_id = client.portal.call(_seed, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(f"/calendar/invitations/{mail_id}/import", json={})
+        assert resp.status_code == 400
+
+    def test_get_describes_what_post_will_actually_do_for_an_unreachable_uid(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Row 120: GET's own existing-object lookup is scoped the way
+        the automatic listener is (reachable DAV accounts only), but
+        POST .../import resolves a UID anywhere -- without accounting
+        for that, the card could say 'unlinked, pick a calendar' for an
+        invitation whose UID actually collides with an object elsewhere,
+        and POST would then silently update that object instead of
+        creating one in the calendar the person just chose."""
+        uid = _new_uid()
+
+        async def _seed(db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+            async with db.session() as session:
+                # No identity, no calendar_prefs link at all -- the
+                # object lives under a DAV account this mail account has
+                # no reachable link to.
+                account_id, folder_id, _identity_id = (
+                    await _seed_mail_account_folder_and_identity(session, email=None)
+                )
+                dav_account_id, collection_id = await _seed_dav_calendar(session)
+                mail_id = await _seed_message_with_ics(
+                    session, account_id=account_id, folder_id=folder_id, data=_request_ics(uid),
+                )
+                object_id = uuid.uuid4()
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects (id, account_id, collection_id, kind, data, uid) "
+                        "VALUES (:id, :account_id, :collection_id, 'calendar', :data, :uid)"
+                    ),
+                    {
+                        "id": object_id, "account_id": dav_account_id,
+                        "collection_id": collection_id,
+                        "data": ical.strip_method(_request_ics(uid)), "uid": uid,
+                    },
+                )
+                await session.commit()
+            return mail_id, collection_id, object_id
+
+        mail_id, collection_id, object_id = client.portal.call(_seed, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.get(f"/calendar/invitations/{mail_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Not "unlinked" -- GET describes what POST would actually do,
+        # which is confirm a change against the object it already found.
+        assert body["status"] == "pending_review"
+        assert body["object_id"] == str(object_id)
+        assert body["calendar_id"] == str(collection_id)

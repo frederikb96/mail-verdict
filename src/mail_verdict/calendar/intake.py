@@ -1,6 +1,22 @@
 """
 Turning an emailed calendar invitation into a calendar entry.
 
+An emailed REQUEST or CANCEL naming a UID already held never applies
+automatically, whoever it claims to be from: the UID and the ORGANIZER
+address that would authenticate it are both lines in the same `.ics` a
+co-attendee already holds, so matching one against the other only
+raises the price of forging a change, it does not stop one. Rather than
+authenticate the sender, nothing here is silent instead -- every such
+message becomes a `pending_review` row a person confirms by hand, and
+the confirmation UI (api/invitations.py's own docstring) is the actual
+defence: it shows what the message claims next to where it actually
+came from. A REQUEST naming a UID nothing holds is a genuinely new
+invitation and keeps importing on its own -- the worst it can do is
+calendar spam, same as any other unsolicited mail. A REPLY keeps
+applying automatically too, gated on the replying ATTENDEE actually
+being the message's own sender: the harm a forged one can do is a wrong
+attendance mark, not a moved or cancelled meeting.
+
 A listener like spam/feedback.py, not a pipeline stage: it reacts to
 `message`/`insert` with `origin = "sync"`, the same event
 pipeline/enqueue.py's enqueue_live_arrival reacts to, and for the same
@@ -70,10 +86,13 @@ CALENDAR_CONTENT_TYPES = ("text/calendar", "application/ics")
 # COUNTER message is left alone rather than guessed at.
 _HANDLED_METHODS = frozenset({"REQUEST", "CANCEL", "REPLY"})
 
-# decide() outcomes _apply() actually writes something for. The intake
-# row for any of these is inserted as "pending" first and promoted only
-# once that write lands -- see _write_intake_row()'s docstring.
-_WRITING_STATUSES = frozenset({"imported", "updated", "cancelled"})
+# decide() outcomes _apply() actually writes something for -- "updated"
+# only for REPLY, since a REQUEST/CANCEL against an existing object
+# never applies automatically (see decide()'s own comment on that). The
+# intake row for either of these is inserted as "pending" first and
+# promoted only once that write lands -- see _write_intake_row()'s
+# docstring.
+_WRITING_STATUSES = frozenset({"imported", "updated"})
 
 
 @dataclass
@@ -166,15 +185,13 @@ class CalendarIntakeHandler:
         if invitation.method == "CANCEL":
             if existing is None:
                 return IntakeDecision(status="ignored")
-            if not self._organizer_authorized(existing, invitation):
-                return IntakeDecision(
-                    status="unauthorized", dav_account_id=existing.account_id,
-                    collection_id=existing.collection_id, existing=existing,
-                    reason="the sender does not match this event's organizer",
-                )
+            # Never applied automatically -- see the REQUEST branch's own
+            # comment below for why. A person confirms a cancellation the
+            # same way they confirm a move.
             return IntakeDecision(
-                status="cancelled", dav_account_id=existing.account_id,
+                status="pending_review", dav_account_id=existing.account_id,
                 collection_id=existing.collection_id, existing=existing,
+                reason="an emailed cancellation needs confirming before it is applied",
             )
 
         if invitation.method == "REPLY":
@@ -191,22 +208,32 @@ class CalendarIntakeHandler:
                 collection_id=existing.collection_id, existing=existing,
             )
 
-        # REQUEST
+        # REQUEST for a UID already held: never applied automatically,
+        # however it is signed. Matching the incoming ORGANIZER against
+        # the stored one only ever raises the price of forging one -- a
+        # co-attendee of the real meeting already holds both the UID and
+        # the ORGANIZER address, since they are lines in the same `.ics`
+        # they themselves received, so ORGANIZER equality authenticates
+        # nothing an attacker could not already produce. Rather than
+        # authenticate the sender, nothing here is silent: the change
+        # always becomes a row a person confirms, and the confirmation
+        # UI is the actual defence -- it shows the address the message
+        # came from next to the ORGANIZER it claims, and says plainly
+        # what accepting would do.
         if existing is not None:
-            if not self._organizer_authorized(existing, invitation):
-                return IntakeDecision(
-                    status="unauthorized", dav_account_id=existing.account_id,
-                    collection_id=existing.collection_id, existing=existing,
-                    reason="the sender does not match this event's organizer",
-                )
             if self._is_stale(existing, invitation):
+                # An old SEQUENCE is very likely a resend or a replay
+                # rather than something worth a person's attention --
+                # this is the one case still auto-resolved, and it never
+                # writes anything either.
                 return IntakeDecision(
                     status="ignored_stale", dav_account_id=existing.account_id,
                     collection_id=existing.collection_id, existing=existing,
                 )
             return IntakeDecision(
-                status="updated", dav_account_id=existing.account_id,
+                status="pending_review", dav_account_id=existing.account_id,
                 collection_id=existing.collection_id, existing=existing,
+                reason="an emailed update needs confirming before it is applied",
             )
 
         identity = await self.resolve_attendee_identity(account_id, invitation)
@@ -250,18 +277,6 @@ class CalendarIntakeHandler:
         self, row: CalendarIntake, decision: IntakeDecision,
         invitation: ical.ParsedInvitation, raw_data: str,
     ) -> None:
-        if decision.status == "cancelled":
-            assert decision.existing is not None
-            new_data = ical.mark_cancelled(
-                decision.existing.data, recurrence_id=invitation.master.recurrence_id,
-            )
-            async with self._db.session() as session:
-                await replace_object_data(session, decision.existing.id, new_data)
-            await self._intake_repo.update_status(
-                row.id, status="cancelled", object_id=decision.existing.id,
-            )
-            return
-
         if decision.status == "updated" and invitation.method == "REPLY":
             assert decision.existing is not None
             attendee = invitation.master.attendees[0] if invitation.master.attendees else None
@@ -289,21 +304,6 @@ class CalendarIntakeHandler:
             )
             return
 
-        if decision.status == "updated" and invitation.method == "REQUEST":
-            assert decision.existing is not None
-            fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(raw_data))
-            new_data = (
-                ical.merge_exception(decision.existing.data, fixed, invitation.master.recurrence_id)
-                if invitation.master.recurrence_id is not None
-                else fixed
-            )
-            async with self._db.session() as session:
-                await replace_object_data(session, decision.existing.id, new_data)
-            await self._intake_repo.update_status(
-                row.id, status="updated", object_id=decision.existing.id,
-            )
-            return
-
         if decision.status == "imported":
             assert decision.dav_account_id is not None and decision.collection_id is not None
             fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(raw_data))
@@ -315,32 +315,11 @@ class CalendarIntakeHandler:
             await self._intake_repo.update_status(row.id, status="imported", object_id=obj.id)
             return
 
-        # ignored / ignored_stale / unlinked / unauthorized -- the intake
-        # row already says everything there is to say; nothing to write
-        # onto an object.
+        # ignored / ignored_stale / unlinked / unauthorized / pending_review
+        # -- the intake row already says everything there is to say;
+        # nothing to write onto an object.
 
     # --- shared building blocks ---
-
-    def _organizer_authorized(self, existing: DavObject, invitation: ical.ParsedInvitation) -> bool:
-        """Whether this REQUEST/CANCEL is entitled to touch the object it
-        names: the incoming ORGANIZER must match the object's own stored
-        ORGANIZER, case-insensitively. Without this, anyone who merely
-        knows an event's UID -- a co-attendee, since it is in the .ics
-        they themselves received -- could silently rewrite or cancel it
-        by emailing a REQUEST or CANCEL that names a UID they hold and an
-        ORGANIZER of their own choosing; `_is_stale()` alone does not stop
-        this, since SEQUENCE is attacker-controlled too."""
-        try:
-            master, _ = ical.parse_master_and_exceptions(existing.data)
-        except ValueError:
-            return False
-        stored_organizer = master.organizer.email.lower() if master.organizer else None
-        incoming_organizer = (
-            invitation.master.organizer.email.lower() if invitation.master.organizer else None
-        )
-        if stored_organizer is None or incoming_organizer is None:
-            return False
-        return stored_organizer == incoming_organizer
 
     def _reply_attendee_authorized(
         self, message: Message, invitation: ical.ParsedInvitation,

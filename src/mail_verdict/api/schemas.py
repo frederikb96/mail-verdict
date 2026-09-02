@@ -1134,12 +1134,22 @@ class RespondRequest(BaseModel):
 # comparison, not an exhaustive switch, so a message in this state simply
 # renders its header and nothing below it rather than failing to render.
 #
-# "unauthorized" -- a REQUEST/CANCEL/REPLY naming a UID this application
-# does hold, whose sender is not entitled to touch it: the ORGANIZER does
-# not match the stored object's (REQUEST/CANCEL), or the replying
-# ATTENDEE does not match the message's own sender (REPLY). Left
+# "unauthorized" -- a REPLY naming a UID this application does hold,
+# whose replying ATTENDEE does not match the message's own sender. Left
 # unapplied; the object_id/calendar_id still name what it claims to be
-# about, so a person can go look.
+# about, so a person can go look. Nothing else produces this status: a
+# REQUEST/CANCEL against an existing object is never applied
+# automatically regardless of who it claims to be from (see
+# "pending_review" below), so there is nothing for that case to be
+# unauthorized *instead of*.
+#
+# "pending_review" -- a REQUEST or CANCEL naming a UID this application
+# already holds. Deliberately never auto-applied, whoever it claims to
+# be from: the same `.ics` that hands a forger the UID hands them the
+# ORGANIZER address too, so authenticating that address only raises the
+# price of forging a change, it does not stop one. A person confirms it
+# instead, via POST .../import -- see that endpoint's own docstring for
+# what confirming actually does.
 #
 # "pending" -- calendar/intake.py wrote the never-classify-twice gate row
 # before attempting the object write it describes, and the process did
@@ -1149,7 +1159,7 @@ class RespondRequest(BaseModel):
 # rather than a status the UI does not otherwise show.
 InvitationStatus = Literal[
     "imported", "updated", "unlinked", "cancelled", "ignored_stale", "failed", "ignored",
-    "unauthorized", "pending",
+    "unauthorized", "pending", "pending_review",
 ]
 
 
@@ -1172,10 +1182,22 @@ class InvitationResponse(BaseModel):
     object_id: uuid.UUID | None
     error: str | None
     own_reply: OwnReplyOut | None
+    # The message's own envelope sender -- shown next to `organizer` on a
+    # `pending_review` card so a forged ORGANIZER line is obvious at a
+    # glance, with no header authentication of any kind: the address the
+    # mail actually came from rarely matches an invitation service's own
+    # organizer field, so this is a hint for a person to judge, not a
+    # check the backend enforces.
+    from_addr: str | None
 
 
 class ImportInvitationRequest(BaseModel):
-    calendar_id: uuid.UUID
+    # Unset when confirming a pending_review REQUEST/CANCEL against an
+    # object that already exists -- POST .../import resolves the target
+    # calendar from that object itself in that case. Required only when
+    # there is nothing existing to update, i.e. importing a genuinely new
+    # invitation.
+    calendar_id: uuid.UUID | None = None
     link: bool = False
 
 

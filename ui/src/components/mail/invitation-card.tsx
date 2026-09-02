@@ -205,10 +205,54 @@ export function InvitationCard({ messageId }: InvitationCardProps) {
         <p className="text-xs text-destructive">This event was cancelled by the organizer.</p>
       )}
 
+      {invitation.status === "pending_review" && (
+        <div className="flex flex-col gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2 text-xs">
+          <p className="text-amber-700 dark:text-amber-400">
+            This message claims to {invitation.method === "CANCEL" ? "cancel" : "update"} an
+            event already in your calendar. Nothing has changed yet — review it before accepting.
+          </p>
+          <div className="flex flex-col gap-0.5 text-muted-foreground">
+            <span>
+              Claims to be from{" "}
+              <span className="font-medium text-foreground">
+                {invitation.organizer?.cn || invitation.organizer?.email || "unknown"}
+              </span>
+            </span>
+            <span>
+              Actually sent from{" "}
+              <span className="font-medium text-foreground">
+                {invitation.from_addr ?? "unknown"}
+              </span>
+            </span>
+          </div>
+          <p>
+            {invitation.method === "CANCEL"
+              ? `Accepting will cancel "${invitation.summary || "this event"}"${calendar ? ` in ${calendar.display_name}` : ""}.`
+              : `Accepting will change "${invitation.summary || "this event"}"${calendar ? ` in ${calendar.display_name}` : ""} to the details shown above.`}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={invitation.method === "CANCEL" ? "destructive" : "default"}
+              disabled={importInvitation.isPending}
+              onClick={() => importInvitation.mutate({ messageId, data: {} })}
+            >
+              {importInvitation.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              {invitation.method === "CANCEL" ? "Confirm cancellation" : "Accept change"}
+            </Button>
+            <Button
+              variant="link" size="sm" className="h-auto p-0 text-xs" onClick={openInCalendar}
+            >
+              View current event
+            </Button>
+          </div>
+        </div>
+      )}
+
       {invitation.status === "unauthorized" && (
         <div className="text-xs text-destructive">
-          This message claims to update an event but was not sent by its organizer, so it was
-          not applied.{" "}
+          This reply claims to be from an attendee but was not sent by them, so it was not
+          applied.{" "}
           <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={openInCalendar}>
             View the event
           </Button>

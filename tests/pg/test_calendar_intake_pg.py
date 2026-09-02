@@ -458,8 +458,10 @@ class TestImport:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         """The second of Freddy's own addresses invited to the same
-        event is an in-place update, resolved by UID -- never a second
-        copy. The first identity's own invitation already imported is
+        event resolves by UID to the object already there -- never a
+        second copy -- even though a REQUEST against an existing object
+        is never applied automatically and needs confirming either way.
+        The first identity's own invitation already imported is
         represented by a pre-seeded object (see the module docstring)."""
         uid = _new_uid()
         async with migrated_db.session() as session:
@@ -504,7 +506,7 @@ class TestImport:
                 )
             ).scalar_one()
         assert object_count == 1
-        assert status == "updated"
+        assert status == "pending_review"
 
     @pytest.mark.asyncio
     async def test_stale_sequence_is_ignored(self, migrated_db: DatabaseConnection) -> None:
@@ -547,9 +549,15 @@ class TestImport:
         assert master.sequence == 2
 
     @pytest.mark.asyncio
-    async def test_cancel_marks_the_event_cancelled_and_keeps_it(
+    async def test_cancel_of_a_known_event_needs_confirming(
         self, migrated_db: DatabaseConnection,
     ) -> None:
+        """Row 107 v2: even a CANCEL naming the real organizer is never
+        applied automatically -- the same `.ics` that hands a forger a
+        UID hands them the ORGANIZER address too, so matching one
+        authenticates nothing. It becomes a row a person confirms
+        through POST .../import instead; the object is untouched until
+        then."""
         uid = _new_uid()
         async with migrated_db.session() as session:
             account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
@@ -560,9 +568,10 @@ class TestImport:
             await _link_intake_calendar(
                 session, collection_id=collection_id, identity_id=identity_id,
             )
+            original_data = _stored_event_data(uid)
             existing_object_id = await _seed_existing_object(
                 session, dav_account_id=dav_account_id, collection_id=collection_id,
-                uid=uid, data=_stored_event_data(uid),
+                uid=uid, data=original_data,
             )
             cancel_mail_id = await _seed_message_with_ics(
                 session, account_id=account_id, folder_id=folder_id,
@@ -572,22 +581,24 @@ class TestImport:
         await _handler(migrated_db).handle_message_event(_insert_event(cancel_mail_id, account_id))
 
         async with migrated_db.session() as session:
-            status = (
+            status, object_id = (
                 await session.execute(
-                    text("SELECT status FROM calendar_intake WHERE account_id = :a"),
+                    text("SELECT status, object_id FROM calendar_intake WHERE account_id = :a"),
                     {"a": account_id},
                 )
-            ).scalar_one()
+            ).one()
             deleted_at, stored = (
                 await session.execute(
                     text("SELECT deleted_at, data FROM dav_objects WHERE id = :id"),
                     {"id": existing_object_id},
                 )
             ).one()
-        assert status == "cancelled"
-        assert deleted_at is None  # cancelled stays visible, never removed
+        assert status == "pending_review"
+        assert object_id == existing_object_id
+        assert deleted_at is None
+        assert stored == original_data  # untouched -- nothing applies without confirming
         master, _ = ical.parse_master_and_exceptions(stored)
-        assert master.status == "cancelled"
+        assert master.status == "confirmed"
 
     @pytest.mark.asyncio
     async def test_cancel_of_unknown_uid_is_ignored(self, migrated_db: DatabaseConnection) -> None:
@@ -739,18 +750,22 @@ class TestImport:
 
 
 class TestAuthentication:
-    """Row 107: an incoming REQUEST/CANCEL/REPLY may only touch an object
-    it is entitled to -- the sender is a stranger to this application
-    until proven otherwise, not another mail account."""
+    """Row 107: an incoming REQUEST/CANCEL against a UID this application
+    already holds is never applied automatically, whoever it claims to
+    be from -- ORGANIZER equality was tried and does not authenticate
+    anything a co-attendee could not already produce, since the same
+    `.ics` that hands them the UID hands them the ORGANIZER address too.
+    Every such message becomes 'pending_review'; the object is left
+    untouched either way. REPLY is the one method still gated (on the
+    message's own sender) and still applies automatically."""
 
     @pytest.mark.asyncio
     async def test_request_from_a_different_organizer_is_not_applied(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """The row 107 repro: a co-attendee (or anyone else) who merely
-        knows the UID cannot move or rewrite the event by emailing a
-        REQUEST that names a different ORGANIZER, however high its
-        SEQUENCE."""
+        """A naive forgery -- a co-attendee (or anyone else) who merely
+        knows the UID invents their own ORGANIZER -- cannot move or
+        rewrite the event, however high its SEQUENCE."""
         uid = _new_uid()
         async with migrated_db.session() as session:
             account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
@@ -786,10 +801,81 @@ class TestAuthentication:
                     {"id": existing_object_id},
                 )
             ).scalar_one()
-        assert status == "unauthorized"
+        assert status == "pending_review"
         assert stored == original_data
         master, _ = ical.parse_master_and_exceptions(stored)
         assert master.organizer is not None and master.organizer.email == "anna@example.com"
+        assert master.summary == "Kickoff"
+
+    @pytest.mark.asyncio
+    async def test_request_from_a_co_attendee_copying_the_real_organizer_is_not_applied(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The attack that actually mattered: a co-attendee of the real
+        meeting already holds the UID *and* the ORGANIZER address, both
+        lines in the `.ics` they themselves received. Matching ORGANIZER
+        against the stored object's own is not a barrier to this at all
+        -- the fix has to be that a REQUEST against an existing object
+        never applies automatically, full stop, not that it applies
+        only when the forger bothers to copy the real ORGANIZER line."""
+        uid = _new_uid()
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            original_data = _stored_event_data(uid)
+            existing_object_id = await _seed_existing_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid=uid, data=original_data,
+            )
+            # Same UID, same ORGANIZER as the stored object -- exactly
+            # what a co-attendee's own copy of the invitation carries --
+            # with a forged SUMMARY/DTSTART and a high SEQUENCE.
+            forged_but_correctly_organized = (
+                "BEGIN:VCALENDAR\r\n"
+                "VERSION:2.0\r\n"
+                "PRODID:-//Test//EN\r\n"
+                "METHOD:REQUEST\r\n"
+                "BEGIN:VEVENT\r\n"
+                f"UID:{uid}\r\n"
+                "DTSTAMP:20260901T120000Z\r\n"
+                "DTSTART:20260911T030000Z\r\n"
+                "DTEND:20260911T040000Z\r\n"
+                "SUMMARY:MOVED - see attacker.example\r\n"
+                "SEQUENCE:99\r\n"
+                "ORGANIZER;CN=Anna Mueller:mailto:anna@example.com\r\n"
+                "END:VEVENT\r\n"
+                "END:VCALENDAR\r\n"
+            )
+            attack_mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=forged_but_correctly_organized,
+                message_id_hdr="<attack-coattendee@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(attack_mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            status = (
+                await session.execute(
+                    text("SELECT status FROM calendar_intake WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).scalar_one()
+            stored = (
+                await session.execute(
+                    text("SELECT data FROM dav_objects WHERE id = :id"),
+                    {"id": existing_object_id},
+                )
+            ).scalar_one()
+        assert status == "pending_review"
+        assert stored == original_data
+        master, _ = ical.parse_master_and_exceptions(stored)
         assert master.summary == "Kickoff"
 
     @pytest.mark.asyncio
@@ -831,7 +917,7 @@ class TestAuthentication:
                     {"id": existing_object_id},
                 )
             ).one()
-        assert status == "unauthorized"
+        assert status == "pending_review"
         assert deleted_at is None
         assert stored == original_data
         master, _ = ical.parse_master_and_exceptions(stored)

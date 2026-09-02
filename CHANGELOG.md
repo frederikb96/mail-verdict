@@ -46,19 +46,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Deleting an identity no longer destroys the RSVP history it left behind: `calendar_replies`
   un-links the identity (`ON DELETE SET NULL`) the same way `calendar_prefs` already does,
   instead of cascading the delete onto every reply that identity ever sent
+- A data migration rewrites any `calendar_intake` row already stranded at `imported` with no
+  object behind it (the shape a pre-`pending`-status build could produce) to `pending`, so it is
+  retried rather than staying permanently unprocessable
+- `POST /api/calendar/invitations/{id}/import` is now what confirms a `pending_review`
+  REQUEST/CANCEL: a `CANCEL` is applied as a cancellation rather than merged into the event's
+  fields the way a `REQUEST` is (a `.ics` carrying `METHOD:CANCEL` commonly has little more than
+  the UID and `ORGANIZER`, and would otherwise blank out the event it means to cancel), and
+  `calendar_id` is no longer required for that case — the target is the existing object itself.
+  `GET` on the same message now describes what that confirmation would actually do rather than
+  what the automatic listener's own narrower reachability scope alone would see, so the two no
+  longer disagree about which object a confirmation targets
 
 ### Security
 
-- An emailed `METHOD:REQUEST`/`CANCEL`/`REPLY` no longer touches a stored calendar object unless
-  its sender is entitled to: the incoming `ORGANIZER` must match the stored object's own
-  (REQUEST/CANCEL), and a REPLY's attendee must match the message's own sender. Previously any
-  sender who merely knew an event's UID — a co-attendee, since it is in the `.ics` they
-  themselves received — could silently rewrite, cancel or mark an attendee's response on it by
-  emailing a matching UID with a higher SEQUENCE. A failed check is recorded as a new
-  `calendar_intake` status, `unauthorized`, left unapplied. The automatic listener's UID lookup is
-  also now scoped to DAV accounts reachable from the receiving mail account's own identities,
-  rather than every DAV account in the database -- a person explicitly importing one message by
-  hand is unaffected, since that lookup was never the unauthenticated surface
+- An emailed `METHOD:REQUEST` or `CANCEL` naming a UID already held in the calendar is never
+  applied automatically now, whoever it claims to be from. Matching the incoming `ORGANIZER`
+  against the stored object's own was tried first and does not actually authenticate anything: a
+  co-attendee of the real meeting already holds both the UID and the `ORGANIZER` address, since
+  both are lines in the same `.ics` they themselves received, so equality only raises the price of
+  forging a change, it does not stop one. Every such message becomes a `pending_review` intake row
+  a person confirms by hand instead (`POST /api/calendar/invitations/{id}/import`, unchanged for
+  everything else) — the confirmation card shows the address the message actually came from next
+  to the organizer it claims, and says plainly what accepting would do, so a forgery is obvious to
+  a person without needing any header authentication. Previously any sender who merely knew an
+  event's UID could silently rewrite, move or cancel it by emailing a matching UID with a higher
+  `SEQUENCE`. A `REPLY` still applies automatically, gated on the replying attendee actually being
+  the message's own sender (`unauthorized` if not) — the harm a forged one can do is a wrong
+  attendance mark, not a moved or cancelled meeting, and requiring a click per RSVP would make a
+  real meeting's replies unusable. A `REQUEST` naming a UID nothing holds is a genuinely new
+  invitation and keeps importing on its own; the worst it can do is calendar spam, same as any
+  other unsolicited mail. The automatic listener's UID lookup is also scoped to DAV accounts
+  reachable from the receiving mail account's own identities, rather than every DAV account in the
+  database — a person explicitly importing or confirming one message by hand is unaffected, since
+  that lookup was never the unauthenticated surface
 - Automatic invitation import now requires the identity to actually be an ATTENDEE, rather than
   falling back to being a To/Cc recipient. Being addressed is not being invited, and the fallback
   was also the easiest way to get an RRULE past a spam filter into the calendar in the first

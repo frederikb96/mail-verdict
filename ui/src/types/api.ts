@@ -843,7 +843,8 @@ export type InvitationStatus =
   | "cancelled"
   | "ignored_stale"
   | "failed"
-  | "unauthorized";
+  | "unauthorized"
+  | "pending_review";
 
 export interface Invitation {
   message_id: string;
@@ -865,10 +866,14 @@ export interface Invitation {
   object_id: string | null;
   error: string | null;
   own_reply: OwnReply | null;
+  /** The message's own envelope sender -- compare against `organizer` on a pending_review card. */
+  from_addr: string | null;
 }
 
 export interface ImportInvitationRequest {
-  calendar_id: string;
+  /** Required only when importing a genuinely new invitation -- confirming a pending_review
+   * REQUEST/CANCEL resolves the target from the existing object itself and ignores this. */
+  calendar_id?: string;
   /** Persist this calendar as the identity's default for future invitations from this address. */
   link?: boolean;
 }

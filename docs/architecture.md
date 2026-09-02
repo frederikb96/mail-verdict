@@ -377,27 +377,42 @@ on its own uniqueness on `(account_id, msg_key)`. For an outcome `_apply()` will
 something for (`imported`/`updated`/`cancelled`) the row is inserted as `pending` and promoted to
 its real status only once that write lands, so anything interrupting between the two leaves an
 honestly-labelled row rather than a terminal status with no object behind it; a `pending` row
-found on a later call is retried rather than treated as already handled. `api/invitations.py`'s
-`GET` reuses `decide()` for a message the listener never saw (backfilled mail, or one that arrived
-before intake was wired up) to render the same view without ever writing `calendar_intake` itself;
-only the explicit `POST .../import` writes for that case, which is what keeps "backfilled mail is
-never imported automatically" true while still letting a person choose "add to calendar" for it.
+found on a later call is retried rather than treated as already handled. A data migration rewrites
+any row a pre-`pending`-status build already stranded (`imported` with no `object_id`) to
+`pending`, so it heals rather than staying permanently unprocessable. `api/invitations.py`'s `GET`
+reuses `decide()` for a message the listener never saw (backfilled mail, or one that arrived before
+intake was wired up) to render the same view without ever writing `calendar_intake` itself; only
+the explicit `POST .../import` writes for that case, which is what keeps "backfilled mail is never
+imported automatically" true while still letting a person choose "add to calendar", or confirm a
+change, for it.
 
-A `REQUEST` or `CANCEL` whose UID is already held by a `dav_objects` row is updated in place
-wherever it lives rather than imported a second time — the hand-imported case, and what keeps two
-of an identity's own addresses invited to the same event from producing two copies — but only
-after the incoming `ORGANIZER` is checked against the held object's own (case-insensitive); a
-mismatch is recorded as `unauthorized` and applied nowhere, since otherwise anyone who merely knew
-the UID (a co-attendee, since it is in the `.ics` they themselves received) could rewrite or
-cancel an event they do not organize. A `REPLY` is authorized the same way, against the message's
-own sender rather than the ORGANIZER, before it updates the matching `ATTENDEE`'s `PARTSTAT` on the
-held object. The lookup itself is scoped to DAV accounts reachable from the receiving mail
-account's own identities (`calendar_prefs.identity_id`) for this automatic path — a person
-importing one specific message by hand (`POST .../import`) still resolves a UID anywhere, since a
-human choosing to write is not the unauthenticated surface the scoping exists for. Past
-authorization, a lower `SEQUENCE` than the held object's own is stale and ignored. A `CANCEL`
-sets the event `STATUS:CANCELLED` rather than deleting it, so it stays visible until the user
-removes it.
+A `REQUEST` or `CANCEL` naming a UID already held by a `dav_objects` row is never applied
+automatically, whoever it claims to be from. Matching the incoming `ORGANIZER` against the held
+object's own was tried and does not authenticate anything a forger could not already produce: a
+co-attendee of the real meeting already holds both the UID and the `ORGANIZER` address, since both
+are lines in the same `.ics` they themselves received. Every such message becomes a
+`pending_review` intake row instead, resolved wherever the UID already lives rather than imported a
+second time (the hand-imported case, and what keeps two of an identity's own addresses invited to
+the same event from producing two copies) but left untouched until a person confirms it through
+`POST .../import` — the same endpoint the manual "add to calendar" flow uses, branching on the
+invitation's own `METHOD` to apply a `CANCEL` as `STATUS:CANCELLED` rather than merging it into the
+event's fields the way a `REQUEST` is (a `.ics` carrying `METHOD:CANCEL` commonly has little more
+than the UID and `ORGANIZER`, and would blank the event out otherwise). The confirmation UI is the
+actual defence: it shows the address the message came from next to the `ORGANIZER` it claims, and
+says plainly what accepting would do. A `REPLY` is the one method still authorized and applied
+automatically, against the message's own sender rather than the `ORGANIZER` — a mismatch is
+`unauthorized` — before it updates the matching `ATTENDEE`'s `PARTSTAT` on the held object; the harm
+a forged one can do is a wrong attendance mark, not a moved or cancelled meeting. A `REQUEST` naming
+a UID nothing holds is a genuinely new invitation and keeps importing on its own, since the worst it
+can do is calendar spam. The existing-object lookup is scoped to DAV accounts reachable from the
+receiving mail account's own identities (`calendar_prefs.identity_id`) for the automatic listener;
+`POST .../import` resolves a UID anywhere, since a person confirming one named message is not the
+unauthenticated surface the scoping exists for, and `GET` on the same message matches that
+unscoped resolution whenever the listener's own narrower one finds nothing, so the card never
+describes an outcome the confirmation button would not actually produce. Past authorization, a
+lower `SEQUENCE` than the held object's own is stale and ignored -- the one case still resolved
+automatically, since an old `SEQUENCE` is far more likely a resend than something worth a person's
+attention, and it never writes anything either.
 
 Identity resolution for automatic import requires the identity to actually appear in the
 `ATTENDEE` list — being a `to_addrs`/`cc_addrs` recipient is not being invited, and that fallback

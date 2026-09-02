@@ -155,12 +155,31 @@ async def _build_response(
     else:
         decision = await handler.decide(message.account_id, message, invitation)
         if decision.existing is not None:
-            # updated/cancelled/ignored_stale -- already true of the held
-            # object regardless of whether a listener ever ran on this
-            # message.
+            # updated/ignored_stale/pending_review -- already true of the
+            # held object regardless of whether a listener ever ran on
+            # this message.
             status = decision.status
             collection_id = decision.collection_id
             object_id = decision.existing.id
+        elif invitation.method in ("REQUEST", "CANCEL"):
+            # decide()'s own existing-object lookup is scoped to DAV
+            # accounts reachable from this mail account's identities --
+            # correct for what the automatic listener may touch, but POST
+            # .../import (a person confirming this exact message) resolves
+            # a UID anywhere, unscoped. Without checking that here too, a
+            # card could say "unlinked -- pick a calendar" for an
+            # invitation whose UID actually collides with an object POST
+            # would go on to silently update instead of the one the
+            # person just chose -- describe what POST will actually do.
+            unscoped_existing = await object_repo.find_by_uid_anywhere(invitation.master.uid)
+            if unscoped_existing is not None:
+                status = "pending_review"
+                collection_id = unscoped_existing.collection_id
+                object_id = unscoped_existing.id
+            else:
+                status = "ignored" if decision.status == "ignored" else "unlinked"
+                collection_id = None
+                object_id = None
         else:
             # decide()'s "imported" describes what an auto-import WOULD
             # do, not something that has actually happened -- nothing is
@@ -214,6 +233,7 @@ async def _build_response(
         object_id=object_id,
         error=error,
         own_reply=own_reply,
+        from_addr=message.from_addr,
     )
 
 
@@ -232,12 +252,22 @@ async def import_invitation(
     message_id: uuid.UUID, request: ImportInvitationRequest,
 ) -> InvitationResponse:
     """
-    Import an invitation the listener left unlinked, or retry one that
-    dead-lettered. If the UID already resolves to an object somewhere
-    (this application's own earlier import, or one hand-created directly
-    on the DAV server), that object is updated in place and calendar_id
-    is not used to create a second copy -- the same invariant
-    calendar/intake.py's own decide() enforces for a live arrival.
+    Import a genuinely new invitation the listener left unlinked, retry
+    one that dead-lettered, or confirm a `pending_review` REQUEST/CANCEL
+    against an object that already exists -- this is the confirmation
+    api/calendar/intake.py's own module docstring describes, the one
+    place an emailed change to an existing event actually takes effect.
+    `calendar_id` is only needed for the first two cases (there is
+    nowhere else to put a brand-new object); confirming a REQUEST/CANCEL
+    always resolves the target from the existing object itself, the same
+    invariant calendar/intake.py's own decide() enforces for a live
+    arrival, and calendar_id is ignored if given.
+
+    A CANCEL is applied as a cancellation (STATUS:CANCELLED), never
+    merged into the object's fields the way a REQUEST is -- a `.ics`
+    carrying METHOD:CANCEL commonly has little more than the UID and
+    ORGANIZER, and would otherwise blank out the event it is meant to
+    cancel.
     """
     await _require_support()
     message = await _load_message(message_id)
@@ -245,32 +275,44 @@ async def import_invitation(
 
     db = get_db_connection()
     collection_repo = CollectionRepository(db)
-    collection = await collection_repo.get_by_id(request.calendar_id)
-    if collection is None or collection.deleted_at is not None or collection.kind != "calendar":
-        raise HTTPException(status_code=404, detail="Calendar not found")
-
     object_repo = DavObjectRepository(db)
     existing = await object_repo.find_by_uid_anywhere(invitation.master.uid)
-    fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(data))
 
     if existing is not None:
         target_collection = await collection_repo.get_by_id(existing.collection_id)
         if target_collection is not None and target_collection.read_only:
             raise HTTPException(status_code=400, detail="This calendar is read-only")
-        new_data = (
-            ical.merge_exception(existing.data, fixed, invitation.master.recurrence_id)
-            if invitation.master.recurrence_id is not None
-            else fixed
-        )
+        if invitation.method == "CANCEL":
+            new_data = ical.mark_cancelled(
+                existing.data, recurrence_id=invitation.master.recurrence_id,
+            )
+            status = "cancelled"
+        else:
+            fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(data))
+            new_data = (
+                ical.merge_exception(existing.data, fixed, invitation.master.recurrence_id)
+                if invitation.master.recurrence_id is not None
+                else fixed
+            )
+            status = "updated"
         async with db.session() as session:
             await replace_object_data(session, existing.id, new_data)
         dav_account_id, target_collection_id, object_id = (
             existing.account_id, existing.collection_id, existing.id,
         )
-        status = "updated"
+    elif invitation.method == "CANCEL":
+        raise HTTPException(status_code=404, detail="Nothing to cancel: event not found")
     else:
+        if request.calendar_id is None:
+            raise HTTPException(
+                status_code=400, detail="calendar_id is required to import a new invitation",
+            )
+        collection = await collection_repo.get_by_id(request.calendar_id)
+        if collection is None or collection.deleted_at is not None or collection.kind != "calendar":
+            raise HTTPException(status_code=404, detail="Calendar not found")
         if collection.read_only:
             raise HTTPException(status_code=400, detail="This calendar is read-only")
+        fixed = ical.set_schedule_agent_client_on_organizer(ical.strip_method(data))
         async with db.session() as session:
             obj = await create_object(
                 session, dav_account_id=collection.account_id,
