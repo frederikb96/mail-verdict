@@ -43,3 +43,33 @@ class TestMinimalRequiredPayload:
         })
         assert event.old_folder_id is None
         assert event.changed == ()
+
+
+class TestDavEventParsing:
+    """DAV events carry account_id = dav_accounts.id, never folder_id."""
+
+    def test_dav_account_insert_has_no_collection_id(self) -> None:
+        event = PostimapEvent.from_payload({
+            "v": 1, "type": "dav_account", "op": "insert", "id": "acc1",
+            "account_id": "acc1", "origin": "app",
+        })
+        assert event.type == "dav_account"
+        assert event.folder_id is None
+        assert event.collection_id is None
+
+    def test_dav_object_move_carries_old_collection_id(self) -> None:
+        event = PostimapEvent.from_payload({
+            "v": 1, "type": "dav_object", "op": "update", "id": "obj1",
+            "account_id": "acc1", "collection_id": "coll-dest",
+            "old_collection_id": "coll-source", "changed": ["collection_id"],
+        })
+        assert event.collection_id == "coll-dest"
+        assert event.old_collection_id == "coll-source"
+
+    def test_dav_notification_carries_action(self) -> None:
+        event = PostimapEvent.from_payload({
+            "v": 1, "type": "dav_notification", "op": "insert", "id": "42",
+            "account_id": "acc1", "collection_id": "coll1", "action": "put",
+        })
+        assert event.action == "put"
+        assert event.old_collection_id is None

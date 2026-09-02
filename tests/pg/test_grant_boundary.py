@@ -20,14 +20,28 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Folder, Message, Outbox
+from mail_verdict.database.models import (
+    DavAccount,
+    DavObject,
+    Folder,
+    Message,
+    Outbox,
+)
 from mail_verdict.postimap.actions import (
+    acknowledge_all_dav_notifications,
     acknowledge_all_notifications,
+    acknowledge_dav_notification,
     acknowledge_notification,
     create_account,
+    create_collection,
+    create_dav_account,
     create_folder,
+    create_object,
     delete_account,
+    delete_collection,
+    delete_dav_account,
     delete_folder,
+    delete_object,
     expunge,
     expunge_bulk,
     expunge_guarded,
@@ -35,7 +49,9 @@ from mail_verdict.postimap.actions import (
     move_message,
     move_message_bulk,
     move_message_guarded,
+    move_object,
     move_to_trash,
+    replace_object_data,
     set_flags,
     set_flags_bulk,
     set_flags_guarded,
@@ -43,6 +59,8 @@ from mail_verdict.postimap.actions import (
     set_keywords,
     set_keywords_delta_guarded,
     update_account,
+    update_collection,
+    update_dav_account,
 )
 
 
@@ -86,6 +104,42 @@ async def _seed_account_folder_message(
         },
     )
     return account_id, folder_id, message_id
+
+
+async def _seed_dav_account_collection_object(
+    session: AsyncSession,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Insert a minimal dav_accounts/dav_collections/dav_objects chain via
+    raw SQL, return their ids. Runs against migrated_db (the owner
+    connection) for the same reason as _seed_account_folder_message."""
+    dav_account_id = uuid.uuid4()
+    collection_id = uuid.uuid4()
+    object_id = uuid.uuid4()
+
+    await session.execute(
+        text(
+            "INSERT INTO dav_accounts (id, name, url, username, password) "
+            "VALUES (:id, :name, 'https://dav.example.com/', 'user@example.com', "
+            "'\\x00' || convert_to('pw', 'UTF8'))"
+        ),
+        {"id": dav_account_id, "name": f"dav-{dav_account_id}"},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO dav_collections (id, account_id, kind, slug, display_name) "
+            "VALUES (:id, :account_id, 'calendar', 'work', 'Work')"
+        ),
+        {"id": collection_id, "account_id": dav_account_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+            "VALUES (:id, :account_id, :collection_id, 'calendar', "
+            "'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:original\r\nEND:VEVENT\r\nEND:VCALENDAR')"
+        ),
+        {"id": object_id, "account_id": dav_account_id, "collection_id": collection_id},
+    )
+    return dav_account_id, collection_id, object_id
 
 
 @pytest.mark.asyncio
@@ -270,6 +324,53 @@ async def test_insert_outbox_with_replaces_message_id_succeeds_under_the_restric
 
 
 @pytest.mark.asyncio
+async def test_create_dav_account_succeeds_under_the_restricted_grant(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """create_dav_account writes exactly (id, name, url, username, password,
+    is_active) -- the dav_accounts insert grant."""
+    name = f"Nextcloud-{uuid.uuid4()}"
+    async with restricted_db.session() as session:
+        account = await create_dav_account(
+            session, name=name, url="https://cloud.example.org/remote.php/dav/",
+            username="alice", password="an-app-password",
+        )
+        await session.commit()
+        account_id = account.id
+
+    async with migrated_db.session() as session:
+        result = await session.execute(select(DavAccount.name).where(DavAccount.id == account_id))
+        assert result.scalar_one() == name
+
+
+@pytest.mark.asyncio
+async def test_creating_an_object_names_no_kind_column(
+    migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
+) -> None:
+    """dav_objects' insert grant is (id, account_id, collection_id, data) --
+    kind carries none at all, a BEFORE INSERT trigger derives it from the
+    collection. A create_object() that named kind explicitly would fail
+    here rather than in a deployment."""
+    async with migrated_db.session() as session:
+        dav_account_id, collection_id, _object_id = await _seed_dav_account_collection_object(
+            session,
+        )
+        await session.commit()
+
+    async with restricted_db.session() as session:
+        obj = await create_object(
+            session, dav_account_id=dav_account_id, collection_id=collection_id,
+            data="BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:new-event\r\nEND:VEVENT\r\nEND:VCALENDAR",
+        )
+        await session.commit()
+        object_id = obj.id
+
+    async with migrated_db.session() as session:
+        result = await session.execute(select(DavObject.kind).where(DavObject.id == object_id))
+        assert result.scalar_one() == "calendar"
+
+
+@pytest.mark.asyncio
 async def test_every_contract_write_survives_the_restricted_grant(
     migrated_db: DatabaseConnection, restricted_db: DatabaseConnection,
 ) -> None:
@@ -307,6 +408,35 @@ async def test_every_contract_write_survives_the_restricted_grant(
                     "VALUES (:account_id, 'set_flags') RETURNING id"
                 ),
                 {"account_id": account_id},
+            )
+        ).scalar_one()
+
+        dav_account_id, collection_id, object_id = await _seed_dav_account_collection_object(
+            session,
+        )
+        # A second collection under the same account, as a move target.
+        move_target_collection_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO dav_collections (id, account_id, kind, slug) "
+                "VALUES (:id, :account_id, 'calendar', 'personal')"
+            ),
+            {"id": move_target_collection_id, "account_id": dav_account_id},
+        )
+        # A separate account/collection/object for the DAV destructive
+        # helpers, same reasoning as doomed_folder_id/doomed_message_id
+        # above -- deleting one must not decide whether a later write in
+        # the sweep reaches any rows.
+        _, doomed_collection_id, doomed_object_id = await _seed_dav_account_collection_object(
+            session,
+        )
+        dav_notification_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO dav_notifications (account_id, action) "
+                    "VALUES (:account_id, 'put') RETURNING id"
+                ),
+                {"account_id": dav_account_id},
             )
         ).scalar_one()
         await session.commit()
@@ -353,6 +483,37 @@ async def test_every_contract_write_survives_the_restricted_grant(
         )),
         ("delete_folder", lambda s: delete_folder(s, doomed_folder_id)),
         ("delete_account", lambda s: delete_account(s, account_id)),
+        ("create_dav_account", lambda s: create_dav_account(
+            s, name=f"sweep-dav-{uuid.uuid4()}", url="https://dav.example.com/",
+            username="sweep@example.com", password="pw",
+        )),
+        ("create_collection", lambda s: create_collection(
+            s, dav_account_id=dav_account_id, kind="calendar",
+            slug=f"sweep-{uuid.uuid4().hex[:8]}", display_name="Sweep",
+        )),
+        ("create_object", lambda s: create_object(
+            s, dav_account_id=dav_account_id, collection_id=collection_id,
+            data="BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:sweep\r\nEND:VEVENT\r\nEND:VCALENDAR",
+        )),
+        ("replace_object_data", lambda s: replace_object_data(
+            s, object_id,
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:original\r\nSUMMARY:Edited\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR",
+        )),
+        ("move_object", lambda s: move_object(s, object_id, move_target_collection_id)),
+        ("update_collection", lambda s: update_collection(
+            s, collection_id, display_name="Renamed",
+        )),
+        ("update_dav_account", lambda s: update_dav_account(s, dav_account_id, is_active=True)),
+        ("acknowledge_dav_notification", lambda s: acknowledge_dav_notification(
+            s, dav_notification_id,
+        )),
+        ("acknowledge_all_dav_notifications", lambda s: acknowledge_all_dav_notifications(
+            s, dav_account_id,
+        )),
+        ("delete_object", lambda s: delete_object(s, doomed_object_id)),
+        ("delete_collection", lambda s: delete_collection(s, doomed_collection_id)),
+        ("delete_dav_account", lambda s: delete_dav_account(s, dav_account_id)),
     ]
 
     _assert_sweep_covers_every_write_helper({name for name, _ in writes})

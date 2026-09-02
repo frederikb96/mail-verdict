@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   database level. `POST /api/outbox` and the MCP `send_mail`/`draft_mail` tools accept an
   `identity_id`, falling back to the account's default identity and then to `accounts.imap_user`
   when it has none — an account that never adopts this table behaves exactly as before
+- **Calendars and contacts**, mirrored the same way mail is (requires PostIMAP >= 1.6.0):
+  `GET`/`POST`/`PATCH`/`DELETE` on `/api/dav-accounts` and `/api/calendars`, `GET`/`PUT
+  /api/calendar/links` for the identity-to-calendar mapping, `GET`/`POST`/`PATCH`/`DELETE` on
+  `/api/calendar/events` with recurring-series expansion and per-occurrence editing, `POST
+  /api/calendar/events/{id}/respond` for RSVPs, and `GET`/`POST`/`PATCH`/`DELETE` on
+  `/api/contacts` plus `/api/contacts/search` for the compose autocomplete. Every write to the
+  calendars/contacts tables PostIMAP mirrors goes through `postimap/actions.py`, proven against
+  the real `postimap_app` role, not just an owner connection
 
 ### Fixed
 

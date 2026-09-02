@@ -94,7 +94,7 @@ class TestIdentityCreate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             resp = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "work@example.com"},
+                json={"account_id": str(account_id), "address": "work@example.com"},
             )
         assert resp.status_code == 201, resp.text
         assert resp.json()["is_default"] is True
@@ -106,12 +106,12 @@ class TestIdentityCreate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             first = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "first@example.com"},
+                json={"account_id": str(account_id), "address": "first@example.com"},
             )
             second = client.post(
                 "/identities",
                 json={
-                    "account_id": str(account_id), "email": "second@example.com",
+                    "account_id": str(account_id), "address": "second@example.com",
                     "is_default": True,
                 },
             )
@@ -127,11 +127,11 @@ class TestIdentityCreate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "first@example.com"},
+                json={"account_id": str(account_id), "address": "first@example.com"},
             )
             second = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "second@example.com"},
+                json={"account_id": str(account_id), "address": "second@example.com"},
             )
         assert second.json()["is_default"] is False
 
@@ -142,11 +142,11 @@ class TestIdentityCreate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "Same@Example.com"},
+                json={"account_id": str(account_id), "address": "Same@Example.com"},
             )
             dup = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "same@example.com"},
+                json={"account_id": str(account_id), "address": "same@example.com"},
             )
         assert dup.status_code == 409
 
@@ -157,11 +157,11 @@ class TestIdentityCreate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             first = client.post(
                 "/identities",
-                json={"account_id": str(account_a), "email": "shared@example.com"},
+                json={"account_id": str(account_a), "address": "shared@example.com"},
             )
             second = client.post(
                 "/identities",
-                json={"account_id": str(account_b), "email": "shared@example.com"},
+                json={"account_id": str(account_b), "address": "shared@example.com"},
             )
         assert first.status_code == 201
         assert second.status_code == 201
@@ -172,7 +172,7 @@ class TestIdentityCreate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             resp = client.post(
                 "/identities",
-                json={"account_id": str(uuid.uuid4()), "email": "nobody@example.com"},
+                json={"account_id": str(uuid.uuid4()), "address": "nobody@example.com"},
             )
         assert resp.status_code == 404
 
@@ -185,7 +185,7 @@ class TestIdentityUpdate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             created = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "only@example.com"},
+                json={"account_id": str(account_id), "address": "only@example.com"},
             )
             identity_id = created.json()["id"]
             resp = client.patch(f"/identities/{identity_id}", json={"is_default": False})
@@ -198,11 +198,11 @@ class TestIdentityUpdate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             first = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "first@example.com"},
+                json={"account_id": str(account_id), "address": "first@example.com"},
             )
             second = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "second@example.com"},
+                json={"account_id": str(account_id), "address": "second@example.com"},
             )
             resp = client.patch(f"/identities/{second.json()['id']}", json={"is_default": True})
         assert resp.status_code == 200
@@ -217,14 +217,14 @@ class TestIdentityUpdate:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "taken@example.com"},
+                json={"account_id": str(account_id), "address": "taken@example.com"},
             )
             second = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "movable@example.com"},
+                json={"account_id": str(account_id), "address": "movable@example.com"},
             )
             resp = client.patch(
-                f"/identities/{second.json()['id']}", json={"email": "taken@example.com"},
+                f"/identities/{second.json()['id']}", json={"address": "taken@example.com"},
             )
         assert resp.status_code == 409
 
@@ -237,11 +237,11 @@ class TestIdentityDelete:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             first = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "first@example.com"},
+                json={"account_id": str(account_id), "address": "first@example.com"},
             )
             second = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "second@example.com"},
+                json={"account_id": str(account_id), "address": "second@example.com"},
             )
             resp = client.delete(f"/identities/{first.json()['id']}")
         assert resp.status_code == 204
@@ -255,7 +255,7 @@ class TestIdentityDelete:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             only = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "only@example.com"},
+                json={"account_id": str(account_id), "address": "only@example.com"},
             )
             resp = client.delete(f"/identities/{only.json()['id']}")
             listing = client.get("/identities", params={"account_id": str(account_id)})
@@ -296,7 +296,7 @@ class TestOutboxIdentityResolution:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "default@example.com"},
+                json={"account_id": str(account_id), "address": "default@example.com"},
             )
         with patch(_OUTBOX_TARGET, return_value=migrated_db):
             resp = client.post(
@@ -316,11 +316,11 @@ class TestOutboxIdentityResolution:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "default@example.com"},
+                json={"account_id": str(account_id), "address": "default@example.com"},
             )
             alias = client.post(
                 "/identities",
-                json={"account_id": str(account_id), "email": "alias@example.com"},
+                json={"account_id": str(account_id), "address": "alias@example.com"},
             )
         with patch(_OUTBOX_TARGET, return_value=migrated_db):
             resp = client.post(
@@ -341,7 +341,7 @@ class TestOutboxIdentityResolution:
         with patch(_IDENTITIES_TARGET, return_value=migrated_db):
             foreign = client.post(
                 "/identities",
-                json={"account_id": str(account_b), "email": "b@example.com"},
+                json={"account_id": str(account_b), "address": "b@example.com"},
             )
         with patch(_OUTBOX_TARGET, return_value=migrated_db):
             resp = client.post(

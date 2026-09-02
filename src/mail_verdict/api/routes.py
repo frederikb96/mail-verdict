@@ -9,6 +9,12 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from mail_verdict.api.accounts import router as accounts_router
+from mail_verdict.api.calendar_events import router as calendar_events_router
+from mail_verdict.api.calendars import addressbooks_router
+from mail_verdict.api.calendars import links_router as calendar_links_router
+from mail_verdict.api.calendars import router as calendars_router
+from mail_verdict.api.contacts import router as contacts_router
+from mail_verdict.api.dav_accounts import router as dav_accounts_router
 from mail_verdict.api.embeddings import router as embeddings_router
 from mail_verdict.api.folder_management import folder_prefs_router
 from mail_verdict.api.folder_management import router as folder_management_router
@@ -49,4 +55,10 @@ all_routers: list[APIRouter] = [
     embeddings_router,
     runs_router,
     pipeline_router,
+    dav_accounts_router,
+    calendars_router,
+    calendar_links_router,
+    addressbooks_router,
+    contacts_router,
+    calendar_events_router,
 ]

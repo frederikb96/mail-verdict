@@ -13,6 +13,11 @@ api/outbox.py and api/mcp_tools.py consult before writing it. Deleting an
 identity has no effect on mail already sent -- from_addr is copied onto
 the outbox row at insert time, never referenced by id.
 
+The wire field is `address`; the database column it is stored in
+(database/models.py's Identity.email) predates the UI's Identity type
+and keeps its own name -- only the API's request/response shape follows
+`address`, so no migration is needed to make the two agree.
+
 At most one identity per account is the default, enforced by a partial
 unique index at the database level (see database/models.py's Identity).
 An account's first identity is always made the default regardless of
@@ -46,7 +51,7 @@ def _to_response(identity: Identity) -> IdentityResponse:
     return IdentityResponse(
         id=identity.id,
         account_id=identity.account_id,
-        email=identity.email,
+        address=identity.email,
         display_name=identity.display_name,
         is_default=identity.is_default,
         created_at=identity.created_at,
@@ -91,9 +96,9 @@ async def list_identities(account_id: uuid.UUID | None = None) -> list[IdentityR
 async def create_identity(request: IdentityCreate) -> IdentityResponse:
     """Create an identity on an account."""
     db = get_db_connection()
-    email = request.email.strip()
+    email = request.address.strip()
     if not email:
-        raise HTTPException(status_code=400, detail="email must not be empty")
+        raise HTTPException(status_code=400, detail="address must not be empty")
 
     async with db.session() as session:
         account = await session.execute(
@@ -149,10 +154,10 @@ async def update_identity(identity_id: uuid.UUID, request: IdentityUpdate) -> Id
                 "set another identity as default instead",
             )
 
-        if "email" in values:
-            email = (values["email"] or "").strip()
+        if "address" in values:
+            email = (values["address"] or "").strip()
             if not email:
-                raise HTTPException(status_code=400, detail="email must not be empty")
+                raise HTTPException(status_code=400, detail="address must not be empty")
             identity.email = email
         if "display_name" in values:
             identity.display_name = values["display_name"]

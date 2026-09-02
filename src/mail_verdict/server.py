@@ -209,6 +209,38 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 {"id": event.id, "account_id": event.account_id},
             )
 
+        elif event.type == "dav_account":
+            await event_ring.add(
+                account_uuid, "calendar.account", {"dav_account_id": event.account_id},
+            )
+
+        elif event.type == "dav_collection":
+            kind = await _dav_collection_kind(db, event.id)
+            sse_type = "contact.collection" if kind == "addressbook" else "calendar.collection"
+            payload: dict[str, Any] = {"dav_account_id": event.account_id}
+            payload["addressbook_id" if kind == "addressbook" else "calendar_id"] = event.id
+            await event_ring.add(account_uuid, sse_type, payload)
+
+        elif event.type == "dav_object":
+            kind = (
+                await _dav_collection_kind(db, event.collection_id)
+                if event.collection_id else None
+            )
+            sse_type = "contact.object" if kind == "addressbook" else "calendar.object"
+            payload = {"id": event.id, "dav_account_id": event.account_id}
+            collection_key = "addressbook_id" if kind == "addressbook" else "calendar_id"
+            payload[collection_key] = event.collection_id
+            await event_ring.add(account_uuid, sse_type, payload)
+
+        elif event.type == "dav_notification":
+            await event_ring.add(
+                account_uuid, "notification.new",
+                {
+                    "id": event.id, "account_id": event.account_id,
+                    "dav_account_id": event.account_id,
+                },
+            )
+
     async def _on_postimap_reconnect() -> None:
         from mail_verdict.api.events import broadcast_resync
 
@@ -330,6 +362,30 @@ async def _outbox_event_payload(db: Any, event: Any) -> dict[str, Any]:
         data["status"] = row.status
         data["kind"] = row.kind
     return data
+
+
+async def _dav_collection_kind(db: Any, collection_id: str) -> str | None:
+    """
+    Whether a dav_collections row is a calendar or an address book --
+    what tells a dav_collection/dav_object event apart as calendar.* or
+    contact.* on the wire. None if the id doesn't parse or the row is
+    already gone (a delete event's own collection can outlive the row it
+    named, so a missing kind is not an error here).
+    """
+    from sqlalchemy import select
+
+    from mail_verdict.database.models import DavCollection
+
+    try:
+        collection_uuid = uuid.UUID(collection_id)
+    except ValueError:
+        return None
+
+    async with db.session() as session:
+        kind: str | None = await session.scalar(
+            select(DavCollection.kind).where(DavCollection.id == collection_uuid)
+        )
+    return kind
 
 
 def _resolve_ui_build_dir() -> Path:

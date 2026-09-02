@@ -300,6 +300,51 @@ belongs to when it syncs back.
 
 There is no subject-based fallback. The raw headers remain on every row if one is ever wanted.
 
+## Calendars and contacts
+
+CalDAV and CardDAV are mirrored the same way IMAP is: PostIMAP does the protocol work, mirroring
+`dav_accounts`/`dav_collections`/`dav_objects`/`dav_notifications` the same way it mirrors
+`accounts`/`folders`/`messages`/`sync_notifications`, and MailVerdict never imports a DAV client
+library of its own. Available from PostIMAP `service_version` 1.6.0 onward, gated in
+`postimap/contract.py` (`supports_dav()`) the same way folder CRUD is. `calendar/repository.py`
+holds the SELECT-only reads on those four tables; every write still goes through
+`postimap/actions.py`.
+
+The unit of sync is the whole resource: one `dav_objects` row holds a whole VCALENDAR body — the
+master `VEVENT` plus every `RECURRENCE-ID` exception — as verbatim text. Recurrence is never
+expanded in storage. `calendar/ical.py` is where a body is parsed, expanded over a date range
+(`recurring-ical-events`), and edited; `calendar/vcard.py` does the same for contacts
+(`vobject`). Neither touches the database — the API layer hands the result to
+`postimap/actions.py`.
+
+Three tables are owned by MailVerdict, migrated alongside `identities`:
+
+- **`calendar_prefs`** — one row per calendar, linking it to an identity and marking at most one
+  calendar per identity as the one that receives its invitations (a partial unique index, the same
+  shape as `identities.is_default`). `identity_id` carries a real foreign key onto `identities`
+  (`ON DELETE SET NULL`) — both tables are MailVerdict-owned, so there is no grant boundary to
+  cross the way there is onto a PostIMAP table.
+- **`calendar_intake`** — the never-classify-twice gate's calendar counterpart, keyed on the same
+  `(account_id, msg_key)` identity `verdicts` and `message_embeddings` use.
+- **`calendar_replies`** — insert-only: every RSVP attempt gets its own row rather than overwriting
+  one in place, so a reply that failed to send and was retried keeps its history. `own_reply` on an
+  `EventInstance` is the latest row for `(object_id, recurrence_id)`, with its outbox status read
+  live by joining `outbox_id` — never copied, since that status changes as PostIMAP processes the
+  send.
+
+Responding to an invitation (`POST /api/calendar/events/{id}/respond`) updates the held object's
+`PARTSTAT` immediately and sends the `METHOD:REPLY` iTIP message over the identity's own outbox,
+never the server's own scheduling engine — every object this application stores or sends carries
+`SCHEDULE-AGENT=CLIENT` on the relevant `ORGANIZER`/`ATTENDEE` line for exactly that reason. A
+failing send is not rolled back; calling `respond` again inserts a fresh `calendar_replies` row and
+outbox attempt, the same "retry never destroys history" shape sending mail already has.
+
+Creating an event with attendees requires its calendar to have a linked identity — there is nothing
+else to send the `METHOD:REQUEST` invitation from — and is refused with `409` otherwise.
+
+Inbound invitation intake (turning an emailed `.ics` attachment into a calendar entry
+automatically) is not implemented yet.
+
 ## Configuration and settings
 
 Two separate mechanisms that must not overlap:

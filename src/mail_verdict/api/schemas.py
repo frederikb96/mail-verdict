@@ -625,10 +625,15 @@ class UnifiedFolderOrderUpdate(BaseModel):
 
 
 class IdentityCreate(BaseModel):
-    """Request to create an identity -- an address its account may send as."""
+    """Request to create an identity -- an address its account may send as.
+
+    The wire field is `address`, matching the UI's Identity type
+    (ui/src/types/api.ts) rather than the `email` column name Identity
+    carries at the database layer (database/models.py).
+    """
 
     account_id: uuid.UUID
-    email: str
+    address: str
     display_name: str | None = None
     is_default: bool = Field(
         default=False,
@@ -641,7 +646,7 @@ class IdentityCreate(BaseModel):
 class IdentityUpdate(BaseModel):
     """Fields to change on an identity; omitted fields are left as-is."""
 
-    email: str | None = None
+    address: str | None = None
     display_name: str | None = None
     is_default: bool | None = Field(
         default=None,
@@ -656,12 +661,10 @@ class IdentityResponse(BaseModel):
 
     id: uuid.UUID
     account_id: uuid.UUID
-    email: str
+    address: str
     display_name: str | None = None
     is_default: bool
     created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 # --- Outbox schemas (send / draft) ---
@@ -919,3 +922,333 @@ class PipelineTestResponse(BaseModel):
     status: str
     skip_reason: str | None = None
     trace: list[dict[str, Any]]
+
+
+# --- DAV account schemas ---
+
+DavAccountState = Literal["created", "syncing", "active", "error", "disabled"]
+
+
+class DavCollectionSummary(BaseModel):
+    """One calendar or address book, as it appears nested under its DAV account."""
+
+    id: uuid.UUID
+    kind: Literal["calendar", "addressbook"]
+    display_name: str | None
+    sync_tier: str | None
+    initial_sync_done: bool
+    total_count: int
+    backfill_total: int | None
+    last_synced_at: datetime | None
+
+
+class DavAccountResponse(BaseModel):
+    """A CalDAV/CardDAV server account -- see postimap/contract.py's
+    MIN_DAV_SERVICE_VERSION."""
+
+    id: uuid.UUID
+    name: str
+    discovery_url: str
+    username: str
+    is_active: bool
+    state: DavAccountState
+    state_error: str | None
+    last_polled_at: datetime | None
+    collections: list[DavCollectionSummary]
+    created_at: datetime
+    updated_at: datetime
+
+
+class DavAccountCreateRequest(BaseModel):
+    name: str
+    discovery_url: str
+    username: str
+    password: str
+
+
+class DavAccountUpdateRequest(BaseModel):
+    name: str | None = None
+    password: str | None = None
+    is_active: bool | None = None
+
+
+# --- Calendar and address book schemas ---
+
+CalendarIntakeState = Literal["none", "import", "import_and_link"]
+
+
+class CalendarResponse(BaseModel):
+    """A calendar (a dav_collections row of kind='calendar') merged with
+    its calendar_prefs -- one document per calendar, so the UI never
+    reconciles two sources for one fact."""
+
+    id: uuid.UUID
+    dav_account_id: uuid.UUID
+    dav_account_name: str
+    display_name: str
+    color: str
+    color_override: str | None
+    is_visible: bool
+    read_only: bool
+    identity_id: uuid.UUID | None
+    intake: CalendarIntakeState
+    supported_components: list[str]
+    sync_error: str | None
+    initial_sync_done: bool
+    total_count: int
+
+
+class CalendarCreateRequest(BaseModel):
+    dav_account_id: uuid.UUID
+    display_name: str
+    color: str | None = None
+
+
+class CalendarUpdateRequest(BaseModel):
+    display_name: str | None = None
+    color_override: str | None = None
+    is_visible: bool | None = None
+    identity_id: uuid.UUID | None = None
+    intake: CalendarIntakeState | None = None
+
+
+class AddressbookSummaryResponse(BaseModel):
+    id: uuid.UUID
+    dav_account_id: uuid.UUID
+    dav_account_name: str
+    display_name: str
+    read_only: bool
+    total_count: int
+
+
+# --- Event and invitation schemas ---
+
+Partstat = Literal["needs-action", "accepted", "declined", "tentative"]
+AttendeeRole = Literal["chair", "req-participant", "opt-participant", "non-participant"]
+EventStatus = Literal["confirmed", "tentative", "cancelled"]
+RecurrenceScope = Literal["this", "following", "all"]
+
+
+class EventAttendeeOut(BaseModel):
+    email: str
+    cn: str | None
+    partstat: Partstat
+    role: AttendeeRole
+
+
+class EventOrganizerOut(BaseModel):
+    email: str
+    cn: str | None
+
+
+class OwnReplyOut(BaseModel):
+    """The last outbox row this identity's respond produced for this
+    object -- null until an RSVP has ever been sent."""
+
+    partstat: Partstat
+    outbox_id: uuid.UUID
+    outbox_status: str
+    error: str | None
+    updated_at: datetime
+
+
+class EventInstanceOut(BaseModel):
+    object_id: uuid.UUID
+    recurrence_id: str | None
+    calendar_id: uuid.UUID
+    uid: str
+    summary: str
+    dtstart: datetime
+    dtend: datetime
+    tz: str | None
+    all_day: bool
+    location: str | None
+    description: str | None
+    status: EventStatus
+    sequence: int
+    organizer: EventOrganizerOut | None
+    attendees: list[EventAttendeeOut]
+    partstat: Partstat | None
+    is_recurring: bool
+    is_exception: bool
+    pending: bool
+    sync_error: str | None
+    own_reply: OwnReplyOut | None
+    source_message_id: uuid.UUID | None
+    read_only: bool
+
+
+class EventAttendeeIn(BaseModel):
+    email: str
+    cn: str | None = None
+
+
+class EventCreateRequest(BaseModel):
+    calendar_id: uuid.UUID
+    summary: str
+    dtstart: datetime
+    dtend: datetime
+    tz: str | None = None
+    all_day: bool = False
+    location: str | None = None
+    description: str | None = None
+    rrule: str | None = None
+    attendees: list[EventAttendeeIn] | None = None
+
+
+class EventUpdateRequest(BaseModel):
+    calendar_id: uuid.UUID | None = None
+    summary: str | None = None
+    dtstart: datetime | None = None
+    dtend: datetime | None = None
+    tz: str | None = None
+    all_day: bool | None = None
+    location: str | None = None
+    description: str | None = None
+    rrule: str | None = None
+    attendees: list[EventAttendeeIn] | None = None
+    scope: RecurrenceScope | None = None
+    recurrence_id: str | None = None
+
+
+class EventDeleteRequest(BaseModel):
+    scope: RecurrenceScope | None = None
+    recurrence_id: str | None = None
+
+
+class EventListResponse(BaseModel):
+    events: list[EventInstanceOut]
+
+
+class RespondRequest(BaseModel):
+    identity_id: uuid.UUID
+    partstat: Literal["accepted", "declined", "tentative"]
+    comment: str | None = None
+    recurrence_id: str | None = None
+
+
+InvitationStatus = Literal[
+    "imported", "updated", "unlinked", "cancelled", "ignored_stale", "failed",
+]
+
+
+class InvitationResponse(BaseModel):
+    message_id: uuid.UUID
+    method: Literal["REQUEST", "REPLY", "CANCEL", "COUNTER"]
+    status: InvitationStatus
+    uid: str
+    summary: str
+    dtstart: datetime
+    dtend: datetime
+    all_day: bool
+    location: str | None
+    organizer: EventOrganizerOut | None
+    attendees: list[EventAttendeeOut]
+    own_address: str | None
+    sequence: int
+    calendar_id: uuid.UUID | None
+    calendar_name: str | None
+    object_id: uuid.UUID | None
+    error: str | None
+    own_reply: OwnReplyOut | None
+
+
+class ImportInvitationRequest(BaseModel):
+    calendar_id: uuid.UUID
+    link: bool = False
+
+
+class CalendarLinkRowOut(BaseModel):
+    identity_id: uuid.UUID
+    identity_address: str
+    account_id: uuid.UUID
+    calendar_ids: list[uuid.UUID]
+    receives_invitations_calendar_id: uuid.UUID | None
+
+
+class CalendarLinksOut(BaseModel):
+    base_revision: int
+    rows: list[CalendarLinkRowOut]
+
+
+class CalendarLinkRowIn(BaseModel):
+    identity_id: uuid.UUID
+    calendar_ids: list[uuid.UUID]
+    receives_invitations_calendar_id: uuid.UUID | None
+
+
+class CalendarLinksUpdateRequest(BaseModel):
+    base_revision: int
+    rows: list[CalendarLinkRowIn]
+
+
+# --- Contact schemas ---
+
+
+class ContactEmailIO(BaseModel):
+    email: str
+    type: str | None = None
+
+
+class ContactPhoneIO(BaseModel):
+    number: str
+    type: str | None = None
+
+
+class ContactAddressIO(BaseModel):
+    label: str | None = None
+    text: str
+
+
+class ContactResponse(BaseModel):
+    id: uuid.UUID
+    addressbook_id: uuid.UUID
+    addressbook_name: str
+    read_only: bool
+    summary: str
+    emails: list[ContactEmailIO]
+    organization: str | None
+    title: str | None
+    phones: list[ContactPhoneIO]
+    addresses: list[ContactAddressIO]
+    birthday: str | None
+    url: str | None
+    notes: str | None
+
+
+class ContactListResponse(BaseModel):
+    contacts: list[ContactResponse]
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class ContactSearchHitOut(BaseModel):
+    contact_id: uuid.UUID
+    name: str
+    email: str
+    source: Literal["contact", "recent", "typed"]
+
+
+class ContactCreateRequest(BaseModel):
+    addressbook_id: uuid.UUID
+    summary: str
+    emails: list[ContactEmailIO]
+    organization: str | None = None
+    title: str | None = None
+    phones: list[ContactPhoneIO] = Field(default_factory=list)
+    addresses: list[ContactAddressIO] = Field(default_factory=list)
+    birthday: str | None = None
+    url: str | None = None
+    notes: str | None = None
+
+
+class ContactUpdateRequest(BaseModel):
+    summary: str | None = None
+    emails: list[ContactEmailIO] | None = None
+    organization: str | None = None
+    title: str | None = None
+    phones: list[ContactPhoneIO] | None = None
+    addresses: list[ContactAddressIO] | None = None
+    birthday: str | None = None
+    url: str | None = None
+    notes: str | None = None
