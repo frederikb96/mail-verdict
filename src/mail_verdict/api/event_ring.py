@@ -124,24 +124,32 @@ class EventRing:
 
     def has_events_after(self, last_event_id: int, account_id: str | None = None) -> bool:
         """
-        Check if there are events after a given ID (gap detection).
+        Check if replaying from last_event_id is safe (gap detection).
 
         Args:
             last_event_id: Last event ID the client received
             account_id: Optional account filter
 
         Returns:
-            True if the ID is still within the ring (replay possible)
+            True if a replay from last_event_id would be complete -- every
+            id after it is still retained. For the global case (no
+            account_id) this means every account's ring, not just one: a
+            quiet account whose ring still reaches back past
+            last_event_id says nothing about a busier account that has
+            already evicted ids in between, and replaying only the quiet
+            one's events would leave the client believing it is caught up
+            while it silently missed the busy account's gap.
         """
         if account_id:
             ring = self._rings.get(account_id, deque())
             if not ring:
                 return False
             return bool(ring[0]["id"] <= last_event_id)
-        return bool(any(
-            ring and ring[0]["id"] <= last_event_id
+        return all(
+            ring[0]["id"] <= last_event_id
             for ring in self._rings.values()
-        ))
+            if ring
+        )
 
     def get_latest_seq(self) -> int:
         """Get the latest global sequence number."""

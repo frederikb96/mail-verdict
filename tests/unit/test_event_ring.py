@@ -177,6 +177,43 @@ class TestEventRingHasEventsAfter:
         ring = EventRing()
         assert ring.has_events_after(0, str(uuid.uuid4())) is False
 
+    @pytest.mark.asyncio
+    async def test_global_check_is_defeated_by_a_busy_account_alone(self) -> None:
+        """A quiet account whose ring still reaches back past last_event_id
+        must not green-light a global replay on its own -- a busier
+        account may have already evicted ids in between, and replaying
+        only misses them silently."""
+        ring = EventRing(max_size=3)
+        quiet, busy = uuid.uuid4(), uuid.uuid4()
+
+        # Client's last-seen id, from back when both accounts were quiet.
+        await ring.add(quiet, "sync.state", {"n": 1})  # id 1
+        last_event_id = await ring.add(busy, "sync.state", {"n": 1})  # id 2
+
+        # The busy account then evicts ids 2 through the ring's whole
+        # capacity while the quiet one produces nothing further.
+        for i in range(2, 6):
+            await ring.add(busy, "sync.progress", {"n": i})  # ids 3..6
+
+        # The quiet account's ring alone would still say "safe to replay"
+        # (its oldest id, 1, is <= last_event_id) -- that is exactly the
+        # false green light the global check must not give.
+        assert ring.has_events_after(last_event_id, str(quiet)) is True
+        assert ring.has_events_after(last_event_id, None) is False
+
+    @pytest.mark.asyncio
+    async def test_global_check_passes_when_every_account_still_covers_the_gap(self) -> None:
+        """The ordinary case: nothing has been evicted anywhere, so a
+        global replay from last_event_id is complete."""
+        ring = EventRing()
+        acct_a, acct_b = uuid.uuid4(), uuid.uuid4()
+
+        await ring.add(acct_a, "sync.state", {"n": 1})  # id 1
+        last_event_id = await ring.add(acct_b, "sync.state", {"n": 1})  # id 2
+        await ring.add(acct_a, "sync.progress", {"n": 2})  # id 3, after last_event_id
+
+        assert ring.has_events_after(last_event_id, None) is True
+
 
 class TestEventRingWaiters:
     """Tests for waiter notification."""
