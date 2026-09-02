@@ -953,6 +953,7 @@ async def create_event(
     location: str | None = None,
     description: str | None = None,
     rrule: str | None = None,
+    tz: str | None = None,
     attendee_emails: list[str] | None = None,
 ) -> dict[str, Any]:
     """
@@ -971,16 +972,23 @@ async def create_event(
         rrule: A raw RRULE value (e.g. "FREQ=WEEKLY;INTERVAL=2;COUNT=6" or
             "FREQ=DAILY;UNTIL=20261231T000000Z") -- the full RFC 5545
             vocabulary, not a fixed preset
+        tz: An IANA zone name (e.g. "Europe/Berlin") to bind dtstart/dtend
+            to, so the stored event carries a named zone rather than only
+            a fixed UTC offset -- correct across a DST change a fixed
+            offset is not. dtstart/dtend's own wall-clock reading is kept;
+            only the zone they resolve against changes. Not valid with
+            all_day, which has no time-of-day to bind
         attendee_emails: Email addresses to invite, optional
 
     Returns:
         The created event instance, or {"error": ...} on failure -- e.g.
-        attendees given but the calendar has no linked identity
+        attendees given but the calendar has no linked identity, or an
+        unrecognised tz
     """
     request = EventCreateRequest(
         calendar_id=calendar_id,  # type: ignore[arg-type]
         summary=summary, dtstart=dtstart, dtend=dtend,  # type: ignore[arg-type]
-        all_day=all_day, location=location, description=description, rrule=rrule,
+        all_day=all_day, location=location, description=description, rrule=rrule, tz=tz,
         attendees=(
             [EventAttendeeIn(email=e) for e in attendee_emails] if attendee_emails else None
         ),

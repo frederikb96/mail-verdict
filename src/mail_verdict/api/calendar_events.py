@@ -15,11 +15,15 @@ RANGE=THISANDFUTURE) is not implemented -- rejected with 422 rather than
 silently treated as scope="this", per the design's own rule that an
 unsupported scope must never be accepted and ignored.
 
-PATCH also rejects attendees and tz outright (422) rather than accept
-and silently drop them -- neither is applied by update_event. Changing
-who is invited needs its own REQUEST/CANCEL sends, the way
-create_event/delete_event already give attendees; tz has no settled
-meaning apart from dtstart/dtend, which already carry the instant.
+POST honours tz -- an IANA zone name (e.g. "Europe/Berlin") DTSTART/DTEND
+are bound to, so the stored event carries a named-zone TZID rather than
+only a fixed UTC offset. PATCH rejects both attendees and tz outright
+(422) rather than accept and silently drop them -- neither is applied
+by update_event. Changing who is invited on an already-sent invitation
+needs its own REQUEST/CANCEL sends, the way create_event/delete_event
+already give attendees; re-timezoning an existing event without also
+moving dtstart/dtend has no settled meaning here, unlike a fresh create,
+where there is no existing wall-clock reading to reconcile against.
 
 source_message_id (which invitation email an event came from) is left
 null throughout: resolving it needs a join from calendar_intake.msg_key
@@ -329,7 +333,7 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
         data = ical.build_new_event(
             summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
             all_day=request.all_day, location=request.location, description=request.description,
-            rrule=request.rrule, organizer_email=organizer_email,
+            rrule=request.rrule, tz=request.tz, organizer_email=organizer_email,
             organizer_cn=organizer_identity.display_name if organizer_identity else None,
             attendees=[(a.email, a.cn) for a in request.attendees] if request.attendees else None,
         )

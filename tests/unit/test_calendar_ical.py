@@ -492,6 +492,41 @@ class TestBuildAndEdit:
                 attendees=[("anna@example.com", "Anna")],
             )
 
+    def test_build_new_event_with_tz_binds_a_named_zone_not_a_fixed_offset(self) -> None:
+        """Row 146: the wall-clock reading given (10:00, 11:00) is kept --
+        only the zone it resolves against changes, from the fixed +00:00
+        the caller's ISO string carried to Europe/Berlin's own (CEST,
+        +02:00 in September)."""
+        data = ical.build_new_event(
+            summary="Standup",
+            dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+            tz="Europe/Berlin",
+        )
+        assert "DTSTART;TZID=Europe/Berlin:20260910T100000" in _unfolded(data)
+        master, _ = ical.parse_master_and_exceptions(data)
+        assert master.tz == "Europe/Berlin"
+        assert master.dtstart == datetime(2026, 9, 10, 8, 0, tzinfo=timezone.utc)
+
+    def test_build_new_event_with_tz_and_all_day_raises(self) -> None:
+        with pytest.raises(ValueError, match="all-day"):
+            ical.build_new_event(
+                summary="Holiday",
+                dtstart=datetime(2026, 9, 10, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 11, tzinfo=timezone.utc),
+                all_day=True,
+                tz="Europe/Berlin",
+            )
+
+    def test_build_new_event_with_an_unknown_tz_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown timezone"):
+            ical.build_new_event(
+                summary="Standup",
+                dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 10, 11, 0, tzinfo=timezone.utc),
+                tz="Not/AZone",
+            )
+
     def test_replace_master_fields_bumps_sequence(self) -> None:
         updated = ical.replace_master_fields(_SIMPLE_EVENT, summary="Team sync (renamed)")
         master, _ = ical.parse_master_and_exceptions(updated)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -208,6 +208,84 @@ class TestCreateAndList:
         with patch(_TARGET, return_value=migrated_db):
             resp = client.get(f"/calendar/events/{uuid.uuid4()}")
         assert resp.status_code == 404
+
+
+class TestCreateWithTimezone:
+    """Row 146: creating an event with tz either honours it or refuses
+    it -- through the actual POST endpoint, not just ical.build_new_event
+    directly."""
+
+    def test_create_with_tz_stores_a_named_zone_dtstart(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "tz": "Europe/Berlin",
+                },
+            )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["tz"] == "Europe/Berlin"
+        # The wall-clock reading given (10:00) is kept; only the zone it
+        # resolves against changed -- Europe/Berlin's own CEST offset in
+        # September (+02:00), not the fixed +00:00 the request carried --
+        # so the instant moved from 10:00 UTC to 08:00 UTC.
+        returned_dtstart = datetime.fromisoformat(body["dtstart"])
+        assert returned_dtstart.utcoffset() == timedelta(hours=2)
+        assert returned_dtstart.astimezone(timezone.utc) == datetime(
+            2026, 9, 10, 8, 0, tzinfo=timezone.utc,
+        )
+
+        object_id = body["object_id"]
+
+        async def _raw_data(db: DatabaseConnection) -> str:
+            async with db.session() as session:
+                result = await session.execute(
+                    text("SELECT data FROM dav_objects WHERE id = :id"), {"id": object_id},
+                )
+                return str(result.scalar_one())
+
+        raw = client.portal.call(_raw_data, migrated_db)
+        assert "DTSTART;TZID=Europe/Berlin:20260910T100000" in raw
+
+    def test_create_with_an_unknown_tz_is_refused(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "tz": "Not/AZone",
+                },
+            )
+        assert resp.status_code == 400, resp.text
+
+    def test_create_with_tz_and_all_day_is_refused(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Holiday",
+                    "dtstart": "2026-09-10T00:00:00+00:00",
+                    "dtend": "2026-09-11T00:00:00+00:00",
+                    "all_day": True,
+                    "tz": "Europe/Berlin",
+                },
+            )
+        assert resp.status_code == 400, resp.text
 
 
 class TestMalformedObjectResilience:

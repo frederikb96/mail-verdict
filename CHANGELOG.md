@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Creating an event with `tz` now actually binds `dtstart`/`dtend` to that named IANA zone --
+  previously the field was declared on the request and silently discarded, so the stored event
+  only ever carried a fixed UTC offset regardless of what `tz` said. The given wall-clock reading
+  is kept; only the zone it resolves against changes, the same way `DTSTART;TZID=...` behaves on
+  every other CalDAV client. `all_day` and an unrecognised zone name are both refused with `400`
+  rather than silently ignored or accepted into a nonsensical object
 - Editing an event's `attendees` or `tz` now answers `422` instead of a `200` that reports
   success while changing neither. `PATCH /calendar/events/{id}` never applied either field --
   a caller renaming the attendee list, or setting a timezone, got a confirmed write back with
