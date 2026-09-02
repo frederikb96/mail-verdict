@@ -8,6 +8,8 @@ import {
   Trash2,
   Archive,
   AlertTriangle,
+  CalendarDays,
+  Contact,
   FileEdit,
   Folder,
   Layers,
@@ -44,6 +46,7 @@ import {
 
 import { DroppableFolder } from "@/components/sidebar/droppable-folder";
 import { FolderManageDialog } from "@/components/sidebar/folder-manage-dialog";
+import { CalendarSidebar } from "@/components/calendar/calendar-sidebar";
 import { ComposeDialog } from "@/components/mail/compose-dialog";
 import { NotificationBell } from "@/components/layout/notification-bell";
 import { useAccounts } from "@/hooks/use-accounts";
@@ -108,6 +111,7 @@ function getFolderDisplayName(folder: FolderResponse): string {
 export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const isCalendarRoute = pathname.startsWith("/calendar");
   const [selectedAccountId, setSelectedAccountId] = useAtom(
     selectedAccountIdAtom,
   );
@@ -272,6 +276,8 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {isCalendarRoute && <CalendarSidebar />}
+        {!isCalendarRoute && (
         <SidebarGroup>
           <SidebarGroupLabel className="flex items-center justify-between gap-2 pr-1">
             <span>{isUnified ? "Unified Folders" : "Folders"}</span>
@@ -402,6 +408,7 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        )}
       </SidebarContent>
 
       <SidebarFooter>
@@ -413,6 +420,24 @@ export function AppSidebar() {
             >
               <Search className="h-4 w-4" />
               <span>Search</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/calendar" />}
+              isActive={pathname.startsWith("/calendar")}
+            >
+              <CalendarDays className="h-4 w-4" />
+              <span>Calendar</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/contacts" />}
+              isActive={pathname.startsWith("/contacts")}
+            >
+              <Contact className="h-4 w-4" />
+              <span>Contacts</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
