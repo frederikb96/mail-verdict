@@ -17,6 +17,10 @@ export type SelectEventHandler = (
   evt?: MouseEvent,
 ) => void;
 
+/** Width of the month view's week-number gutter -- shared by the scroller's
+ * header and each week row so the two stay aligned. */
+export const WEEK_NUMBER_GUTTER_WIDTH = 28;
+
 // --- Month view: spanning-bar lane assignment ---
 
 export interface SpanningItem {

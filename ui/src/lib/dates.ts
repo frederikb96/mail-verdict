@@ -13,6 +13,7 @@ import {
   differenceInCalendarWeeks,
   endOfWeek,
   format,
+  getISOWeek,
   isSameDay,
   isSameMonth,
   isToday as dfIsToday,
@@ -66,6 +67,11 @@ export function monthChunkKey(date: Date): string {
 export function monthChunksForWeek(index: number): string[] {
   const days = weekDays(index);
   return Array.from(new Set(days.map(monthChunkKey)));
+}
+
+/** ISO-8601 week number, for the gutter next to the month view. */
+export function weekNumber(date: Date): number {
+  return getISOWeek(date);
 }
 
 export function isToday(date: Date): boolean {

@@ -27,7 +27,7 @@ import {
   weekIndexToDate,
 } from "@/lib/dates";
 import { MonthWeekRow } from "@/components/calendar/month-week-row";
-import type { SelectEventHandler } from "@/components/calendar/layout";
+import { WEEK_NUMBER_GUTTER_WIDTH, type SelectEventHandler } from "@/components/calendar/layout";
 
 const ROWS_PER_SCREEN_DESKTOP = 6;
 const ROWS_PER_SCREEN_COMPACT = 8;
@@ -43,9 +43,11 @@ interface MonthScrollerProps {
   compact?: boolean;
   onSelectEvent: SelectEventHandler;
   onSelectDay: (date: Date) => void;
+  /** A week number was clicked -- opens the week view on that week. */
+  onSelectWeek: (date: Date) => void;
 }
 
-export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: MonthScrollerProps) {
+export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onSelectWeek }: MonthScrollerProps) {
   const [calendarDate, setCalendarDate] = useAtom(calendarDateAtom);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -173,6 +175,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: M
         </div>
       )}
       <div className="flex border-b bg-muted/20 text-xs text-muted-foreground">
+        {!compact && <div style={{ width: WEEK_NUMBER_GUTTER_WIDTH }} className="shrink-0" />}
         {WEEKDAY_LABELS.map((label) => (
           <div key={label} className="flex-1 px-1 py-1 text-center">
             {label}
@@ -198,6 +201,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay }: M
                 compact={compact}
                 onSelectEvent={onSelectEvent}
                 onSelectDay={onSelectDay}
+                onSelectWeek={onSelectWeek}
               />
             </div>
           ))}
