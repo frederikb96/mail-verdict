@@ -178,6 +178,8 @@ function ThreadMessage({
                   href={api.mails.attachmentUrl(mail.id, att.id)}
                   download={att.filename ?? "attachment"}
                   className="ml-1"
+                  title={`Download ${att.filename ?? "attachment"}`}
+                  aria-label={`Download ${att.filename ?? "attachment"}`}
                 >
                   <Download className="h-3 w-3 text-muted-foreground hover:text-foreground" />
                 </a>
@@ -307,6 +309,10 @@ export function ReadingPane() {
   // means the reversible move-to-trash button already above it.
   const isInTrash =
     folders?.find((f) => f.id === primary?.folder_id)?.special_use === "trash";
+  // Junk offers "not spam" instead of "spam" -- classifying an already-junked
+  // message as spam again is a no-op the API doesn't need to see.
+  const isInJunk =
+    folders?.find((f) => f.id === primary?.folder_id)?.special_use === "junk";
 
   // Reset expansion state per opened mail: last message expanded, plus
   // whichever message the user actually clicked in the list.
@@ -402,24 +408,45 @@ export function ReadingPane() {
               })
             }
             title="Archive"
+            aria-label="Archive"
           >
             <Archive className="h-4 w-4" />
           </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() =>
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: "spam" },
-              })
-            }
-            title="Spam"
-          >
-            <Ban className="h-4 w-4" />
-          </Button>
+          {isInJunk ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: primary.id,
+                  accountId: primary.account_id,
+                  action: { action: "not_spam" },
+                })
+              }
+              title="Not spam"
+              aria-label="Not spam"
+            >
+              <ThumbsUp className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                mailAction.mutate({
+                  mailId: primary.id,
+                  accountId: primary.account_id,
+                  action: { action: "spam" },
+                })
+              }
+              title="Spam"
+              aria-label="Spam"
+            >
+              <Ban className="h-4 w-4" />
+            </Button>
+          )}
           {isInTrash ? (
             <Button
               variant="ghost"
@@ -427,6 +454,7 @@ export function ReadingPane() {
               className="h-8 w-8 text-destructive"
               onClick={() => setConfirmExpunge(true)}
               title="Delete forever"
+              aria-label="Delete forever"
             >
               <Trash2 className="h-4 w-4" />
             </Button>
@@ -443,6 +471,7 @@ export function ReadingPane() {
                 })
               }
               title="Move to trash"
+              aria-label="Move to trash"
             >
               <Trash2 className="h-4 w-4" />
             </Button>

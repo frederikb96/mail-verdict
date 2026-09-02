@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, Archive, Ban, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
+import { Star, Archive, Ban, ThumbsUp, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   extractSenderName,
@@ -14,7 +14,14 @@ import type { MessageActionType, MessageSummary } from "@/types/api";
 
 type RowAction = Extract<
   MessageActionType,
-  "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
+  | "flag"
+  | "unflag"
+  | "archive"
+  | "spam"
+  | "not_spam"
+  | "trash"
+  | "mark_read"
+  | "mark_unread"
 >;
 
 // Kept in the layout at full width at all times; only opacity/pointer-events
@@ -28,6 +35,8 @@ interface MailListItemProps {
   isFocused?: boolean;
   isChecked: boolean;
   selectionMode: boolean;
+  /** True when the row's folder is Junk -- swaps the Spam control for Not spam. */
+  isJunk?: boolean;
   onSelect: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (mailId: string, action: RowAction) => void;
@@ -39,6 +48,7 @@ export function MailListItem({
   isFocused,
   isChecked,
   selectionMode,
+  isJunk,
   onSelect,
   onCheckToggle,
   onAction,
@@ -169,20 +179,37 @@ export function MailListItem({
         >
           <Archive className="h-4 w-4 text-muted-foreground" />
         </button>
-        <button
-          className={cn(
-            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            revealOnHoverClass,
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(mail.id, "spam");
-          }}
-          title="Spam"
-          aria-label="Mark as spam"
-        >
-          <Ban className="h-4 w-4 text-muted-foreground" />
-        </button>
+        {isJunk ? (
+          <button
+            className={cn(
+              "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+              revealOnHoverClass,
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(mail.id, "not_spam");
+            }}
+            title="Not spam"
+            aria-label="Not spam"
+          >
+            <ThumbsUp className="h-4 w-4 text-muted-foreground" />
+          </button>
+        ) : (
+          <button
+            className={cn(
+              "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+              revealOnHoverClass,
+            )}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAction?.(mail.id, "spam");
+            }}
+            title="Spam"
+            aria-label="Mark as spam"
+          >
+            <Ban className="h-4 w-4 text-muted-foreground" />
+          </button>
+        )}
         <button
           className={cn(
             "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
