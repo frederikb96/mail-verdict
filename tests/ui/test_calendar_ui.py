@@ -15,7 +15,12 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.e2e.helpers import wait_for, wait_for_dav_account_active, wait_for_dav_collection, wait_for_event_synced
+from tests.e2e.helpers import (
+    wait_for,
+    wait_for_dav_account_active,
+    wait_for_dav_collection,
+    wait_for_event_synced,
+)
 from tests.setup.dav_helpers import create_calendar, discover
 from tests.ui.helpers import event_chip
 

@@ -129,7 +129,7 @@ class TestDavAccounts:
     def test_password_change_on_an_active_account_forces_reconnect(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 112: correcting a wrong password on an already-running
+        """Correcting a wrong password on an already-running
         account has to actually reconnect PostIMAP to it -- the
         documented mail-side trap (api/accounts.py's own
         credentials_changed/was_active dance), not carried across to DAV

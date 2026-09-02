@@ -27,8 +27,8 @@ _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
 # VTIMEZONE component, an RRULE narrowed by an EXDATE, an RDATE adding an
 # extra occurrence, an exception overriding one occurrence, and
 # properties this codebase never models (CATEGORIES, an X- property, a
-# VALARM subcomponent). Row 125's round-trip proof for the PATCH endpoint
-# itself, not just the ical.py functions underneath it.
+# VALARM subcomponent). A round-trip proof for the PATCH endpoint itself,
+# not just the ical.py functions underneath it.
 _EXOTIC_RECURRING_ICS = (
     "BEGIN:VCALENDAR\r\n"
     "VERSION:2.0\r\n"
@@ -211,7 +211,7 @@ class TestCreateAndList:
 
 
 class TestCreateWithTimezone:
-    """Row 146: creating an event with tz either honours it or refuses
+    """Creating an event with tz either honours it or refuses
     it -- through the actual POST endpoint, not just ical.build_new_event
     directly."""
 
@@ -351,7 +351,7 @@ class TestMalformedObjectResilience:
 
 
 class TestWriteErrors:
-    """Row 110: a reverted write -- the server's copy already overwrote
+    """A reverted write -- the server's copy already overwrote
     the user's edit -- has to say so, not read as "nothing happened"."""
 
     def test_reverted_write_is_surfaced_with_its_own_wording(
@@ -503,7 +503,7 @@ class TestUpdateAndDelete:
     def test_update_as_attendee_does_not_bump_sequence(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 114: SEQUENCE is the organizer's own version counter --
+        """SEQUENCE is the organizer's own version counter --
         editing an event this calendar was only invited to, not created,
         must not advance it, or the real organizer's next genuine update
         loses to it as stale."""
@@ -549,7 +549,7 @@ class TestUpdateAndDelete:
     def test_update_with_attendees_sends_a_request(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 111: create notifies, delete notifies -- an edit that
+        """Create notifies, delete notifies -- an edit that
         moves the time has to as well, or an attendee's calendar is
         simply wrong with nothing telling them."""
         calendar_id = client.portal.call(_seed, migrated_db)
@@ -678,7 +678,7 @@ class TestUpdateAndDelete:
     def test_update_naming_attendees_is_refused_not_silently_dropped(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 143: the endpoint reads neither attendees nor tz -- a
+        """The endpoint reads neither attendees nor tz -- a
         caller naming either must get an error, not a 200 that reports
         success for a field it never touched."""
         calendar_id = client.portal.call(_seed, migrated_db)
@@ -925,7 +925,7 @@ class TestRespond:
 
 
 class TestRecurrenceRoundTrip:
-    """Row 125: an object shaped like something a real CalDAV server
+    """An object shaped like something a real CalDAV server
     produced must survive an edit through the PATCH endpoint an agent or
     the UI actually calls, not just the pure ical.py functions
     underneath it."""
@@ -1017,7 +1017,7 @@ class TestRecurrenceRoundTrip:
 
 
 class TestCreateWithComplexRrule:
-    """Row 125's other half: creating complex recurrence through the API
+    """Creating complex recurrence through the API
     -- an interval and an end -- has to actually work, not just survive
     what already exists."""
 

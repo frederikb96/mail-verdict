@@ -1,6 +1,6 @@
 """
-FolderRepository.resolve_special_folder()'s name-fallback path -- row 114:
-the fallback only ever compared the full imap_name against a bare
+FolderRepository.resolve_special_folder()'s name-fallback path -- the
+fallback only ever compared the full imap_name against a bare
 candidate name, so a namespaced mailbox (INBOX.Archive, INBOX/Archive)
 never matched, and picking between two matching folders (Junk and Spam
 both present) was whatever Postgres happened to return with no ORDER BY.

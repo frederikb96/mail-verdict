@@ -419,8 +419,8 @@ class TestForceReconnect:
 
 
 class TestForceReconnectDavAccount:
-    """The DavAccount counterpart -- row 112: correcting a wrong CalDAV
-    password on an active account has to actually take effect."""
+    """The DavAccount counterpart -- correcting a wrong CalDAV password on
+    an active account has to actually take effect."""
 
     @pytest.mark.asyncio
     async def test_bounces_back_to_active_and_actually_writes(

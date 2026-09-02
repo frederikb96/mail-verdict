@@ -6,7 +6,7 @@ Every other calendar_intake test migrates an empty database straight to
 head, which is the one shape a data migration cannot fail in -- the
 UPDATE this migration runs has nothing to match. This builds the state
 a pre-0014 deployment actually reaches (a 'status=imported, object_id
-NULL' strand, per row 118) and upgrades through it, the same shape
+NULL' strand) and upgrades through it, the same shape
 test_migration_from_v1.py uses for the 1.0.0 upgrade.
 """
 

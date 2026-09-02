@@ -135,7 +135,7 @@ class TestWindowFilter:
     async def test_dtstart_only_event_with_null_dtend_is_kept(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 109 re-verification: PostIMAP only ever writes dtend from
+        """PostIMAP only ever writes dtend from
         an explicit DTEND property -- a DURATION-only event, a
         DTSTART-only one, and the canonical single-day all-day
         `DTSTART;VALUE=DATE` with neither all leave dtend NULL. Without

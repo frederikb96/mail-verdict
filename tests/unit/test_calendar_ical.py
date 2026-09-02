@@ -86,7 +86,7 @@ _RECURRING_EVENT = (
 # pair -- both forms RFC 5545 allows), an RDATE adding an extra one-off
 # occurrence, an exception overriding one occurrence, and a scattering of
 # properties this codebase has never modeled (CATEGORIES, CLASS, TRANSP,
-# an X- property, a VALARM subcomponent). Row 125's round-trip proof: none
+# an X- property, a VALARM subcomponent). A round-trip proof: none
 # of this may be narrowed, dropped or rewritten by an edit that only
 # means to change one field.
 _EXOTIC_RECURRING_EVENT = (
@@ -204,7 +204,7 @@ class TestExpansion:
 
 
 class TestOccurrenceBound:
-    """Row 108: an event whose RRULE could expand to an unreasonable
+    """An event whose RRULE could expand to an unreasonable
     occurrence count inside the requested window is refused outright,
     before recurring-ical-events is ever asked to generate anything."""
 
@@ -493,7 +493,7 @@ class TestBuildAndEdit:
             )
 
     def test_build_new_event_with_tz_binds_a_named_zone_not_a_fixed_offset(self) -> None:
-        """Row 146: the wall-clock reading given (10:00, 11:00) is kept --
+        """The wall-clock reading given (10:00, 11:00) is kept --
         only the zone it resolves against changes, from the fixed +00:00
         the caller's ISO string carried to Europe/Berlin's own (CEST,
         +02:00 in September)."""
@@ -563,7 +563,7 @@ class TestBuildAndEdit:
         assert master.location == "Room 4"
 
     def test_replace_master_fields_with_bump_sequence_false_leaves_it(self) -> None:
-        """Row 114: editing an event this calendar does not organize must
+        """Editing an event this calendar does not organize must
         not advance SEQUENCE -- it belongs to the organizer's own version
         counter (RFC 5545), and bumping it locally makes the organizer's
         next genuine update look stale by comparison."""
@@ -796,7 +796,7 @@ def _exception_components(data: str) -> list[Component]:
 
 
 class TestPropertyPreservation:
-    """Row 125: a complex object read from elsewhere must not be narrowed,
+    """A complex object read from elsewhere must not be narrowed,
     dropped or rewritten by an edit that only means to change one field --
     everything _EXOTIC_RECURRING_EVENT carries that this codebase never
     models has to survive every edit path unchanged."""

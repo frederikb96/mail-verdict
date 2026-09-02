@@ -281,7 +281,7 @@ class TestGetInvitation:
     def test_request_against_a_known_uid_is_pending_review_with_from_addr(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 107 v2: a REQUEST naming a UID already held is never
+        """A REQUEST naming a UID already held is never
         applied automatically -- the card shows pending_review with the
         message's own envelope sender next to the ORGANIZER it claims,
         so a mismatch is obvious without any header authentication."""
@@ -594,7 +594,7 @@ class TestImportInvitation:
     def test_confirming_a_pending_review_request_updates_the_object(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 107 v2: confirming a pending_review REQUEST needs no
+        """Confirming a pending_review REQUEST needs no
         calendar_id -- the target is the existing object itself."""
         uid = _new_uid()
         mail_id, collection_id, object_id = client.portal.call(
@@ -686,7 +686,7 @@ class TestImportInvitation:
     def test_get_describes_what_post_will_actually_do_for_an_unreachable_uid(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 120: GET's own existing-object lookup is scoped the way
+        """GET's own existing-object lookup is scoped the way
         the automatic listener is (reachable DAV accounts only), but
         POST .../import resolves a UID anywhere -- without accounting
         for that, the card could say 'unlinked, pick a calendar' for an

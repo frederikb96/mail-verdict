@@ -122,7 +122,7 @@ def _reply_ics(
 
 
 def _attacker_request_ics(uid: str, *, sequence: int = 99) -> str:
-    """The row 107 repro's attack body: a REQUEST naming a UID the sender
+    """An attack body: a REQUEST naming a UID the sender
     merely knows (a co-attendee has it, since it is in the .ics they
     themselves received), an ORGANIZER of the attacker's own choosing,
     no ATTENDEE line at all, and a SEQUENCE high enough to beat
@@ -368,7 +368,7 @@ class TestImport:
     async def test_addressed_but_not_an_attendee_is_not_auto_imported(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 113: being a To/Cc recipient is not the same as being
+        """Being a To/Cc recipient is not the same as being
         invited. Only ATTENDEE resolves an identity for an automatic
         import -- the to/cc fallback stays available to
         resolve_attendee_identity()'s callers, just never for this one,
@@ -554,7 +554,7 @@ class TestImport:
     async def test_cancel_of_a_known_event_needs_confirming(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 107 v2: even a CANCEL naming the real organizer is never
+        """Even a CANCEL naming the real organizer is never
         applied automatically -- the same `.ics` that hands a forger a
         UID hands them the ORGANIZER address too, so matching one
         authenticates nothing. It becomes a row a person confirms
@@ -752,7 +752,7 @@ class TestImport:
 
 
 class TestAuthentication:
-    """Row 107: an incoming REQUEST/CANCEL against a UID this application
+    """An incoming REQUEST/CANCEL against a UID this application
     already holds is never applied automatically, whoever it claims to
     be from -- ORGANIZER equality was tried and does not authenticate
     anything a co-attendee could not already produce, since the same
@@ -979,7 +979,7 @@ class TestAuthentication:
     async def test_uid_lookup_is_not_reachable_across_unrelated_accounts(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """The scope half of row 107: a UID collision with an object under
+        """A UID collision with an object under
         a DAV account only linked to a different mail account's identity
         must not resolve at all -- it has to be treated as a fresh
         invitation (or ignored, for CANCEL/REPLY), never as "the existing
@@ -1041,7 +1041,7 @@ class TestAuthentication:
 
 
 class TestPendingRetry:
-    """Row 114: calendar_intake's gate row is written before _apply()
+    """calendar_intake's gate row is written before _apply()
     writes anything, but never with a terminal status _apply() has not
     actually reached -- a decision that writes something is inserted as
     'pending' and only promoted once that write lands."""
@@ -1148,7 +1148,7 @@ class TestReadOnlyIntakeCalendar:
     async def test_read_only_intake_calendar_is_not_auto_imported(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """Row 114: manual import already refuses a read-only calendar
+        """Manual import already refuses a read-only calendar
         with 400 -- automatic import silently skipped this check, so the
         write dead-lettered on the server with nothing telling anyone."""
         uid = _new_uid()
@@ -1191,7 +1191,7 @@ class TestReadOnlyIntakeCalendar:
 
 
 class TestFindCalendarAttachment:
-    """Row 114: a Google-shaped invitation carries both a bare
+    """A Google-shaped invitation carries both a bare
     text/calendar part and an application/ics one -- picking between them
     has to be deterministic, not whatever an unordered `.first()` returns."""
 

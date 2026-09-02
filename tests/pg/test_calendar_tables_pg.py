@@ -187,7 +187,7 @@ async def test_calendar_replies_records_every_attempt(
 async def test_deleting_an_identity_unlinks_its_replies(
     migrated_db: DatabaseConnection,
 ) -> None:
-    """Row 114: identity_id's ON DELETE SET NULL -- the reply survives
+    """identity_id's ON DELETE SET NULL -- the reply survives
     its identity being deleted, the same as calendar_prefs above,
     instead of the RSVP history the table exists to keep being deleted
     along with the identity that sent it."""

@@ -1,5 +1,5 @@
 """
-Row 124: an MCP client lists calendars, creates, edits and deletes an
+An MCP client lists calendars, creates, edits and deletes an
 event, and searches and edits contacts -- against a real database, over
 FastMCP's own in-memory Client rather than the underlying api/ functions
 directly, since these tools are what an agent actually calls.

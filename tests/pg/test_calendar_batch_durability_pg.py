@@ -1,5 +1,5 @@
 """
-Row 126: a large batch of calendar writes must reach storage in order,
+A large batch of calendar writes must reach storage in order,
 with nothing lost and nothing duplicated -- against a real database,
 not a mock.
 
