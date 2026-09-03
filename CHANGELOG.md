@@ -7,7 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-09-03
+
 ### Added
+
+- Trash, archive and spam offer an "Undo" on their success toast, both from a single row and
+  from the bulk toolbar, moving the affected message(s) straight back to the folder they were
+  in — a compensating action rather than a delayed commit, the same shape a failed mutation's
+  own optimistic rollback already uses
+- A `ui` test layer (`tests/ui/`, `pytest -m ui`) drives the application through a real browser
+  with Playwright, reusing the same testcontainers world the `e2e` layer builds for itself, plus
+  `scripts/devstack.py` for running an independent, compose-less development stack per checkout
+- **Identities** — a mail account's addresses to send as. `GET`/`POST /api/identities`,
+  `PATCH`/`DELETE /api/identities/{id}`; at most one default per account, enforced at the
+  database level. `POST /api/outbox` and the MCP `send_mail`/`draft_mail` tools accept an
+  `identity_id`, falling back to the account's default identity and then to `accounts.imap_user`
+  when it has none — an account that never adopts this table behaves exactly as before
+- **Calendars and contacts**, mirrored the same way mail is (requires PostIMAP >= 1.6.0):
+  `GET`/`POST`/`PATCH`/`DELETE` on `/api/dav-accounts` and `/api/calendars`, `GET`/`PUT
+  /api/calendar/links` for the identity-to-calendar mapping, `GET`/`POST`/`PATCH`/`DELETE` on
+  `/api/calendar/events` with recurring-series expansion and per-occurrence editing, `POST
+  /api/calendar/events/{id}/respond` for RSVPs, and `GET`/`POST`/`PATCH`/`DELETE` on
+  `/api/contacts` plus `/api/contacts/search` for the compose autocomplete. Every write to the
+  calendars/contacts tables PostIMAP mirrors goes through `postimap/actions.py`, proven against
+  the real `postimap_app` role, not just an owner connection
+- **Invitation intake** — an emailed `.ics` attachment becomes a calendar entry on its own:
+  `calendar/intake.py` reacts to a message arriving the same way the spam feedback listener does,
+  resolves the recipient identity from the ATTENDEE list (falling back to To/Cc), and imports,
+  updates, cancels or records a reply against the calendar_intake table's never-classify-twice
+  gate. A UID already held anywhere is always updated in place rather than duplicated — the
+  hand-imported case, and what keeps two of an identity's own addresses invited to the same event
+  from producing two copies. `GET`/`POST /api/calendar/invitations` reads a parsed invitation with
+  its intake status and candidate calendars, and imports one manually (optionally linking the
+  calendar to the identity), for anything intake left unlinked or that dead-lettered
 
 - `POST /api/addressbooks` creates an address book on the server, mirroring the existing
   calendar create endpoint -- previously only reachable by calling the internal action directly,
@@ -54,6 +86,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `TestPhoneLayoutUi.test_contacts_page_has_an_add_control` in `tests/ui/test_mail_actions_ui.py`
 
 ### Fixed
+
+- An action on a message already in its target folder (marking spam already in Junk as spam
+  again, archiving something already in Archive, an explicit move onto the current folder, and
+  the bulk variants of each) no longer strands the row mid-move. `move_message()` and
+  `move_message_bulk()` wrote `imap_uid = NULL` unconditionally, and PostIMAP only enqueues a
+  sync when the folder actually changes, so nothing ever cleared it and the row spun forever.
+  Both writes now skip a message already in the target folder
+- Dragging a message onto a folder moved it to the folder above the one under the pointer,
+  because the default rectangle-intersection collision detection compared the dragged row's
+  height against the shorter sidebar items. Drag-and-drop now uses pointer-position collision
+  detection, and dropping a message back onto its current folder is a no-op rather than a request
+- `scripts/seed_dev.py` stamps each delivery with the current date and a fresh Message-ID. The
+  fixtures carry dates from the year they were written, so the corpus arrived older than
+  `pipeline.live_max_age_days` and was never classified — the development stack came up with
+  spam detection apparently dead. A repeated Message-ID had the same effect on a second run.
+  `--keep-dates` delivers the fixtures verbatim
+- Archiving a message returned "No archive folder found for this account" on any server that
+  never advertises IMAP SPECIAL-USE, even with a folder literally named Archive present.
+  Resolving trash/archive/junk/inbox now falls back to matching a well-known name for the role
+  when no folder carries the flag
+- The pipeline queue's worker loop never passed its own `max_attempts` setting down to
+  `claim_batch`, so a row that crashed the worker process itself before ever reaching the
+  retry-vs-fail decision was reclaimed and re-claimed forever instead of eventually stopping
+- The dev image's `/api/health` check could report the container healthy for minutes after a
+  file-watcher reload crashed at startup. `--reload` pre-binds the listening socket once and
+  reuses it across every worker generation, so a dead worker still leaves 8080 accepting
+  connections; a plain `curl -sf` with no timeout of its own can hang on a response that never
+  comes rather than failing. The check now bounds curl with `--max-time` and checks more often,
+  so a dead worker is reported unhealthy within seconds instead of minutes
 
 - Switching to a second mail account no longer strands the message list on the previous
   account's folder. The folder list keeps the previous account's data on screen while the new
@@ -368,71 +429,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   occurrence by `RECURRENCE-ID` searches a one-day window around that occurrence's own timestamp
   instead of a six-year span. The month view also no longer fails as a whole when one calendar
   object cannot be expanded or parsed -- that object is skipped, not every visible calendar
-
-## [3.1.0] - 2026-09-02
-
-### Added
-
-- Trash, archive and spam offer an "Undo" on their success toast, both from a single row and
-  from the bulk toolbar, moving the affected message(s) straight back to the folder they were
-  in — a compensating action rather than a delayed commit, the same shape a failed mutation's
-  own optimistic rollback already uses
-- A `ui` test layer (`tests/ui/`, `pytest -m ui`) drives the application through a real browser
-  with Playwright, reusing the same testcontainers world the `e2e` layer builds for itself, plus
-  `scripts/devstack.py` for running an independent, compose-less development stack per checkout
-- **Identities** — a mail account's addresses to send as. `GET`/`POST /api/identities`,
-  `PATCH`/`DELETE /api/identities/{id}`; at most one default per account, enforced at the
-  database level. `POST /api/outbox` and the MCP `send_mail`/`draft_mail` tools accept an
-  `identity_id`, falling back to the account's default identity and then to `accounts.imap_user`
-  when it has none — an account that never adopts this table behaves exactly as before
-- **Calendars and contacts**, mirrored the same way mail is (requires PostIMAP >= 1.6.0):
-  `GET`/`POST`/`PATCH`/`DELETE` on `/api/dav-accounts` and `/api/calendars`, `GET`/`PUT
-  /api/calendar/links` for the identity-to-calendar mapping, `GET`/`POST`/`PATCH`/`DELETE` on
-  `/api/calendar/events` with recurring-series expansion and per-occurrence editing, `POST
-  /api/calendar/events/{id}/respond` for RSVPs, and `GET`/`POST`/`PATCH`/`DELETE` on
-  `/api/contacts` plus `/api/contacts/search` for the compose autocomplete. Every write to the
-  calendars/contacts tables PostIMAP mirrors goes through `postimap/actions.py`, proven against
-  the real `postimap_app` role, not just an owner connection
-- **Invitation intake** — an emailed `.ics` attachment becomes a calendar entry on its own:
-  `calendar/intake.py` reacts to a message arriving the same way the spam feedback listener does,
-  resolves the recipient identity from the ATTENDEE list (falling back to To/Cc), and imports,
-  updates, cancels or records a reply against the calendar_intake table's never-classify-twice
-  gate. A UID already held anywhere is always updated in place rather than duplicated — the
-  hand-imported case, and what keeps two of an identity's own addresses invited to the same event
-  from producing two copies. `GET`/`POST /api/calendar/invitations` reads a parsed invitation with
-  its intake status and candidate calendars, and imports one manually (optionally linking the
-  calendar to the identity), for anything intake left unlinked or that dead-lettered
-
-### Fixed
-
-- An action on a message already in its target folder (marking spam already in Junk as spam
-  again, archiving something already in Archive, an explicit move onto the current folder, and
-  the bulk variants of each) no longer strands the row mid-move. `move_message()` and
-  `move_message_bulk()` wrote `imap_uid = NULL` unconditionally, and PostIMAP only enqueues a
-  sync when the folder actually changes, so nothing ever cleared it and the row spun forever.
-  Both writes now skip a message already in the target folder
-- Dragging a message onto a folder moved it to the folder above the one under the pointer,
-  because the default rectangle-intersection collision detection compared the dragged row's
-  height against the shorter sidebar items. Drag-and-drop now uses pointer-position collision
-  detection, and dropping a message back onto its current folder is a no-op rather than a request
-- `scripts/seed_dev.py` stamps each delivery with the current date and a fresh Message-ID. The
-  fixtures carry dates from the year they were written, so the corpus arrived older than
-  `pipeline.live_max_age_days` and was never classified — the development stack came up with
-  spam detection apparently dead. A repeated Message-ID had the same effect on a second run.
-  `--keep-dates` delivers the fixtures verbatim
-- Archiving a message returned "No archive folder found for this account" on any server that
-  never advertises IMAP SPECIAL-USE, even with a folder literally named Archive present.
-  Resolving trash/archive/junk/inbox now falls back to matching a well-known name for the role
-  when no folder carries the flag
-- The pipeline queue's worker loop never passed its own `max_attempts` setting down to
-  `claim_batch`, so a row that crashed the worker process itself before ever reaching the
-  retry-vs-fail decision was reclaimed and re-claimed forever instead of eventually stopping
-- The dev image's `/api/health` check could report the container healthy for minutes after a
-  file-watcher reload crashed at startup. `--reload` pre-binds the listening socket once and
-  reuses it across every worker generation, so a dead worker still leaves 8080 accepting
-  connections; a plain `curl -sf` with no timeout of its own can hang on a response that never
-  comes rather than failing. The check now bounds curl with `--max-time` and checks more often,
-  so a dead worker is reported unhealthy within seconds instead of minutes
 
 ## [3.0.0] - 2026-08-30
 
