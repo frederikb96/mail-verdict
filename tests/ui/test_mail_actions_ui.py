@@ -10,12 +10,12 @@ test_dragging_a_junk_row_onto_trash_moves_it describe correct behaviour for
 two backend/UI defects: a same-folder move stranding imap_uid with a
 spinner that never clears, and dnd-kit's default collision detection
 dropping a row on the folder above the pointer rather than the one under
-it. move_message()'s own fix for the former is in place and
-test_dragging_a_junk_row_onto_trash_moves_it now passes.
-test_spam_on_an_already_junked_message_settles still fails, but on a row
-click timing out behind another element intercepting the pointer event --
-a different, still-open defect from the stranded spinner the test was
-written to catch.
+it. move_message()'s own fix for the former is in place and both tests now
+pass. test_spam_on_an_already_junked_message_settles goes through the bulk
+toolbar's Spam button rather than the row's own -- a Junk row's own Spam
+control is replaced by Not spam once rescuing from Junk is possible, so the
+toolbar button is the one still-current control that can send an
+already-junked message through the spam action.
 
 test_arriving_mail_holds_the_list_scroll_position and
 TestPhoneLayoutUi.test_contacts_page_has_an_add_control described correct
@@ -324,8 +324,11 @@ class TestMailActionsUi:
         junk_folder: dict[str, Any],
     ) -> None:
         """A same-folder move must be a no-op success, not a stranded
-        imap_uid=NULL row that spins forever. Expected to fail until the
-        backend treats spam-on-a-Junk-message as already-satisfied."""
+        imap_uid=NULL row that spins forever. The row's own Spam control is
+        replaced by Not spam once a message sits in Junk, so this goes
+        through the bulk toolbar's Spam button instead -- it stays
+        available in every folder, and is the one control left that can
+        still send an already-junked message through the spam action."""
         already_junked = _deliver_and_move(
             api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
             inbox_folder["id"], junk_folder["id"], f"Already junk {uuid.uuid4()}",
@@ -336,7 +339,9 @@ class TestMailActionsUi:
         row = mail_row(page, already_junked["id"])
         expect(row).to_be_visible(timeout=15_000)
 
-        row.get_by_title("Spam").click()
+        row.hover()
+        row.get_by_role("checkbox").click()
+        page.get_by_role("main").get_by_role("button", name="Spam", exact=True).click()
 
         expect(row.locator(".animate-spin")).to_have_count(0, timeout=10_000)
         expect(row).to_be_visible()
