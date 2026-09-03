@@ -15,7 +15,7 @@ import time
 from typing import Any
 
 import httpx
-from playwright.sync_api import Locator, Page
+from playwright.sync_api import Locator, Page, expect
 
 from tests.e2e.helpers import (  # noqa: F401 -- re-exported for tests/ui/ callers
     unique_email,
@@ -156,12 +156,25 @@ def select_account(page: Page, account: dict[str, Any]) -> None:
     necessarily this test's own account, once other modules running in the
     same session have created accounts of their own. This drives the
     identical control a real multi-account user reaches for, rather than
-    assuming the default lands on the right one."""
+    assuming the default lands on the right one.
+
+    On a mobile viewport the switcher lives inside the sidebar's own sheet,
+    closed by default -- the same hamburger trigger a phone user taps opens
+    it first, and picking an account leaves it open covering the page, so
+    it's closed again the same way a person would dismiss it."""
     trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
+    opened_sheet = trigger.is_hidden()
+    if opened_sheet:
+        page.locator('[data-slot="sidebar-trigger"]').click()
+        expect(trigger).to_be_visible(timeout=10_000)
     trigger.click()
     page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
         account["name"], exact=True,
     ).click()
+    if opened_sheet:
+        sheet = page.locator('[data-slot="sheet-portal"]')
+        page.keyboard.press("Escape")
+        expect(sheet).to_have_count(0, timeout=10_000)
 
 
 def wait_for_account_active(

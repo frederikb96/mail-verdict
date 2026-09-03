@@ -134,7 +134,7 @@ export function AppSidebar() {
   );
   const isUnified = useAtom(isUnifiedViewAtom)[0];
   const { data: accounts } = useAccounts();
-  const { data: folders } = useFolders(
+  const { data: folders, isPlaceholderData: foldersArePlaceholder } = useFolders(
     isUnified ? null : selectedAccountId,
   );
   const { data: folderOrderData } = useFolderOrder(
@@ -171,18 +171,32 @@ export function AppSidebar() {
     [folders],
   );
 
-  // Auto-select inbox folder when account changes or folders load
+  // Auto-select inbox folder when account changes or folders load.
+  //
+  // `useFolders` keeps the previous account's folders as placeholder data
+  // while the new account's request is in flight, so the fallback branch
+  // below must not act on it -- it belongs to the account that was
+  // selected a moment ago, not the one selected now. `useFolderOrder` has
+  // no such placeholder: it returns undefined for an account it hasn't
+  // fetched yet, so `orderedFolders` is never stale for the wrong account.
   useEffect(() => {
     if (isUnified || selectedFolderId) return;
 
     if (orderedFolders && orderedFolders.length > 0) {
       const inbox = orderedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.folder_id : orderedFolders[0].folder_id);
-    } else if (sortedFolders.length > 0) {
+    } else if (sortedFolders.length > 0 && !foldersArePlaceholder) {
       const inbox = sortedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.id : sortedFolders[0].id);
     }
-  }, [isUnified, selectedFolderId, orderedFolders, sortedFolders, setSelectedFolderId]);
+  }, [
+    isUnified,
+    selectedFolderId,
+    orderedFolders,
+    sortedFolders,
+    foldersArePlaceholder,
+    setSelectedFolderId,
+  ]);
 
   /** Select a folder and navigate to the mail view if on a different page. */
   const handleFolderSelect = (folderId: string) => {

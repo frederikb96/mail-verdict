@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Switching to a second mail account no longer strands the message list on the previous
+  account's folder. The folder list keeps the previous account's data on screen while the new
+  account's own folders are still loading, and the sidebar's inbox auto-selection picked a
+  folder from that stale, wrong-account data the moment it saw none selected yet -- so the
+  account switcher and the sidebar's folder badges correctly showed the new account while the
+  message list stayed on "No messages in this folder" until a folder was clicked by hand.
+  Auto-selection now waits for the new account's own folder data before picking one
 - Editing an event keeps the timezone it is bound to. An edit carries its times as instants, and
   those were written back with whatever offset they arrived with -- so a named zone was replaced
   by a bare UTC stamp, or by an invented offset name the object defined no timezone for. On a
