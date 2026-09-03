@@ -190,7 +190,7 @@ jobs:
 
       # Built but never pushed: this proves the release will not discover a
       # broken Dockerfile after the tag has already been created.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile
