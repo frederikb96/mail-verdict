@@ -156,6 +156,46 @@ class TestSettingsServiceUpdate:
         service._repo.upsert_category.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_update_coerces_an_int_to_a_float_setting(self) -> None:
+        """
+        A whole-number float setting (base_delay_seconds=1.0) round-trips
+        through JSON as a bare int -- update() must accept that rather than
+        rejecting it as a type mismatch, since a JS client can never send
+        a literal "1.0" for the number 1.
+        """
+        service = _make_service()
+        await service.load()
+        service._repo.get_category = AsyncMock(return_value={"base_delay_seconds": 1.0})
+
+        result = await service.update("retry", {"base_delay_seconds": 1})
+
+        service._repo.upsert_category.assert_awaited_once_with(
+            "retry", {"base_delay_seconds": 1.0},
+        )
+        assert result["base_delay_seconds"] == 1.0
+
+    @pytest.mark.asyncio
+    async def test_bulk_import_coerces_an_int_to_a_float_setting(self) -> None:
+        """bulk_import() gets the same int-for-float leniency as update()."""
+        service = _make_service()
+        await service.load()
+
+        await service.bulk_import({"retry": {"base_delay_seconds": 1}})
+
+        service._repo.upsert_category.assert_awaited_once_with(
+            "retry", {"base_delay_seconds": 1.0},
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_still_rejects_a_bool_for_a_float_setting(self) -> None:
+        """Coercion is int-to-float only -- a bool must not slip through as 0.0/1.0."""
+        service = _make_service()
+        await service.load()
+
+        with pytest.raises(ValueError, match="retry.base_delay_seconds"):
+            await service.update("retry", {"base_delay_seconds": True})
+
+    @pytest.mark.asyncio
     async def test_bulk_import_writes_nothing_if_any_category_is_invalid(self) -> None:
         """
         A multi-category import is all-or-nothing: one bad value must not

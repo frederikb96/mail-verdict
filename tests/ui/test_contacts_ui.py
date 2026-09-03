@@ -6,6 +6,7 @@ drives the actual form.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -256,11 +257,25 @@ class TestContactsUi:
         to_field.press("ArrowDown")
         to_field.press("Enter")
 
-        expect(page.get_by_text("anna.testerson@example.com", exact=True)).to_be_visible(
-            timeout=10_000
+        # A chip is the only thing that counts as "committed" -- the
+        # suggestion option carries the same text and stays in the DOM
+        # for a moment after a no-op Enter, so asserting on visible text
+        # alone passes whether or not anything was actually selected. The
+        # chip shows the contact's name when its search result is still
+        # cached, its bare email otherwise -- "anna" matches either.
+        chip = page.locator("[data-slot='combobox-chip']").filter(
+            has_text=re.compile("anna", re.IGNORECASE)
         )
+        expect(chip).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("option")).to_have_count(0)
         expect(page.get_by_text("ann", exact=True)).to_have_count(0)
-        expect(to_field).to_have_value("")
+        # Not `to_field` any more: once a chip exists, the field's own
+        # accessible name (derived from its now-empty placeholder) is gone,
+        # so the original name="To" locator no longer resolves to anything --
+        # and a bare role="combobox" also matches the From account Select,
+        # which carries the same role. The combobox's own input carries a
+        # stable data-slot regardless of either.
+        expect(page.locator('[data-slot="combobox-input"]')).to_have_value("")
 
     def test_recipient_field_rejects_unparseable_text_visibly(
         self, page: Page, app_server: str, ui_account: dict[str, Any],

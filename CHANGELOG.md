@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A bulk action (archive, trash, spam, move) that the server reports as failed no longer shows a
+  success toast with an Undo. The endpoint answers 200 even when it did nothing, carrying the
+  reason in an `errors` field the bulk handler never read -- it now surfaces that failure the same
+  way the single-row actions already did, and a response that moved fewer messages than requested
+  (without failing outright) shows "N of M", not the full count
+- Retry, pipeline and semantic settings whose defaults are whole-number floats (`base_delay_seconds:
+  1.0`, say) can now be saved. Their form field renders as a plain number, and JSON has no way to
+  write a literal `1.0` for the JS number `1` -- the API rejected the resulting int on every save of
+  an untouched field. Settings now accept an int wherever a float is expected. A settings save that
+  fails for any reason also now shows a toast naming why, rather than leaving the form showing the
+  edited value with the old one still stored and nothing said about it
+- Choosing a recipient suggestion by arrow-down-then-Enter adds that recipient again. Enter commits
+  the highlighted item by clicking the DOM node the combobox finds at its own index, and that
+  registry is only populated for an item that names its index -- ours never did, so the item
+  highlighted correctly (arrow keys, `aria-activedescendant`) but Enter's click found nothing there,
+  silently doing nothing while clearing the field's typed query on the way out
 - The recipient field's suggestion list no longer opens with nothing in it. It appeared as soon
   as the field was clicked and stayed up for any typed text, covering the Subject field beneath
   it with a hint -- so a click aimed at Subject landed on the hint instead, and had to be made
