@@ -1021,6 +1021,11 @@ class AddressbookSummaryResponse(BaseModel):
     total_count: int
 
 
+class AddressbookCreateRequest(BaseModel):
+    dav_account_id: uuid.UUID
+    display_name: str
+
+
 # --- Event and invitation schemas ---
 
 Partstat = Literal["needs-action", "accepted", "declined", "tentative"]
