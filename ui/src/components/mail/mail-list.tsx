@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue } from "jotai";
 import { Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
@@ -47,6 +47,22 @@ type RowAction = Extract<
   | "mark_unread"
 >;
 
+/** How many ids at the front of `nextIds` are new, given `prevIds` -- zero
+ * unless the whole of `prevIds` still appears afterward, in the same order.
+ * That is what tells mail arriving above the reader (a real prepend, worth
+ * compensating) apart from a folder switch, a threading toggle, or a page
+ * appended at the tail: none of those leave the previous list as a
+ * contiguous run inside the new one. */
+function countPrepended(prevIds: string[], nextIds: string[]): number {
+  if (prevIds.length === 0 || nextIds.length <= prevIds.length) return 0;
+  const anchor = nextIds.indexOf(prevIds[0]);
+  if (anchor <= 0) return 0;
+  for (let i = 0; i < prevIds.length; i++) {
+    if (nextIds[anchor + i] !== prevIds[i]) return 0;
+  }
+  return anchor;
+}
+
 export function MailList() {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const folderId = useAtomValue(selectedFolderIdAtom);
@@ -88,6 +104,23 @@ export function MailList() {
   const allMails: (MessageSummary | UnifiedMessageSummary)[] =
     data?.pages.flatMap((p) => p.messages) ?? [];
   const allMailIds = allMails.map((m) => m.id);
+
+  // Mail arriving above a scrolled-away reader must not move a single row
+  // on screen. `shift` is virtua's own mechanism for exactly this -- it
+  // realigns its measured-height cache to the new indices and compensates
+  // scrollOffset by the real delta once the new rows are measured, rather
+  // than a guessed pixel count. It only applies for the render where the
+  // prepend actually lands: an append (older mail paged in at the tail)
+  // must never see it, or the cache misaligns the other way.
+  const prevDataRef = useRef(data);
+  const prevMailIdsRef = useRef<string[]>([]);
+  const [shiftForPrepend, setShiftForPrepend] = useState(false);
+  if (data !== prevDataRef.current) {
+    const isPrepend = countPrepended(prevMailIdsRef.current, allMailIds) > 0;
+    prevDataRef.current = data;
+    prevMailIdsRef.current = allMailIds;
+    if (isPrepend !== shiftForPrepend) setShiftForPrepend(isPrepend);
+  }
 
   const scrollToIndex = useCallback(
     (index: number) => {
@@ -196,6 +229,7 @@ export function MailList() {
           className="flex-1"
           style={{ height: "100%" }}
           itemSize={76}
+          shift={shiftForPrepend}
           onScroll={handleScroll}
         >
           {allMails.map((mail, index) =>

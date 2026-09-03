@@ -7,18 +7,22 @@ the real account through api_client -- never a mock.
 
 test_spam_on_an_already_junked_message_settles and
 test_dragging_a_junk_row_onto_trash_moves_it describe correct behaviour for
-two backend/UI defects fixed elsewhere: a same-folder move stranding
-imap_uid with a spinner that never clears, and dnd-kit's default collision
-detection dropping a row on the folder above the pointer rather than the
-one under it. Both are expected to fail until that fix lands.
+two backend/UI defects: a same-folder move stranding imap_uid with a
+spinner that never clears, and dnd-kit's default collision detection
+dropping a row on the folder above the pointer rather than the one under
+it. move_message()'s own fix for the former is in place and
+test_dragging_a_junk_row_onto_trash_moves_it now passes.
+test_spam_on_an_already_junked_message_settles still fails, but on a row
+click timing out behind another element intercepting the pointer event --
+a different, still-open defect from the stranded spinner the test was
+written to catch.
 
 test_arriving_mail_holds_the_list_scroll_position and
-TestPhoneLayoutUi.test_contacts_page_has_an_add_control are the same kind
-of documentation-by-test: both describe correct behaviour this suite never
-asserted before and both currently fail, against real, currently-unfixed
-defects (a virtualized-list prepend that does not compensate scroll
-position, and a mobile contacts layout with no control that can ever open
-the contact editor) rather than anything wrong with the test itself.
+TestPhoneLayoutUi.test_contacts_page_has_an_add_control described correct
+behaviour this suite never asserted before, against real, then-unfixed
+defects (a virtualized-list prepend that did not compensate scroll
+position, and a mobile contacts layout with no control that could ever
+open the contact editor). Both now pass.
 """
 
 from __future__ import annotations

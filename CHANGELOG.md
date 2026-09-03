@@ -214,6 +214,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Manage folders no longer offers Delete on a special-use folder (Sent, Trash, Junk, Drafts) --
   only INBOX, absent from that list entirely, was ever protected there; the rest showed the
   same destructive control and confirmation as any folder created by hand
+- Mail arriving above a scrolled-away reader no longer pushes every visible row down by one.
+  The virtualized mail list never told `virtua` a prepend had landed, so the size cache it
+  keeps per row index stayed aligned to the old positions once the new row shifted everything
+  after it -- the list now recognises a genuine prepend (mail arriving) apart from a page
+  appended at the tail (older mail paging in) or a different list entirely (a folder switch,
+  a threading toggle), and only then hands the render to the library's own prepend-shift mode
+- A contact can now be created from a phone-sized viewport. The contacts page's mobile branch
+  rendered the contact list or its detail and nothing else -- the editor sheet was mounted
+  underneath, but nothing on that branch ever opened it
 
 ### Security
 
