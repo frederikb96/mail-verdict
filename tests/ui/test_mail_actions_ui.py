@@ -789,26 +789,39 @@ def _contrast_ratio(one: str, other: str) -> float:
 
 
 # WCAG AA for body text. Used here as the readable/unreadable line rather
-# than as a compliance claim: the defect below rendered at about 1.2.
+# than as a compliance claim: the two defects below rendered at 1.27 and
+# 1.68 respectively.
 _READABLE_CONTRAST = 4.5
 
-# The sender's own markup: a white wrapper, a coloured heading, and body
-# copy left entirely to the client -- the shape almost all marketing mail
-# has, and the one that made the message unreadable.
-_WHITE_CANVAS_HTML = (
+# The sender supplies a white background and leaves the text to the
+# client. The text is then ours and the background is theirs.
+_WHITE_BACKGROUND_HTML = (
     '<div style="background:#ffffff;padding:16px">'
     '<h1 style="color:#111111">Quarterly update</h1>'
     "<p>Body copy the sender left for the client to colour.</p>"
     "</div>"
 )
 
+# The mirror image: the sender supplies text colours -- greys chosen for a
+# white page -- and no background at all. Now the text is theirs and the
+# background is ours.
+_DARK_TEXT_HTML = (
+    '<div style="color:#4b5563;padding:16px">'
+    '<h2 style="color:#1f2937">Tasks due today</h2>'
+    "<p>Digest copy the sender coloured for a page it assumed was white.</p>"
+    "</div>"
+)
+
+# One probe serves both shapes. Whichever of the two the message is, the
+# text meets a background: the sender's own where they set one, ours where
+# they did not.
 _HTML_CANVAS_PROBE = """
 (host) => {
     const root = host.shadowRoot;
     return {
         text: getComputedStyle(root.querySelector('p')).color,
-        sender_canvas: getComputedStyle(root.querySelector('div')).backgroundColor,
-        host_canvas: getComputedStyle(host).backgroundColor,
+        sender_background: getComputedStyle(root.querySelector('div')).backgroundColor,
+        canvas: getComputedStyle(host).backgroundColor,
     };
 }
 """
@@ -823,17 +836,56 @@ _PLAIN_TEXT_PROBE = """
 }
 """
 
+_TRANSPARENT = "rgba(0, 0, 0, 0)"
+
+
+def _computed_colours(
+    browser: Browser,
+    app_server: str,
+    account: dict[str, Any],
+    message_id: str,
+    *,
+    marker: str,
+    probe: str,
+) -> dict[str, str]:
+    """Open one message in a dark-mode browser and read computed colours
+    back out of its shadow root.
+
+    `marker` is text the message body renders, waited on so the probe runs
+    against content that is actually there rather than an empty root.
+    """
+    context = browser.new_context(color_scheme="dark")
+    page = context.new_page()
+    try:
+        page.goto(app_server)
+        select_account(page, account)
+        row = mail_row(page, message_id)
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+
+        body_host = page.get_by_test_id("email-body")
+        expect(body_host).to_be_visible(timeout=15_000)
+        # Scoped to the message body: the row's own preview line carries
+        # the same text and an unscoped match resolves to both. Playwright
+        # pierces the open shadow root to reach the content itself.
+        expect(body_host.get_by_text(marker)).to_be_visible(timeout=15_000)
+
+        colours: dict[str, str] = body_host.evaluate(probe)
+        return colours
+    finally:
+        context.close()
+
 
 class TestMessageCanvasUi:
     """The canvas a message body renders on, which is not the application's.
 
-    Both scenarios run in a browser pinned to `prefers-color-scheme: dark`
-    and read computed colours out of the message's shadow root -- a light
-    browser resolves the theme the other way and neither defect exists
-    there at all.
+    Every scenario here runs in a browser pinned to `prefers-color-scheme:
+    dark` and reads computed colours out of the message's shadow root -- a
+    light browser resolves the theme the other way and none of these
+    defects exist there at all.
     """
 
-    def test_dark_mode_leaves_html_mail_readable_on_the_sender_own_background(
+    def test_dark_mode_leaves_html_mail_readable_on_a_sender_supplied_background(
         self,
         browser: Browser,
         app_server: str,
@@ -847,53 +899,75 @@ class TestMessageCanvasUi:
         through a shadow boundary. Mail that supplies its own white
         background and no text colour -- which is most marketing HTML --
         therefore took its background from the sender and its text from the
-        theme: light grey on white, for every dark-mode reader.
-
-        Message HTML is authored against a light canvas and cannot be
-        recoloured reliably, so the canvas is pinned light whatever the
-        theme is; the assertion below is on the sender's background and our
-        text meeting on it, not on any particular hex."""
+        theme: light grey on white, for every dark-mode reader."""
         subject = f"Quarterly canvas {uuid.uuid4()}"
         target = _deliver_to_inbox(
             api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
             inbox_folder["id"], subject,
-            body=_WHITE_CANVAS_HTML, content_type="text/html; charset=utf-8",
+            body=_WHITE_BACKGROUND_HTML, content_type="text/html; charset=utf-8",
         )
 
-        context = browser.new_context(color_scheme="dark")
-        page = context.new_page()
-        try:
-            page.goto(app_server)
-            select_account(page, ui_account)
-            row = mail_row(page, target["id"])
-            expect(row).to_be_visible(timeout=15_000)
-            row.click()
+        colours = _computed_colours(
+            browser, app_server, ui_account, target["id"],
+            marker="Body copy the sender left", probe=_HTML_CANVAS_PROBE,
+        )
 
-            body_host = page.get_by_test_id("email-body")
-            expect(body_host).to_be_visible(timeout=15_000)
-            # Scoped to the message body: the row's own preview line
-            # carries the same text, and an unscoped match resolves to both.
-            # Playwright pierces the open shadow root to reach the paragraph.
-            expect(body_host.get_by_text("Body copy the sender left")).to_be_visible(
-                timeout=15_000,
-            )
-
-            colours = body_host.evaluate(_HTML_CANVAS_PROBE)
-        finally:
-            context.close()
-
-        assert colours["sender_canvas"] == "rgb(255, 255, 255)", (
+        assert colours["sender_background"] == "rgb(255, 255, 255)", (
             "the sender's own white background did not survive to the browser, so this "
             f"proves nothing about text on it: {colours}"
         )
-        contrast = _contrast_ratio(colours["text"], colours["sender_canvas"])
+        contrast = _contrast_ratio(colours["text"], colours["sender_background"])
         assert contrast >= _READABLE_CONTRAST, (
             f"message text {colours['text']} on the sender's own "
-            f"{colours['sender_canvas']} has contrast {contrast:.2f}"
+            f"{colours['sender_background']} has contrast {contrast:.2f}"
         )
-        assert _relative_luminance(colours["host_canvas"]) > 0.5, (
-            f"the message canvas is {colours['host_canvas']} -- mail we did not author "
-            "renders on a light canvas whatever the application theme is"
+
+    def test_dark_mode_leaves_html_mail_readable_when_the_sender_colours_the_text(
+        self,
+        browser: Browser,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The same defect from the other side, and the reason the fix is a
+        canvas rather than a colour. Mail that colours its own text -- greys
+        chosen for a white page -- and sets no background took its text from
+        the sender and its background from the theme: dark grey on near
+        black. Recolouring `:host`'s text alone would leave exactly this
+        case broken while making the scenario above pass, so both shapes are
+        asserted."""
+        subject = f"Digest canvas {uuid.uuid4()}"
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], subject,
+            body=_DARK_TEXT_HTML, content_type="text/html; charset=utf-8",
+        )
+
+        colours = _computed_colours(
+            browser, app_server, ui_account, target["id"],
+            marker="Digest copy the sender coloured", probe=_HTML_CANVAS_PROBE,
+        )
+
+        assert colours["sender_background"] == _TRANSPARENT, (
+            "the message set a background of its own after all, so this proves nothing "
+            f"about the canvas underneath it: {colours}"
+        )
+        assert colours["text"] == "rgb(75, 85, 99)", (
+            "the sender's own text colour did not survive to the browser, so this proves "
+            f"nothing about reading their text on our canvas: {colours}"
+        )
+        # A transparent canvas is not a light one: the text would then be
+        # read against whatever lies beneath, and the ratio below would be
+        # computed against a colour nobody ever sees.
+        assert colours["canvas"] != _TRANSPARENT, (
+            f"the message canvas is transparent rather than a colour of its own: {colours}"
+        )
+        contrast = _contrast_ratio(colours["text"], colours["canvas"])
+        assert contrast >= _READABLE_CONTRAST, (
+            f"the sender's own text {colours['text']} on the canvas we supply "
+            f"{colours['canvas']} has contrast {contrast:.2f}"
         )
 
     def test_dark_mode_keeps_plain_text_mail_on_the_dark_canvas(
@@ -916,25 +990,10 @@ class TestMessageCanvasUi:
             body="Plain body copy with no markup around it.",
         )
 
-        context = browser.new_context(color_scheme="dark")
-        page = context.new_page()
-        try:
-            page.goto(app_server)
-            select_account(page, ui_account)
-            row = mail_row(page, target["id"])
-            expect(row).to_be_visible(timeout=15_000)
-            row.click()
-
-            body_host = page.get_by_test_id("email-body")
-            expect(body_host).to_be_visible(timeout=15_000)
-            # Scoped for the same reason as the scenario above.
-            expect(body_host.get_by_text("Plain body copy with no markup")).to_be_visible(
-                timeout=15_000,
-            )
-
-            colours = body_host.evaluate(_PLAIN_TEXT_PROBE)
-        finally:
-            context.close()
+        colours = _computed_colours(
+            browser, app_server, ui_account, target["id"],
+            marker="Plain body copy with no markup", probe=_PLAIN_TEXT_PROBE,
+        )
 
         assert _relative_luminance(colours["text"]) > _relative_luminance(colours["canvas"]), (
             f"plain text {colours['text']} on {colours['canvas']} is dark on light -- "
