@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Choosing an option from a dropdown in the event editor no longer closes the editor. The event
+  popover dismissed itself on any pointer press outside its own DOM subtree, exempting the editor
+  and the confirmation dialogs by name -- and a dropdown renders its options into a portal of its
+  own, matching neither, so the press that chose a calendar or a repeat unmounted the popover and
+  took the editor down with it before Save could be reached. The popover now leaves dismissal to
+  whichever layer it has opened on top of itself
 - Clicking an event in the day or week grid no longer writes to it. The drag hook committed a
   move on every pointer press-and-release with no check that anything moved, so a plain click
   bumped the event's version and truncated its stored seconds -- and for an organized event, sent

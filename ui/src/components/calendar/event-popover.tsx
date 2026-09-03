@@ -63,22 +63,23 @@ export function EventPopover() {
     else setConfirmDelete(true);
   }, [isRecurring]);
 
+  // The editor Sheet and the two confirmation dialogs are layers this
+  // popover puts on top of itself, and every one of them -- along with
+  // anything they open in turn, such as a Select's own popup -- renders
+  // into a portal outside this popover's DOM subtree. So while one is up,
+  // this popover is not the topmost layer and must not dismiss itself:
+  // any press inside the layer would otherwise read as an outside press
+  // and unmount the popover, taking the layer down with it before its own
+  // click ever completes. Each layer dismisses itself.
+  const hasLayerAbove = editorOpen || scopeOpen || confirmDelete;
+
   useEffect(() => {
+    if (hasLayerAbove) return;
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") setSelected(null);
     }
     function onPointerDown(e: PointerEvent) {
-      const target = e.target as Node;
-      if (ref.current?.contains(target)) return;
-      // The editor Sheet, and the recurrence-scope/delete confirmation
-      // dialogs it can open, all render into a portal outside this
-      // popover's own DOM subtree -- without this, the very first
-      // pointerdown inside any of them (the Save button included) reads
-      // as "outside the popover" and closes it, unmounting the dialog
-      // before its own click ever completes.
-      if ((target as Element).closest?.('[data-slot="sheet-content"], [data-slot="dialog-content"]')) {
-        return;
-      }
+      if (ref.current?.contains(e.target as Node)) return;
       setSelected(null);
     }
     window.addEventListener("keydown", onKeyDown);
@@ -87,7 +88,7 @@ export function EventPopover() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [setSelected]);
+  }, [hasLayerAbove, setSelected]);
 
   // The Delete key has no direct handle on this popover's own confirmation
   // state, so it comes in as an atom instead -- only acted on once the event

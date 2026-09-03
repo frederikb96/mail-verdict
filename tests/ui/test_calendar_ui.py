@@ -481,6 +481,61 @@ class TestCalendarUi:
         expect(chip).to_be_hidden(timeout=10_000)
         wait_for_mailpit_message(mailpit_http_url, f"Cancelled: {summary}")
 
+    def test_choosing_a_dropdown_option_in_the_editor_leaves_it_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the popover dismissed itself on any
+        press outside its own DOM subtree, exempting only the Sheet and
+        dialog popups by name -- and a Select renders its options into a
+        portal of its own, which matched neither. So choosing a calendar or
+        a repeat unmounted the popover and the editor it renders with it,
+        before Save could be reached at all."""
+        summary = f"Dropdown reach {uuid.uuid4()}"
+        resp = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"],
+                "summary": summary,
+                "dtstart": "2026-09-17T10:00:00Z",
+                "dtend": "2026-09-17T11:00:00Z",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        created = wait_for_event_synced(api_client, resp.json()["object_id"])
+
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Agenda", exact=True).click()
+        chip = event_chip(page, created["object_id"])
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+        page.get_by_role("button", name="Edit", exact=True).click()
+
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+        # Calendar first, Repeats second -- the editor's own field order.
+        calendar_select, repeat_select = sheet.locator('[data-slot="select-trigger"]').all()
+
+        calendar_select.click()
+        page.get_by_role("option", name="Work", exact=True).click()
+        expect(sheet).to_be_visible()
+
+        repeat_select.click()
+        page.get_by_role("option", name="Weekly", exact=True).click()
+        expect(sheet).to_be_visible()
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.get_by_text("Event updated")).to_be_visible(timeout=10_000)
+
+        def _repeats_weekly() -> dict[str, Any] | None:
+            detail = api_client.get(f"/api/calendar/events/{created['object_id']}").json()
+            return detail if (detail["rrule"] or "").startswith("FREQ=WEEKLY") else None
+
+        wait_for(_repeats_weekly, description="Repeat chosen through the editor saved")
+
     def test_manage_calendars_selects_show_labels_not_raw_ids(
         self,
         page: Page,
