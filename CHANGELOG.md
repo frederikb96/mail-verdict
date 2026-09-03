@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   once per slice it overlapped, so a birthday could appear seven times in one day
 - `is_exception` reports whether an occurrence is actually overridden by a stored `RECURRENCE-ID`
   component, rather than being true for every event including non-recurring ones
+- HTML message bodies render on a light canvas whatever the application theme is. Mail sets only
+  half of the background/colour pair and the dark theme supplied the other half, unreadably in
+  both directions: a sender's white background under our light text, and a sender's dark text on
+  our near-black background. Plain-text bodies, whose wrapper this application generates itself,
+  still follow the theme
 
 ## [3.1.0] - 2026-09-03
 
