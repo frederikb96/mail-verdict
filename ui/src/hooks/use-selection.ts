@@ -144,11 +144,17 @@ export function useBulkAction() {
       const target: BulkActionTarget = scope
         ? { scope: { folder_id: scope.folderId, filter: scope.filter } }
         : { ids: Array.from(selectedIds) };
-      return api.messages.bulkAction(accountId, {
-        action,
-        target_folder_id: targetFolderId,
-        ...target,
-      });
+      return api.messages
+        .bulkAction(accountId, { action, target_folder_id: targetFolderId, ...target })
+        .then((data) => {
+          // The endpoint answers 200 even when it did nothing, carrying the
+          // reason in `errors` -- throw so this reaches onError exactly like
+          // the single-row action's HTTPException does, rollback included.
+          if (!data.success) {
+            throw new Error(data.errors.join("; ") || `Could not ${action}`);
+          }
+          return data;
+        });
     },
 
     onMutate: async ({ accountId, action }) => {
@@ -215,13 +221,20 @@ export function useBulkAction() {
       };
     },
 
-    onSuccess: (_data, { accountId, action }, ctx) => {
+    onSuccess: (data, { accountId, action }, ctx) => {
       if (!UNDOABLE_ACTIONS.includes(action) || ctx.mailIdsByFolder.size === 0) return;
       const mailIdsByFolder = ctx.mailIdsByFolder;
-      const count = [...mailIdsByFolder.values()].reduce((n, ids) => n + ids.length, 0);
+      const requested = [...mailIdsByFolder.values()].reduce((n, ids) => n + ids.length, 0);
+      // affected_count can fall short of what was requested (an id already
+      // gone, for instance) without the response counting as a failure --
+      // say so rather than reporting the full requested count as done.
+      const partial = data.affected_count < requested;
+      const message = partial
+        ? `${data.affected_count} of ${requested} message${requested === 1 ? "" : "s"} ${BULK_UNDO_PHRASING[action]}`
+        : `${requested} message${requested === 1 ? "" : "s"} ${BULK_UNDO_PHRASING[action]}`;
       pushToast(
-        `${count} message${count === 1 ? "" : "s"} ${BULK_UNDO_PHRASING[action]}`,
-        "success",
+        message,
+        partial ? "warning" : "success",
         6000,
         {
           label: "Undo",

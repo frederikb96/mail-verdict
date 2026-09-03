@@ -121,8 +121,14 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
         />
       </ComboboxChips>
       <ComboboxContent>
-        {results.map((hit) => (
-          <ComboboxItem key={hit.email} value={hit.email}>
+        {results.map((hit, index) => (
+          // Enter committing the highlighted suggestion clicks the DOM node
+          // it finds at this index in the combobox's own registry, and that
+          // registry is only populated for an item that names its index --
+          // without it, the item still highlights (aria-activedescendant,
+          // arrow-key navigation) but Enter finds nothing there and silently
+          // does nothing.
+          <ComboboxItem key={hit.email} value={hit.email} index={index}>
             <Avatar size="sm">
               <AvatarFallback>{getInitials(hit.name || hit.email)}</AvatarFallback>
             </Avatar>

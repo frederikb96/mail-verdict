@@ -313,6 +313,70 @@ class TestMailActionsUi:
             detail = api_client.get(f"/api/messages/{target['id']}").json()
             assert detail["folder_id"] == inbox_folder["id"]
 
+    def test_bulk_archive_with_no_archive_folder_shows_the_failure(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The bulk endpoint answers 200 with success: false when this
+        account has no Archive folder -- the regression this guards is the
+        toolbar reading only the HTTP status and showing a success/Undo
+        toast for a request that moved nothing. Neither row should move,
+        and the failure should be the one thing on screen."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Bulk archive fail {i} {uuid.uuid4()}" for i in range(2)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(_find_all, description="both bulk-archive messages synced into INBOX")
+
+        page.goto(app_server)
+        _open_folder(page, inbox_folder)
+        rows = [mail_row(page, target["id"]) for target in targets]
+        for row in rows:
+            expect(row).to_be_visible(timeout=15_000)
+        rows[0].hover()
+        rows[0].get_by_role("checkbox").click()
+        rows[1].get_by_role("checkbox").click()
+
+        # "Archive" collides with every row's own hover-revealed Archive
+        # button (same accessible name) -- scoped to the bulk toolbar,
+        # which "Trash" above didn't need since a row's own trash button
+        # is named "Move to trash", not "Trash".
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Archive", exact=True,
+        ).click()
+
+        expect(
+            page.get_by_text(
+                "Could not archive: No archive folder found for this account", exact=True,
+            )
+        ).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_have_count(0)
+        for row in rows:
+            expect(row).to_be_visible()
+        for target in targets:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            assert detail["folder_id"] == inbox_folder["id"]
+
     def test_spam_on_an_already_junked_message_settles(
         self,
         page: Page,

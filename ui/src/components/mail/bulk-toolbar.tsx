@@ -50,7 +50,11 @@ export function BulkToolbar({ folderId, visibleIds }: BulkToolbarProps) {
     scope?.filter === "unread" ? "Every unread message" : "Every message";
 
   return (
-    <div className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2">
+    <div
+      role="toolbar"
+      aria-label="Bulk actions"
+      className="flex items-center gap-2 border-b bg-muted/50 px-3 py-2"
+    >
       <Badge variant="secondary" className="mr-1">
         {scope ? scopeLabel : `${count} selected`}
       </Badge>

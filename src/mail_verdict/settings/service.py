@@ -83,26 +83,41 @@ class SettingsService:
         return result
 
     @staticmethod
-    def _validate_types(category: str, data: dict[str, Any]) -> None:
+    def _validate_types(category: str, data: dict[str, Any]) -> dict[str, Any]:
         """
         Validate setting values match expected types from defaults.
+
+        A whole-number float setting is accepted as an int and coerced --
+        JSON (and the JS client sending it) has one number type, so there
+        is no way to write a literal "1.0" for a value that happens to be
+        1, and rejecting it makes every unmodified default field in a
+        settings form unsendable.
 
         Args:
             category: Setting category name
             data: Settings data to validate
 
+        Returns:
+            data, with any int-for-float value coerced to float
+
         Raises:
             ValueError: If a value has the wrong type
         """
         defaults = SETTING_DEFAULTS.get(category, {})
+        coerced = dict(data)
         for key, value in data.items():
-            if key in defaults:
-                expected = type(defaults[key])
-                if not isinstance(value, expected):
-                    raise ValueError(
-                        f"Setting '{category}.{key}' expects "
-                        f"{expected.__name__}, got {type(value).__name__}"
-                    )
+            if key not in defaults:
+                continue
+            expected = type(defaults[key])
+            if expected is float and isinstance(value, int) and not isinstance(value, bool):
+                coerced[key] = float(value)
+                continue
+            if not isinstance(value, expected):
+                raise ValueError(
+                    f"Setting '{category}.{key}' expects "
+                    f"{expected.__name__}, got {type(value).__name__}"
+                )
+        return coerced
 
     async def update(self, category: str, data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -117,7 +132,7 @@ class SettingsService:
         Returns:
             Updated merged settings
         """
-        self._validate_types(category, data)
+        data = self._validate_types(category, data)
         await self._repo.upsert_category(category, data)
         defaults = SETTING_DEFAULTS.get(category, {})
         db_data = await self._repo.get_category(category)
@@ -147,8 +162,10 @@ class SettingsService:
             for category, data in settings.items()
             if category in {cat.value for cat in SettingCategory}
         }
-        for category, data in importable.items():
-            self._validate_types(category, data)
+        importable = {
+            category: self._validate_types(category, data)
+            for category, data in importable.items()
+        }
         for category, data in importable.items():
             await self._repo.upsert_category(category, data)
         await self.load()
