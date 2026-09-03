@@ -374,7 +374,11 @@ class TestMailActionsUi:
         wait_for(_moved, timeout_s=30.0, description="Dragged row lands in Trash")
 
     def test_compose_and_send_shows_a_toast_and_reaches_mailpit(
-        self, page: Page, app_server: str, mailpit_http_url: str,
+        self,
+        page: Page,
+        app_server: str,
+        mailpit_http_url: str,
+        ui_account: dict[str, Any],
     ) -> None:
         subject = f"UI send {uuid.uuid4()}"
 

@@ -14,7 +14,6 @@ import {
   ComboboxChipRemove,
   ComboboxChips,
   ComboboxContent,
-  ComboboxEmpty,
   ComboboxInput,
   ComboboxItem,
 } from "@/components/ui/combobox";
@@ -35,6 +34,12 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
   // one is, Enter belongs to the combobox itself (commit that suggestion),
   // not to the free-text path below.
   const [highlighted, setHighlighted] = useState<string | undefined>(undefined);
+  // Whether the combobox wants its list up. It only actually goes up when
+  // there is a contact to pick: a list carrying nothing but a hint still
+  // covers the field below this one, still swallows a click aimed at that
+  // field, and -- like any popup -- still takes the rest of the form out
+  // of the accessibility tree for as long as it is open.
+  const [listRequested, setListRequested] = useState(false);
   const { results } = useContactSearch(query);
   const { push: pushToast } = useToast();
 
@@ -50,9 +55,9 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
     }
     if (invalid.length > 0) {
       // Neither silently accepted nor silently dropped: named in a toast
-      // rather than turned into a chip. The combobox clears the typed
-      // text itself once the popup closes with nothing selected, the same
-      // way it already does for a query that matched no suggestion.
+      // rather than turned into a chip. The commit paths clear the typed
+      // text either way, so a rejected address leaves the field empty
+      // instead of sitting there looking accepted.
       pushToast(
         `Not a valid email address: ${invalid.join(", ")}`,
         "warning",
@@ -69,6 +74,8 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
       inputValue={query}
       onInputValueChange={setQuery}
       onItemHighlighted={(v) => setHighlighted(v as string | undefined)}
+      open={listRequested && items.length > 0}
+      onOpenChange={setListRequested}
       filter={null}
     >
       <ComboboxChips>
@@ -94,11 +101,15 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
               if (query.trim()) {
                 e.preventDefault();
                 addAddresses(query);
+                setQuery("");
               }
             }
           }}
           onBlur={() => {
-            if (query.trim()) addAddresses(query);
+            if (query.trim()) {
+              addAddresses(query);
+              setQuery("");
+            }
           }}
           onPaste={(e) => {
             const text = e.clipboardData.getData("text");
@@ -110,7 +121,6 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
         />
       </ComboboxChips>
       <ComboboxContent>
-        <ComboboxEmpty>{query.trim() ? "Press Enter to add this address" : "Type to search"}</ComboboxEmpty>
         {results.map((hit) => (
           <ComboboxItem key={hit.email} value={hit.email}>
             <Avatar size="sm">

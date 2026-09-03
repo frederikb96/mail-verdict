@@ -55,6 +55,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The recipient field's suggestion list no longer opens with nothing in it. It appeared as soon
+  as the field was clicked and stayed up for any typed text, covering the Subject field beneath
+  it with a hint -- so a click aimed at Subject landed on the hint instead, and had to be made
+  twice. The list now opens only when there is a contact to choose
+- That also restores the rest of the compose form to screen readers while a recipient is being
+  typed: an open suggestion list takes everything outside it out of the accessibility tree, which
+  put Subject, the message body and both buttons out of reach for as long as the list was up --
+  which, until now, was the whole time
+- `test_compose_and_send_shows_a_toast_and_reaches_mailpit` asks for the account fixture it
+  needs. It relied on another test in the module having created it first, so it failed when run
+  on its own
 - The event editor tells the truth about who it will mail. It asked whether an event had an
   organiser at all rather than whether that organiser is you, so an event you organise fell
   through as though it were someone else's -- its delete confirmation and its recurring-scope
