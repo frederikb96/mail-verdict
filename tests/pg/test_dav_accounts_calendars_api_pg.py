@@ -254,6 +254,42 @@ class TestCalendars:
         assert resp.status_code == 400
 
 
+class TestAddressbooks:
+    async def _seed(self, db: DatabaseConnection) -> uuid.UUID:
+        async with db.session() as session:
+            dav_account_id = await _seed_dav_account(session)
+            await session.commit()
+        return dav_account_id
+
+    def test_create_and_list_addressbook(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        dav_account_id = client.portal.call(self._seed, migrated_db)
+
+        with patch(_CALENDARS_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/addressbooks",
+                json={"dav_account_id": str(dav_account_id), "display_name": "Contacts"},
+            )
+            assert created.status_code == 201, created.text
+            addressbook_id = created.json()["id"]
+            assert created.json()["display_name"] == "Contacts"
+            assert created.json()["total_count"] == 0
+
+            listed = client.get("/addressbooks")
+        assert any(a["id"] == addressbook_id for a in listed.json())
+
+    def test_create_with_unknown_dav_account_is_404(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        with patch(_CALENDARS_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/addressbooks",
+                json={"dav_account_id": str(uuid.uuid4()), "display_name": "Ghost"},
+            )
+        assert resp.status_code == 404
+
+
 class TestCalendarLinks:
     async def _seed_identity(self, db: DatabaseConnection, email: str) -> uuid.UUID:
         async with db.session() as session:

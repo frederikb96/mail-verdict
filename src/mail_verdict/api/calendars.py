@@ -8,6 +8,8 @@ PATCH  /api/calendars/:id       -- rename, recolour, link an identity, set intak
 DELETE /api/calendars/:id       -- destroy it and every event in it, irreversibly
 GET    /api/calendar/links      -- the whole identity-to-calendar mapping
 PUT    /api/calendar/links      -- replace it, optimistic on base_revision
+GET    /api/addressbooks        -- every visible address book
+POST   /api/addressbooks        -- create one on the server
 
 Requires PostIMAP >= 1.6.0 -- see postimap/contract.py's MIN_DAV_SERVICE_VERSION.
 """
@@ -21,6 +23,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from mail_verdict.api.schemas import (
+    AddressbookCreateRequest,
     AddressbookSummaryResponse,
     CalendarCreateRequest,
     CalendarIntakeState,
@@ -233,6 +236,29 @@ async def list_addressbooks() -> list[AddressbookSummaryResponse]:
         )
         for c, a in pairs
     ]
+
+
+@addressbooks_router.post("", response_model=AddressbookSummaryResponse, status_code=201)
+async def create_addressbook(request: AddressbookCreateRequest) -> AddressbookSummaryResponse:
+    """Create an address book on the server. PostIMAP issues MKCOL and
+    writes href back once it lands."""
+    await _require_support()
+    db = get_db_connection()
+    account_repo = DavAccountRepository(db)
+    account = await account_repo.get_by_id(request.dav_account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="DAV account not found")
+
+    async with db.session() as session:
+        collection = await create_collection(
+            session, dav_account_id=request.dav_account_id, kind="addressbook",
+            slug=_slugify(request.display_name), display_name=request.display_name,
+        )
+    return AddressbookSummaryResponse(
+        id=collection.id, dav_account_id=account.id, dav_account_name=account.name,
+        display_name=collection.display_name or collection.slug,
+        read_only=collection.read_only, total_count=collection.total_count,
+    )
 
 
 # --- The identity-to-calendar mapping ---

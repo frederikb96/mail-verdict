@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `POST /api/addressbooks` creates an address book on the server, mirroring the existing
+  calendar create endpoint -- previously only reachable by calling the internal action directly,
+  now a route any API client can use
 - The development stack runs Radicale, a throwaway CalDAV/CardDAV server, alongside the
   mail server -- `scripts/seed_dev.py` seeds a calendar and an address book on it directly,
   so a fresh checkout shows real calendar data once a DAV account is added, the same as it

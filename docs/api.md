@@ -77,6 +77,31 @@ time now, usually self-heals." Watching a first sync in more detail is in
 [architecture.md](architecture.md); the practical summary is that `folders_synced`/
 `folders_total` on this response are the honest progress indicator, not a byte count.
 
+### Add a CalDAV/CardDAV account, then a calendar or address book
+
+```bash
+curl -X POST localhost:8080/api/dav-accounts -H 'content-type: application/json' -d '{
+  "name": "Nextcloud", "discovery_url": "https://cloud.example.org/remote.php/dav/",
+  "username": "alice", "password": "an-app-password"
+}'
+# -> 201, DavAccountResponse with "id"
+```
+
+The field is `discovery_url`, not `url` — PostIMAP's own `dav_accounts.url` column (see the
+consumer contract) is named differently from the request body this endpoint accepts.
+
+PostIMAP discovers every calendar and address book already on the server under that account and
+backfills them; `POST /api/calendars` and `POST /api/addressbooks` each create a new one instead:
+
+```bash
+curl -X POST localhost:8080/api/calendars -H 'content-type: application/json' -d '{
+  "dav_account_id": "{dav_account_id}", "display_name": "Work", "color": "#0082C9"
+}'
+curl -X POST localhost:8080/api/addressbooks -H 'content-type: application/json' -d '{
+  "dav_account_id": "{dav_account_id}", "display_name": "Contacts"
+}'
+```
+
 ### Set a provider key
 
 Classification and embeddings need a key for whichever provider `ai.provider` names (`openai` or
@@ -160,8 +185,8 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 |---|---|---|
 | Accounts | `/accounts` | Create, update, delete, list; folder listing; sync status and manual sync trigger |
 | Identities | `/identities` | An account's addresses to send as — create, update, delete, list (optionally scoped by `account_id`); at most one default per account, enforced at the database level. `POST /outbox`'s `identity_id` resolves through these |
-| DAV accounts | `/dav-accounts` | CalDAV/CardDAV server connections, mirrored the same way a mail account is — create, update, delete, list with each account's collections, manual sync trigger. Every route under this and the four groups below answers `501` until PostIMAP reports `service_version >= 1.6.0` |
-| Calendars | `/calendars`, `/calendar/links`, `/addressbooks` | Calendar create/update/delete/list, merged with local prefs (colour, invitation intake, linked identity); deletion destroys every event in it on the server, so `DELETE /calendars/{id}` requires a `confirm_event_count` query parameter the same way folder deletion does. `/calendar/links` reads and replaces the whole identity-to-calendar mapping as one document, optimistic on `base_revision`. `/addressbooks` lists address books |
+| DAV accounts | `/dav-accounts` | CalDAV/CardDAV server connections, mirrored the same way a mail account is — create, update, delete, list with each account's collections, manual sync trigger. The discovery URL goes under `discovery_url` (see the Quickstart example below — the underlying `dav_accounts.url` column is named differently). Every route under this and the four groups below answers `501` until PostIMAP reports `service_version >= 1.6.0` |
+| Calendars | `/calendars`, `/calendar/links`, `/addressbooks` | Calendar create/update/delete/list, merged with local prefs (colour, invitation intake, linked identity); deletion destroys every event in it on the server, so `DELETE /calendars/{id}` requires a `confirm_event_count` query parameter the same way folder deletion does. `/calendar/links` reads and replaces the whole identity-to-calendar mapping as one document, optimistic on `base_revision`. `/addressbooks` creates and lists address books |
 | Calendar events | `/calendar/events` | Month-windowed list with recurring series expanded to instances, each carrying its own `rrule` (`null` when it doesn't repeat); detail; create (`tz`, an IANA zone name, binds `dtstart`/`dtend` to a named zone rather than only a fixed UTC offset — rejected with `400` for an all-day event or an unrecognised zone); edit with `scope=this\|following\|all` (`following` — splitting a series in two — is rejected with `422`, not implemented; `attendees` and `tz` in an edit are also rejected with `422` rather than silently ignored, since neither is applied; `rrule` left out of the request leaves an existing repeat untouched, an empty string removes it — the two need to read differently since `null` already means "unchanged"); delete/cancel; `POST /{id}/respond` records an RSVP and sends the `METHOD:REPLY` over the linked identity's outbox |
 | Invitations | `/calendar/invitations` | The message-shaped view of `calendar/intake.py`: `GET /{message_id}` returns the parsed invitation plus its intake status, running the same decision live for a message intake never saw; `POST /{message_id}/import` imports it (or retries a failed import) into a chosen calendar |
 | Contacts | `/contacts` | Paged list with address-book filter and free-text search; `/contacts/search` returns one row per email address for compose autocomplete; structured create/update/delete parsed from the vCard body |
