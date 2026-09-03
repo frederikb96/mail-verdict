@@ -70,19 +70,27 @@ def _bounded_between(
     2 x MAX_EXPANDED_OCCURRENCES before giving up, however the series
     that produced them is written.
 
+    Probing is what makes one occurrence reachable from several calls:
+    query.between() returns every occurrence *overlapping* the span it is
+    given, not only the ones starting inside it, so an occurrence wider
+    than the probes it touches comes back from each of them. An all-day
+    event on the window's first day is the worst of it -- the probes
+    there are still minutes and hours wide, so its one day overlaps seven
+    of them. Occurrences are therefore collected by identity, which also
+    keeps the cap measuring real occurrences rather than repeats of one.
     query.between()'s own bounds are inclusive on both ends, so each
-    probe's query end is nudged a microsecond short of the next probe's
-    start -- otherwise an occurrence landing exactly on a probe boundary
-    would be counted, and rendered, twice.
+    probe's query end is additionally nudged a microsecond short of the
+    next probe's start.
     """
-    collected: list[Any] = []
+    collected: dict[tuple[Any, ...], Any] = {}
     probe_start = window_start
     step = _PROBE_INITIAL_STEP
     while probe_start < window_end:
         probe_end = min(probe_start + step, window_end)
         query_end = probe_end - timedelta(microseconds=1)
         if query_end >= probe_start:
-            collected.extend(query.between(probe_start, query_end))
+            for occurrence in query.between(probe_start, query_end):
+                collected.setdefault(_occurrence_identity(occurrence), occurrence)
         if len(collected) > MAX_EXPANDED_OCCURRENCES:
             raise TooManyOccurrencesError(
                 f"more than {MAX_EXPANDED_OCCURRENCES} occurrences "
@@ -90,7 +98,24 @@ def _bounded_between(
             )
         probe_start = probe_end
         step = step * 2
-    return collected
+    return list(collected.values())
+
+
+def _occurrence_identity(occurrence: Any) -> tuple[Any, ...]:
+    """What makes one generated occurrence the same occurrence as
+    another: its series, the instant it starts at, and the occurrence it
+    overrides. Instants rather than the properties' own text -- the two
+    occurrences either side of a DST fall-back read the same wall clock
+    in the same zone and are two occurrences."""
+
+    def instant(name: str) -> Any:
+        prop = occurrence.get(name)
+        if prop is None:
+            return None
+        value = prop.dt
+        return value.astimezone(timezone.utc) if isinstance(value, datetime) else value
+
+    return (str(occurrence.get("UID", "")), instant("DTSTART"), instant("RECURRENCE-ID"))
 
 
 def validate_rrule_frequency(rrule: str) -> None:
@@ -487,10 +512,19 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
         if is_recurring
         else query.between(window_start, window_end)
     )
+    # recurring-ical-events stamps a RECURRENCE-ID on every occurrence it
+    # generates, naming the occurrence's own start -- so an occurrence
+    # carrying one says nothing about whether the stored body overrides
+    # it, and a plain event's single occurrence carries one too. What
+    # is_exception means is that this occurrence is overridden, which the
+    # stored components are the only record of.
+    exception_ids = {
+        _recurrence_id_value(c) for c in vevents if c.get("RECURRENCE-ID") is not None
+    }
     parsed = [
         _parse_component(
             occ, is_recurring=is_recurring,
-            is_exception=occ.get("RECURRENCE-ID") is not None,
+            is_exception=_recurrence_id_value(occ) in exception_ids,
         )
         for occ in occurrences
     ]

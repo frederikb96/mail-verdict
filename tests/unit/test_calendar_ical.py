@@ -234,6 +234,138 @@ class TestExpansion:
         assert instances[0].rrule is None
 
 
+class TestEachOccurrenceReturnedOnce:
+    """_bounded_between() walks the window in doubling probes, and
+    query.between() returns every occurrence *overlapping* a probe rather
+    than only those starting in it -- so an occurrence wider than the
+    probes covering it comes back once per probe it touches. An all-day
+    event early in the month is the worst case: the probes there are
+    still minutes and hours wide, so its single day overlaps seven of
+    them."""
+
+    @staticmethod
+    def _birthday(dtstart: str, dtend: str) -> str:
+        return (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:birthday-1@example.com\r\n"
+            "DTSTAMP:20240420T105849Z\r\n"
+            f"DTSTART;VALUE=DATE:{dtstart}\r\n"
+            f"DTEND;VALUE=DATE:{dtend}\r\n"
+            "SUMMARY:Birthday\r\n"
+            "RRULE:FREQ=YEARLY\r\n"
+            "TRANSP:TRANSPARENT\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+
+    def test_all_day_yearly_event_on_the_first_of_the_month(self) -> None:
+        """The placeholder year a birthday with no known year is stored
+        with -- the occurrence lands on the window's own first day, where
+        the probes are narrowest."""
+        instances = ical.expand_instances(
+            self._birthday("19700901", "19700902"),
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert [i.dtstart for i in instances] == [
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+        ]
+
+    def test_all_day_yearly_event_with_a_real_start_year(self) -> None:
+        """A normal birthday, a few days into the month -- fewer probe
+        boundaries cross it, so the count differs from the case above
+        without the cause differing at all."""
+        instances = ical.expand_instances(
+            self._birthday("19960906", "19960907"),
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert [i.dtstart for i in instances] == [
+            datetime(2026, 9, 6, tzinfo=timezone.utc),
+        ]
+
+    def test_timed_occurrence_straddling_a_probe_boundary(self) -> None:
+        """Nothing about this is specific to all-day events: a 90-minute
+        occurrence laid across a probe boundary comes back twice the same
+        way."""
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:straddle-1@example.com\r\n"
+            "DTSTAMP:20260901T120000Z\r\n"
+            "DTSTART:20260901T070000Z\r\n"
+            "DTEND:20260901T083000Z\r\n"
+            "SUMMARY:Long standup\r\n"
+            "RRULE:FREQ=WEEKLY\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        instances = ical.expand_instances(
+            data,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert [i.dtstart for i in instances] == [
+            datetime(2026, 9, d, 7, 0, tzinfo=timezone.utc) for d in (1, 8, 15, 22, 29)
+        ]
+
+    def test_a_series_spanning_a_dst_change_keeps_both_ambiguous_hours(self) -> None:
+        """The two occurrences either side of a fall-back read the same
+        wall clock in their own zone and are still two occurrences --
+        whatever identifies one for de-duplication has to separate them
+        by instant, not by local time."""
+        data = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//Test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            "UID:dst-1@example.com\r\n"
+            "DTSTAMP:20261024T120000Z\r\n"
+            "DTSTART;TZID=Europe/Berlin:20261025T000000\r\n"
+            "DTEND;TZID=Europe/Berlin:20261025T003000\r\n"
+            "SUMMARY:Hourly\r\n"
+            "RRULE:FREQ=HOURLY;COUNT=6\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        instances = ical.expand_instances(
+            data,
+            datetime(2026, 10, 25, tzinfo=ZoneInfo("Europe/Berlin")),
+            datetime(2026, 10, 26, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        assert len(instances) == 6
+        assert len({i.dtstart.astimezone(timezone.utc) for i in instances}) == 6
+
+
+class TestExceptionFlag:
+    """is_exception says this occurrence is overridden by a stored
+    RECURRENCE-ID component. recurring-ical-events stamps a RECURRENCE-ID
+    on every occurrence it generates, overridden or not -- reading the
+    flag off the generated component's own property therefore reports
+    true for everything, a plain event included."""
+
+    def test_a_non_recurring_events_occurrence_is_not_an_exception(self) -> None:
+        instances = ical.expand_instances(
+            _SIMPLE_EVENT,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 9, 10, tzinfo=timezone.utc),
+        )
+        assert [i.is_exception for i in instances] == [False]
+
+    def test_only_the_overridden_occurrence_of_a_series_is_an_exception(self) -> None:
+        instances = ical.expand_instances(
+            _RECURRING_EVENT,
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert [i.is_exception for i in instances] == [False, True, False, False]
+
+
 class TestOccurrenceBound:
     """An event whose RRULE could expand to an unreasonable
     occurrence count inside the requested window is refused outright,

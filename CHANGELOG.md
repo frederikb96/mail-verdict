@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The month view no longer repeats an event. A recurring occurrence wider than the window slices
+  the expansion probes in — an all-day event on the first of the month worst of all — was returned
+  once per slice it overlapped, so a birthday could appear seven times in one day
+- `is_exception` reports whether an occurrence is actually overridden by a stored `RECURRENCE-ID`
+  component, rather than being true for every event including non-recurring ones
+
 ## [3.1.0] - 2026-09-03
 
 ### Added

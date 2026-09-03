@@ -202,6 +202,52 @@ class TestCreateAndList:
         assert len(standups) == 4
         assert all(e["is_recurring"] for e in standups)
 
+    def test_an_all_day_yearly_occurrence_is_listed_once(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A birthday on the first of the month -- the occurrence spans a
+        whole day at the point where the expansion probes are still
+        minutes wide, which is where one stored event turns into seven
+        rendered ones."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Birthday",
+                    "dtstart": "2026-09-01T00:00:00+00:00",
+                    "dtend": "2026-09-02T00:00:00+00:00",
+                    "all_day": True, "rrule": "FREQ=YEARLY",
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            listed = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+        assert listed.status_code == 200
+        birthdays = [e for e in listed.json()["events"] if e["summary"] == "Birthday"]
+        assert len(birthdays) == 1
+
+    def test_a_plain_event_is_not_reported_as_an_exception(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Planning",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                },
+            )
+            listed = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+        events = [e for e in listed.json()["events"] if e["summary"] == "Planning"]
+        assert [e["is_exception"] for e in events] == [False]
+
     def test_get_unknown_event_is_404(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
