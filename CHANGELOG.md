@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- HTML message bodies render on a light canvas whatever the application theme is. `color`
+  inherits through a shadow boundary, so a dark-theme text colour was landing on the white
+  background senders set for themselves — light grey on white, unreadable, for most marketing
+  mail in dark mode. Plain-text bodies, whose wrapper this application generates itself, still
+  follow the theme
+
 ## [3.1.0] - 2026-09-03
 
 ### Added

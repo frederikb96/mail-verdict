@@ -89,6 +89,7 @@ def build_eml(
     subject: str,
     body: str = "Test message body.",
     message_id: str | None = None,
+    content_type: str = "text/plain; charset=utf-8",
 ) -> bytes:
     """Build a minimal RFC822 message with CRLF line endings for LMTP delivery."""
     headers = [
@@ -98,7 +99,7 @@ def build_eml(
     ]
     if message_id is not None:
         headers.append(f"Message-ID: {message_id}")
-    headers += ["MIME-Version: 1.0", "Content-Type: text/plain; charset=utf-8"]
+    headers += ["MIME-Version: 1.0", f"Content-Type: {content_type}"]
     lines = [*headers, "", body, ""]
     return "\r\n".join(lines).encode("utf-8")
 
