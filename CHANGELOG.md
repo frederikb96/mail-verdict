@@ -55,6 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- An event created in the calendar is stored at the time that was entered. The editor sent a UTC
+  instant together with the browser's own zone, and the API binds the reading it is given to the
+  zone it is given -- so an event entered at 10:00 in Berlin was stored, and shown, as 08:00.
+  Editing was never affected, since an edit sends no zone. A browser in UTC could not see it
+- Clicking an event that carries a timezone opens it again. The identifier naming one occurrence
+  carried no zone of its own, so resolving it back to a moment in time assumed UTC and looked for
+  the occurrence a whole offset away from where it is -- the popover, the Edit and Delete
+  controls, the Delete key and the MCP tools all reached that occurrence by exactly that
+  identifier, and all of them got "not found" for any event a real CalDAV server stores. An
+  occurrence identifier is now an absolute instant wherever it is read, and an exception this
+  application writes names its occurrence in the series' own zone rather than in no zone at all
+- Retyping a date in the event editor no longer replaces the calendar with an error screen.
+  A single digit typed into the year segment left the field holding a value the control could
+  not parse, and the error that followed reached the page's error boundary, taking the editor
+  and everything typed into it with it
 - The recipient field's suggestion list no longer opens with nothing in it. It appeared as soon
   as the field was clicked and stayed up for any typed text, covering the Subject field beneath
   it with a hint -- so a click aimed at Subject landed on the hint instead, and had to be made

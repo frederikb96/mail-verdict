@@ -30,6 +30,7 @@ from tests.ui.helpers import (
     drag_by_pixels,
     event_chip,
     event_occurrence_chip,
+    set_date_input,
     wait_for_account_active,
 )
 
@@ -441,21 +442,9 @@ class TestCalendarUi:
         expect(title_input).to_be_visible(timeout=15_000)
         title_input.fill(summary)
 
-        # fill() on a datetime-local input sets the DOM value without
-        # React ever seeing it -- go through the input's own native
-        # setter and fire the event React listens for instead.
         starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
-        for locator, value in (
-            (starts_input, "2026-09-10T10:00"), (ends_input, "2026-09-10T11:00"),
-        ):
-            locator.evaluate(
-                "(el, value) => {"
-                "  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')"
-                "    .set.call(el, value);"
-                "  el.dispatchEvent(new Event('input', { bubbles: true }));"
-                "}",
-                value,
-            )
+        set_date_input(starts_input, "2026-09-10T10:00")
+        set_date_input(ends_input, "2026-09-10T11:00")
 
         page.get_by_role("button", name="Save", exact=True).click()
         expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
@@ -466,6 +455,96 @@ class TestCalendarUi:
 
         event = wait_for(_created, description="Created event synced back")
         assert event["tz"] == browser_tz
+
+    def test_a_timed_event_is_stored_at_the_wall_clock_that_was_entered(
+        self,
+        browser: Browser,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the editor converted its input to a
+        UTC instant *and* sent the browser's zone alongside it, and the API
+        keeps the reading it is given and binds it to that zone -- so the
+        UTC reading was stamped Europe/Berlin and every event created in
+        the interface landed one whole offset early. Editing was correct,
+        because no zone is sent on an edit, so only creating was wrong.
+
+        The zone has to be pinned and has to be a non-UTC one: on a UTC
+        browser the two readings are the same number and the defect is
+        invisible, which is how it survived the pass that introduced it.
+        The test above proves the zone travels at all; this one proves
+        what it is bound to."""
+        summary = f"Wall clock {uuid.uuid4()}"
+        context = browser.new_context(timezone_id="Europe/Berlin")
+        page = context.new_page()
+        try:
+            page.goto(f"{app_server}/calendar")
+            # Same race as the test above: the Calendar field is seeded
+            # from useCalendars() once, at mount.
+            expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+            page.get_by_role("button", name="New event", exact=True).click()
+            title_input = page.get_by_label("Title")
+            expect(title_input).to_be_visible(timeout=15_000)
+            title_input.fill(summary)
+
+            starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
+            set_date_input(starts_input, "2026-09-10T10:00")
+            set_date_input(ends_input, "2026-09-10T11:00")
+
+            page.get_by_role("button", name="Save", exact=True).click()
+            expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+        finally:
+            context.close()
+
+        def _created() -> dict[str, Any] | None:
+            listed = api_client.get("/api/calendar/events", params={"month": "2026-09"}).json()
+            return next((e for e in listed["events"] if e["summary"] == summary), None)
+
+        event = wait_for(_created, description="Created event synced back")
+        assert event["tz"] == "Europe/Berlin"
+        stored = datetime.fromisoformat(event["dtstart"])
+        assert (stored.hour, stored.minute) == (10, 0), (
+            f"entered 10:00 in Europe/Berlin, stored {event['dtstart']}"
+        )
+        assert stored.utcoffset() == timedelta(hours=2)
+
+    def test_retyping_the_year_in_the_editor_does_not_take_the_page_down(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: one digit typed into the Starts
+        field's year segment replaced the whole calendar with the error
+        boundary's screen, editor and typed values gone. Two causes, both
+        needed: an unpadded year rendered back as `2-09-03T06:00`, which
+        the control cannot parse and so empties itself; and the state
+        updater read `e.target.value` from the live element inside its own
+        body, which React runs during render -- so the empty value was
+        read a render later and `new Date("").toISOString()` threw where an
+        error boundary could catch it.
+
+        Retyping a date is what a person does, not an edge case. The
+        arrow-key walk is how the year segment is reached: a
+        datetime-local renders as month/day/year/hour/minute segments, and
+        ArrowLeft/ArrowRight move between them."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        expect(page.get_by_label("Title")).to_be_visible(timeout=15_000)
+
+        starts_input = page.locator('input[type="datetime-local"]').first
+        original = starts_input.input_value()
+        starts_input.click()
+        for _ in range(6):
+            page.keyboard.press("ArrowLeft")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.type("2")
+
+        expect(page.get_by_text("Something went wrong")).to_have_count(0)
+        expect(page.get_by_label("Title")).to_be_visible()
+        expect(starts_input).to_have_value(f"0002{original[4:]}")
 
     def test_creating_an_all_day_event_stores_the_exclusive_end(
         self,

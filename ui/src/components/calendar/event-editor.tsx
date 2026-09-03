@@ -72,14 +72,37 @@ function presetSelectValue(rrule: string): string {
   return preset ? preset.rrule : rrule;
 }
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** A year always occupies four digits in a date/datetime-local value --
+ * an unpadded one is not a value the control can parse, so it silently
+ * empties itself instead, which is what turns a half-typed year into an
+ * unreadable field. */
+const padYear = (n: number) => String(n).padStart(4, "0");
+
 function toLocalInputValue(iso: string): string {
   const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${padYear(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function fromLocalInputValue(value: string): string {
-  return new Date(value).toISOString();
+/** The wall clock an instant reads as in the browser's own zone, for a
+ * request that sends `tz` alongside: the API keeps the reading it is
+ * given and binds it to that zone, so sending a UTC instant there would
+ * stamp the UTC reading onto the local zone -- an event entered at 10:00
+ * stored as 10:00 in a zone it was never 10:00 in. */
+function toLocalWallClock(iso: string): string {
+  return `${toLocalInputValue(iso)}:00`;
+}
+
+/** What a date or datetime-local field currently names, as an instant --
+ * or null while it names nothing readable. Ordinary typing goes through
+ * such states (retyping a year momentarily leaves the control empty),
+ * and building a Date from one throws on the *next render*, not here,
+ * because a state updater's body runs during render: the error lands in
+ * the page's error boundary and takes the whole calendar down with it. */
+function fromInputValue(value: string, allDay: boolean): string | null {
+  const d = allDay ? wholeDayDate(value) : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 /** The calendar day an instant falls on in the browser's own local time --
@@ -87,8 +110,7 @@ function fromLocalInputValue(value: string): string {
  * UTC day the same instant can carry near midnight in a positive offset. */
 function toLocalDateValue(iso: string): string {
   const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return `${padYear(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** An all-day dtstart/dtend carries no timezone at all (RFC 5545
@@ -98,13 +120,16 @@ function toLocalDateValue(iso: string): string {
  * differently depending on where it's opened. */
 function toWholeDayValue(iso: string): string {
   const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  return `${padYear(d.getUTCFullYear())}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+}
+
+function wholeDayDate(value: string): Date {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 function wholeDayIso(value: string): string {
-  const [year, month, day] = value.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day)).toISOString();
+  return wholeDayDate(value).toISOString();
 }
 
 function addDaysIso(iso: string, days: number): string {
@@ -250,26 +275,34 @@ export function EventEditor({
   // as its full current value (never omitted): "" is what removes an
   // existing RRULE, distinct from the field being left out entirely,
   // which ical.py's _apply_field_overrides reads as "unchanged".
-  const buildCommonPayload = () => ({
-    calendar_id: calendarId,
-    summary,
-    dtstart: range.start,
-    dtend: allDay ? addDaysIso(range.end, 1) : range.end,
-    all_day: allDay,
-    location: location || undefined,
-    description: description || undefined,
-    rrule,
-  });
+  //
+  // `tz` changes what dtstart/dtend mean: with a zone alongside them they
+  // are the wall clock that zone resolves, not an instant (see
+  // toLocalWallClock). Without one they stay the instant they already are.
+  const buildCommonPayload = (tz?: string) => {
+    const end = allDay ? addDaysIso(range.end, 1) : range.end;
+    return {
+      calendar_id: calendarId,
+      summary,
+      dtstart: tz ? toLocalWallClock(range.start) : range.start,
+      dtend: tz ? toLocalWallClock(end) : end,
+      all_day: allDay,
+      location: location || undefined,
+      description: description || undefined,
+      rrule,
+    };
+  };
 
   const doSave = (scope?: RecurrenceScope) => {
     if (mode === "create") {
+      // The API refuses tz on an all-day event (it has no time of day to
+      // bind) and on any edit (dtstart/dtend already carry the instant
+      // there) -- only a timed create ever sends it.
+      const tz = allDay ? undefined : Intl.DateTimeFormat().resolvedOptions().timeZone;
       createEvent.mutate(
         {
-          ...buildCommonPayload(),
-          // The API refuses tz on an all-day event (it has no time of
-          // day to bind) and on any edit (dtstart/dtend already carry
-          // the instant there) -- only a timed create ever sends it.
-          tz: allDay ? undefined : Intl.DateTimeFormat().resolvedOptions().timeZone,
+          ...buildCommonPayload(tz),
+          tz,
           attendees: parseAddressList(attendees).map((email) => ({ email })),
         },
         {
@@ -384,12 +417,13 @@ export function EventEditor({
                   type={allDay ? "date" : "datetime-local"}
                   value={allDay ? toWholeDayValue(range.start) : toLocalInputValue(range.start)}
                   disabled={readOnly}
-                  onChange={(e) =>
-                    setRange((r) => ({
-                      ...r,
-                      start: allDay ? wholeDayIso(e.target.value) : fromLocalInputValue(e.target.value),
-                    }))
-                  }
+                  onChange={(e) => {
+                    // Read outside the updater: React runs an updater's
+                    // body during render, by which time the control has
+                    // moved on and e.target is the live element.
+                    const start = fromInputValue(e.target.value, allDay);
+                    if (start) setRange((r) => ({ ...r, start }));
+                  }}
                 />
               </div>
               <div className="grid gap-1.5">
@@ -398,12 +432,10 @@ export function EventEditor({
                   type={allDay ? "date" : "datetime-local"}
                   value={allDay ? toWholeDayValue(range.end) : toLocalInputValue(range.end)}
                   disabled={readOnly}
-                  onChange={(e) =>
-                    setRange((r) => ({
-                      ...r,
-                      end: allDay ? wholeDayIso(e.target.value) : fromLocalInputValue(e.target.value),
-                    }))
-                  }
+                  onChange={(e) => {
+                    const end = fromInputValue(e.target.value, allDay);
+                    if (end) setRange((r) => ({ ...r, end }));
+                  }}
                 />
               </div>
             </div>

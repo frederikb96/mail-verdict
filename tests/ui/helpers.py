@@ -82,6 +82,24 @@ def center_in_grid_viewport(page: Page, chip: Locator) -> None:
     )
 
 
+def set_date_input(field: Locator, value: str) -> None:
+    """Set a date/datetime-local field the way React can see it.
+
+    fill() writes the DOM value directly, which React's own value tracker
+    then treats as the value it already knew about -- no change event is
+    dispatched and the component's state never moves. Going through the
+    prototype's native setter first is what makes the input event React
+    listens for count as a real edit."""
+    field.evaluate(
+        "(el, value) => {"
+        "  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')"
+        "    .set.call(el, value);"
+        "  el.dispatchEvent(new Event('input', { bubbles: true }));"
+        "}",
+        value,
+    )
+
+
 def drag_by_pixels(page: Page, from_x: float, from_y: float, to_x: float, to_y: float) -> None:
     """A raw pointer drag between two viewport-relative points -- the time
     grid's drag hook listens for pointer events directly rather than

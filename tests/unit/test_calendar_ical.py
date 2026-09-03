@@ -727,6 +727,43 @@ class TestExceptionMerge:
         assert exceptions[0].summary == "Weekly standup (moved again)"
 
 
+class TestOccurrenceIdentifiers:
+    """An occurrence id has to name the same instant wherever it is read.
+    It travels from the month view through the API, a URL query parameter
+    and a React key, and comes back as the way one occurrence is named
+    for a fetch, an edit, a delete or an RSVP."""
+
+    def test_a_zone_bound_occurrences_id_resolves_to_its_own_start(self) -> None:
+        """The regression this guards: RECURRENCE-ID carries its zone in a
+        TZID parameter, so serialising the value alone produced an id
+        reading as a floating local time -- and resolving that back
+        guessed UTC, landing two hours from the occurrence it named. Every
+        lookup by id then missed, for every event a real CalDAV server
+        stores. A UTC-stamped event cannot show it: both readings agree."""
+        instances = ical.expand_instances(
+            _EXOTIC_RECURRING_EVENT,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 9, 30, tzinfo=timezone.utc),
+        )
+        unmoved = next(i for i in instances if i.dtstart.day == 7)
+        assert unmoved.recurrence_id is not None
+        assert ical.recurrence_id_to_datetime(unmoved.recurrence_id) == unmoved.dtstart
+
+    def test_an_exception_written_for_a_zone_bound_series_carries_its_zone(self) -> None:
+        """The inverse direction: an exception this application writes must
+        name its occurrence in the series' own zone (RFC 5545 requires
+        RECURRENCE-ID and DTSTART to share it), and must read back as the
+        same id it was asked for."""
+        updated = ical.edit_occurrence(
+            _EXOTIC_RECURRING_EVENT, "20260907T070000Z", summary="Standup (first)",
+        )
+        assert "RECURRENCE-ID;TZID=Europe/Berlin:20260907T090000" in updated
+
+        _, exceptions = ical.parse_master_and_exceptions(updated)
+        written = next(e for e in exceptions if e.summary == "Standup (first)")
+        assert written.recurrence_id == "20260907T070000Z"
+
+
 class TestEditOccurrence:
     def test_edits_an_existing_exception_in_place(self) -> None:
         updated = ical.edit_occurrence(
@@ -915,7 +952,7 @@ class TestPropertyPreservation:
         RECURRENCE-ID -- the master's own RRULE/EXDATE/RDATE/VTIMEZONE and
         the exception's own untouched fields must survive."""
         updated = ical.edit_occurrence(
-            _EXOTIC_RECURRING_EVENT, "20260921T090000", summary="Standup (moved again)",
+            _EXOTIC_RECURRING_EVENT, "20260921T070000Z", summary="Standup (moved again)",
         )
 
         master, exceptions = ical.parse_master_and_exceptions(updated)
@@ -949,7 +986,9 @@ class TestPropertyPreservation:
             "SEQUENCE:2\r\n"
             "END:VEVENT\r\nEND:VCALENDAR\r\n"
         )
-        merged = ical.merge_exception(_EXOTIC_RECURRING_EVENT, replacement, "20260921T090000")
+        merged = ical.merge_exception(
+            _EXOTIC_RECURRING_EVENT, replacement, "20260921T070000Z",
+        )
 
         assert len(_vtimezones(merged)) == 1
         master, exceptions = ical.parse_master_and_exceptions(merged)

@@ -107,11 +107,12 @@ def validate_rrule_frequency(rrule: str) -> None:
 
 
 def recurrence_id_to_datetime(recurrence_id: str) -> datetime:
-    """The occurrence datetime a RECURRENCE-ID string names. RFC 5545
-    ties every RECURRENCE-ID to the DTSTART of the occurrence it
-    overrides, so this is where that exact occurrence would be found --
-    used to search a window of hours around one specific occurrence
-    instead of the whole series when looking one up by RECURRENCE-ID."""
+    """The occurrence datetime a recurrence id names -- the exact inverse
+    of _recurrence_id_value(), which is what makes the id resolvable at
+    all. RFC 5545 ties every RECURRENCE-ID to the DTSTART of the
+    occurrence it overrides, so this is where that exact occurrence would
+    be found: used to search a window of hours around one specific
+    occurrence instead of the whole series when looking one up."""
     value = vDDDTypes.from_ical(recurrence_id)
     return _to_datetime(value, not isinstance(value, datetime))
 
@@ -256,6 +257,39 @@ def _tz_name(value: object) -> str | None:
     return None
 
 
+def _recurrence_id_value(component: Component) -> str | None:
+    """
+    The occurrence identifier this component names, in the one form every
+    reader of it agrees on: an absolute instant in UTC ("...Z") for a
+    timed occurrence, the bare day for an all-day one. None on a master.
+
+    RECURRENCE-ID carries its zone in a TZID *parameter*, and serialising
+    the property's value alone drops it -- so a zone-bound occurrence's
+    identifier reads back as a floating local time and anything resolving
+    it to an instant has to guess a zone. That guess is made in a
+    different place from where the identifier is produced, which is the
+    whole defect: the id crosses the API, a URL and a React key, and has
+    to mean the same thing at every one of them. Normalising here is what
+    lets recurrence_id_to_datetime() be its exact inverse.
+
+    A floating RECURRENCE-ID -- no TZID and no "Z", which a server or an
+    earlier client may have written -- is resolved against this
+    component's own DTSTART zone, the zone RFC 5545 requires the two to
+    share.
+    """
+    prop = component.get("RECURRENCE-ID")
+    if prop is None:
+        return None
+    value = prop.dt
+    if not isinstance(value, datetime):
+        return cast(date, value).strftime("%Y%m%d")
+    if value.tzinfo is None:
+        dtstart = component.get("DTSTART")
+        zone = getattr(dtstart.dt, "tzinfo", None) if dtstart is not None else None
+        value = value.replace(tzinfo=zone or timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
 def _parse_component(
     component: Component, *, is_recurring: bool, is_exception: bool, lenient: bool = False,
 ) -> ParsedEvent:
@@ -300,8 +334,7 @@ def _parse_component(
         for a in _as_list(component.get("ATTENDEE"))
     ]
 
-    recurrence_id_prop = component.get("RECURRENCE-ID")
-    recurrence_id = recurrence_id_prop.to_ical().decode("utf-8") if recurrence_id_prop else None
+    recurrence_id = _recurrence_id_value(component)
 
     status_raw = str(component.get("STATUS", "CONFIRMED")).lower()
 
@@ -737,6 +770,23 @@ def replace_master_fields(
     return _serialize(cal)
 
 
+def _recurrence_id_property(master: Component, recurrence_id: str) -> date | datetime:
+    """The RECURRENCE-ID value to write for a recurrence id, in the zone
+    RFC 5545 requires it to share with the series' own DTSTART -- so a
+    Europe/Berlin series gets `RECURRENCE-ID;TZID=Europe/Berlin:...`
+    rather than the bare local time that names no instant at all, or a
+    UTC stamp other clients would have to convert back. The inverse of
+    _recurrence_id_value(), which reads whichever shape it finds."""
+    value = vDDDTypes.from_ical(recurrence_id)
+    if not isinstance(value, datetime):
+        return cast(date, value)
+    dtstart = master.get("DTSTART")
+    zone = getattr(dtstart.dt, "tzinfo", None) if dtstart is not None else None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(zone) if zone is not None else value
+
+
 def _get_or_clone_exception(cal: Calendar, recurrence_id: str) -> Component:
     """
     The exception component at recurrence_id, creating it first if the
@@ -749,7 +799,7 @@ def _get_or_clone_exception(cal: Calendar, recurrence_id: str) -> Component:
     would silently misfile every later one.
     """
     existing = next(
-        (c for c in cal.walk() if c.name == "VEVENT" and _recurrence_id_of(c) == recurrence_id),
+        (c for c in cal.walk() if c.name == "VEVENT" and _recurrence_id_value(c) == recurrence_id),
         None,
     )
     if existing is not None:
@@ -763,7 +813,7 @@ def _get_or_clone_exception(cal: Calendar, recurrence_id: str) -> Component:
     exception = deepcopy(master)
     if "RRULE" in exception:
         del exception["RRULE"]
-    _set(exception, "RECURRENCE-ID", vDDDTypes.from_ical(recurrence_id))
+    _set(exception, "RECURRENCE-ID", _recurrence_id_property(master, recurrence_id))
     cal.add_component(exception)
     return exception
 
@@ -817,16 +867,11 @@ def set_partstat(
     return _serialize(cal)
 
 
-def _recurrence_id_of(component: Component) -> str | None:
-    rid = component.get("RECURRENCE-ID")
-    return _serialize(rid) if rid else None
-
-
 def _find_component(cal: Calendar, recurrence_id: str | None) -> Component:
     for component in cal.walk():
         if component.name != "VEVENT":
             continue
-        if _recurrence_id_of(component) == recurrence_id:
+        if _recurrence_id_value(component) == recurrence_id:
             return component
     raise ValueError(
         "No matching VEVENT" if recurrence_id is None
@@ -872,7 +917,7 @@ def merge_exception(existing_data: str, exception_data: str, recurrence_id: str)
     # remove-component-by-identity, only subcomponents list surgery.
     existing.subcomponents = [
         c for c in existing.subcomponents
-        if not (c.name == "VEVENT" and _recurrence_id_of(c) == recurrence_id)
+        if not (c.name == "VEVENT" and _recurrence_id_value(c) == recurrence_id)
     ]
     existing.add_component(incoming_component)
     return _serialize(existing)

@@ -340,6 +340,52 @@ class TestCreateWithTimezone:
         raw = client.portal.call(_raw_data, migrated_db)
         assert "DTSTART;TZID=Europe/Berlin:20260910T100000" in raw
 
+    def test_a_zone_bound_events_own_occurrence_id_finds_it_again(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The regression this guards: the identifier the month view hands
+        out for a zone-bound occurrence carried no zone, so resolving it
+        back to an instant guessed UTC and looked for the occurrence two
+        hours away from where it is -- 404 for every event stored with a
+        TZID, which is every event a real CalDAV server holds. The chip
+        clicked in the calendar, the popover, the Delete key and the MCP
+        tools all reach an occurrence by exactly this id.
+
+        A UTC-stamped event cannot show it: its identifier is the same
+        string either way."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Zone bound",
+                    "dtstart": "2026-09-10T10:00:00",
+                    "dtend": "2026-09-10T11:00:00",
+                    "tz": "Europe/Berlin",
+                },
+            )
+            assert created.status_code == 201, created.text
+            object_id = created.json()["object_id"]
+
+            listed = client.get("/calendar/events", params={"month": "2026-09"})
+            assert listed.status_code == 200, listed.text
+            instance = next(
+                e for e in listed.json()["events"] if e["object_id"] == object_id
+            )
+            recurrence_id = instance["recurrence_id"]
+
+            fetched = client.get(
+                f"/calendar/events/{object_id}",
+                params={"recurrence_id": recurrence_id},
+            )
+        assert fetched.status_code == 200, (
+            f"the month view's own recurrence_id {recurrence_id!r} did not resolve: "
+            f"{fetched.text}"
+        )
+        assert datetime.fromisoformat(fetched.json()["dtstart"]) == datetime.fromisoformat(
+            instance["dtstart"],
+        )
+
     def test_create_with_an_unknown_tz_is_refused(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
@@ -1086,7 +1132,7 @@ class TestRecurrenceRoundTrip:
                 f"/calendar/events/{object_id}",
                 json={
                     "summary": "Moved once more", "scope": "this",
-                    "recurrence_id": "20260921T090000",
+                    "recurrence_id": "20260921T070000Z",
                 },
             )
         assert resp.status_code == 200, resp.text
