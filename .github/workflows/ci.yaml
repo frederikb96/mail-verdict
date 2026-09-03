@@ -186,7 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # Built but never pushed: this proves the release will not discover a
       # broken Dockerfile after the tag has already been created.
