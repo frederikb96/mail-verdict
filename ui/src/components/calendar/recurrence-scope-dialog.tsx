@@ -20,15 +20,16 @@ import type { RecurrenceScope } from "@/types/api";
 interface RecurrenceScopeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Present for a delete that cancels an organized event with attendees. */
-  cancellationNoticeCount?: number;
+  /** Present when confirming will mail the event's guests: what they are
+   * about to be told, and how many of them. */
+  guestNotice?: { action: "cancellation" | "update"; count: number };
   onConfirm: (scope: RecurrenceScope) => void;
 }
 
 export function RecurrenceScopeDialog({
   open,
   onOpenChange,
-  cancellationNoticeCount,
+  guestNotice,
   onConfirm,
 }: RecurrenceScopeDialogProps) {
   return (
@@ -37,10 +38,10 @@ export function RecurrenceScopeDialog({
         <DialogHeader>
           <DialogTitle>Change recurring event</DialogTitle>
         </DialogHeader>
-        {cancellationNoticeCount ? (
+        {guestNotice ? (
           <p className="text-sm text-muted-foreground">
-            A cancellation will be sent to {cancellationNoticeCount} guest
-            {cancellationNoticeCount === 1 ? "" : "s"}.
+            {guestNotice.action === "cancellation" ? "A cancellation" : "An update"} will be sent to{" "}
+            {guestNotice.count} guest{guestNotice.count === 1 ? "" : "s"}.
           </p>
         ) : null}
         <div className="flex flex-col gap-2">

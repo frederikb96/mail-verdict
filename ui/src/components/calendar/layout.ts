@@ -24,6 +24,15 @@ export function isEventOrganizedBySelf(
   return organizer.email.toLowerCase() === identityEmail.toLowerCase();
 }
 
+/** What a delete confirmation tells the user it is about to do. Both the
+ * popover and the editor delete the same event through the same API, so
+ * they say the same thing about it. */
+export function eventDeletionNotice(guestCount: number | undefined): string {
+  if (guestCount === undefined) return "This cannot be undone.";
+  const guests = `${guestCount} guest${guestCount === 1 ? "" : "s"}`;
+  return `A cancellation will be sent to ${guests}. This cannot be undone.`;
+}
+
 /** Shared by every view that can open the event popover -- the click event
  * is optional so a keyboard activation or a programmatic selection can omit
  * it, falling back to whatever anchor the caller already knows. */

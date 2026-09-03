@@ -29,8 +29,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
+import { eventDeletionNotice, isEventOrganizedBySelf } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useCreateEvent, useDeleteEvent, useUpdateEvent } from "@/hooks/use-events";
+import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
 import { parseAddressList } from "@/lib/format";
 import type { EventInstance, RecurrenceScope } from "@/types/api";
@@ -48,6 +50,12 @@ const RECURRENCE_PRESETS: { label: string; rrule: string }[] = [
   { label: "Monthly", rrule: "FREQ=MONTHLY" },
   { label: "Yearly", rrule: "FREQ=YEARLY" },
 ];
+
+/** What a preset is offered under in the Select -- "Does not repeat" needs
+ * a name of its own, since an empty item value reads as no selection. */
+function presetItemValue(preset: { rrule: string }): string {
+  return preset.rrule === "" ? "none" : preset.rrule;
+}
 
 /** A preset's own value is bare ("FREQ=WEEKLY") but a real event's rrule
  * almost always carries more (COUNT, UNTIL, BYDAY -- every server this
@@ -142,6 +150,7 @@ export function EventEditor({
   onDeleted,
 }: EventEditorProps) {
   const { data: calendars } = useCalendars();
+  const { data: identities } = useIdentities();
   const createEvent = useCreateEvent();
   const updateEvent = useUpdateEvent();
   const deleteEvent = useDeleteEvent();
@@ -163,6 +172,7 @@ export function EventEditor({
   );
   const [scopeDialog, setScopeDialog] = useState<"save" | "delete" | null>(null);
   const [confirmSimpleDelete, setConfirmSimpleDelete] = useState(false);
+  const [confirmUpdateNotice, setConfirmUpdateNotice] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -180,6 +190,19 @@ export function EventEditor({
   const calendar = calendars?.find((c) => c.id === calendarId);
   const readOnly = calendar?.read_only ?? false;
   const isRecurring = mode === "edit" && (event?.is_recurring ?? false);
+
+  const attendeeCount = parseAddressList(attendees).length;
+  // Organising an event is the ORGANIZER address matching the identity the
+  // event's own calendar is linked to -- not the calendar currently picked
+  // in the form, which the user may have just changed. Saving or deleting
+  // one mails every guest, so anything that does either says so first.
+  const eventCalendar = calendars?.find((c) => c.id === event?.calendar_id);
+  const eventIdentityEmail = identities?.find((i) => i.id === eventCalendar?.identity_id)?.address;
+  const isOrganizerWithGuests =
+    mode === "edit" &&
+    event !== undefined &&
+    isEventOrganizedBySelf(event.organizer, eventIdentityEmail) &&
+    attendeeCount > 0;
 
   const handleAllDayChange = (checked: boolean) => {
     setAllDay(checked);
@@ -263,6 +286,10 @@ export function EventEditor({
       setScopeDialog("save");
       return;
     }
+    if (isOrganizerWithGuests) {
+      setConfirmUpdateNotice(true);
+      return;
+    }
     doSave();
   };
 
@@ -291,9 +318,6 @@ export function EventEditor({
     }
     setConfirmSimpleDelete(true);
   };
-
-  const attendeeCount = parseAddressList(attendees).length;
-  const isOrganizerWithGuests = mode === "edit" && event?.organizer === null && attendeeCount > 0;
 
   return (
     <>
@@ -360,7 +384,14 @@ export function EventEditor({
               <Label>Calendar</Label>
               <Select value={calendarId} onValueChange={(v) => v && setCalendarId(v)}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Choose a calendar" />
+                  {/* The underlying control only resolves a label itself when
+                      given an item list, which nothing here passes -- without
+                      this it renders the calendar's raw id. */}
+                  <SelectValue placeholder="Choose a calendar">
+                    {(v: string) =>
+                      calendars?.find((c) => c.id === v)?.display_name ?? "Choose a calendar"
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {writableCalendars.map((c) => (
@@ -400,11 +431,13 @@ export function EventEditor({
                 onValueChange={(v) => setRrule(v === "none" ? "" : (v as string))}
               >
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue>
+                    {(v: string) => RECURRENCE_PRESETS.find((p) => presetItemValue(p) === v)?.label ?? v}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {RECURRENCE_PRESETS.map((p) => (
-                    <SelectItem key={p.label} value={p.rrule === "" ? "none" : p.rrule}>
+                    <SelectItem key={p.label} value={presetItemValue(p)}>
                       {p.label}
                     </SelectItem>
                   ))}
@@ -464,8 +497,13 @@ export function EventEditor({
       <RecurrenceScopeDialog
         open={scopeDialog !== null}
         onOpenChange={(o) => !o && setScopeDialog(null)}
-        cancellationNoticeCount={
-          scopeDialog === "delete" && isOrganizerWithGuests ? attendeeCount : undefined
+        guestNotice={
+          isOrganizerWithGuests
+            ? {
+                action: scopeDialog === "delete" ? "cancellation" : "update",
+                count: attendeeCount,
+              }
+            : undefined
         }
         onConfirm={(scope) => {
           setScopeDialog(null);
@@ -478,13 +516,23 @@ export function EventEditor({
         open={confirmSimpleDelete}
         onOpenChange={setConfirmSimpleDelete}
         title="Delete this event?"
-        description={
-          isOrganizerWithGuests
-            ? `A cancellation will be sent to ${attendeeCount} guest${attendeeCount === 1 ? "" : "s"}.`
-            : "This cannot be undone."
-        }
+        description={eventDeletionNotice(isOrganizerWithGuests ? attendeeCount : undefined)}
         isConfirming={deleteEvent.isPending}
         onConfirm={() => doDelete()}
+      />
+
+      <ConfirmDialog
+        open={confirmUpdateNotice}
+        onOpenChange={setConfirmUpdateNotice}
+        title="Save this change?"
+        description={`An update will be sent to ${attendeeCount} guest${attendeeCount === 1 ? "" : "s"}.`}
+        confirmLabel="Save and notify"
+        confirmVariant="default"
+        isConfirming={updateEvent.isPending}
+        onConfirm={() => {
+          setConfirmUpdateNotice(false);
+          doSave();
+        }}
       />
     </>
   );

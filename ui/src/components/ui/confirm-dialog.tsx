@@ -16,17 +16,22 @@ interface ConfirmDialogProps {
   title: string;
   description: string;
   confirmLabel?: string;
+  /** Destructive by default -- a confirmation that only warns before an
+   * action nobody loses anything to (a notification going out, say) reads
+   * wrongly in the destructive colour. */
+  confirmVariant?: "destructive" | "default";
   isConfirming?: boolean;
   onConfirm: () => void;
 }
 
-/** A destructive-action confirmation, naming what it destroys. */
+/** A confirmation before an action with consequences, naming them. */
 export function ConfirmDialog({
   open,
   onOpenChange,
   title,
   description,
   confirmLabel = "Delete permanently",
+  confirmVariant = "destructive",
   isConfirming = false,
   onConfirm,
 }: ConfirmDialogProps) {
@@ -41,7 +46,7 @@ export function ConfirmDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button variant="destructive" disabled={isConfirming} onClick={onConfirm}>
+          <Button variant={confirmVariant} disabled={isConfirming} onClick={onConfirm}>
             {isConfirming && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
             {confirmLabel}
           </Button>

@@ -536,6 +536,105 @@ class TestCalendarUi:
 
         wait_for(_repeats_weekly, description="Repeat chosen through the editor saved")
 
+    def test_the_editors_calendar_and_repeat_controls_show_labels(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: both controls rendered the raw value
+        behind them -- the calendar's uuid and the event's own RRULE text --
+        because the underlying control only resolves a label itself when it
+        is given an item list, which nothing in this application passes."""
+        summary = f"Label check {uuid.uuid4()}"
+        resp = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"],
+                "summary": summary,
+                "dtstart": "2026-09-18T10:00:00Z",
+                "dtend": "2026-09-18T11:00:00Z",
+                "rrule": "FREQ=WEEKLY;COUNT=2",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        object_id = resp.json()["object_id"]
+        created = wait_for_event_synced(api_client, object_id)
+
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Agenda", exact=True).click()
+        chip = event_chip(page, created["object_id"]).first
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+        page.get_by_role("button", name="Edit", exact=True).click()
+
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+        expect(sheet.get_by_text("Work", exact=True)).to_be_visible(timeout=10_000)
+        expect(sheet.get_by_text("Weekly", exact=True)).to_be_visible(timeout=10_000)
+        expect(sheet.get_by_text(calendar_collection["id"], exact=False)).to_have_count(0)
+        expect(sheet.get_by_text("FREQ=", exact=False)).to_have_count(0)
+
+    def test_editing_an_organised_event_names_the_guests_it_will_mail(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+        organizer_identity: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the editor asked whether the event
+        had an organiser at all rather than whether that organiser is the
+        viewer, so an event organised by the calendar's own identity got
+        the generic warning on delete -- and saving an edit mailed every
+        guest an update with no prompt whatsoever."""
+        summary = f"Organised in the sheet {uuid.uuid4()}"
+        resp = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"],
+                "summary": summary,
+                "dtstart": "2026-09-19T10:00:00Z",
+                "dtend": "2026-09-19T11:00:00Z",
+                "attendees": [{"email": "guest@example.com"}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        created = wait_for_event_synced(api_client, resp.json()["object_id"])
+        assert created["organizer"] is not None
+
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Agenda", exact=True).click()
+        chip = event_chip(page, created["object_id"])
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+        page.get_by_role("button", name="Edit", exact=True).click()
+
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+
+        # Delete first, then back out of it -- the confirmation has to name
+        # the guest the cancellation actually goes to.
+        sheet.get_by_role("button", name="Delete", exact=True).click()
+        expect(
+            page.get_by_text(
+                "A cancellation will be sent to 1 guest. This cannot be undone.", exact=True,
+            )
+        ).to_be_visible(timeout=10_000)
+        page.locator('[data-slot="dialog-content"]').get_by_role(
+            "button", name="Cancel", exact=True,
+        ).click()
+
+        title_input = page.get_by_label("Title")
+        title_input.fill(f"{summary} revised")
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(
+            page.get_by_text("An update will be sent to 1 guest.", exact=True)
+        ).to_be_visible(timeout=10_000)
+        page.get_by_role("button", name="Save and notify", exact=True).click()
+        expect(page.get_by_text("Event updated")).to_be_visible(timeout=10_000)
+
     def test_manage_calendars_selects_show_labels_not_raw_ids(
         self,
         page: Page,

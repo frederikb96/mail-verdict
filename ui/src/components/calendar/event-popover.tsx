@@ -20,7 +20,11 @@ import { RsvpControl } from "@/components/calendar/rsvp-control";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useDeleteEvent, useEventDetail } from "@/hooks/use-events";
 import { resolveCalendarColor } from "@/components/calendar/colors";
-import { deriveEventLook, isEventOrganizedBySelf } from "@/components/calendar/layout";
+import {
+  deriveEventLook,
+  eventDeletionNotice,
+  isEventOrganizedBySelf,
+} from "@/components/calendar/layout";
 import { useIdentities } from "@/hooks/use-identities";
 import {
   eventDeleteRequestAtom,
@@ -244,7 +248,11 @@ export function EventPopover() {
       <RecurrenceScopeDialog
         open={scopeOpen}
         onOpenChange={setScopeOpen}
-        cancellationNoticeCount={cancellationGuestCount}
+        guestNotice={
+          cancellationGuestCount !== undefined
+            ? { action: "cancellation", count: cancellationGuestCount }
+            : undefined
+        }
         onConfirm={(scope) => {
           setScopeOpen(false);
           doDelete(scope);
@@ -255,11 +263,7 @@ export function EventPopover() {
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title="Delete this event?"
-        description={
-          cancellationGuestCount !== undefined
-            ? `A cancellation will be sent to ${cancellationGuestCount} guest${cancellationGuestCount === 1 ? "" : "s"}. This cannot be undone.`
-            : "This cannot be undone."
-        }
+        description={eventDeletionNotice(cancellationGuestCount)}
         isConfirming={deleteEvent.isPending}
         onConfirm={() => doDelete()}
       />
