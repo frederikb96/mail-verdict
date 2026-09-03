@@ -691,6 +691,38 @@ def _parse_rrule_value(rrule: str) -> dict[str, Any]:
     return cast(dict[str, Any], vRecur.from_ical(rrule))
 
 
+def _property_zone(component: Component, name: str) -> tzinfo | None:
+    """The zone a date-time property resolves against, or None for an
+    all-day date, a floating time, or a property that is not there."""
+    prop = component.get(name)
+    return getattr(prop.dt, "tzinfo", None) if prop is not None else None
+
+
+def _in_existing_zone(component: Component, name: str, value: datetime) -> datetime:
+    """
+    The same instant, expressed in the zone the property being replaced
+    already resolves against.
+
+    An edit carries dtstart/dtend as instants -- an ISO string with an
+    offset is all a caller has to send -- and writing one verbatim
+    replaces a named zone with whatever that offset happened to be:
+    `DTSTART;TZID=Europe/Berlin:...` becomes a bare UTC stamp, or an
+    invented `TZID="UTC+02:00"` the object defines no VTIMEZONE for. On a
+    single event that is only a lost label, since the instant is the same
+    either way. A recurring series resolves every later occurrence
+    against that zone, so an offset-anchored RRULE holds its offset and
+    moves its wall clock by an hour the moment daylight saving changes --
+    a weekly 09:00 meeting becomes 08:00 in November.
+
+    The zone comes from the property being replaced, falling back to
+    DTSTART's, which is the series' own zone and the one the object's
+    VTIMEZONE defines. With nothing to fall back to the value is written
+    as it came.
+    """
+    zone = _property_zone(component, name) or _property_zone(component, "DTSTART")
+    return value.astimezone(zone) if zone is not None else value
+
+
 def _apply_field_overrides(
     component: Component,
     *,
@@ -712,12 +744,18 @@ def _apply_field_overrides(
         is_all_day = all_day if all_day is not None else not isinstance(
             component.get("DTSTART").dt, datetime,
         )
-        _set(component, "DTSTART", dtstart.date() if is_all_day else dtstart)
+        _set(
+            component, "DTSTART",
+            dtstart.date() if is_all_day else _in_existing_zone(component, "DTSTART", dtstart),
+        )
     if dtend is not None:
         is_all_day = all_day if all_day is not None else not isinstance(
             component.get("DTSTART").dt, datetime,
         )
-        _set(component, "DTEND", dtend.date() if is_all_day else dtend)
+        _set(
+            component, "DTEND",
+            dtend.date() if is_all_day else _in_existing_zone(component, "DTEND", dtend),
+        )
     if location is not None:
         _set(component, "LOCATION", location)
     if description is not None:

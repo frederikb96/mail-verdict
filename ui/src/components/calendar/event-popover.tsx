@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { useRouter } from "next/navigation";
-import { Loader2, MapPin, Pencil, Trash2, Users, X } from "lucide-react";
+import { AlertTriangle, Loader2, MapPin, Pencil, Trash2, Users, X } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -47,7 +47,7 @@ export function EventPopover() {
   const [scopeOpen, setScopeOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const { data: event, isLoading } = useEventDetail(
+  const { data: event, isLoading, error } = useEventDetail(
     selected?.objectId ?? null,
     selected?.recurrenceId ?? null,
   );
@@ -131,9 +131,25 @@ export function EventPopover() {
         style={style}
         className="z-50 flex w-80 flex-col gap-2 rounded-lg border bg-popover p-3 shadow-lg"
       >
-        {isLoading || !event ? (
+        {isLoading ? (
           <div className="flex items-center justify-center py-6">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : !event ? (
+          // A spinner that never stops is indistinguishable from one still
+          // loading, so a fetch that came back with nothing says so and
+          // carries its reason, rather than presenting as a hang.
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-start gap-1.5 py-1 text-sm text-muted-foreground">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+              <span>
+                This event could not be loaded
+                {error ? `: ${error.message}` : "."}
+              </span>
+            </div>
+            <Button variant="ghost" size="icon-xs" onClick={() => setSelected(null)}>
+              <X className="h-3.5 w-3.5" />
+            </Button>
           </div>
         ) : (
           <>

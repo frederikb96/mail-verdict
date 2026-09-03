@@ -5,6 +5,7 @@ dataclass out."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from icalendar import Calendar, Component, Event
@@ -762,6 +763,77 @@ class TestOccurrenceIdentifiers:
         _, exceptions = ical.parse_master_and_exceptions(updated)
         written = next(e for e in exceptions if e.summary == "Standup (first)")
         assert written.recurrence_id == "20260907T070000Z"
+
+
+class TestEditKeepsTheSeriesZone:
+    """An edit sends dtstart/dtend as instants, and the zone they are
+    written back in decides where every *later* occurrence of a series
+    lands -- not just how the first one is labelled."""
+
+    _BERLIN = ZoneInfo("Europe/Berlin")
+
+    def _weekly_across_the_autumn_change(self) -> str:
+        """A Berlin 09:00 weekly series whose four occurrences straddle
+        the last Sunday of October, when CEST becomes CET."""
+        return ical.build_new_event(
+            summary="Weekly standup",
+            dtstart=datetime(2026, 10, 20, 9, 0),
+            dtend=datetime(2026, 10, 20, 9, 30),
+            tz="Europe/Berlin",
+            rrule="FREQ=WEEKLY;COUNT=4",
+        )
+
+    def _wall_clocks(self, data: str) -> list[str]:
+        return [
+            occurrence.dtstart.astimezone(self._BERLIN).strftime("%Y-%m-%d %H:%M")
+            for occurrence in ical.expand_instances(
+                data,
+                datetime(2026, 10, 1, tzinfo=timezone.utc),
+                datetime(2026, 12, 1, tzinfo=timezone.utc),
+            )
+        ]
+
+    def test_a_series_keeps_its_wall_clock_across_a_daylight_saving_change(self) -> None:
+        """The regression this guards: an edit wrote the instant it was
+        given with whatever tzinfo that instant carried, replacing the
+        series' named zone with a bare UTC stamp. An RRULE anchored to a
+        fixed offset holds the offset and moves the wall clock, so every
+        occurrence after the October change slid an hour earlier -- a
+        09:00 meeting became 08:00 in November, from an edit that only
+        meant to rename it. A single event cannot show this: the instant
+        is the same either way, and only the label is lost."""
+        data = self._weekly_across_the_autumn_change()
+        before = self._wall_clocks(data)
+        assert before == [
+            "2026-10-20 09:00", "2026-10-27 09:00", "2026-11-03 09:00", "2026-11-10 09:00",
+        ]
+
+        # What an edit actually carries: the same instants, expressed
+        # against UTC, since an ISO string is all a caller can send.
+        edited = ical.replace_master_fields(
+            data, summary="Renamed",
+            dtstart=datetime(2026, 10, 20, 7, 0, tzinfo=timezone.utc),
+            dtend=datetime(2026, 10, 20, 7, 30, tzinfo=timezone.utc),
+            all_day=False, location=None, description=None,
+            rrule="FREQ=WEEKLY;COUNT=4",
+        )
+        assert self._wall_clocks(edited) == before
+        assert "DTSTART;TZID=Europe/Berlin:20261020T090000" in edited
+
+    def test_an_offset_only_instant_does_not_invent_a_zone(self) -> None:
+        """An instant carrying a fixed offset rather than UTC produced
+        `TZID="UTC+02:00"` -- a zone name the object defines no VTIMEZONE
+        for, which every later reader has to guess at. Same cause, worse
+        result, and reachable from any caller that sends a local offset."""
+        edited = ical.replace_master_fields(
+            self._weekly_across_the_autumn_change(), summary="Renamed",
+            dtstart=datetime.fromisoformat("2026-10-20T09:00:00+02:00"),
+            dtend=datetime.fromisoformat("2026-10-20T09:30:00+02:00"),
+            all_day=False, location=None, description=None,
+            rrule="FREQ=WEEKLY;COUNT=4",
+        )
+        assert "DTSTART;TZID=Europe/Berlin:20261020T090000" in edited
+        assert "UTC+02:00" not in edited
 
 
 class TestEditOccurrence:

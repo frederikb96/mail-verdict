@@ -55,6 +55,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Editing an event keeps the timezone it is bound to. An edit carries its times as instants, and
+  those were written back with whatever offset they arrived with -- so a named zone was replaced
+  by a bare UTC stamp, or by an invented offset name the object defined no timezone for. On a
+  single event that only loses a label, since the moment is the same either way. On a repeating
+  one it is not: every later occurrence resolves against that zone, so a weekly 09:00 meeting
+  quietly became 08:00 from the end of October, after an edit that only meant to rename it
+- A calendar event whose details cannot be loaded says so, with the reason, instead of showing a
+  spinner that never stops
 - An event created in the calendar is stored at the time that was entered. The editor sent a UTC
   instant together with the browser's own zone, and the API binds the reading it is given to the
   zone it is given -- so an event entered at 10:00 in Berlin was stored, and shown, as 08:00.

@@ -546,6 +546,51 @@ class TestCalendarUi:
         expect(page.get_by_label("Title")).to_be_visible()
         expect(starts_input).to_have_value(f"0002{original[4:]}")
 
+    def test_a_popover_whose_event_cannot_be_loaded_says_so(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the popover treated "not loaded
+        yet" and "did not load" as one state, so a failed detail fetch
+        left it spinning forever. A spinner that never stops reads as a
+        hang rather than as an error, which is how a broken fetch stays
+        unnoticed until someone times how long they have been waiting."""
+        summary = f"Fetch failure {uuid.uuid4()}"
+        created = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"], "summary": summary,
+                "dtstart": "2026-09-24T10:00:00+00:00", "dtend": "2026-09-24T11:00:00+00:00",
+            },
+        )
+        assert created.status_code == 201, created.text
+        object_id = created.json()["object_id"]
+
+        # The detail route only -- the month list has no path segment
+        # after "events", so it still answers normally and the chip
+        # renders.
+        page.route(
+            "**/api/calendar/events/*",
+            lambda route: route.fulfill(
+                status=503, content_type="application/json",
+                body='{"detail": "Calendar server unavailable"}',
+            ),
+        )
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Month", exact=True).click()
+
+        chip = event_chip(page, object_id)
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+
+        expect(page.get_by_text("This event could not be loaded", exact=False)).to_be_visible(
+            timeout=10_000
+        )
+        expect(page.get_by_text("Calendar server unavailable", exact=False)).to_be_visible()
+
     def test_creating_an_all_day_event_stores_the_exclusive_end(
         self,
         page: Page,

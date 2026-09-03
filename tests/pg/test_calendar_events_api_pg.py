@@ -386,6 +386,58 @@ class TestCreateWithTimezone:
             instance["dtstart"],
         )
 
+    def test_editing_a_zone_bound_series_leaves_its_zone_alone(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The regression this guards: PATCH wrote the instant it was
+        given with whatever tzinfo that instant carried, so a named zone
+        became a bare UTC stamp and the series' later occurrences moved
+        with the next daylight-saving change. The rule itself, and the
+        wall clocks either side of the change, are proven directly in
+        TestEditKeepsTheSeriesZone in the unit layer; this only has to
+        show the endpoint applies it to what a caller really sends -- the
+        instants the editor reads back out of a previous response."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-10-20T09:00:00", "dtend": "2026-10-20T09:30:00",
+                    "tz": "Europe/Berlin", "rrule": "FREQ=WEEKLY;COUNT=4",
+                },
+            )
+            assert created.status_code == 201, created.text
+            body = created.json()
+            object_id = body["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={
+                    "summary": "Renamed", "scope": "all",
+                    "dtstart": body["dtstart"], "dtend": body["dtend"],
+                    "rrule": "FREQ=WEEKLY;COUNT=4",
+                },
+            )
+            assert updated.status_code == 200, updated.text
+
+            listed = client.get("/calendar/events", params={"month": "2026-11"})
+            assert listed.status_code == 200, listed.text
+
+        november = [e for e in listed.json()["events"] if e["object_id"] == object_id]
+        assert november, "the series has occurrences in November"
+        for occurrence in november:
+            starts = datetime.fromisoformat(occurrence["dtstart"])
+            assert (starts.hour, starts.minute) == (9, 0), (
+                f"a 09:00 Berlin series must still read 09:00 after the October "
+                f"change, got {occurrence['dtstart']}"
+            )
+            # CET, not the CEST offset the series was created under -- and
+            # not a naive reading, which is what an unresolvable invented
+            # TZID leaves behind and which reads as the right hour.
+            assert starts.utcoffset() == timedelta(hours=1)
+        assert updated.json()["tz"] == "Europe/Berlin"
+
     def test_create_with_an_unknown_tz_is_refused(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:

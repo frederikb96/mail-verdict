@@ -23,7 +23,10 @@ by update_event. Changing who is invited on an already-sent invitation
 needs its own REQUEST/CANCEL sends, the way create_event/delete_event
 already give attendees; re-timezoning an existing event without also
 moving dtstart/dtend has no settled meaning here, unlike a fresh create,
-where there is no existing wall-clock reading to reconcile against.
+where there is no existing wall-clock reading to reconcile against. An
+edit keeps whatever zone the event is already bound to and writes its new
+instants against that, so a series does not need tz to stay correct
+across a daylight-saving change.
 
 source_message_id (which invitation email an event came from) is left
 null throughout: resolving it needs a join from calendar_intake.msg_key
