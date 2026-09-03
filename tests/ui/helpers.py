@@ -148,6 +148,22 @@ def drag_row_to_folder(page: Page, row: Locator, target: Locator) -> None:
     page.mouse.up()
 
 
+def select_account(page: Page, account: dict[str, Any]) -> None:
+    """Explicitly choose an account through the sidebar's own switcher.
+
+    A fresh page load auto-selects whichever account sorts first by name
+    across every account the shared test database currently holds -- not
+    necessarily this test's own account, once other modules running in the
+    same session have created accounts of their own. This drives the
+    identical control a real multi-account user reaches for, rather than
+    assuming the default lands on the right one."""
+    trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
+    trigger.click()
+    page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
+        account["name"], exact=True,
+    ).click()
+
+
 def wait_for_account_active(
     client: httpx.Client, account_id: str, timeout_s: float = 30.0,
 ) -> dict[str, Any]:

@@ -11,7 +11,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui.helpers import unique_email
+from tests.ui.helpers import select_account, unique_email
 
 from tests.setup.containers import (  # isort: skip
     DOVECOT_ALIAS,
@@ -62,7 +62,15 @@ class TestComposeAccountPicker:
         first, second = two_accounts
 
         page.goto(app_server)
-        page.get_by_role("button", name="Compose").click()
+        # Compose's From starts on the sidebar's currently selected account
+        # -- explicit, rather than trusting whichever account a fresh page
+        # load auto-selects, which is only ever `first` when this account
+        # sorts before every other account the shared test database holds.
+        select_account(page, first)
+        # exact=True: substring matching would otherwise also resolve the
+        # sidebar's own account-switcher trigger, now labelled "Compose
+        # test one ..." since that account is the one just selected.
+        page.get_by_role("button", name="Compose", exact=True).click()
         dialog = page.get_by_role("dialog", name="New Message")
         expect(dialog).to_be_visible(timeout=15_000)
 

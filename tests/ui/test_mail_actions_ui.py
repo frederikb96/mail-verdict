@@ -43,6 +43,7 @@ from tests.ui.helpers import (
     drag_row_to_folder,
     folder,
     mail_row,
+    select_account,
     unique_email,
     wait_for,
     wait_for_account_active,
@@ -198,6 +199,11 @@ class TestMailActionsUi:
         )
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         row = mail_row(page, target["id"])
         expect(row).to_be_visible(timeout=15_000)
         before = _badge_count(page, inbox_folder["id"])
@@ -246,6 +252,11 @@ class TestMailActionsUi:
         target = wait_for(_find, description=f"{subject!r} synced into INBOX")
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         _open_folder(page, inbox_folder)
         row = mail_row(page, target["id"])
         expect(row).to_be_visible(timeout=15_000)
@@ -294,6 +305,11 @@ class TestMailActionsUi:
         targets = wait_for(_find_all, description="both bulk-undo messages synced into INBOX")
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         _open_folder(page, inbox_folder)
         rows = [mail_row(page, target["id"]) for target in targets]
         for row in rows:
@@ -349,6 +365,11 @@ class TestMailActionsUi:
         targets = wait_for(_find_all, description="both bulk-archive messages synced into INBOX")
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         _open_folder(page, inbox_folder)
         rows = [mail_row(page, target["id"]) for target in targets]
         for row in rows:
@@ -399,6 +420,11 @@ class TestMailActionsUi:
         )
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         _open_folder(page, junk_folder)
         row = mail_row(page, already_junked["id"])
         expect(row).to_be_visible(timeout=15_000)
@@ -430,6 +456,11 @@ class TestMailActionsUi:
         )
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         _open_folder(page, junk_folder)
         row = mail_row(page, to_drag["id"])
         expect(row).to_be_visible(timeout=15_000)
@@ -452,6 +483,11 @@ class TestMailActionsUi:
         subject = f"UI send {uuid.uuid4()}"
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         page.get_by_role("button", name="Compose").click()
         dialog = page.get_by_role("dialog", name="New Message")
         expect(dialog).to_be_visible()
@@ -477,6 +513,11 @@ class TestMailActionsUi:
         subject = f"UI draft {uuid.uuid4()}"
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         page.get_by_role("button", name="Compose").click()
         dialog = page.get_by_role("dialog", name="New Message")
         dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
@@ -497,6 +538,11 @@ class TestMailActionsUi:
         )
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         _open_folder(page, drafts_folder)
         mail_row(page, draft["id"]).click()
         expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
@@ -521,6 +567,11 @@ class TestMailActionsUi:
         ui_account: dict[str, Any],
     ) -> None:
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         expect(
             page.get_by_role("button", name=re.compile("Connection status: Connected")),
         ).to_be_visible(timeout=15_000)
@@ -545,6 +596,11 @@ class TestMailActionsUi:
 
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         row = mail_row(page, target["id"])
         expect(row).to_be_visible(timeout=15_000)
 
@@ -561,6 +617,7 @@ class TestMailActionsUi:
         self,
         page: Page,
         app_server: str,
+        ui_account: dict[str, Any],
         junk_folder: dict[str, Any],
         trash_folder: dict[str, Any],
         drafts_folder: dict[str, Any],
@@ -571,6 +628,11 @@ class TestMailActionsUi:
         exactly the same irreversible action as any folder they created
         themselves."""
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         page.get_by_role("button", name="Manage folders", exact=True).click()
 
         dialog = page.get_by_role("dialog", name="Manage folders")
@@ -625,6 +687,11 @@ class TestMailActionsUi:
         wait_for(_batch_synced, timeout_s=30.0, description="Scroll-test batch synced into INBOX")
 
         page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
         expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
 
         # Nothing is focused yet, so j/k move the list's own focus/scroll
