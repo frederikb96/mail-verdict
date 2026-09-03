@@ -29,7 +29,15 @@ export function ContactsPage() {
             <ContactDetail contactId={selectedId} />
           </>
         ) : (
-          <ContactList />
+          <>
+            <div className="flex items-center justify-end border-b px-2 py-1">
+              <Button variant="ghost" size="sm" className="gap-1" onClick={() => setNewOpen(true)}>
+                <Plus className="h-4 w-4" />
+                New contact
+              </Button>
+            </div>
+            <ContactList />
+          </>
         )}
         <ContactEditor open={newOpen} onOpenChange={setNewOpen} />
       </div>

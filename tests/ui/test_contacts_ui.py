@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from tests.e2e.helpers import (
     unique_email,
@@ -115,6 +115,14 @@ def seeded_contact(api_client: httpx.Client, addressbook: dict[str, Any]) -> dic
     return resp.json()
 
 
+def _labeled_field(page: Page, label_text: str) -> Locator:
+    """contact-editor.tsx's Label elements carry no htmlFor/id pointing at
+    their input, so get_by_label() cannot find it -- scoped instead to the
+    one "grid gap-1.5" wrapper div that holds both the label and its own
+    field, the only structural relationship there is between them."""
+    return page.locator("div.grid").filter(has_text=label_text).locator("input, textarea").first
+
+
 class TestContactsUi:
     def test_creating_a_contact_from_the_editor_succeeds(
         self,
@@ -150,6 +158,78 @@ class TestContactsUi:
 
         contact = wait_for(_created, description="Created contact synced back")
         assert contact["addressbook_id"] == addressbook["id"]
+
+    def test_editing_a_contact_adds_details_and_search_finds_the_secondary_email(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        addressbook: dict[str, Any],
+    ) -> None:
+        """Neither of these is covered by the create test above: the
+        editor's own edit path (organisation, title, a second email added
+        to an existing contact) and search matching an address that isn't
+        a contact's first."""
+        name = f"UI Edit Test {uuid.uuid4()}"
+        primary_email = f"{uuid.uuid4().hex[:8]}@example.com"
+        secondary_email = f"{uuid.uuid4().hex[:8]}@example.com"
+        resp = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": addressbook["id"], "summary": name,
+                "emails": [{"email": primary_email}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        contact = resp.json()
+
+        page.goto(f"{app_server}/contacts")
+        page.get_by_text(name, exact=True).click()
+
+        # Icon-only, with no accessible name of its own -- see
+        # contact-detail.tsx -- so located by the lucide icon class the
+        # Edit control renders rather than a role/name pair it doesn't have.
+        page.locator('button:has(svg.lucide-pencil)').click()
+
+        organization_input = _labeled_field(page, "Organization")
+        expect(organization_input).to_be_visible(timeout=15_000)
+        organization_input.fill("Vex GmbH")
+        _labeled_field(page, "Title").fill("Tester")
+
+        page.get_by_role("button", name="Add email", exact=True).click()
+        page.locator('input[type="email"]').nth(1).fill(secondary_email)
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(organization_input).to_be_hidden(timeout=10_000)
+
+        # Scoped to the detail pane, not the page as a whole -- the
+        # sidebar list row for this same contact shows its name and first
+        # email as preview text right next to it, and an unscoped
+        # get_by_text(primary_email) matches both.
+        detail = page.locator(
+            f"xpath=//h2[normalize-space(text())='{name}']"
+            "/ancestor::div[contains(@class,'overflow-y-auto')][1]"
+        )
+        expect(detail.get_by_text("Tester at Vex GmbH", exact=True)).to_be_visible(timeout=10_000)
+        expect(detail.get_by_text(primary_email, exact=True)).to_be_visible()
+        expect(detail.get_by_text(secondary_email, exact=True)).to_be_visible()
+
+        def _updated() -> dict[str, Any] | None:
+            detail = api_client.get(f"/api/contacts/{contact['id']}").json()
+            emails = {e["email"] for e in detail["emails"]}
+            if detail["organization"] == "Vex GmbH" and secondary_email in emails:
+                return detail
+            return None
+
+        wait_for(_updated, description="Edited contact synced back")
+
+        page.get_by_placeholder("Search contacts").fill(secondary_email)
+        # The detail pane still shows this same contact (untouched by the
+        # search), so its own name heading is a second match for plain
+        # text -- the list row itself is a <button>, which get_by_text
+        # doesn't resolve to, so the role-based, substring locator finds
+        # only the search result.
+        expect(page.get_by_role("button", name=name)).to_be_visible(timeout=10_000)
 
     def test_recipient_field_arrow_down_enter_commits_the_highlighted_suggestion(
         self,

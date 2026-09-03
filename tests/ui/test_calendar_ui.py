@@ -432,6 +432,68 @@ class TestCalendarUi:
         event = wait_for(_created, description="Created event synced back")
         assert event["tz"] == browser_tz
 
+    def test_creating_an_all_day_event_stores_the_exclusive_end(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the editor sent the same day for
+        both ends of an all-day event and the API stored it verbatim, so
+        DTSTART == DTEND -- a zero-length event RFC 5545 forbids (DTEND is
+        exclusive), and one a UTC or western browser's month/week views
+        hid entirely (endCol < startCol). Runs on this suite's own host
+        clock, which is UTC -- the zone the bug was invisible in."""
+        summary = f"All day test {uuid.uuid4()}"
+
+        page.goto(f"{app_server}/calendar")
+        # Same race as the timed-create test above: the Calendar field is
+        # seeded from useCalendars() once, at mount.
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event").click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(summary)
+
+        page.get_by_role("switch", name="All day").click()
+
+        date_inputs = page.locator('input[type="date"]')
+        expect(date_inputs).to_have_count(2)
+        start_value = date_inputs.nth(0).input_value()
+        end_value = date_inputs.nth(1).input_value()
+        assert start_value == end_value, (
+            "the all-day fields must show the same day the timed default was "
+            "showing, not a UTC day one off from a near-midnight local instant"
+        )
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+        def _created() -> dict[str, Any] | None:
+            listed = api_client.get(
+                "/api/calendar/events",
+                params={"month": month, "calendars": calendar_collection["id"]},
+            ).json()
+            return next((e for e in listed["events"] if e["summary"] == summary), None)
+
+        event = wait_for(_created, description="Created all-day event synced back")
+        assert event["all_day"] is True
+        dtstart = datetime.fromisoformat(event["dtstart"])
+        dtend = datetime.fromisoformat(event["dtend"])
+        assert dtend == dtstart + timedelta(days=1), (
+            f"DTEND must be exactly one day after DTSTART (RFC 5545's exclusive "
+            f"end), not the same instant -- got dtstart={dtstart!r} dtend={dtend!r}"
+        )
+
+        chip = event_chip(page, event["object_id"])
+        expect(chip).to_be_visible(timeout=10_000)  # the week view's all-day tray
+
+        page.get_by_role("tab", name="Month", exact=True).click()
+        expect(chip).to_be_visible(timeout=10_000)  # a bar in the month grid
 
     def test_deleting_an_organised_event_with_guests_names_the_guest_count(
         self,

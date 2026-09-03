@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   need the pointer machinery to interact with the scroller's virtualisation, with no cheap way to
   be confident in it -- so this is how create, drag and resize become reachable from month view
   without dragging in it, since both already exist in day and week view
+- `tests/ui/` gains browser-level coverage for an all-day event's exclusive end, invitation intake
+  driven manually and automatically over real LMTP delivery (`tests/ui/test_calendar_invitations_ui.py`,
+  new), editing a contact and finding it by a secondary email, and the phone layout's contacts
+  page and month-view day tap. Two of the new tests describe correct behaviour this suite never
+  asserted before and currently fail against real, unfixed defects rather than anything wrong with
+  the test itself -- see `test_arriving_mail_holds_the_list_scroll_position` and
+  `TestPhoneLayoutUi.test_contacts_page_has_an_add_control` in `tests/ui/test_mail_actions_ui.py`
 
 ### Fixed
 
@@ -239,6 +246,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Manage folders no longer offers Delete on a special-use folder (Sent, Trash, Junk, Drafts) --
   only INBOX, absent from that list entirely, was ever protected there; the rest showed the
   same destructive control and confirmation as any folder created by hand
+- Mail arriving above a scrolled-away reader no longer pushes every visible row down by one.
+  The virtualized mail list never told `virtua` a prepend had landed, so the size cache it
+  keeps per row index stayed aligned to the old positions once the new row shifted everything
+  after it -- the list now recognises a genuine prepend (mail arriving) apart from a page
+  appended at the tail (older mail paging in) or a different list entirely (a folder switch,
+  a threading toggle), and only then hands the render to the library's own prepend-shift mode
+- A contact can now be created from a phone-sized viewport. The contacts page's mobile branch
+  rendered the contact list or its detail and nothing else -- the editor sheet was mounted
+  underneath, but nothing on that branch ever opened it
 
 ### Security
 
