@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Browser, Page, expect
 
 from tests.e2e.helpers import (
     unique_email,
@@ -733,6 +733,35 @@ class TestCalendarUi:
         expect(save).to_be_enabled(timeout=15_000)
         save.click()
         expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+
+    def test_a_browser_in_another_timezone_hydrates_without_error(
+        self, browser: Browser, app_server: str,
+    ) -> None:
+        """The regression this guards: every page is prerendered to static
+        HTML at build time, so the calendar's anchor date, today's column
+        and the current-time line were all baked from the build machine's
+        own clock. A browser on a different day hydrated against markup for
+        another one, React reported the mismatch and rebuilt the tree.
+
+        Two zones 25 hours apart are never on the same date as each other,
+        so whatever zone the build ran in, at least one of them differs from
+        it -- the check does not depend on where this runs."""
+        for timezone_id in ("Pacific/Kiritimati", "Pacific/Midway"):
+            context = browser.new_context(timezone_id=timezone_id)
+            page = context.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            try:
+                page.goto(f"{app_server}/calendar")
+                expect(page.get_by_test_id("calendar-toolbar-title")).to_be_visible(
+                    timeout=15_000
+                )
+                # Handlers survive: the toolbar still responds to a click.
+                page.get_by_role("button", name="New event", exact=True).click()
+                expect(page.get_by_label("Title")).to_be_visible(timeout=15_000)
+            finally:
+                context.close()
+            assert errors == [], f"{timezone_id}: {errors}"
 
     def test_manage_calendars_selects_show_labels_not_raw_ids(
         self,

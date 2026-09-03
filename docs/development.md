@@ -163,6 +163,13 @@ picks the new directory up.
 For faster iteration `npm run dev` runs the Next.js dev server directly against the backend's API,
 with no rebuild and no restart.
 
+The export is prerendered to static HTML at build time, so anything a component derives from the
+clock or from the browser's timezone is baked from the build machine's own. Rendering such a value
+during the prerender means the first client render disagrees with the shipped HTML, React reports
+a hydration mismatch and rebuilds the tree -- which costs the handlers attached during hydration.
+Wrap a view that needs the clock in `ClientOnly` (`ui/src/components/client-only.tsx`), as the
+calendar does.
+
 ## Before pushing
 
 ```bash

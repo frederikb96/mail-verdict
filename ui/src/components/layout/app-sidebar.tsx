@@ -47,6 +47,7 @@ import {
 import { DroppableFolder } from "@/components/sidebar/droppable-folder";
 import { FolderManageDialog } from "@/components/sidebar/folder-manage-dialog";
 import { CalendarSidebar } from "@/components/calendar/calendar-sidebar";
+import { ClientOnly } from "@/components/client-only";
 import { ComposeDialog } from "@/components/mail/compose-dialog";
 import { NotificationBell } from "@/components/layout/notification-bell";
 import { useAccounts } from "@/hooks/use-accounts";
@@ -288,7 +289,11 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        {isCalendarRoute && <CalendarSidebar />}
+        {isCalendarRoute && (
+          <ClientOnly>
+            <CalendarSidebar />
+          </ClientOnly>
+        )}
         {!isCalendarRoute && (
         <SidebarGroup>
           <SidebarGroupLabel className="flex items-center justify-between gap-2 pr-1">

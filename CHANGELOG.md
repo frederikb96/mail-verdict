@@ -53,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identity its calendar is linked to, and name the guests before anything is sent
 - The event editor's Calendar and Repeats controls show the calendar's name and the repeat's
   label rather than the raw identifier and the raw RRULE behind them
+- The calendar renders correctly for a browser whose timezone or date differs from the machine
+  that built the application. Pages are prerendered to static HTML at build time, so today's
+  column, the current-time line and the date the whole view is anchored on were baked from the
+  build machine's own clock -- a browser on a different day hydrated against markup for another
+  one and React rebuilt the tree, losing the toolbar's click handlers on the way. The calendar
+  view and its sidebar now render once the browser has them
 - Opening New event before the calendar list has arrived no longer leaves Save disabled for
   good. The editor read its default calendar out of that query once, in a state initialiser and
   in an effect keyed on the sheet opening, neither of which runs again when the query resolves
