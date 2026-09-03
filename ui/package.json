@@ -37,6 +37,6 @@
     "@types/react-dom": "^19.2.5",
     "shadcn": "^4.19.0",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5"
+    "typescript": "^7.0.0"
   }
 }
