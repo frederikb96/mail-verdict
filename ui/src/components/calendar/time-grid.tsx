@@ -174,6 +174,19 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
     },
   });
 
+  // A chip that has just been dragged also receives the click the browser
+  // derives from the same press-and-release: the drag captured the pointer
+  // on it, which retargets that click back to it wherever the pointer
+  // ended up. Opening the popover on it would show the values the move has
+  // just replaced, so the derived click is dropped and a real one is not.
+  const selectEventUnlessDragged: SelectEventHandler = useCallback(
+    (objectId, recurrenceId, evt) => {
+      if (drag.wasJustDragged(objectId, recurrenceId)) return;
+      onSelectEvent(objectId, recurrenceId, evt);
+    },
+    [drag.wasJustDragged, onSelectEvent],
+  );
+
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
       if (!drag.ghost) return;
@@ -291,7 +304,7 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
               events={timedByColumn[col]}
               hourHeight={HOUR_HEIGHT}
               ghost={drag.ghost}
-              onSelectEvent={onSelectEvent}
+              onSelectEvent={selectEventUnlessDragged}
               onPointerDownMove={(e, event, startMin, endMin, kind) =>
                 drag.beginMove(e, event.object_id, event.recurrence_id, startMin, endMin, col, kind)
               }

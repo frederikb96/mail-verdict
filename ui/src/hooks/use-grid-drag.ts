@@ -46,6 +46,12 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
     pointerStartMin: number;
     column: number;
   } | null>(null);
+  // Which chip, if any, the last release actually moved. Capturing the
+  // pointer on a chip retargets the click the browser derives from the
+  // press-and-release back to that chip wherever the pointer physically
+  // ends up, so every drag also fires the chip's own onClick -- see
+  // wasJustDragged below.
+  const draggedRef = useRef<{ objectId: string; recurrenceId: string | null } | null>(null);
 
   const minutesFromClientY = useCallback(
     (containerTop: number, clientY: number) => (clientY - containerTop) / pixelsPerMinute,
@@ -71,6 +77,7 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
       kind: "move" | "resize-start" | "resize-end",
     ) => {
       e.currentTarget.setPointerCapture(e.pointerId);
+      draggedRef.current = null;
       const container = (e.currentTarget as HTMLElement).closest("[data-grid-surface]") as HTMLElement | null;
       const containerRect = container?.getBoundingClientRect();
       const pointerStartMin = containerRect ? minutesFromClientY(containerRect.top, e.clientY) : startMin;
@@ -82,6 +89,7 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
 
   const beginCreate = useCallback(
     (containerTop: number, clientY: number, column: number) => {
+      draggedRef.current = null;
       const min = snap(minutesFromClientY(containerTop, clientY));
       originRef.current = { startMin: min, endMin: min, pointerStartMin: min, column };
       setGhost({
@@ -140,7 +148,10 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
           ghost.startMin !== origin.startMin ||
           ghost.endMin !== origin.endMin ||
           ghost.column !== origin.column;
-        if (moved) onCommitMove?.(ghost);
+        if (moved) {
+          draggedRef.current = { objectId: ghost.objectId, recurrenceId: ghost.recurrenceId };
+          onCommitMove?.(ghost);
+        }
       }
     }
     setGhost(null);
@@ -152,5 +163,16 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
     originRef.current = null;
   }, []);
 
-  return { ghost, beginMove, beginCreate, updateDrag, commit, cancel };
+  /** Whether the click now arriving on this chip is the one the browser
+   * derived from a drag that just moved it, rather than a real click. The
+   * record is cleared by the next press, so a genuine click on the same
+   * chip always comes through. */
+  const wasJustDragged = useCallback(
+    (objectId: string, recurrenceId: string | null) =>
+      draggedRef.current?.objectId === objectId &&
+      draggedRef.current?.recurrenceId === recurrenceId,
+    [],
+  );
+
+  return { ghost, beginMove, beginCreate, updateDrag, commit, cancel, wasJustDragged };
 }

@@ -635,6 +635,48 @@ class TestCalendarUi:
         page.get_by_role("button", name="Save and notify", exact=True).click()
         expect(page.get_by_text("Event updated")).to_be_visible(timeout=10_000)
 
+    def test_a_grid_drag_does_not_open_the_popover_it_would_fill_with_stale_values(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: beginning a move captures the pointer
+        on the chip, and a captured pointer retargets the click the browser
+        derives from that press-and-release back to the capturing element
+        wherever the pointer physically ends up. So every drag also fired the
+        chip's own click handler, opening the popover on values the move had
+        just replaced."""
+        summary = f"Grid drag popover {uuid.uuid4()}"
+        dtstart = datetime.now(timezone.utc).replace(hour=8, minute=0, second=0, microsecond=0)
+        resp = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"],
+                "summary": summary,
+                "dtstart": dtstart.isoformat(),
+                "dtend": (dtstart + timedelta(minutes=30)).isoformat(),
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        created = wait_for_event_synced(api_client, resp.json()["object_id"])
+
+        page.goto(f"{app_server}/calendar")
+        chip = event_chip(page, created["object_id"])
+        expect(chip).to_be_visible(timeout=15_000)
+        center_in_grid_viewport(page, chip)
+        box = chip.bounding_box()
+        assert box is not None, "chip has no bounding box after centering it"
+        start_x = box["x"] + box["width"] / 2
+        start_y = box["y"] + box["height"] / 2
+
+        drag_by_pixels(page, start_x, start_y, start_x, start_y + 2 * _HOUR_HEIGHT_PX)
+
+        expect(page.get_by_text("Event moved")).to_be_visible(timeout=10_000)
+        # The popover is what a click opens, and a drag is not a click.
+        expect(page.get_by_role("button", name="Edit", exact=True)).to_have_count(0)
+
     def test_manage_calendars_selects_show_labels_not_raw_ids(
         self,
         page: Page,

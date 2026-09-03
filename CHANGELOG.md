@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identity its calendar is linked to, and name the guests before anything is sent
 - The event editor's Calendar and Repeats controls show the calendar's name and the repeat's
   label rather than the raw identifier and the raw RRULE behind them
+- Dragging an event in the day or week grid no longer opens its popover on the values the drag
+  has just replaced. Beginning a move captures the pointer on the chip, and a captured pointer
+  retargets the click derived from the release back to that chip wherever it ends up, so every
+  drag also fired the chip's own click handler. The click a real drag derives is dropped; a plain
+  click still opens the popover
 - Choosing an option from a dropdown in the event editor no longer closes the editor. The event
   popover dismissed itself on any pointer press outside its own DOM subtree, exempting the editor
   and the confirmation dialogs by name -- and a dropdown renders its options into a portal of its
