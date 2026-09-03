@@ -425,7 +425,9 @@ names the calendar directly. An invitation to an address linked to no calendar
 
 `ical.expand_instances()` bounds a recurring series' expansion regardless of how the RRULE (or
 RDATE) that produces it is spelled: it walks the requested window in progressively wider slices,
-counting the real occurrences `recurring-ical-events` returns for each slice, and refuses once more
+collecting the real occurrences `recurring-ical-events` returns for each slice by identity — a
+slice hands back everything *overlapping* it rather than only what starts inside it, so an
+occurrence wider than the slices it touches comes back from each of them — and refuses once more
 than a few thousand have come back — rather than asking the library for the whole window in one
 call, which is what a `FREQ=SECONDLY` series, or one whose `BYHOUR`/`BYMINUTE`/`BYSECOND` widen a
 coarser `FREQ` to the same effect, or a large `RDATE` list, turns into tens of seconds and hundreds
