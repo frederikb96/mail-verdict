@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   need the pointer machinery to interact with the scroller's virtualisation, with no cheap way to
   be confident in it -- so this is how create, drag and resize become reachable from month view
   without dragging in it, since both already exist in day and week view
+- `tests/ui/` gains browser-level coverage for an all-day event's exclusive end, invitation intake
+  driven manually and automatically over real LMTP delivery (`tests/ui/test_calendar_invitations_ui.py`,
+  new), editing a contact and finding it by a secondary email, and the phone layout's contacts
+  page and month-view day tap. Two of the new tests describe correct behaviour this suite never
+  asserted before and currently fail against real, unfixed defects rather than anything wrong with
+  the test itself -- see `test_arriving_mail_holds_the_list_scroll_position` and
+  `TestPhoneLayoutUi.test_contacts_page_has_an_add_control` in `tests/ui/test_mail_actions_ui.py`
 
 ### Fixed
 

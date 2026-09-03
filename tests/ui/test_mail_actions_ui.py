@@ -11,18 +11,29 @@ two backend/UI defects fixed elsewhere: a same-folder move stranding
 imap_uid with a spinner that never clears, and dnd-kit's default collision
 detection dropping a row on the folder above the pointer rather than the
 one under it. Both are expected to fail until that fix lands.
+
+test_arriving_mail_holds_the_list_scroll_position and
+TestPhoneLayoutUi.test_contacts_page_has_an_add_control are the same kind
+of documentation-by-test: both describe correct behaviour this suite never
+asserted before and both currently fail, against real, currently-unfixed
+defects (a virtualized-list prepend that does not compensate scroll
+position, and a mobile contacts layout with no control that can ever open
+the contact editor) rather than anything wrong with the test itself.
 """
 
 from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests.e2e.helpers import wait_for_dav_account_active, wait_for_dav_collection
+from tests.setup.dav_helpers import create_addressbook, create_calendar, discover
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
     drag_row_to_folder,
@@ -41,6 +52,8 @@ from tests.setup.containers import (  # isort: skip
     DOVECOT_PASSWORD,
     MAILPIT_ALIAS,
     MAILPIT_SMTP_PORT,
+    RADICALE_ALIAS,
+    RADICALE_PORT,
 )
 
 
@@ -496,9 +509,204 @@ class TestMailActionsUi:
         # checked by name above.
         expect(dialog.get_by_role("button", name="Delete folder")).to_have_count(0)
 
+    def test_arriving_mail_holds_the_list_scroll_position(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Nothing in this suite asserted that a message arriving over IDLE
+        -- which is prepended above whatever the reader currently has in
+        view, not appended below it -- leaves their own scroll position
+        alone. A virtualized list re-rendered naively on every new row
+        could as easily reset to the top or shift the row under the
+        pointer; a batch of throwaway messages here is only to make the
+        list tall enough to actually be scrolled."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        batch = f"scroll batch {uuid.uuid4()}"
+        subjects = [f"{batch} {i:02d}" for i in range(40)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _batch_synced() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        wait_for(_batch_synced, timeout_s=30.0, description="Scroll-test batch synced into INBOX")
+
+        page.goto(app_server)
+        expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
+
+        # Nothing is focused yet, so j/k move the list's own focus/scroll
+        # rather than typing anywhere -- well past whatever the first
+        # screenful already showed, and comfortably short of the batch's
+        # own tail, where nearing the end triggers pagination's own
+        # re-render and would confound this with a second cause.
+        for _ in range(10):
+            page.keyboard.press("j")
+        page.wait_for_timeout(300)
+
+        def _rendered_rows() -> list[dict[str, Any]]:
+            return page.evaluate(
+                "() => Array.from(document.querySelectorAll('[data-testid=\"mail-row\"]'))"
+                ".map((el) => ({id: el.getAttribute('data-mail-id'), "
+                "top: el.getBoundingClientRect().top}))"
+            )
+
+        before = _rendered_rows()
+        assert len(before) >= 3, (
+            "expected the virtualized list to be showing only part of the batch, "
+            f"not all of it at once: {before!r}"
+        )
+        anchor = before[len(before) // 2]
+
+        before_unread = _badge_count(page, inbox_folder["id"])
+        subject = f"Arrived above the fold {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+
+        # The arrival is proven by the live badge count, not by the new
+        # row becoming visible -- it lands above the current scroll
+        # position, so it staying off-screen is the point of this test,
+        # not a sign the arrival was missed.
+        after_unread = before_unread + 1
+        wait_for(
+            lambda: _badge_count(page, inbox_folder["id"]) == after_unread or None,
+            timeout_s=45.0,
+            description=f"INBOX badge rises from {before_unread} to {after_unread}",
+        )
+
+        after = {row["id"]: row["top"] for row in _rendered_rows()}
+        assert anchor["id"] in after, "the row that was in view scrolled away or unmounted"
+        assert abs(after[anchor["id"]] - anchor["top"]) < 2.0, (
+            f"row {anchor['id']} moved from {anchor['top']} to {after[anchor['id']]} "
+            "on the screen -- the list jumped when mail arrived above the viewport"
+        )
+
 
 def _trigger_sync(api_client: httpx.Client, account_id: str) -> None:
     """Force an immediate sync -- a sent or drafted copy otherwise only
     reappears on that folder's next periodic sync."""
     resp = api_client.post(f"/api/accounts/{account_id}/sync")
     assert resp.status_code == 200, resp.text
+
+
+@pytest.fixture(scope="module")
+def phone_radicale_base_url(radicale_endpoint: tuple[str, int]) -> str:
+    host, port = radicale_endpoint
+    return f"http://{host}:{port}/"
+
+
+@pytest.fixture(scope="module")
+def phone_dav_principal(phone_radicale_base_url: str) -> str:
+    username = f"phone-{uuid.uuid4().hex[:8]}"
+    with httpx.Client(auth=(username, "unused"), timeout=10.0) as client:
+        principal = discover(client, phone_radicale_base_url)
+        create_calendar(client, principal, "personal", "Personal")
+        create_addressbook(client, principal, "friends", "Friends")
+    return username
+
+
+@pytest.fixture(scope="module")
+def phone_dav_account(api_client: httpx.Client, phone_dav_principal: str) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/dav-accounts",
+        json={
+            "name": f"Radicale-{uuid.uuid4().hex[:8]}",
+            "discovery_url": f"http://{RADICALE_ALIAS}:{RADICALE_PORT}/",
+            "username": phone_dav_principal,
+            "password": "unused",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    account = resp.json()
+    wait_for_dav_account_active(api_client, account["id"])
+    return account
+
+
+@pytest.fixture(scope="module")
+def phone_calendar_collection(
+    api_client: httpx.Client, phone_dav_account: dict[str, Any],
+) -> dict[str, Any]:
+    return wait_for_dav_collection(api_client, phone_dav_account["id"], "Personal")
+
+
+@pytest.fixture(scope="module")
+def phone_addressbook(
+    api_client: httpx.Client, phone_dav_account: dict[str, Any],
+) -> dict[str, Any]:
+    return wait_for_dav_collection(api_client, phone_dav_account["id"], "Friends")
+
+
+class TestPhoneLayoutUi:
+    """Shares one DAV account holding both a calendar and an address book
+    -- neither test below needs any data in them, only a genuinely synced
+    account, since both regressions are about a control that is missing
+    (or a tap that is mishandled) regardless of what a real mailbox or
+    calendar would otherwise show."""
+
+    def test_contacts_page_has_an_add_control(
+        self, page: Page, app_server: str, phone_addressbook: dict[str, Any],
+    ) -> None:
+        """The regression this guards: ContactsPage's mobile branch
+        rendered ContactList or ContactDetail and nothing else -- the
+        ContactEditor sheet it mounted underneath had no control anywhere
+        on the phone layout that could ever open it."""
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{app_server}/contacts")
+        expect(page.get_by_placeholder("Search contacts")).to_be_visible(timeout=15_000)
+
+        # useIsMobile() starts undefined -- !!undefined is false -- so the
+        # very first render is always the desktop branch, which carries
+        # its own "New contact" button; only the effect that follows
+        # measures window.innerWidth and flips to the mobile branch.
+        # Asserting on the add control before that flip would catch the
+        # desktop layout's own button instead of the mobile one under
+        # test -- wait for the desktop-only header to be gone first.
+        expect(page.get_by_text("Contacts", exact=True)).to_have_count(0, timeout=10_000)
+
+        expect(page.get_by_role("button", name=re.compile("new contact", re.I))).to_be_visible(
+            timeout=10_000
+        )
+
+    def test_month_view_tapping_a_cell_opens_that_day(
+        self, page: Page, app_server: str, phone_calendar_collection: dict[str, Any],
+    ) -> None:
+        """P2's own check: Month shows dots and opens the tapped day. The
+        phone layout only swaps Week for Day (calendar-page.tsx); Month
+        stays the same shared component and handler, so this proves the
+        tap-to-open path itself, not anything phone-specific about it."""
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Month", exact=True).click()
+
+        target = (datetime.now(timezone.utc) + timedelta(days=10)).date()
+        cell = page.locator(f'[data-date="{target.isoformat()}"]')
+        expect(cell).to_be_visible(timeout=15_000)
+        cell.click()
+
+        # date-fns "EEEE, MMMM d, yyyy" -- calendar-toolbar.tsx's own
+        # format for the day view, distinct from month's "MMMM yyyy" and
+        # week's range, so matching it also proves which view opened.
+        expected_title = f"{target.strftime('%A, %B')} {target.day}, {target.year}"
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            expected_title, timeout=10_000,
+        )
