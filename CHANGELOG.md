@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-09-03
+
 ### Fixed
 
 - The month view no longer repeats an event. A recurring occurrence wider than the window slices
