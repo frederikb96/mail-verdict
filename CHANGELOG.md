@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   identity its calendar is linked to, and name the guests before anything is sent
 - The event editor's Calendar and Repeats controls show the calendar's name and the repeat's
   label rather than the raw identifier and the raw RRULE behind them
+- Opening New event before the calendar list has arrived no longer leaves Save disabled for
+  good. The editor read its default calendar out of that query once, in a state initialiser and
+  in an effect keyed on the sheet opening, neither of which runs again when the query resolves
+  afterwards -- so on a slow load the calendar stayed empty with nothing said about why
 - Dragging an event in the day or week grid no longer opens its popover on the values the drag
   has just replaced. Beginning a move captures the pointer on the chip, and a captured pointer
   retargets the click derived from the release back to that chip wherever it ends up, so every

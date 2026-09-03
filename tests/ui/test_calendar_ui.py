@@ -677,6 +677,63 @@ class TestCalendarUi:
         # The popover is what a click opens, and a drag is not a click.
         expect(page.get_by_role("button", name="Edit", exact=True)).to_have_count(0)
 
+    def test_new_event_opened_before_the_calendars_arrive_can_still_be_saved(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the editor read its default calendar
+        out of a query in a state initialiser and in an effect keyed on the
+        sheet opening, neither of which runs again when that query resolves
+        afterwards. Opening New event first left the calendar empty and Save
+        disabled for good, with nothing said about why.
+
+        The calendars response is held open in the page rather than raced
+        against: holding it is the same condition a slow network produces,
+        and it is the only way to be sure the editor really did open first."""
+        # Holds the first calendar list request until the test releases it.
+        page.add_init_script(
+            """
+            (() => {
+              const original = window.fetch;
+              window.__releaseCalendars = null;
+              window.fetch = function (input, init) {
+                const target = typeof input === "string" ? input : input.url;
+                if (/\\/api\\/calendars(\\?|$)/.test(target) && !window.__releaseCalendars) {
+                  return new Promise((resolve, reject) => {
+                    window.__releaseCalendars = () =>
+                      original(input, init).then(resolve, reject);
+                  });
+                }
+                return original(input, init);
+              };
+            })();
+            """
+        )
+
+        summary = f"Late calendars {uuid.uuid4()}"
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("button", name="New event", exact=True).click()
+
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(summary)
+
+        sheet = page.locator('[data-slot="sheet-content"]')
+        save = sheet.get_by_role("button", name="Save", exact=True)
+        expect(save).to_be_disabled()
+        assert page.evaluate("() => !!window.__releaseCalendars"), (
+            "the calendar list was never requested -- nothing was held back"
+        )
+
+        page.evaluate("() => window.__releaseCalendars()")
+
+        expect(save).to_be_enabled(timeout=15_000)
+        save.click()
+        expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+
     def test_manage_calendars_selects_show_labels_not_raw_ids(
         self,
         page: Page,

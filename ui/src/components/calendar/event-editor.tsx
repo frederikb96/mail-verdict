@@ -187,6 +187,18 @@ export function EventEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, event?.object_id, event?.recurrence_id]);
 
+  // The calendar list comes from a query that can resolve after this opens,
+  // and neither the initialiser above nor the reset keyed on `open` runs
+  // again when it does -- so an editor opened first kept an empty calendar,
+  // a permanently disabled Save, and nothing said about why.
+  useEffect(() => {
+    if (!open) return;
+    setCalendarId(
+      (current) => current || event?.calendar_id || defaultCalendarId || writableCalendars[0]?.id || "",
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, calendars]);
+
   const calendar = calendars?.find((c) => c.id === calendarId);
   const readOnly = calendar?.read_only ?? false;
   const isRecurring = mode === "edit" && (event?.is_recurring ?? false);
