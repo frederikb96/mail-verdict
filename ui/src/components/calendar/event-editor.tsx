@@ -113,7 +113,18 @@ function addDaysIso(iso: string, days: number): string {
   return d.toISOString();
 }
 
-function defaultRange(defaultDate?: Date): { start: string; end: string } {
+/** A range dragged out on the grid, in preference to the rounded default
+ * below -- a deliberate act with an obvious intent, silently discarding it
+ * teaches the user the gesture does not work. */
+interface DraggedRange {
+  start: Date;
+  end: Date;
+}
+
+function defaultRange(defaultDate?: Date, dragRange?: DraggedRange): { start: string; end: string } {
+  if (dragRange) {
+    return { start: dragRange.start.toISOString(), end: dragRange.end.toISOString() };
+  }
   const base = defaultDate ? new Date(defaultDate) : new Date();
   base.setMinutes(0, 0, 0);
   base.setHours(base.getHours() + 1);
@@ -125,8 +136,8 @@ function defaultRange(defaultDate?: Date): { start: string; end: string } {
  * *inclusive* last day (what someone picking an end date on a calendar
  * expects), one day short of the exclusive dtend RFC 5545 and the API
  * both store. buildCommonPayload() below does the inverse conversion. */
-function toDisplayRange(event: EventInstance | undefined, defaultDate?: Date) {
-  if (!event) return defaultRange(defaultDate);
+function toDisplayRange(event: EventInstance | undefined, defaultDate?: Date, dragRange?: DraggedRange) {
+  if (!event) return defaultRange(defaultDate, dragRange);
   return { start: event.dtstart, end: event.all_day ? addDaysIso(event.dtend, -1) : event.dtend };
 }
 
@@ -137,6 +148,10 @@ interface EventEditorProps {
   event?: EventInstance;
   defaultCalendarId?: string;
   defaultDate?: Date;
+  /** The exact range a create-by-drag dragged out, preferred over
+   * defaultDate's rounded default when present. Absent for the toolbar's
+   * "New event", which has no dragged range to honour. */
+  dragRange?: DraggedRange;
   onDeleted?: () => void;
 }
 
@@ -147,6 +162,7 @@ export function EventEditor({
   event,
   defaultCalendarId,
   defaultDate,
+  dragRange,
   onDeleted,
 }: EventEditorProps) {
   const { data: calendars } = useCalendars();
@@ -160,7 +176,7 @@ export function EventEditor({
 
   const [summary, setSummary] = useState(event?.summary ?? "");
   const [allDay, setAllDay] = useState(event?.all_day ?? false);
-  const [range, setRange] = useState(() => toDisplayRange(event, defaultDate));
+  const [range, setRange] = useState(() => toDisplayRange(event, defaultDate, dragRange));
   const [calendarId, setCalendarId] = useState(
     event?.calendar_id ?? defaultCalendarId ?? writableCalendars[0]?.id ?? "",
   );
@@ -178,7 +194,7 @@ export function EventEditor({
     if (!open) return;
     setSummary(event?.summary ?? "");
     setAllDay(event?.all_day ?? false);
-    setRange(toDisplayRange(event, defaultDate));
+    setRange(toDisplayRange(event, defaultDate, dragRange));
     setCalendarId(event?.calendar_id ?? defaultCalendarId ?? writableCalendars[0]?.id ?? "");
     setLocation(event?.location ?? "");
     setDescription(event?.description ?? "");

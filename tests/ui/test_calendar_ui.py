@@ -371,6 +371,41 @@ class TestCalendarUi:
 
         wait_for(_created, description="Event created via the drag-opened editor")
 
+    def test_create_by_drag_prefills_the_dragged_range_not_a_rounded_hour(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the grid computed the real dragged
+        start and length, then discarded both and passed only the bare date
+        onward -- so the editor's default range rounded unconditionally to
+        the next full hour with a fixed one-hour length regardless of what
+        was actually dragged. A drag from 3am to 5am must open the editor
+        at 3am to 5am, not 4am to 5am."""
+        page.goto(f"{app_server}/calendar")
+        next_button = page.get_by_role("button", name="Next", exact=True)
+        for _ in range(5):
+            next_button.click()
+
+        page.evaluate(
+            "document.querySelector('[data-testid=\"time-grid-scroll\"]').scrollTop = 0"
+        )
+        column = page.locator("[data-grid-surface]").first
+        expect(column).to_be_visible(timeout=10_000)
+        date_str = column.get_attribute("data-date")
+        assert date_str is not None
+
+        box = column.bounding_box()
+        assert box is not None
+        x = box["x"] + box["width"] / 2
+        start_y = box["y"] + 3 * _HOUR_HEIGHT_PX
+        drag_by_pixels(page, x, start_y, x, start_y + 2 * _HOUR_HEIGHT_PX)
+
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=10_000)
+
+        starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
+        assert starts_input.input_value() == f"{date_str}T03:00"
+        assert ends_input.input_value() == f"{date_str}T05:00"
+
     def test_creating_a_timed_event_binds_the_browsers_own_timezone(
         self,
         page: Page,

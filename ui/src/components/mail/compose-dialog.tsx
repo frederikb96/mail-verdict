@@ -74,7 +74,12 @@ export function ComposeDialog() {
             onValueChange={(value) => setAccountId(value ?? undefined)}
           >
             <SelectTrigger className="h-8">
-              <SelectValue placeholder="From account" />
+              {/* The underlying control only resolves a label itself when
+                  given an item list, which nothing here passes -- without
+                  this it renders the account's raw id. */}
+              <SelectValue placeholder="From account">
+                {(v: string) => accounts?.find((a) => a.id === v)?.name ?? "From account"}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {accounts.map((a) => (
