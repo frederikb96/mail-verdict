@@ -167,7 +167,7 @@ class CircuitBreaker:
                 {"name": self._name, "reason": reason, "probe_interval": probe_interval},
             )
         logger.warning(
-            "Circuit breaker suspended", extra={"name": self._name, "reason": reason},
+            "Circuit breaker suspended", extra={"breaker": self._name, "reason": reason},
         )
 
     async def try_probe(self, *, probe_interval: timedelta) -> bool:

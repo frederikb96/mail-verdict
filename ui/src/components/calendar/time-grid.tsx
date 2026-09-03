@@ -45,9 +45,9 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
     end: string;
     original: EventInstance | undefined;
   } | null>(null);
-  const [createDefaults, setCreateDefaults] = useState<{ date: Date; calendarId: string } | null>(
-    null,
-  );
+  const [createDefaults, setCreateDefaults] = useState<
+    { start: Date; end: Date; calendarId: string } | null
+  >(null);
 
   const days = useMemo(() => {
     if (dayCount === 1) return [anchor];
@@ -163,6 +163,8 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
       const day = days[ghost.column];
       const start = new Date(day);
       start.setHours(0, ghost.startMin, 0, 0);
+      const end = new Date(day);
+      end.setHours(0, ghost.endMin, 0, 0);
       const defaultCalendar = calendars?.find((c) => !c.read_only);
       if (!defaultCalendar) {
         pushToast("Add a calendar before creating events", "warning");
@@ -170,7 +172,7 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
       }
       // Nothing is created here -- the editor opens prefilled and the user
       // still has to press Save, same as the toolbar's New event button.
-      setCreateDefaults({ date: start, calendarId: defaultCalendar.id });
+      setCreateDefaults({ start, end, calendarId: defaultCalendar.id });
     },
   });
 
@@ -337,7 +339,8 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
           if (!open) setCreateDefaults(null);
         }}
         mode="create"
-        defaultDate={createDefaults?.date}
+        defaultDate={createDefaults?.start}
+        dragRange={createDefaults ?? undefined}
         defaultCalendarId={createDefaults?.calendarId}
       />
     </div>

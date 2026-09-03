@@ -5,6 +5,7 @@ window, suspends on an auth failure and only clears via a probe.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import timedelta
 
@@ -145,3 +146,38 @@ class TestSuspension:
         may_probe = await breaker.try_probe(probe_interval=timedelta(seconds=60))
 
         assert may_probe is False
+
+
+class TestSuspensionLogging:
+    @pytest.mark.asyncio
+    async def test_suspending_logs_rather_than_crashing_the_caller(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The suspension log line's `extra` dict must not collide with a
+        reserved LogRecord attribute -- `name` does, and the module logger
+        must actually be enabled to prove it: alembic's env.py calls
+        fileConfig() while migrated_db runs migrations, and
+        fileConfig()'s default disable_existing_loggers=True sets
+        `.disabled = True` on this module's logger, which otherwise masks
+        the crash by skipping the log call entirely."""
+        records: list[logging.LogRecord] = []
+
+        class _CollectingHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        handler = _CollectingHandler()
+        circuit_logger = logging.getLogger("mail_verdict.queue.circuit")
+        circuit_logger.addHandler(handler)
+        was_disabled = circuit_logger.disabled
+        circuit_logger.disabled = False
+        try:
+            breaker = CircuitBreaker(migrated_db, _name())
+            await breaker.record_unavailable(
+                reason="401: invalid api key", probe_interval=timedelta(seconds=60),
+            )
+        finally:
+            circuit_logger.removeHandler(handler)
+            circuit_logger.disabled = was_disabled
+
+        assert any("Circuit breaker suspended" in r.getMessage() for r in records)

@@ -239,6 +239,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Manage folders no longer offers Delete on a special-use folder (Sent, Trash, Junk, Drafts) --
   only INBOX, absent from that list entirely, was ever protected there; the rest showed the
   same destructive control and confirmation as any folder created by hand
+- Dragging out a time range in the day or week grid now opens the editor prefilled with that
+  exact range instead of a fixed one-hour block rounded to the next full hour. The grid computed
+  the real dragged start and length, then passed only the bare date onward, discarding both
+  before the editor ever saw them
+- The compose dialog's From select now shows the account's name instead of its raw id, once more
+  than one account exists -- the same one-line cause and fix as the other rendered-a-raw-value
+  defects already listed here, only visible with two or more accounts, which every fixture up to
+  now had only ever seeded one of
+- A provider outage no longer crashes the worker that was supposed to contain it. The circuit
+  breaker's own suspension log passed a field named `name`, which collides with a reserved
+  attribute the logging module already sets on every record -- so the log call itself raised and
+  took the calling worker down, every time a provider became unavailable
 
 ### Security
 
