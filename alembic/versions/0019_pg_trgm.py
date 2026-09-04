@@ -11,8 +11,8 @@ This only registers the extension. It does not index anything -- the
 `messages` table this powers fuzzy search over is PostIMAP's, not
 MailVerdict's, so an index there is not this migration's call to make.
 
-Revision ID: 0018_pg_trgm
-Revises: 0017_heal_stranded_intake
+Revision ID: 0019_pg_trgm
+Revises: 0018_calendar_prefs_enabled
 Create Date: 2026-09-04
 """
 
@@ -23,8 +23,8 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import op
 
-revision = "0018_pg_trgm"
-down_revision = "0017_heal_stranded_intake"
+revision = "0019_pg_trgm"
+down_revision = "0018_calendar_prefs_enabled"
 branch_labels = None
 depends_on = None
 
