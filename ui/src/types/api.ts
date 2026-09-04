@@ -713,7 +713,12 @@ export interface Calendar {
   color: string;
   /** A per-user override; when set, this is what every surface renders. */
   color_override: string | null;
+  /** Whether this calendar's events are drawn right now -- the sidebar's
+   * own per-view checkbox. Meaningless while is_enabled is false. */
   is_visible: boolean;
+  /** Whether this calendar is offered at all: the sidebar list, the
+   * event editor's Calendar picker. Set only from the manage dialog. */
+  is_enabled: boolean;
   read_only: boolean;
   /** The identity invitations addressed to it are attributed to and replied from. */
   identity_id: string | null;
@@ -734,6 +739,7 @@ export interface CalendarUpdateRequest {
   display_name?: string;
   color_override?: string | null;
   is_visible?: boolean;
+  is_enabled?: boolean;
   identity_id?: string | null;
   intake?: CalendarIntake;
 }

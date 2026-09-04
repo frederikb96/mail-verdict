@@ -33,6 +33,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Expanding every visible calendar's recurring series is also run off the event loop, so a slow
   month view no longer starves every other request sharing the process — including the
   liveness check, which is what pulled the pod out of service
+- Unchecking a calendar in the sidebar actually hides its events now, and checking one shows
+  them again immediately. The checkbox itself already wrote the change; nothing told the events
+  query to refetch under the new visibility, so the previously-cached month kept rendering as if
+  nothing had happened
+- The sidebar's calendar checkbox is tinted with the calendar's own colour rather than always
+  the theme's primary colour — it renders as a plain button, not a native input, so `accent-color`
+  never had any effect on it
+- The manage-calendars dialog is a compact list instead of every calendar permanently showing
+  all twelve palette colours as a row of swatches, which pushed the name into an ellipsis and
+  forced the dialog to scroll sideways as well as down. Each calendar now has a single colour
+  swatch that opens the palette in a popover
+- A calendar can now be hidden from the sidebar and the event editor entirely (in the manage
+  dialog), independent of the sidebar's own per-view visibility checkbox — two levels rather
+  than one flag serving both
 
 ## [3.1.1] - 2026-09-03
 

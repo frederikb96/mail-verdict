@@ -197,7 +197,13 @@ export function EventEditor({
   const deleteEvent = useDeleteEvent();
   const { push: pushToast } = useToast();
 
-  const writableCalendars = (calendars ?? []).filter((c) => !c.read_only);
+  // Offering a disabled calendar here would let an event land somewhere
+  // that just vanished from the sidebar the manage dialog hid it from.
+  // An event already saved to one (disabled after the fact) is exempted
+  // below, so editing it doesn't silently move it to another calendar.
+  const writableCalendars = (calendars ?? []).filter(
+    (c) => !c.read_only && (c.is_enabled || c.id === event?.calendar_id),
+  );
 
   const [summary, setSummary] = useState(event?.summary ?? "");
   const [allDay, setAllDay] = useState(event?.all_day ?? false);

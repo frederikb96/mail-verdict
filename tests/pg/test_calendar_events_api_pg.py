@@ -26,6 +26,7 @@ from mail_verdict.postimap.actions import create_object
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
 
+
 # Shaped like what a real CalDAV server (Nextcloud, or an Outlook
 # invitation) actually emits for a timezone-bound recurring series: a
 # VTIMEZONE component, an RRULE narrowed by an EXDATE, an RDATE adding an
@@ -258,6 +259,68 @@ class TestCreateAndList:
         with patch(_TARGET, return_value=migrated_db):
             resp = client.get(f"/calendar/events/{uuid.uuid4()}")
         assert resp.status_code == 404
+
+
+class TestVisibilityFiltering:
+    """The two independent levels a calendar can be hidden by: is_visible
+    (the sidebar's per-view checkbox) and is_enabled (the manage dialog's
+    own "offered at all" level). Either one off must remove the calendar's
+    events from the default (no `calendars` param) list -- the sidebar
+    checkbox writing is_visible with nothing reading that write back was
+    exactly the defect that made the toggle look inert."""
+
+    def test_is_visible_false_hides_a_calendars_events_from_the_default_list(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db), \
+             patch(_CALENDARS_TARGET, return_value=migrated_db):
+            client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Toggled off",
+                    "dtstart": "2026-09-10T10:00:00+00:00", "dtend": "2026-09-10T11:00:00+00:00",
+                },
+            )
+            before = client.get("/calendar/events", params={"month": "2026-09"})
+            assert "Toggled off" in [e["summary"] for e in before.json()["events"]]
+
+            patched = client.patch(f"/calendars/{calendar_id}", json={"is_visible": False})
+            assert patched.status_code == 200, patched.text
+
+            after = client.get("/calendar/events", params={"month": "2026-09"})
+            assert "Toggled off" not in [e["summary"] for e in after.json()["events"]]
+
+            # Naming the calendar explicitly still bypasses both levels --
+            # the same escape hatch the event editor's own calendar field
+            # already relies on for is_visible.
+            explicit = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+        assert "Toggled off" in [e["summary"] for e in explicit.json()["events"]]
+
+    def test_is_enabled_false_hides_a_calendars_events_from_the_default_list(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db), \
+             patch(_CALENDARS_TARGET, return_value=migrated_db):
+            client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Disabled calendar",
+                    "dtstart": "2026-09-11T10:00:00+00:00", "dtend": "2026-09-11T11:00:00+00:00",
+                },
+            )
+            # is_visible stays true -- only is_enabled goes off, proving the
+            # two levels are independent rather than one flag doing both.
+            patched = client.patch(f"/calendars/{calendar_id}", json={"is_enabled": False})
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["is_visible"] is True
+            assert patched.json()["is_enabled"] is False
+
+            after = client.get("/calendar/events", params={"month": "2026-09"})
+        assert "Disabled calendar" not in [e["summary"] for e in after.json()["events"]]
 
 
 class TestRruleField:

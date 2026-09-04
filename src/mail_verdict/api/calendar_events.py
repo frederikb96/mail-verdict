@@ -263,7 +263,15 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
         if requested_ids is not None and collection.id not in requested_ids:
             continue
         prefs = all_prefs.get(collection.id)
-        if requested_ids is None and prefs is not None and not prefs.is_visible:
+        # is_enabled gates whether the calendar is offered at all (the
+        # sidebar list, the event editor's picker); is_visible is the
+        # separate per-view toggle over an offered calendar. Either one
+        # off means this calendar's events are absent from the month
+        # view -- an explicit `calendars` param (opened directly, e.g.
+        # from the editor's own calendar field) still bypasses both, the
+        # same way it already bypassed is_visible.
+        hidden = prefs is not None and (not prefs.is_visible or not prefs.is_enabled)
+        if requested_ids is None and hidden:
             continue
         candidates.append((collection, prefs))
 

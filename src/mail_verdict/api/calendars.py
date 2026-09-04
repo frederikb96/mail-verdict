@@ -93,6 +93,7 @@ def _to_response(
         color=collection.color or "",
         color_override=prefs.color_override if prefs else None,
         is_visible=prefs.is_visible if prefs else True,
+        is_enabled=prefs.is_enabled if prefs else True,
         read_only=collection.read_only,
         identity_id=prefs.identity_id if prefs else None,
         intake=_intake_state(prefs),
@@ -160,6 +161,8 @@ async def update_calendar(
         prefs_fields["color_override"] = values["color_override"]
     if "is_visible" in values:
         prefs_fields["is_visible"] = values["is_visible"]
+    if "is_enabled" in values:
+        prefs_fields["is_enabled"] = values["is_enabled"]
     if "identity_id" in values:
         prefs_fields["identity_id"] = values["identity_id"]
     if "intake" in values:
