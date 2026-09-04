@@ -58,8 +58,10 @@ import type {
   QueuePatchRequest,
   QueueResponse,
   RespondRequest,
+  SearchField,
   SearchResponse,
   SelectionSnapshotResponse,
+  SemanticSearchResponse,
   StageCreateRequest,
   StageTypeOut,
   StageUpdateRequest,
@@ -109,17 +111,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-function qs(
-  params: Record<string, string | number | boolean | undefined | null>,
-): string {
-  const entries = Object.entries(params).filter(
-    ([, v]) => v !== undefined && v !== null && v !== "",
-  );
-  if (entries.length === 0) return "";
-  return (
-    "?" +
-    new URLSearchParams(entries.map(([k, v]) => [k, String(v)])).toString()
-  );
+type QsValue = string | number | boolean | undefined | null | string[];
+
+function qs(params: Record<string, QsValue>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+    if (Array.isArray(value)) {
+      // Repeated keys, e.g. folder_ids=a&folder_ids=b -- FastAPI's
+      // list[...] Query param expects exactly this shape, not one
+      // comma-joined value.
+      for (const item of value) search.append(key, item);
+    } else {
+      search.append(key, String(value));
+    }
+  }
+  const result = search.toString();
+  return result ? `?${result}` : "";
 }
 
 export const api = {
@@ -349,8 +357,23 @@ export const api = {
   },
 
   search: {
-    query(params: { q: string; account_id?: string }): Promise<SearchResponse> {
+    query(params: {
+      q: string;
+      account_id?: string;
+      folder_ids?: string[];
+      fields?: SearchField[];
+      before?: string;
+      limit?: number;
+    }): Promise<SearchResponse> {
       return request(`/search${qs(params)}`);
+    },
+    semantic(params: {
+      q: string;
+      account_id?: string;
+      folder_ids?: string[];
+      limit?: number;
+    }): Promise<SemanticSearchResponse> {
+      return request(`/embeddings/search${qs(params)}`);
     },
   },
 

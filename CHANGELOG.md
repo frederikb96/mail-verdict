@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Search can be scoped to exactly the folders and fields you mean, and remembers the choice.
+  Opening it offers a folder picker (every folder selected by default, with select-all/deselect-
+  all) and toggles for subject/from/to/body -- both enforced by the query itself, not filtered
+  afterward, so a scoped search stays scoped across every page. Matching is fuzzy rather than a
+  plain substring test (a typo still finds the message; pg_trgm's `word_similarity`, left out for
+  an `@` token since two unrelated addresses sharing a domain score higher on it than a genuine
+  typo does), results are always newest first with no sort control, and the list virtualizes and
+  pages as you scroll rather than loading a mailbox's worth of results up front. A switch turns on
+  semantic search instead -- the folder picker stays, the field toggles disappear, since there's
+  one embedding per message and nothing to scope by field
 - The compose dialog, reply box and draft editor share a rich-text editor: a small toolbar plus
   Markdown input rules, so typing `# ` makes a heading and `**bold**` makes bold while typing.
   Pasted formatted content keeps its formatting instead of arriving as literal HTML source, and a

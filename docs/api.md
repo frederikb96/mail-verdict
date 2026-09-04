@@ -170,11 +170,13 @@ agent editing at the same time, most notably. Omit it to write unconditionally.
 curl 'localhost:8080/api/embeddings/search?q=that+invoice+about+the+conference+trip&limit=10'
 ```
 
-Complements `GET /api/search` (literal full-text) rather than replacing it — semantic search wins
-on a half-remembered topic with none of the same words, full-text wins on a known sender or an
-exact phrase. Coverage is never assumed complete: `GET /api/embeddings/status` reports what
-fraction of in-scope mail has a current-model embedding, and `POST /api/embeddings/backfill`
-enqueues whatever is missing rather than waiting out the periodic reconciler.
+Complements `GET /api/search` (fuzzy, field-scoped text matching, newest first, cursor-paginated
+with `folder_ids`/`fields`/`before`) rather than replacing it — semantic search wins on a
+half-remembered topic with none of the same words, full-text wins on a known sender or an exact
+phrase; both accept `folder_ids` to scope to a set of folders, enforced in the query itself.
+Coverage is never assumed complete: `GET /api/embeddings/status` reports what fraction of in-scope
+mail has a current-model embedding, and `POST /api/embeddings/backfill` enqueues whatever is
+missing rather than waiting out the periodic reconciler.
 
 ## Endpoint groups
 
@@ -193,7 +195,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Folders | `/accounts/{id}/folders`, `/folders/{id}` | Create and delete a folder, folder display prefs, custom ordering — see [known limitations](../README.md#known-limitations-deliberately) for what folder management deliberately does not do. Deletion is irreversible and destroys every message in the folder on the server, so `DELETE /folders/{id}` requires a `confirm_message_count` query parameter matching the folder's current message count; a call without it (or with a stale count) is a `409` naming the actual count rather than a deletion |
 | Messages | `/accounts/{id}/messages`, `/messages/{id}` | Cursor-paginated list (optionally threaded, each row carrying `mirrored_at`), detail, thread, attachment streaming, `.eml` download, single and bulk actions. `GET /{id}/quote` returns the message's raw body as safe-to-send HTML, for embedding as a reply or forward quote, or for reopening a saved draft. `GET /accounts/{id}/messages/selection` mints a "select all matching" snapshot (`snapshot_at`, `count`) for a folder/filter, from one statement so the two can't disagree; `POST .../bulk-action`'s `scope` then carries that `snapshot_at` back (required) so mail mirrored after the snapshot is excluded from the action, and `ids`/`scope` may be named together — the union of an explicit list and a predicate |
 | Outbox | `/outbox` | Send, save or edit a draft (JSON or multipart with attachments); list outbox rows for send/draft status. `identity_id` picks which of the account's identities to send as, falling back to its default identity and then to `accounts.imap_user`. `body_html`, when set, is sanitised to a small mail-safe vocabulary before it reaches the row, and requires `body_text` alongside it -- nothing derives a plain-text alternative from HTML on a producer's behalf |
-| Search | `/search`, `/embeddings/search` | Full-text and semantic search, respectively |
+| Search | `/search`, `/embeddings/search` | Fuzzy field-scoped text search, cursor-paginated, and semantic search, respectively — both scopeable to a set of folders |
 | Verdicts | `/verdicts`, `/mails/{id}/verdict`, `/mails/{id}/feedback` | Spam verdict history and the user-correction feedback loop |
 | Pipeline | `/pipeline` | Read/replace the whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |
 | Pipeline runs | `/runs`, `/mails/{id}/runs` | Per-message pipeline execution history and trace — "why did this message get that treatment"; retry a failed run |

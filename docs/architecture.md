@@ -223,9 +223,12 @@ spaces in one index; old rows are kept, not deleted, until the new coverage comp
 
 Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and orders
 messages by cosine distance, joined back to `messages` at read time — never a denormalised copy of
-anything that changes, matching the no-foreign-key posture above. It complements full-text search
-rather than replacing it: literal search wins on a known sender or an exact phrase, semantic search
-wins on a half-remembered topic with none of the same words.
+anything that changes, matching the no-foreign-key posture above. It complements the fuzzy,
+field-scoped text search at `GET /api/search` rather than replacing it: text search wins on a known
+sender or an exact phrase, semantic search wins on a half-remembered topic with none of the same
+words. Both accept `folder_ids`, enforced in the query itself rather than filtered afterward — a
+caller filtering the response instead would silently turn a scoped search into an unscoped one
+with a smaller page.
 
 ### Neighbour hints, and why the classifier's own verdicts never feed them
 
