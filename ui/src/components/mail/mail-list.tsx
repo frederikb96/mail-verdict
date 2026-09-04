@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue } from "jotai";
 import { Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
@@ -57,6 +57,29 @@ function countPrepended(prevIds: string[], nextIds: string[]): number {
   return anchor;
 }
 
+/** The id still present in both lists nearest to `fromIndex` in `prevIds`,
+ * searched outward in both directions -- used when the row that sat at
+ * the reader's anchor point is itself the one that moved out from under
+ * them, so there is nothing to correct against directly. */
+function nearestSurvivor(
+  prevIds: string[],
+  fromIndex: number,
+  nextIdSet: Set<string>,
+): { id: string; index: number } | null {
+  const clamped = Math.max(0, Math.min(fromIndex, prevIds.length - 1));
+  for (let d = 0; d < prevIds.length; d++) {
+    const before = clamped - d;
+    if (before >= 0 && nextIdSet.has(prevIds[before])) {
+      return { id: prevIds[before], index: before };
+    }
+    const after = clamped + d;
+    if (d > 0 && after < prevIds.length && nextIdSet.has(prevIds[after])) {
+      return { id: prevIds[after], index: after };
+    }
+  }
+  return null;
+}
+
 export function MailList() {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const folderId = useAtomValue(selectedFolderIdAtom);
@@ -103,22 +126,62 @@ export function MailList() {
     return map;
   }, [allMails]);
 
-  // Mail arriving above a scrolled-away reader must not move a single row
-  // on screen. `shift` is virtua's own mechanism for exactly this -- it
-  // realigns its measured-height cache to the new indices and compensates
-  // scrollOffset by the real delta once the new rows are measured, rather
-  // than a guessed pixel count. It only applies for the render where the
-  // prepend actually lands: an append (older mail paged in at the tail)
-  // must never see it, or the cache misaligns the other way.
+  // Nothing above the reader may move a single row on screen, whatever
+  // caused the row count above them to change -- mail arriving at the top,
+  // or a message (a classification run, a rule, a drag) leaving the folder
+  // from somewhere in the middle. Two mechanisms, gated so exactly one
+  // runs per change:
+  //
+  // - A real prepend hands off to `shift`, virtua's own mechanism for it --
+  //   it realigns its measured-height cache to the new indices and
+  //   compensates scrollOffset by the real delta once the new rows are
+  //   measured, which a pixel read taken here could not do for content
+  //   that has never been laid out.
+  // - Anything else reads the viewport's own anchor row before the change
+  //   commits, then in a layout effect after it corrects scrollOffset by
+  //   exactly how far that same row's measured position moved -- the same
+  //   snapshot-before/correct-after shape the scrolling skill uses for a
+  //   prepend, generalised to a change anywhere above the reader rather
+  //   than only at the top.
   const prevDataRef = useRef(data);
   const prevMailIdsRef = useRef<string[]>([]);
   const [shiftForPrepend, setShiftForPrepend] = useState(false);
+  const pendingScrollCorrectionRef = useRef<{
+    anchorId: string;
+    oldOffset: number;
+    oldScrollOffset: number;
+  } | null>(null);
   if (data !== prevDataRef.current) {
-    const isPrepend = countPrepended(prevMailIdsRef.current, allMailIds) > 0;
+    const prevIds = prevMailIdsRef.current;
+    const isPrepend = countPrepended(prevIds, allMailIds) > 0;
+    const handle = vlistRef.current;
+    if (!isPrepend && handle && prevIds.length > 0) {
+      const oldScrollOffset = handle.scrollOffset;
+      const oldAnchorIndex = handle.findItemIndex(oldScrollOffset);
+      const survivor = nearestSurvivor(prevIds, oldAnchorIndex, new Set(allMailIds));
+      if (survivor) {
+        pendingScrollCorrectionRef.current = {
+          anchorId: survivor.id,
+          oldOffset: handle.getItemOffset(survivor.index),
+          oldScrollOffset,
+        };
+      }
+    }
     prevDataRef.current = data;
     prevMailIdsRef.current = allMailIds;
     if (isPrepend !== shiftForPrepend) setShiftForPrepend(isPrepend);
   }
+
+  useLayoutEffect(() => {
+    const correction = pendingScrollCorrectionRef.current;
+    pendingScrollCorrectionRef.current = null;
+    const handle = vlistRef.current;
+    if (!correction || !handle) return;
+    const newIndex = allMailIds.indexOf(correction.anchorId);
+    if (newIndex < 0) return;
+    const delta = handle.getItemOffset(newIndex) - correction.oldOffset;
+    if (delta !== 0) handle.scrollTo(correction.oldScrollOffset + delta);
+  }, [allMailIds]);
 
   const scrollToIndex = useCallback(
     (index: number) => {

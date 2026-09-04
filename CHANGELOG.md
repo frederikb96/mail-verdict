@@ -97,6 +97,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The mail list holds the reader's scroll position when a message leaves the folder from
+  somewhere above them (a classification run, a rule, a drag) while they are scrolled deep in --
+  previously only mail arriving at the very top was compensated, so any other row count change
+  above the reader tugged the view by roughly one row
 - A bulk action spanning accounts in the unified view now acts on every account the selection
   touches, not silently on whichever one the interface happened to have selected
 - An SSE-driven mail list refresh patches the affected row(s) directly instead of invalidating

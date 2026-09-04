@@ -92,6 +92,20 @@ async def seed_large_mailbox_account(
     return account_id, folder_id
 
 
+async def seed_extra_folder(
+    session: AsyncSession, account_id: uuid.UUID, *, imap_name: str,
+) -> uuid.UUID:
+    """Add one more bare folder to an account already seeded above -- the
+    move target for anything that needs to relocate a message out of the
+    account's main folder rather than only ever adding to it."""
+    folder_id = uuid.uuid4()
+    await session.execute(
+        text("INSERT INTO folders (id, account_id, imap_name) VALUES (:id, :account_id, :name)"),
+        {"id": folder_id, "account_id": account_id, "name": imap_name},
+    )
+    return folder_id
+
+
 async def seed_large_mailbox(
     session: AsyncSession,
     account_id: uuid.UUID,
