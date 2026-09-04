@@ -1040,6 +1040,82 @@ class TestMailActionsUi:
             "controls should float over the row, not push its content aside"
         )
 
+    def test_threaded_row_controls_name_their_scope(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A row action in threaded mode acts on the thread's latest
+        message only -- pre-existing, and not something this lane
+        changes -- so its controls say so rather than leaving the scope
+        for the user to guess at."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        # "Group by conversation" defaults on, so this is already threaded.
+        expect(page.get_by_role("switch", name="Group by conversation")).to_be_checked()
+        expect(row.get_by_title("Archive (latest message in thread)")).to_have_count(1)
+        expect(row.get_by_title("Move to trash (latest message in thread)")).to_have_count(1)
+
+        page.get_by_role("switch", name="Group by conversation").click()
+        expect(row.get_by_title("Archive", exact=True)).to_have_count(1)
+        expect(row.get_by_title("Archive (latest message in thread)")).to_have_count(0)
+
+    def test_selection_banner_offers_to_select_the_whole_folder(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The banner names the current count and offers to extend the
+        selection to the whole folder -- Outlook's own pattern, which is
+        what this is built to match. The folder here is small enough
+        that everything loads in one page, so this goes through the
+        always-available Select menu rather than the banner's own
+        auto-surfaced offer, which only appears once the folder holds
+        more than what is currently loaded."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+        folder_total = api_client.get(
+            f"/api/accounts/{ui_account['id']}/folders",
+        ).json()
+        inbox_total = next(
+            f["total_count"] for f in folder_total if f["id"] == inbox_folder["id"]
+        )
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Select", exact=True).click()
+        page.get_by_role("menuitem", name="Every message in this folder", exact=True).click()
+
+        expect(page.get_by_text(f"{inbox_total} selected", exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
 
 def _channels(colour: str) -> list[float]:
     """The three channels of a computed `rgb(...)` / `rgba(...)` value."""
