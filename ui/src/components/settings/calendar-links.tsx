@@ -1,28 +1,148 @@
 "use client";
 
 /**
- * The identity-to-calendar mapping: one row per identity, a column of
- * calendar checkboxes, and a radio for which checked calendar receives
- * invitations addressed to that identity. Dirty-tracked and saved like
- * `CategorySettings` on this same page; a `PUT` names `base_revision` so a
- * conflicting concurrent edit is rejected rather than silently overwritten.
+ * The identity-to-calendar mapping: one row per identity, a chip-based
+ * multi-select of the calendars it can import invitations into, and a
+ * dropdown for which one of those receives new invitations by default.
+ * Grouped by the mail account the identity belongs to. Dirty-tracked and
+ * saved like `CategorySettings` on this same page; a `PUT` names
+ * `base_revision` so a conflicting concurrent edit is rejected rather than
+ * silently overwritten.
+ *
+ * A column-per-calendar table was the previous shape here -- it worked for
+ * a handful of calendars and became wider than the screen well before
+ * thirty. A chip picker scales with however many are actually linked to an
+ * identity, not with how many exist.
  */
 
 import { useEffect, useState } from "react";
 import { Code, Loader2, Save, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Combobox,
+  ComboboxChip,
+  ComboboxChipRemove,
+  ComboboxChips,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+} from "@/components/ui/combobox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { useAccounts } from "@/hooks/use-accounts";
 import { useCalendarLinks, useCalendars, useUpdateCalendarLinks } from "@/hooks/use-calendars";
 import { useToast } from "@/hooks/use-toast";
 import { resolveCalendarColor } from "@/components/calendar/colors";
-import type { CalendarLinkRow } from "@/types/api";
+import { cn } from "@/lib/utils";
+import type { Calendar, CalendarLinkRow } from "@/types/api";
+
+function CalendarDot({ calendar }: { calendar: Calendar }) {
+  return (
+    <span
+      className="h-2 w-2 shrink-0 rounded-full"
+      style={{ background: resolveCalendarColor(calendar) }}
+    />
+  );
+}
+
+function IdentityLinkRow({
+  row,
+  calendars,
+  pickableCalendars,
+  invalid,
+  onCalendarIdsChange,
+  onReceivingChange,
+}: {
+  row: CalendarLinkRow;
+  calendars: Calendar[];
+  pickableCalendars: Calendar[];
+  invalid: boolean;
+  onCalendarIdsChange: (calendarIds: string[]) => void;
+  onReceivingChange: (calendarId: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const selected = calendars.filter((c) => row.calendar_ids.includes(c.id));
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-1.5 rounded-md border p-2",
+        invalid && "border-destructive bg-destructive/10",
+      )}
+    >
+      <span className="truncate text-sm font-medium">{row.identity_address}</span>
+
+      <Combobox
+        multiple
+        items={pickableCalendars.map((c) => c.id)}
+        value={row.calendar_ids}
+        onValueChange={(next) => onCalendarIdsChange(next as string[])}
+        inputValue={query}
+        onInputValueChange={setQuery}
+        itemToStringLabel={(id) => calendars.find((c) => c.id === id)?.display_name ?? id}
+      >
+        <ComboboxChips>
+          {selected.map((c) => (
+            <ComboboxChip key={c.id}>
+              <CalendarDot calendar={c} />
+              {c.display_name}
+              <ComboboxChipRemove
+                onClick={() => onCalendarIdsChange(row.calendar_ids.filter((id) => id !== c.id))}
+              />
+            </ComboboxChip>
+          ))}
+          <ComboboxInput placeholder={selected.length === 0 ? "Link a calendar..." : undefined} />
+        </ComboboxChips>
+        <ComboboxContent>
+          <ComboboxEmpty>No matching calendar</ComboboxEmpty>
+          {pickableCalendars.map((c, index) => (
+            <ComboboxItem key={c.id} value={c.id} index={index}>
+              <CalendarDot calendar={c} />
+              {c.display_name}
+            </ComboboxItem>
+          ))}
+        </ComboboxContent>
+      </Combobox>
+
+      <Select
+        value={row.receives_invitations_calendar_id ?? ""}
+        onValueChange={(v) => v && onReceivingChange(v)}
+        disabled={selected.length === 0}
+      >
+        <SelectTrigger size="sm" className="w-full">
+          <SelectValue>
+            {(v: string) =>
+              selected.length === 0
+                ? "No calendar linked yet"
+                : (selected.find((c) => c.id === v)?.display_name ?? "Which one receives invitations?")
+            }
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {selected.map((c) => (
+            <SelectItem key={c.id} value={c.id}>
+              {c.display_name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
 
 export function CalendarLinksCard() {
   const { data: links, isLoading } = useCalendarLinks();
   const { data: calendars } = useCalendars();
+  const { data: accounts } = useAccounts();
   const updateLinks = useUpdateCalendarLinks();
   const { push: pushToast } = useToast();
 
@@ -68,19 +188,22 @@ export function CalendarLinksCard() {
     );
   }
 
-  const toggleCalendar = (identityId: string, calendarId: string, checked: boolean) => {
+  const allCalendars = calendars ?? [];
+  // A read-only calendar can't take a new event, so it was never a valid
+  // choice here -- excluded from what the picker offers rather than shown
+  // and then rejected on save.
+  const pickableCalendars = allCalendars.filter((c) => !c.read_only);
+
+  const setCalendarIds = (identityId: string, calendarIds: string[]) => {
     setRows((prev) =>
       prev.map((r) => {
         if (r.identity_id !== identityId) return r;
-        const calendar_ids = checked
-          ? Array.from(new Set([...r.calendar_ids, calendarId]))
-          : r.calendar_ids.filter((id) => id !== calendarId);
-        const receives_invitations_calendar_id = calendar_ids.includes(
+        const receives_invitations_calendar_id = calendarIds.includes(
           r.receives_invitations_calendar_id ?? "",
         )
           ? r.receives_invitations_calendar_id
-          : (calendar_ids[0] ?? null);
-        return { ...r, calendar_ids, receives_invitations_calendar_id };
+          : (calendarIds[0] ?? null);
+        return { ...r, calendar_ids: calendarIds, receives_invitations_calendar_id };
       }),
     );
     setDirty(true);
@@ -148,69 +271,36 @@ export function CalendarLinksCard() {
           {rawMode ? <Table2 className="h-4 w-4" /> : <Code className="h-4 w-4" />}
         </Button>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3">
+      <CardContent className="flex flex-col gap-4">
         {!rawMode ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
-                  <th className="py-1 pr-2">Identity</th>
-                  {calendars?.map((c) => (
-                    <th key={c.id} className="px-1 py-1 text-center">
-                      <span
-                        className="mx-auto block h-2.5 w-2.5 rounded-full"
-                        style={{ background: resolveCalendarColor(c) }}
-                        title={c.display_name}
-                      />
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {Array.from(groupedByAccount.entries()).flatMap(([, identityRows]) =>
-                  identityRows.map((r) => (
-                    <tr
+          <>
+            {Array.from(groupedByAccount.entries()).map(([accountId, identityRows]) => (
+              <div key={accountId} className="flex flex-col gap-2">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {accounts?.find((a) => a.id === accountId)?.name ?? accountId}
+                </span>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {identityRows.map((r) => (
+                    <IdentityLinkRow
                       key={r.identity_id}
-                      className={
-                        invalidIdentityId === r.identity_id
-                          ? "border-b bg-destructive/10"
-                          : "border-b"
-                      }
-                    >
-                      <td className="py-1.5 pr-2">{r.identity_address}</td>
-                      {calendars?.map((c) => (
-                        <td key={c.id} className="px-1 text-center">
-                          <div className="flex flex-col items-center gap-0.5">
-                            <Checkbox
-                              checked={r.calendar_ids.includes(c.id)}
-                              disabled={c.read_only}
-                              onCheckedChange={(checked) =>
-                                toggleCalendar(r.identity_id, c.id, checked === true)
-                              }
-                            />
-                            {r.calendar_ids.includes(c.id) && (
-                              <input
-                                type="radio"
-                                name={`receiving-${r.identity_id}`}
-                                checked={r.receives_invitations_calendar_id === c.id}
-                                onChange={() => setReceiving(r.identity_id, c.id)}
-                                className="h-3 w-3"
-                                title="Receives invitations"
-                              />
-                            )}
-                          </div>
-                        </td>
-                      ))}
-                    </tr>
-                  )),
-                )}
-              </tbody>
-            </table>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Checkbox links a calendar to the identity; the radio button below it picks which one
-              new invitations import into.
-            </p>
-          </div>
+                      row={r}
+                      calendars={allCalendars}
+                      pickableCalendars={pickableCalendars}
+                      invalid={invalidIdentityId === r.identity_id}
+                      onCalendarIdsChange={(ids) => setCalendarIds(r.identity_id, ids)}
+                      onReceivingChange={(id) => setReceiving(r.identity_id, id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+            {pickableCalendars.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No writable calendar exists yet -- add one through Manage calendars in the
+                calendar sidebar.
+              </p>
+            )}
+          </>
         ) : (
           <div className="flex flex-col gap-1.5">
             <Textarea

@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Save, Loader2, Bot, CalendarDays, ShieldAlert, Repeat, Sun, Moon, Monitor, Workflow } from "lucide-react";
 import Link from "next/link";
+import { Save, Loader2, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,24 +17,43 @@ import { useTheme } from "@/components/theme-provider";
 import { UnifiedOrder } from "@/components/settings/unified-order";
 import { CalendarLinksCard } from "@/components/settings/calendar-links";
 
-// "rules" is not a settings category any more -- a rule is a `match` stage
-// in the pipeline now, edited through the pipeline definition rather than
-// a raw settings JSON blob.
+/**
+ * Settings groups into three things Freddy actually goes looking for,
+ * rather than one long unlabelled scroll of cards: Appearance (how the
+ * interface looks), Mail (cross-account behaviour), Calendar (everything
+ * about invitations and events in one place, where it used to be split
+ * across a raw card above the tabs and a tab below them), and AI &
+ * automation for the categories that are closer to server configuration
+ * than to a setting most people touch day to day.
+ *
+ * Every category the server actually has (`SettingCategory` in
+ * settings/defaults.py) gets a tab here -- "semantic" and "pipeline" had
+ * none before, reachable only by calling the API directly. "spam" is the
+ * opposite case: it has a tab-shaped hole in `CATEGORIES` below, on
+ * purpose, as the comment there explains.
+ */
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
-  { key: "spam", label: "Spam", icon: ShieldAlert },
+  { key: "semantic", label: "Semantic search", icon: Sparkles },
   { key: "retry", label: "Retry", icon: Repeat },
-  { key: "calendar", label: "Calendar", icon: CalendarDays },
+  { key: "pipeline", label: "Pipeline", icon: Workflow },
 ] as const;
 
-// spam.enabled, spam.auto_move_to_junk and spam.auto_mark_read only ever
-// fed the one-time migration that built the pipeline's first revision --
-// classification is now a `classify` stage, and moving/marking spam is a
-// `match` stage the pipeline page edits directly. spam.excerpt_length has
-// no reader left either. Editing any of them here would silently do
-// nothing, which is worse than not offering the control.
-const DEAD_SETTINGS: Record<string, string[]> = {
-  spam: ["enabled", "auto_move_to_junk", "auto_mark_read", "excerpt_length"],
+// ai's read-only credential status: computed on every GET from whether a
+// provider key is stored, never a setting itself -- a PUT strips it before
+// merging (settings_api.py's _apply_credential_writes), so editing it here
+// would silently do nothing. The key fields themselves (anthropic_api_key,
+// openai_api_key) never appear in a GET response at all -- they are
+// write-only, and this UI has no form for setting one; that goes through
+// the API directly (see the README's provider key table) until this page
+// grows one.
+const COMPUTED_SETTINGS: Record<string, string[]> = {
+  ai: [
+    "anthropic_api_key_configured",
+    "anthropic_api_key_hint",
+    "openai_api_key_configured",
+    "openai_api_key_hint",
+  ],
 };
 
 function SettingField({
@@ -138,9 +157,9 @@ function CategorySettings({
     );
   };
 
-  const dead = DEAD_SETTINGS[category] ?? [];
+  const computed = COMPUTED_SETTINGS[category] ?? [];
   const entries = Object.entries(localSettings).filter(
-    ([key]) => key !== "id" && key !== "category" && !dead.includes(key),
+    ([key]) => key !== "id" && key !== "category" && !computed.includes(key),
   );
 
   return (
@@ -165,6 +184,37 @@ function CategorySettings({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Read-only status line for the AI category's provider keys -- the fields
+ * `CategorySettings` deliberately excludes above. */
+function ProviderKeyStatus({ settings }: { settings: Record<string, unknown> }) {
+  const providers: { key: string; label: string }[] = [
+    { key: "anthropic", label: "Anthropic" },
+    { key: "openai", label: "OpenAI" },
+  ];
+  return (
+    <div className="flex flex-col gap-1 rounded-md border bg-muted/30 p-3 text-sm">
+      {providers.map(({ key, label }) => {
+        const configured = settings[`${key}_api_key_configured`] === true;
+        const hint = settings[`${key}_api_key_hint`];
+        return (
+          <div key={key} className="flex items-center justify-between gap-2">
+            <span>{label}</span>
+            <span className="text-muted-foreground">
+              {configured ? `configured (…${hint})` : "not configured"}
+            </span>
+          </div>
+        );
+      })}
+      <p className="mt-1 text-xs text-muted-foreground">
+        Set through <span className="font-mono">PUT /api/settings/ai</span> (
+        <span className="font-mono">anthropic_api_key</span> /{" "}
+        <span className="font-mono">openai_api_key</span>) or the matching environment
+        variable -- there is no form for it here yet.
+      </p>
     </div>
   );
 }
@@ -196,6 +246,10 @@ function ThemeSettings() {
   );
 }
 
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{children}</h2>;
+}
+
 export function SettingsPage() {
   const { data: allSettings, isLoading } = useAllSettings();
 
@@ -209,62 +263,93 @@ export function SettingsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6 p-6">
+    <div className="flex flex-col gap-8 p-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-base">Appearance</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <ThemeSettings />
-        </CardContent>
-      </Card>
+      <div className="flex flex-col gap-3">
+        <SectionHeading>Appearance</SectionHeading>
+        <Card>
+          <CardContent className="pt-6">
+            <ThemeSettings />
+          </CardContent>
+        </Card>
+      </div>
 
-      {/* Unified folder ordering (cross-account) */}
-      <UnifiedOrder />
+      <div className="flex flex-col gap-3">
+        <SectionHeading>Mail</SectionHeading>
+        <UnifiedOrder />
+      </div>
 
-      <CalendarLinksCard />
+      <div className="flex flex-col gap-3">
+        <SectionHeading>Calendar</SectionHeading>
+        <CalendarLinksCard />
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CalendarDays className="h-4 w-4" />
+              Event defaults
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {allSettings?.calendar ? (
+              <CategorySettings category="calendar" settings={allSettings.calendar} />
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">
+                The server didn&apos;t return calendar settings -- the interface and the server
+                may be running different versions.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
-      <Tabs defaultValue="ai">
-        <TabsList>
-          {CATEGORIES.map(({ key, label, icon: Icon }) => (
-            <TabsTrigger key={key} value={key} className="gap-1.5">
-              <Icon className="h-3.5 w-3.5" />
-              {label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        {CATEGORIES.map(({ key }) => (
-          <TabsContent key={key} value={key}>
-            <Card>
-              <CardContent className="flex flex-col gap-4 pt-6">
-                {key === "spam" && (
-                  <div className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm">
-                    <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                    <div>
-                      Classification and what happens to spam are stages in the{" "}
-                      <Link href="/pipeline" className="underline">
-                        pipeline
-                      </Link>{" "}
-                      now -- a <span className="font-mono">classify</span> stage produces the
-                      verdict, a <span className="font-mono">match</span> stage decides what
-                      happens to it.
+      <div className="flex flex-col gap-3">
+        <SectionHeading>AI &amp; automation</SectionHeading>
+        <div className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm">
+          <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div>
+            Whether spam detection runs, and what happens to a message it flags, are stages in
+            the{" "}
+            <Link href="/pipeline" className="underline">
+              pipeline
+            </Link>{" "}
+            now, not a setting here -- a <span className="font-mono">classify</span> stage
+            produces the verdict, a <span className="font-mono">match</span> stage decides what
+            happens to it. The categories below are the model that stage calls (AI), how it
+            finds similar past messages (Semantic search), how a failed step is retried
+            (Retry), and the worker mechanics behind the queue (Pipeline).
+          </div>
+        </div>
+        <Tabs defaultValue="ai">
+          <TabsList>
+            {CATEGORIES.map(({ key, label, icon: Icon }) => (
+              <TabsTrigger key={key} value={key} className="gap-1.5">
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {CATEGORIES.map(({ key }) => (
+            <TabsContent key={key} value={key}>
+              <Card>
+                <CardContent className="flex flex-col gap-4 pt-6">
+                  {key === "ai" && allSettings?.ai && (
+                    <ProviderKeyStatus settings={allSettings.ai} />
+                  )}
+                  {allSettings?.[key] ? (
+                    <CategorySettings category={key} settings={allSettings[key]} />
+                  ) : (
+                    <div className="py-4 text-sm text-muted-foreground">
+                      The server didn&apos;t return settings for this category -- the interface
+                      and the server may be running different versions.
                     </div>
-                  </div>
-                )}
-                {allSettings?.[key] ? (
-                  <CategorySettings category={key} settings={allSettings[key]} />
-                ) : (
-                  <div className="py-4 text-sm text-muted-foreground">
-                    No settings available for this category
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        ))}
-      </Tabs>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          ))}
+        </Tabs>
+      </div>
     </div>
   );
 }

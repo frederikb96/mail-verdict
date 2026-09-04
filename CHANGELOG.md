@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
 
+### Changed
+
+- Settings groups into labelled sections -- Appearance, Mail, Calendar, and AI & automation --
+  instead of one unlabelled scroll of cards. Everything calendar-related lives together (the
+  invitations panel and the event-duration setting used to sit on opposite sides of the page);
+  the AI & automation tabs are AI, Semantic search, Retry and Pipeline, matching the categories
+  the server actually has, with a note pointing at the pipeline page for spam detection and rules
+- The calendar invitations panel replaces its one-column-per-linked-calendar table with a chip
+  picker per identity, so the number of calendars in an account no longer decides the width of
+  the page
 
 ### Fixed
 
@@ -75,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   full list a deployment with many synced collections would otherwise show
 - The week view's header shows the week number in brackets after the date range, the way the
   month view's own gutter already does
+- Collapsing the sidebar rail on the calendar route no longer squeezes the mini-month grid and
+  the per-calendar checkbox list into the icon-width rail, where the month's rows overlapped and
+  the checkboxes lost their labels. That content now hides while the rail is collapsed and
+  reappears immediately on expanding it
+- A settings category the interface expects but the server didn't return now explains that the
+  interface and the server may disagree on which categories exist, rather than saying nothing
+  more than "No settings available for this category"
 
 ## [3.1.1] - 2026-09-03
 
