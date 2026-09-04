@@ -8,11 +8,10 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { useAtom } from "jotai";
 import { VList, type VListHandle } from "virtua";
 import { Loader2, Search, UserRound } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useAddressbooks, useContacts } from "@/hooks/use-contacts";
-import { getInitials } from "@/lib/format";
 import { selectedContactIdAtom } from "@/lib/atoms";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/api";
@@ -137,9 +136,7 @@ export function ContactList() {
                   selectedId === row.contact.id && "bg-accent",
                 )}
               >
-                <Avatar>
-                  <AvatarFallback>{getInitials(row.contact.summary)}</AvatarFallback>
-                </Avatar>
+                <InitialsAvatar name={row.contact.summary} />
                 <div className="flex min-w-0 flex-col">
                   <span className="truncate text-sm font-medium">{row.contact.summary}</span>
                   <span className="truncate text-xs text-muted-foreground">

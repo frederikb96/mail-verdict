@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The navigation rail has a Mail entry between Search and Calendar, so there is a way back to the
+  mail view from anywhere else in the application
+- The account/folder tree in the sidebar only renders on the mail view. It previously rendered
+  underneath the contacts view's own list panel as well, where it served no purpose
+
 ## [3.1.1] - 2026-09-03
 
 ### Fixed

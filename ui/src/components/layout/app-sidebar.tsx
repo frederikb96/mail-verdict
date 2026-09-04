@@ -122,6 +122,7 @@ export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const isCalendarRoute = pathname.startsWith("/calendar");
+  const isMailRoute = pathname === "/";
   const [selectedAccountId, setSelectedAccountId] = useAtom(
     selectedAccountIdAtom,
   );
@@ -308,7 +309,7 @@ export function AppSidebar() {
             <CalendarSidebar />
           </ClientOnly>
         )}
-        {!isCalendarRoute && (
+        {isMailRoute && (
         <SidebarGroup>
           <SidebarGroupLabel className="flex items-center justify-between gap-2 pr-1">
             <span>{isUnified ? "Unified Folders" : "Folders"}</span>
@@ -454,6 +455,15 @@ export function AppSidebar() {
             >
               <Search className="h-4 w-4" />
               <span>Search</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/" />}
+              isActive={pathname === "/"}
+            >
+              <Mail className="h-4 w-4" />
+              <span>Mail</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

@@ -2,12 +2,8 @@
 
 import { Star, Archive, Ban, ThumbsUp, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  extractSenderName,
-  formatRelativeDate,
-  getInitials,
-} from "@/lib/format";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { extractSenderName, formatRelativeDate } from "@/lib/format";
+import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { MessageActionType, MessageSummary } from "@/types/api";
@@ -54,7 +50,6 @@ export function MailListItem({
   onAction,
 }: MailListItemProps) {
   const senderName = extractSenderName(mail.from_addr);
-  const initials = getInitials(senderName);
 
   return (
     <div
@@ -90,15 +85,10 @@ export function MailListItem({
       </div>
 
       {/* Avatar (hidden when checkbox visible in selection mode) */}
-      <Avatar
-        className={cn(
-          "h-8 w-8 shrink-0",
-          selectionMode && "hidden",
-          !selectionMode && "group-hover:hidden",
-        )}
-      >
-        <AvatarFallback className="text-xs">{initials}</AvatarFallback>
-      </Avatar>
+      <InitialsAvatar
+        name={senderName}
+        className={cn(selectionMode && "hidden", !selectionMode && "group-hover:hidden")}
+      />
 
       {/* Content */}
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">

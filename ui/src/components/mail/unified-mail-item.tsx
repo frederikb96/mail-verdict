@@ -8,12 +8,8 @@
 
 import { Star, Archive, Ban, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  extractSenderName,
-  formatRelativeDate,
-  getInitials,
-} from "@/lib/format";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { extractSenderName, formatRelativeDate } from "@/lib/format";
+import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { MessageActionType, UnifiedMessageSummary } from "@/types/api";
@@ -50,7 +46,6 @@ export function UnifiedMailItem({
   onAction,
 }: UnifiedMailItemProps) {
   const senderName = extractSenderName(mail.from_addr);
-  const initials = getInitials(senderName);
 
   return (
     <div
@@ -86,25 +81,13 @@ export function UnifiedMailItem({
       </div>
 
       {/* Avatar with emoji badge (hidden when checkbox visible) */}
-      <div
-        className={cn(
-          "relative shrink-0",
-          selectionMode && "hidden",
-          !selectionMode && "group-hover:hidden",
-        )}
-      >
-        <Avatar className="h-8 w-8">
-          <AvatarFallback className="text-xs">{initials}</AvatarFallback>
-        </Avatar>
-        {mail.account_emoji && (
-          <span
-            className="absolute -bottom-1 -right-1 text-xs leading-none"
-            title="Source account"
-          >
-            {mail.account_emoji}
-          </span>
-        )}
-      </div>
+      <InitialsAvatar
+        name={senderName}
+        className={cn(selectionMode && "hidden", !selectionMode && "group-hover:hidden")}
+        badge={
+          mail.account_emoji && <span title="Source account">{mail.account_emoji}</span>
+        }
+      />
 
       {/* Content */}
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
