@@ -307,7 +307,16 @@ export function AppSidebar() {
         </SidebarGroup>
         {isCalendarRoute && (
           <ClientOnly>
-            <CalendarSidebar />
+            {/* A mini-month grid and a per-calendar checkbox list have no
+             * icon-sized form -- squeezed into the collapsed rail's width
+             * they overlap and lose their labels rather than degrading
+             * gracefully the way a folder's icon+tooltip does. Hiding the
+             * group entirely below the icon-mode breakpoint leaves the
+             * rail readable; expanding the rail is what gets them back,
+             * same as it is for switching folders on the mail route. */}
+            <div className="group-data-[collapsible=icon]:hidden">
+              <CalendarSidebar />
+            </div>
           </ClientOnly>
         )}
         {isMailRoute && (

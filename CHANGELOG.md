@@ -71,6 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   it may take a while on a large folder -- the write itself is one statement over however many
   rows match, resolved server-side before the request returns
 
+### Changed
+
+- A contact carries a list of websites rather than a single one. `url` on a contact is now `urls`
+  in the API, the MCP tools and the response schema — a breaking change for anything reading that
+  field
+- Settings groups into labelled sections -- Appearance, Mail, Calendar, and AI & automation --
+  instead of one unlabelled scroll of cards. Everything calendar-related lives together (the
+  invitations panel and the event-duration setting used to sit on opposite sides of the page);
+  the AI & automation tabs are AI, Semantic search, Retry and Pipeline, matching the categories
+  the server actually has, with a note pointing at the pipeline page for spam detection and rules
+- The calendar invitations panel replaces its one-column-per-linked-calendar table with a chip
+  picker per identity, so the number of calendars in an account no longer decides the width of
+  the page
+
 ### Fixed
 
 - A bulk action spanning accounts in the unified view now acts on every account the selection
@@ -83,15 +97,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   row, so a whole-folder action no longer turns a single click into thousands of individual
   requests. A bulk action's own completion refresh now resets the affected list instead of
   replaying every page it had loaded, for the same reason
-
 - A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
   already carried the requested flag -- only rows that actually changed count
-
-### Changed
-
-- A contact carries a list of websites rather than a single one. `url` on a contact is now `urls`
-  in the API, the MCP tools and the response schema — a breaking change for anything reading that
-  field
 
 ### Fixed
 
@@ -137,6 +144,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   full list a deployment with many synced collections would otherwise show
 - The week view's header shows the week number in brackets after the date range, the way the
   month view's own gutter already does
+- Collapsing the sidebar rail on the calendar route no longer squeezes the mini-month grid and
+  the per-calendar checkbox list into the icon-width rail, where the month's rows overlapped and
+  the checkboxes lost their labels. That content now hides while the rail is collapsed and
+  reappears immediately on expanding it
+- A settings category the interface expects but the server didn't return now explains that the
+  interface and the server may disagree on which categories exist, rather than saying nothing
+  more than "No settings available for this category"
 
 ## [3.1.1] - 2026-09-03
 

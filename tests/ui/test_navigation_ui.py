@@ -94,3 +94,24 @@ class TestNavigationShellUi:
 
         page.get_by_role("link", name="Mail", exact=True).click()
         expect(folder(page, inbox_folder["id"])).to_be_visible(timeout=15_000)
+
+    def test_collapsing_the_rail_hides_the_calendar_mini_month_instead_of_squeezing_it(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards: collapsing the sidebar rail on the
+        calendar route squeezed the mini-month grid and the per-calendar
+        checkbox list into the icon-width rail -- the month's rows
+        overlapped and the checkboxes lost their labels. Collapsing now
+        hides that content instead of mangling it, and expanding again
+        brings it straight back."""
+        page.goto(f"{app_server}/calendar")
+        mini_month_title = page.get_by_test_id("mini-month-title")
+        expect(mini_month_title).to_be_visible(timeout=15_000)
+
+        toggle = page.get_by_role("button", name="Toggle Sidebar", exact=True)
+        toggle.click()
+        with pytest.raises(AssertionError):
+            expect(mini_month_title).to_be_visible(timeout=8_000)
+
+        toggle.click()
+        expect(mini_month_title).to_be_visible(timeout=8_000)
