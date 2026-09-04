@@ -62,6 +62,11 @@ export const searchKeys = {
  * only forwards the current preferences and shapes the two response
  * bodies into one common page type.
  *
+ * "Always newest first, no sort control" governs the fulltext list, not
+ * semantic mode's own similarity ranking -- overriding that would remove
+ * the entire reason semantic search exists, so it keeps ordering by
+ * nearest match regardless of date.
+ *
  * Semantic mode has no further pages: one embedding per message bounds
  * the corpus far below full-mailbox scale, and re-embedding the query
  * text on every scroll tick would be wasteful and slow. hasNextPage is
