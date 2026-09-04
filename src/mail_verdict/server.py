@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -63,6 +64,23 @@ _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _contract_ok: bool = False
+_process_alive: bool = False
+_alive_checker_thread: Any | None = None
+_alive_checker_stop: threading.Event = threading.Event()
+
+
+def _process_alive_checker() -> None:
+    """
+    Background thread that continuously marks the process as alive.
+
+    This runs independently of the async event loop, so liveness probes
+    can always be answered even if the event loop is blocked.
+    """
+    global _process_alive
+
+    while not _alive_checker_stop.is_set():
+        _process_alive = True
+        _alive_checker_stop.wait(timeout=0.1)
 
 
 def get_spam_processor() -> Any | None:
@@ -76,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _postimap_listener, _spam_processor, _contract_ok
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
+    global _process_alive, _alive_checker_thread, _alive_checker_stop
 
     config = get_config()
 
@@ -83,6 +102,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     setup_logging(config.server.log_level)
     logger.info("MailVerdict server starting")
+
+    # Start background thread that marks process as alive
+    # This runs independently of the event loop so liveness can answer
+    # even if the event loop is blocked
+    _alive_checker_stop.clear()
+    _alive_checker_thread = threading.Thread(
+        target=_process_alive_checker, daemon=True, name="process-alive-checker"
+    )
+    _alive_checker_thread.start()
+    logger.info("Process alive checker started")
 
     await init_database(config.database)
     logger.info("Database initialized")
@@ -297,6 +326,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_notifier = None
     _pipeline_reconciler = None
     _contract_ok = False
+    _process_alive = False
+
+    # Stop the process alive checker thread
+    _alive_checker_stop.set()
+    if _alive_checker_thread:
+        _alive_checker_thread.join(timeout=1.0)
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
     from mail_verdict.core.openai_provider import reset_openai_provider
@@ -474,8 +509,20 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
 
     @api_router.get("/health/live")
     async def health_live() -> JSONResponse:
-        """Liveness: process is up. Never touches the database."""
-        return JSONResponse(status_code=200, content={"status": "alive"})
+        """
+        Liveness: process is alive and responsive.
+
+        Checked by a background thread independent of the async event loop,
+        so this responds promptly even if the event loop is blocked by
+        long-running operations in other handlers.
+        """
+        global _process_alive
+
+        status_code = 200 if _process_alive else 503
+        return JSONResponse(
+            status_code=status_code,
+            content={"status": "alive" if _process_alive else "not_responding"}
+        )
 
     @api_router.get("/health")
     async def health() -> JSONResponse:
@@ -510,13 +557,13 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
             _contract_ok = await asyncio.wait_for(_check_contract(db), timeout=0.5)
         except asyncio.TimeoutError:
             # Pool is likely exhausted, return based on what we know
-            pass
-        except RuntimeError:
+            logger.debug("Readiness probe contract check timed out (pool exhausted)")
+        except RuntimeError as e:
             # Database not initialized
-            pass
-        except Exception:
+            logger.debug(f"Readiness probe failed: database not initialized: {e}")
+        except Exception as e:
             # Any other error, just use the cached flag
-            pass
+            logger.warning(f"Readiness probe contract check error: {e}", exc_info=False)
 
         ready = _contract_ok
         return JSONResponse(
