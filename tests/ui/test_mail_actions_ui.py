@@ -676,6 +676,145 @@ class TestMailActionsUi:
         expect(row).to_be_visible(timeout=10_000)
         expect(back).not_to_be_visible()
 
+    def test_folder_hover_menu_marks_every_message_read(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Hovering a folder replaces its unread badge with a three-dot
+        control; its Mark all as read entry flips every unread message
+        in the folder, not just whatever page happens to be loaded."""
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], f"Folder menu unread {uuid.uuid4()}",
+        )
+        assert target["is_seen"] is False
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
+
+        inbox_row = folder(page, inbox_folder["id"])
+        inbox_row.hover()
+        inbox_row.get_by_role("button", name="INBOX options").click()
+        page.get_by_role("menuitem", name="Mark all as read").click()
+
+        def _target_read() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["is_seen"] else None
+
+        wait_for(
+            _target_read, timeout_s=15.0,
+            description=f"{target['subject']!r} marked read via the folder menu",
+        )
+
+    def test_folder_hover_menu_empties_a_folder_with_confirmation(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Emptying a folder destroys every message in it on the server
+        with no undo, so the menu confirms first, naming the count -- and
+        offers no Rename, which IMAP cannot express as a single-row
+        update. Uses a folder created just for this test rather than a
+        shared one, since emptying is irreversible."""
+        resp = api_client.post(
+            f"/api/accounts/{ui_account['id']}/folders",
+            json={"name": f"Empty-me-{uuid.uuid4().hex[:8]}"},
+        )
+        assert resp.status_code == 201, resp.text
+        custom_folder = wait_for_folder(
+            api_client, str(ui_account["id"]), resp.json()["imap_name"],
+        )
+
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Empty test {i} {uuid.uuid4()}" for i in range(2)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(
+            _find_all, timeout_s=45.0, description="both empty-test messages synced into INBOX",
+        )
+        for target in targets:
+            resp = api_client.post(
+                f"/api/messages/{target['id']}/action",
+                json={"action": "move", "target_folder_id": custom_folder["id"]},
+            )
+            assert resp.status_code == 200, resp.text
+
+        def _both_settled() -> bool | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in targets]
+            settled = all(
+                d["folder_id"] == custom_folder["id"] and not d["pending_sync"] for d in details
+            )
+            return True if settled else None
+
+        wait_for(
+            _both_settled, timeout_s=30.0,
+            description="both messages genuinely moved into the custom folder",
+        )
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        custom_row = folder(page, custom_folder["id"])
+        expect(custom_row).to_be_visible(timeout=15_000)
+
+        custom_row.hover()
+        custom_row.get_by_role(
+            "button", name=re.compile(re.escape(custom_folder["imap_name"]) + r" options"),
+        ).click()
+
+        expect(page.get_by_role("menuitem", name="Rename")).to_have_count(0)
+        page.get_by_role("menuitem", name="Empty folder").click()
+
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_be_visible(timeout=10_000)
+        expect(dialog.get_by_text("2 messages", exact=False)).to_be_visible()
+        dialog.get_by_role("button", name="Empty folder", exact=True).click()
+
+        target_ids = {t["id"] for t in targets}
+
+        def _both_gone() -> bool | None:
+            # expunge() is a soft delete (expunged_at, the row survives) --
+            # GET .../messages/{id} doesn't filter on it, so absence from
+            # the folder listing (which does) is the observable proof.
+            remaining = {
+                m["id"] for m in _list_folder(api_client, ui_account["id"], custom_folder["id"])
+            }
+            return True if not (target_ids & remaining) else None
+
+        wait_for(_both_gone, timeout_s=20.0, description="both messages permanently deleted")
+
     def test_manage_folders_offers_no_delete_for_special_use_folders(
         self,
         page: Page,

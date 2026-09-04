@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A row's Junk control now moves the message to the Junk folder unconditionally; correcting the
   model's spam verdict is its own control, since the two are different actions that happened to
   share one icon before
+- Hovering a folder in the sidebar replaces its unread count with a menu offering mark-all-read
+  and emptying the folder; emptying confirms with the message count first, since it destroys
+  every message in it on the server with no undo. Renaming is deliberately not offered -- IMAP's
+  rename also renames every child folder, so it cannot be a single-row update
 
 ### Fixed
 

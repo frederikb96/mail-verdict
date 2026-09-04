@@ -46,6 +46,7 @@ import {
 
 import { DroppableFolder } from "@/components/sidebar/droppable-folder";
 import { FolderManageDialog } from "@/components/sidebar/folder-manage-dialog";
+import { FolderRowMenu } from "@/components/sidebar/folder-row-menu";
 import { CalendarSidebar } from "@/components/calendar/calendar-sidebar";
 import { ClientOnly } from "@/components/client-only";
 import { ComposeDialog } from "@/components/mail/compose-dialog";
@@ -369,7 +370,7 @@ export function AppSidebar() {
                           folderId={folder.folder_id}
                           folderName={folder.display_name || folder.imap_name}
                         >
-                          <SidebarMenuItem>
+                          <SidebarMenuItem className="flex items-center gap-1">
                             <SidebarMenuButton
                               isActive={isActive}
                               onClick={() => handleFolderSelect(folder.folder_id)}
@@ -379,15 +380,16 @@ export function AppSidebar() {
                               <span className="flex-1 truncate">
                                 {folder.display_name || folder.imap_name}
                               </span>
-                              {getFolderBadgeCount(folder) > 0 && (
-                                <Badge
-                                  variant="secondary"
-                                  className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                                >
-                                  {getFolderBadgeCount(folder)}
-                                </Badge>
-                              )}
                             </SidebarMenuButton>
+                            {selectedAccountId && (
+                              <FolderRowMenu
+                                accountId={selectedAccountId}
+                                folderId={folder.folder_id}
+                                folderName={folder.display_name || folder.imap_name}
+                                badgeCount={getFolderBadgeCount(folder)}
+                                totalCount={folder.total_count}
+                              />
+                            )}
                           </SidebarMenuItem>
                         </DroppableFolder>
                       );
@@ -401,7 +403,7 @@ export function AppSidebar() {
                           folderId={folder.id}
                           folderName={getFolderDisplayName(folder)}
                         >
-                          <SidebarMenuItem>
+                          <SidebarMenuItem className="flex items-center gap-1">
                             <SidebarMenuButton
                               isActive={isActive}
                               onClick={() => handleFolderSelect(folder.id)}
@@ -411,15 +413,16 @@ export function AppSidebar() {
                               <span className="flex-1 truncate">
                                 {getFolderDisplayName(folder)}
                               </span>
-                              {getFolderBadgeCount(folder) > 0 && (
-                                <Badge
-                                  variant="secondary"
-                                  className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                                >
-                                  {getFolderBadgeCount(folder)}
-                                </Badge>
-                              )}
                             </SidebarMenuButton>
+                            {selectedAccountId && (
+                              <FolderRowMenu
+                                accountId={selectedAccountId}
+                                folderId={folder.id}
+                                folderName={getFolderDisplayName(folder)}
+                                badgeCount={getFolderBadgeCount(folder)}
+                                totalCount={folder.total_count}
+                              />
+                            )}
                           </SidebarMenuItem>
                         </DroppableFolder>
                       );

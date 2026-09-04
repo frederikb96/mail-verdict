@@ -95,6 +95,36 @@ export function useClearSelection() {
   return useCallback(() => setState(EMPTY_SELECTION), [setState]);
 }
 
+/**
+ * Acts on an entire folder from the sidebar's own hover menu -- mints a
+ * fresh predicate snapshot and resolves it server-side in the same
+ * request, independent of whatever row selection (if any) is active
+ * elsewhere. Never touches the shared selection atom.
+ */
+export function useFolderBulkAction() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      accountId, folderId, action,
+    }: {
+      accountId: string;
+      folderId: string;
+      action: Extract<BulkActionType, "mark_read" | "expunge">;
+    }) => {
+      const snapshot = await api.messages.selection(accountId, { folder_id: folderId, filter: "all" });
+      return api.messages.bulkAction(accountId, {
+        action,
+        scope: { folder_id: folderId, filter: "all", snapshot_at: snapshot.snapshot_at },
+      });
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ["mails"] });
+      invalidateAllFolderCaches(qc);
+    },
+  });
+}
+
 /** Find which account a set of mail ids belongs to, from whatever list
  * caches currently hold them -- needed because a unified-view selection
  * can span accounts, and a bulk-action request is scoped to one. */
