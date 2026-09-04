@@ -136,6 +136,45 @@ class TestPhoto:
         cleared = vcard.apply_contact_fields(data, photo_data_url="")
         assert vcard.parse_contact(cleared).photo is None
 
+    def test_replacing_photo_removes_every_existing_photo_line(self) -> None:
+        """A card can legally carry more than one PHOTO line -- some
+        servers produce that shape. `card.photo` is vobject's singular
+        accessor and only ever names the first, which would leave every
+        other one behind rather than replaced."""
+        first = base64.b64encode(b"first-photo").decode()
+        second = base64.b64encode(b"second-photo").decode()
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Multi Photo\r\n"
+            f"PHOTO;ENCODING=b;TYPE=JPEG:{first}\r\n"
+            f"PHOTO;ENCODING=b;TYPE=PNG:{second}\r\nEND:VCARD\r\n"
+        )
+        replacement = base64.b64encode(b"replacement-photo").decode()
+        updated = vcard.apply_contact_fields(
+            card, photo_data_url=f"data:image/png;base64,{replacement}",
+        )
+        photo_lines = [
+            line for line in vcard._unfold_lines(updated) if line.upper().startswith("PHOTO")
+        ]
+        assert len(photo_lines) == 1
+
+
+class TestCategories:
+    def test_replacing_categories_removes_every_existing_categories_line(self) -> None:
+        """Same shape as the PHOTO case above: `card.categories` only
+        names the first CATEGORIES line, and a card can carry more than
+        one."""
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Multi Cats\r\n"
+            "CATEGORIES:Friend\r\nCATEGORIES:Work\r\nEND:VCARD\r\n"
+        )
+        updated = vcard.apply_contact_fields(card, categories=["Only"])
+        category_lines = [
+            line for line in vcard._unfold_lines(updated)
+            if line.upper().startswith("CATEGORIES")
+        ]
+        assert len(category_lines) == 1
+        assert "Only" in category_lines[0]
+
 
 class TestBuild:
     def test_build_contact_round_trips(self) -> None:

@@ -59,7 +59,7 @@ from mail_verdict.core.image_sanitizer import (
     strip_remote_images,
 )
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
-from mail_verdict.core.sanitizer import declares_dark_mode_support, sanitize_email_html
+from mail_verdict.core.sanitizer import sanitize_email_html
 from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import (
     Attachment,
@@ -325,9 +325,7 @@ async def get_message(
     body_html = msg.body_html
     images_allowed = False
     has_blocked_images = False
-    supports_dark_mode = False
     if body_html:
-        supports_dark_mode = declares_dark_mode_support(body_html)
         body_html = sanitize_email_html(body_html)
         body_html = _rewrite_cid_references(body_html, message_id, attachments)
 
@@ -368,7 +366,6 @@ async def get_message(
         created_at=msg.created_at,
         has_blocked_images=has_blocked_images,
         images_allowed=images_allowed,
-        supports_dark_mode=supports_dark_mode,
         tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
         attachments=[
             AttachmentSummary(
@@ -449,9 +446,7 @@ async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
             verdict = await verdict_repo.get_latest_for_mail(m.id)
 
             body_html = m.body_html
-            supports_dark_mode = False
             if body_html:
-                supports_dark_mode = declares_dark_mode_support(body_html)
                 body_html = sanitize_email_html(body_html)
                 body_html = _rewrite_cid_references(body_html, m.id, attachments)
                 images_allowed = await _check_image_allowed(m.account_id, m.from_addr)
@@ -477,7 +472,7 @@ async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
                     is_draft=m.is_draft, keywords=m.keywords or [],
                     snippet=m.body_text[:120] if m.body_text else None,
                     created_at=m.created_at, has_blocked_images=has_blocked,
-                    images_allowed=images_allowed, supports_dark_mode=supports_dark_mode,
+                    images_allowed=images_allowed,
                     tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
                     attachments=[
                         AttachmentSummary(

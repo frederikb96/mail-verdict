@@ -6,14 +6,18 @@
  * sender, instead of the same markup duplicated at each call site.
  *
  * A photo pulled from the address book takes precedence here once one
- * exists to read -- nothing in the data model carries a contact photo
- * yet, so no caller passes one today. The `photoUrl` prop is what a
- * future caller would fill in, resolved from wherever that lookup ends
- * up living (a sender's address matched to a contact); this component
- * never fetches anything itself. Deliberately not a remote avatar
- * keyed by address, e.g. Gravatar -- that would tell a third party a
- * message from that address was opened, for every sender on the
- * remote-image allowlist, which is not what that allowlist is for. */
+ * exists to read. The `photoUrl` prop is resolved by the caller from
+ * wherever that lookup lives -- a contact row already showing its own
+ * contact passes its photo directly, a thread message resolves the
+ * sender's address against the contact API. This component never
+ * fetches anything itself, and a caller must never pass a photo whose
+ * `kind` is `"url"` without first running it through the same
+ * remote-content allowlist any other remote image does -- unlike an
+ * embedded `data:` photo, it is a request to whatever the URL names.
+ * Deliberately never a lookup keyed by address against an unrelated
+ * third party, e.g. Gravatar -- that would tell that party a message
+ * from the address was opened, for every sender, which is not what the
+ * allowlist governs. */
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/format";
@@ -27,7 +31,8 @@ interface InitialsAvatarProps {
   /** Rendered over the bottom-right corner, e.g. an emoji identifying the source account. */
   badge?: React.ReactNode;
   /** A resolved photo to show instead of initials, e.g. an address-book
-   * contact's photo. Nothing in this app supplies one yet. */
+   * contact's photo -- already allowlist-checked by the caller if it came
+   * from a `kind: "url"` source. */
   photoUrl?: string | null;
 }
 

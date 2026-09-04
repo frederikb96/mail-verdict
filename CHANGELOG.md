@@ -80,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A predicate-based bulk action ("select all") or a folder-wide menu action shows a heads-up that
   it may take a while on a large folder -- the write itself is one statement over however many
   rows match, resolved server-side before the request returns
+- A message can be switched to a dark canvas from a toggle in its header, remembered per message
+  across reopening it
 
 ### Changed
 
@@ -165,6 +167,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings category the interface expects but the server didn't return now explains that the
   interface and the server may disagree on which categories exist, rather than saying nothing
   more than "No settings available for this category"
+- A sender's avatar in an open thread now shows their address-book contact's photo, when one
+  matches -- an embedded photo renders with no request of its own; a remote photo URL only
+  renders once the sender is on the same allowlist that already gates the message's own remote
+  images
+- A contact photo far larger than any reasonable upload is rejected server-side rather than
+  reaching the vCard and the CardDAV server it syncs to unbounded
+- Editing a contact's photo or categories now removes every existing line of that kind rather
+  than only the first -- a card carrying more than one (legal, and produced by some servers) kept
+  the extras around after a replacement
 
 ## [3.1.1] - 2026-09-03
 

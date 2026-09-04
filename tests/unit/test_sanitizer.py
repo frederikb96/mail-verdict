@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mail_verdict.core.sanitizer import declares_dark_mode_support, sanitize_email_html
+from mail_verdict.core.sanitizer import sanitize_email_html
 
 
 class TestRemoteImageBlocking:
@@ -500,40 +500,6 @@ class TestStructuralTagsDoNotLeakTheirTextAsCopy:
         assert "no iframe support" not in out
         assert "tracker.example" not in out
         assert "<p>ok</p>" in out
-
-
-class TestDarkModeDeclaration:
-    """A message can say it renders correctly on a dark canvas, through any
-    of the three shapes mail actually uses. The signal only exists in the
-    head/meta/style markup this module otherwise discards, so it has to be
-    read from the raw HTML before sanitizing."""
-
-    def test_the_css_color_scheme_meta_tag_is_recognised(self) -> None:
-        html = '<meta name="color-scheme" content="light dark"><p>x</p>'
-        assert declares_dark_mode_support(html) is True
-
-    def test_apples_supported_color_schemes_meta_tag_is_recognised(self) -> None:
-        html = '<meta name="supported-color-schemes" content="light dark"><p>x</p>'
-        assert declares_dark_mode_support(html) is True
-
-    def test_the_color_scheme_css_property_is_recognised(self) -> None:
-        html = "<style>:root{color-scheme: light dark;}</style><p>x</p>"
-        assert declares_dark_mode_support(html) is True
-
-    def test_a_prefers_color_scheme_media_query_is_recognised(self) -> None:
-        html = (
-            "<style>@media (prefers-color-scheme: dark) "
-            "{ body { background:#000 } }</style><p>x</p>"
-        )
-        assert declares_dark_mode_support(html) is True
-
-    def test_ordinary_mail_with_no_signal_is_not_mistaken_for_dark_aware(self) -> None:
-        html = "<head><title>Newsletter</title></head><body><p>Hello</p></body>"
-        assert declares_dark_mode_support(html) is False
-
-    def test_a_light_only_declaration_is_not_treated_as_dark_support(self) -> None:
-        html = '<meta name="color-scheme" content="light only"><p>x</p>'
-        assert declares_dark_mode_support(html) is False
 
 
 class TestDataImagesRenderAsDocumented:

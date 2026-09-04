@@ -17,6 +17,8 @@ import httpx
 import pytest
 from playwright.sync_api import Browser, Page, expect
 
+from tests.e2e.helpers import wait_for_dav_account_active, wait_for_dav_collection
+from tests.setup.dav_helpers import create_addressbook, discover
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
     mail_row,
@@ -33,6 +35,8 @@ from tests.setup.containers import (  # isort: skip
     DOVECOT_PASSWORD,
     MAILPIT_ALIAS,
     MAILPIT_SMTP_PORT,
+    RADICALE_ALIAS,
+    RADICALE_PORT,
 )
 
 # A real GIF, not a placeholder string -- a browser needs actual image bytes
@@ -71,6 +75,39 @@ def rendering_account(
 @pytest.fixture(scope="module")
 def inbox_folder(api_client: httpx.Client, rendering_account: dict[str, Any]) -> dict[str, Any]:
     return wait_for_folder(api_client, str(rendering_account["id"]), "INBOX")
+
+
+@pytest.fixture(scope="module")
+def avatar_addressbook_owner(radicale_endpoint: tuple[str, int]) -> str:
+    """An address book on the real Radicale server, owned by a fresh
+    principal -- see test_contacts_ui.py's `ui_addressbook_owner`, the
+    same pattern for the same reason."""
+    host, port = radicale_endpoint
+    base_url = f"http://{host}:{port}/"
+    username = f"avatar-{uuid.uuid4().hex[:8]}"
+    with httpx.Client(auth=(username, "unused"), timeout=10.0) as client:
+        principal = discover(client, base_url)
+        create_addressbook(client, principal, "avatar-book", "Avatar Book")
+    return username
+
+
+@pytest.fixture(scope="module")
+def avatar_addressbook(
+    api_client: httpx.Client, avatar_addressbook_owner: str,
+) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/dav-accounts",
+        json={
+            "name": f"Radicale-{uuid.uuid4().hex[:8]}",
+            "discovery_url": f"http://{RADICALE_ALIAS}:{RADICALE_PORT}/",
+            "username": avatar_addressbook_owner,
+            "password": "unused",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    dav_account = resp.json()
+    wait_for_dav_account_active(api_client, dav_account["id"])
+    return wait_for_dav_collection(api_client, dav_account["id"], "Avatar Book")
 
 
 def _list_folder(api_client: httpx.Client, account_id: str, folder_id: str) -> list[dict[str, Any]]:
@@ -222,9 +259,12 @@ class TestStructuralMarkupDoesNotLeakAsVisibleCopy:
 
 class TestPerMessageDarkMode:
     """Every message renders on a light canvas by default -- correct, since
-    mail is written assuming one -- but the reader can ask for dark, and a
-    message that declares its own dark-canvas support gets it without being
-    asked."""
+    mail is written assuming one -- and the reader can ask for dark with the
+    per-message toggle. A message declaring its own dark-canvas support is
+    not switched automatically: the sanitizer strips the `<meta>`/`<style>`
+    markup that carries both the declaration and the rules that would make
+    the message readable on a dark canvas, so there is nothing honest to
+    honour."""
 
     def test_the_toggle_switches_the_canvas_and_the_choice_survives_reopening(
         self,
@@ -273,7 +313,7 @@ class TestPerMessageDarkMode:
         expect(light_mode_button).to_be_visible(timeout=10_000)
         assert _host_background() == dark_bg
 
-    def test_a_message_declaring_dark_support_renders_dark_unasked(
+    def test_a_message_declaring_dark_support_is_not_switched_automatically(
         self,
         page: Page,
         app_server: str,
@@ -283,11 +323,19 @@ class TestPerMessageDarkMode:
         inbox_folder: dict[str, Any],
         browser: Browser,
     ) -> None:
+        """The shape a real ESP uses: declare `color-scheme`, then swap
+        colours in an `@media` block -- which the sanitizer strips along
+        with every other `<style>` tag's content. Honouring the
+        declaration without the rules it depends on would put the message
+        on a dark canvas with its light-mode inline colour still applied:
+        dark text on a dark background."""
         target = _deliver_html(
             api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
             inbox_folder["id"], "UI dark declared test",
             '<meta name="color-scheme" content="light dark">'
-            "<p>Renders dark on its own</p>",
+            "<style>@media (prefers-color-scheme: dark) "
+            "{ .msg { color: #eee } }</style>"
+            '<p class="msg" style="color:#111">Assumes its own dark rules survived</p>',
         )
 
         # A dedicated dark-scheme context: the shared page fixture's colour
@@ -302,23 +350,27 @@ class TestPerMessageDarkMode:
 
             body = dark_page.locator('[data-testid="email-body"]')
             expect(body).to_be_visible(timeout=15_000)
-            light_mode_button = dark_page.get_by_role(
-                "button", name="Switch this message to light mode", exact=True,
+            # Still light by default: the toggle offers to switch *to*
+            # dark, rather than already showing dark and offering to leave
+            # it -- the declaration alone is not honoured.
+            toggle = dark_page.get_by_role(
+                "button", name="Enable dark message mode", exact=True,
             )
-            expect(light_mode_button).to_be_visible(timeout=10_000)
+            expect(toggle).to_be_visible(timeout=10_000)
         finally:
             context.close()
 
 
 class TestSenderAvatar:
-    """The sender avatar renders from local data only -- initials derived
-    from the display name -- with no network request of any kind, for any
-    sender. Nothing here reads the remote-image allowlist: an avatar keyed
-    by address and fetched from a third party (Gravatar) was considered
-    and rejected, because it would tell that third party a message from
-    this address was opened, for a party outside the allowlist model
-    entirely -- the allowlist governs a sender's own published content,
-    not a lookup against an unrelated service."""
+    """A sender with no matching address-book contact gets initials --
+    derived from the display name, with no network request of any kind.
+    A sender who does match one gets that contact's photo instead, when it
+    has one: an embedded photo with no request of its own, a remote photo
+    URL only once the sender is allowlisted the same way any other remote
+    image is. Never a lookup keyed by address against an unrelated third
+    party (Gravatar) -- that was considered and rejected, since it would
+    tell that party a message from the address was opened, for every
+    sender, whether or not the sender is allowlisted."""
 
     def test_a_sender_gets_initials_and_no_network_request_at_all(
         self,
@@ -354,3 +406,46 @@ class TestSenderAvatar:
         fallback = header.locator('[data-slot="avatar-fallback"]')
         expect(fallback).to_have_text("AS", timeout=10_000)
         assert third_party_requests == [], f"unexpected third-party request: {third_party_requests}"
+
+    def test_a_sender_matching_a_contact_with_an_embedded_photo_gets_it_as_the_avatar(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        rendering_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        avatar_addressbook: dict[str, Any],
+    ) -> None:
+        sender_email = "photo-sender@example.com"
+        # A real GIF, not fabricated bytes -- the browser must actually
+        # decode this as an image for the avatar to render it rather than
+        # falling back to initials on a load error.
+        photo_data_url = _TINY_GIF
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": avatar_addressbook["id"],
+                "summary": "Photo Sender",
+                "emails": [{"email": sender_email}],
+                "photo_data_url": photo_data_url,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        target = _deliver_html(
+            api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
+            inbox_folder["id"], "UI avatar photo test",
+            "<p>hello</p>",
+            sender=f"Photo Sender <{sender_email}>",
+        )
+
+        page.goto(app_server)
+        select_account(page, rendering_account)
+        mail_row(page, target["id"]).click()
+
+        expect(page.locator('[data-testid="email-body"]')).to_be_visible(timeout=15_000)
+        header = page.locator('[data-testid="thread-message-header"]')
+        photo = header.locator('[data-slot="avatar-image"]')
+        expect(photo).to_be_visible(timeout=10_000)
+        assert photo.get_attribute("src") == photo_data_url

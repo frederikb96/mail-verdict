@@ -60,8 +60,6 @@ export interface MessageDetail extends MessageSummary {
   keywords: string[];
   has_blocked_images: boolean;
   images_allowed: boolean;
-  /** Whether the message's own markup declares dark-canvas support. */
-  supports_dark_mode: boolean;
   created_at: string;
   tags: TagResponse[];
   attachments: AttachmentSummary[];

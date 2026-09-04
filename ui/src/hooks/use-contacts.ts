@@ -87,6 +87,20 @@ export function useContact(id: string | null) {
   });
 }
 
+/** The contact matching a sender's address, for the avatar next to their
+ * mail -- `null` while there is no match, which is the ordinary case. Its
+ * own query key rather than reusing `contactKeys.detail`, since this is
+ * keyed by address rather than contact id and a contact's addresses are
+ * not looked up from its id anywhere else. */
+export function useContactByEmail(email: string | null) {
+  return useQuery({
+    queryKey: ["contact-by-email", email ?? ""],
+    queryFn: () => api.contacts.resolveByEmail(email!),
+    enabled: !!email,
+    staleTime: 60_000,
+  });
+}
+
 /** Debounced, abortable search for the compose recipient autocomplete. The
  * server does the filtering (`filter={null}` on the combobox); this hook
  * only owns the debounce and cancellation of the in-flight request. */
