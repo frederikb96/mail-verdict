@@ -17,11 +17,14 @@ from playwright.sync_api import Page, expect
 
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
+    folder,
+    mail_row,
     select_account,
     unique_email,
     wait_for,
     wait_for_account_active,
     wait_for_folder,
+    wait_for_mailpit_message,
 )
 
 from tests.setup.containers import (  # isort: skip
@@ -87,6 +90,62 @@ def original_message(
         return next((m for m in resp.json()["messages"] if m["subject"] == "Quoted original"), None)
 
     return wait_for(_find, description="Original message synced into INBOX")
+
+
+@pytest.fixture(scope="module")
+def drafts_folder(api_client: httpx.Client, editor_account: dict[str, Any]) -> dict[str, Any]:
+    return wait_for_folder(api_client, str(editor_account["id"]), "Drafts")
+
+
+@pytest.fixture(scope="module")
+def plain_text_message(
+    api_client: httpx.Client, dovecot_endpoint: tuple[str, int, int],
+    editor_account: dict[str, Any], inbox_folder: dict[str, Any],
+) -> dict[str, Any]:
+    """A distinct, plain-text-only original -- so the quote this test
+    reconstructs from a reopened draft's body_text has an unambiguous,
+    known plain-text form to check against, rather than whatever an
+    HTML-only message's own text alternative happens to be."""
+    host, _imap_port, lmtp_port = dovecot_endpoint
+    subject = "Plain text original"
+    message = build_eml(
+        sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+        message_id=f"<editor-plain-{uuid.uuid4()}@example.com>",
+        body="Original plain body line.",
+    )
+    deliver_message(
+        message, host, lmtp_port, sender="sender@example.com", recipient=editor_account["email"],
+    )
+
+    def _find() -> dict[str, Any] | None:
+        resp = api_client.get(
+            f"/api/accounts/{editor_account['id']}/messages",
+            params={"folder_id": inbox_folder["id"]},
+        )
+        return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+    return wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+
+def _trigger_sync(api_client: httpx.Client, account_id: str) -> None:
+    """Force an immediate sync -- a drafted or sent copy otherwise only
+    reappears on that folder's next periodic sync."""
+    resp = api_client.post(f"/api/accounts/{account_id}/sync")
+    assert resp.status_code == 200, resp.text
+
+
+def _list_folder(
+    api_client: httpx.Client, account_id: str, folder_id: str,
+) -> list[dict[str, Any]]:
+    resp = api_client.get(
+        f"/api/accounts/{account_id}/messages", params={"folder_id": folder_id},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["messages"]
+
+
+def _open_folder(page: Page, folder_row: dict[str, Any]) -> None:
+    folder(page, folder_row["id"]).get_by_role("button").click()
 
 
 def _open_thread(
@@ -185,6 +244,135 @@ class TestReplyQuoting:
             "(el) => el.shadowRoot.querySelector('h1')?.textContent ?? ''",
         )
         assert quoted_heading == "Original heading"
+
+
+class TestReplyQuoteDoesNotLeakImages:
+    """A message from a sender who is not allowlisted shows no images when
+    read -- replying to it must not be a stronger signal than opening it,
+    the same rule collapsing the quote alone cannot enforce (display:none
+    does not stop an <img> from loading)."""
+
+    def test_replying_to_an_unallowlisted_sender_issues_no_image_request(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"UI reply image privacy test {uuid.uuid4()}"
+        message = build_eml(
+            sender="Untrusted Sender <untrusted-reply-sender@example.com>",
+            recipient=editor_account["email"], subject=subject,
+            message_id=f"<reply-image-{uuid.uuid4()}@example.com>",
+            body='<p>Hello</p><img src="https://tracker.invalid/pixel.gif">',
+            content_type="text/html; charset=utf-8",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="untrusted-reply-sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        third_party_requests: list[str] = []
+
+        def _record(req: object) -> None:
+            url = req.url  # type: ignore[attr-defined]
+            if "tracker.invalid" in url:
+                third_party_requests.append(url)
+
+        page.on("request", _record)
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        expect(page.locator('[data-testid="email-body"]')).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="Reply", exact=True).click()
+        expect(page.locator(".quoted-message-attribution")).to_be_visible(timeout=10_000)
+        toggle = page.locator(".quoted-message-toggle")
+        toggle.click()
+        expect(toggle).to_have_text("Hide quoted text")
+
+        host_shadow = page.locator('[data-testid="quoted-message-shadow-host"]')
+        image_count = host_shadow.evaluate(
+            "(el) => el.shadowRoot.querySelectorAll('img').length",
+        )
+        assert image_count == 1, "the quoted image itself must survive, only its fetch is blocked"
+
+        assert third_party_requests == [], (
+            f"quoting an unallowlisted sender fetched: {third_party_requests}"
+        )
+
+
+class TestDraftReopenPreservesTheQuote:
+    """A reply saved as a draft before anything was typed, reopened and
+    sent without typing anything either -- the shape that previously lost
+    the plain-text quote on reopen, and could fail outright on send since
+    the HTML part still carried one and the text part did not."""
+
+    def test_reopening_and_sending_an_untouched_reply_draft_keeps_the_quote(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        mailpit_http_url: str,
+        editor_account: dict[str, Any],
+        drafts_folder: dict[str, Any],
+        plain_text_message: dict[str, Any],
+    ) -> None:
+        subject = "Re: Plain text original"
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, plain_text_message["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+        expect(page.locator(".quoted-message-attribution")).to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Save draft", exact=True).click()
+        expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
+
+        _trigger_sync(api_client, editor_account["id"])
+        draft = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, editor_account["id"], drafts_folder["id"])
+                 if m["subject"] == subject), None,
+            ),
+            timeout_s=60.0, description=f"Draft {subject!r} synced into Drafts",
+        )
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        _open_folder(page, drafts_folder)
+        mail_row(page, draft["id"]).click()
+        expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
+        expect(page.locator(".quoted-message-attribution")).to_be_visible(timeout=10_000)
+
+        # Nothing typed -- the exact shape that previously 400'd, since the
+        # HTML part still carried the quote (isEmpty() is false, an atom
+        # node) while the reconstructed plain-text part came back empty.
+        page.get_by_role("button", name="Send", exact=True).click()
+        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+
+        mailpit_message = wait_for_mailpit_message(mailpit_http_url, subject)
+        raw = httpx.get(
+            f"{mailpit_http_url}/api/v1/message/{mailpit_message['ID']}/raw", timeout=10.0,
+        )
+        assert raw.status_code == 200, raw.text
+        assert "> Original plain body line." in raw.text, (
+            "expected the plain-text quote to survive the reopened draft; "
+            f"raw source:\n{raw.text}"
+        )
 
 
 class TestCloseAndDiscard:

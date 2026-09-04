@@ -306,14 +306,18 @@ def _rewrite_style(match: re.Match[str], quote: str) -> str:
     )
 
 
-def _rewrite_remote_images(html: str) -> str:
+def rewrite_remote_images(html: str) -> str:
     """
     Replace img src, background and CSS url() references with data-x-*.
 
-    CID references (inline MIME images) are preserved as-is.
+    CID references (inline MIME images) are preserved as-is. Also used by
+    the quote endpoint in api/mails.py, on HTML that has already been
+    through sanitize_outbound_html rather than nh3.clean -- outbound's own
+    allowlist keeps src attributes quoted the same way nh3 does, which is
+    the only thing the regexes above rely on.
 
     Args:
-        html: Raw email HTML
+        html: Sanitized email HTML
 
     Returns:
         HTML with remote images blocked
@@ -359,7 +363,7 @@ def sanitize_email_html(html: str) -> str:
         link_rel="noopener noreferrer",
         url_schemes={"http", "https", "mailto", "cid", "data"},
     )
-    return _rewrite_remote_images(cleaned)
+    return rewrite_remote_images(cleaned)
 
 
 _META_COLOR_SCHEME_RE = re.compile(
