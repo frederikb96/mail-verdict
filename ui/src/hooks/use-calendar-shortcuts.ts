@@ -9,16 +9,11 @@
 "use client";
 
 import { useEffect } from "react";
-import { useAtom, useSetAtom } from "jotai";
-import {
-  calendarDateAtom,
-  calendarViewAtom,
-  eventDeleteRequestAtom,
-  selectedEventAtom,
-  type CalendarViewMode,
-} from "@/lib/atoms";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { calendarDateAtom, calendarViewAtom, eventDeleteRequestAtom, selectedEventAtom } from "@/lib/atoms";
 import { addDays, addMonths, addWeeks } from "@/lib/dates";
 import { isEditableElement } from "@/lib/utils";
+import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 
 interface UseCalendarShortcutsOptions {
   /** Called on "n" to open the create-event editor. */
@@ -26,16 +21,19 @@ interface UseCalendarShortcutsOptions {
 }
 
 export function useCalendarShortcuts({ onCreate }: UseCalendarShortcutsOptions = {}) {
-  const [view, setView] = useAtom(calendarViewAtom);
-  const setDate = useSetAtom(calendarDateAtom);
+  const view = useAtomValue(calendarViewAtom);
+  const date = useAtomValue(calendarDateAtom);
+  const navigate = useCalendarNavigate();
   const [selected, setSelected] = useAtom(selectedEventAtom);
   const setDeleteRequest = useSetAtom(eventDeleteRequestAtom);
 
   useEffect(() => {
+    // push: false -- j/k held down or repeated must not fill the
+    // back-button history with one entry per period stepped through.
     function step(dir: 1 | -1) {
-      if (view === "day") setDate((d) => addDays(d, dir));
-      else if (view === "week") setDate((d) => addWeeks(d, dir));
-      else setDate((d) => addMonths(d, dir));
+      if (view === "day") navigate({ date: addDays(date, dir) }, { push: false });
+      else if (view === "week") navigate({ date: addWeeks(date, dir) }, { push: false });
+      else navigate({ date: addMonths(date, dir) }, { push: false });
     }
 
     function handleKeyDown(e: KeyboardEvent) {
@@ -43,19 +41,19 @@ export function useCalendarShortcuts({ onCreate }: UseCalendarShortcutsOptions =
 
       switch (e.key) {
         case "t":
-          setDate(new Date());
+          navigate({ date: new Date() });
           break;
         case "d":
-          setView("day" as CalendarViewMode);
+          navigate({ view: "day" });
           break;
         case "w":
-          setView("week" as CalendarViewMode);
+          navigate({ view: "week" });
           break;
         case "m":
-          setView("month" as CalendarViewMode);
+          navigate({ view: "month" });
           break;
         case "a":
-          setView("agenda" as CalendarViewMode);
+          navigate({ view: "agenda" });
           break;
         case "n":
           onCreate?.();
@@ -82,5 +80,5 @@ export function useCalendarShortcuts({ onCreate }: UseCalendarShortcutsOptions =
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [view, selected, setDate, setView, setSelected, setDeleteRequest, onCreate]);
+  }, [view, date, selected, navigate, setSelected, setDeleteRequest, onCreate]);
 }

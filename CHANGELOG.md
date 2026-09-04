@@ -14,6 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
+- The calendar's view and date live in the URL now (`?view=week&date=2026-09-04`), so reloading
+  or sharing a link lands on the right place, and the browser's back button undoes a view switch
+  or a jump to a specific day the way it does everywhere else in the application. Continuous
+  navigation -- the toolbar's prev/next, the keyboard shortcuts, scrolling the month view -- keeps
+  the URL accurate without spending a history entry on every step
+- Clicking the calendar header's month/year title opens a picker: a month grid for the current
+  year, and clicking the year switches to a year grid to jump further
+- The day/week view remembers where it was scrolled to, restored across switching views and
+  coming back, and Ctrl+scroll wheel zooms its vertical density -- both persist
+- A Calendar section under Settings holds the default length a new event gets: a click on empty
+  grid space creates one that long, and a drag snaps to boundaries that many minutes apart. Was a
+  fixed 15 minutes; the default is now 30
 
 ### Fixed
 
@@ -47,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A calendar can now be hidden from the sidebar and the event editor entirely (in the manage
   dialog), independent of the sidebar's own per-view visibility checkbox — two levels rather
   than one flag serving both
+- The event editor's Calendar picker offers only enabled calendars, so it is not as long as the
+  full list a deployment with many synced collections would otherwise show
+- The week view's header shows the week number in brackets after the date range, the way the
+  month view's own gutter already does
 
 ## [3.1.1] - 2026-09-03
 

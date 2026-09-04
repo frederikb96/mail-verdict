@@ -8,6 +8,8 @@ api_client, never a mock.
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -1206,3 +1208,126 @@ class TestCalendarUi:
 
         page.get_by_role("tab", name="Day", exact=True).click()
         expect(toolbar_title).to_have_text(today_title, timeout=10_000)
+
+
+class TestCalendarNavigation:
+    """View, date, scroll position and zoom -- none of this needs a
+    synced calendar, so it runs against a bare app_server rather than
+    sharing TestCalendarUi's DAV fixtures."""
+
+    def test_switching_views_updates_the_url_and_survives_the_back_button(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards: view and date lived in a plain
+        in-memory atom with no URL of their own, so a reload always
+        landed back on the default view and the browser's back button
+        did nothing -- switching from Week into Day left no trace to
+        return from."""
+        page.goto(f"{app_server}/calendar")
+        expect(page).to_have_url(re.compile(r"[?&]view=week(&|$)"))
+
+        page.get_by_role("tab", name="Day", exact=True).click()
+        expect(page).to_have_url(re.compile(r"[?&]view=day(&|$)"))
+        expect(page.get_by_role("tab", name="Day", exact=True)).to_have_attribute(
+            "aria-selected", "true",
+        )
+
+        page.go_back()
+        expect(page).to_have_url(re.compile(r"[?&]view=week(&|$)"))
+        expect(page.get_by_role("tab", name="Week", exact=True)).to_have_attribute(
+            "aria-selected", "true",
+        )
+
+    def test_a_day_reached_from_the_month_view_can_be_left_by_going_back(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The concrete case named for this feature: jumping from the
+        month view into a specific day, then going back, must return to
+        the month view rather than landing somewhere else entirely."""
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Month", exact=True).click()
+        expect(page).to_have_url(re.compile(r"[?&]view=month(&|$)"))
+
+        # Today's own cell, not just "the first day-cell button": the
+        # month grid is a virtualized, continuously scrolling list still
+        # settling its render window right after a mount, and .first
+        # picks up whatever week currently sits first in DOM order --
+        # liable to be unmounted and replaced mid-click. Today's date is
+        # always inside the render window the anchor date opens with.
+        today_iso = page.evaluate(
+            "() => { const d = new Date(); "
+            "return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') "
+            "+ '-' + String(d.getDate()).padStart(2, '0'); }"
+        )
+        day_cell = page.locator(f'button[data-date="{today_iso}"]')
+        expect(day_cell).to_be_visible(timeout=15_000)
+        day_cell.click()
+        expect(page).to_have_url(re.compile(r"[?&]view=day(&|$)"))
+
+        page.go_back()
+        expect(page).to_have_url(re.compile(r"[?&]view=month(&|$)"))
+
+    def test_month_year_picker_jumps_to_a_chosen_month(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """Clicking the header title opens a month grid for the current
+        year first; clicking the year switches to a year grid."""
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Month", exact=True).click()
+
+        current_year = page.evaluate("new Date().getFullYear()")
+        target_year = current_year - 1
+
+        page.get_by_test_id("calendar-toolbar-title").click()
+        page.get_by_role("button", name=str(current_year), exact=True).click()
+        page.get_by_role("button", name=str(target_year), exact=True).click()
+        page.get_by_role("button", name="Mar", exact=True).click()
+
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            f"March {target_year}", timeout=10_000,
+        )
+
+    def test_time_grid_scroll_position_persists_across_view_changes(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards: the day/week grid always scrolled
+        to a fixed 08:00 (or an hour before now) on every mount, so
+        leaving a view and coming back -- even switching from week to
+        day on the same date -- lost exactly where the reader was."""
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Day", exact=True).click()
+        scroller = page.locator('[data-testid="time-grid-scroll"]')
+        expect(scroller).to_be_visible(timeout=15_000)
+
+        scroller.evaluate("(el) => { el.scrollTop = 500; }")
+        # Past the debounce that keeps the persisted write off every
+        # scroll frame.
+        page.wait_for_timeout(600)
+
+        page.get_by_role("tab", name="Month", exact=True).click()
+        page.get_by_role("tab", name="Week", exact=True).click()
+
+        restored = page.locator('[data-testid="time-grid-scroll"]')
+        expect(restored).to_be_visible(timeout=15_000)
+        scroll_top = restored.evaluate("(el) => el.scrollTop")
+        assert abs(scroll_top - 500) < 5, f"expected scrollTop near 500, got {scroll_top}"
+
+    def test_ctrl_wheel_zooms_the_time_grid_and_the_zoom_persists(
+        self, page: Page, app_server: str,
+    ) -> None:
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Day", exact=True).click()
+        scroller = page.locator('[data-testid="time-grid-scroll"]')
+        expect(scroller).to_be_visible(timeout=15_000)
+
+        box = scroller.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.keyboard.down("Control")
+        page.mouse.wheel(0, -600)
+        page.keyboard.up("Control")
+        page.wait_for_timeout(300)
+
+        stored = page.evaluate("() => localStorage.getItem('mailverdict:calendar-zoom')")
+        assert stored is not None, "zoom was never persisted"
+        assert json.loads(stored) > 1.0, f"expected zoom > 1.0 after zooming in, got {stored}"

@@ -8,17 +8,19 @@ import { TimeGrid } from "@/components/calendar/time-grid";
 import { AgendaList } from "@/components/calendar/agenda-list";
 import { EventPopover } from "@/components/calendar/event-popover";
 import type { SelectEventHandler } from "@/components/calendar/layout";
+import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
+import { useCalendarUrlSync } from "@/hooks/use-calendar-url-sync";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
-  calendarDateAtom,
   calendarViewAtom,
   eventPopoverAnchorAtom,
   selectedEventAtom,
 } from "@/lib/atoms";
 
 export function CalendarPage() {
-  const [view, setView] = useAtom(calendarViewAtom);
-  const setCalendarDate = useSetAtom(calendarDateAtom);
+  useCalendarUrlSync();
+  const [view] = useAtom(calendarViewAtom);
+  const navigate = useCalendarNavigate();
   const setSelectedEvent = useSetAtom(selectedEventAtom);
   const setAnchor = useSetAtom(eventPopoverAnchorAtom);
   const isMobile = useIsMobile();
@@ -36,19 +38,13 @@ export function CalendarPage() {
   );
 
   const handleSelectDay = useCallback(
-    (date: Date) => {
-      setCalendarDate(date);
-      setView("day");
-    },
-    [setCalendarDate, setView],
+    (date: Date) => navigate({ view: "day", date }),
+    [navigate],
   );
 
   const handleSelectWeek = useCallback(
-    (date: Date) => {
-      setCalendarDate(date);
-      setView("week");
-    },
-    [setCalendarDate, setView],
+    (date: Date) => navigate({ view: "week", date }),
+    [navigate],
   );
 
   const effectiveView = isMobile && view === "week" ? "day" : view;

@@ -13,7 +13,6 @@
 
 import { useCallback, useRef, useState } from "react";
 
-export const SNAP_MINUTES = 15;
 export const MINUTES_PER_DAY = 24 * 60;
 
 export interface GridGhost {
@@ -30,15 +29,22 @@ export interface GridGhost {
 interface UseGridDragOptions {
   columns: number;
   pixelsPerMinute: number;
+  /** Both the snap granularity and a click-to-create's default length --
+   * settings.calendar.default_event_duration_minutes, threaded down by
+   * the caller rather than read here, so this hook stays free of a query
+   * dependency. */
+  snapMinutes: number;
   onCommitMove?: (ghost: GridGhost) => void;
   onCommitCreate?: (ghost: GridGhost) => void;
 }
 
-function snap(minutes: number): number {
-  return Math.round(minutes / SNAP_MINUTES) * SNAP_MINUTES;
-}
-
-export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCreate }: UseGridDragOptions) {
+export function useGridDrag({
+  columns, pixelsPerMinute, snapMinutes, onCommitMove, onCommitCreate,
+}: UseGridDragOptions) {
+  const snap = useCallback(
+    (minutes: number) => Math.round(minutes / snapMinutes) * snapMinutes,
+    [snapMinutes],
+  );
   const [ghost, setGhost] = useState<GridGhost | null>(null);
   const originRef = useRef<{
     startMin: number;
@@ -96,12 +102,12 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
         objectId: "__new__",
         recurrenceId: null,
         startMin: min,
-        endMin: min + SNAP_MINUTES,
+        endMin: min + snapMinutes,
         column,
         kind: "create",
       });
     },
-    [minutesFromClientY],
+    [minutesFromClientY, snap, snapMinutes],
   );
 
   const updateDrag = useCallback(
@@ -121,19 +127,19 @@ export function useGridDrag({ columns, pixelsPerMinute, onCommitMove, onCommitCr
         const startMin = Math.max(0, Math.min(MINUTES_PER_DAY - duration, origin.startMin + delta));
         setGhost((g) => (g ? { ...g, startMin, endMin: startMin + duration, column } : g));
       } else if (ghost.kind === "resize-start") {
-        const startMin = Math.min(origin.endMin - SNAP_MINUTES, Math.max(0, snap(pointerMin)));
+        const startMin = Math.min(origin.endMin - snapMinutes, Math.max(0, snap(pointerMin)));
         setGhost((g) => (g ? { ...g, startMin } : g));
       } else if (ghost.kind === "resize-end") {
-        const endMin = Math.max(origin.startMin + SNAP_MINUTES, Math.min(MINUTES_PER_DAY, snap(pointerMin)));
+        const endMin = Math.max(origin.startMin + snapMinutes, Math.min(MINUTES_PER_DAY, snap(pointerMin)));
         setGhost((g) => (g ? { ...g, endMin } : g));
       } else if (ghost.kind === "create") {
         const current = snap(pointerMin);
         const startMin = Math.min(origin.startMin, current);
-        const endMin = Math.max(origin.startMin + SNAP_MINUTES, current);
+        const endMin = Math.max(origin.startMin + snapMinutes, current);
         setGhost((g) => (g ? { ...g, startMin, endMin, column } : g));
       }
     },
-    [ghost, minutesFromClientY, columnFromClientX],
+    [ghost, minutesFromClientY, columnFromClientX, snap, snapMinutes],
   );
 
   const commit = useCallback(() => {

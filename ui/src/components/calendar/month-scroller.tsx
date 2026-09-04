@@ -18,7 +18,8 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useAtom } from "jotai";
+import { useAtomValue } from "jotai";
+import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 import { calendarDateAtom } from "@/lib/atoms";
 import {
   WEEK_INDEX_MAX,
@@ -50,7 +51,8 @@ interface MonthScrollerProps {
 }
 
 export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onSelectWeek }: MonthScrollerProps) {
-  const [calendarDate, setCalendarDate] = useAtom(calendarDateAtom);
+  const calendarDate = useAtomValue(calendarDateAtom);
+  const navigate = useCalendarNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [rowHeight, setRowHeight] = useState(MIN_ROW_HEIGHT);
@@ -192,9 +194,11 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     const week = Math.floor(top / rowHeightRef.current) + WEEK_INDEX_MIN;
     if (week !== currentWeekRef.current) {
       currentWeekRef.current = week;
-      setCalendarDate(weekIndexToDate(week));
+      // push: false -- this fires on every week scrolled past, and must
+      // not fill the back-button history with one entry each.
+      navigate({ date: weekIndexToDate(week) }, { push: false });
     }
-  }, [setCalendarDate, updateMonthLabel]);
+  }, [navigate, updateMonthLabel]);
 
   const firstVisible = Math.floor(scrollTop / rowHeight) + WEEK_INDEX_MIN;
   const lastVisible = Math.floor((scrollTop + viewportHeight) / rowHeight) + WEEK_INDEX_MIN;
