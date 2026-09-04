@@ -1,5 +1,7 @@
 /** Date and size formatting utilities. */
 
+import { format as formatDate } from "date-fns";
+
 /**
  * Format a date string as a relative time (e.g., "2h ago", "Yesterday")
  * or absolute date for older items.
@@ -92,6 +94,63 @@ export function parseAddressList(value: string): string[] {
     .split(/[,;]/)
     .map((a) => a.trim())
     .filter(Boolean);
+}
+
+function isValidCalendarDate(date: Date, month: number, day: number, year?: number): boolean {
+  if (Number.isNaN(date.getTime())) return false;
+  // `new Date` silently rolls an out-of-range day/month forward (Feb 30
+  // becomes Mar 2) instead of failing -- round-tripping the parts is what
+  // catches that.
+  return (
+    date.getMonth() === month - 1 &&
+    date.getDate() === day &&
+    (year === undefined || date.getFullYear() === year)
+  );
+}
+
+export interface ContactBirthdayParts {
+  year: number | null;
+  month: number;
+  day: number;
+}
+
+/** A vCard BDAY value carries whatever shape the sending app chose to
+ * write, verbatim -- a full `YYYY-MM-DD`, RFC 6350's year-less `--MM-DD` /
+ * `--MMDD` (common: "we know the birthday, not the birth year"), or free
+ * text. `new Date(raw)` throws on the year-less forms and on anything
+ * date-fns' `format()` then can't format, which is the "invalid time
+ * value" crash a malformed or partial birthday produced. Returns `null`
+ * for whatever it cannot confidently parse. */
+export function parseContactBirthday(raw: string): ContactBirthdayParts | null {
+  const trimmed = raw.trim();
+
+  let m = /^--(\d{2})-?(\d{2})$/.exec(trimmed);
+  if (m) {
+    const month = Number(m[1]);
+    const day = Number(m[2]);
+    const date = new Date(2000, month - 1, day);
+    return isValidCalendarDate(date, month, day) ? { year: null, month, day } : null;
+  }
+
+  m = /^(\d{4})-?(\d{2})-?(\d{2})$/.exec(trimmed);
+  if (m) {
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    const date = new Date(year, month - 1, day);
+    return isValidCalendarDate(date, month, day, year) ? { year, month, day } : null;
+  }
+
+  return null;
+}
+
+/** For display: `null` for anything that cannot be confidently parsed, so
+ * a caller can render nothing rather than either garbage or a crash. */
+export function formatContactBirthday(raw: string): string | null {
+  const parts = parseContactBirthday(raw);
+  if (!parts) return null;
+  const date = new Date(parts.year ?? 2000, parts.month - 1, parts.day);
+  return formatDate(date, parts.year !== null ? "MMMM d, yyyy" : "MMMM d");
 }
 
 /** A permissive shape check -- one @ with something on each side, no

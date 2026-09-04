@@ -7,8 +7,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useAtom } from "jotai";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
+import { selectedContactIdAtom } from "@/lib/atoms";
 import type { ContactCreateRequest, ContactSearchHit, ContactUpdateRequest } from "@/types/api";
 
 export const contactKeys = {
@@ -40,6 +43,39 @@ export function useContacts(addressbookId?: string, q?: string) {
     staleTime: 60_000,
     placeholderData: keepPreviousData,
   });
+}
+
+/** The open contact lives in the URL (`?id=...`), the way an open message
+ * does -- linkable and survives the back button. The URL is the source of
+ * truth: this hook mirrors it into `selectedContactIdAtom` on every
+ * navigation (including back/forward), and `selectContact` is the one way
+ * to change it. A caller must not write the atom directly, or the two
+ * fall out of sync the next time the URL changes. Needs a Suspense
+ * boundary above it (see app/contacts/page.tsx) -- `useSearchParams()`
+ * requires one under this app's static export. */
+export function useContactSelection() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [selectedId, setSelectedId] = useAtom(selectedContactIdAtom);
+
+  useEffect(() => {
+    setSelectedId(searchParams.get("id"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  const selectContact = useCallback(
+    (id: string | null) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (id) params.set("id", id);
+      else params.delete("id");
+      const qs = params.toString();
+      router.push(`${pathname}${qs ? `?${qs}` : ""}`, { scroll: false });
+    },
+    [router, pathname, searchParams],
+  );
+
+  return { selectedId, selectContact };
 }
 
 export function useContact(id: string | null) {

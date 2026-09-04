@@ -12,23 +12,24 @@ import {
   Pencil,
   Phone,
   StickyNote,
+  Tag,
   Trash2,
   UserRound,
 } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ContactEditor } from "@/components/contacts/contact-editor";
-import { useContact, useDeleteContact } from "@/hooks/use-contacts";
-import { composeIntentAtom, selectedContactIdAtom } from "@/lib/atoms";
-import { getInitials } from "@/lib/format";
-import { format } from "@/lib/dates";
+import { useContact, useContactSelection, useDeleteContact } from "@/hooks/use-contacts";
+import { composeIntentAtom } from "@/lib/atoms";
+import { formatContactBirthday, getInitials } from "@/lib/format";
 
 export function ContactDetail({ contactId }: { contactId: string }) {
   const { data: contact, isLoading } = useContact(contactId);
   const deleteContact = useDeleteContact();
   const setComposeIntent = useSetAtom(composeIntentAtom);
-  const setSelectedId = useSetAtom(selectedContactIdAtom);
+  const { selectContact } = useContactSelection();
   const [editorOpen, setEditorOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -45,6 +46,7 @@ export function ContactDetail({ contactId }: { contactId: string }) {
       <div className="flex items-start justify-between gap-3 border-b p-4">
         <div className="flex items-center gap-3">
           <Avatar size="lg">
+            {contact.photo?.kind === "embedded" && <AvatarImage src={contact.photo.url} />}
             <AvatarFallback>{getInitials(contact.summary)}</AvatarFallback>
           </Avatar>
           <div>
@@ -108,6 +110,7 @@ export function ContactDetail({ contactId }: { contactId: string }) {
             {contact.phones.map((p, i) => (
               <span key={i} className="text-sm">
                 {p.number}
+                {p.type && <span className="ml-1.5 text-xs text-muted-foreground">{p.type}</span>}
               </span>
             ))}
           </div>
@@ -122,24 +125,30 @@ export function ContactDetail({ contactId }: { contactId: string }) {
             {contact.addresses.map((a, i) => (
               <span key={i} className="whitespace-pre-line text-sm">
                 {a.text}
+                {a.label && <span className="ml-1.5 text-xs text-muted-foreground">{a.label}</span>}
               </span>
             ))}
           </div>
         )}
 
-        {contact.birthday && (
+        {contact.birthday && formatContactBirthday(contact.birthday) && (
           <div className="flex items-center gap-1.5 text-sm">
             <Cake className="h-3.5 w-3.5 text-muted-foreground" />
-            {format(new Date(contact.birthday), "MMMM d, yyyy")}
+            {formatContactBirthday(contact.birthday)}
           </div>
         )}
 
-        {contact.url && (
-          <div className="flex items-center gap-1.5 text-sm">
-            <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
-            <a href={contact.url} target="_blank" rel="noreferrer" className="underline">
-              {contact.url}
-            </a>
+        {contact.urls.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Link2 className="h-3.5 w-3.5" />
+              Website
+            </span>
+            {contact.urls.map((u) => (
+              <a key={u} href={u} target="_blank" rel="noreferrer" className="text-sm underline">
+                {u}
+              </a>
+            ))}
           </div>
         )}
 
@@ -157,6 +166,22 @@ export function ContactDetail({ contactId }: { contactId: string }) {
               Notes
             </span>
             <p className="whitespace-pre-line text-sm">{contact.notes}</p>
+          </div>
+        )}
+
+        {contact.categories.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Tag className="h-3.5 w-3.5" />
+              Categories
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {contact.categories.map((c) => (
+                <Badge key={c} variant="outline">
+                  {c}
+                </Badge>
+              ))}
+            </div>
           </div>
         )}
 
@@ -178,7 +203,7 @@ export function ContactDetail({ contactId }: { contactId: string }) {
           deleteContact.mutate(contact.id, {
             onSuccess: () => {
               setConfirmDelete(false);
-              setSelectedId(null);
+              selectContact(null);
             },
           })
         }

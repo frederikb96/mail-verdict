@@ -702,6 +702,11 @@ export const api = {
     search(q: string): Promise<ContactSearchHit[]> {
       return request(`/contacts/search${qs({ q })}`);
     },
+    /** The one contact carrying this address, or null -- what a sender's
+     * avatar/name lookup resolves against. */
+    resolveByEmail(email: string): Promise<Contact | null> {
+      return request(`/contacts/resolve${qs({ email })}`);
+    },
     create(data: ContactCreateRequest): Promise<Contact> {
       return request("/contacts", { method: "POST", body: JSON.stringify(data) });
     },

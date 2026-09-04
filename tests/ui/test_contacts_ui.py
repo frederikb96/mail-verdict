@@ -117,11 +117,44 @@ def seeded_contact(api_client: httpx.Client, addressbook: dict[str, Any]) -> dic
 
 
 def _labeled_field(page: Page, label_text: str) -> Locator:
-    """contact-editor.tsx's Label elements carry no htmlFor/id pointing at
-    their input, so get_by_label() cannot find it -- scoped instead to the
-    one "grid gap-1.5" wrapper div that holds both the label and its own
-    field, the only structural relationship there is between them."""
+    """Several of contact-editor.tsx's repeatable fields (Phone, Address,
+    Website) hold more than one input under one Label with no single
+    htmlFor to point at, so get_by_label() cannot resolve them -- scoped
+    instead to the one "grid gap-1.5" wrapper div that holds both the
+    label and its own field(s), the only structural relationship there is
+    between them."""
     return page.locator("div.grid").filter(has_text=label_text).locator("input, textarea").first
+
+
+@pytest.fixture(scope="module")
+def contact_with_year_less_birthday(
+    api_client: httpx.Client, addressbook: dict[str, Any],
+) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/contacts",
+        json={
+            "addressbook_id": addressbook["id"], "summary": f"No Year Birthday {uuid.uuid4()}",
+            "emails": [{"email": f"{uuid.uuid4().hex[:8]}@example.com"}],
+            "birthday": "--09-15",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.fixture(scope="module")
+def contact_with_no_birthday(
+    api_client: httpx.Client, addressbook: dict[str, Any],
+) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/contacts",
+        json={
+            "addressbook_id": addressbook["id"], "summary": f"No Birthday At All {uuid.uuid4()}",
+            "emails": [{"email": f"{uuid.uuid4().hex[:8]}@example.com"}],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
 
 
 class TestContactsUi:
@@ -159,6 +192,67 @@ class TestContactsUi:
 
         contact = wait_for(_created, description="Created contact synced back")
         assert contact["addressbook_id"] == addressbook["id"]
+
+    def test_creating_a_contact_with_phone_year_less_birthday_and_categories(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        addressbook: dict[str, Any],
+    ) -> None:
+        """The editor's expanded field set -- phone with a type, a
+        year-less birthday, and categories -- all reach the stored vCard.
+        Address and photo share the same repeatable-row/upload machinery
+        already proven for phone/email above and are covered end to end
+        by the vcard.py unit and pg tests instead of a second UI pass."""
+        name = f"UI Fields Test {uuid.uuid4()}"
+        email = f"{uuid.uuid4().hex[:8]}@example.com"
+
+        page.goto(f"{app_server}/contacts")
+        page.get_by_role("button", name="New contact", exact=True).click()
+
+        name_input = page.get_by_label("Name", exact=True)
+        expect(name_input).to_be_visible(timeout=15_000)
+        name_input.fill(name)
+        page.get_by_label("Email", exact=True).fill(email)
+
+        page.get_by_role("button", name="Add phone", exact=True).click()
+        page.get_by_placeholder("Number", exact=True).fill("+491701234567")
+        page.get_by_placeholder("Type", exact=True).fill("cell")
+
+        page.locator("label").filter(has_text="I don't know the year").locator("input").check()
+        page.locator("select").nth(0).select_option(label="September")
+        page.locator("select").nth(1).select_option(value="15")
+
+        page.get_by_label("Categories", exact=True).fill("Friend, Work")
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(name_input).to_be_hidden(timeout=10_000)
+
+        # Creating leaves nothing selected -- open the new row to check
+        # what actually got saved.
+        expect(page.get_by_text(name, exact=True)).to_be_visible(timeout=10_000)
+        page.get_by_text(name, exact=True).click()
+
+        detail = page.locator(
+            f"xpath=//h2[normalize-space(text())='{name}']"
+            "/ancestor::div[contains(@class,'overflow-y-auto')][1]"
+        )
+        expect(detail.get_by_text("September 15", exact=True)).to_be_visible(timeout=10_000)
+        expect(detail.get_by_text("Friend", exact=True)).to_be_visible()
+        expect(detail.get_by_text("Work", exact=True)).to_be_visible()
+
+        def _created() -> dict[str, Any] | None:
+            resp = api_client.get("/api/contacts", params={"q": name})
+            assert resp.status_code == 200, resp.text
+            contacts = resp.json()["contacts"]
+            return contacts[0] if contacts else None
+
+        contact = wait_for(_created, description="Created contact synced back")
+        assert contact["addressbook_id"] == addressbook["id"]
+        assert contact["birthday"] == "--09-15"
+        assert contact["phones"] == [{"number": "+491701234567", "type": "cell"}]
+        assert set(contact["categories"]) == {"Friend", "Work"}
 
     def test_editing_a_contact_adds_details_and_search_finds_the_secondary_email(
         self,
@@ -227,10 +321,11 @@ class TestContactsUi:
         page.get_by_placeholder("Search contacts").fill(secondary_email)
         # The detail pane still shows this same contact (untouched by the
         # search), so its own name heading is a second match for plain
-        # text -- the list row itself is a <button>, which get_by_text
-        # doesn't resolve to, so the role-based, substring locator finds
-        # only the search result.
-        expect(page.get_by_role("button", name=name)).to_be_visible(timeout=10_000)
+        # text -- scoped to the list panel (contact-list.tsx's own
+        # data-slot) rather than the page as a whole finds only the
+        # search result row.
+        contact_list = page.locator('[data-slot="contact-list"]')
+        expect(contact_list.get_by_text(name, exact=True)).to_be_visible(timeout=10_000)
 
     def test_recipient_field_arrow_down_enter_commits_the_highlighted_suggestion(
         self,
@@ -296,3 +391,109 @@ class TestContactsUi:
             page.get_by_text("Not a valid email address: not-an-address", exact=True)
         ).to_be_visible(timeout=10_000)
         expect(page.get_by_text("not-an-address", exact=True)).to_have_count(0)
+
+
+class TestBirthdayCrash:
+    """The regression this guards: opening a contact whose birthday is a
+    partial or missing date threw "invalid time value" and took the whole
+    page down -- date-fns' format() on new Date("--09-15") (year-less,
+    RFC 6350's own shape for "we know the birthday, not the birth year").
+    A card must render everything it can and stay quiet about what it
+    cannot parse, never crash."""
+
+    def test_a_year_less_birthday_renders_without_the_year(
+        self,
+        page: Page,
+        app_server: str,
+        contact_with_year_less_birthday: dict[str, Any],
+    ) -> None:
+        name = contact_with_year_less_birthday["summary"]
+        page.goto(f"{app_server}/contacts")
+        page.get_by_text(name, exact=True).click()
+
+        detail = page.locator(
+            f"xpath=//h2[normalize-space(text())='{name}']"
+            "/ancestor::div[contains(@class,'overflow-y-auto')][1]"
+        )
+        expect(detail.get_by_text("September 15", exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("Something went wrong", exact=False)).to_have_count(0)
+
+    def test_a_contact_with_no_birthday_at_all_renders(
+        self,
+        page: Page,
+        app_server: str,
+        contact_with_no_birthday: dict[str, Any],
+    ) -> None:
+        name = contact_with_no_birthday["summary"]
+        page.goto(f"{app_server}/contacts")
+        page.get_by_text(name, exact=True).click()
+
+        expect(page.get_by_role("heading", name=name, exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("Something went wrong", exact=False)).to_have_count(0)
+
+
+class TestUrlReflectsSelection:
+    def test_opening_a_contact_updates_the_url_and_survives_the_back_button(
+        self, page: Page, app_server: str, seeded_contact: dict[str, Any],
+    ) -> None:
+        page.goto(f"{app_server}/contacts")
+        page.get_by_text(seeded_contact["summary"], exact=True).click()
+
+        expect(page).to_have_url(re.compile(rf"[?&]id={seeded_contact['id']}"), timeout=10_000)
+
+        page.go_back()
+        expect(page).not_to_have_url(re.compile(rf"[?&]id={seeded_contact['id']}"), timeout=10_000)
+
+    def test_a_direct_link_to_a_contact_opens_it(
+        self, page: Page, app_server: str, seeded_contact: dict[str, Any],
+    ) -> None:
+        page.goto(f"{app_server}/contacts?id={seeded_contact['id']}")
+        expect(
+            page.get_by_role("heading", name=seeded_contact["summary"], exact=True)
+        ).to_be_visible(timeout=15_000)
+
+
+class TestMultiSelection:
+    def test_shift_click_selects_a_range_and_bulk_delete_removes_it(
+        self, page: Page, app_server: str, api_client: httpx.Client, addressbook: dict[str, Any],
+    ) -> None:
+        names = [f"UI Multiselect {uuid.uuid4()}" for _ in range(3)]
+        for name in names:
+            resp = api_client.post(
+                "/api/contacts",
+                json={
+                    "addressbook_id": addressbook["id"], "summary": name,
+                    "emails": [{"email": f"{uuid.uuid4().hex[:8]}@example.com"}],
+                },
+            )
+            assert resp.status_code == 201, resp.text
+
+        # The list sorts alphabetically by summary, not by creation order --
+        # the shift-click range is the first-to-last row *as shown*, so the
+        # endpoints have to be the alphabetically first/last of the three,
+        # not names[0]/names[2] from this (UUID-ordered) list.
+        shown_order = sorted(names)
+
+        page.goto(f"{app_server}/contacts")
+        first_checkbox = page.get_by_label(f"Select {shown_order[0]}")
+        expect(first_checkbox).to_be_hidden(timeout=10_000)
+        page.get_by_text(shown_order[0], exact=True).hover()
+        first_checkbox.click()
+
+        page.get_by_text(shown_order[2], exact=True).hover()
+        page.get_by_label(f"Select {shown_order[2]}").click(modifiers=["Shift"])
+
+        expect(page.get_by_text("3 selected", exact=True)).to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Delete", exact=True).click()
+        page.get_by_role("button", name="Delete permanently", exact=True).click()
+
+        for name in names:
+            expect(page.get_by_text(name, exact=True)).to_have_count(0)
+
+        def _all_deleted() -> bool | None:
+            resp = api_client.get("/api/contacts", params={"q": "UI Multiselect"})
+            assert resp.status_code == 200, resp.text
+            return all(c["summary"] not in names for c in resp.json()["contacts"]) or None
+
+        wait_for(_all_deleted, description="Bulk-deleted contacts gone")

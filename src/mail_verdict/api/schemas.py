@@ -1262,6 +1262,17 @@ class ContactAddressIO(BaseModel):
     text: str
 
 
+class ContactPhotoOut(BaseModel):
+    """`kind="embedded"` -- `url` is a self-contained `data:` URI, already
+    in the mirror, safe to render with no network request. `kind="url"`
+    -- `url` is a third party's address; a caller must run it through the
+    same remote-content allowlist any other remote image does before ever
+    putting it in an `<img src>`, never fetch it unconditionally."""
+
+    kind: Literal["embedded", "url"]
+    url: str
+
+
 class ContactResponse(BaseModel):
     id: uuid.UUID
     addressbook_id: uuid.UUID
@@ -1274,8 +1285,10 @@ class ContactResponse(BaseModel):
     phones: list[ContactPhoneIO]
     addresses: list[ContactAddressIO]
     birthday: str | None
-    url: str | None
+    urls: list[str]
     notes: str | None
+    categories: list[str]
+    photo: ContactPhotoOut | None
 
 
 class ContactListResponse(BaseModel):
@@ -1300,8 +1313,11 @@ class ContactCreateRequest(BaseModel):
     phones: list[ContactPhoneIO] = Field(default_factory=list)
     addresses: list[ContactAddressIO] = Field(default_factory=list)
     birthday: str | None = None
-    url: str | None = None
+    urls: list[str] = Field(default_factory=list)
     notes: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    # A data: URI, as a browser's FileReader hands back an uploaded image.
+    photo_data_url: str | None = None
 
 
 class ContactUpdateRequest(BaseModel):
@@ -1312,5 +1328,8 @@ class ContactUpdateRequest(BaseModel):
     phones: list[ContactPhoneIO] | None = None
     addresses: list[ContactAddressIO] | None = None
     birthday: str | None = None
-    url: str | None = None
+    urls: list[str] | None = None
     notes: str | None = None
+    categories: list[str] | None = None
+    # "" clears an existing photo; None (unset) leaves it untouched.
+    photo_data_url: str | None = None

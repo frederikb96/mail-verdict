@@ -1,18 +1,17 @@
 "use client";
 
-import { useAtom } from "jotai";
 import { ArrowLeft, Contact as ContactIcon, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContactList } from "@/components/contacts/contact-list";
 import { ContactDetail } from "@/components/contacts/contact-detail";
 import { ContactEditor } from "@/components/contacts/contact-editor";
+import { useContactSelection } from "@/hooks/use-contacts";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { selectedContactIdAtom } from "@/lib/atoms";
 import { useState } from "react";
 
 export function ContactsPage() {
   const isMobile = useIsMobile();
-  const [selectedId, setSelectedId] = useAtom(selectedContactIdAtom);
+  const { selectedId, selectContact } = useContactSelection();
   const [newOpen, setNewOpen] = useState(false);
 
   if (isMobile) {
@@ -21,7 +20,7 @@ export function ContactsPage() {
         {selectedId ? (
           <>
             <div className="flex items-center border-b px-2 py-1">
-              <Button variant="ghost" size="sm" className="gap-1" onClick={() => setSelectedId(null)}>
+              <Button variant="ghost" size="sm" className="gap-1" onClick={() => selectContact(null)}>
                 <ArrowLeft className="h-4 w-4" />
                 Back
               </Button>
