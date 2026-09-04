@@ -146,6 +146,12 @@ class ThreadResponse(BaseModel):
     messages: list[MessageDetail]
 
 
+class MessageQuoteResponse(BaseModel):
+    """A message's body as safe-to-send HTML, for a reply or forward quote."""
+
+    html: str
+
+
 class MessageActionRequest(BaseModel):
     """Request to perform an action on a message."""
 

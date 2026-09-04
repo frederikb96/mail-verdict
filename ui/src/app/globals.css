@@ -128,3 +128,87 @@
     @apply font-sans;
   }
 }
+
+/* The compose editor's own content, not the mail it may quote -- a
+   quoted message renders through email-renderer.tsx's shadow-root
+   styles instead, since it is content this application did not author. */
+@layer components {
+  .mail-editor .ProseMirror {
+    outline: none;
+    min-height: 100%;
+  }
+  .mail-editor .ProseMirror p {
+    margin: 0 0 0.5em 0;
+  }
+  .mail-editor .ProseMirror p:last-child {
+    margin-bottom: 0;
+  }
+  .mail-editor .ProseMirror h1,
+  .mail-editor .ProseMirror h2,
+  .mail-editor .ProseMirror h3 {
+    font-weight: 600;
+    margin: 0.5em 0;
+  }
+  .mail-editor .ProseMirror ul,
+  .mail-editor .ProseMirror ol {
+    padding-left: 1.5em;
+    margin: 0 0 0.5em 0;
+  }
+  .mail-editor .ProseMirror ul {
+    list-style: disc;
+  }
+  .mail-editor .ProseMirror ol {
+    list-style: decimal;
+  }
+  .mail-editor .ProseMirror blockquote {
+    border-left: 3px solid var(--border);
+    margin: 0.5em 0;
+    padding-left: 1em;
+    color: var(--muted-foreground);
+  }
+  .mail-editor .ProseMirror pre {
+    background: var(--muted);
+    padding: 0.5em 0.75em;
+    border-radius: 0.375rem;
+    overflow-x: auto;
+    font-size: 0.8125rem;
+  }
+  .mail-editor .ProseMirror pre code {
+    background: none;
+    padding: 0;
+  }
+  .mail-editor .ProseMirror code {
+    background: var(--muted);
+    border-radius: 0.25rem;
+    padding: 0.1em 0.3em;
+    font-size: 0.85em;
+  }
+  .mail-editor .ProseMirror hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1em 0;
+  }
+  .mail-editor .ProseMirror a {
+    color: var(--primary);
+    text-decoration: underline;
+  }
+}
+
+.quoted-message-node {
+  margin: 0.5em 0;
+}
+.quoted-message-attribution {
+  font-size: 0.8125rem;
+  color: var(--muted-foreground);
+  margin-bottom: 0.25em;
+}
+.quoted-message-toggle {
+  font-size: 0.75rem;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-bottom: 0.25em;
+}

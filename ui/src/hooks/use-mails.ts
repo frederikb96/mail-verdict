@@ -19,6 +19,7 @@ import type {
   FolderResponse,
   MessageActionRequest,
   MessageListResponse,
+  MessageQuoteResponse,
   MessageSummary,
   ThreadResponse,
 } from "@/types/api";
@@ -65,6 +66,7 @@ export const mailKeys = {
     ) as string[],
   detail: (id: string) => ["mail", id] as const,
   thread: (id: string) => ["thread", id] as const,
+  quote: (id: string) => ["mail-quote", id] as const,
 };
 
 export function useMailList(
@@ -107,6 +109,21 @@ export function useThread(mailId: string | null) {
     queryFn: () => api.mails.thread(mailId!),
     enabled: !!mailId,
     staleTime: 30_000,
+  });
+}
+
+/** A message's body as safe-to-send HTML, for reopening a draft or
+ * embedding it as a reply/forward quote -- see draft-editor.tsx and
+ * reply-box.tsx. staleTime: Infinity, since the underlying message never
+ * changes once it exists and this is fetched fresh on every mount anyway
+ * (a compose surface never stays open long enough for the cache's
+ * default staleness to matter). */
+export function useMessageQuote(mailId: string | null) {
+  return useQuery<MessageQuoteResponse>({
+    queryKey: mailKeys.quote(mailId!),
+    queryFn: () => api.mails.quote(mailId!),
+    enabled: !!mailId,
+    staleTime: Infinity,
   });
 }
 

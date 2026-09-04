@@ -43,6 +43,7 @@ import type {
   MessageActionResponse,
   MessageDetail,
   MessageListResponse,
+  MessageQuoteResponse,
   NotificationCountResponse,
   NotificationResponse,
   OutboxCreateRequest,
@@ -270,6 +271,11 @@ export const api = {
     /** The message's RFC822 source as a .eml download. */
     rawUrl(messageId: string): string {
       return `${BASE_URL}/messages/${messageId}/raw`;
+    },
+
+    /** The message's body as safe-to-send HTML, for a reply or forward quote. */
+    quote(id: string): Promise<MessageQuoteResponse> {
+      return request(`/messages/${id}/quote`);
     },
   },
 

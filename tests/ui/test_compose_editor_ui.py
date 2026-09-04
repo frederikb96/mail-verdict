@@ -1,0 +1,253 @@
+"""
+The rich-text composer: pasted HTML keeps its formatting, long content
+scrolls inside its own box rather than growing it without bound, a reply
+embeds the original as a real quote rather than a lossy text dump, and
+every composer surface can be closed -- with a prompt to save or discard
+when there is unsaved work, the gap that most annoyed the owner.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import httpx
+import pytest
+from playwright.sync_api import Page, expect
+
+from tests.setup.mail_delivery import build_eml, deliver_message
+from tests.ui.helpers import (
+    select_account,
+    unique_email,
+    wait_for,
+    wait_for_account_active,
+    wait_for_folder,
+)
+
+from tests.setup.containers import (  # isort: skip
+    DOVECOT_ALIAS,
+    DOVECOT_IMAP_PORT,
+    DOVECOT_PASSWORD,
+    MAILPIT_ALIAS,
+    MAILPIT_SMTP_PORT,
+)
+
+
+@pytest.fixture(scope="module")
+def editor_account(
+    api_client: httpx.Client, dovecot_endpoint: tuple[str, int, int],
+) -> dict[str, Any]:
+    """An active account with one HTML message in INBOX to reply to."""
+    host, _imap_port, lmtp_port = dovecot_endpoint
+    email = unique_email("editor")
+
+    message = build_eml(
+        sender="sender@example.com", recipient=email, subject="Quoted original",
+        message_id=f"<editor-{uuid.uuid4()}@example.com>",
+        body="<h1>Original heading</h1><p>Original body text.</p>",
+        content_type="text/html; charset=utf-8",
+    )
+    deliver_message(message, host, lmtp_port, sender="sender@example.com", recipient=email)
+
+    resp = api_client.post(
+        "/api/accounts",
+        json={
+            "name": email,
+            "imap_host": DOVECOT_ALIAS,
+            "imap_port": DOVECOT_IMAP_PORT,
+            "imap_user": email,
+            "imap_password": DOVECOT_PASSWORD,
+            "smtp_host": MAILPIT_ALIAS,
+            "smtp_port": MAILPIT_SMTP_PORT,
+            "smtp_user": email,
+            "smtp_password": "unused",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    account = resp.json()
+    wait_for_account_active(api_client, account["id"])
+    account["email"] = email
+    return account
+
+
+@pytest.fixture(scope="module")
+def inbox_folder(api_client: httpx.Client, editor_account: dict[str, Any]) -> dict[str, Any]:
+    return wait_for_folder(api_client, str(editor_account["id"]), "INBOX")
+
+
+@pytest.fixture(scope="module")
+def original_message(
+    api_client: httpx.Client, editor_account: dict[str, Any], inbox_folder: dict[str, Any],
+) -> dict[str, Any]:
+    def _find() -> dict[str, Any] | None:
+        resp = api_client.get(
+            f"/api/accounts/{editor_account['id']}/messages",
+            params={"folder_id": inbox_folder["id"]},
+        )
+        return next((m for m in resp.json()["messages"] if m["subject"] == "Quoted original"), None)
+
+    return wait_for(_find, description="Original message synced into INBOX")
+
+
+def _open_thread(
+    page: Page, app_server: str, account: dict[str, Any], message: dict[str, Any],
+) -> None:
+    page.goto(app_server)
+    select_account(page, account)
+    page.locator(f'[data-testid="mail-row"][data-mail-id="{message["id"]}"]').click()
+
+
+def _dispatch_paste(locator, html: str, text: str) -> None:
+    """Simulate a clipboard paste offering both flavours -- the same event
+    shape a real browser paste dispatches, so ProseMirror's own clipboard
+    handling (not a mock of it) is what runs."""
+    locator.evaluate(
+        """(el, { html, text }) => {
+            const dt = new DataTransfer();
+            dt.setData('text/html', html);
+            dt.setData('text/plain', text);
+            const event = new ClipboardEvent('paste', {
+                clipboardData: dt, bubbles: true, cancelable: true,
+            });
+            el.dispatchEvent(event);
+        }""",
+        {"html": html, "text": text},
+    )
+
+
+class TestPasteAndScroll:
+    def test_pasted_html_keeps_its_formatting(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """The reported failure: rich content pasted from a note app
+        arrived as raw HTML source, literally, as text. Offering the
+        text/html clipboard flavour is what a source that also offers
+        text/plain HTML source fails to do -- this is the case the editor
+        fixes outright, the paste event's own text/html flavour winning."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        _dispatch_paste(body, "<p>plain <strong>bold</strong> text</p>", "plain bold text")
+
+        expect(body.locator("strong")).to_have_text("bold")
+        # Never as literal, visible source -- the exact failure reported.
+        expect(body).not_to_contain_text("<strong>")
+
+    def test_long_content_scrolls_inside_the_composer_rather_than_growing_it(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        long_text = "\n\n".join(f"Paragraph {i} of a very long message." for i in range(80))
+        _dispatch_paste(body, "", long_text)
+
+        scroller = dialog.locator('[data-testid="mail-editor-scroll"]')
+        overflowing = scroller.evaluate("(el) => el.scrollHeight > el.clientHeight")
+        assert overflowing, "the editor's content did not exceed its own box -- inconclusive"
+
+        # The dialog itself stays within the viewport -- it is the inner
+        # box that scrolls, not the page around it.
+        dialog_box = dialog.bounding_box()
+        viewport = page.viewport_size
+        assert dialog_box is not None and viewport is not None
+        assert dialog_box["height"] <= viewport["height"]
+
+
+class TestReplyQuoting:
+    def test_reply_embeds_the_original_as_a_collapsible_quote(
+        self,
+        page: Page,
+        app_server: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        attribution = page.locator(".quoted-message-attribution")
+        expect(attribution).to_be_visible(timeout=10_000)
+        expect(attribution).to_contain_text("wrote:")
+
+        toggle = page.locator(".quoted-message-toggle")
+        expect(toggle).to_have_text("Show quoted text")
+        toggle.click()
+        expect(toggle).to_have_text("Hide quoted text")
+
+        host = page.locator('[data-testid="quoted-message-shadow-host"]')
+        quoted_heading = host.evaluate(
+            "(el) => el.shadowRoot.querySelector('h1')?.textContent ?? ''",
+        )
+        assert quoted_heading == "Original heading"
+
+
+class TestCloseAndDiscard:
+    def test_closing_a_dirty_reply_prompts_to_save_or_discard(
+        self,
+        page: Page,
+        app_server: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        """The gap that most annoyed the owner: no way out of a reply in
+        progress at all. Typing, then Close, has to ask rather than
+        silently drop what was typed."""
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply in progress.")
+
+        page.get_by_role("button", name="Close", exact=True).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Discard", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        # Back to the collapsed Reply/Reply all/Forward row -- the typed
+        # text is gone, discarded rather than left stranded on screen.
+        expect(page.get_by_role("button", name="Reply", exact=True)).to_be_visible()
+
+    def test_closing_a_clean_reply_needs_no_prompt(
+        self,
+        page: Page,
+        app_server: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+        expect(page.get_by_role("button", name="Close", exact=True)).to_be_visible()
+
+        page.get_by_role("button", name="Close", exact=True).click()
+        expect(page.get_by_role("dialog", name="Save this message?")).not_to_be_visible()
+        expect(page.get_by_role("button", name="Reply", exact=True)).to_be_visible()
+
+    def test_escaping_a_dirty_compose_dialog_prompts_instead_of_discarding_silently(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        dialog.get_by_test_id("mail-editor-body").click()
+        dialog.get_by_test_id("mail-editor-body").type("Unsaved compose text.")
+
+        page.keyboard.press("Escape")
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Cancel", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        # The compose dialog's own content survived underneath -- Escape
+        # did not silently discard it, the actual failure being guarded.
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "Unsaved compose text.",
+        )

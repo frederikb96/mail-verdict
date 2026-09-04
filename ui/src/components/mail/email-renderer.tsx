@@ -91,8 +91,13 @@ function writeStoredCanvasChoice(messageId: string, canvas: Canvas): void {
   }
 }
 
-/** CSS injected into the Shadow DOM for email rendering. */
-function getEmailStyles(canvas: Canvas): string {
+/** CSS injected into the Shadow DOM for email rendering.
+ *
+ * Exported for the compose editor's quoted-message node, which renders a
+ * quoted or forwarded message's own HTML the same way -- isolated in a
+ * shadow root, on the light canvas mail is always written against -- and
+ * has no reason to keep a second copy of this ruleset. */
+export function getEmailStyles(canvas: Canvas): string {
   const isDark = canvas === "dark";
   return `
     :host {

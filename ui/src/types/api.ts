@@ -434,9 +434,17 @@ export interface OutboxCreateRequest {
   body_html?: string;
   in_reply_to?: string;
   references?: string[];
+  /** The identity to send as. Falls back to the account's default
+   * identity, or accounts.imap_user if it has none at all. */
+  identity_id?: string;
   /** The messages.id of a draft this row replaces -- editing or sending a
    * draft leaves no duplicate behind. Requires PostIMAP >= 1.4.0. */
   replaces_message_id?: string;
+}
+
+/** A message's body as safe-to-send HTML, for a reply or forward quote. */
+export interface MessageQuoteResponse {
+  html: string;
 }
 
 export interface OutboxAttachmentSummary {
