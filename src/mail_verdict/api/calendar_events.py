@@ -37,6 +37,7 @@ implemented here -- flagged in the report as unfinished.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -63,7 +64,7 @@ from mail_verdict.calendar.repository import (
     DavObjectRepository,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import DavCollection, DavObject, Identity, Outbox
+from mail_verdict.database.models import CalendarPrefs, DavCollection, DavObject, Identity, Outbox
 from mail_verdict.postimap.actions import (
     create_object,
     delete_object,
@@ -191,6 +192,55 @@ async def _to_instance(
     )
 
 
+# Expanding recurrence has no await point of its own -- it is icalendar
+# parsing plus dateutil's RRULE walk, both plain CPU, and a month view
+# can carry one such object per visible calendar. Run the whole batch
+# once on a worker thread rather than the request's own coroutine, so it
+# cannot hold up every other request sharing this process's one event
+# loop while it works. The budget below is the backstop for a single
+# object recurring-ical-events cannot expand quickly despite that: a
+# thread has no cooperative way to be interrupted mid-walk, so timing out
+# abandons the wait rather than the underlying computation -- that
+# object's occurrences are simply missing from the response, the same
+# best-effort contract this view already keeps for a parse failure.
+_EXPANSION_TIMEOUT_SECONDS = 10.0
+
+
+def _expand_all_sync(
+    objects: list[DavObject], window_start: datetime, window_end: datetime,
+) -> dict[uuid.UUID, list[ical.ParsedEvent]]:
+    expanded: dict[uuid.UUID, list[ical.ParsedEvent]] = {}
+    for obj in objects:
+        try:
+            expanded[obj.id] = ical.expand_instances(obj.data, window_start, window_end)
+        except Exception:
+            # A single malformed or pathological object (an unparseable
+            # body, or one that would expand past the occurrence bound)
+            # must never take the whole month view down with it -- catch
+            # broadly rather than ValueError alone, since a library-level
+            # parse failure is not guaranteed to be one.
+            logger.warning(
+                "Skipping calendar object %s in month view", obj.id, exc_info=True,
+            )
+    return expanded
+
+
+async def _expand_all(
+    objects: list[DavObject], window_start: datetime, window_end: datetime,
+) -> dict[uuid.UUID, list[ical.ParsedEvent]]:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_expand_all_sync, objects, window_start, window_end),
+            timeout=_EXPANSION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Calendar expansion exceeded %.0fs for %d objects; returning none of them",
+            _EXPANSION_TIMEOUT_SECONDS, len(objects),
+        )
+        return {}
+
+
 @router.get("", response_model=EventListResponse)
 async def list_events(month: str, calendars: str | None = None) -> EventListResponse:
     """Every instance (recurring series expanded) in one calendar-month
@@ -208,20 +258,39 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
     all_prefs = await prefs_repo.list_all()
 
     requested_ids = {uuid.UUID(c) for c in calendars.split(",") if c} if calendars else None
-    visible: list[tuple[DavCollection, str | None]] = []
+    candidates: list[tuple[DavCollection, CalendarPrefs | None]] = []
     for collection, _account in pairs:
         if requested_ids is not None and collection.id not in requested_ids:
             continue
         prefs = all_prefs.get(collection.id)
         if requested_ids is None and prefs is not None and not prefs.is_visible:
             continue
-        identity_email = None
-        if prefs is not None and prefs.identity_id is not None:
-            async with db.session() as session:
-                identity_email = await session.scalar(
-                    select(Identity.email).where(Identity.id == prefs.identity_id)
-                )
-        visible.append((collection, identity_email))
+        candidates.append((collection, prefs))
+
+    # One query for every identity a visible calendar is linked to,
+    # instead of one per calendar -- list_by_kind already returned every
+    # collection there is, so this was a request-shaped fan-out over a
+    # fixed, small set that a single IN() covers just as well.
+    identity_ids = {
+        prefs.identity_id for _, prefs in candidates
+        if prefs is not None and prefs.identity_id is not None
+    }
+    identity_emails: dict[uuid.UUID, str] = {}
+    if identity_ids:
+        async with db.session() as session:
+            result = await session.execute(
+                select(Identity.id, Identity.email).where(Identity.id.in_(identity_ids))
+            )
+            identity_emails = dict(result.tuples().all())
+
+    visible: list[tuple[DavCollection, str | None]] = [
+        (
+            collection,
+            identity_emails.get(prefs.identity_id)
+            if prefs is not None and prefs.identity_id is not None else None,
+        )
+        for collection, prefs in candidates
+    ]
 
     collection_ids = [c.id for c, _ in visible]
     objects = await object_repo.list_in_collections(collection_ids, window_start, window_end)
@@ -229,19 +298,12 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
     identity_by_collection = {c.id: email for c, email in visible}
     read_only_by_collection = {c.id: c.read_only for c, _ in visible}
 
+    expanded = await _expand_all(objects, window_start, window_end)
+
     events: list[EventInstanceOut] = []
     for obj in objects:
-        try:
-            instances = ical.expand_instances(obj.data, window_start, window_end)
-        except Exception:
-            # A single malformed or pathological object (an unparseable
-            # body, or one that would expand past the occurrence bound)
-            # must never take the whole month view down with it -- catch
-            # broadly rather than ValueError alone, since a library-level
-            # parse failure is not guaranteed to be one.
-            logger.warning(
-                "Skipping calendar object %s in month view", obj.id, exc_info=True,
-            )
+        instances = expanded.get(obj.id)
+        if instances is None:
             continue
         for parsed in instances:
             events.append(

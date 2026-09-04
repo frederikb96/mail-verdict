@@ -4,6 +4,7 @@ dataclass out."""
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -1200,3 +1201,43 @@ class TestPropertyPreservation:
         assert "EXDATE" in _master_component(merged)
         assert len(exceptions) == 1
         assert exceptions[0].summary == "Weekly standup (moved once more)"
+
+
+class TestExpansionCost:
+    """expand_instances() must cost about what the requested window
+    needs, not about how far in the past the series started -- a daily
+    reminder set up years ago is an entirely ordinary calendar object,
+    not a pathological one, and a month view touches every recurring
+    series across every visible calendar on each request."""
+
+    @staticmethod
+    def _old_daily(dtstart_date: str) -> str:
+        return (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n"
+            f"UID:old-{dtstart_date}@example.com\r\nDTSTAMP:20100101T000000Z\r\n"
+            f"DTSTART:{dtstart_date}T090000Z\r\nDTEND:{dtstart_date}T093000Z\r\n"
+            "SUMMARY:Daily reminder\r\nRRULE:FREQ=DAILY\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+    def test_several_old_daily_series_expand_quickly(self) -> None:
+        """Five series, DTSTART two to five decades before the window,
+        each generating a routine 30 occurrences inside it -- the shape
+        a handful of long-running daily reminders across a real
+        person's calendars actually has, and what one month view
+        expands on every request. A widening-probe expansion strategy
+        re-walks each series from its own start once per probe, so this
+        alone measured several seconds; a single query.between() call
+        per series pays that walk once."""
+        window_start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        window_end = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        started = time.perf_counter()
+        for dtstart_date in ("19700101", "19750101", "19800101", "19850101", "19900101"):
+            instances = ical.expand_instances(
+                self._old_daily(dtstart_date), window_start, window_end,
+            )
+            assert len(instances) == 30
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 2.5, (
+            f"expanding five decades-old daily series took {elapsed:.2f}s"
+        )
