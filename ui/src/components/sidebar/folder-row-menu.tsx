@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useFolderBulkAction } from "@/hooks/use-selection";
+import { useToast } from "@/hooks/use-toast";
 
 interface FolderRowMenuProps {
   accountId: string;
@@ -34,6 +35,21 @@ export function FolderRowMenu({
 }: FolderRowMenuProps) {
   const [confirmEmpty, setConfirmEmpty] = useState(false);
   const folderAction = useFolderBulkAction();
+  const { push: pushToast } = useToast();
+
+  // A whole-folder write is resolved as one statement over however many
+  // rows match -- measured at tens of seconds for a large folder, all of
+  // it server-side before the request even returns. Said up front so the
+  // menu doesn't look like it did nothing while it works.
+  const warnIfSlow = (label: string, count: number) => {
+    if (count > 0) {
+      pushToast(
+        `${label} ${count} message${count === 1 ? "" : "s"} -- this can take a while for a large folder.`,
+        "info",
+        6000,
+      );
+    }
+  };
 
   return (
     <span
@@ -64,7 +80,10 @@ export function FolderRowMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem
-            onClick={() => folderAction.mutate({ accountId, folderId, action: "mark_read" })}
+            onClick={() => {
+              warnIfSlow("Marking", totalCount);
+              folderAction.mutate({ accountId, folderId, action: "mark_read" });
+            }}
           >
             Mark all as read
           </DropdownMenuItem>
@@ -87,12 +106,13 @@ export function FolderRowMenu({
           "from the mail server. It cannot be undone."
         }
         isConfirming={folderAction.isPending}
-        onConfirm={() =>
+        onConfirm={() => {
+          warnIfSlow("Deleting", totalCount);
           folderAction.mutate(
             { accountId, folderId, action: "expunge" },
             { onSuccess: () => setConfirmEmpty(false) },
-          )
-        }
+          );
+        }}
       />
     </span>
   );

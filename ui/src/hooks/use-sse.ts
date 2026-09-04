@@ -17,13 +17,34 @@ import {
   mailKeys,
   refreshMailFromServer,
   removeMailFromAllListCaches,
-  removeMailFromCache,
 } from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
 import type { OutboxStatus, SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
+
+/**
+ * A bulk write over a whole folder fires one postimap_events NOTIFY per
+ * row -- thousands for a large folder, all arriving over SSE in a burst
+ * far tighter than any one of them takes to handle. mail.new/mail.updated/
+ * mail.deleted are collected into this buffer instead of acting per
+ * event, and flushed at most once per FLUSH_INTERVAL_MS: a fixed-window
+ * throttle rather than a debounce, since a debounce that keeps resetting
+ * on every new event in a continuous flood would never fire until the
+ * whole burst finished, leaving the interface looking frozen for however
+ * long the write takes.
+ */
+const FLUSH_INTERVAL_MS = 500;
+
+/**
+ * Below this many distinct changed messages in one flush window, patch
+ * each individually (one bounded fetch per row, via refreshMailFromServer)
+ * -- the ordinary single- or few-message-action case. At or above it,
+ * fetching one row at a time *is* the storm; treat the whole window as a
+ * bulk change and do one bounded list refresh instead.
+ */
+const PATCH_BURST_THRESHOLD = 20;
 
 const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" | "warning" | "error" } | null> = {
   pending: null,
@@ -45,7 +66,48 @@ export function useSSE(accountId?: string) {
   const sourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Buffered mail.new/mail.updated/mail.deleted state -- see FLUSH_INTERVAL_MS.
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingNewOrMovedRef = useRef(false);
+  const pendingUpdatedIdsRef = useRef<Set<string>>(new Set());
+  const pendingRemovedIdsRef = useRef<Set<string>>(new Set());
+  const pendingFolderCountsRef = useRef(false);
+
   useEffect(() => {
+    function flushPending() {
+      flushTimerRef.current = null;
+      const removed = pendingRemovedIdsRef.current;
+      const updated = pendingUpdatedIdsRef.current;
+      const hadNewOrMoved = pendingNewOrMovedRef.current;
+      const hadFolderCounts = pendingFolderCountsRef.current;
+      pendingRemovedIdsRef.current = new Set();
+      pendingUpdatedIdsRef.current = new Set();
+      pendingNewOrMovedRef.current = false;
+      pendingFolderCountsRef.current = false;
+
+      for (const id of removed) removeMailFromAllListCaches(queryClient, id);
+
+      if (updated.size > 0) {
+        if (updated.size < PATCH_BURST_THRESHOLD) {
+          for (const id of updated) void refreshMailFromServer(queryClient, id);
+        } else {
+          // A burst this wide is a bulk action, not a handful of edits --
+          // fetching one row at a time here would itself be the storm.
+          invalidateMailListsBounded(queryClient);
+        }
+      }
+
+      if (hadNewOrMoved) invalidateMailListsBounded(queryClient);
+      if (hadFolderCounts || hadNewOrMoved || removed.size > 0 || updated.size > 0) {
+        invalidateAllFolderCaches(queryClient);
+      }
+    }
+
+    function scheduleFlush() {
+      if (flushTimerRef.current) return;
+      flushTimerRef.current = setTimeout(flushPending, FLUSH_INTERVAL_MS);
+    }
+
     function connect() {
       // Clean up previous
       if (sourceRef.current) {
@@ -97,21 +159,23 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries();
       });
 
+      // mail.new/mail.updated/mail.deleted are buffered rather than acted
+      // on per event: a bulk write over a whole folder fires one of these
+      // per row (thousands, for a large folder), all in a burst far
+      // tighter than handling even one of them takes -- see
+      // FLUSH_INTERVAL_MS. Each handler below only records into the
+      // pending buffer and schedules a flush; flushPending is what
+      // actually touches the cache.
       source.addEventListener("mail.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
-          // A truly new row's data isn't in the event -- only a fetch gets
-          // it, and a shallowly-loaded list gets one immediately; a deeply
-          // scrolled one is marked stale and catches up on its own later,
-          // rather than this firing hundreds of page refetches at once.
-          invalidateMailListsBounded(queryClient);
-          if (data.folder_id) {
-            invalidateAllFolderCaches(queryClient);
-          }
+          pendingNewOrMovedRef.current = true;
+          if (data.folder_id) pendingFolderCountsRef.current = true;
         } catch {
           // Ignore
         }
+        scheduleFlush();
       });
 
       source.addEventListener("mail.updated", (e: MessageEvent) => {
@@ -119,27 +183,30 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           // Message events carry the row's id as `id`, not `message_id`
-          // (that name is verdict.issued's own convention).
+          // (that name is verdict.issued's own convention). Thread
+          // invalidation stays immediate -- it targets one specific
+          // cached query key and only ever costs a real fetch if that
+          // exact thread happens to be the one open, so it never fans out
+          // into the kind of storm the list/detail paths below guard
+          // against.
           if (data.id) {
             queryClient.invalidateQueries({ queryKey: mailKeys.thread(data.id) });
             if (data.changed?.includes("folder_id")) {
               // Moved out of whatever folder cache held it; the folder it
-              // moved into (if currently viewed) catches up via the bounded
-              // refetch below rather than a fetch reconstructing the row.
-              removeMailFromCache(queryClient, data.id);
-              invalidateMailListsBounded(queryClient);
+              // moved into (if currently viewed) catches up via the
+              // bounded refresh the flush issues, rather than a fetch
+              // reconstructing the row.
+              pendingRemovedIdsRef.current.add(data.id);
+              pendingNewOrMovedRef.current = true;
             } else {
-              // Only the changed columns' new names are on the event, not
-              // their values -- one bounded fetch of this row patches both
-              // its detail cache and every list row for it, never a full
-              // list refetch.
-              void refreshMailFromServer(queryClient, data.id);
+              pendingUpdatedIdsRef.current.add(data.id);
             }
           }
-          invalidateAllFolderCaches(queryClient);
+          pendingFolderCountsRef.current = true;
         } catch {
           // Ignore
         }
+        scheduleFlush();
       });
 
       source.addEventListener("mail.deleted", (e: MessageEvent) => {
@@ -147,15 +214,18 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           if (data.id) {
-            removeMailFromAllListCaches(queryClient, data.id);
+            pendingRemovedIdsRef.current.add(data.id);
           } else {
-            invalidateMailListsBounded(queryClient);
+            pendingNewOrMovedRef.current = true;
           }
         } catch {
-          invalidateMailListsBounded(queryClient);
+          pendingNewOrMovedRef.current = true;
         }
-        queryClient.invalidateQueries({ queryKey: ["unified", "folders"] });
-        queryClient.invalidateQueries({ queryKey: ["folders"] });
+        // invalidateAllFolderCaches (folders, folder-order, and unified
+        // together) already covers this on the batched flush below --
+        // no separate immediate call needed.
+        pendingFolderCountsRef.current = true;
+        scheduleFlush();
       });
 
       source.addEventListener("verdict.issued", (e: MessageEvent) => {
@@ -278,6 +348,10 @@ export function useSSE(accountId?: string) {
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
+      }
+      if (flushTimerRef.current) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
       }
       setConnectionState("disconnected");
     };

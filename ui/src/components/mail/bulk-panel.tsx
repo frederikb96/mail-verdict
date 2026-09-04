@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useBulkAction, useSelection } from "@/hooks/use-selection";
+import { useToast } from "@/hooks/use-toast";
 import { selectedAccountIdAtom } from "@/lib/atoms";
 import type { BulkActionType } from "@/types/api";
 
@@ -42,15 +43,31 @@ export function BulkPanel() {
   const bulkAction = useBulkAction();
   const { data: orderData } = useFolderOrder(state.predicate?.accountId ?? accountId);
   const [pending, setPending] = useState<PendingAction | null>(null);
+  const { push: pushToast } = useToast();
 
   const folders = orderData?.folders ?? [];
+
+  const execute = (action: BulkActionType, targetFolderId: string | undefined, label: string) => {
+    // A predicate write is resolved as one statement over however many
+    // rows match -- measured at tens of seconds for a large folder, all
+    // of it server-side before the request even returns. Say so up front
+    // rather than leaving the panel looking hung while it works.
+    if (state.predicate) {
+      pushToast(
+        `Applying ${label.toLowerCase()} to ${count} messages -- this can take a while for a large selection.`,
+        "info",
+        6000,
+      );
+    }
+    bulkAction.mutate({ action, targetFolderId });
+  };
 
   const run = (action: BulkActionType, targetFolderId: string | undefined, label: string) => {
     if (state.predicate && DESTRUCTIVE_SCOPE_ACTIONS.includes(action)) {
       setPending({ action, targetFolderId, label });
       return;
     }
-    bulkAction.mutate({ action, targetFolderId });
+    execute(action, targetFolderId, label);
   };
 
   return (
@@ -116,7 +133,7 @@ export function BulkPanel() {
         isConfirming={bulkAction.isPending}
         onConfirm={() => {
           if (!pending) return;
-          bulkAction.mutate({ action: pending.action, targetFolderId: pending.targetFolderId });
+          execute(pending.action, pending.targetFolderId, pending.label);
           setPending(null);
         }}
       />

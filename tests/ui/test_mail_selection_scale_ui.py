@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import re
 import uuid
 
 import pytest
@@ -215,4 +216,59 @@ class TestLargeMailboxSelectionUi:
             f"a single arriving message issued {len(list_requests)} requests to "
             f"the mail list endpoint on a deeply-scrolled folder: "
             f"{[r.url for r in list_requests]}"
+        )
+
+    def test_bulk_action_over_the_whole_mailbox_stays_bounded(
+        self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
+    ) -> None:
+        """PostIMAP's own trigger family fires one live-update event per
+        row -- a bulk write over the whole mailbox emits `_MAILBOX_SIZE`
+        of them in a burst far tighter than handling even one of them
+        takes. Marks the whole predicate-selected mailbox read through
+        the bulk panel (a single server-resolved statement, never an
+        enumerated id list) and counts requests from the moment it fires
+        through a quiet settling window -- unbounded per-event handling
+        would turn this one click into roughly `_MAILBOX_SIZE` of them."""
+        account_id, _folder_id, message_ids = big_mailbox
+        top_id = message_ids[-1]
+
+        _open_big_mailbox(page, app_server, account_id)
+        top_row = mail_row(page, top_id)
+        expect(top_row).to_be_visible(timeout=15_000)
+
+        page.get_by_role("switch", name="Group by conversation").click()
+        top_row.hover()
+        top_row.get_by_role("checkbox").click()
+        page.get_by_role("button", name="Select", exact=True).click()
+        page.get_by_role("menuitem", name="Every message in this folder", exact=True).click()
+        # Not pinned to _MAILBOX_SIZE exactly: an earlier test in this
+        # module inserts one more message into the same shared mailbox.
+        expect(page.get_by_text(re.compile(r"^\d+ selected$"))).to_be_visible(timeout=15_000)
+
+        requests: list[Request] = []
+        page.on(
+            "request",
+            lambda req: requests.append(req) if "/messages" in req.url or "/folders" in req.url
+            else None,
+        )
+
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Mark as read", exact=True,
+        ).click()
+
+        # The write itself is the slow part (one statement over however
+        # many rows match, server-side) -- wait for the bulk-action POST
+        # to resolve, then a further quiet window for the event burst it
+        # triggers to arrive and settle through the client's own
+        # throttled flush before counting.
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_have_count(
+            0, timeout=30_000,
+        )
+        page.wait_for_timeout(4000)
+
+        assert len(requests) <= 30, (
+            f"marking the whole {_MAILBOX_SIZE}-message mailbox read issued "
+            f"{len(requests)} requests -- expected a small, bounded number "
+            f"regardless of how many rows the write actually touched: "
+            f"{[r.url for r in requests]}"
         )

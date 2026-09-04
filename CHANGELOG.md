@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   request rather than looping a move per message
 - A row action in threaded mode names its scope (the thread's latest message) in its tooltip,
   rather than leaving it to guess at now that bulk selection sits beside it
+- A predicate-based bulk action ("select all") or a folder-wide menu action shows a heads-up that
+  it may take a while on a large folder -- the write itself is one statement over however many
+  rows match, resolved server-side before the request returns
 
 ### Fixed
 
@@ -57,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - An SSE-driven mail list refresh patches the affected row(s) directly instead of invalidating
   and refetching every already-loaded page -- a folder scrolled deep no longer turns one arriving
   or changed message into hundreds of requests
+- Live-update events (a message arriving, changing or leaving a folder) are collected and applied
+  in bounded batches rather than one at a time -- a bulk action fires one such event per affected
+  row, so a whole-folder action no longer turns a single click into thousands of individual
+  requests. A bulk action's own completion refresh now resets the affected list instead of
+  replaying every page it had loaded, for the same reason
 
 - A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
   already carried the requested flag -- only rows that actually changed count

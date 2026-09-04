@@ -119,7 +119,14 @@ export function useFolderBulkAction() {
       });
     },
     onSettled: () => {
-      qc.invalidateQueries({ queryKey: ["mails"] });
+      // resetQueries, not invalidateQueries: this can touch a whole large
+      // folder, and an infinite query's invalidate-refetch replays every
+      // already-loaded page sequentially with no cap -- reset instead
+      // wipes the cached pages and, for whatever's still observed, fetches
+      // page one only. The reader's scroll position is lost, which after a
+      // whole-folder action is the honest outcome: the list is either
+      // empty or unrecognisably different from what they were looking at.
+      qc.resetQueries({ queryKey: ["mails"] });
       invalidateAllFolderCaches(qc);
     },
   });
@@ -365,7 +372,13 @@ export function useBulkAction() {
 
     onSettled: () => {
       clearSelection();
-      qc.invalidateQueries({ queryKey: ["mails"] });
+      // resetQueries, not invalidateQueries -- a predicate selection can
+      // span a whole large folder, and an infinite query's invalidate
+      // replays every already-loaded page sequentially with no cap. Reset
+      // wipes the cached pages and fetches page one only for whatever's
+      // still observed; losing scroll position is the honest outcome for
+      // an action that just changed the folder wholesale.
+      qc.resetQueries({ queryKey: ["mails"] });
       qc.invalidateQueries({ queryKey: ["mail"] });
       invalidateAllFolderCaches(qc);
     },
