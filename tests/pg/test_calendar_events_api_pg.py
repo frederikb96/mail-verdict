@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +21,7 @@ from mail_verdict.api.calendars import router as calendars_router
 from mail_verdict.calendar import ical
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
+from mail_verdict.postimap.actions import create_object
 
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
@@ -1282,3 +1286,124 @@ class TestCreateWithComplexRrule:
             datetime(2026, 10, 5, 10, 0, tzinfo=timezone.utc),
             datetime(2026, 10, 19, 10, 0, tzinfo=timezone.utc),
         ]
+
+
+class TestEventLoopNotBlocked:
+    """A month view expands every recurring series across every visible
+    calendar synchronously, and that CPU-bound work holds the process's
+    one event loop unless it runs somewhere else. Proven behaviourally,
+    against a real ASGI app on a real event loop -- a handler that
+    touches nothing at all, polled while a burst of month requests is in
+    flight -- rather than by asserting the source calls a particular
+    function, which would pass on code that still blocks.
+
+    Running expansion on a worker thread does not make the handler free
+    of the burst entirely -- CPython's GIL still hands the interpreter
+    back and forth between the event loop thread and however many worker
+    threads are busy with pure-Python recurrence math, so a handler
+    touching nothing can still cost tens to a few hundred milliseconds
+    under a heavy concurrent burst rather than the low single digits it
+    costs standing alone. What the fix rules out is what actually caused
+    the outage: several *seconds* of complete unresponsiveness with
+    nothing scheduled at all, which is what pushed liveness past
+    Kubernetes' own readiness timeout and pulled the pod out of service.
+    The bound below is set against that timeout, not against an idle
+    baseline this burst was never going to reach."""
+
+    @staticmethod
+    async def _seed_old_recurring_calendar(
+        db: DatabaseConnection, series_count: int,
+    ) -> uuid.UUID:
+        """One calendar carrying several long-running daily series --
+        the ordinary shape a real mailbox's calendars have, not an
+        adversarial one, and what turns a month view's fixed per-object
+        cost into several seconds when it isn't kept off the loop."""
+        async with db.session() as session:
+            dav_account_id, collection_id = await _seed_calendar(session)
+            await session.commit()
+        for i in range(series_count):
+            data = ical.build_new_event(
+                summary=f"Old daily reminder {i}",
+                dtstart=datetime(1975 + i, 1, 1, 9, 0, tzinfo=timezone.utc),
+                dtend=datetime(1975 + i, 1, 1, 9, 30, tzinfo=timezone.utc),
+                rrule="FREQ=DAILY",
+            )
+            async with db.session() as session:
+                await create_object(
+                    session, dav_account_id=dav_account_id,
+                    collection_id=collection_id, data=data,
+                )
+        return collection_id
+
+    @pytest.mark.asyncio
+    async def test_a_handler_touching_nothing_stays_fast_during_a_calendar_burst(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = await self._seed_old_recurring_calendar(migrated_db, series_count=5)
+
+        app = FastAPI()
+        app.include_router(events_router)
+
+        @app.get("/live")
+        async def live() -> dict[str, str]:
+            """Shaped after /api/health/live in server.py: a literal
+            constant, no database, no await on anything at all."""
+            return {"status": "alive"}
+
+        months = ["2026-09", "2026-08", "2026-07", "2026-06", "2026-05", "2026-04"]
+        live_timings: list[float] = []
+        burst_done = asyncio.Event()
+
+        async def poll_live(client: httpx.AsyncClient) -> None:
+            # started is captured before the pacing sleep, not after --
+            # a stalled event loop delays the sleep's own wakeup exactly
+            # as much as it would delay the request that follows it, so
+            # timing only the request and starting the clock afterward
+            # would let that delay hide in the untimed gap instead of
+            # showing up in a measurement.
+            while not burst_done.is_set():
+                started = time.perf_counter()
+                await asyncio.sleep(0.01)
+                try:
+                    response = await asyncio.wait_for(client.get("/live"), timeout=5.0)
+                except TimeoutError:
+                    live_timings.append(time.perf_counter() - started)
+                    continue
+                live_timings.append(time.perf_counter() - started)
+                assert response.status_code == 200
+
+        async def fetch_month(client: httpx.AsyncClient, month: str) -> None:
+            response = await client.get(
+                "/calendar/events", params={"month": month, "calendars": str(calendar_id)},
+            )
+            assert response.status_code == 200
+
+        with patch(_TARGET, return_value=migrated_db):
+            transport = httpx.ASGITransport(app=app)
+            # Two separate clients (two separate connection pools) --
+            # sharing one would let the pool's own concurrency limit
+            # serialize the poller behind the burst, which is a
+            # connection-pool artifact, not the event-loop defect this
+            # test exists to catch.
+            async with (
+                httpx.AsyncClient(transport=transport, base_url="http://test") as burst_client,
+                httpx.AsyncClient(transport=transport, base_url="http://test") as poll_client,
+            ):
+                poller = asyncio.create_task(poll_live(poll_client))
+                await asyncio.gather(*(fetch_month(burst_client, m) for m in months))
+                burst_done.set()
+                await poller
+
+        assert len(live_timings) > 5, (
+            "the poller barely ran at all -- the event loop was not free enough "
+            "to service it during the burst"
+        )
+        # Kubernetes' own readiness probe against this endpoint uses a
+        # 5-second timeout with a 3-failure threshold -- an order of
+        # magnitude of headroom below that is what keeps a slow calendar
+        # from ever pulling the pod out of service again, the failure
+        # this test exists to catch.
+        assert max(live_timings) < 1.0, (
+            f"a handler touching nothing took up to {max(live_timings):.2f}s "
+            f"to respond while a calendar burst was in flight"
+        )

@@ -30,23 +30,12 @@ from icalendar import Calendar, Component, Event, Timezone, vCalAddress, vDDDTyp
 # TooManyOccurrencesError and _bounded_between().
 MAX_EXPANDED_OCCURRENCES = 3000
 
-# _bounded_between()'s first probe width, then doubled each round -- 15
-# minutes is recurring-ical-events' own choice of granularity floor for
-# its `after()` binary search (query.py's `min_time_span`), so a probe
-# this wide already catches FREQ=SECONDLY/MINUTELY within the first
-# round or two while costing little for an ordinary calendar.
-_PROBE_INITIAL_STEP = timedelta(minutes=15)
-
 
 class TooManyOccurrencesError(ValueError):
     """A series that could produce more than MAX_EXPANDED_OCCURRENCES
     occurrences inside the requested window -- raised once
     _bounded_between() has actually measured that many real occurrences,
-    never predicted from the RRULE's own text. Asking recurring-ical-events
-    to expand a FREQ=SECONDLY series over even a one-day window measures
-    at tens of seconds and hundreds of MB, synchronously, on the
-    process's only event loop -- and that One Big Call is what this
-    exists to avoid making at all."""
+    never predicted from the RRULE's own text."""
 
 
 def _bounded_between(
@@ -62,42 +51,42 @@ def _bounded_between(
     of surface for something whose failure mode is either a bypass (the
     original attack, respelled) or a false positive (a legitimate event
     silently absent). This instead measures what the library actually
-    produces, a bounded slice of the window at a time, so it is immune to
-    how the danger is spelled: query.between() is called on a small
-    sub-window first, doubling each round only while the running total
-    stays under the cap, so a call expensive enough to matter is never
-    made in the first place. Worst case computes on the order of
-    2 x MAX_EXPANDED_OCCURRENCES before giving up, however the series
-    that produced them is written.
+    produces and caps the result afterward.
 
-    Probing is what makes one occurrence reachable from several calls:
-    query.between() returns every occurrence *overlapping* the span it is
-    given, not only the ones starting inside it, so an occurrence wider
-    than the probes it touches comes back from each of them. An all-day
-    event on the window's first day is the worst of it -- the probes
-    there are still minutes and hours wide, so its one day overlaps seven
-    of them. Occurrences are therefore collected by identity, which also
-    keeps the cap measuring real occurrences rather than repeats of one.
-    query.between()'s own bounds are inclusive on both ends, so each
-    probe's query end is additionally nudged a microsecond short of the
-    next probe's start.
+    One call to query.between(), not a widening sequence of them. A
+    probing form of this function -- several progressively larger calls
+    starting from window_start, each meant to be cheaper than asking for
+    the whole window at once -- was tried and measured. It made every
+    ordinary long-running series (a daily reminder from a decade back is
+    all it takes) several times slower rather than cheaper: the
+    underlying rrule library has no way to skip forward to a lower bound,
+    so every between() call walks the series from its own start
+    regardless of how narrow a slice is asked for, and repeating that
+    walk on each probe multiplies its cost by the number of probes
+    instead of paying it once. It also does not protect against the
+    thing it was written for -- a high-frequency series with a distant
+    DTSTART hangs identically on the first, narrowest probe, since that
+    walk-from-the-start cost has nothing to do with the probe's width.
+    A single call pays the walk once, and the caller runs expansion off
+    the event loop with a time budget, which is what actually bounds a
+    series that never converges.
+
+    Occurrences are still collected by identity rather than trusted as
+    already-distinct: query.between() returns every occurrence
+    *overlapping* the span it is given, and de-duplicating costs nothing
+    when the underlying library already returns each once.
     """
+    query_end = window_end - timedelta(microseconds=1)
+    if query_end < window_start:
+        return []
     collected: dict[tuple[Any, ...], Any] = {}
-    probe_start = window_start
-    step = _PROBE_INITIAL_STEP
-    while probe_start < window_end:
-        probe_end = min(probe_start + step, window_end)
-        query_end = probe_end - timedelta(microseconds=1)
-        if query_end >= probe_start:
-            for occurrence in query.between(probe_start, query_end):
-                collected.setdefault(_occurrence_identity(occurrence), occurrence)
-        if len(collected) > MAX_EXPANDED_OCCURRENCES:
-            raise TooManyOccurrencesError(
-                f"more than {MAX_EXPANDED_OCCURRENCES} occurrences "
-                f"between {window_start.isoformat()} and {window_end.isoformat()}",
-            )
-        probe_start = probe_end
-        step = step * 2
+    for occurrence in query.between(window_start, query_end):
+        collected.setdefault(_occurrence_identity(occurrence), occurrence)
+    if len(collected) > MAX_EXPANDED_OCCURRENCES:
+        raise TooManyOccurrencesError(
+            f"more than {MAX_EXPANDED_OCCURRENCES} occurrences "
+            f"between {window_start.isoformat()} and {window_end.isoformat()}",
+        )
     return list(collected.values())
 
 

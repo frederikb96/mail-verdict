@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The calendar month view no longer costs several seconds per request regardless of how much it
+  returns, and no longer holds up every other request while it works. A long-running recurring
+  series (a daily reminder set up years ago is all it takes) was re-walked from its own start
+  once per probe by the window-narrowing guard against pathological expansion, multiplying an
+  ordinary series' cost by the number of probes; a single bounded call now pays that walk once.
+  Expanding every visible calendar's recurring series is also run off the event loop, so a slow
+  month view no longer starves every other request sharing the process — including the
+  liveness check, which is what pulled the pod out of service
+
 ## [3.1.1] - 2026-09-03
 
 ### Fixed
