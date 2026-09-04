@@ -30,7 +30,16 @@ export function useUpdateCalendar() {
   return useMutation({
     mutationFn: ({ id, data }: { id: string; data: CalendarUpdateRequest }) =>
       api.calendars.update(id, data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: calendarKeys.list }),
+    // is_visible/is_enabled decide which calendars the server includes in
+    // GET /calendar-events -- leaving that query cached under its old
+    // response is what made the sidebar's visibility checkbox look inert:
+    // the calendar list refetched and showed the new checked state, but
+    // the events themselves, fetched separately and cached for 5 minutes,
+    // never did.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: calendarKeys.list });
+      qc.invalidateQueries({ queryKey: ["calendar-events"] });
+    },
   });
 }
 

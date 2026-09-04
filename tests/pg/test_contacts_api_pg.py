@@ -86,6 +86,76 @@ class TestCreateAndGet:
             resp = client.get(f"/contacts/{uuid.uuid4()}")
         assert resp.status_code == 404
 
+    def test_response_carries_the_full_field_set(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/contacts",
+                json={
+                    "addressbook_id": str(addressbook_id), "summary": "Full Fields",
+                    "emails": [{"email": "full@example.com"}],
+                    "urls": ["https://a.example.com", "https://b.example.com"],
+                    "categories": ["Friend", "Work"],
+                },
+            )
+        assert created.status_code == 201, created.text
+        body = created.json()
+        assert body["urls"] == ["https://a.example.com", "https://b.example.com"]
+        assert body["categories"] == ["Friend", "Work"]
+        assert body["photo"] is None
+
+
+class TestResolveByEmail:
+    def test_resolves_a_contact_by_its_email_case_insensitively(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """`emails` is populated by PostIMAP's own outbound round trip,
+        which nothing here triggers -- seeded directly, the same
+        convention `test_search_returns_one_row_per_email` above uses."""
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        object_id = uuid.uuid4()
+
+        async def _seed_synced_contact(db: DatabaseConnection) -> None:
+            async with db.session() as session:
+                dav_account_id = await session.scalar(
+                    text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                    {"id": addressbook_id},
+                )
+                await session.execute(
+                    text(
+                        "INSERT INTO dav_objects "
+                        "(id, account_id, collection_id, kind, data, summary, emails) "
+                        "VALUES (:id, :account_id, :collection_id, 'addressbook', "
+                        "'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Resolve Me\r\n"
+                        "EMAIL:Resolve@Example.com\r\nEND:VCARD\r\n', "
+                        "'Resolve Me', ARRAY['Resolve@Example.com'])"
+                    ),
+                    {
+                        "id": object_id, "account_id": dav_account_id,
+                        "collection_id": addressbook_id,
+                    },
+                )
+                await session.commit()
+
+        client.portal.call(_seed_synced_contact, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            resolved = client.get("/contacts/resolve", params={"email": "resolve@example.com"})
+        assert resolved.status_code == 200
+        assert resolved.json()["summary"] == "Resolve Me"
+
+    def test_no_match_returns_null_rather_than_an_error(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        with patch(_TARGET, return_value=migrated_db):
+            resolved = client.get(
+                "/contacts/resolve", params={"email": "nobody@example.com"},
+            )
+        assert resolved.status_code == 200
+        assert resolved.json() is None
+
 
 class TestListAndSearch:
     def test_list_is_paged(

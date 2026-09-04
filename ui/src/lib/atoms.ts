@@ -72,6 +72,20 @@ export const eventDeleteRequestAtom = atom<{
   recurrenceId: string | null;
 } | null>(null);
 
+/** The day/week time grid's vertical zoom -- a multiplier over its base
+ * hour height. Persisted like the view mode: a display preference, not
+ * server state. Ctrl+wheel is the only writer. */
+export const calendarZoomAtom = atomWithStorage<number>("mailverdict:calendar-zoom", 1);
+
+/** The hour-of-day (a decimal, e.g. 8.5 for 08:30) currently at the top
+ * of the day/week grid's viewport -- an identity to restore by, per the
+ * scrolling skill, rather than a remembered pixel offset that would be
+ * meaningless at a different zoom. null until the grid has measured its
+ * own first scroll position. */
+export const calendarScrollHourAtom = atomWithStorage<number | null>(
+  "mailverdict:calendar-scroll-hour", null,
+);
+
 // --- Contacts ---
 
 export const selectedContactIdAtom = atom<string | null>(null);

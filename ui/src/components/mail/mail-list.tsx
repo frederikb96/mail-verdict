@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue } from "jotai";
 import { Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
@@ -8,17 +8,13 @@ import { Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
 import { MailListItem } from "@/components/mail/mail-list-item";
 import { UnifiedMailItem } from "@/components/mail/unified-mail-item";
 import { DragMail } from "@/components/mail/drag-mail";
-import { BulkToolbar } from "@/components/mail/bulk-toolbar";
+import { SelectionBanner } from "@/components/mail/selection-banner";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
 import { useFolders } from "@/hooks/use-folders";
 import { useUnifiedMails } from "@/hooks/use-unified-view";
-import {
-  useSelection,
-  useToggleSelection,
-  useRangeSelection,
-} from "@/hooks/use-selection";
+import { useClearSelection, useSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import {
   selectedAccountIdAtom,
@@ -28,10 +24,8 @@ import {
   selectedUnifiedFolderAtom,
   threadedViewAtom,
 } from "@/lib/atoms";
-import {
-  lastClickedMailIdAtom,
-  selectionModeAtom,
-} from "@/store/selection-atom";
+import { selectionModeAtom } from "@/store/selection-atom";
+import type { SelectableRow } from "@/lib/selection";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import type { MessageActionType, MessageSummary, UnifiedMessageSummary } from "@/types/api";
 
@@ -69,13 +63,12 @@ export function MailList() {
   const isUnifiedView = useAtomValue(isUnifiedViewAtom);
   const selectedUnifiedFolder = useAtomValue(selectedUnifiedFolderAtom);
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
-  const [lastClickedId, setLastClickedId] = useAtom(lastClickedMailIdAtom);
   const focusedIndex = useAtomValue(focusedMailIndexAtom);
   const selectionMode = useAtomValue(selectionModeAtom);
   const [threaded, setThreaded] = useAtom(threadedViewAtom);
-  const { selectedIds: checkedIds } = useSelection();
-  const toggleSelection = useToggleSelection();
-  const rangeSelection = useRangeSelection();
+  const { isSelected } = useSelection();
+  const { toggle, shiftRange } = useSelectionGestures();
+  const clearSelection = useClearSelection();
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
 
@@ -104,6 +97,11 @@ export function MailList() {
   const allMails: (MessageSummary | UnifiedMessageSummary)[] =
     data?.pages.flatMap((p) => p.messages) ?? [];
   const allMailIds = allMails.map((m) => m.id);
+  const rowsById = useMemo(() => {
+    const map = new Map<string, SelectableRow>();
+    for (const m of allMails) map.set(m.id, m);
+    return map;
+  }, [allMails]);
 
   // Mail arriving above a scrolled-away reader must not move a single row
   // on screen. `shift` is virtua's own mechanism for exactly this -- it
@@ -159,16 +157,26 @@ export function MailList() {
     [accountId, mailAction],
   );
 
+  // A plain click on a row's text abandons any active selection entirely
+  // and just opens that message -- checking a checkbox never does this.
+  const handleOpen = useCallback(
+    (mailId: string) => {
+      if (selectionMode) clearSelection();
+      setSelectedMailId(mailId);
+    },
+    [selectionMode, clearSelection, setSelectedMailId],
+  );
+
   const handleCheckToggle = useCallback(
     (mailId: string, shiftKey: boolean) => {
-      if (shiftKey && lastClickedId) {
-        rangeSelection(allMailIds, lastClickedId, mailId);
-      } else {
-        toggleSelection(mailId);
+      if (shiftKey) {
+        shiftRange(allMailIds, rowsById, mailId);
+        return;
       }
-      setLastClickedId(mailId);
+      const row = rowsById.get(mailId);
+      if (row) toggle(row);
     },
-    [allMailIds, lastClickedId, rangeSelection, toggleSelection, setLastClickedId],
+    [allMailIds, rowsById, shiftRange, toggle],
   );
 
   if (isLoading) {
@@ -217,7 +225,13 @@ export function MailList() {
           </label>
         </div>
       )}
-      <BulkToolbar folderId={folderId} visibleIds={allMailIds} />
+      <SelectionBanner
+        accountId={isUnifiedView ? null : accountId}
+        folderId={isUnifiedView ? null : folderId}
+        threaded={threaded}
+        loadedCount={allMailIds.length}
+        loadedIds={allMailIds}
+      />
       {allMails.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
           <InboxIcon className="h-12 w-12 opacity-50" />
@@ -234,28 +248,29 @@ export function MailList() {
         >
           {allMails.map((mail, index) =>
             isUnifiedView ? (
-              <DragMail key={mail.id} mailId={mail.id} accountId={mail.account_id} folderId={mail.folder_id}>
+              <DragMail key={mail.id} row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
                 <UnifiedMailItem
                   mail={mail as UnifiedMessageSummary}
                   isSelected={mail.id === selectedMailId}
                   isFocused={index === focusedIndex}
-                  isChecked={checkedIds.has(mail.id)}
+                  isChecked={isSelected(mail)}
                   selectionMode={selectionMode}
-                  onSelect={setSelectedMailId}
+                  onOpen={handleOpen}
                   onCheckToggle={handleCheckToggle}
                   onAction={handleAction}
                 />
               </DragMail>
             ) : (
-              <DragMail key={mail.id} mailId={mail.id} accountId={mail.account_id} folderId={mail.folder_id}>
+              <DragMail key={mail.id} row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
                 <MailListItem
                   mail={mail as MessageSummary}
                   isSelected={mail.id === selectedMailId}
                   isFocused={index === focusedIndex}
-                  isChecked={checkedIds.has(mail.id)}
+                  isChecked={isSelected(mail)}
                   selectionMode={selectionMode}
                   isJunk={isJunkFolder}
-                  onSelect={setSelectedMailId}
+                  isThreaded={threaded}
+                  onOpen={handleOpen}
                   onCheckToggle={handleCheckToggle}
                   onAction={handleAction}
                 />

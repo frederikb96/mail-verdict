@@ -309,6 +309,36 @@ class DavObjectRepository:
             )
             return list(result.scalars().all())
 
+    async def find_by_email(self, email: str) -> DavObject | None:
+        """The first contact carrying this address, case-insensitively --
+        what a sender's avatar/name lookup resolves against. Several
+        contacts sharing one address is possible; the caller only needs
+        one match, so this isn't the paged `search_email_hits` above.
+
+        Prefiltered in SQL the same way `search_email_hits` does (ILIKE on
+        the emails array flattened to text), then matched exactly in
+        Python -- an address book is small enough that pulling the few
+        ILIKE hits into Python for an exact, case-insensitive compare is
+        simpler and less fragile than composing a per-element `lower()`
+        comparison against a Postgres array in SQLAlchemy."""
+        needle = email.strip().lower()
+        if not needle:
+            return None
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(DavObject)
+                .where(
+                    DavObject.kind == "addressbook",
+                    DavObject.deleted_at.is_(None),
+                    func.array_to_string(DavObject.emails, ",").ilike(f"%{needle}%"),
+                )
+                .order_by(DavObject.summary)
+            )
+            for obj in result.scalars().all():
+                if any((addr or "").strip().lower() == needle for addr in obj.emails or []):
+                    return obj
+        return None
+
     async def get_unresolved_errors(
         self, object_ids: list[uuid.UUID],
     ) -> dict[uuid.UUID, str]:

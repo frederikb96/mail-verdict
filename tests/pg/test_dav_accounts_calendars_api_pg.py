@@ -204,17 +204,19 @@ class TestCalendars:
             calendar_id = created.json()["id"]
             assert created.json()["intake"] == "none"
             assert created.json()["is_visible"] is True
+            assert created.json()["is_enabled"] is True
 
             listed = client.get("/calendars")
             assert any(c["id"] == calendar_id for c in listed.json())
 
             updated = client.patch(
                 f"/calendars/{calendar_id}",
-                json={"color_override": "#ff0000", "is_visible": False},
+                json={"color_override": "#ff0000", "is_visible": False, "is_enabled": False},
             )
         assert updated.status_code == 200
         assert updated.json()["color_override"] == "#ff0000"
         assert updated.json()["is_visible"] is False
+        assert updated.json()["is_enabled"] is False
 
     async def _seed(self, db: DatabaseConnection) -> uuid.UUID:
         async with db.session() as session:

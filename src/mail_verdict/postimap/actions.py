@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Any, cast
 
-from sqlalchemy import any_, delete, insert, text, update
+from sqlalchemy import any_, delete, insert, or_, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
@@ -350,6 +350,14 @@ async def set_flags_bulk(
     over 32767 parameters; ANY binds the whole id list as a single array
     parameter, so this scales to any folder size.
 
+    Also filtered to rows where at least one named flag actually differs
+    from its requested value -- without this, re-marking an already-read
+    folder read reports every row as affected, and `affected_count` is
+    user-facing (the bulk-action toast). PostIMAP's own triggers already
+    gate the queue insert and the NOTIFY on `OLD IS DISTINCT FROM NEW`, so
+    this guard only changes what is reported, not what would otherwise be
+    written unsafely.
+
     Args:
         session: Active AsyncSession (caller commits)
         message_ids: Messages to update
@@ -357,13 +365,18 @@ async def set_flags_bulk(
 
     Returns:
         The number of rows actually updated -- may be fewer than
-        `len(message_ids)` if some had already been expunged or otherwise
-        no longer matched.
+        `len(message_ids)` if some had already been expunged, no longer
+        matched, or already carried every named flag at its requested value.
     """
     if not flags or not message_ids:
         return 0
+    actually_different = or_(
+        *(getattr(Message, column).is_not(value) for column, value in flags.items())
+    )
     result = await session.execute(
-        update(Message).where(Message.id == any_(message_ids)).values(**flags)  # type: ignore[arg-type]
+        update(Message)
+        .where(Message.id == any_(message_ids), actually_different)  # type: ignore[arg-type]
+        .values(**flags)
     )
     return result.rowcount or 0  # type: ignore[attr-defined]
 

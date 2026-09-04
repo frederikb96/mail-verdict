@@ -4,6 +4,8 @@ doesn't, which is exactly what these prove."""
 
 from __future__ import annotations
 
+import base64
+
 from mail_verdict.calendar import vcard
 
 _SIMPLE_CARD = (
@@ -38,7 +40,7 @@ class TestParsing:
         assert parsed.phones[0].number == "+491701234567"
         assert "Berlin" in parsed.addresses[0].text
         assert parsed.birthday == "1990-05-04"
-        assert parsed.url == "https://example.com/anna"
+        assert parsed.urls == ["https://example.com/anna"]
         assert parsed.notes == "Met at a conference"
 
     def test_missing_optional_fields_are_none_or_empty(self) -> None:
@@ -48,6 +50,91 @@ class TestParsing:
         assert parsed.emails == []
         assert parsed.organization is None
         assert parsed.birthday is None
+        assert parsed.urls == []
+        assert parsed.categories == []
+        assert parsed.photo is None
+
+    def test_year_less_birthday_is_kept_as_the_raw_rfc6350_shape(self) -> None:
+        """A birthday with no year is a real vCard shape (`--MMDD` /
+        `--MM-DD`), not a malformed one -- parsing must not reject it or
+        try to coerce it into a full date server-side. Rendering it
+        safely is the UI's job (see test_contacts_ui.py)."""
+        card = (
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:No Year\r\nBDAY:--09-15\r\nEND:VCARD\r\n"
+        )
+        parsed = vcard.parse_contact(card)
+        assert parsed.birthday == "--09-15"
+
+    def test_categories_parse_as_a_list(self) -> None:
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Cats\r\n"
+            "CATEGORIES:Friend,Work\r\nEND:VCARD\r\n"
+        )
+        parsed = vcard.parse_contact(card)
+        assert parsed.categories == ["Friend", "Work"]
+
+    def test_multiple_urls_all_parse(self) -> None:
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Multi Url\r\n"
+            "URL:https://a.example.com\r\nURL:https://b.example.com\r\nEND:VCARD\r\n"
+        )
+        parsed = vcard.parse_contact(card)
+        assert parsed.urls == ["https://a.example.com", "https://b.example.com"]
+
+
+class TestPhoto:
+    def test_v3_base64_encoded_photo_is_embedded(self) -> None:
+        payload = base64.b64encode(b"fake-jpeg-bytes").decode()
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Photo\r\n"
+            f"PHOTO;ENCODING=b;TYPE=JPEG:{payload}\r\nEND:VCARD\r\n"
+        )
+        parsed = vcard.parse_contact(card)
+        assert parsed.photo is not None
+        assert parsed.photo.kind == "embedded"
+        assert parsed.photo.url == f"data:image/jpeg;base64,{payload}"
+
+    def test_v4_inline_data_uri_photo_is_not_truncated_at_its_comma(self) -> None:
+        """The regression this guards: vobject's default TEXT-value
+        decoding for PHOTO treats the value as a comma-separated list and
+        keeps only the first field, so `PHOTO:data:image/jpeg;base64,xxx`
+        parsed through vobject directly loses the entire payload after
+        the comma. `parse_contact` must read PHOTO its own way."""
+        payload = base64.b64encode(b"another-fake-image-payload").decode()
+        card = (
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Photo V4\r\n"
+            f"PHOTO:data:image/jpeg;base64,{payload}\r\nEND:VCARD\r\n"
+        )
+        parsed = vcard.parse_contact(card)
+        assert parsed.photo is not None
+        assert parsed.photo.kind == "embedded"
+        assert parsed.photo.url == f"data:image/jpeg;base64,{payload}"
+
+    def test_remote_url_photo_is_never_treated_as_embedded(self) -> None:
+        card = (
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Remote Photo\r\n"
+            "PHOTO;VALUE=URI:https://example.com/photo.jpg\r\nEND:VCARD\r\n"
+        )
+        parsed = vcard.parse_contact(card)
+        assert parsed.photo is not None
+        assert parsed.photo.kind == "url"
+        assert parsed.photo.url == "https://example.com/photo.jpg"
+
+    def test_build_and_apply_round_trip_an_uploaded_photo(self) -> None:
+        payload = base64.b64encode(b"uploaded-photo-bytes").decode()
+        data_url = f"data:image/png;base64,{payload}"
+        data = vcard.build_contact(
+            summary="New Photo Contact",
+            emails=[vcard.ContactEmail(email="p@example.com")],
+            photo_data_url=data_url,
+        )
+        parsed = vcard.parse_contact(data)
+        assert parsed.photo is not None
+        assert parsed.photo.kind == "embedded"
+        assert parsed.photo.url == data_url
+
+        cleared = vcard.apply_contact_fields(data, photo_data_url="")
+        assert vcard.parse_contact(cleared).photo is None
 
 
 class TestBuild:

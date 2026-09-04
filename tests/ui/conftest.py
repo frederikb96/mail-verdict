@@ -20,23 +20,33 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import os
+import socket
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import httpx
 import pytest
+import pytest_asyncio
 import uvicorn
 from testcontainers.core.container import DockerContainer
 
-from mail_verdict.config.loader import reset_config
+from mail_verdict.config.loader import DatabaseConfig, reset_config
+from mail_verdict.database.connection import DatabaseConnection
 from tests.setup.migrations import run_migrations
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
 
 _APP_READY_TIMEOUT_S = 30.0
 _APP_SHUTDOWN_TIMEOUT_S = 10.0
+
+
+def _get_random_port() -> int:
+    """Get a random available port by binding to port 0 and reading back the assigned port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _assert_ui_build_is_fresh() -> None:
@@ -109,6 +119,7 @@ def app_server(
         pool.submit(asyncio.run, run_migrations(postgres_url)).result()
 
     os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
+    os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
     reset_config()
 
     from mail_verdict.server import create_app
@@ -161,3 +172,20 @@ def api_client(app_server: str) -> Iterator[httpx.Client]:
     """
     with httpx.Client(base_url=app_server, timeout=30.0) as client:
         yield client
+
+
+@pytest_asyncio.fixture()
+async def db(postgres_url: str) -> AsyncIterator[DatabaseConnection]:
+    """A standalone DatabaseConnection for direct seeding (large_mailbox's
+    bulk INSERT, well past what LMTP delivery could do in a test's
+    lifetime) -- the same pattern tests/e2e's own `db` fixture uses, and
+    for the same reason: app_server's lifespan already occupies the app's
+    global connection singleton for the whole module."""
+    connection = DatabaseConnection(
+        DatabaseConfig(url=postgres_url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+    )
+    await connection.init()
+    try:
+        yield connection
+    finally:
+        await connection.close()

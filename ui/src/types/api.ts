@@ -33,6 +33,12 @@ export interface MessageSummary {
   /** Only present when the list was fetched with threaded=true. */
   thread_count?: number;
   unread_in_thread?: number;
+  /**
+   * When this row entered the local mirror -- what a selection snapshot
+   * compares against. Present on every list row; absent on a
+   * MessageDetail, which is never itself a selection target.
+   */
+  mirrored_at?: string;
 }
 
 export interface MessageListResponse {
@@ -365,9 +371,12 @@ export interface BulkActionScope {
   folder_id: string;
   filter?: "unread" | "all";
   exclude_ids?: string[];
+  /** From GET .../messages/selection -- required, never defaulted. */
+  snapshot_at: string;
 }
 
-export type BulkActionTarget = { ids: string[] } | { scope: BulkActionScope };
+/** ids and scope may be given together (a predicate plus rows ticked on top of it); at least one is required. */
+export type BulkActionTarget = { ids?: string[]; scope?: BulkActionScope };
 
 export type BulkActionRequest = BulkActionTarget & {
   action: BulkActionType;
@@ -379,6 +388,12 @@ export interface BulkActionResponse {
   action: string;
   affected_count: number;
   errors: string[];
+}
+
+/** GET .../messages/selection -- an instant and a count from one statement. */
+export interface SelectionSnapshotResponse {
+  snapshot_at: string;
+  count: number;
 }
 
 // --- Unified view types ---
@@ -749,7 +764,12 @@ export interface Calendar {
   color: string;
   /** A per-user override; when set, this is what every surface renders. */
   color_override: string | null;
+  /** Whether this calendar's events are drawn right now -- the sidebar's
+   * own per-view checkbox. Meaningless while is_enabled is false. */
   is_visible: boolean;
+  /** Whether this calendar is offered at all: the sidebar list, the
+   * event editor's Calendar picker. Set only from the manage dialog. */
+  is_enabled: boolean;
   read_only: boolean;
   /** The identity invitations addressed to it are attributed to and replied from. */
   identity_id: string | null;
@@ -770,6 +790,7 @@ export interface CalendarUpdateRequest {
   display_name?: string;
   color_override?: string | null;
   is_visible?: boolean;
+  is_enabled?: boolean;
   identity_id?: string | null;
   intake?: CalendarIntake;
 }
@@ -940,6 +961,16 @@ export interface ContactEmail {
   type: string | null;
 }
 
+/** `kind: "embedded"` -- `url` is a self-contained `data:` URI, already
+ * mirrored, safe to render directly. `kind: "url"` -- `url` is a third
+ * party's address; never put it in an `<img src>` without first running
+ * it through the same remote-content allowlist any other remote image
+ * does. */
+export interface ContactPhoto {
+  kind: "embedded" | "url";
+  url: string;
+}
+
 export interface Contact {
   id: string;
   addressbook_id: string;
@@ -952,8 +983,10 @@ export interface Contact {
   phones: { number: string; type: string | null }[];
   addresses: { label: string | null; text: string }[];
   birthday: string | null;
-  url: string | null;
+  urls: string[];
   notes: string | null;
+  categories: string[];
+  photo: ContactPhoto | null;
 }
 
 export interface ContactListResponse {
@@ -978,8 +1011,11 @@ export interface ContactCreateRequest {
   phones?: { number: string; type?: string }[];
   addresses?: { label?: string; text: string }[];
   birthday?: string;
-  url?: string;
+  urls?: string[];
   notes?: string;
+  categories?: string[];
+  /** A data: URI, as FileReader hands back an uploaded image. */
+  photo_data_url?: string;
 }
 
 export type ContactUpdateRequest = Partial<Omit<ContactCreateRequest, "addressbook_id">>;

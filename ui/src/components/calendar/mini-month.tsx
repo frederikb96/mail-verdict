@@ -8,9 +8,8 @@
 
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { useSetAtom } from "jotai";
 import { Button } from "@/components/ui/button";
-import { calendarDateAtom } from "@/lib/atoms";
+import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 import {
   addDays,
   addMonths,
@@ -25,7 +24,7 @@ import {
 import { cn } from "@/lib/utils";
 
 export function MiniMonth({ anchor }: { anchor: Date }) {
-  const setCalendarDate = useSetAtom(calendarDateAtom);
+  const navigate = useCalendarNavigate();
   const [displayMonth, setDisplayMonth] = useState(() => startOfMonth(anchor));
 
   // The chevrons browse displayMonth on its own, ahead of the main view --
@@ -77,7 +76,7 @@ export function MiniMonth({ anchor }: { anchor: Date }) {
           <button
             key={day.toISOString()}
             type="button"
-            onClick={() => setCalendarDate(day)}
+            onClick={() => navigate({ date: day })}
             className={cn(
               "flex h-6 w-6 items-center justify-center rounded-full text-xs",
               !isSameMonth(day, displayMonth) && "text-muted-foreground/40",

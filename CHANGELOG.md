@@ -42,13 +42,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
-- A dark-mode toggle in each message's header, remembered per message across reopening it. A
-  message renders on a light canvas by default and stays there -- mail is written assuming one --
-  but one that declares its own dark-canvas support (a `color-scheme` meta tag, CSS property, or
-  a `prefers-color-scheme: dark` media query) renders dark on its own, unasked
-- A sender avatar next to each message's name: initials derived from the display name, with no
-  network request involved. Ready to show an address-book photo once one is available; it is not
-  yet
+- `GET /api/accounts/{account_id}/messages/selection`: mints a "select all matching" snapshot --
+  an instant and a count from one statement, so the two can never disagree. A bulk action's
+  `scope` now carries that instant back as `snapshot_at` (required), so mail arriving after a
+  selection was agreed to is never swept into a destructive action the user never saw
+- A bulk action may now name `ids` and `scope` together, acting on their union -- a predicate
+  selection plus a row outside it the user ticked by hand. Naming the same id in both `ids` and
+  `scope.exclude_ids` is rejected rather than picking a winner silently
+- Message list rows carry `mirrored_at` (when the row entered the local mirror), the field a
+  selection snapshot compares against
+- A mail row's hover controls now float over the row instead of reserving space in its layout --
+  the sender, subject and preview keep the row's full width whether or not the pointer is
+  anywhere near it. Keyboard focus on a row reveals the same controls
+- Selecting mail is now a predicate (a "select all matching" scope, minted server-side) plus
+  explicit ids layered on top of it, rather than only an enumerated id set -- checking a folder's
+  checkbox no longer requires loading every message in it first, and a selection stays exact
+  across a scroll that unmounts and remounts rows. Shift-click extends a range from the last
+  plain or ctrl-click, ctrl/cmd-click toggles a single row, and a plain click on a row's text
+  abandons the selection and opens that message
+- With more than one message selected, the reading pane is replaced by a bulk panel offering
+  read/unread, star, archive, junk, trash and move-to-folder; a destructive action against a
+  "select all" scope confirms with the count first, since it cannot be undone the way an explicit
+  selection's toast can
+- A row's Junk control now moves the message to the Junk folder unconditionally; correcting the
+  model's spam verdict is its own control, since the two are different actions that happened to
+  share one icon before
+- Hovering a folder in the sidebar replaces its unread count with a menu offering mark-all-read
+  and emptying the folder; emptying confirms with the message count first, since it destroys
+  every message in it on the server with no undo. Renaming is deliberately not offered -- IMAP's
+  rename also renames every child folder, so it cannot be a single-row update
+- The reading pane's own action row now also carries star, download as .eml, mark read/unread
+  and a verdict-correction control alongside archive, junk and trash
+- Dragging a multi-message selection onto a sidebar folder now moves the whole selection in one
+  request rather than looping a move per message
+- A row action in threaded mode names its scope (the thread's latest message) in its tooltip,
+  rather than leaving it to guess at now that bulk selection sits beside it
+- A predicate-based bulk action ("select all") or a folder-wide menu action shows a heads-up that
+  it may take a while on a large folder -- the write itself is one statement over however many
+  rows match, resolved server-side before the request returns
+
+### Fixed
+
+- A bulk action spanning accounts in the unified view now acts on every account the selection
+  touches, not silently on whichever one the interface happened to have selected
+- An SSE-driven mail list refresh patches the affected row(s) directly instead of invalidating
+  and refetching every already-loaded page -- a folder scrolled deep no longer turns one arriving
+  or changed message into hundreds of requests
+- Live-update events (a message arriving, changing or leaving a folder) are collected and applied
+  in bounded batches rather than one at a time -- a bulk action fires one such event per affected
+  row, so a whole-folder action no longer turns a single click into thousands of individual
+  requests. A bulk action's own completion refresh now resets the affected list instead of
+  replaying every page it had loaded, for the same reason
+
+- A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
+  already carried the requested flag -- only rows that actually changed count
+
+### Changed
+
+- A contact carries a list of websites rather than a single one. `url` on a contact is now `urls`
+  in the API, the MCP tools and the response schema — a breaking change for anything reading that
+  field
 
 ### Fixed
 
@@ -61,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail view from anywhere else in the application
 - The account/folder tree in the sidebar only renders on the mail view. It previously rendered
   underneath the contacts view's own list panel as well, where it served no purpose
+- Opening a contact whose birthday is a partial or missing date (a year-less birthday is a real
+  vCard shape, not a malformed one) no longer crashes the whole page. The card now renders
+  everything it can and stays quiet about a birthday it cannot confidently parse
 - The liveness probe answers from a plain background socket on its own port, independent of the
   application's event loop. A handler that blocks that loop (heavy concurrent load, a bug) no
   longer risks the pod being restarted for merely being busy — only a genuinely dead or hung
@@ -73,6 +129,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Expanding every visible calendar's recurring series is also run off the event loop, so a slow
   month view no longer starves every other request sharing the process — including the
   liveness check, which is what pulled the pod out of service
+- Unchecking a calendar in the sidebar actually hides its events now, and checking one shows
+  them again immediately. The checkbox itself already wrote the change; nothing told the events
+  query to refetch under the new visibility, so the previously-cached month kept rendering as if
+  nothing had happened
+- The sidebar's calendar checkbox is tinted with the calendar's own colour rather than always
+  the theme's primary colour — it renders as a plain button, not a native input, so `accent-color`
+  never had any effect on it
+- The manage-calendars dialog is a compact list instead of every calendar permanently showing
+  all twelve palette colours as a row of swatches, which pushed the name into an ellipsis and
+  forced the dialog to scroll sideways as well as down. Each calendar now has a single colour
+  swatch that opens the palette in a popover
+- A calendar can now be hidden from the sidebar and the event editor entirely (in the manage
+  dialog), independent of the sidebar's own per-view visibility checkbox — two levels rather
+  than one flag serving both
+- The event editor's Calendar picker offers only enabled calendars, so it is not as long as the
+  full list a deployment with many synced collections would otherwise show
+- The week view's header shows the week number in brackets after the date range, the way the
+  month view's own gutter already does
 
 ## [3.1.1] - 2026-09-03
 

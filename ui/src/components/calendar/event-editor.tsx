@@ -31,6 +31,7 @@ import {
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
 import { eventDeletionNotice, isEventOrganizedBySelf } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
+import { useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
 import { useCreateEvent, useDeleteEvent, useUpdateEvent } from "@/hooks/use-events";
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
@@ -146,14 +147,16 @@ interface DraggedRange {
   end: Date;
 }
 
-function defaultRange(defaultDate?: Date, dragRange?: DraggedRange): { start: string; end: string } {
+function defaultRange(
+  durationMinutes: number, defaultDate?: Date, dragRange?: DraggedRange,
+): { start: string; end: string } {
   if (dragRange) {
     return { start: dragRange.start.toISOString(), end: dragRange.end.toISOString() };
   }
   const base = defaultDate ? new Date(defaultDate) : new Date();
   base.setMinutes(0, 0, 0);
   base.setHours(base.getHours() + 1);
-  const end = new Date(base.getTime() + 60 * 60_000);
+  const end = new Date(base.getTime() + durationMinutes * 60_000);
   return { start: base.toISOString(), end: end.toISOString() };
 }
 
@@ -161,8 +164,10 @@ function defaultRange(defaultDate?: Date, dragRange?: DraggedRange): { start: st
  * *inclusive* last day (what someone picking an end date on a calendar
  * expects), one day short of the exclusive dtend RFC 5545 and the API
  * both store. buildCommonPayload() below does the inverse conversion. */
-function toDisplayRange(event: EventInstance | undefined, defaultDate?: Date, dragRange?: DraggedRange) {
-  if (!event) return defaultRange(defaultDate, dragRange);
+function toDisplayRange(
+  event: EventInstance | undefined, durationMinutes: number, defaultDate?: Date, dragRange?: DraggedRange,
+) {
+  if (!event) return defaultRange(durationMinutes, defaultDate, dragRange);
   return { start: event.dtstart, end: event.all_day ? addDaysIso(event.dtend, -1) : event.dtend };
 }
 
@@ -196,12 +201,19 @@ export function EventEditor({
   const updateEvent = useUpdateEvent();
   const deleteEvent = useDeleteEvent();
   const { push: pushToast } = useToast();
+  const durationMinutes = useDefaultEventDurationMinutes();
 
-  const writableCalendars = (calendars ?? []).filter((c) => !c.read_only);
+  // Offering a disabled calendar here would let an event land somewhere
+  // that just vanished from the sidebar the manage dialog hid it from.
+  // An event already saved to one (disabled after the fact) is exempted
+  // below, so editing it doesn't silently move it to another calendar.
+  const writableCalendars = (calendars ?? []).filter(
+    (c) => !c.read_only && (c.is_enabled || c.id === event?.calendar_id),
+  );
 
   const [summary, setSummary] = useState(event?.summary ?? "");
   const [allDay, setAllDay] = useState(event?.all_day ?? false);
-  const [range, setRange] = useState(() => toDisplayRange(event, defaultDate, dragRange));
+  const [range, setRange] = useState(() => toDisplayRange(event, durationMinutes, defaultDate, dragRange));
   const [calendarId, setCalendarId] = useState(
     event?.calendar_id ?? defaultCalendarId ?? writableCalendars[0]?.id ?? "",
   );
@@ -219,7 +231,7 @@ export function EventEditor({
     if (!open) return;
     setSummary(event?.summary ?? "");
     setAllDay(event?.all_day ?? false);
-    setRange(toDisplayRange(event, defaultDate, dragRange));
+    setRange(toDisplayRange(event, durationMinutes, defaultDate, dragRange));
     setCalendarId(event?.calendar_id ?? defaultCalendarId ?? writableCalendars[0]?.id ?? "");
     setLocation(event?.location ?? "");
     setDescription(event?.description ?? "");
@@ -260,7 +272,7 @@ export function EventEditor({
   const handleAllDayChange = (checked: boolean) => {
     setAllDay(checked);
     setRange((r) => {
-      if (!checked) return defaultRange(new Date(r.start));
+      if (!checked) return defaultRange(durationMinutes, new Date(r.start));
       // A fresh one-day event: both fields start on the same day the
       // timed range was showing, in the browser's own local time -- not
       // the UTC day the same instant could carry near midnight.

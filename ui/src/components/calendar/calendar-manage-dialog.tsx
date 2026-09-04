@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   Select,
   SelectContent,
@@ -24,7 +25,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CALENDAR_PALETTE } from "@/components/calendar/colors";
+import { Switch } from "@/components/ui/switch";
+import { CALENDAR_PALETTE, resolveCalendarColor } from "@/components/calendar/colors";
 import { useCalendars, useCreateCalendar, useDeleteCalendar, useUpdateCalendar } from "@/hooks/use-calendars";
 import { useDavAccounts } from "@/hooks/use-dav-accounts";
 import { useIdentities } from "@/hooks/use-identities";
@@ -36,6 +38,51 @@ const INTAKE_LABELS: Record<CalendarIntake, string> = {
   import_and_link: "Import invitations automatically",
 };
 
+/** A single swatch that opens the palette in a popover, instead of every
+ * calendar permanently rendering all twelve colours as a row of buttons --
+ * that laid the name out in an ellipsis and forced the dialog to scroll
+ * sideways as well as down. */
+function ColorPicker({ calendar }: { calendar: Calendar }) {
+  const updateCalendar = useUpdateCalendar();
+  const [open, setOpen] = useState(false);
+  const current = resolveCalendarColor(calendar);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            aria-label={`Colour for ${calendar.display_name}`}
+            className="h-4 w-4 shrink-0 rounded-full border"
+            style={{ background: current }}
+          />
+        }
+      />
+      <PopoverContent className="w-auto p-2">
+        <div className="grid grid-cols-6 gap-1.5">
+          {CALENDAR_PALETTE.map((c) => (
+            <button
+              key={c}
+              type="button"
+              aria-label={`Colour ${c}`}
+              className={cn(
+                "h-5 w-5 rounded-full border",
+                current === c && "ring-2 ring-ring ring-offset-1",
+              )}
+              style={{ background: c }}
+              onClick={() => {
+                updateCalendar.mutate({ id: calendar.id, data: { color_override: c } });
+                setOpen(false);
+              }}
+            />
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function CalendarRow({ calendar }: { calendar: Calendar }) {
   const updateCalendar = useUpdateCalendar();
   const deleteCalendar = useDeleteCalendar();
@@ -45,23 +92,16 @@ function CalendarRow({ calendar }: { calendar: Calendar }) {
   return (
     <div className="flex flex-col gap-2 rounded-md border p-2">
       <div className="flex items-center gap-2">
-        <div className="flex gap-1">
-          {CALENDAR_PALETTE.map((c) => (
-            <button
-              key={c}
-              type="button"
-              aria-label={`Colour ${c}`}
-              className={cn(
-                "h-4 w-4 rounded-full border",
-                (calendar.color_override ?? calendar.color) === c && "ring-2 ring-ring ring-offset-1",
-              )}
-              style={{ background: c }}
-              onClick={() => updateCalendar.mutate({ id: calendar.id, data: { color_override: c } })}
-            />
-          ))}
-        </div>
+        <ColorPicker calendar={calendar} />
         <span className="flex-1 truncate text-sm">{calendar.display_name}</span>
         {calendar.read_only && <span className="text-xs text-muted-foreground">Read-only</span>}
+        <Switch
+          aria-label={`Show ${calendar.display_name} in the sidebar`}
+          checked={calendar.is_enabled}
+          onCheckedChange={(checked) =>
+            updateCalendar.mutate({ id: calendar.id, data: { is_enabled: checked } })
+          }
+        />
         <Button
           variant="ghost"
           size="icon-xs"

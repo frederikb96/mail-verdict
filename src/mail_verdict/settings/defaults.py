@@ -2,7 +2,7 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, retry, pipeline, semantic.
+Categories: ai, retry, pipeline, semantic, calendar.
 
 "rules" is not one of them: a rule is a `match` stage in the pipeline
 now (see pipeline/stages/match.py), and `settings.rules` -- if a pre-
@@ -32,6 +32,7 @@ class SettingCategory(str, enum.Enum):
     RETRY = "retry"
     PIPELINE = "pipeline"
     SEMANTIC = "semantic"
+    CALENDAR = "calendar"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -114,5 +115,13 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_attempts": 5,
         "base_delay_seconds": 2.0,
         "max_delay_seconds": 60.0,
+    },
+    SettingCategory.CALENDAR: {
+        # A click on empty grid space creates an event this long; a drag
+        # also snaps to boundaries this many minutes apart. One value
+        # serves both, the same way the grid's own snap constant always
+        # has -- a shorter snap than the default duration would let a
+        # drag land on a boundary the click-created default never uses.
+        "default_event_duration_minutes": 30,
     },
 }

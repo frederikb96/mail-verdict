@@ -1,29 +1,19 @@
-/** Jotai atoms for client-held mail selection state. */
+/** Jotai atoms for client-held mail selection state. See lib/selection.ts
+ * for the state shape and the pure functions that mutate it. */
 
 import { atom } from "jotai";
+import { EMPTY_SELECTION, selectionSize, type SelectionState } from "@/lib/selection";
 
-/** Set of selected mail IDs. Client-only — never round-trips to the server. */
-export const selectedMailIdsAtom = atom<Set<string>>(new Set<string>());
+/** The whole selection: predicate plus included/excluded ids plus the
+ * shift-range anchor. Client-only -- never round-trips to the server
+ * except as the scope/ids a bulk-action request resolves server-side. */
+export const selectionAtom = atom<SelectionState>(EMPTY_SELECTION);
 
-/** Count of selected mails (derived). */
-export const selectionCountAtom = atom<number>(
-  (get) => get(selectedMailIdsAtom).size,
-);
+/** Count of selected mails (derived -- see lib/selection.ts). */
+export const selectionCountAtom = atom<number>((get) => selectionSize(get(selectionAtom)));
 
-/** Last clicked mail ID for shift-select anchor tracking. */
-export const lastClickedMailIdAtom = atom<string | null>(null);
-
-/**
- * Set when "select all" is used on a folder larger than what is fetched
- * client-side. Bulk actions send this scope instead of an id list; any
- * subsequent per-mail toggle clears it back to an explicit id set.
- */
-export const selectionScopeAtom = atom<{
-  folderId: string;
-  filter?: "unread" | "all";
-} | null>(null);
-
-/** Whether selection mode is active: explicit ids, or a folder-wide scope. */
-export const selectionModeAtom = atom<boolean>(
-  (get) => get(selectedMailIdsAtom).size > 0 || get(selectionScopeAtom) !== null,
-);
+/** Whether selection mode is active: explicit ids, or a folder-wide predicate. */
+export const selectionModeAtom = atom<boolean>((get) => {
+  const s = get(selectionAtom);
+  return s.predicate !== null || s.included.size > 0;
+});

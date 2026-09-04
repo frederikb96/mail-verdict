@@ -60,6 +60,7 @@ import type {
   RespondRequest,
   SearchField,
   SearchResponse,
+  SelectionSnapshotResponse,
   SemanticSearchResponse,
   StageCreateRequest,
   StageTypeOut,
@@ -412,6 +413,16 @@ export const api = {
         body: JSON.stringify(body),
       });
     },
+
+    /** Mints a "select all matching" snapshot: an instant and a count from
+     * one statement, so a following bulk-action's scope can carry the
+     * instant back without the two ever disagreeing. */
+    selection(
+      accountId: string,
+      params: { folder_id: string; filter?: "unread" | "all" },
+    ): Promise<SelectionSnapshotResponse> {
+      return request(`/accounts/${accountId}/messages/selection${qs(params)}`);
+    },
   },
 
   unified: {
@@ -724,6 +735,11 @@ export const api = {
      * several choices in the compose autocomplete. */
     search(q: string): Promise<ContactSearchHit[]> {
       return request(`/contacts/search${qs({ q })}`);
+    },
+    /** The one contact carrying this address, or null -- what a sender's
+     * avatar/name lookup resolves against. */
+    resolveByEmail(email: string): Promise<Contact | null> {
+      return request(`/contacts/resolve${qs({ email })}`);
     },
     create(data: ContactCreateRequest): Promise<Contact> {
       return request("/contacts", { method: "POST", body: JSON.stringify(data) });

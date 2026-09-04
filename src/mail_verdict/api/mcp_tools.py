@@ -1252,7 +1252,8 @@ async def get_contact(contact_id: str) -> dict[str, Any]:
 
     Returns:
         summary, emails, organization, title, phones, addresses,
-        birthday, url, notes -- or {"error": ...} if not found
+        birthday, urls, notes, categories, photo -- or {"error": ...}
+        if not found
     """
     try:
         contact = await _get_contact(uuid.UUID(contact_id))
@@ -1292,8 +1293,9 @@ async def create_contact(
     phones: list[dict[str, Any]] | None = None,
     addresses: list[dict[str, Any]] | None = None,
     birthday: str | None = None,
-    url: str | None = None,
+    urls: list[str] | None = None,
     notes: str | None = None,
+    categories: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Create a contact in an address book.
@@ -1307,8 +1309,9 @@ async def create_contact(
         phones: [{"number": str, "type": str | None}, ...], optional
         addresses: [{"label": str | None, "text": str}, ...], optional
         birthday: Birthday, optional
-        url: Website, optional
+        urls: Websites, optional
         notes: Free text notes, optional
+        categories: Tags, optional
 
     Returns:
         The created contact, or {"error": ...} on failure
@@ -1317,7 +1320,7 @@ async def create_contact(
         addressbook_id=addressbook_id,  # type: ignore[arg-type]
         summary=summary, emails=_contact_emails(emails), organization=organization, title=title,
         phones=_contact_phones(phones), addresses=_contact_addresses(addresses),
-        birthday=birthday, url=url, notes=notes,
+        birthday=birthday, urls=urls or [], notes=notes, categories=categories or [],
     )
     try:
         contact = await _create_contact(request)
@@ -1345,8 +1348,9 @@ async def update_contact(
     phones: list[dict[str, Any]] | None = None,
     addresses: list[dict[str, Any]] | None = None,
     birthday: str | None = None,
-    url: str | None = None,
+    urls: list[str] | None = None,
     notes: str | None = None,
+    categories: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Edit a contact. Every field given is a full replacement of that
@@ -1362,8 +1366,9 @@ async def update_contact(
         phones: New [{"number": str, "type": str | None}, ...], optional
         addresses: New [{"label": str | None, "text": str}, ...], optional
         birthday: New birthday, optional
-        url: New website, optional
+        urls: New websites, optional
         notes: New free text notes, optional
+        categories: New tags, optional
 
     Returns:
         The updated contact, or {"error": ...} on failure
@@ -1387,10 +1392,12 @@ async def update_contact(
         fields["addresses"] = _contact_addresses(addresses)
     if birthday is not None:
         fields["birthday"] = birthday
-    if url is not None:
-        fields["url"] = url
+    if urls is not None:
+        fields["urls"] = urls
     if notes is not None:
         fields["notes"] = notes
+    if categories is not None:
+        fields["categories"] = categories
     request = ContactUpdateRequest(**fields)
     try:
         contact = await _update_contact(uuid.UUID(contact_id), request)

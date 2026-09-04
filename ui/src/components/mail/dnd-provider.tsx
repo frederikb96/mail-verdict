@@ -18,6 +18,7 @@ import { useAtomValue } from "jotai";
 import { GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useMailAction } from "@/hooks/use-mails";
+import { useBulkAction } from "@/hooks/use-selection";
 import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 
 interface MailDndProviderProps {
@@ -32,9 +33,9 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const isUnified = useAtomValue(isUnifiedViewAtom);
   const mailAction = useMailAction();
+  const bulkAction = useBulkAction();
   const [dragData, setDragData] = useState<{
     count: number;
-    mailIds: string[];
   } | null>(null);
 
   const sensors = useSensors(
@@ -48,10 +49,7 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
   function handleDragStart(event: DragStartEvent) {
     const data = event.active.data.current;
     if (data?.type === "mail") {
-      setDragData({
-        count: data.count as number,
-        mailIds: data.mailIds as string[],
-      });
+      setDragData({ count: data.count as number });
     }
   }
 
@@ -66,36 +64,46 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
 
     if (activeData?.type !== "mail" || overData?.type !== "folder") return;
 
-    const mailIds = activeData.mailIds as string[];
     const mailAccountId = activeData.accountId as string | undefined;
     const folderMapping = overData.folderMapping as
       | { account_id: string; folder_id: string }[]
       | undefined;
-
-    let targetFolderId = overData.folderId as string;
-    let effectiveAccountId = isUnified ? mailAccountId : accountId;
-
-    if (isUnified && folderMapping && mailAccountId) {
-      const match = folderMapping.find((f) => f.account_id === mailAccountId);
-      if (match) {
-        targetFolderId = match.folder_id;
-      }
-    }
-
-    if (!effectiveAccountId) return;
+    const dropFolderId = overData.folderId as string;
 
     // Dropping back onto the folder the message is already in is a no-op --
     // skip the request rather than sending a move with no destination change.
     const sourceFolderId = activeData.folderId as string | undefined;
-    if (sourceFolderId && sourceFolderId === targetFolderId) return;
+    if (sourceFolderId && sourceFolderId === dropFolderId) return;
 
-    for (const mailId of mailIds) {
-      mailAction.mutate({
-        mailId,
-        accountId: effectiveAccountId,
-        action: { action: "move", target_folder_id: targetFolderId },
+    // A unified folder maps to a different id per account -- resolve each
+    // account's own id for it rather than assuming the one the pointer
+    // happens to be over applies everywhere.
+    const targetFolderIdForAccount = (forAccountId: string): string | undefined => {
+      if (!isUnified) return dropFolderId;
+      const match = folderMapping?.find((f) => f.account_id === forAccountId);
+      return match?.folder_id;
+    };
+
+    if (activeData.isSelectionDrag) {
+      bulkAction.mutate({
+        action: "move",
+        targetFolderId: isUnified ? targetFolderIdForAccount : dropFolderId,
       });
+      return;
     }
+
+    const mailId = activeData.mailId as string;
+    const effectiveAccountId = isUnified ? mailAccountId : accountId;
+    const targetFolderId = isUnified
+      ? (mailAccountId && targetFolderIdForAccount(mailAccountId))
+      : dropFolderId;
+    if (!effectiveAccountId || !targetFolderId) return;
+
+    mailAction.mutate({
+      mailId,
+      accountId: effectiveAccountId,
+      action: { action: "move", target_folder_id: targetFolderId },
+    });
   }
 
   // dnd-kit's default announcements read out its internal draggable/droppable

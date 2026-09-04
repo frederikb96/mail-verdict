@@ -8,6 +8,8 @@ api_client, never a mock.
 
 from __future__ import annotations
 
+import json
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -1014,6 +1016,165 @@ class TestCalendarUi:
         expect(dialog.get_by_text(dav_account["id"], exact=False)).to_have_count(0)
         expect(dialog.get_by_text("none", exact=True)).to_have_count(0)
 
+    def test_unchecking_a_calendar_hides_its_events_immediately(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the checkbox wrote is_visible and
+        nothing told the separately-cached events query to refetch under
+        the new visibility, so the calendar's events kept rendering
+        exactly as before -- the toggle looked entirely inert. Restores
+        visibility at the end so later tests sharing this module's
+        calendar still see it."""
+        summary = f"Visibility toggle test {uuid.uuid4()}"
+        resp = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"], "summary": summary,
+                "dtstart": "2026-09-20T10:00:00Z", "dtend": "2026-09-20T11:00:00Z",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        created = wait_for_event_synced(api_client, resp.json()["object_id"])
+
+        try:
+            page.goto(f"{app_server}/calendar")
+            page.get_by_role("tab", name="Month", exact=True).click()
+            chip = event_chip(page, created["object_id"])
+            expect(chip).to_be_visible(timeout=15_000)
+
+            checkbox = page.get_by_role("checkbox", name="Work", exact=True)
+            checkbox.click()
+            with pytest.raises(AssertionError):
+                expect(chip).to_be_visible(timeout=20_000)
+
+            checkbox.click()
+            expect(chip).to_be_visible(timeout=10_000)
+        finally:
+            api_client.patch(
+                f"/api/calendars/{calendar_collection['id']}", json={"is_visible": True},
+            )
+
+    def test_disabling_a_calendar_in_the_manage_dialog_hides_it_everywhere(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dav_account: dict[str, Any],
+    ) -> None:
+        """The regression this guards: there was only one visibility level
+        -- a calendar could be toggled per-view or not at all, with no way
+        to declutter it out of the sidebar and the event editor's Calendar
+        picker entirely. A calendar created just for this test, so the
+        module's shared "Work" calendar is never touched."""
+        name = f"Disable test {uuid.uuid4().hex[:8]}"
+        created = api_client.post(
+            "/api/calendars", json={"dav_account_id": dav_account["id"], "display_name": name},
+        )
+        assert created.status_code == 201, created.text
+
+        page.goto(f"{app_server}/calendar")
+        checkbox = page.get_by_role("checkbox", name=name, exact=True)
+        expect(checkbox).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="Manage calendars", exact=True).click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_be_visible(timeout=15_000)
+        dialog.get_by_role("switch", name=f"Show {name} in the sidebar", exact=True).click()
+        page.keyboard.press("Escape")
+        expect(dialog).to_be_hidden(timeout=10_000)
+
+        with pytest.raises(AssertionError):
+            expect(checkbox).to_be_visible(timeout=8_000)
+
+        # The same calendars query backs the event editor's own Calendar
+        # picker -- the sidebar checkbox already having loaded (above) is
+        # what proves that query has resolved before the dropdown opens.
+        page.get_by_role("button", name="New event", exact=True).click()
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+        sheet.locator('[data-slot="select-trigger"]').first.click()
+        expect(page.get_by_role("option", name=name, exact=True)).to_have_count(0)
+
+    def test_clicking_a_yearly_all_day_event_shows_its_popover_promptly(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: a birthday-shaped occurrence (an
+        all-day yearly series, fetched by its own recurrence-id the way a
+        month-view click always does) opened an empty popover with a
+        spinner that never resolved. The actual cause was never anything
+        specific to this shape of event -- it was the same shared-event-
+        loop stall the month view's own perf fix (elsewhere in this
+        codebase) already resolves, so this proves the popover survives
+        that fix rather than adding a second one."""
+        summary = f"Birthday-shaped {uuid.uuid4()}"
+        resp = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"], "summary": summary,
+                "dtstart": "2026-09-22T00:00:00Z", "dtend": "2026-09-23T00:00:00Z",
+                "all_day": True, "rrule": "FREQ=YEARLY",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        object_id = resp.json()["object_id"]
+        wait_for_event_synced(api_client, object_id)
+
+        page.goto(f"{app_server}/calendar")
+        # Month, not Agenda -- the agenda list virtualizes its rows and this
+        # date can land outside the initial render margin once enough other
+        # tests' events occupy the nearer ones; the month grid renders the
+        # whole month regardless.
+        page.get_by_role("tab", name="Month", exact=True).click()
+        chip = event_chip(page, object_id)
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+
+        expect(page.get_by_role("paragraph").filter(has_text=summary)).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("This event could not be loaded", exact=False)).to_have_count(0)
+
+    def test_a_forced_create_failure_leaves_the_editor_open_with_data_intact(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """A save that cannot reach the server must say so rather than
+        spin forever, and must leave whatever was typed in place -- the
+        request is intercepted rather than driven through a genuine
+        server error so the failure mode is exact and repeatable."""
+        page.route(
+            "**/api/calendar/events",
+            lambda route: route.fulfill(
+                status=503, content_type="application/json",
+                body='{"detail": "Calendar server unavailable"}',
+            ) if route.request.method == "POST" else route.continue_(),
+        )
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        summary = f"Forced failure {uuid.uuid4()}"
+        page.get_by_role("button", name="New event", exact=True).click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(summary)
+
+        save = page.get_by_role("button", name="Save", exact=True)
+        save.click()
+
+        expect(
+            page.get_by_text("Could not create event", exact=False)
+        ).to_be_visible(timeout=10_000)
+        # The spinner an in-flight mutation shows must be gone once it has
+        # settled, whatever the outcome -- and the entered data survives.
+        expect(save.locator(".animate-spin")).to_have_count(0)
+        expect(title_input).to_have_value(summary)
+        expect(title_input).to_be_visible()
+
     def test_today_after_navigating_away_agrees_across_toolbar_grid_and_mini_month(
         self, page: Page, app_server: str,
     ) -> None:
@@ -1047,3 +1208,126 @@ class TestCalendarUi:
 
         page.get_by_role("tab", name="Day", exact=True).click()
         expect(toolbar_title).to_have_text(today_title, timeout=10_000)
+
+
+class TestCalendarNavigation:
+    """View, date, scroll position and zoom -- none of this needs a
+    synced calendar, so it runs against a bare app_server rather than
+    sharing TestCalendarUi's DAV fixtures."""
+
+    def test_switching_views_updates_the_url_and_survives_the_back_button(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards: view and date lived in a plain
+        in-memory atom with no URL of their own, so a reload always
+        landed back on the default view and the browser's back button
+        did nothing -- switching from Week into Day left no trace to
+        return from."""
+        page.goto(f"{app_server}/calendar")
+        expect(page).to_have_url(re.compile(r"[?&]view=week(&|$)"))
+
+        page.get_by_role("tab", name="Day", exact=True).click()
+        expect(page).to_have_url(re.compile(r"[?&]view=day(&|$)"))
+        expect(page.get_by_role("tab", name="Day", exact=True)).to_have_attribute(
+            "aria-selected", "true",
+        )
+
+        page.go_back()
+        expect(page).to_have_url(re.compile(r"[?&]view=week(&|$)"))
+        expect(page.get_by_role("tab", name="Week", exact=True)).to_have_attribute(
+            "aria-selected", "true",
+        )
+
+    def test_a_day_reached_from_the_month_view_can_be_left_by_going_back(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The concrete case named for this feature: jumping from the
+        month view into a specific day, then going back, must return to
+        the month view rather than landing somewhere else entirely."""
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Month", exact=True).click()
+        expect(page).to_have_url(re.compile(r"[?&]view=month(&|$)"))
+
+        # Today's own cell, not just "the first day-cell button": the
+        # month grid is a virtualized, continuously scrolling list still
+        # settling its render window right after a mount, and .first
+        # picks up whatever week currently sits first in DOM order --
+        # liable to be unmounted and replaced mid-click. Today's date is
+        # always inside the render window the anchor date opens with.
+        today_iso = page.evaluate(
+            "() => { const d = new Date(); "
+            "return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') "
+            "+ '-' + String(d.getDate()).padStart(2, '0'); }"
+        )
+        day_cell = page.locator(f'button[data-date="{today_iso}"]')
+        expect(day_cell).to_be_visible(timeout=15_000)
+        day_cell.click()
+        expect(page).to_have_url(re.compile(r"[?&]view=day(&|$)"))
+
+        page.go_back()
+        expect(page).to_have_url(re.compile(r"[?&]view=month(&|$)"))
+
+    def test_month_year_picker_jumps_to_a_chosen_month(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """Clicking the header title opens a month grid for the current
+        year first; clicking the year switches to a year grid."""
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Month", exact=True).click()
+
+        current_year = page.evaluate("new Date().getFullYear()")
+        target_year = current_year - 1
+
+        page.get_by_test_id("calendar-toolbar-title").click()
+        page.get_by_role("button", name=str(current_year), exact=True).click()
+        page.get_by_role("button", name=str(target_year), exact=True).click()
+        page.get_by_role("button", name="Mar", exact=True).click()
+
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            f"March {target_year}", timeout=10_000,
+        )
+
+    def test_time_grid_scroll_position_persists_across_view_changes(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards: the day/week grid always scrolled
+        to a fixed 08:00 (or an hour before now) on every mount, so
+        leaving a view and coming back -- even switching from week to
+        day on the same date -- lost exactly where the reader was."""
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Day", exact=True).click()
+        scroller = page.locator('[data-testid="time-grid-scroll"]')
+        expect(scroller).to_be_visible(timeout=15_000)
+
+        scroller.evaluate("(el) => { el.scrollTop = 500; }")
+        # Past the debounce that keeps the persisted write off every
+        # scroll frame.
+        page.wait_for_timeout(600)
+
+        page.get_by_role("tab", name="Month", exact=True).click()
+        page.get_by_role("tab", name="Week", exact=True).click()
+
+        restored = page.locator('[data-testid="time-grid-scroll"]')
+        expect(restored).to_be_visible(timeout=15_000)
+        scroll_top = restored.evaluate("(el) => el.scrollTop")
+        assert abs(scroll_top - 500) < 5, f"expected scrollTop near 500, got {scroll_top}"
+
+    def test_ctrl_wheel_zooms_the_time_grid_and_the_zoom_persists(
+        self, page: Page, app_server: str,
+    ) -> None:
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("tab", name="Day", exact=True).click()
+        scroller = page.locator('[data-testid="time-grid-scroll"]')
+        expect(scroller).to_be_visible(timeout=15_000)
+
+        box = scroller.bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.keyboard.down("Control")
+        page.mouse.wheel(0, -600)
+        page.keyboard.up("Control")
+        page.wait_for_timeout(300)
+
+        stored = page.evaluate("() => localStorage.getItem('mailverdict:calendar-zoom')")
+        assert stored is not None, "zoom was never persisted"
+        assert json.loads(stored) > 1.0, f"expected zoom > 1.0 after zooming in, got {stored}"

@@ -19,10 +19,11 @@ type RowAction = Extract<
   "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
 >;
 
-// Kept in the layout at full width at all times; only opacity/pointer-events
-// toggle, so revealing these controls never shifts anything else in the row.
+// Opacity/pointer-events only -- these float over the row's own background
+// rather than reserving layout space, so the sender/subject/snippet keep
+// the row's full width whether or not the pointer is anywhere near it.
 const revealOnHoverClass =
-  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto";
+  "opacity-0 pointer-events-none group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto";
 
 interface UnifiedMailItemProps {
   mail: UnifiedMessageSummary;
@@ -30,7 +31,7 @@ interface UnifiedMailItemProps {
   isFocused?: boolean;
   isChecked: boolean;
   selectionMode: boolean;
-  onSelect: (mailId: string) => void;
+  onOpen: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (mailId: string, action: RowAction, mailAccountId?: string) => void;
 }
@@ -41,16 +42,28 @@ export function UnifiedMailItem({
   isFocused,
   isChecked,
   selectionMode,
-  onSelect,
+  onOpen,
   onCheckToggle,
   onAction,
 }: UnifiedMailItemProps) {
   const senderName = extractSenderName(mail.from_addr);
 
+  const handleRowClick = (e: React.MouseEvent) => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      onCheckToggle(mail.id, e.shiftKey);
+      return;
+    }
+    onOpen(mail.id);
+  };
+
   return (
     <div
       className={cn(
-        "group flex cursor-pointer items-start gap-3 border-b px-4 py-3 transition-colors",
+        // No "group"/tabIndex here -- DragMail's own wrapper is the row's
+        // one real tab stop (dnd-kit's keyboard-drag support already
+        // needs it) and declares the named group every hover/focus
+        // reveal below keys off instead.
+        "relative flex cursor-pointer items-start gap-3 border-b px-4 py-3 transition-colors",
         isSelected
           ? "bg-accent border-l-2 border-l-primary"
           : isChecked
@@ -60,36 +73,43 @@ export function UnifiedMailItem({
         isFocused && "ring-2 ring-inset ring-ring",
         mail.pending_sync && "opacity-60",
       )}
-      onClick={() => onSelect(mail.id)}
+      onClick={handleRowClick}
     >
-      {/* Checkbox (visible in selection mode or on hover) */}
-      <div
-        className={cn(
-          "shrink-0",
-          selectionMode ? "block" : "hidden group-hover:block",
-        )}
-      >
-        <Checkbox
-          checked={isChecked}
-          onCheckedChange={() => {}}
-          onClick={(e) => {
-            e.stopPropagation();
-            onCheckToggle(mail.id, e.shiftKey);
-          }}
-          className="h-4 w-4"
+      {/* Avatar/checkbox slot with the emoji badge -- the checkbox is how selection starts. */}
+      <div className="relative h-8 w-8 shrink-0">
+        <InitialsAvatar
+          name={senderName}
+          className={cn(
+            "absolute inset-0",
+            selectionMode
+              ? "hidden"
+              : "opacity-100 transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
+          )}
+          badge={
+            mail.account_emoji && <span title="Source account">{mail.account_emoji}</span>
+          }
         />
+        <div
+          className={cn(
+            "absolute inset-0 flex items-center justify-center",
+            selectionMode
+              ? "opacity-100"
+              : "opacity-0 pointer-events-none transition-opacity group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto",
+          )}
+        >
+          <Checkbox
+            checked={isChecked}
+            onCheckedChange={() => {}}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCheckToggle(mail.id, e.shiftKey);
+            }}
+            className="h-4 w-4"
+          />
+        </div>
       </div>
 
-      {/* Avatar with emoji badge (hidden when checkbox visible) */}
-      <InitialsAvatar
-        name={senderName}
-        className={cn(selectionMode && "hidden", !selectionMode && "group-hover:hidden")}
-        badge={
-          mail.account_emoji && <span title="Source account">{mail.account_emoji}</span>
-        }
-      />
-
-      {/* Content */}
+      {/* Content -- always the row's full width; controls float over it. */}
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
         <div className="flex items-center gap-2">
           {/* Emoji badge inline (always visible, small) */}
@@ -133,23 +153,25 @@ export function UnifiedMailItem({
       </div>
 
       {/*
-        Row actions. Every button is always in the DOM at a fixed position -
-        only opacity/pointer-events toggle on hover or focus - so the
-        always-visible mark-read control never shifts under the pointer when
-        the rest of the row reveals itself.
+        Floating controls: positioned over the row rather than reserved in
+        its flex layout, vertically centered so they never cover the
+        timestamp sitting at the very top of the row. Every button stays
+        in the DOM at all times -- only opacity/pointer-events toggle on
+        hover or focus -- so nothing shifts under the pointer as the row
+        reveals itself.
       */}
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-0.5">
         <button
           className={cn(
-            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
             !mail.is_flagged && revealOnHoverClass,
           )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, mail.is_flagged ? "unflag" : "flag", mail.account_id);
           }}
-          title={mail.is_flagged ? "Unflag" : "Star"}
-          aria-label={mail.is_flagged ? "Unflag" : "Star"}
+          title={mail.is_flagged ? "Unstar" : "Star"}
+          aria-label={mail.is_flagged ? "Unstar" : "Star"}
         >
           <Star
             className={cn(
@@ -162,7 +184,7 @@ export function UnifiedMailItem({
         </button>
         <button
           className={cn(
-            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
             revealOnHoverClass,
           )}
           onClick={(e) => {
@@ -176,34 +198,20 @@ export function UnifiedMailItem({
         </button>
         <button
           className={cn(
-            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+            "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
             revealOnHoverClass,
           )}
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, "spam", mail.account_id);
           }}
-          title="Spam"
-          aria-label="Mark as spam"
+          title="Move to Junk"
+          aria-label="Move to Junk"
         >
           <Ban className="h-4 w-4 text-muted-foreground" />
         </button>
         <button
-          className={cn(
-            "rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            revealOnHoverClass,
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(mail.id, "trash", mail.account_id);
-          }}
-          title="Move to trash"
-          aria-label="Move to trash"
-        >
-          <Trash2 className="h-4 w-4 text-muted-foreground" />
-        </button>
-        <button
-          className="rounded-md p-1 text-muted-foreground hover:text-foreground transition-colors"
+          className="pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
           onClick={(e) => {
             e.stopPropagation();
             onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read", mail.account_id);
@@ -212,12 +220,29 @@ export function UnifiedMailItem({
           aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
         >
           {mail.is_seen ? (
-            <MailIcon className="h-3.5 w-3.5" />
+            <MailIcon className="h-4 w-4" />
           ) : (
-            <MailOpen className="h-3.5 w-3.5" />
+            <MailOpen className="h-4 w-4" />
           )}
         </button>
       </div>
+
+      {/* Delete sits apart from the rest, lower right, so a reach for
+          Archive or Junk doesn't land on it by mistake. */}
+      <button
+        className={cn(
+          "absolute bottom-1.5 right-2 rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
+          revealOnHoverClass,
+        )}
+        onClick={(e) => {
+          e.stopPropagation();
+          onAction?.(mail.id, "trash", mail.account_id);
+        }}
+        title="Move to trash"
+        aria-label="Move to trash"
+      >
+        <Trash2 className="h-4 w-4 text-muted-foreground" />
+      </button>
     </div>
   );
 }

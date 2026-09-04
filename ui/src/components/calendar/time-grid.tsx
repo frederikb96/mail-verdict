@@ -4,23 +4,37 @@
  * container (so its growth never moves the grid under the pointer), and
  * the hour-axis time grid itself. */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAtom, useAtomValue } from "jotai";
 import { EventChip } from "@/components/calendar/event-chip";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
 import { TimeGridColumn } from "@/components/calendar/time-grid-column";
 import { assignLanes, type SelectEventHandler, type SpanningItem } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
+import { useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
 import { useEventsForRange, useUpdateEvent } from "@/hooks/use-events";
 import { useGridDrag, type GridGhost } from "@/hooks/use-grid-drag";
 import { useToast } from "@/hooks/use-toast";
-import { calendarDateAtom } from "@/lib/atoms";
+import { calendarDateAtom, calendarScrollHourAtom, calendarZoomAtom } from "@/lib/atoms";
 import { addDays, format, isSameDay, isToday, startOfWeek } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import type { EventInstance, RecurrenceScope } from "@/types/api";
 
-const HOUR_HEIGHT = 56;
+/** HOUR_HEIGHT at zoom 1 -- the grid's actual row height is this times
+ * the persisted zoom atom. */
+const BASE_HOUR_HEIGHT = 56;
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 3;
+/** How much one wheel-delta unit under Ctrl moves the zoom -- tuned so a
+ * normal trackpad/mouse-wheel notch (~100 raw delta) is a small, smooth
+ * step rather than jumping the whole range in one scroll. */
+const ZOOM_PER_WHEEL_DELTA = 0.0015;
+/** Debounces the write into the persisted atom (which round-trips through
+ * localStorage on every set) away from firing on every scroll frame; the
+ * in-memory anchor ref, used for the zoom-recompute below, still updates
+ * immediately regardless. */
+const SCROLL_PERSIST_DEBOUNCE_MS = 300;
 
 interface TimeGridProps {
   /** 1 for the day view, 7 for the week view. */
@@ -34,9 +48,13 @@ interface AllDaySpanning extends SpanningItem {
 
 export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
   const anchor = useAtomValue(calendarDateAtom);
+  const [zoom, setZoom] = useAtom(calendarZoomAtom);
+  const [persistedScrollHour, setPersistedScrollHour] = useAtom(calendarScrollHourAtom);
+  const HOUR_HEIGHT = BASE_HOUR_HEIGHT * zoom;
   const scrollRef = useRef<HTMLDivElement>(null);
   const { push: pushToast } = useToast();
   const { data: calendars } = useCalendars();
+  const defaultDurationMinutes = useDefaultEventDurationMinutes();
   const calendarById = useMemo(() => new Map((calendars ?? []).map((c) => [c.id, c])), [calendars]);
   const updateEvent = useUpdateEvent();
   const [pendingScope, setPendingScope] = useState<{
@@ -142,6 +160,7 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
   const drag = useGridDrag({
     columns: days.length,
     pixelsPerMinute: HOUR_HEIGHT / 60,
+    snapMinutes: defaultDurationMinutes,
     onCommitMove: (ghost) => {
       const day = days[ghost.column];
       const start = new Date(day);
@@ -200,16 +219,71 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
     [drag],
   );
 
-  // Scroll to 8:00 (or an hour before now, on today) once on mount.
+  // The hour-of-day at the top of the viewport -- an identity to restore
+  // and recompute against, per the scrolling skill, never a remembered
+  // pixel offset (which a zoom change would make meaningless). Seeded
+  // from whatever was persisted; still null the very first time this
+  // view has ever been opened.
+  const anchorHourRef = useRef<number | null>(persistedScrollHour);
+  const persistTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Scroll to the persisted hour (or 8:00, or an hour before now on
+  // today) once on mount.
   const scrolledRef = useRef(false);
   useEffect(() => {
     if (scrolledRef.current || !scrollRef.current) return;
     const showsToday = days.some((d) => isToday(d));
-    const hour = showsToday ? Math.max(0, new Date().getHours() - 1) : 8;
+    const hour = anchorHourRef.current ?? (showsToday ? Math.max(0, new Date().getHours() - 1) : 8);
+    anchorHourRef.current = hour;
     scrollRef.current.scrollTop = hour * HOUR_HEIGHT;
     scrolledRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A zoom change alone must not lose the reader's place: recompute
+  // scrollTop from the anchor hour against whatever HOUR_HEIGHT now is,
+  // rather than leaving the scrollTop a different scale produced.
+  useLayoutEffect(() => {
+    if (!scrolledRef.current || !scrollRef.current || anchorHourRef.current === null) return;
+    scrollRef.current.scrollTop = anchorHourRef.current * HOUR_HEIGHT;
+  }, [HOUR_HEIGHT]);
+
+  const handleGridScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const hour = el.scrollTop / HOUR_HEIGHT;
+    anchorHourRef.current = hour;
+    if (persistTimeoutRef.current) clearTimeout(persistTimeoutRef.current);
+    persistTimeoutRef.current = setTimeout(
+      () => setPersistedScrollHour(hour), SCROLL_PERSIST_DEBOUNCE_MS,
+    );
+  }, [HOUR_HEIGHT, setPersistedScrollHour]);
+
+  useEffect(() => {
+    return () => {
+      if (persistTimeoutRef.current) clearTimeout(persistTimeoutRef.current);
+    };
+  }, []);
+
+  // Ctrl+wheel zooms the grid's vertical density. React's own onWheel is
+  // a passive listener by default (attached at the root for scroll
+  // perf), so preventDefault() inside it is silently ignored and the
+  // page would also zoom natively underneath -- a real, non-passive
+  // listener is the only way to actually stop that.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    function handleWheel(e: WheelEvent) {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setZoom((z) => {
+        const next = z - e.deltaY * ZOOM_PER_WHEEL_DELTA;
+        return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+      });
+    }
+    el.addEventListener("wheel", handleWheel, { passive: false });
+    return () => el.removeEventListener("wheel", handleWheel);
+  }, [setZoom]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -282,6 +356,7 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
         data-testid="time-grid-scroll"
         className="min-h-0 flex-1 overflow-y-auto"
         style={{ overflowAnchor: "none" }}
+        onScroll={handleGridScroll}
         onPointerMove={handlePointerMove}
         onPointerUp={drag.commit}
         onPointerCancel={drag.cancel}
