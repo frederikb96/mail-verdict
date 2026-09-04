@@ -24,7 +24,7 @@ type RowAction = Extract<
 // rather than reserving layout space, so the sender/subject/snippet keep
 // the row's full width whether or not the pointer is anywhere near it.
 const revealOnHoverClass =
-  "opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto";
+  "opacity-0 pointer-events-none group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto";
 
 interface MailListItemProps {
   mail: MessageSummary;
@@ -71,7 +71,11 @@ export function MailListItem({
   return (
     <div
       className={cn(
-        "group relative flex cursor-pointer items-start gap-3 border-b px-4 py-3 transition-colors",
+        // No "group"/tabIndex here -- DragMail's own wrapper is the row's
+        // one real tab stop (dnd-kit's keyboard-drag support already
+        // needs it) and declares the named group every hover/focus
+        // reveal below keys off instead.
+        "relative flex cursor-pointer items-start gap-3 border-b px-4 py-3 transition-colors",
         isSelected
           ? "bg-accent border-l-2 border-l-primary"
           : isChecked
@@ -81,7 +85,6 @@ export function MailListItem({
         isFocused && "ring-2 ring-inset ring-ring",
         mail.pending_sync && "opacity-60",
       )}
-      tabIndex={0}
       onClick={handleRowClick}
     >
       {/* Avatar/checkbox slot -- the checkbox is how selection starts. */}
@@ -92,7 +95,7 @@ export function MailListItem({
             "absolute inset-0",
             selectionMode
               ? "hidden"
-              : "opacity-100 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0",
+              : "opacity-100 transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
           )}
         />
         <div
@@ -100,7 +103,7 @@ export function MailListItem({
             "absolute inset-0 flex items-center justify-center",
             selectionMode
               ? "opacity-100"
-              : "opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto",
+              : "opacity-0 pointer-events-none transition-opacity group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto",
           )}
         >
           <Checkbox

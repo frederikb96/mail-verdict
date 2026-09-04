@@ -947,6 +947,99 @@ class TestMailActionsUi:
             "on the screen -- the list jumped when mail arrived above the viewport"
         )
 
+    def test_row_controls_have_distinct_accessible_names(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A screen reader distinguishes the row's controls only if none
+        of their accessible names is a substring of another -- the exact
+        trap 'Spam' / 'Not spam' used to be."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+
+        names = [b.get_attribute("aria-label") for b in row.get_by_role("button").all()]
+        assert all(names), f"every row control needs an accessible name: {names!r}"
+        assert len(names) == len(set(names)), f"duplicate accessible names: {names!r}"
+        for name in names:
+            others = [n for n in names if n != name]
+            assert not any(name in other or other in name for other in others), (
+                f"{name!r} is a substring of, or contains, another control's name in {names!r}"
+            )
+
+    def test_row_controls_are_reachable_by_keyboard(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Controls that only ever appear on hover are unusable without a
+        mouse unless keyboard focus reveals them the same way."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        trash_button = row.get_by_title("Move to trash")
+        assert trash_button.evaluate("el => getComputedStyle(el).opacity") == "0", (
+            "expected the control hidden before focus, to prove focus is what reveals it"
+        )
+
+        row.focus()
+        expect(trash_button).to_have_css("opacity", "1", timeout=5_000)
+
+    def test_row_text_keeps_full_width_while_controls_float_over_it(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Hovering must not shrink the sender/subject text to make room
+        for the row's controls -- they float over the row instead."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        subject_text = row.locator("span.truncate").first
+
+        width_before = subject_text.evaluate("el => el.getBoundingClientRect().width")
+        row.hover()
+        expect(row.get_by_title("Archive")).to_have_css("opacity", "1", timeout=5_000)
+        width_during_hover = subject_text.evaluate("el => el.getBoundingClientRect().width")
+
+        assert width_during_hover == width_before, (
+            f"row text narrowed from {width_before}px to {width_during_hover}px on hover -- "
+            "controls should float over the row, not push its content aside"
+        )
+
 
 def _channels(colour: str) -> list[float]:
     """The three channels of a computed `rgb(...)` / `rgba(...)` value."""

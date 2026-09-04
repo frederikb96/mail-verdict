@@ -46,7 +46,14 @@ export function DragMail({ row, accountId, folderId, children }: DragMailProps) 
       {...attributes}
       data-testid="mail-row"
       data-mail-id={row.id}
-      className="relative"
+      // Named group, not the bare "group" MailListItem/UnifiedMailItem
+      // used to declare on their own root -- dnd-kit's own `attributes`
+      // above already puts tabIndex on *this* element for keyboard-driven
+      // dragging, so this is the row's one real tab stop. Keying the
+      // hover-reveal on a second, inner tabIndex would have made
+      // keyboard focus land on a stop that reveals nothing, one Tab
+      // before the one that does.
+      className="group/row relative"
       style={{ opacity: isDragging ? 0.5 : 1 }}
     >
       {children}
