@@ -43,6 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and emptying the folder; emptying confirms with the message count first, since it destroys
   every message in it on the server with no undo. Renaming is deliberately not offered -- IMAP's
   rename also renames every child folder, so it cannot be a single-row update
+- The reading pane's own action row now also carries star, download as .eml, mark read/unread
+  and a verdict-correction control alongside archive, junk and trash
+- Dragging a multi-message selection onto a sidebar folder now moves the whole selection in one
+  request rather than looping a move per message
+- A row action in threaded mode names its scope (the thread's latest message) in its tooltip,
+  rather than leaving it to guess at now that bulk selection sits beside it
 
 ### Fixed
 
