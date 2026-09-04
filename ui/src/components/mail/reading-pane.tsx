@@ -143,7 +143,7 @@ export function ReadingPane() {
         <h2 className="text-lg font-semibold leading-tight">
           {primary.subject ?? "(no subject)"}
         </h2>
-        <div className="flex shrink-0 items-center gap-1">
+        <div role="toolbar" aria-label="Message actions" className="flex shrink-0 items-center gap-1">
           {messages.length > 1 && (
             <Badge variant="secondary" className="mr-1">
               {messages.length} messages

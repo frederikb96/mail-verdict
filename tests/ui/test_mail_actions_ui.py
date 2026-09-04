@@ -987,6 +987,50 @@ class TestMailActionsUi:
                 f"{name!r} is a substring of, or contains, another control's name in {names!r}"
             )
 
+    def test_reading_pane_action_row_controls_have_distinct_accessible_names(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The consolidated action row keeps the two spam-adjacent
+        controls tellable apart: Junk moves the message to the Junk
+        folder, the verdict thumb corrects the model's classification --
+        two different actions that must not collide under the same
+        substring trap the row's own hover controls guard against."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+
+        toolbar = page.get_by_role("toolbar", name="Message actions")
+        expect(toolbar).to_be_visible(timeout=15_000)
+        # Anchors (the download link) carry role="link", not "button" --
+        # both element types are collected so the download control's own
+        # name is checked alongside the rest.
+        names = [
+            el.get_attribute("aria-label") for el in toolbar.locator("button, a").all()
+        ]
+        # star, download, mark read/unread, archive, junk, trash -- the
+        # verdict thumb is conditional on a verdict existing yet.
+        assert len(names) >= 6, f"expected at least six always-present controls: {names!r}"
+        assert all(names), f"every control needs an accessible name: {names!r}"
+        assert len(names) == len(set(names)), f"duplicate accessible names: {names!r}"
+        for name in names:
+            others = [n for n in names if n != name]
+            assert not any(name in other or other in name for other in others), (
+                f"{name!r} is a substring of, or contains, another control's name in {names!r}"
+            )
+
     def test_row_controls_are_reachable_by_keyboard(
         self,
         page: Page,
