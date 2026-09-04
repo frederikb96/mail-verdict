@@ -14,6 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
+- `GET /api/accounts/{account_id}/messages/selection`: mints a "select all matching" snapshot --
+  an instant and a count from one statement, so the two can never disagree. A bulk action's
+  `scope` now carries that instant back as `snapshot_at` (required), so mail arriving after a
+  selection was agreed to is never swept into a destructive action the user never saw
+- A bulk action may now name `ids` and `scope` together, acting on their union -- a predicate
+  selection plus a row outside it the user ticked by hand. Naming the same id in both `ids` and
+  `scope.exclude_ids` is rejected rather than picking a winner silently
+- Message list rows carry `mirrored_at` (when the row entered the local mirror), the field a
+  selection snapshot compares against
+
+### Fixed
+
+- A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
+  already carried the requested flag -- only rows that actually changed count
 
 ### Fixed
 

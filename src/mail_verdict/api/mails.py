@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import all_, any_, case, desc, func, or_, select
@@ -42,6 +43,7 @@ from mail_verdict.api.schemas import (
     MessageDetail,
     MessageListResponse,
     MessageSummary,
+    SelectionSnapshotResponse,
     TagResponse,
     ThreadResponse,
     VerdictResponse,
@@ -167,6 +169,7 @@ async def list_messages(
                     snippet=m.body_text[:120] if m.body_text else None,
                     thread_count=thread_count,
                     unread_in_thread=unread_in_thread,
+                    mirrored_at=m.created_at,
                 )
                 for m, thread_count, unread_in_thread in rows[:limit]
             ]
@@ -209,6 +212,7 @@ async def list_messages(
                     is_truncated=m.is_truncated,
                     pending_sync=m.imap_uid is None,
                     snippet=m.body_text[:120] if m.body_text else None,
+                    mirrored_at=m.created_at,
                 )
                 for m in all_msgs[:limit]
             ]
@@ -757,27 +761,56 @@ async def _folder_belongs_to_account(
     return result.scalar_one_or_none() is not None
 
 
+@account_router.get("/selection", response_model=SelectionSnapshotResponse)
+async def mint_selection(
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID = Query(...),
+    filter: Literal["unread", "all"] = Query(default="all"),  # noqa: A002
+) -> SelectionSnapshotResponse:
+    """
+    Mint a 'select all matching' snapshot: the current instant and the
+    predicate's count at that instant, from one statement so the two can
+    never disagree. Side-effect free -- no selection state is created here,
+    the client holds the returned descriptor and sends it back on the
+    bulk-action request that acts on it.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        stmt = select(func.now(), func.count(Message.id)).where(
+            Message.account_id == account_id,
+            Message.folder_id == folder_id,
+            Message.expunged_at.is_(None),
+        )
+        if filter == "unread":
+            stmt = stmt.where(Message.is_seen.is_(False))
+        row = (await session.execute(stmt)).one()
+    return SelectionSnapshotResponse(snapshot_at=row[0], count=row[1])
+
+
 @account_router.post("/bulk-action", response_model=BulkActionResponse)
 async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> BulkActionResponse:
     """
-    Apply one action to many messages, selected by id list or by scope.
+    Apply one action to many messages, selected by an id list, a scope, or
+    both -- a predicate scope plus explicit ids added on top of it (a row
+    outside the predicate the user ticked by hand).
 
     A scope resolves server-side ("everything unread in this folder") so a
     virtualized, never-fully-fetched list can still "select all" without
     the client holding every id.
     """
     db = get_db_connection()
-    target = request.resolved_ids_or_scope()
 
     async with db.session() as session:
-        if isinstance(target, list):
+        resolved: set[uuid.UUID] = set()
+        if request.scope is not None:
+            resolved.update(await _resolve_scope_ids(session, account_id, request.scope))
+        if request.ids:
             # An explicit id list is client-supplied and otherwise never
             # checked against the path's account_id -- narrowed to the
             # ids that actually belong here (and still exist) the same
             # way a scope already is, rather than trusting the list.
-            message_ids = await _resolve_explicit_ids(session, account_id, target)
-        else:
-            message_ids = await _resolve_scope_ids(session, account_id, target)
+            resolved.update(await _resolve_explicit_ids(session, account_id, request.ids))
+        message_ids = list(resolved)
 
     if not message_ids:
         return BulkActionResponse(success=True, action=request.action, affected_count=0)
@@ -872,13 +905,18 @@ async def _resolve_scope_ids(
     """
     Resolve a bulk-action scope descriptor to a concrete list of message ids.
 
-    exclude_ids is matched with `!= ALL(:ids)` rather than `NOT IN (...)`
-    for the same reason as _resolve_explicit_ids's `= ANY(:ids)`.
+    `created_at <= snapshot_at` excludes anything mirrored after the client
+    minted this scope -- the guard against sweeping in mail that arrived
+    between "select all" and the button press, which the user never agreed
+    to and never saw. exclude_ids is matched with `!= ALL(:ids)` rather
+    than `NOT IN (...)` for the same reason as _resolve_explicit_ids's
+    `= ANY(:ids)`.
     """
     stmt = select(Message.id).where(
         Message.account_id == account_id,
         Message.folder_id == scope.folder_id,
         Message.expunged_at.is_(None),
+        Message.created_at <= scope.snapshot_at,
     )
     if scope.filter == "unread":
         stmt = stmt.where(Message.is_seen.is_(False))
