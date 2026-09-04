@@ -51,6 +51,11 @@ spec:
             - name: http
               containerPort: {{ include "mail-verdict.appPort" . }}
               protocol: TCP
+            # The liveness probe's own port -- see livenessProbe below and
+            # the comment on `livenessPort` in values.yaml.
+            - name: liveness
+              containerPort: {{ include "mail-verdict.livenessPort" . }}
+              protocol: TCP
           env:
             - name: MAIL_VERDICT_CONFIG_OVERRIDE_PATH
               value: {{ .Values.configOverridePath | quote }}

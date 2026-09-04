@@ -4,8 +4,14 @@ MailVerdict ASGI Server.
 Single app serving:
 - /api/* — REST API (FastAPI routers)
 - /api/events — SSE real-time updates
-- /api/health, /api/health/live — health/readiness checks
+- /api/health — readiness check
 - /mcp — MCP streamable-http endpoint (FastMCP)
+
+Liveness is not one of these routes. It is answered by a plain socket server
+on its own port and its own thread (see `start_liveness_server` below),
+because an async endpoint here shares the event loop with every other
+handler -- a handler that blocks that loop blocks liveness along with it,
+which is exactly the failure a liveness probe exists to catch.
 
 PostIMAP handles all IMAP sync. MailVerdict is a pure PostgreSQL application.
 The FastAPI root is built first, MCP is mounted underneath it (inverted from
@@ -18,11 +24,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from fastapi import FastAPI
@@ -64,23 +71,55 @@ _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _contract_ok: bool = False
-_process_alive: bool = False
-_alive_checker_thread: Any | None = None
-_alive_checker_stop: threading.Event = threading.Event()
+_liveness_server: ThreadingHTTPServer | None = None
+_liveness_thread: Thread | None = None
 
 
-def _process_alive_checker() -> None:
+class _LivenessRequestHandler(BaseHTTPRequestHandler):
+    """Answers every request 200, from a thread with its own listening
+    socket -- there is nothing here for a blocked event loop to hold up."""
+
+    def do_GET(self) -> None:
+        body = b'{"status": "alive"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, log_format: str, *args: Any) -> None:
+        """Silence the default per-request stderr log -- a probe hits this
+        every few seconds for the life of the pod."""
+
+
+def start_liveness_server(host: str, port: int) -> tuple[ThreadingHTTPServer, Thread]:
     """
-    Background thread that continuously marks the process as alive.
+    Start the liveness listener: its own socket, its own thread, no asyncio.
 
-    This runs independently of the async event loop, so liveness probes
-    can always be answered even if the event loop is blocked.
+    A `ThreadingHTTPServer` so one slow or stuck client can never make the
+    next probe queue behind it. Called at process startup rather than from
+    the async `lifespan` below, so liveness is already answering before
+    anything that could be slow -- the database connection among it -- has
+    even been attempted.
+
+    Args:
+        host: Bind address, `config.server.host`.
+        port: TCP port to listen on, `config.server.liveness_port`.
+
+    Returns:
+        The server and the daemon thread running its `serve_forever()`.
     """
-    global _process_alive
+    server = ThreadingHTTPServer((host, port), _LivenessRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True, name="liveness-server")
+    thread.start()
+    return server, thread
 
-    while not _alive_checker_stop.is_set():
-        _process_alive = True
-        _alive_checker_stop.wait(timeout=0.1)
+
+def stop_liveness_server(server: ThreadingHTTPServer, thread: Thread) -> None:
+    """Stop the liveness listener started by `start_liveness_server`."""
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=1.0)
 
 
 def get_spam_processor() -> Any | None:
@@ -94,7 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _postimap_listener, _spam_processor, _contract_ok
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
-    global _process_alive, _alive_checker_thread, _alive_checker_stop
+    global _liveness_server, _liveness_thread
 
     config = get_config()
 
@@ -103,15 +142,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging(config.server.log_level)
     logger.info("MailVerdict server starting")
 
-    # Start background thread that marks process as alive
-    # This runs independently of the event loop so liveness can answer
-    # even if the event loop is blocked
-    _alive_checker_stop.clear()
-    _alive_checker_thread = threading.Thread(
-        target=_process_alive_checker, daemon=True, name="process-alive-checker"
+    # Started first and stopped last, deliberately outside everything else
+    # in this function -- liveness must answer for as long as the process
+    # is up, including while the rest of startup (the database connection
+    # among it) is still in progress or has failed outright.
+    _liveness_server, _liveness_thread = start_liveness_server(
+        config.server.host, config.server.liveness_port
     )
-    _alive_checker_thread.start()
-    logger.info("Process alive checker started")
+    logger.info("Liveness listener started on port %d", config.server.liveness_port)
 
     await init_database(config.database)
     logger.info("Database initialized")
@@ -326,12 +364,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_notifier = None
     _pipeline_reconciler = None
     _contract_ok = False
-    _process_alive = False
-
-    # Stop the process alive checker thread
-    _alive_checker_stop.set()
-    if _alive_checker_thread:
-        _alive_checker_thread.join(timeout=1.0)
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
     from mail_verdict.core.openai_provider import reset_openai_provider
@@ -344,6 +376,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Database connection closed")
 
     _postimap_listener = None
+
+    # Stopped last -- liveness should keep answering through every step
+    # above, including one that hangs or raises.
+    if _liveness_server and _liveness_thread:
+        stop_liveness_server(_liveness_server, _liveness_thread)
+    _liveness_server = None
+    _liveness_thread = None
 
 
 async def _check_contract(db: Any) -> bool:
@@ -506,23 +545,6 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     api_router = FastAPI(title="MailVerdict API", version=__version__)
     for router in all_routers:
         api_router.include_router(router)
-
-    @api_router.get("/health/live")
-    async def health_live() -> JSONResponse:
-        """
-        Liveness: process is alive and responsive.
-
-        Checked by a background thread independent of the async event loop,
-        so this responds promptly even if the event loop is blocked by
-        long-running operations in other handlers.
-        """
-        global _process_alive
-
-        status_code = 200 if _process_alive else 503
-        return JSONResponse(
-            status_code=status_code,
-            content={"status": "alive" if _process_alive else "not_responding"}
-        )
 
     @api_router.get("/health")
     async def health() -> JSONResponse:

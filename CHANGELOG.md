@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The liveness probe answers from a plain background socket on its own port, independent of the
+  application's event loop. A handler that blocks that loop (heavy concurrent load, a bug) no
+  longer risks the pod being restarted for merely being busy — only a genuinely dead or hung
+  process fails it now. The readiness probe (`/api/health`) is unaffected and still reflects load
+
 ## [3.1.1] - 2026-09-03
 
 ### Fixed

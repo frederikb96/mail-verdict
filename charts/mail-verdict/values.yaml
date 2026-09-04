@@ -63,6 +63,14 @@ service:
   # you override `config.server.port`.
   port: 8080
 
+# -- Port the liveness listener binds (`config.server.liveness_port` in the
+# image defaults) -- a plain background socket, separate from `service.port`,
+# so the liveness probe reaches it even when a handler blocks the app's
+# event loop. Not exposed on the Service: only the kubelet probes it,
+# directly against the pod. Change both together if you override
+# `config.server.liveness_port`.
+livenessPort: 8081
+
 resources:
   requests:
     cpu: 100m
@@ -74,13 +82,13 @@ resources:
     # cpu: 1000m
 
 livenessProbe:
-  # -- Process-liveness only: confirms the process is responsive without
-  # accessing any resources. Never waits for database connections, so heavy
-  # load does not restart a healthy pod. Detects only catastrophic process
-  # failures, not transient database issues or application bugs.
+  # -- Answered by a background socket on its own thread and its own port
+  # (`livenessPort` above), independent of the app's event loop -- a
+  # handler that blocks that loop (heavy load, a bug) never delays this,
+  # so it only ever fails on a genuinely dead or hung process.
   httpGet:
-    path: /api/health/live
-    port: http
+    path: /
+    port: liveness
   initialDelaySeconds: 10
   periodSeconds: 15
   timeoutSeconds: 5
