@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `tests/setup/large_mailbox.py`: bulk-seeds a mailbox of any size directly into the messages
+  mirror, for tests that need mailbox scale (virtualized scrolling, bulk selection) rather than
+  mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
+  a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
+  loop over individual round trips
+
 ## [3.1.1] - 2026-09-03
 
 ### Fixed
