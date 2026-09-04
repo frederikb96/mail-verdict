@@ -299,9 +299,9 @@ class TestMailActionsUi:
         ui_account: dict[str, Any],
         inbox_folder: dict[str, Any],
     ) -> None:
-        """The bulk toolbar's Trash button offers the same Undo, moving
-        every affected message back -- the selection's own compensating-move
-        path, not the single-row one above."""
+        """The bulk panel's Move to trash button offers the same Undo,
+        moving every affected message back -- the selection's own
+        compensating-move path, not the single-row one above."""
         host, _imap_port, lmtp_port = dovecot_endpoint
         subjects = [f"Bulk undo {i} {uuid.uuid4()}" for i in range(2)]
         for subject in subjects:
@@ -337,7 +337,12 @@ class TestMailActionsUi:
         rows[0].get_by_role("checkbox").click()
         rows[1].get_by_role("checkbox").click()
 
-        page.get_by_role("main").get_by_role("button", name="Trash", exact=True).click()
+        # Scoped to the bulk panel -- its Move to trash button now shares
+        # its accessible name with every row's own, so "main" alone would
+        # be a strict-mode violation across both.
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to trash", exact=True,
+        ).click()
         for row in rows:
             expect(row).not_to_be_visible(timeout=10_000)
 
@@ -398,9 +403,8 @@ class TestMailActionsUi:
         rows[1].get_by_role("checkbox").click()
 
         # "Archive" collides with every row's own hover-revealed Archive
-        # button (same accessible name) -- scoped to the bulk toolbar,
-        # which "Trash" above didn't need since a row's own trash button
-        # is named "Move to trash", not "Trash".
+        # button (same accessible name) -- scoped to the bulk panel, same
+        # reasoning as the Move to trash button above.
         page.get_by_role("toolbar", name="Bulk actions").get_by_role(
             "button", name="Archive", exact=True,
         ).click()
@@ -428,14 +432,49 @@ class TestMailActionsUi:
         junk_folder: dict[str, Any],
     ) -> None:
         """A same-folder move must be a no-op success, not a stranded
-        imap_uid=NULL row that spins forever. The row's own Spam control is
-        replaced by Not spam once a message sits in Junk, so this goes
-        through the bulk toolbar's Spam button instead -- it stays
-        available in every folder, and is the one control left that can
-        still send an already-junked message through the spam action."""
-        already_junked = _deliver_and_move(
-            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
-            inbox_folder["id"], junk_folder["id"], f"Already junk {uuid.uuid4()}",
+        imap_uid=NULL row that spins forever. A single row's own control
+        is Remove from Junk once it sits in Junk, not Move to Junk -- so
+        this reaches the spam action through the bulk panel instead, over
+        two selected rows, which always sends it regardless of where the
+        rows currently are."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Already junk {uuid.uuid4()}", f"Also junk {uuid.uuid4()}"]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_both() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(
+            _find_both, timeout_s=45.0, description="both already-junk messages synced into INBOX",
+        )
+        for target in targets:
+            resp = api_client.post(
+                f"/api/messages/{target['id']}/action",
+                json={"action": "move", "target_folder_id": junk_folder["id"]},
+            )
+            assert resp.status_code == 200, resp.text
+
+        def _both_settled_in_junk() -> list[dict[str, Any]] | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in targets]
+            if all(d["folder_id"] == junk_folder["id"] and not d["pending_sync"] for d in details):
+                return details
+            return None
+
+        already_junked, also_junked = wait_for(
+            _both_settled_in_junk, timeout_s=45.0,
+            description="both messages genuinely moved into Junk",
         )
 
         page.goto(app_server)
@@ -446,11 +485,16 @@ class TestMailActionsUi:
         select_account(page, ui_account)
         _open_folder(page, junk_folder)
         row = mail_row(page, already_junked["id"])
+        other_row = mail_row(page, also_junked["id"])
         expect(row).to_be_visible(timeout=15_000)
+        expect(other_row).to_be_visible(timeout=15_000)
 
         row.hover()
         row.get_by_role("checkbox").click()
-        page.get_by_role("main").get_by_role("button", name="Spam", exact=True).click()
+        other_row.get_by_role("checkbox").click()
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to Junk", exact=True,
+        ).click()
 
         expect(row.locator(".animate-spin")).to_have_count(0, timeout=10_000)
         expect(row).to_be_visible()

@@ -100,7 +100,7 @@ export function MailListItem({
             "absolute inset-0 flex items-center justify-center",
             selectionMode
               ? "opacity-100"
-              : "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100",
+              : "opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto",
           )}
         >
           <Checkbox
