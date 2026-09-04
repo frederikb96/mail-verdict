@@ -102,7 +102,10 @@ async def trigger_backfill(
 async def search(
     q: str = Query(min_length=1),
     account_id: uuid.UUID | None = Query(default=None),
-    limit: int = Query(default=20, ge=1, le=100),
+    folder_ids: list[uuid.UUID] | None = Query(
+        default=None, description="Restrict to these folders; omit for no restriction",
+    ),
+    limit: int = Query(default=20, ge=1, le=200),
     min_similarity: float | None = Query(default=None, ge=0.0, le=1.0),
 ) -> SemanticSearchResponse:
     """
@@ -128,14 +131,17 @@ async def search(
 
     hits = await semantic_search(
         get_db_connection(), query_vector=vectors[0], model=model,
-        account_id=account_id, k=limit, min_similarity=min_similarity,
+        account_id=account_id, folder_ids=folder_ids, k=limit,
+        min_similarity=min_similarity,
     )
     return SemanticSearchResponse(
         results=[
             SemanticSearchResult(
                 message_id=hit.message.id, account_id=hit.message.account_id,
+                folder_id=hit.message.folder_id,
                 subject=hit.message.subject, from_addr=hit.message.from_addr,
                 received_at=hit.message.received_at, similarity=hit.similarity,
+                is_seen=hit.message.is_seen, is_flagged=hit.message.is_flagged,
             )
             for hit in hits
         ],

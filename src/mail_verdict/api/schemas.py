@@ -230,23 +230,33 @@ class BulkActionResponse(BaseModel):
 # --- Search schemas ---
 
 
+SearchField = Literal["subject", "from", "to", "body"]
+
+
 class SearchResult(BaseModel):
-    """A single search result."""
+    """A single search result -- carries enough of the message (folder,
+    read/flagged state) for the search page's own row, distinct from the
+    mail list's MessageSummary and its full set of row actions."""
 
     message_id: uuid.UUID
+    account_id: uuid.UUID
+    folder_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     received_at: datetime | None = None
     snippet: str | None = None
+    is_seen: bool = False
+    is_flagged: bool = False
 
     model_config = {"from_attributes": True}
 
 
 class SearchResponse(BaseModel):
-    """Search results wrapper."""
+    """Paginated search results, newest first."""
 
     results: list[SearchResult]
-    total: int
+    has_more: bool
+    next_cursor: str | None = None
     query: str
 
 
@@ -808,10 +818,13 @@ class SemanticSearchResult(BaseModel):
 
     message_id: uuid.UUID
     account_id: uuid.UUID
+    folder_id: uuid.UUID
     subject: str | None = None
     from_addr: str | None = None
     received_at: datetime | None = None
     similarity: float
+    is_seen: bool = False
+    is_flagged: bool = False
 
 
 class SemanticSearchResponse(BaseModel):

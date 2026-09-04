@@ -42,6 +42,7 @@ async def semantic_search(
     query_vector: list[float],
     model: str,
     account_id: uuid.UUID | None = None,
+    folder_ids: list[uuid.UUID] | None = None,
     k: int = 20,
     min_similarity: float | None = None,
 ) -> list[SemanticSearchResult]:
@@ -54,6 +55,7 @@ async def semantic_search(
         model: Only rows encoded with this model are searched -- never mix
             vector spaces from two models in one ranking
         account_id: Scope to one account, or None to search every account
+        folder_ids: Restrict to these folders, or None for no restriction
         k: Maximum results
         min_similarity: Drop results below this cosine similarity (0..1),
             or None for no floor
@@ -84,6 +86,8 @@ async def semantic_search(
         )
         if account_id is not None:
             stmt = stmt.where(Message.account_id == account_id)
+        if folder_ids is not None:
+            stmt = stmt.where(Message.folder_id.in_(folder_ids))
         if min_similarity is not None:
             stmt = stmt.where(similarity >= min_similarity)
 

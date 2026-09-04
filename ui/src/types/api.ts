@@ -93,18 +93,44 @@ export interface MessageActionResponse {
   message: string | null;
 }
 
+/** Which parts of a message the fulltext search endpoint scans. */
+export type SearchField = "subject" | "from" | "to" | "body";
+
 export interface SearchResult {
   message_id: string;
+  account_id: string;
+  folder_id: string;
   subject: string | null;
   from_addr: string | null;
   received_at: string | null;
   snippet: string | null;
+  is_seen: boolean;
+  is_flagged: boolean;
 }
 
 export interface SearchResponse {
   results: SearchResult[];
-  total: number;
+  has_more: boolean;
+  next_cursor: string | null;
   query: string;
+}
+
+export interface SemanticSearchResult {
+  message_id: string;
+  account_id: string;
+  folder_id: string;
+  subject: string | null;
+  from_addr: string | null;
+  received_at: string | null;
+  similarity: number;
+  is_seen: boolean;
+  is_flagged: boolean;
+}
+
+export interface SemanticSearchResponse {
+  results: SemanticSearchResult[];
+  query: string;
+  model: string;
 }
 
 export interface AccountResponse {

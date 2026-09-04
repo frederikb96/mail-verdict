@@ -9,11 +9,15 @@ and manages its own tables (verdicts, tags, prefs, settings).
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, delete, desc, func, select
+from sqlalchemy import Text, case, cast, delete, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import aliased
 
+from mail_verdict.core.cursor import after_cursor
 from mail_verdict.database.models import (
     Account,
     AccountPrefs,
@@ -280,6 +284,91 @@ class FolderPrefsRepository:
             return list(result.scalars().all())
 
 
+# The four scopeable parts of a search-page query. "to" matches to_addrs as
+# a whole -- each element is already a "Name <addr>" string (see from_addr),
+# so casting the JSONB array to text and matching against that finds a hit
+# in either the name or the address of any recipient, without unnesting.
+SEARCH_FIELDS = frozenset({"subject", "from", "to", "body"})
+
+
+def _search_haystack(fields: frozenset[str]) -> Any:
+    """One concatenated text expression over exactly the requested fields,
+    space-joined so a token can never straddle two fields it shouldn't."""
+    columns: list[Any] = []
+    if "subject" in fields:
+        columns.append(func.coalesce(Message.subject, ""))
+    if "from" in fields:
+        columns.append(func.coalesce(Message.from_addr, ""))
+    if "to" in fields:
+        columns.append(func.coalesce(cast(Message.to_addrs, Text), ""))
+    if "body" in fields:
+        columns.append(func.coalesce(Message.body_text, ""))
+    if not columns:
+        columns = [cast("", Text)]
+    expr = columns[0]
+    for col in columns[1:]:
+        expr = expr + " " + col
+    return expr
+
+
+def _ilike_escape(token: str) -> str:
+    """Escape ILIKE's own wildcards in raw user input before wrapping it
+    in %...% -- a query containing a literal % or _ must match that
+    character, not be treated as a pattern."""
+    return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _fuzzy_token_predicate(haystack: Any, token: str, threshold: float = 0.4) -> Any:
+    """A token matches if it appears literally, or -- pg_trgm's
+    word_similarity, not similarity() -- if a substring of the (possibly
+    much longer) haystack is a near enough match to the short token that a
+    typo shouldn't lose the hit. similarity() compares two whole strings
+    and would systematically under-score a five-letter token against a
+    paragraph; word_similarity is the one meant for exactly this shape.
+
+    An '@' token is left literal-only. Measured directly: two unrelated
+    addresses sharing a domain score *higher* on word_similarity
+    ("bob@example.com" against "alice@example.com": 0.75) than a genuine
+    one-letter typo does ("reimbursment" against "reimbursement": 0.69) --
+    there is no threshold that keeps the second and drops the first. An
+    address is a literal identifier a user is typing exactly, not prose
+    worth typo-tolerance over.
+    """
+    escaped = _ilike_escape(token)
+    if "@" in token:
+        return haystack.ilike(f"%{escaped}%")
+    return or_(
+        haystack.ilike(f"%{escaped}%"),
+        func.word_similarity(token, haystack) >= threshold,
+    )
+
+
+def _build_snippet(haystack: str, tokens: list[str], window: int = 60) -> str | None:
+    """A **bold**-marked excerpt centred on the first token found as a
+    literal substring (case-insensitive) -- the same markers the UI's
+    renderSnippet already expects. A row that matched purely on trigram
+    similarity (no literal substring present anywhere) falls back to a
+    plain leading excerpt, still useful context even unmarked."""
+    lower = haystack.lower()
+    for token in tokens:
+        idx = lower.find(token.lower())
+        if idx == -1:
+            continue
+        start = max(0, idx - window)
+        end = min(len(haystack), idx + len(token) + window)
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(haystack) else ""
+        return (
+            f"{prefix}{haystack[start:idx]}"
+            f"**{haystack[idx : idx + len(token)]}**"
+            f"{haystack[idx + len(token) : end]}{suffix}"
+        )
+    excerpt = haystack.strip()
+    if not excerpt:
+        return None
+    return excerpt[:140] + "…" if len(excerpt) > 140 else excerpt
+
+
 class MessageRepository:
     """
     Repository for Message read operations.
@@ -518,6 +607,81 @@ class MessageRepository:
 
             result = await session.execute(stmt)
             return [(row[0], row[1]) for row in result.all()]
+
+    async def search_messages(
+        self,
+        account_id: uuid.UUID | None,
+        query: str,
+        *,
+        folder_ids: Sequence[uuid.UUID] | None = None,
+        fields: frozenset[str] = SEARCH_FIELDS,
+        cursor_received_at: datetime | None = None,
+        cursor_id: uuid.UUID | None = None,
+        limit: int = 50,
+    ) -> list[tuple[Message, str | None]]:
+        """
+        Fuzzy, field- and folder-scoped search, newest first, keyset-paged.
+
+        Unlike search_fulltext_with_snippet above (stemmed tsquery, ranked
+        by relevance -- what the MCP search tool still uses), this treats
+        every whitespace-split token of the query as required, matched
+        against one concatenated haystack built from exactly the toggled
+        fields: a literal substring, or -- pg_trgm's word_similarity --
+        close enough that a typo doesn't lose the hit. That is deliberately
+        not stemmed-tsquery recall (a plural does not automatically match
+        its singular): once results are ordered by date rather than
+        relevance, "matches" needs a single, predictable meaning rather
+        than one that silently depends on ts_rank.
+
+        folder_ids is enforced here, in the query itself -- a caller
+        filtering the returned page instead would silently turn a scoped
+        search into an unscoped one with a smaller page, and would make
+        keyset pagination lose rows across page boundaries.
+
+        Args:
+            account_id: Account scope, or None to search across every account
+            query: Raw query text
+            folder_ids: Restrict to these folders, or None for no restriction
+            fields: Which of "subject"/"from"/"to"/"body" to search
+            cursor_received_at, cursor_id: Keyset cursor (core/cursor.py)
+            limit: Max rows
+
+        Returns:
+            (Message, snippet) pairs ordered received_at DESC, id DESC.
+            snippet is None only when the matched text was empty.
+        """
+        tokens = query.split()
+        if not tokens:
+            return []
+
+        haystack = _search_haystack(fields)
+        async with self._db.session() as session:
+            base = select(Message, haystack.label("haystack")).where(
+                Message.expunged_at.is_(None)
+            )
+            if account_id is not None:
+                base = base.where(Message.account_id == account_id)
+            if folder_ids is not None:
+                base = base.where(Message.folder_id.in_(folder_ids))
+            sub = base.subquery()
+            msg = aliased(Message, sub)
+
+            stmt = (
+                select(msg, sub.c.haystack)
+                .where(*[_fuzzy_token_predicate(sub.c.haystack, t) for t in tokens])
+                .order_by(desc(sub.c.received_at), desc(sub.c.id))
+            )
+            if cursor_id is not None:
+                stmt = stmt.where(
+                    after_cursor(msg.received_at, msg.id, cursor_received_at, cursor_id)
+                )
+            stmt = stmt.limit(limit)
+
+            result = await session.execute(stmt)
+            return [
+                (m, _build_snippet(haystack_text, tokens))
+                for m, haystack_text in result.all()
+            ]
 
 
 class VerdictRepository:
