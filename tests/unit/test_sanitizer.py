@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mail_verdict.core.sanitizer import sanitize_email_html
+from mail_verdict.core.sanitizer import declares_dark_mode_support, sanitize_email_html
 
 
 class TestRemoteImageBlocking:
@@ -440,6 +440,100 @@ class TestUrlStringFunctionsCannotEvadeDetection:
         out = sanitize_email_html(f'<div style="background:{fn}(&quot;cid:logo&quot;)">x</div>')
         assert "cid:logo" in out
         assert "data-x-style" not in out
+
+
+class TestStructuralTagsDoNotLeakTheirTextAsCopy:
+    """A tag outside the allowlist has its tag stripped, but by default
+    only script and style also lose their text -- every other disallowed
+    tag is unwrapped, hoisting its text into the surrounding body. An
+    ESP-generated message routinely carries a `<head>` full of exactly
+    this kind of markup ahead of the real content, so the leaked text
+    lands at the very top of what renders."""
+
+    def test_a_title_does_not_become_visible_copy(self) -> None:
+        html = "<head><title>Weekly newsletter</title></head><body><p>Hello</p></body>"
+        out = sanitize_email_html(html)
+        assert "Weekly newsletter" not in out
+        assert "<p>Hello</p>" in out
+
+    def test_a_head_full_of_metadata_does_not_become_visible_copy(self) -> None:
+        html = (
+            "<html><head>"
+            '<meta name="viewport" content="width=device-width">'
+            "<title>Newsletter</title>"
+            "<style>body{margin:0}</style>"
+            "</head><body><p>Real content</p></body></html>"
+        )
+        out = sanitize_email_html(html)
+        assert "Newsletter" not in out
+        assert "margin" not in out
+        assert "<p>Real content</p>" in out
+
+    def test_an_outlook_xml_block_does_not_leak(self) -> None:
+        html = "<xml><o:p>Office namespace junk</o:p></xml><p>after</p>"
+        out = sanitize_email_html(html)
+        assert "Office namespace junk" not in out
+        assert "<p>after</p>" in out
+
+    def test_a_style_hidden_behind_the_legacy_comment_trick_still_does_not_leak(
+        self,
+    ) -> None:
+        """<style><!-- ... --></style> is how old newsletters hide CSS from
+        browsers that do not understand <style> -- the CSS must not leak
+        either as markup or, once unwrapped, as visible text."""
+        html = "<style><!--\nbody { color: red; }\n--></style><p>ok</p>"
+        out = sanitize_email_html(html)
+        assert "color" not in out
+        assert "<p>ok</p>" in out
+
+    def test_an_ordinary_unknown_tag_still_keeps_its_text(self) -> None:
+        """The fix must not become a general content-eater: a stray or
+        custom inline tag with no security meaning still shows its text,
+        exactly as before."""
+        html = "<blink>Flashy but harmless</blink>"
+        out = sanitize_email_html(html)
+        assert "Flashy but harmless" in out
+
+    def test_iframe_fallback_text_does_not_leak_either(self) -> None:
+        html = '<iframe src="https://tracker.example/x">no iframe support</iframe><p>ok</p>'
+        out = sanitize_email_html(html)
+        assert "no iframe support" not in out
+        assert "tracker.example" not in out
+        assert "<p>ok</p>" in out
+
+
+class TestDarkModeDeclaration:
+    """A message can say it renders correctly on a dark canvas, through any
+    of the three shapes mail actually uses. The signal only exists in the
+    head/meta/style markup this module otherwise discards, so it has to be
+    read from the raw HTML before sanitizing."""
+
+    def test_the_css_color_scheme_meta_tag_is_recognised(self) -> None:
+        html = '<meta name="color-scheme" content="light dark"><p>x</p>'
+        assert declares_dark_mode_support(html) is True
+
+    def test_apples_supported_color_schemes_meta_tag_is_recognised(self) -> None:
+        html = '<meta name="supported-color-schemes" content="light dark"><p>x</p>'
+        assert declares_dark_mode_support(html) is True
+
+    def test_the_color_scheme_css_property_is_recognised(self) -> None:
+        html = "<style>:root{color-scheme: light dark;}</style><p>x</p>"
+        assert declares_dark_mode_support(html) is True
+
+    def test_a_prefers_color_scheme_media_query_is_recognised(self) -> None:
+        html = (
+            "<style>@media (prefers-color-scheme: dark) "
+            "{ body { background:#000 } }</style><p>x</p>"
+        )
+        assert declares_dark_mode_support(html) is True
+
+    def test_ordinary_mail_with_no_signal_is_not_mistaken_for_dark_aware(self) -> None:
+        html = "<head><title>Newsletter</title></head><body><p>Hello</p></body>"
+        assert declares_dark_mode_support(html) is False
+
+    def test_a_light_only_declaration_is_not_treated_as_dark_support(self) -> None:
+        html = '<meta name="color-scheme" content="light only"><p>x</p>'
+        assert declares_dark_mode_support(html) is False
 
 
 class TestDataImagesRenderAsDocumented:

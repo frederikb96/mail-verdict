@@ -22,6 +22,22 @@ ALLOWED_TAGS = {
     "u", "ul", "center", "font",
 }
 
+# A tag outside ALLOWED_TAGS has its own tag stripped, but by default only
+# `script` and `style` also lose their text content -- every other
+# disallowed tag is unwrapped, hoisting its text into the surrounding body.
+# That is correct for a stray inline wrapper (a `<blink>` or a custom
+# element still ought to show its text), but wrong for a document-structure
+# tag: a `<title>` or `<head>` was never meant to be visible copy, and an
+# ESP-generated message routinely carries several kilobytes of exactly this
+# kind of markup ahead of the actual content, which is why it surfaces at
+# the very top of the rendered message. These lose their content along with
+# the tag; nh3's own defaults (script, style) are named explicitly too, so
+# the set does not depend on them not changing under us.
+CONTENT_STRIPPED_TAGS = {
+    "script", "style", "title", "head", "meta", "xml", "noscript",
+    "iframe", "audio", "video", "object", "embed",
+}
+
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
     "img": {"src", "data-x-src", "alt", "width", "height", "title"},
@@ -338,8 +354,49 @@ def sanitize_email_html(html: str) -> str:
     cleaned = nh3.clean(
         html,
         tags=ALLOWED_TAGS,
+        clean_content_tags=CONTENT_STRIPPED_TAGS,
         attributes=ALLOWED_ATTRIBUTES,
         link_rel="noopener noreferrer",
         url_schemes={"http", "https", "mailto", "cid", "data"},
     )
     return _rewrite_remote_images(cleaned)
+
+
+_META_COLOR_SCHEME_RE = re.compile(
+    r'<meta\b[^>]*\bname\s*=\s*["\']?(color-scheme|supported-color-schemes)["\']?'
+    r'[^>]*\bcontent\s*=\s*["\']([^"\']*)["\']'
+    r"|"
+    r'<meta\b[^>]*\bcontent\s*=\s*["\']([^"\']*)["\']'
+    r'[^>]*\bname\s*=\s*["\']?(color-scheme|supported-color-schemes)["\']?',
+    re.IGNORECASE,
+)
+_MEDIA_PREFERS_DARK_RE = re.compile(
+    r"@media[^{]*prefers-color-scheme\s*:\s*dark", re.IGNORECASE
+)
+_COLOR_SCHEME_PROPERTY_RE = re.compile(
+    r"(?<![\w-])color-scheme\s*:\s*[^;}\"']*dark", re.IGNORECASE
+)
+
+
+def declares_dark_mode_support(html: str) -> bool:
+    """Whether a message's own markup says it renders correctly on a dark
+    canvas, rather than assuming the light one every other message does.
+
+    `<head>`, `<meta>` and `<style>` are stripped from the rendered output
+    (they carry no visible content, only structure this renderer does not
+    use), so this reads the raw, pre-sanitized HTML -- the only place the
+    signal still exists. Three shapes, each already standardised for mail:
+    the CSS `color-scheme` meta tag and property, and Apple Mail's own
+    `supported-color-schemes` meta tag. A regex rather than a full parse,
+    matching how the rest of this module treats attribute-level detection
+    that does not need a tree.
+    """
+    if _MEDIA_PREFERS_DARK_RE.search(html):
+        return True
+    if _COLOR_SCHEME_PROPERTY_RE.search(html):
+        return True
+    for match in _META_COLOR_SCHEME_RE.finditer(html):
+        content = match.group(2) or match.group(3) or ""
+        if "dark" in content.lower():
+            return True
+    return False

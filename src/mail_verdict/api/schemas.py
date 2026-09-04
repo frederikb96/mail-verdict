@@ -127,6 +127,11 @@ class MessageDetail(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     has_blocked_images: bool = False
     images_allowed: bool = False
+    # Whether the message's own markup (a color-scheme meta tag, property or
+    # media query) says it renders correctly on a dark canvas -- computed
+    # from the raw HTML before sanitizing strips the head/meta/style it
+    # lived in. Most mail never says either way, and defaults to False.
+    supports_dark_mode: bool = False
     created_at: datetime
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
