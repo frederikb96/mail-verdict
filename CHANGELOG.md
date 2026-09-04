@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
 
+### Changed
+
+- A contact carries a list of websites rather than a single one. `url` on a contact is now `urls`
+  in the API, the MCP tools and the response schema — a breaking change for anything reading that
+  field
 
 ### Fixed
 
