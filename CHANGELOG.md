@@ -33,8 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   plain or ctrl-click, ctrl/cmd-click toggles a single row, and a plain click on a row's text
   abandons the selection and opens that message
 - With more than one message selected, the reading pane is replaced by a bulk panel offering
-  read/unread, archive, junk, trash and move-to-folder; a destructive action against a "select
-  all" scope confirms with the count first, since it cannot be undone the way an explicit
+  read/unread, star, archive, junk, trash and move-to-folder; a destructive action against a
+  "select all" scope confirms with the count first, since it cannot be undone the way an explicit
   selection's toast can
 - A row's Junk control now moves the message to the Junk folder unconditionally; correcting the
   model's spam verdict is its own control, since the two are different actions that happened to

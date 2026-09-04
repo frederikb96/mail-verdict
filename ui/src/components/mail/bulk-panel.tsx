@@ -9,7 +9,7 @@
  */
 
 import { useState } from "react";
-import { Archive, Ban, ChevronDown, Mail as MailIcon, MailOpen, Trash2 } from "lucide-react";
+import { Archive, Ban, ChevronDown, Mail as MailIcon, MailOpen, Star, Trash2 } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -87,6 +87,10 @@ export function BulkPanel() {
         <Button variant="outline" size="sm" onClick={() => run("mark_unread", undefined, "Mark as unread")}>
           <MailIcon className="h-4 w-4" />
           Mark as unread
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => run("flag", undefined, "Star")}>
+          <Star className="h-4 w-4" />
+          Star
         </Button>
         <Button variant="outline" size="sm" onClick={() => run("archive", undefined, "Archive")}>
           <Archive className="h-4 w-4" />
