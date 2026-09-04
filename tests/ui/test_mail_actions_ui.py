@@ -815,6 +815,14 @@ class TestMailActionsUi:
 
         wait_for(_both_gone, timeout_s=20.0, description="both messages permanently deleted")
 
+        # Clean up the folder itself -- it's now empty, and this account is
+        # shared with test_manage_folders_offers_no_delete_for_special_use_folders,
+        # which assumes every folder on it is special-use.
+        resp = api_client.delete(
+            f"/api/folders/{custom_folder['id']}", params={"confirm_message_count": 0},
+        )
+        assert resp.status_code == 204, resp.text
+
     def test_manage_folders_offers_no_delete_for_special_use_folders(
         self,
         page: Page,
