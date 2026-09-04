@@ -32,13 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
-- A dark-mode toggle in each message's header, remembered per message across reopening it. A
-  message renders on a light canvas by default and stays there -- mail is written assuming one --
-  but one that declares its own dark-canvas support (a `color-scheme` meta tag, CSS property, or
-  a `prefers-color-scheme: dark` media query) renders dark on its own, unasked
-- A sender avatar next to each message's name: initials derived from the display name, with no
-  network request involved. Ready to show an address-book photo once one is available; it is not
-  yet
+
 
 ### Fixed
 
@@ -63,6 +57,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Expanding every visible calendar's recurring series is also run off the event loop, so a slow
   month view no longer starves every other request sharing the process — including the
   liveness check, which is what pulled the pod out of service
+- Unchecking a calendar in the sidebar actually hides its events now, and checking one shows
+  them again immediately. The checkbox itself already wrote the change; nothing told the events
+  query to refetch under the new visibility, so the previously-cached month kept rendering as if
+  nothing had happened
+- The sidebar's calendar checkbox is tinted with the calendar's own colour rather than always
+  the theme's primary colour — it renders as a plain button, not a native input, so `accent-color`
+  never had any effect on it
+- The manage-calendars dialog is a compact list instead of every calendar permanently showing
+  all twelve palette colours as a row of swatches, which pushed the name into an ellipsis and
+  forced the dialog to scroll sideways as well as down. Each calendar now has a single colour
+  swatch that opens the palette in a popover
+- A calendar can now be hidden from the sidebar and the event editor entirely (in the manage
+  dialog), independent of the sidebar's own per-view visibility checkbox — two levels rather
+  than one flag serving both
+- The event editor's Calendar picker offers only enabled calendars, so it is not as long as the
+  full list a deployment with many synced collections would otherwise show
+- The week view's header shows the week number in brackets after the date range, the way the
+  month view's own gutter already does
 
 ## [3.1.1] - 2026-09-03
 

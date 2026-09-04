@@ -910,6 +910,12 @@ class CalendarPrefs(Base):
     identity_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     intake: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Whether this calendar is offered at all -- the sidebar list, the
+    # event editor's Calendar picker -- distinct from is_visible, which
+    # only decides whether an *offered* calendar's events are drawn right
+    # now. Disabling one calendar leaves every other calendar's own
+    # is_visible untouched.
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     color_override: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("idx_calendar_prefs_identity", "identity_id"),)

@@ -23,8 +23,13 @@ export function CalendarSidebar() {
   const { data: calendars } = useCalendars();
   const updateCalendar = useUpdateCalendar();
 
+  // is_enabled hides a calendar out of the sidebar entirely (the manage
+  // dialog's own level); is_visible, below, is the remaining per-view
+  // checkbox on whatever is still offered here.
+  const enabledCalendars = (calendars ?? []).filter((c) => c.is_enabled);
+
   const groups = new Map<string, { name: string; calendars: typeof calendars }>();
-  for (const c of calendars ?? []) {
+  for (const c of enabledCalendars) {
     if (!groups.has(c.dav_account_id)) {
       groups.set(c.dav_account_id, { name: c.dav_account_name, calendars: [] });
     }
@@ -56,11 +61,16 @@ export function CalendarSidebar() {
                       onCheckedChange={(checked) =>
                         updateCalendar.mutate({ id: c.id, data: { is_visible: checked === true } })
                       }
-                      style={{ accentColor: resolveCalendarColor(c) }}
-                    />
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ background: resolveCalendarColor(c) }}
+                      // The checkbox is a base-ui button, not a native
+                      // <input>, so `accent-color` (which only styles a
+                      // real form control's own paint) has no effect on
+                      // it -- an inline background/border wins over the
+                      // component's own `data-[checked]:bg-primary` class
+                      // by specificity and is what actually tints it.
+                      style={{
+                        borderColor: resolveCalendarColor(c),
+                        backgroundColor: c.is_visible ? resolveCalendarColor(c) : undefined,
+                      }}
                     />
                     <span className="flex-1 truncate">{c.display_name}</span>
                     {c.read_only && (
@@ -72,8 +82,10 @@ export function CalendarSidebar() {
                 ))}
               </div>
             ))}
-            {(calendars ?? []).length === 0 && (
-              <p className="px-1 py-2 text-sm text-muted-foreground">No calendars yet</p>
+            {enabledCalendars.length === 0 && (
+              <p className="px-1 py-2 text-sm text-muted-foreground">
+                {(calendars ?? []).length === 0 ? "No calendars yet" : "Every calendar is hidden"}
+              </p>
             )}
           </div>
         </SidebarGroupContent>

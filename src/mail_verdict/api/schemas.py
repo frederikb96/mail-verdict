@@ -1000,6 +1000,7 @@ class CalendarResponse(BaseModel):
     color: str
     color_override: str | None
     is_visible: bool
+    is_enabled: bool
     read_only: bool
     identity_id: uuid.UUID | None
     intake: CalendarIntakeState
@@ -1019,6 +1020,7 @@ class CalendarUpdateRequest(BaseModel):
     display_name: str | None = None
     color_override: str | None = None
     is_visible: bool | None = None
+    is_enabled: bool | None = None
     identity_id: uuid.UUID | None = None
     intake: CalendarIntakeState | None = None
 
