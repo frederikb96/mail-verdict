@@ -24,6 +24,7 @@ from mail_verdict.api.schemas import (
     ContactEmailIO,
     ContactListResponse,
     ContactPhoneIO,
+    ContactPhotoOut,
     ContactResponse,
     ContactSearchHitOut,
     ContactUpdateRequest,
@@ -89,8 +90,13 @@ async def _to_response(obj: DavObject) -> ContactResponse:
         phones=[ContactPhoneIO(number=p.number, type=p.type) for p in parsed.phones],
         addresses=[ContactAddressIO(label=a.label, text=a.text) for a in parsed.addresses],
         birthday=parsed.birthday,
-        url=parsed.url,
+        urls=parsed.urls,
         notes=parsed.notes,
+        categories=parsed.categories,
+        photo=(
+            ContactPhotoOut(kind=parsed.photo.kind, url=parsed.photo.url)
+            if parsed.photo else None
+        ),
     )
 
 
@@ -132,6 +138,19 @@ async def search_contacts(q: str = Query(min_length=1)) -> list[ContactSearchHit
     return results
 
 
+@router.get("/resolve", response_model=ContactResponse | None)
+async def resolve_contact_by_email(email: str = Query(min_length=1)) -> ContactResponse | None:
+    """The one contact carrying this address, or none -- what a sender's
+    avatar/name lookup resolves against. `None` (204-less null body) is
+    the ordinary "no match" outcome, not an error."""
+    await _require_support()
+    repo = DavObjectRepository(get_db_connection())
+    obj = await repo.find_by_email(email)
+    if obj is None:
+        return None
+    return await _to_response(obj)
+
+
 @router.get("/{contact_id}", response_model=ContactResponse)
 async def get_contact(contact_id: uuid.UUID) -> ContactResponse:
     """Structured detail, parsed server-side from the vCard body."""
@@ -161,8 +180,10 @@ async def create_contact(request: ContactCreateRequest) -> ContactResponse:
         phones=[vcard.ContactPhone(number=p.number, type=p.type) for p in request.phones],
         addresses=[vcard.ContactAddress(label=a.label, text=a.text) for a in request.addresses],
         birthday=request.birthday,
-        url=request.url,
+        urls=request.urls,
         notes=request.notes,
+        categories=request.categories,
+        photo_data_url=request.photo_data_url,
     )
     async with db.session() as session:
         obj = await create_object(
@@ -208,8 +229,10 @@ async def update_contact(contact_id: uuid.UUID, request: ContactUpdateRequest) -
         phones=phones,
         addresses=addresses,
         birthday=values.get("birthday"),
-        url=values.get("url"),
+        urls=values.get("urls"),
         notes=values.get("notes"),
+        categories=values.get("categories"),
+        photo_data_url=values.get("photo_data_url"),
     )
     async with db.session() as session:
         await replace_object_data(session, contact_id, updated_data)

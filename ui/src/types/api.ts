@@ -906,6 +906,16 @@ export interface ContactEmail {
   type: string | null;
 }
 
+/** `kind: "embedded"` -- `url` is a self-contained `data:` URI, already
+ * mirrored, safe to render directly. `kind: "url"` -- `url` is a third
+ * party's address; never put it in an `<img src>` without first running
+ * it through the same remote-content allowlist any other remote image
+ * does. */
+export interface ContactPhoto {
+  kind: "embedded" | "url";
+  url: string;
+}
+
 export interface Contact {
   id: string;
   addressbook_id: string;
@@ -918,8 +928,10 @@ export interface Contact {
   phones: { number: string; type: string | null }[];
   addresses: { label: string | null; text: string }[];
   birthday: string | null;
-  url: string | null;
+  urls: string[];
   notes: string | null;
+  categories: string[];
+  photo: ContactPhoto | null;
 }
 
 export interface ContactListResponse {
@@ -944,8 +956,11 @@ export interface ContactCreateRequest {
   phones?: { number: string; type?: string }[];
   addresses?: { label?: string; text: string }[];
   birthday?: string;
-  url?: string;
+  urls?: string[];
   notes?: string;
+  categories?: string[];
+  /** A data: URI, as FileReader hands back an uploaded image. */
+  photo_data_url?: string;
 }
 
 export type ContactUpdateRequest = Partial<Omit<ContactCreateRequest, "addressbook_id">>;

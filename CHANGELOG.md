@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A sender avatar next to each message's name: initials derived from the display name, with no
   network request involved. Ready to show an address-book photo once one is available; it is not
   yet
+- A contact's photo is read from its vCard, when the address book carries one, and exposed through
+  the API alongside every field the format offers: several phone numbers and addresses with their
+  types, birthday, notes, websites, and categories. An embedded photo is exposed directly, since it
+  is already in the mirror; a photo that is only a remote URL is exposed too but never fetched --
+  the same rule any other remote content in this application follows. A new endpoint resolves a
+  sender's email address to its contact
+- The contacts editor exposes every one of those fields, including uploading or removing a photo
+- The contacts list supports the same checkbox multi-selection gesture the mail list does --
+  click to toggle, shift-click for a range -- with a bulk delete for the selection
+- Opening a contact updates the URL and survives the back button, the way opening a message does
 
 ### Fixed
 
@@ -33,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail view from anywhere else in the application
 - The account/folder tree in the sidebar only renders on the mail view. It previously rendered
   underneath the contacts view's own list panel as well, where it served no purpose
+- Opening a contact whose birthday is a partial or missing date (a year-less birthday is a real
+  vCard shape, not a malformed one) no longer crashes the whole page. The card now renders
+  everything it can and stays quiet about a birthday it cannot confidently parse
 - The liveness probe answers from a plain background socket on its own port, independent of the
   application's event loop. A handler that blocks that loop (heavy concurrent load, a bug) no
   longer risks the pod being restarted for merely being busy — only a genuinely dead or hung
