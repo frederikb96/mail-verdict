@@ -14,9 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
+- A dark-mode toggle in each message's header, remembered per message across reopening it. A
+  message renders on a light canvas by default and stays there -- mail is written assuming one --
+  but one that declares its own dark-canvas support (a `color-scheme` meta tag, CSS property, or
+  a `prefers-color-scheme: dark` media query) renders dark on its own, unasked
+- A sender avatar next to each message's name: initials by default, with no network request
+  involved, or a remote avatar for a sender already on the per-sender/domain remote-image
+  allowlist -- the same control that already governs whether a message's own images load
 
 ### Fixed
 
+- A message's `<title>`, `<head>`, or similar document-structure markup no longer renders as
+  visible copy at the top of the message. Stripping such a tag kept its text and hoisted it into
+  the body -- correct for a stray inline tag, wrong for one that was never meant to be read
+- An image with no sizing of its own, or one declaring an implausible size, is now bounded to the
+  reading pane in both dimensions rather than only the one a plain `max-width` already caught
 - The navigation rail has a Mail entry between Search and Calendar, so there is a way back to the
   mail view from anywhere else in the application
 - The account/folder tree in the sidebar only renders on the mail view. It previously rendered
