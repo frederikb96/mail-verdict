@@ -1,36 +1,27 @@
 "use client";
 
 /** One message inside a thread: a collapsed summary row, or -- once
- * expanded -- its full header, body and per-message action bar. The
+ * expanded -- its full header, verdict, body and attachments. The
  * reading pane renders one of these per message in the thread; this is
  * where per-message rendering concerns (the email body itself, images,
- * attachments, spam feedback) live, separate from the reading pane's own
- * thread-level header and reply box. */
+ * attachments) live, separate from the reading pane's own thread-level
+ * header, action row and reply box. */
 
 import {
   Paperclip,
   Download,
-  FileDown,
-  MailOpen,
-  MailIcon,
   ChevronRight,
   ChevronDown,
   Loader2,
-  ThumbsDown,
-  ThumbsUp,
-  Star,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { EmailRenderer } from "@/components/mail/email-renderer";
 import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
 import { InvitationCard } from "@/components/mail/invitation-card";
 import { api } from "@/lib/api";
-import { useMailAction } from "@/hooks/use-mails";
-import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import {
   extractSenderName,
   extractEmail,
@@ -62,8 +53,6 @@ export function ThreadMessage({
   imagesAllowedOverride: boolean;
   onLoadImages: () => void;
 }) {
-  const mailAction = useMailAction();
-  const verdictFeedback = useVerdictFeedback();
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
 
@@ -76,12 +65,7 @@ export function ThreadMessage({
         className="flex w-full items-center gap-3 border-b px-4 py-2.5 text-left hover:bg-accent/50"
       >
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <InitialsAvatar
-          name={senderName}
-          size="sm"
-          email={senderEmail}
-          imagesAllowed={mail.images_allowed}
-        />
+        <InitialsAvatar name={senderName} size="sm" />
         <span
           className={mail.is_seen ? "font-medium" : "font-semibold"}
         >
@@ -110,11 +94,7 @@ export function ThreadMessage({
           className="flex items-start justify-between gap-4 text-left"
         >
           <div className="flex items-start gap-2">
-            <InitialsAvatar
-              name={senderName}
-              email={senderEmail}
-              imagesAllowed={mail.images_allowed}
-            />
+            <InitialsAvatar name={senderName} />
             <div className="flex flex-col gap-0.5">
               <span className="font-medium">{senderName}</span>
               <span className="text-xs text-muted-foreground">
@@ -209,103 +189,6 @@ export function ThreadMessage({
           </div>
         </div>
       )}
-
-      <div className="flex items-center gap-1 border-t px-4 py-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 px-2"
-          onClick={() =>
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId: mail.account_id,
-              action: { action: mail.is_seen ? "mark_unread" : "mark_read" },
-            })
-          }
-          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
-          aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
-        >
-          {mail.is_seen ? (
-            <MailIcon className="h-3.5 w-3.5" />
-          ) : (
-            <MailOpen className="h-3.5 w-3.5" />
-          )}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 px-2"
-          onClick={() =>
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId: mail.account_id,
-              action: { action: mail.is_flagged ? "unflag" : "flag" },
-            })
-          }
-          title={mail.is_flagged ? "Unflag" : "Star"}
-          aria-label={mail.is_flagged ? "Unflag" : "Star"}
-        >
-          <Star
-            className={
-              mail.is_flagged
-                ? "h-3.5 w-3.5 fill-yellow-400 text-yellow-400"
-                : "h-3.5 w-3.5"
-            }
-          />
-        </Button>
-        <a
-          href={api.mails.rawUrl(mail.id)}
-          download={`${mail.subject ?? "message"}.eml`}
-          className="flex h-7 items-center gap-1 rounded-md px-2 text-muted-foreground hover:bg-muted hover:text-foreground"
-          title="Download as .eml"
-          aria-label="Download as .eml"
-        >
-          <FileDown className="h-3.5 w-3.5" />
-        </a>
-        {mail.verdict?.is_spam && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2"
-            onClick={() => {
-              // Records the correction for the classifier and moves the
-              // message out of Junk -- two distinct writes, both needed.
-              verdictFeedback.mutate({
-                mailId: mail.id,
-                accountId: mail.account_id,
-                isSpam: false,
-              });
-              mailAction.mutate({
-                mailId: mail.id,
-                accountId: mail.account_id,
-                action: { action: "not_spam" },
-              });
-            }}
-            title="Mark as not spam"
-            aria-label="Mark as not spam"
-          >
-            <ThumbsUp className="h-3.5 w-3.5" />
-          </Button>
-        )}
-        {mail.verdict && !mail.verdict.is_spam && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 px-2"
-            onClick={() =>
-              verdictFeedback.mutate({
-                mailId: mail.id,
-                accountId: mail.account_id,
-                isSpam: true,
-              })
-            }
-            title="Mark as spam"
-            aria-label="Mark as spam"
-          >
-            <ThumbsDown className="h-3.5 w-3.5" />
-          </Button>
-        )}
-      </div>
     </div>
   );
 }

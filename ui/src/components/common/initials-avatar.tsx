@@ -5,21 +5,19 @@
  * results. One place to add a real image or a colour derived from the
  * sender, instead of the same markup duplicated at each call site.
  *
- * A photo pulled from the address book would take precedence here once
- * one exists to read -- nothing in the data model carries a contact photo
- * yet, so callers cannot pass one. */
+ * A photo pulled from the address book takes precedence here once one
+ * exists to read -- nothing in the data model carries a contact photo
+ * yet, so no caller passes one today. The `photoUrl` prop is what a
+ * future caller would fill in, resolved from wherever that lookup ends
+ * up living (a sender's address matched to a contact); this component
+ * never fetches anything itself. Deliberately not a remote avatar
+ * keyed by address, e.g. Gravatar -- that would tell a third party a
+ * message from that address was opened, for every sender on the
+ * remote-image allowlist, which is not what that allowlist is for. */
 
-import { useEffect, useState } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { gravatarUrl } from "@/lib/gravatar";
-
-const GRAVATAR_PX: Record<"default" | "sm" | "lg", number> = {
-  sm: 48,
-  default: 64,
-  lg: 80,
-};
 
 interface InitialsAvatarProps {
   /** The display name initials are derived from -- sender, contact, whatever the row represents. */
@@ -28,14 +26,9 @@ interface InitialsAvatarProps {
   className?: string;
   /** Rendered over the bottom-right corner, e.g. an emoji identifying the source account. */
   badge?: React.ReactNode;
-  /** The address a remote avatar would be fetched for. Omitted (the
-   * default) renders initials only, with no network involved at all. */
-  email?: string | null;
-  /** Gates the remote fetch on the same per-sender/domain allowlist that
-   * already governs remote images in the message body -- a sender not
-   * allowed images from gets no avatar lookup either. Ignored when
-   * `email` is not given. */
-  imagesAllowed?: boolean;
+  /** A resolved photo to show instead of initials, e.g. an address-book
+   * contact's photo. Nothing in this app supplies one yet. */
+  photoUrl?: string | null;
 }
 
 export function InitialsAvatar({
@@ -43,29 +36,12 @@ export function InitialsAvatar({
   size = "default",
   className,
   badge,
-  email,
-  imagesAllowed = false,
+  photoUrl,
 }: InitialsAvatarProps) {
-  const [remoteSrc, setRemoteSrc] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!email || !imagesAllowed) {
-      setRemoteSrc(null);
-      return;
-    }
-    let cancelled = false;
-    void gravatarUrl(email, GRAVATAR_PX[size]).then((url) => {
-      if (!cancelled) setRemoteSrc(url);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [email, imagesAllowed, size]);
-
   return (
     <div className={cn("relative shrink-0", className)}>
       <Avatar size={size}>
-        {remoteSrc && <AvatarImage src={remoteSrc} referrerPolicy="no-referrer" />}
+        {photoUrl && <AvatarImage src={photoUrl} />}
         <AvatarFallback>{getInitials(name)}</AvatarFallback>
       </Avatar>
       {badge && (

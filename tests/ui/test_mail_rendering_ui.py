@@ -311,11 +311,16 @@ class TestPerMessageDarkMode:
 
 
 class TestSenderAvatar:
-    """Initials render for every sender with no network involved; a remote
-    avatar is only ever attempted for a sender already on the image
-    allowlist, and never for one who is not."""
+    """The sender avatar renders from local data only -- initials derived
+    from the display name -- with no network request of any kind, for any
+    sender. Nothing here reads the remote-image allowlist: an avatar keyed
+    by address and fetched from a third party (Gravatar) was considered
+    and rejected, because it would tell that third party a message from
+    this address was opened, for a party outside the allowlist model
+    entirely -- the allowlist governs a sender's own published content,
+    not a lookup against an unrelated service."""
 
-    def test_a_non_allowlisted_sender_gets_initials_and_no_network_request(
+    def test_a_sender_gets_initials_and_no_network_request_at_all(
         self,
         page: Page,
         app_server: str,
@@ -331,13 +336,14 @@ class TestSenderAvatar:
             sender="Avatar Sender <avatar-sender@example.com>",
         )
 
-        remote_requests: list[str] = []
-        page.on(
-            "request",
-            lambda req: remote_requests.append(req.url)
-            if "gravatar" in req.url
-            else None,
-        )
+        third_party_requests: list[str] = []
+
+        def _record(req: object) -> None:
+            url = req.url  # type: ignore[attr-defined]
+            if not url.startswith(app_server):
+                third_party_requests.append(url)
+
+        page.on("request", _record)
 
         page.goto(app_server)
         select_account(page, rendering_account)
@@ -347,4 +353,4 @@ class TestSenderAvatar:
         header = page.locator('[data-testid="thread-message-header"]')
         fallback = header.locator('[data-slot="avatar-fallback"]')
         expect(fallback).to_have_text("AS", timeout=10_000)
-        assert remote_requests == [], f"unexpected remote avatar fetch: {remote_requests}"
+        assert third_party_requests == [], f"unexpected third-party request: {third_party_requests}"

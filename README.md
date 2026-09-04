@@ -36,11 +36,12 @@ mirror, which is what keeps it simple.
   with recurring events, RSVPs and per-occurrence editing, and address books with compose
   autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply
   goes back over the identity's own outbox rather than the server's scheduling engine.
-- **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist a
-  sender avatar follows too. Message HTML is sanitized on the server and rendered in an isolated
-  shadow root, on a light canvas by default — mail is written assuming one, and cannot be
-  recoloured reliably — with dark rendering available per message, either through a toggle in its
-  header or automatically for a message that declares its own dark-canvas support.
+- **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
+  A sender's avatar is initials only, never a lookup against a third party. Message HTML is
+  sanitized on the server and rendered in an isolated shadow root, on a light canvas by default —
+  mail is written assuming one, and cannot be recoloured reliably — with dark rendering available
+  per message, either through a toggle in its header or automatically for a message that declares
+  its own dark-canvas support.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail, and
   read, create, edit and delete calendar events and contacts.
 

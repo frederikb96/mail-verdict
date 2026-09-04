@@ -18,9 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   message renders on a light canvas by default and stays there -- mail is written assuming one --
   but one that declares its own dark-canvas support (a `color-scheme` meta tag, CSS property, or
   a `prefers-color-scheme: dark` media query) renders dark on its own, unasked
-- A sender avatar next to each message's name: initials by default, with no network request
-  involved, or a remote avatar for a sender already on the per-sender/domain remote-image
-  allowlist -- the same control that already governs whether a message's own images load
+- A sender avatar next to each message's name: initials derived from the display name, with no
+  network request involved. Ready to show an address-book photo once one is available; it is not
+  yet
 
 ### Fixed
 
