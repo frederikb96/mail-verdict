@@ -148,7 +148,7 @@ function findMailInCache(qc: QueryClient, mailId: string) {
 }
 
 /** Remove a mail from all infinite query caches. */
-function removeMailFromCache(qc: QueryClient, mailId: string) {
+export function removeMailFromCache(qc: QueryClient, mailId: string) {
   qc.setQueriesData<InfiniteData<MessageListResponse>>(
     { queryKey: ["mails"] },
     (old) => {
@@ -164,8 +164,31 @@ function removeMailFromCache(qc: QueryClient, mailId: string) {
   );
 }
 
+/**
+ * Remove a mail from every list cache, including the unified view's --
+ * unlike removeMailFromCache above (single-account mutations only ever
+ * need to patch their own account's lists), an SSE mail.deleted can
+ * concern a message the unified view is currently showing.
+ */
+export function removeMailFromAllListCaches(qc: QueryClient, mailId: string) {
+  removeMailFromCache(qc, mailId);
+  qc.setQueriesData<InfiniteData<{ messages: { id: string }[] }>>(
+    { queryKey: ["unified", "mails"] },
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          messages: page.messages.filter((m) => m.id !== mailId),
+        })),
+      };
+    },
+  );
+}
+
 /** Update a mail's properties in all infinite query caches. */
-function updateMailInCache(
+export function updateMailInCache(
   qc: QueryClient,
   mailId: string,
   updates: Partial<MessageSummary>,
@@ -185,6 +208,57 @@ function updateMailInCache(
       };
     },
   );
+}
+
+/**
+ * A live-mail-list infinite query is refetched by re-fetching every
+ * already-loaded page in sequence (TanStack has no partial-refetch for an
+ * infinite query) -- so invalidating one scrolled hundreds of pages deep
+ * turns a single arriving message into hundreds of requests. Anything past
+ * a small page count is marked stale with no eager fetch instead; it
+ * catches up next time it is newly observed (folder switch, refocus)
+ * rather than right now. A shallowly-loaded list (the overwhelmingly
+ * common case) still refreshes immediately.
+ */
+const EAGER_REFETCH_MAX_PAGES = 3;
+
+export function invalidateMailListsBounded(qc: QueryClient): void {
+  for (const prefix of [["mails"], ["unified", "mails"]] as const) {
+    for (const [key, data] of qc.getQueriesData<InfiniteData<unknown>>({ queryKey: prefix })) {
+      const pageCount = data?.pages.length ?? 0;
+      qc.invalidateQueries({
+        queryKey: key,
+        exact: true,
+        refetchType: pageCount <= EAGER_REFETCH_MAX_PAGES ? "active" : "none",
+      });
+    }
+  }
+}
+
+/**
+ * A mail.updated SSE event names which columns changed but not their new
+ * values (the underlying NOTIFY payload carries only column names) -- so
+ * reflecting it needs one fetch of that message, never a full list
+ * refetch. Patches every list cache holding the row plus its own detail
+ * cache from the same response. Swallows a 404: the message may already
+ * be gone by the time this runs, and the list settles on its own bounded
+ * refetch regardless.
+ */
+export async function refreshMailFromServer(qc: QueryClient, mailId: string): Promise<void> {
+  try {
+    const detail = await qc.fetchQuery({
+      queryKey: mailKeys.detail(mailId),
+      queryFn: () => api.mails.get(mailId),
+      staleTime: 0,
+    });
+    updateMailInCache(qc, mailId, {
+      is_seen: detail.is_seen,
+      is_flagged: detail.is_flagged,
+      is_answered: detail.is_answered,
+    });
+  } catch {
+    // Ignore -- see docstring.
+  }
 }
 
 /** Adjust folder total_count and unread_count in ALL folder caches. */

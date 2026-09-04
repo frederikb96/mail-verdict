@@ -85,6 +85,13 @@ class MessageSummary(BaseModel):
         default=None,
         description="Unread message count in the thread, only present when threaded=true",
     )
+    mirrored_at: datetime = Field(
+        description=(
+            "When this row entered the mirror (messages.created_at). Named "
+            "distinctly from received_at -- it is what a selection snapshot "
+            "compares against, not when the sender sent the message."
+        ),
+    )
 
     model_config = {"from_attributes": True}
 
@@ -190,6 +197,17 @@ class BulkActionScope(BaseModel):
     folder_id: uuid.UUID
     filter: Literal["unread", "all"] | None = None
     exclude_ids: list[uuid.UUID] = Field(default_factory=list)
+    snapshot_at: datetime = Field(
+        description=(
+            "The instant the client minted this selection (from "
+            "GET .../messages/selection). Required, not defaulted -- a "
+            "missing value would silently mean 'everything, including "
+            "whatever arrived since', which is exactly what this guards "
+            "against. Only messages mirrored at or before this instant "
+            "are in scope, so mail arriving after the user agreed to a "
+            "count is never swept into a destructive action they never saw."
+        ),
+    )
 
 
 class BulkActionRequest(BaseModel):
@@ -207,15 +225,30 @@ class BulkActionRequest(BaseModel):
     scope: BulkActionScope | None = None
 
     @model_validator(mode="after")
-    def _exactly_one_of_ids_or_scope(self) -> BulkActionRequest:
-        """Reject a request naming both or neither selection mechanism."""
-        if (self.ids is None) == (self.scope is None):
-            raise ValueError("Exactly one of 'ids' or 'scope' must be provided")
+    def _at_least_one_of_ids_or_scope(self) -> BulkActionRequest:
+        """Reject a request naming neither selection mechanism.
+
+        Both together is allowed and meaningful: a predicate scope ("select
+        all in this folder") plus explicit ids added on top of it (a row
+        outside the predicate the user ticked by hand -- new mail arriving
+        after the snapshot, for instance). The two are unioned at
+        resolution time, `scope` minus its own `exclude_ids` first.
+        """
+        if self.ids is None and self.scope is None:
+            raise ValueError("At least one of 'ids' or 'scope' must be provided")
         return self
 
-    def resolved_ids_or_scope(self) -> list[uuid.UUID] | BulkActionScope:
-        """Return whichever of ids/scope was provided (validated exclusive)."""
-        return self.ids if self.ids is not None else self.scope  # type: ignore[return-value]
+    @model_validator(mode="after")
+    def _ids_and_exclude_ids_never_overlap(self) -> BulkActionRequest:
+        """An id named as both included and excluded is a client bug, not a
+        preference for either side to win silently."""
+        if self.ids and self.scope and self.scope.exclude_ids:
+            overlap = set(self.ids) & set(self.scope.exclude_ids)
+            if overlap:
+                raise ValueError(
+                    f"ids and scope.exclude_ids both name: {sorted(str(i) for i in overlap)}"
+                )
+        return self
 
 
 class BulkActionResponse(BaseModel):
@@ -225,6 +258,16 @@ class BulkActionResponse(BaseModel):
     action: str
     affected_count: int
     errors: list[str] = Field(default_factory=list)
+
+
+class SelectionSnapshotResponse(BaseModel):
+    """A minted 'select all matching' snapshot: an instant and a count that
+    come from the same statement, so they can never disagree with each
+    other. `snapshot_at` is what a following bulk-action's `scope` must
+    carry back."""
+
+    snapshot_at: datetime
+    count: int
 
 
 # --- Search schemas ---

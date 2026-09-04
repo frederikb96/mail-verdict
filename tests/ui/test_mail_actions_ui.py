@@ -290,6 +290,64 @@ class TestMailActionsUi:
         detail = api_client.get(f"/api/messages/{target['id']}").json()
         assert detail["folder_id"] == inbox_folder["id"]
 
+    def test_bulk_star_flags_every_selected_row(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The bulk panel's own Star button, the one bulk action that
+        applies unconditionally to every selected row rather than
+        confirming first -- flagging isn't destructive."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Bulk star {i} {uuid.uuid4()}" for i in range(2)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(_find_all, description="both bulk-star messages synced into INBOX")
+        assert not any(m["is_flagged"] for m in targets)
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        rows = [mail_row(page, target["id"]) for target in targets]
+        for row in rows:
+            expect(row).to_be_visible(timeout=15_000)
+        rows[0].hover()
+        rows[0].get_by_role("checkbox").click()
+        rows[1].get_by_role("checkbox").click()
+
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Star", exact=True,
+        ).click()
+
+        def _both_flagged() -> bool | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in targets]
+            return True if all(d["is_flagged"] for d in details) else None
+
+        wait_for(_both_flagged, timeout_s=15.0, description="both messages flagged")
+
     def test_bulk_undo_after_trash_restores_every_row(
         self,
         page: Page,
@@ -299,9 +357,9 @@ class TestMailActionsUi:
         ui_account: dict[str, Any],
         inbox_folder: dict[str, Any],
     ) -> None:
-        """The bulk toolbar's Trash button offers the same Undo, moving
-        every affected message back -- the selection's own compensating-move
-        path, not the single-row one above."""
+        """The bulk panel's Move to trash button offers the same Undo,
+        moving every affected message back -- the selection's own
+        compensating-move path, not the single-row one above."""
         host, _imap_port, lmtp_port = dovecot_endpoint
         subjects = [f"Bulk undo {i} {uuid.uuid4()}" for i in range(2)]
         for subject in subjects:
@@ -337,7 +395,12 @@ class TestMailActionsUi:
         rows[0].get_by_role("checkbox").click()
         rows[1].get_by_role("checkbox").click()
 
-        page.get_by_role("main").get_by_role("button", name="Trash", exact=True).click()
+        # Scoped to the bulk panel -- its Move to trash button now shares
+        # its accessible name with every row's own, so "main" alone would
+        # be a strict-mode violation across both.
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to trash", exact=True,
+        ).click()
         for row in rows:
             expect(row).not_to_be_visible(timeout=10_000)
 
@@ -398,9 +461,8 @@ class TestMailActionsUi:
         rows[1].get_by_role("checkbox").click()
 
         # "Archive" collides with every row's own hover-revealed Archive
-        # button (same accessible name) -- scoped to the bulk toolbar,
-        # which "Trash" above didn't need since a row's own trash button
-        # is named "Move to trash", not "Trash".
+        # button (same accessible name) -- scoped to the bulk panel, same
+        # reasoning as the Move to trash button above.
         page.get_by_role("toolbar", name="Bulk actions").get_by_role(
             "button", name="Archive", exact=True,
         ).click()
@@ -428,14 +490,49 @@ class TestMailActionsUi:
         junk_folder: dict[str, Any],
     ) -> None:
         """A same-folder move must be a no-op success, not a stranded
-        imap_uid=NULL row that spins forever. The row's own Spam control is
-        replaced by Not spam once a message sits in Junk, so this goes
-        through the bulk toolbar's Spam button instead -- it stays
-        available in every folder, and is the one control left that can
-        still send an already-junked message through the spam action."""
-        already_junked = _deliver_and_move(
-            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
-            inbox_folder["id"], junk_folder["id"], f"Already junk {uuid.uuid4()}",
+        imap_uid=NULL row that spins forever. A single row's own control
+        is Remove from Junk once it sits in Junk, not Move to Junk -- so
+        this reaches the spam action through the bulk panel instead, over
+        two selected rows, which always sends it regardless of where the
+        rows currently are."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Already junk {uuid.uuid4()}", f"Also junk {uuid.uuid4()}"]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_both() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(
+            _find_both, timeout_s=45.0, description="both already-junk messages synced into INBOX",
+        )
+        for target in targets:
+            resp = api_client.post(
+                f"/api/messages/{target['id']}/action",
+                json={"action": "move", "target_folder_id": junk_folder["id"]},
+            )
+            assert resp.status_code == 200, resp.text
+
+        def _both_settled_in_junk() -> list[dict[str, Any]] | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in targets]
+            if all(d["folder_id"] == junk_folder["id"] and not d["pending_sync"] for d in details):
+                return details
+            return None
+
+        already_junked, also_junked = wait_for(
+            _both_settled_in_junk, timeout_s=45.0,
+            description="both messages genuinely moved into Junk",
         )
 
         page.goto(app_server)
@@ -446,11 +543,16 @@ class TestMailActionsUi:
         select_account(page, ui_account)
         _open_folder(page, junk_folder)
         row = mail_row(page, already_junked["id"])
+        other_row = mail_row(page, also_junked["id"])
         expect(row).to_be_visible(timeout=15_000)
+        expect(other_row).to_be_visible(timeout=15_000)
 
         row.hover()
         row.get_by_role("checkbox").click()
-        page.get_by_role("main").get_by_role("button", name="Spam", exact=True).click()
+        other_row.get_by_role("checkbox").click()
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to Junk", exact=True,
+        ).click()
 
         expect(row.locator(".animate-spin")).to_have_count(0, timeout=10_000)
         expect(row).to_be_visible()
@@ -632,6 +734,153 @@ class TestMailActionsUi:
         expect(row).to_be_visible(timeout=10_000)
         expect(back).not_to_be_visible()
 
+    def test_folder_hover_menu_marks_every_message_read(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Hovering a folder replaces its unread badge with a three-dot
+        control; its Mark all as read entry flips every unread message
+        in the folder, not just whatever page happens to be loaded."""
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], f"Folder menu unread {uuid.uuid4()}",
+        )
+        assert target["is_seen"] is False
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
+
+        inbox_row = folder(page, inbox_folder["id"])
+        inbox_row.hover()
+        inbox_row.get_by_role("button", name="INBOX options").click()
+        page.get_by_role("menuitem", name="Mark all as read").click()
+
+        def _target_read() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["is_seen"] else None
+
+        wait_for(
+            _target_read, timeout_s=15.0,
+            description=f"{target['subject']!r} marked read via the folder menu",
+        )
+
+    def test_folder_hover_menu_empties_a_folder_with_confirmation(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Emptying a folder destroys every message in it on the server
+        with no undo, so the menu confirms first, naming the count -- and
+        offers no Rename, which IMAP cannot express as a single-row
+        update. Uses a folder created just for this test rather than a
+        shared one, since emptying is irreversible."""
+        resp = api_client.post(
+            f"/api/accounts/{ui_account['id']}/folders",
+            json={"name": f"Empty-me-{uuid.uuid4().hex[:8]}"},
+        )
+        assert resp.status_code == 201, resp.text
+        custom_folder = wait_for_folder(
+            api_client, str(ui_account["id"]), resp.json()["imap_name"],
+        )
+
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Empty test {i} {uuid.uuid4()}" for i in range(2)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(
+            _find_all, timeout_s=45.0, description="both empty-test messages synced into INBOX",
+        )
+        for target in targets:
+            resp = api_client.post(
+                f"/api/messages/{target['id']}/action",
+                json={"action": "move", "target_folder_id": custom_folder["id"]},
+            )
+            assert resp.status_code == 200, resp.text
+
+        def _both_settled() -> bool | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in targets]
+            settled = all(
+                d["folder_id"] == custom_folder["id"] and not d["pending_sync"] for d in details
+            )
+            return True if settled else None
+
+        wait_for(
+            _both_settled, timeout_s=30.0,
+            description="both messages genuinely moved into the custom folder",
+        )
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        custom_row = folder(page, custom_folder["id"])
+        expect(custom_row).to_be_visible(timeout=15_000)
+
+        custom_row.hover()
+        custom_row.get_by_role(
+            "button", name=re.compile(re.escape(custom_folder["imap_name"]) + r" options"),
+        ).click()
+
+        expect(page.get_by_role("menuitem", name="Rename")).to_have_count(0)
+        page.get_by_role("menuitem", name="Empty folder").click()
+
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_be_visible(timeout=10_000)
+        expect(dialog.get_by_text("2 messages", exact=False)).to_be_visible()
+        dialog.get_by_role("button", name="Empty folder", exact=True).click()
+
+        target_ids = {t["id"] for t in targets}
+
+        def _both_gone() -> bool | None:
+            # expunge() is a soft delete (expunged_at, the row survives) --
+            # GET .../messages/{id} doesn't filter on it, so absence from
+            # the folder listing (which does) is the observable proof.
+            remaining = {
+                m["id"] for m in _list_folder(api_client, ui_account["id"], custom_folder["id"])
+            }
+            return True if not (target_ids & remaining) else None
+
+        wait_for(_both_gone, timeout_s=20.0, description="both messages permanently deleted")
+
+        # Clean up the folder itself -- it's now empty, and this account is
+        # shared with test_manage_folders_offers_no_delete_for_special_use_folders,
+        # which assumes every folder on it is special-use.
+        resp = api_client.delete(
+            f"/api/folders/{custom_folder['id']}", params={"confirm_message_count": 0},
+        )
+        assert resp.status_code == 204, resp.text
+
     def test_manage_folders_offers_no_delete_for_special_use_folders(
         self,
         page: Page,
@@ -762,6 +1011,219 @@ class TestMailActionsUi:
         assert abs(after[anchor["id"]] - anchor["top"]) < 2.0, (
             f"row {anchor['id']} moved from {anchor['top']} to {after[anchor['id']]} "
             "on the screen -- the list jumped when mail arrived above the viewport"
+        )
+
+    def test_row_controls_have_distinct_accessible_names(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A screen reader distinguishes the row's controls only if none
+        of their accessible names is a substring of another -- the exact
+        trap 'Spam' / 'Not spam' used to be."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+
+        names = [b.get_attribute("aria-label") for b in row.get_by_role("button").all()]
+        assert all(names), f"every row control needs an accessible name: {names!r}"
+        assert len(names) == len(set(names)), f"duplicate accessible names: {names!r}"
+        for name in names:
+            others = [n for n in names if n != name]
+            assert not any(name in other or other in name for other in others), (
+                f"{name!r} is a substring of, or contains, another control's name in {names!r}"
+            )
+
+    def test_reading_pane_action_row_controls_have_distinct_accessible_names(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The consolidated action row keeps the two spam-adjacent
+        controls tellable apart: Junk moves the message to the Junk
+        folder, the verdict thumb corrects the model's classification --
+        two different actions that must not collide under the same
+        substring trap the row's own hover controls guard against."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+
+        toolbar = page.get_by_role("toolbar", name="Message actions")
+        expect(toolbar).to_be_visible(timeout=15_000)
+        # Anchors (the download link) carry role="link", not "button" --
+        # both element types are collected so the download control's own
+        # name is checked alongside the rest.
+        names = [
+            el.get_attribute("aria-label") for el in toolbar.locator("button, a").all()
+        ]
+        # star, download, mark read/unread, archive, junk, trash -- the
+        # verdict thumb is conditional on a verdict existing yet.
+        assert len(names) >= 6, f"expected at least six always-present controls: {names!r}"
+        assert all(names), f"every control needs an accessible name: {names!r}"
+        assert len(names) == len(set(names)), f"duplicate accessible names: {names!r}"
+        for name in names:
+            others = [n for n in names if n != name]
+            assert not any(name in other or other in name for other in others), (
+                f"{name!r} is a substring of, or contains, another control's name in {names!r}"
+            )
+
+    def test_row_controls_are_reachable_by_keyboard(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Controls that only ever appear on hover are unusable without a
+        mouse unless keyboard focus reveals them the same way."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        trash_button = row.get_by_title("Move to trash")
+        assert trash_button.evaluate("el => getComputedStyle(el).opacity") == "0", (
+            "expected the control hidden before focus, to prove focus is what reveals it"
+        )
+
+        row.focus()
+        expect(trash_button).to_have_css("opacity", "1", timeout=5_000)
+
+    def test_row_text_keeps_full_width_while_controls_float_over_it(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Hovering must not shrink the sender/subject text to make room
+        for the row's controls -- they float over the row instead."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        subject_text = row.locator("span.truncate").first
+
+        width_before = subject_text.evaluate("el => el.getBoundingClientRect().width")
+        row.hover()
+        expect(row.get_by_title("Archive")).to_have_css("opacity", "1", timeout=5_000)
+        width_during_hover = subject_text.evaluate("el => el.getBoundingClientRect().width")
+
+        assert width_during_hover == width_before, (
+            f"row text narrowed from {width_before}px to {width_during_hover}px on hover -- "
+            "controls should float over the row, not push its content aside"
+        )
+
+    def test_threaded_row_controls_name_their_scope(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A row action in threaded mode acts on the thread's latest
+        message only -- pre-existing, and not something this lane
+        changes -- so its controls say so rather than leaving the scope
+        for the user to guess at."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        # "Group by conversation" defaults on, so this is already threaded.
+        expect(page.get_by_role("switch", name="Group by conversation")).to_be_checked()
+        expect(row.get_by_title("Archive (latest message in thread)")).to_have_count(1)
+        expect(row.get_by_title("Move to trash (latest message in thread)")).to_have_count(1)
+
+        page.get_by_role("switch", name="Group by conversation").click()
+        expect(row.get_by_title("Archive", exact=True)).to_have_count(1)
+        expect(row.get_by_title("Archive (latest message in thread)")).to_have_count(0)
+
+    def test_selection_banner_offers_to_select_the_whole_folder(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The banner names the current count and offers to extend the
+        selection to the whole folder -- Outlook's own pattern, which is
+        what this is built to match. The folder here is small enough
+        that everything loads in one page, so this goes through the
+        always-available Select menu rather than the banner's own
+        auto-surfaced offer, which only appears once the folder holds
+        more than what is currently loaded."""
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+        folder_total = api_client.get(
+            f"/api/accounts/{ui_account['id']}/folders",
+        ).json()
+        inbox_total = next(
+            f["total_count"] for f in folder_total if f["id"] == inbox_folder["id"]
+        )
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Select", exact=True).click()
+        page.get_by_role("menuitem", name="Every message in this folder", exact=True).click()
+
+        expect(page.get_by_text(f"{inbox_total} selected", exact=True)).to_be_visible(
+            timeout=10_000,
         )
 
 

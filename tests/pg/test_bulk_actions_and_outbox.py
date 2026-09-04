@@ -6,6 +6,7 @@ PostIMAP-migrated schema.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, text
@@ -108,6 +109,28 @@ class TestBulkWriteHelpers:
         async with migrated_db.session() as session:
             result = await session.execute(select(Message.is_seen).where(Message.id.in_(ids)))
             assert all(seen for (seen,) in result.all())
+
+    @pytest.mark.asyncio
+    async def test_set_flags_bulk_reports_only_actually_changed_rows(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Re-marking an already-read message read must not count it as
+        affected -- affected_count is user-facing (the bulk-action toast),
+        and reporting every requested id regardless of whether anything
+        changed would say '3 messages marked read' for a no-op."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            already_read = await _seed_messages(session, account_id, inbox_id, 2, is_seen=True)
+            unread = await _seed_messages(
+                session, account_id, inbox_id, 1, is_seen=False, uid_start=3,
+            )
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            affected = await set_flags_bulk(session, [*already_read, *unread], is_seen=True)
+            await session.commit()
+
+        assert affected == len(unread)
 
     @pytest.mark.asyncio
     async def test_set_flags_bulk_empty_list_is_a_noop(
@@ -275,7 +298,10 @@ class TestBulkHelpersBeyondAsyncpgParamLimit:
         async with migrated_db.session() as session:
             resolved = await _resolve_scope_ids(
                 session, account_id,
-                BulkActionScope(folder_id=inbox_id, exclude_ids=padded_exclude),
+                BulkActionScope(
+                    folder_id=inbox_id, exclude_ids=padded_exclude,
+                    snapshot_at=datetime.now(UTC),
+                ),
             )
 
         assert excluded not in resolved
@@ -298,7 +324,10 @@ class TestBulkActionScopeResolution:
 
         async with migrated_db.session() as session:
             resolved = await _resolve_scope_ids(
-                session, account_id, BulkActionScope(folder_id=inbox_id, filter="unread"),
+                session, account_id,
+                BulkActionScope(
+                    folder_id=inbox_id, filter="unread", snapshot_at=datetime.now(UTC),
+                ),
             )
 
         assert set(resolved) == set(unread_ids)
@@ -316,7 +345,10 @@ class TestBulkActionScopeResolution:
         excluded = ids[0]
         async with migrated_db.session() as session:
             resolved = await _resolve_scope_ids(
-                session, account_id, BulkActionScope(folder_id=inbox_id, exclude_ids=[excluded]),
+                session, account_id,
+                BulkActionScope(
+                    folder_id=inbox_id, exclude_ids=[excluded], snapshot_at=datetime.now(UTC),
+                ),
             )
 
         assert excluded not in resolved
@@ -335,10 +367,41 @@ class TestBulkActionScopeResolution:
 
         async with migrated_db.session() as session:
             resolved = await _resolve_scope_ids(
-                session, account_id, BulkActionScope(folder_id=inbox_id),
+                session, account_id,
+                BulkActionScope(folder_id=inbox_id, snapshot_at=datetime.now(UTC)),
             )
 
         assert set(resolved) == set(inbox_ids)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_at_excludes_a_message_mirrored_after_it(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A message that entered the mirror after the client minted its
+        snapshot must not be swept into a scope resolved against it -- the
+        guard against new mail arriving between "select all" and the button
+        press being acted on without the user ever having seen it."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            before_ids = await _seed_messages(session, account_id, inbox_id, 2)
+            snapshot_at = (await session.execute(select(text("now()")))).scalar_one()
+            await session.commit()
+
+        # Arrives after the snapshot -- created_at defaults to now(), which
+        # is later than the instant captured above.
+        async with migrated_db.session() as session:
+            after_ids = await _seed_messages(
+                session, account_id, inbox_id, 1, uid_start=len(before_ids) + 1,
+            )
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            resolved = await _resolve_scope_ids(
+                session, account_id, BulkActionScope(folder_id=inbox_id, snapshot_at=snapshot_at),
+            )
+
+        assert set(resolved) == set(before_ids)
+        assert not set(after_ids) & set(resolved)
 
 
 class TestInsertOutbox:

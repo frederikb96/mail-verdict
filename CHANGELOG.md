@@ -32,6 +32,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
   a thousand messages in about 1.5s, fourteen thousand in 25-30s, one bulk INSERT rather than a
   loop over individual round trips
+- `GET /api/accounts/{account_id}/messages/selection`: mints a "select all matching" snapshot --
+  an instant and a count from one statement, so the two can never disagree. A bulk action's
+  `scope` now carries that instant back as `snapshot_at` (required), so mail arriving after a
+  selection was agreed to is never swept into a destructive action the user never saw
+- A bulk action may now name `ids` and `scope` together, acting on their union -- a predicate
+  selection plus a row outside it the user ticked by hand. Naming the same id in both `ids` and
+  `scope.exclude_ids` is rejected rather than picking a winner silently
+- Message list rows carry `mirrored_at` (when the row entered the local mirror), the field a
+  selection snapshot compares against
+- A mail row's hover controls now float over the row instead of reserving space in its layout --
+  the sender, subject and preview keep the row's full width whether or not the pointer is
+  anywhere near it. Keyboard focus on a row reveals the same controls
+- Selecting mail is now a predicate (a "select all matching" scope, minted server-side) plus
+  explicit ids layered on top of it, rather than only an enumerated id set -- checking a folder's
+  checkbox no longer requires loading every message in it first, and a selection stays exact
+  across a scroll that unmounts and remounts rows. Shift-click extends a range from the last
+  plain or ctrl-click, ctrl/cmd-click toggles a single row, and a plain click on a row's text
+  abandons the selection and opens that message
+- With more than one message selected, the reading pane is replaced by a bulk panel offering
+  read/unread, star, archive, junk, trash and move-to-folder; a destructive action against a
+  "select all" scope confirms with the count first, since it cannot be undone the way an explicit
+  selection's toast can
+- A row's Junk control now moves the message to the Junk folder unconditionally; correcting the
+  model's spam verdict is its own control, since the two are different actions that happened to
+  share one icon before
+- Hovering a folder in the sidebar replaces its unread count with a menu offering mark-all-read
+  and emptying the folder; emptying confirms with the message count first, since it destroys
+  every message in it on the server with no undo. Renaming is deliberately not offered -- IMAP's
+  rename also renames every child folder, so it cannot be a single-row update
+- The reading pane's own action row now also carries star, download as .eml, mark read/unread
+  and a verdict-correction control alongside archive, junk and trash
+- Dragging a multi-message selection onto a sidebar folder now moves the whole selection in one
+  request rather than looping a move per message
+- A row action in threaded mode names its scope (the thread's latest message) in its tooltip,
+  rather than leaving it to guess at now that bulk selection sits beside it
+- A predicate-based bulk action ("select all") or a folder-wide menu action shows a heads-up that
+  it may take a while on a large folder -- the write itself is one statement over however many
+  rows match, resolved server-side before the request returns
+
+### Fixed
+
+- A bulk action spanning accounts in the unified view now acts on every account the selection
+  touches, not silently on whichever one the interface happened to have selected
+- An SSE-driven mail list refresh patches the affected row(s) directly instead of invalidating
+  and refetching every already-loaded page -- a folder scrolled deep no longer turns one arriving
+  or changed message into hundreds of requests
+- Live-update events (a message arriving, changing or leaving a folder) are collected and applied
+  in bounded batches rather than one at a time -- a bulk action fires one such event per affected
+  row, so a whole-folder action no longer turns a single click into thousands of individual
+  requests. A bulk action's own completion refresh now resets the affected list instead of
+  replaying every page it had loaded, for the same reason
+
+- A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
+  already carried the requested flag -- only rows that actually changed count
 
 ### Changed
 
