@@ -1,4 +1,5 @@
-/** Recipient, subject and threading-header derivation for reply/reply-all. */
+/** Recipient, subject and threading-header derivation for reply/reply-all
+ * and forward, plus the plain-text and attribution halves of a quote. */
 
 import { extractEmail, extractSenderName, formatFullDate } from "@/lib/format";
 import type { MessageDetail } from "@/types/api";
@@ -7,9 +8,21 @@ export interface ReplyDraft {
   to: string[];
   cc: string[];
   subject: string;
-  bodyText: string;
+  /** The `> `-prefixed plain-text quote, appended below the authored
+   * markdown to build body_text -- see compose-form.tsx. */
+  quotedText: string;
+  /** "On <date>, <name> wrote:" -- the attribution line shown above the
+   * quote embedded in the editor, and the source quotedText's own first
+   * line, so the two forms of the quote agree with each other. */
+  attribution: string;
   inReplyTo?: string;
   references?: string[];
+}
+
+export interface ForwardDraft {
+  subject: string;
+  quotedText: string;
+  attribution: string;
 }
 
 function dedupeExcluding(addrs: string[], exclude: Set<string>): string[] {
@@ -29,24 +42,29 @@ function subjectWithPrefix(subject: string | null): string {
   return /^re:/i.test(base) ? base : `Re: ${base}`;
 }
 
-function quoteBody(source: MessageDetail): string {
+function replyAttribution(source: MessageDetail): string {
   const sender = extractSenderName(source.from_addr);
   const date = formatFullDate(source.received_at);
+  return `On ${date}, ${sender} wrote:`;
+}
+
+/** The `> `-prefixed plain-text form of a quote, built from the original
+ * message's own body_text -- unrelated to the HTML quote embedded in the
+ * editor, which comes from GET /api/messages/:id/quote instead. Kept as
+ * plain text because that is the conventional readable rendering a plain
+ * mail reader expects, and because it is appended below the editor's own
+ * markdown export rather than parsed back into anything. */
+function quotedPlainText(source: MessageDetail, attribution: string): string {
   const body = source.body_text ?? "";
   const quoted = body
     .split("\n")
     .map((line) => `> ${line}`)
     .join("\n");
-  return `\n\nOn ${date}, ${sender} wrote:\n${quoted}`;
-}
-
-export interface ForwardDraft {
-  subject: string;
-  bodyText: string;
+  return `\n\n${attribution}\n${quoted}`;
 }
 
 /**
- * Build the prefilled subject and body for a forward.
+ * Build the prefilled subject and quote for a forward.
  *
  * Deliberately carries no In-Reply-To/References: a forward goes to
  * someone new, not into the sender's own conversation, so it starts a
@@ -56,7 +74,8 @@ export function buildForward(source: MessageDetail): ForwardDraft {
   const base = source.subject ?? "(no subject)";
   const subject = /^fwd?:/i.test(base) ? base : `Fwd: ${base}`;
 
-  const header = [
+  const attribution = [
+    "---------- Forwarded message ----------",
     `From: ${source.from_addr ?? "unknown"}`,
     `Date: ${formatFullDate(source.received_at)}`,
     `Subject: ${source.subject ?? "(no subject)"}`,
@@ -65,11 +84,13 @@ export function buildForward(source: MessageDetail): ForwardDraft {
 
   return {
     subject,
-    bodyText: `\n\n---------- Forwarded message ----------\n${header}\n\n${source.body_text ?? ""}`,
+    quotedText: quotedPlainText(source, attribution),
+    attribution,
   };
 }
 
-/** Build the prefilled recipients, subject and threading headers for a reply. */
+/** Build the prefilled recipients, subject, threading headers and quote
+ * for a reply. */
 export function buildReply(
   source: MessageDetail,
   ownEmail: string,
@@ -91,11 +112,14 @@ export function buildReply(
   const references = [...(source.references ?? [])];
   if (source.message_id) references.push(source.message_id);
 
+  const attribution = replyAttribution(source);
+
   return {
     to,
     cc,
     subject: subjectWithPrefix(source.subject),
-    bodyText: quoteBody(source),
+    quotedText: quotedPlainText(source, attribution),
+    attribution,
     inReplyTo: source.message_id ?? undefined,
     references: references.length > 0 ? references : undefined,
   };

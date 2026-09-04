@@ -1,16 +1,41 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Paperclip, Send, Save, X, ChevronDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { RecipientField } from "@/components/contacts/recipient-field";
+import { MailEditorLazy } from "@/components/mail/editor/mail-editor-lazy";
+import { buildQuotedMessageHtml } from "@/components/mail/editor/quoted-message-node";
+import type { MailEditorHandle } from "@/components/mail/editor/mail-editor";
+import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { useCreateOutbox } from "@/hooks/use-outbox";
+import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
 import type { OutboxCreateRequest } from "@/types/api";
+
+/** A message quoted or forwarded into the composer -- see reply-box.tsx,
+ * which is what fetches messages/:id/quote and builds this. */
+export interface ComposeQuote {
+  html: string;
+  attribution: string;
+}
+
+/** The subset of ComposeForm's submit machinery a host surface (the
+ * dialog, the reply box, the draft editor) needs to drive its own close
+ * button -- saving as a draft before actually closing. */
+export interface ComposeFormControls {
+  saveDraft: () => void;
+}
 
 interface ComposeFormProps {
   accountId: string;
@@ -18,7 +43,22 @@ interface ComposeFormProps {
   defaultCc?: string[];
   defaultBcc?: string[];
   defaultSubject?: string;
-  defaultBody?: string;
+  /** Which identity to preselect -- a reply resolves this to whichever
+   * of the account's identities the original message was addressed to;
+   * a fresh compose leaves it unset and falls back to the account's
+   * starred default, the same way the API itself does when no
+   * identity_id is sent at all. */
+  defaultIdentityId?: string;
+  /** A previously-saved draft's full HTML body, reopened as-is --
+   * mutually exclusive with `quote` (a draft that itself quoted
+   * something already has that quote embedded in this HTML). */
+  defaultBodyHtml?: string;
+  /** A reply or forward's quoted original, embedded as the editor's
+   * initial content alongside an empty paragraph to type into. */
+  quote?: ComposeQuote;
+  /** The `> `-prefixed plain-text form of `quote`, appended to the
+   * editor's own markdown export to build body_text. */
+  quotedText?: string;
   inReplyTo?: string;
   references?: string[];
   /** The messages.id of a draft being edited or sent from -- both buttons
@@ -30,6 +70,11 @@ interface ComposeFormProps {
   /** Inline reply box styling instead of a standalone dialog form. */
   compact?: boolean;
   onDone: () => void;
+  /** Whether there is anything here that would be lost by closing
+   * without saving -- the host surface uses this to decide whether
+   * closing needs to ask first. */
+  onDirtyChange?: (dirty: boolean) => void;
+  onControlsReady?: (controls: ComposeFormControls) => void;
 }
 
 /** Shared body for the new-mail dialog, the inline reply box, and the draft editor. */
@@ -39,38 +84,89 @@ export function ComposeForm({
   defaultCc = [],
   defaultBcc = [],
   defaultSubject = "",
-  defaultBody = "",
+  defaultIdentityId,
+  defaultBodyHtml,
+  quote,
+  quotedText = "",
   inReplyTo,
   references,
   replacesMessageId,
   initialAttachments = [],
   compact = false,
   onDone,
+  onDirtyChange,
+  onControlsReady,
 }: ComposeFormProps) {
   const [to, setTo] = useState<string[]>(defaultTo);
   const [cc, setCc] = useState<string[]>(defaultCc);
   const [bcc, setBcc] = useState<string[]>(defaultBcc);
   const [showCcBcc, setShowCcBcc] = useState(defaultCc.length > 0 || defaultBcc.length > 0);
   const [subject, setSubject] = useState(defaultSubject);
-  const [body, setBody] = useState(defaultBody);
   const [attachments, setAttachments] = useState<File[]>(initialAttachments);
+  const [identityId, setIdentityId] = useState("");
+  const [bodyDirty, setBodyDirty] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const { data: identities } = useIdentities(accountId);
   const createOutbox = useCreateOutbox();
   const { push: pushToast } = useToast();
 
-  const buildRequest = (kind: "send" | "draft"): OutboxCreateRequest => ({
-    account_id: accountId,
-    kind,
-    to,
-    cc,
-    bcc,
-    subject,
-    body_text: body,
-    in_reply_to: inReplyTo,
-    references,
-    replaces_message_id: replacesMessageId,
+  // Never `undefined`, per the trap that costs the most hours in this
+  // codebase: a Select whose value starts `undefined` decides on that
+  // first render that it is uncontrolled, and never picks up a real
+  // value set later once the identities query resolves.
+  const effectiveIdentityId =
+    identityId || defaultIdentityId || identities?.find((i) => i.is_default)?.id || "";
+
+  const editorHandle = useRef<MailEditorHandle | null>(null);
+
+  const initialHtml =
+    defaultBodyHtml ?? (quote ? `<p></p>${buildQuotedMessageHtml(quote)}` : "");
+
+  const initialSnapshot = useRef({
+    to: defaultTo,
+    cc: defaultCc,
+    bcc: defaultBcc,
+    subject: defaultSubject,
+    attachmentNames: initialAttachments.map((f) => f.name),
   });
+
+  const isDirty =
+    bodyDirty ||
+    JSON.stringify(to) !== JSON.stringify(initialSnapshot.current.to) ||
+    JSON.stringify(cc) !== JSON.stringify(initialSnapshot.current.cc) ||
+    JSON.stringify(bcc) !== JSON.stringify(initialSnapshot.current.bcc) ||
+    subject !== initialSnapshot.current.subject ||
+    JSON.stringify(attachments.map((f) => f.name)) !==
+      JSON.stringify(initialSnapshot.current.attachmentNames);
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+    // Deliberately every render rather than a narrower dependency list --
+    // isDirty is a cheap derived value, not a reference the caller needs
+    // held stable, and listing its inputs one by one here would just be
+    // isDirty's own definition duplicated.
+  });
+
+  const buildRequest = (kind: "send" | "draft"): OutboxCreateRequest => {
+    const empty = editorHandle.current?.isEmpty() ?? true;
+    const html = empty ? undefined : editorHandle.current?.getHTML();
+    const markdown = empty ? "" : (editorHandle.current?.getMarkdown() ?? "");
+    return {
+      account_id: accountId,
+      kind,
+      to,
+      cc,
+      bcc,
+      subject,
+      body_text: `${markdown}${quotedText}`,
+      body_html: html,
+      in_reply_to: inReplyTo,
+      references,
+      identity_id: effectiveIdentityId || undefined,
+      replaces_message_id: replacesMessageId,
+    };
+  };
 
   const submit = (kind: "send" | "draft") => {
     const data = buildRequest(kind);
@@ -94,6 +190,17 @@ export function ComposeForm({
       },
     );
   };
+
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+
+  useEffect(() => {
+    onControlsReady?.({ saveDraft: () => submitRef.current("draft") });
+    // onControlsReady is called once -- submitRef.current is always the
+    // latest submit, so the host surface's close button never sends a
+    // stale snapshot of the form even though this effect itself never
+    // re-runs.
+  }, []);
 
   return (
     <div className="flex flex-col gap-2">
@@ -130,12 +237,38 @@ export function ComposeForm({
         />
       )}
 
-      <Textarea
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        placeholder="Write your message..."
-        rows={compact ? 5 : 10}
+      {identities && identities.length > 1 && (
+        <div className="grid grid-cols-[auto_1fr] items-center gap-2">
+          <span className="text-xs text-muted-foreground">From</span>
+          <Select value={effectiveIdentityId} onValueChange={(v) => setIdentityId(v ?? "")}>
+            <SelectTrigger className="h-8">
+              <SelectValue placeholder="From address">
+                {(v: string) => {
+                  const found = identities.find((i) => i.id === v);
+                  return found ? (found.display_name || found.address) : "From address";
+                }}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {identities.map((identity) => (
+                <SelectItem key={identity.id} value={identity.id}>
+                  {identity.display_name || identity.address}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      <MailEditorLazy
+        key={initialHtml}
+        initialHtml={initialHtml}
         autoFocus={compact}
+        compact={compact}
+        onDirtyChange={setBodyDirty}
+        onReady={(handle) => {
+          editorHandle.current = handle;
+        }}
       />
 
       {attachments.length > 0 && (
@@ -208,5 +341,57 @@ export function ComposeForm({
         </div>
       </div>
     </div>
+  );
+}
+
+interface ComposeCloseButtonProps {
+  isDirty: boolean;
+  onDiscard: () => void;
+  saveDraft: (() => void) | null;
+  isSaving?: boolean;
+  className?: string;
+}
+
+/**
+ * A close control that asks first when there is unsaved work -- shared by
+ * the reply box (which had no close control at all) and the draft
+ * editor's existing Back arrow, so both surfaces gain the same prompt
+ * with one implementation. The compose dialog's own close button already
+ * routes through Base UI's onOpenChange instead (see compose-dialog.tsx),
+ * since that also has to cover Escape and an outside click.
+ */
+export function ComposeCloseButton({
+  isDirty,
+  onDiscard,
+  saveDraft,
+  isSaving = false,
+  className,
+}: ComposeCloseButtonProps) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={className}
+        title="Close"
+        onClick={() => (isDirty ? setConfirming(true) : onDiscard())}
+      >
+        <X className="h-3.5 w-3.5" />
+      </Button>
+      <DiscardChangesDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        onDiscard={() => {
+          setConfirming(false);
+          onDiscard();
+        }}
+        onSaveDraft={() => {
+          setConfirming(false);
+          saveDraft?.();
+        }}
+        isSaving={isSaving}
+      />
+    </>
   );
 }

@@ -150,6 +150,39 @@ class TestOutboxHtmlSanitisation:
         assert stored is None
 
 
+class TestDraftQuoteRoundTrip:
+    def test_a_saved_quote_still_carries_its_marker_and_cite_type_after_storage(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The shape the compose editor's quotedMessage node needs back to
+        reconstruct itself on reopening a draft -- both attributes have to
+        survive being sanitised once at save time, since the quote
+        endpoint sanitises again on every reopen."""
+        account_id = client.portal.call(_seed_account, migrated_db)
+        html = (
+            '<p>reply text</p>'
+            '<div data-quoted-message="true" class="gmail_quote">'
+            '<div class="gmail_attr">On x wrote:</div>'
+            '<blockquote type="cite" class="gmail_quote">quoted</blockquote>'
+            '</div>'
+        )
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "draft",
+                    "to": ["them@example.com"], "subject": "hi",
+                    "body_text": "reply text", "body_html": html,
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        stored = client.portal.call(_outbox_body_html, migrated_db, uuid.UUID(resp.json()["id"]))
+        assert stored is not None
+        assert 'data-quoted-message="true"' in stored
+        assert 'type="cite"' in stored
+        assert 'class="gmail_quote"' in stored
+
+
 class TestMessageQuote:
     def test_quotes_the_raw_html_body_sanitised(
         self, client: TestClient, migrated_db: DatabaseConnection,

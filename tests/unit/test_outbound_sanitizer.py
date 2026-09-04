@@ -91,6 +91,42 @@ class TestQuoteStyling:
         assert "font-family:monospace" in out
 
 
+class TestQuoteMarkerClasses:
+    def test_the_gmail_quote_and_attr_classes_survive_by_exact_value(self) -> None:
+        html = '<div class="gmail_quote"><div class="gmail_attr">On x wrote:</div>' \
+            '<blockquote type="cite" class="gmail_quote">quoted</blockquote></div>'
+        out = sanitize_outbound_html(html)
+        assert 'class="gmail_quote"' in out
+        assert 'class="gmail_attr"' in out
+
+    def test_any_other_class_value_is_dropped_even_when_it_contains_the_marker(self) -> None:
+        """nh3 matches by whole value, not per token -- a quoted message
+        combining its own class with the marker must not slip through."""
+        html = '<div class="gmail_quote evil-tracker">x</div>'
+        out = sanitize_outbound_html(html)
+        assert "class=" not in out
+
+    def test_an_unrelated_class_is_dropped(self) -> None:
+        html = '<div class="newsletter-header">x</div>'
+        out = sanitize_outbound_html(html)
+        assert "class=" not in out
+
+
+class TestQuotedMessageMarker:
+    def test_the_data_quoted_message_marker_survives(self) -> None:
+        """Without this, a draft carrying a quote loses the attribute the
+        compose editor's quotedMessage node parses back on reopening --
+        the quote would still render, but never re-collapse into the node."""
+        html = '<div data-quoted-message="true" class="gmail_quote">x</div>'
+        out = sanitize_outbound_html(html)
+        assert 'data-quoted-message="true"' in out
+
+    def test_any_other_data_quoted_message_value_is_dropped(self) -> None:
+        html = '<div data-quoted-message="false">x</div>'
+        out = sanitize_outbound_html(html)
+        assert "data-quoted-message" not in out
+
+
 class TestListItemUnwrap:
     def test_a_paragraph_wrapped_list_item_is_unwrapped(self) -> None:
         """Outlook and Gmail both apply their own per-<p> margin, which

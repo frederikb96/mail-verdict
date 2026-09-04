@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { PenSquare } from "lucide-react";
 
@@ -19,7 +19,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ComposeForm } from "@/components/mail/compose-form";
+import { ComposeForm, type ComposeFormControls } from "@/components/mail/compose-form";
+import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { useAccounts } from "@/hooks/use-accounts";
 import { composeIntentAtom, selectedAccountIdAtom } from "@/lib/atoms";
 
@@ -34,6 +35,9 @@ export function ComposeDialog() {
   const [open, setOpen] = useState(false);
   const [accountId, setAccountId] = useState<string | undefined>(undefined);
   const [composeIntent, setComposeIntent] = useAtom(composeIntentAtom);
+  const [isDirty, setIsDirty] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  const controlsRef = useRef<ComposeFormControls | null>(null);
 
   useEffect(() => {
     if (composeIntent) {
@@ -50,12 +54,23 @@ export function ComposeDialog() {
   const closeAndClearIntent = () => {
     setOpen(false);
     setComposeIntent(null);
+    setIsDirty(false);
   };
 
   return (
     <Dialog
       open={open}
-      onOpenChange={(next) => {
+      onOpenChange={(next, eventDetails) => {
+        // Escape, an outside click and the dialog's own close button all
+        // reach here as the same request -- pausing every one of them on
+        // unsaved work is what closes the gap the compose dialog used to
+        // have: any of the three discarded a message in progress with no
+        // warning at all.
+        if (!next && isDirty) {
+          eventDetails.cancel();
+          setConfirmClose(true);
+          return;
+        }
         setOpen(next);
         if (!next) setComposeIntent(null);
       }}
@@ -97,6 +112,10 @@ export function ComposeDialog() {
             defaultTo={composeIntent?.to}
             defaultSubject={composeIntent?.subject}
             onDone={closeAndClearIntent}
+            onDirtyChange={setIsDirty}
+            onControlsReady={(controls) => {
+              controlsRef.current = controls;
+            }}
           />
         )}
         {!effectiveAccountId && (
@@ -105,6 +124,18 @@ export function ComposeDialog() {
           </p>
         )}
       </DialogContent>
+      <DiscardChangesDialog
+        open={confirmClose}
+        onOpenChange={setConfirmClose}
+        onDiscard={() => {
+          setConfirmClose(false);
+          closeAndClearIntent();
+        }}
+        onSaveDraft={() => {
+          setConfirmClose(false);
+          controlsRef.current?.saveDraft();
+        }}
+      />
     </Dialog>
   );
 }

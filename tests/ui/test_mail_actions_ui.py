@@ -513,7 +513,7 @@ class TestMailActionsUi:
 
         dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
         dialog.get_by_role("textbox", name="Subject").fill(subject)
-        dialog.get_by_role("textbox", name="Write your message...").fill(
+        dialog.get_by_test_id("mail-editor-body").fill(
             "Sent from the UI test.",
         )
         dialog.get_by_role("button", name="Send", exact=True).click()
@@ -541,7 +541,7 @@ class TestMailActionsUi:
         dialog = page.get_by_role("dialog", name="New Message")
         dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
         dialog.get_by_role("textbox", name="Subject").fill(subject)
-        dialog.get_by_role("textbox", name="Write your message...").fill(
+        dialog.get_by_test_id("mail-editor-body").fill(
             "A draft the UI test will reopen and send.",
         )
         dialog.get_by_role("button", name="Save draft").click()

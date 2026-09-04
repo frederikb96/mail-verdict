@@ -1,11 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Forward, Loader2, Reply, ReplyAll } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ComposeForm } from "@/components/mail/compose-form";
+import {
+  ComposeCloseButton,
+  ComposeForm,
+  type ComposeFormControls,
+} from "@/components/mail/compose-form";
 import { buildForward, buildReply } from "@/lib/reply";
+import { matchIdentity } from "@/lib/identities";
+import { useIdentities } from "@/hooks/use-identities";
 import { api } from "@/lib/api";
 import type { MessageDetail } from "@/types/api";
 
@@ -35,38 +41,54 @@ async function fetchAttachmentsAsFiles(source: MessageDetail): Promise<File[]> {
 export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [mode, setMode] = useState<"reply" | "reply-all" | "forward" | null>(null);
   const [forwardAttachments, setForwardAttachments] = useState<File[] | null>(null);
-  const [loadingAttachments, setLoadingAttachments] = useState(false);
+  const [quoteHtml, setQuoteHtml] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const controlsRef = useRef<ComposeFormControls | null>(null);
 
-  const startForward = () => {
-    if (source.attachments.length === 0) {
-      setForwardAttachments([]);
-      setMode("forward");
-      return;
-    }
-    setLoadingAttachments(true);
-    setMode("forward");
-    fetchAttachmentsAsFiles(source)
-      .then(setForwardAttachments)
-      .finally(() => setLoadingAttachments(false));
+  const { data: identities } = useIdentities(source.account_id);
+  // A reply and a forward alike go out as whichever of the account's
+  // identities the original was addressed to -- To before Cc, since that
+  // is the order the header itself carries the message's recipients in.
+  const defaultIdentityId = matchIdentity(
+    [...(source.to_addrs ?? []), ...(source.cc_addrs ?? [])],
+    identities,
+  );
+
+  const start = (next: "reply" | "reply-all" | "forward") => {
+    setMode(next);
+    const attachmentsNeeded = next === "forward" && source.attachments.length > 0;
+    setLoading(true);
+    Promise.all([
+      attachmentsNeeded ? fetchAttachmentsAsFiles(source) : Promise.resolve([]),
+      api.mails.quote(source.id),
+    ])
+      .then(([files, quote]) => {
+        setForwardAttachments(files);
+        setQuoteHtml(quote.html);
+      })
+      .finally(() => setLoading(false));
   };
 
   const reset = () => {
     setMode(null);
     setForwardAttachments(null);
+    setQuoteHtml(null);
+    setIsDirty(false);
   };
 
   if (!mode) {
     return (
       <div className="flex gap-2 border-t p-3">
-        <Button variant="outline" size="sm" onClick={() => setMode("reply")}>
+        <Button variant="outline" size="sm" onClick={() => start("reply")}>
           <Reply className="mr-1 h-3.5 w-3.5" />
           Reply
         </Button>
-        <Button variant="outline" size="sm" onClick={() => setMode("reply-all")}>
+        <Button variant="outline" size="sm" onClick={() => start("reply-all")}>
           <ReplyAll className="mr-1 h-3.5 w-3.5" />
           Reply all
         </Button>
-        <Button variant="outline" size="sm" onClick={startForward}>
+        <Button variant="outline" size="sm" onClick={() => start("forward")}>
           <Forward className="mr-1 h-3.5 w-3.5" />
           Forward
         </Button>
@@ -74,45 +96,66 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     );
   }
 
-  if (mode === "forward") {
-    if (loadingAttachments || forwardAttachments === null) {
-      return (
-        <div className="flex items-center gap-2 border-t p-3 text-sm text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Preparing forward...
-        </div>
-      );
-    }
-    const draft = buildForward(source);
+  if (loading || forwardAttachments === null || quoteHtml === null) {
     return (
-      <div className="border-t p-3">
-        <ComposeForm
-          accountId={source.account_id}
-          defaultSubject={draft.subject}
-          defaultBody={draft.bodyText}
-          initialAttachments={forwardAttachments}
-          compact
-          onDone={reset}
-        />
+      <div className="flex items-center gap-2 border-t p-3 text-sm text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Preparing...
       </div>
     );
   }
 
-  const draft = buildReply(source, ownEmail, mode);
-
-  return (
+  const common = (
+    to: string[],
+    cc: string[],
+    subject: string,
+    quotedText: string,
+    attribution: string,
+    inReplyTo: string | undefined,
+    references: string[] | undefined,
+  ) => (
     <div className="border-t p-3">
+      <div className="mb-1 flex justify-end">
+        <ComposeCloseButton
+          isDirty={isDirty}
+          onDiscard={reset}
+          saveDraft={() => controlsRef.current?.saveDraft()}
+        />
+      </div>
       <ComposeForm
         accountId={source.account_id}
-        defaultTo={draft.to}
-        defaultCc={draft.cc}
-        defaultSubject={draft.subject}
-        defaultBody={draft.bodyText}
-        inReplyTo={draft.inReplyTo}
-        references={draft.references}
+        defaultTo={to}
+        defaultCc={cc}
+        defaultSubject={subject}
+        defaultIdentityId={defaultIdentityId}
+        quote={{ html: quoteHtml, attribution }}
+        quotedText={quotedText}
+        inReplyTo={inReplyTo}
+        references={references}
+        initialAttachments={forwardAttachments}
         compact
         onDone={reset}
+        onDirtyChange={setIsDirty}
+        onControlsReady={(controls) => {
+          controlsRef.current = controls;
+        }}
       />
     </div>
+  );
+
+  if (mode === "forward") {
+    const draft = buildForward(source);
+    return common([], [], draft.subject, draft.quotedText, draft.attribution, undefined, undefined);
+  }
+
+  const draft = buildReply(source, ownEmail, mode);
+  return common(
+    draft.to,
+    draft.cc,
+    draft.subject,
+    draft.quotedText,
+    draft.attribution,
+    draft.inReplyTo,
+    draft.references,
   );
 }

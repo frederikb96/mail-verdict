@@ -9,12 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- The compose dialog, reply box and draft editor share a rich-text editor: a small toolbar plus
+  Markdown input rules, so typing `# ` makes a heading and `**bold**` makes bold while typing.
+  Pasted formatted content keeps its formatting instead of arriving as literal HTML source, and a
+  reply or forward embeds the original message as a collapsible, correctly rendered quote rather
+  than a lossy line-by-line text dump. The editor scrolls inside its own bounded box instead of
+  growing the dialog or the reply box without limit, and every composer surface now has a close
+  control that asks whether to save a draft or discard when there is unsaved work -- previously
+  the reply box had no way out at all, and the compose dialog's own close discarded silently
 - Compose can send an HTML body alongside the plain-text one: `POST /api/outbox` sanitises
   `body_html` for safe sending (a small, mail-client-safe tag vocabulary; no class or style
   attribute survives from the input) before it reaches the outbox row, and requires `body_text`
   alongside it. `GET /api/messages/:id/quote` turns a message's raw body into the same safe shape
-  for quoting in a reply or forward -- a remote image quotes as its own absolute URL, and a
-  `cid:` or other locally-meaningful reference is dropped rather than left broken
+  for quoting in a reply or forward, and for reopening a saved draft -- a remote image quotes as
+  its own absolute URL, and a `cid:` or other locally-meaningful reference is dropped rather than
+  left broken
+- Replying now sends from whichever of the account's identities the original message was
+  addressed to, rather than always the starred default; a fresh compose still uses the default. A
+  sending identity is selectable in the composer whenever an account has more than one
 - `tests/setup/large_mailbox.py`: bulk-seeds a mailbox of any size directly into the messages
   mirror, for tests that need mailbox scale (virtualized scrolling, bulk selection) rather than
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:
