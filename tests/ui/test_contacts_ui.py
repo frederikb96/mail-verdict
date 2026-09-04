@@ -193,6 +193,67 @@ class TestContactsUi:
         contact = wait_for(_created, description="Created contact synced back")
         assert contact["addressbook_id"] == addressbook["id"]
 
+    def test_creating_a_contact_with_phone_year_less_birthday_and_categories(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        addressbook: dict[str, Any],
+    ) -> None:
+        """The editor's expanded field set -- phone with a type, a
+        year-less birthday, and categories -- all reach the stored vCard.
+        Address and photo share the same repeatable-row/upload machinery
+        already proven for phone/email above and are covered end to end
+        by the vcard.py unit and pg tests instead of a second UI pass."""
+        name = f"UI Fields Test {uuid.uuid4()}"
+        email = f"{uuid.uuid4().hex[:8]}@example.com"
+
+        page.goto(f"{app_server}/contacts")
+        page.get_by_role("button", name="New contact", exact=True).click()
+
+        name_input = page.get_by_label("Name", exact=True)
+        expect(name_input).to_be_visible(timeout=15_000)
+        name_input.fill(name)
+        page.get_by_label("Email", exact=True).fill(email)
+
+        page.get_by_role("button", name="Add phone", exact=True).click()
+        page.get_by_placeholder("Number", exact=True).fill("+491701234567")
+        page.get_by_placeholder("Type", exact=True).fill("cell")
+
+        page.locator("label").filter(has_text="I don't know the year").locator("input").check()
+        page.locator("select").nth(0).select_option(label="September")
+        page.locator("select").nth(1).select_option(value="15")
+
+        page.get_by_label("Categories", exact=True).fill("Friend, Work")
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(name_input).to_be_hidden(timeout=10_000)
+
+        # Creating leaves nothing selected -- open the new row to check
+        # what actually got saved.
+        expect(page.get_by_text(name, exact=True)).to_be_visible(timeout=10_000)
+        page.get_by_text(name, exact=True).click()
+
+        detail = page.locator(
+            f"xpath=//h2[normalize-space(text())='{name}']"
+            "/ancestor::div[contains(@class,'overflow-y-auto')][1]"
+        )
+        expect(detail.get_by_text("September 15", exact=True)).to_be_visible(timeout=10_000)
+        expect(detail.get_by_text("Friend", exact=True)).to_be_visible()
+        expect(detail.get_by_text("Work", exact=True)).to_be_visible()
+
+        def _created() -> dict[str, Any] | None:
+            resp = api_client.get("/api/contacts", params={"q": name})
+            assert resp.status_code == 200, resp.text
+            contacts = resp.json()["contacts"]
+            return contacts[0] if contacts else None
+
+        contact = wait_for(_created, description="Created contact synced back")
+        assert contact["addressbook_id"] == addressbook["id"]
+        assert contact["birthday"] == "--09-15"
+        assert contact["phones"] == [{"number": "+491701234567", "type": "cell"}]
+        assert set(contact["categories"]) == {"Friend", "Work"}
+
     def test_editing_a_contact_adds_details_and_search_finds_the_secondary_email(
         self,
         page: Page,
@@ -407,14 +468,20 @@ class TestMultiSelection:
             )
             assert resp.status_code == 201, resp.text
 
+        # The list sorts alphabetically by summary, not by creation order --
+        # the shift-click range is the first-to-last row *as shown*, so the
+        # endpoints have to be the alphabetically first/last of the three,
+        # not names[0]/names[2] from this (UUID-ordered) list.
+        shown_order = sorted(names)
+
         page.goto(f"{app_server}/contacts")
-        first_checkbox = page.get_by_label(f"Select {names[0]}")
+        first_checkbox = page.get_by_label(f"Select {shown_order[0]}")
         expect(first_checkbox).to_be_hidden(timeout=10_000)
-        page.get_by_text(names[0], exact=True).hover()
+        page.get_by_text(shown_order[0], exact=True).hover()
         first_checkbox.click()
 
-        page.get_by_text(names[2], exact=True).hover()
-        page.get_by_label(f"Select {names[2]}").click(modifiers=["Shift"])
+        page.get_by_text(shown_order[2], exact=True).hover()
+        page.get_by_label(f"Select {shown_order[2]}").click(modifiers=["Shift"])
 
         expect(page.get_by_text("3 selected", exact=True)).to_be_visible(timeout=10_000)
 
