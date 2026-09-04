@@ -63,6 +63,14 @@ service:
   # you override `config.server.port`.
   port: 8080
 
+# -- Port the liveness listener binds (`config.server.liveness_port` in the
+# image defaults) -- a plain background socket, separate from `service.port`,
+# so the liveness probe reaches it even when a handler blocks the app's
+# event loop. Not exposed on the Service: only the kubelet probes it,
+# directly against the pod. Change both together if you override
+# `config.server.liveness_port`.
+livenessPort: 8081
+
 resources:
   requests:
     cpu: 100m
@@ -74,23 +82,25 @@ resources:
     # cpu: 1000m
 
 livenessProbe:
-  # -- Process-liveness only: does not touch the database or PostIMAP's
-  # contract version, so it never restarts a healthy pod over a transient
-  # database outage.
+  # -- Answered by a background socket on its own thread and its own port
+  # (`livenessPort` above), independent of the app's event loop -- a
+  # handler that blocks that loop (heavy load, a bug) never delays this,
+  # so it only ever fails on a genuinely dead or hung process.
   httpGet:
-    path: /api/health/live
-    port: http
+    path: /
+    port: liveness
   initialDelaySeconds: 10
   periodSeconds: 15
   timeoutSeconds: 5
   failureThreshold: 3
 
 readinessProbe:
-  # -- Checks the database is reachable and PostIMAP's contract version
-  # matches what this image was built against. Deliberately does NOT
-  # depend on any mail account existing -- a fresh install with zero
-  # accounts configured is Ready as soon as the database check passes, so
-  # `helm install --wait` and a rollout both complete normally.
+  # -- Checks if PostIMAP's contract version matches what this image was
+  # built against. Returns the cached contract status without blocking on
+  # database pool access, so a pod under heavy load is never removed from
+  # the service because the readiness probe timed out. If the contract check
+  # fails at startup, the pod is unready; once ready, it remains ready even
+  # through transient database issues.
   enabled: true
   path: /api/health
   initialDelaySeconds: 10

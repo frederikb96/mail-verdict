@@ -205,7 +205,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Unified view | `/unified`, `/accounts/{id}/emoji` | Cross-account folder merging and message listing |
 | Stats | `/stats` | Dashboard aggregates: spam metrics, accuracy trend, per-account sync summary |
 | Events | `/events` | Server-Sent Events stream — see below |
-| Health | `/health`, `/health/live` | Readiness (DB + PostIMAP contract confirmed) and liveness |
+| Health | `/health` | Readiness — PostIMAP contract version confirmed. Liveness is a separate, unauthenticated probe endpoint on its own port, not part of this API — see the chart README |
 
 ## Live updates
 

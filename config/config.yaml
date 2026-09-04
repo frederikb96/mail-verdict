@@ -11,6 +11,11 @@
 server:
   host: 0.0.0.0
   port: 8080
+  # A plain background socket the liveness probe hits instead of the main
+  # port -- it answers from its own thread, so it stays responsive even
+  # when a handler blocks the asyncio event loop the rest of the app runs
+  # on. Change the chart's matching container port alongside this.
+  liveness_port: 8081
   log_level: INFO
   cors_origins: []            # same-origin serving by default; empty disables CORS
 

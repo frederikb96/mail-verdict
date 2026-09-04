@@ -227,6 +227,7 @@ class ServerConfig(BaseModel):
 
     host: str
     port: int
+    liveness_port: int
     log_level: str
     cors_origins: list[str] = Field(default_factory=list)
 

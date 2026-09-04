@@ -156,17 +156,23 @@ above doesn't intercept, and put whatever mechanism suits a machine client in fr
 -- mTLS, a static bearer token verified by a different ForwardAuth service, an IP allowlist.
 Entirely a proxy-level decision; the application enforces nothing itself either way.
 
-### Readiness probe
+### Liveness and readiness probes
 
-Unlike a service whose readiness depends on having active work, MailVerdict's `/api/health`
-readiness check only asserts the database is reachable and that PostIMAP's contract version
-matches what the image was built against -- it does **not** depend on any mail account existing.
-A fresh install with zero accounts configured becomes Ready as soon as the database check passes,
-so `helm install --wait` and a normal rollout both complete without you needing to add an account
-first.
+The two probes answer different questions and live on different ports because of it.
 
-`/api/health/live` (liveness) checks process-up only -- it never touches the database, so a
-transient database outage doesn't cause a restart loop on top of the outage.
+`/api/health` (readiness, `service.port`) asserts that PostIMAP's contract version matches what
+the image was built against -- it does **not** depend on any mail account existing, so a fresh
+install with zero accounts configured becomes Ready as soon as that check passes, and
+`helm install --wait` and a normal rollout both complete without you needing to add an account
+first. It reflects the app's own request-handling capacity: a pod under heavy load can legitimately
+answer slowly here and be taken out of the Service rotation for a while, which only affects
+routing, never the pod's lifetime.
+
+The liveness probe (`livenessPort`) answers a different question -- is the process itself still
+running -- and a wrong answer restarts the pod, so it cannot share readiness's fate: a busy pod is
+not a dead one. It is served by a plain background socket on its own thread, entirely independent
+of the async event loop the rest of the app (including `/api/health`) runs on, so a handler that
+blocks that loop never delays it.
 
 ## Values
 
@@ -186,9 +192,10 @@ transient database outage doesn't cause a restart loop on top of the outage.
 | `securityContext` | read-only root filesystem, all capabilities dropped, no privilege escalation | The app writes nothing to disk at runtime beyond `/tmp`; a `tmp` `emptyDir` is mounted there as a safety margin. |
 | `service.type` | `ClusterIP` | |
 | `service.port` | `8080` | Must match `config.server.port` if you override the latter -- see the comment in `values.yaml`. |
+| `livenessPort` | `8081` | Must match `config.server.liveness_port` if you override the latter. See [Liveness and readiness probes](#liveness-and-readiness-probes). |
 | `resources` | `100m`/`256Mi` requests, `1Gi` memory limit, no CPU limit | No default CPU limit, to avoid throttling the event loop and the spam pipeline under load. |
-| `livenessProbe` | `GET /api/health/live` | Process-liveness only. |
-| `readinessProbe.enabled` | `true` | See [Readiness probe](#readiness-probe). |
+| `livenessProbe` | `GET /` on `livenessPort` | See [Liveness and readiness probes](#liveness-and-readiness-probes). |
+| `readinessProbe.enabled` | `true` | See [Liveness and readiness probes](#liveness-and-readiness-probes). |
 | `readinessProbe.path` | `/api/health` | |
 | `nodeSelector` / `tolerations` / `affinity` | `{}` / `[]` / `{}` | |
 | `extraVolumes` / `extraVolumeMounts` | `[]` | |

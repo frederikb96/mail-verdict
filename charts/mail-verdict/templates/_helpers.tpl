@@ -87,3 +87,13 @@ the same number only for convenience.
 {{- define "mail-verdict.appPort" -}}
 {{- dig "server" "port" .Values.service.port .Values.config }}
 {{- end }}
+
+{{/*
+Port the liveness listener binds -- a plain background socket, separate
+from the app's own port, so the liveness probe reaches it even when a
+handler blocks the app's event loop. `config.server.liveness_port` wins
+when set, the same override precedence as `mail-verdict.appPort` above.
+*/}}
+{{- define "mail-verdict.livenessPort" -}}
+{{- dig "server" "liveness_port" .Values.livenessPort .Values.config }}
+{{- end }}

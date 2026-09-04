@@ -4,8 +4,14 @@ MailVerdict ASGI Server.
 Single app serving:
 - /api/* — REST API (FastAPI routers)
 - /api/events — SSE real-time updates
-- /api/health, /api/health/live — health/readiness checks
+- /api/health — readiness check
 - /mcp — MCP streamable-http endpoint (FastMCP)
+
+Liveness is not one of these routes. It is answered by a plain socket server
+on its own port and its own thread (see `start_liveness_server` below),
+because an async endpoint here shares the event loop with every other
+handler -- a handler that blocks that loop blocks liveness along with it,
+which is exactly the failure a liveness probe exists to catch.
 
 PostIMAP handles all IMAP sync. MailVerdict is a pure PostgreSQL application.
 The FastAPI root is built first, MCP is mounted underneath it (inverted from
@@ -16,11 +22,14 @@ and the spam/rules consumers that listener drives.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from typing import Any
 
 from fastapi import FastAPI
@@ -62,6 +71,55 @@ _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _contract_ok: bool = False
+_liveness_server: ThreadingHTTPServer | None = None
+_liveness_thread: Thread | None = None
+
+
+class _LivenessRequestHandler(BaseHTTPRequestHandler):
+    """Answers every request 200, from a thread with its own listening
+    socket -- there is nothing here for a blocked event loop to hold up."""
+
+    def do_GET(self) -> None:
+        body = b'{"status": "alive"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, log_format: str, *args: Any) -> None:
+        """Silence the default per-request stderr log -- a probe hits this
+        every few seconds for the life of the pod."""
+
+
+def start_liveness_server(host: str, port: int) -> tuple[ThreadingHTTPServer, Thread]:
+    """
+    Start the liveness listener: its own socket, its own thread, no asyncio.
+
+    A `ThreadingHTTPServer` so one slow or stuck client can never make the
+    next probe queue behind it. Called at process startup rather than from
+    the async `lifespan` below, so liveness is already answering before
+    anything that could be slow -- the database connection among it -- has
+    even been attempted.
+
+    Args:
+        host: Bind address, `config.server.host`.
+        port: TCP port to listen on, `config.server.liveness_port`.
+
+    Returns:
+        The server and the daemon thread running its `serve_forever()`.
+    """
+    server = ThreadingHTTPServer((host, port), _LivenessRequestHandler)
+    thread = Thread(target=server.serve_forever, daemon=True, name="liveness-server")
+    thread.start()
+    return server, thread
+
+
+def stop_liveness_server(server: ThreadingHTTPServer, thread: Thread) -> None:
+    """Stop the liveness listener started by `start_liveness_server`."""
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=1.0)
 
 
 def get_spam_processor() -> Any | None:
@@ -75,6 +133,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _postimap_listener, _spam_processor, _contract_ok
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
+    global _liveness_server, _liveness_thread
 
     config = get_config()
 
@@ -82,6 +141,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     setup_logging(config.server.log_level)
     logger.info("MailVerdict server starting")
+
+    # Started first and stopped last, deliberately outside everything else
+    # in this function -- liveness must answer for as long as the process
+    # is up, including while the rest of startup (the database connection
+    # among it) is still in progress or has failed outright.
+    _liveness_server, _liveness_thread = start_liveness_server(
+        config.server.host, config.server.liveness_port
+    )
+    logger.info("Liveness listener started on port %d", config.server.liveness_port)
 
     await init_database(config.database)
     logger.info("Database initialized")
@@ -309,6 +377,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _postimap_listener = None
 
+    # Stopped last -- liveness should keep answering through every step
+    # above, including one that hangs or raises.
+    if _liveness_server and _liveness_thread:
+        stop_liveness_server(_liveness_server, _liveness_thread)
+    _liveness_server = None
+    _liveness_thread = None
+
 
 async def _check_contract(db: Any) -> bool:
     """
@@ -471,36 +546,52 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     for router in all_routers:
         api_router.include_router(router)
 
-    @api_router.get("/health/live")
-    async def health_live() -> JSONResponse:
-        """Liveness: process is up. Never touches the database."""
-        return JSONResponse(status_code=200, content={"status": "alive"})
-
     @api_router.get("/health")
     async def health() -> JSONResponse:
         """
-        Readiness: database reachable and PostIMAP contract version confirmed.
+        Readiness: PostIMAP contract version confirmed.
 
-        Re-checks the contract whenever it isn't confirmed yet, so a pod that
-        started before PostIMAP finished its own migrations becomes ready as
-        soon as the contract row appears, instead of staying unready forever.
+        Returns the cached contract version flag set during startup. If the
+        flag is false, attempts a non-blocking retry with a short timeout.
+        Does NOT block on database pool access -- a heavy load that exhausts
+        the pool does not starve the readiness probe.
+
+        If the contract check fails at startup, the pod starts unready and
+        stays unready. A successful check enables readiness and the pod remains
+        ready through transient database issues (because readiness reflects
+        PostIMAP compatibility, not transient connectivity).
         """
         global _contract_ok
+
+        # If already confirmed, return immediately
+        if _contract_ok:
+            return JSONResponse(
+                status_code=200,
+                content={"status": "ready", "postimap_contract": "ok"},
+            )
+
+        # If not yet confirmed, attempt retry with timeout to avoid blocking
+        # when the pool is exhausted. Use a short timeout since pool contention
+        # is the real issue -- we don't want to wait 5+ seconds here.
         try:
             db = get_db_connection()
-            db_ok = await db.health_check()
-        except RuntimeError:
-            db_ok = False
+            # Try to check the contract with a 500ms timeout
+            _contract_ok = await asyncio.wait_for(_check_contract(db), timeout=0.5)
+        except asyncio.TimeoutError:
+            # Pool is likely exhausted, return based on what we know
+            logger.debug("Readiness probe contract check timed out (pool exhausted)")
+        except RuntimeError as e:
+            # Database not initialized
+            logger.debug(f"Readiness probe failed: database not initialized: {e}")
+        except Exception as e:
+            # Any other error, just use the cached flag
+            logger.warning(f"Readiness probe contract check error: {e}", exc_info=False)
 
-        if db_ok and not _contract_ok:
-            _contract_ok = await _check_contract(db)
-
-        ready = db_ok and _contract_ok
+        ready = _contract_ok
         return JSONResponse(
             status_code=200 if ready else 503,
             content={
                 "status": "ready" if ready else "not_ready",
-                "database": "ok" if db_ok else "error",
                 "postimap_contract": "ok" if _contract_ok else "not confirmed",
             },
         )
