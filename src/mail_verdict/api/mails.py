@@ -18,6 +18,7 @@ propagate them to IMAP, and postimap/listener.py fans them out to SSE.
 
 from __future__ import annotations
 
+import html
 import logging
 import uuid
 from datetime import datetime
@@ -41,6 +42,7 @@ from mail_verdict.api.schemas import (
     MessageActionResponse,
     MessageDetail,
     MessageListResponse,
+    MessageQuoteResponse,
     MessageSummary,
     TagResponse,
     ThreadResponse,
@@ -54,6 +56,7 @@ from mail_verdict.core.image_sanitizer import (
     restore_remote_images,
     strip_remote_images,
 )
+from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.core.sanitizer import sanitize_email_html
 from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import (
@@ -550,6 +553,48 @@ async def get_raw_source(message_id: uuid.UUID) -> Response:
         media_type="message/rfc822",
         headers={"Content-Disposition": content_disposition(filename)},
     )
+
+
+def _text_to_html(text: str) -> str:
+    """Escape plain text and join its lines with <br>, for quoting a
+    message that never had an HTML part at all."""
+    return "<br>".join(html.escape(line) for line in text.splitlines())
+
+
+@router.get("/{message_id}/quote", response_model=MessageQuoteResponse)
+async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
+    """
+    A message's body as safe-to-send HTML, for embedding as a reply or
+    forward quote in the compose editor.
+
+    Reads the raw body_html column rather than the display-shaped one
+    get_message returns: that copy has cid: images rewritten to local,
+    unauthenticated attachment URLs and blocked remote images marked with
+    data-x-src, neither of which means anything to a message actually
+    being sent. Starting from the raw column and running it through the
+    same outbound sanitiser every other producer of outbox.body_html goes
+    through keeps that mapping in one place -- a remote image quotes as
+    the sender's own absolute URL, a cid: or locally-rewritten one simply
+    disappears, since there is nothing to attach it to.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(Message.body_html, Message.body_text).where(
+                Message.id == message_id, Message.expunged_at.is_(None),
+            )
+        )
+        row = result.one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+
+    body_html, body_text = row
+    if body_html:
+        return MessageQuoteResponse(html=sanitize_outbound_html(body_html))
+    if body_text:
+        return MessageQuoteResponse(html=f"<p>{_text_to_html(body_text)}</p>")
+    return MessageQuoteResponse(html="")
 
 
 async def _check_image_allowed(account_id: uuid.UUID, from_addr: str | None) -> bool:

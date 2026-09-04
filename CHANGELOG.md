@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Compose can send an HTML body alongside the plain-text one: `POST /api/outbox` sanitises
+  `body_html` for safe sending (a small, mail-client-safe tag vocabulary; no class or style
+  attribute survives from the input) before it reaches the outbox row, and requires `body_text`
+  alongside it. `GET /api/messages/:id/quote` turns a message's raw body into the same safe shape
+  for quoting in a reply or forward -- a remote image quotes as its own absolute URL, and a
+  `cid:` or other locally-meaningful reference is dropped rather than left broken
 - `tests/setup/large_mailbox.py`: bulk-seeds a mailbox of any size directly into the messages
   mirror, for tests that need mailbox scale (virtualized scrolling, bulk selection) rather than
   mail content. Opt-in -- nothing runs it unless a test calls it -- and fast enough to be usable:

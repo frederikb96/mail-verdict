@@ -10,7 +10,13 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   no duplicate behind (requires PostIMAP >= 1.4.0). identity_id resolves
   through api/identities.py to the from_addr the row is actually written
   with, falling back to the account's default identity and then to
-  accounts.imap_user (PostIMAP's own fallback) if it has none.
+  accounts.imap_user (PostIMAP's own fallback) if it has none. body_html
+  is passed through core/outbound_sanitizer.py before it reaches
+  insert_outbox() -- the boundary that makes composed, pasted and quoted
+  content safe to send -- and requires body_text alongside it, since
+  nothing derives a text/plain alternative from HTML on this producer's
+  behalf. The MCP send_mail/draft_mail tools only ever accept body_text,
+  so neither sees this path.
 GET /api/outbox — list outbox rows, for the outbox/status view
 """
 
@@ -32,6 +38,7 @@ from mail_verdict.api.schemas import (
     OutboxResponse,
 )
 from mail_verdict.config import get_config
+from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import insert_outbox
@@ -162,6 +169,19 @@ async def create_outbox(request: Request) -> OutboxResponse:
     """
     payload, attachments = await _parse_request(request)
 
+    if payload.body_html and not payload.body_text:
+        # Nodemailer does not derive a text/plain alternative from HTML on
+        # its own, so a producer sending body_html with no body_text would
+        # ship a message with no text alternative at all -- a bad citizen
+        # for any client or filter that only reads the plain part. Every
+        # producer is required to send both rather than this endpoint
+        # deriving one on their behalf, which would be a second place
+        # computing the same content.
+        raise HTTPException(
+            status_code=400, detail="body_text is required whenever body_html is set",
+        )
+    body_html = sanitize_outbound_html(payload.body_html) if payload.body_html else None
+
     db = get_db_connection()
     async with db.session() as session:
         if payload.replaces_message_id is not None:
@@ -213,7 +233,7 @@ async def create_outbox(request: Request) -> OutboxResponse:
             bcc_addrs=payload.bcc,
             subject=payload.subject,
             body_text=payload.body_text,
-            body_html=payload.body_html,
+            body_html=body_html,
             in_reply_to=payload.in_reply_to,
             references=payload.references,
             replaces_message_id=payload.replaces_message_id,
