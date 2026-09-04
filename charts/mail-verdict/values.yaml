@@ -74,9 +74,10 @@ resources:
     # cpu: 1000m
 
 livenessProbe:
-  # -- Process-liveness only: does not touch the database or PostIMAP's
-  # contract version, so it never restarts a healthy pod over a transient
-  # database outage.
+  # -- Process-liveness only: confirms the process is responsive without
+  # accessing any resources. Never waits for database connections, so heavy
+  # load does not restart a healthy pod. Detects only catastrophic process
+  # failures, not transient database issues or application bugs.
   httpGet:
     path: /api/health/live
     port: http
@@ -86,11 +87,12 @@ livenessProbe:
   failureThreshold: 3
 
 readinessProbe:
-  # -- Checks the database is reachable and PostIMAP's contract version
-  # matches what this image was built against. Deliberately does NOT
-  # depend on any mail account existing -- a fresh install with zero
-  # accounts configured is Ready as soon as the database check passes, so
-  # `helm install --wait` and a rollout both complete normally.
+  # -- Checks if PostIMAP's contract version matches what this image was
+  # built against. Returns the cached contract status without blocking on
+  # database pool access, so a pod under heavy load is never removed from
+  # the service because the readiness probe timed out. If the contract check
+  # fails at startup, the pod is unready; once ready, it remains ready even
+  # through transient database issues.
   enabled: true
   path: /api/health
   initialDelaySeconds: 10

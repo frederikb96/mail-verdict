@@ -16,6 +16,7 @@ and the spam/rules consumers that listener drives.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -479,28 +480,49 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     @api_router.get("/health")
     async def health() -> JSONResponse:
         """
-        Readiness: database reachable and PostIMAP contract version confirmed.
+        Readiness: PostIMAP contract version confirmed.
 
-        Re-checks the contract whenever it isn't confirmed yet, so a pod that
-        started before PostIMAP finished its own migrations becomes ready as
-        soon as the contract row appears, instead of staying unready forever.
+        Returns the cached contract version flag set during startup. If the
+        flag is false, attempts a non-blocking retry with a short timeout.
+        Does NOT block on database pool access -- a heavy load that exhausts
+        the pool does not starve the readiness probe.
+
+        If the contract check fails at startup, the pod starts unready and
+        stays unready. A successful check enables readiness and the pod remains
+        ready through transient database issues (because readiness reflects
+        PostIMAP compatibility, not transient connectivity).
         """
         global _contract_ok
+
+        # If already confirmed, return immediately
+        if _contract_ok:
+            return JSONResponse(
+                status_code=200,
+                content={"status": "ready", "postimap_contract": "ok"},
+            )
+
+        # If not yet confirmed, attempt retry with timeout to avoid blocking
+        # when the pool is exhausted. Use a short timeout since pool contention
+        # is the real issue -- we don't want to wait 5+ seconds here.
         try:
             db = get_db_connection()
-            db_ok = await db.health_check()
+            # Try to check the contract with a 500ms timeout
+            _contract_ok = await asyncio.wait_for(_check_contract(db), timeout=0.5)
+        except asyncio.TimeoutError:
+            # Pool is likely exhausted, return based on what we know
+            pass
         except RuntimeError:
-            db_ok = False
+            # Database not initialized
+            pass
+        except Exception:
+            # Any other error, just use the cached flag
+            pass
 
-        if db_ok and not _contract_ok:
-            _contract_ok = await _check_contract(db)
-
-        ready = db_ok and _contract_ok
+        ready = _contract_ok
         return JSONResponse(
             status_code=200 if ready else 503,
             content={
                 "status": "ready" if ready else "not_ready",
-                "database": "ok" if db_ok else "error",
                 "postimap_contract": "ok" if _contract_ok else "not confirmed",
             },
         )
