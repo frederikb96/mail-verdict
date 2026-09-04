@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 from collections.abc import AsyncIterator, Iterator
 
 import pytest
@@ -23,6 +24,13 @@ from testcontainers.core.container import DockerContainer
 from mail_verdict.config.loader import DatabaseConfig, reset_config
 from mail_verdict.database.connection import DatabaseConnection
 from tests.setup.migrations import run_migrations
+
+
+def _get_random_port() -> int:
+    """Get a random available port by binding to port 0 and reading back the assigned port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 @pytest.fixture(scope="module")
@@ -57,6 +65,7 @@ def app_client(
     asyncio.run(run_migrations(postgres_url))
 
     os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
+    os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
     reset_config()
 
     from mail_verdict.server import create_app

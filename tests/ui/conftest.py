@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import os
+import socket
 import threading
 import time
 from collections.abc import Iterator
@@ -37,6 +38,13 @@ _REPO_ROOT = Path(__file__).parent.parent.parent
 
 _APP_READY_TIMEOUT_S = 30.0
 _APP_SHUTDOWN_TIMEOUT_S = 10.0
+
+
+def _get_random_port() -> int:
+    """Get a random available port by binding to port 0 and reading back the assigned port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 def _assert_ui_build_is_fresh() -> None:
@@ -109,6 +117,7 @@ def app_server(
         pool.submit(asyncio.run, run_migrations(postgres_url)).result()
 
     os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
+    os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
     reset_config()
 
     from mail_verdict.server import create_app

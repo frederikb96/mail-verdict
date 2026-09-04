@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import os
 import signal
+import socket
 import sys
 import threading
 import time
@@ -82,6 +83,13 @@ from tests.setup.runtime import bootstrap_container_runtime  # noqa: E402
 DEFAULT_RECIPIENT = "alice@test.local"
 APP_READY_TIMEOUT_S = 30.0
 ACCOUNT_ACTIVE_TIMEOUT_S = 60.0
+
+
+def _get_random_port() -> int:
+    """Get a random available port by binding to port 0 and reading back the assigned port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 class _ThreadedUvicornServer(uvicorn.Server):
@@ -221,6 +229,7 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         asyncio.run(run_migrations(postgres_url))
 
         os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
+        os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
         from mail_verdict.config.loader import reset_config
 
         reset_config()
