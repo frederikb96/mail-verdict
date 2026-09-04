@@ -33,6 +33,12 @@ export interface MessageSummary {
   /** Only present when the list was fetched with threaded=true. */
   thread_count?: number;
   unread_in_thread?: number;
+  /**
+   * When this row entered the local mirror -- what a selection snapshot
+   * compares against. Present on every list row; absent on a
+   * MessageDetail, which is never itself a selection target.
+   */
+  mirrored_at?: string;
 }
 
 export interface MessageListResponse {
@@ -337,9 +343,12 @@ export interface BulkActionScope {
   folder_id: string;
   filter?: "unread" | "all";
   exclude_ids?: string[];
+  /** From GET .../messages/selection -- required, never defaulted. */
+  snapshot_at: string;
 }
 
-export type BulkActionTarget = { ids: string[] } | { scope: BulkActionScope };
+/** ids and scope may be given together (a predicate plus rows ticked on top of it); at least one is required. */
+export type BulkActionTarget = { ids?: string[]; scope?: BulkActionScope };
 
 export type BulkActionRequest = BulkActionTarget & {
   action: BulkActionType;
@@ -351,6 +360,12 @@ export interface BulkActionResponse {
   action: string;
   affected_count: number;
   errors: string[];
+}
+
+/** GET .../messages/selection -- an instant and a count from one statement. */
+export interface SelectionSnapshotResponse {
+  snapshot_at: string;
+  count: number;
 }
 
 // --- Unified view types ---

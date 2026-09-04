@@ -23,8 +23,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `scope.exclude_ids` is rejected rather than picking a winner silently
 - Message list rows carry `mirrored_at` (when the row entered the local mirror), the field a
   selection snapshot compares against
+- A mail row's hover controls now float over the row instead of reserving space in its layout --
+  the sender, subject and preview keep the row's full width whether or not the pointer is
+  anywhere near it. Keyboard focus on a row reveals the same controls
+- Selecting mail is now a predicate (a "select all matching" scope, minted server-side) plus
+  explicit ids layered on top of it, rather than only an enumerated id set -- checking a folder's
+  checkbox no longer requires loading every message in it first, and a selection stays exact
+  across a scroll that unmounts and remounts rows. Shift-click extends a range from the last
+  plain or ctrl-click, ctrl/cmd-click toggles a single row, and a plain click on a row's text
+  abandons the selection and opens that message
+- With more than one message selected, the reading pane is replaced by a bulk panel offering
+  read/unread, archive, junk, trash and move-to-folder; a destructive action against a "select
+  all" scope confirms with the count first, since it cannot be undone the way an explicit
+  selection's toast can
+- A row's Junk control now moves the message to the Junk folder unconditionally; correcting the
+  model's spam verdict is its own control, since the two are different actions that happened to
+  share one icon before
 
 ### Fixed
+
+- A bulk action spanning accounts in the unified view now acts on every account the selection
+  touches, not silently on whichever one the interface happened to have selected
+- An SSE-driven mail list refresh patches the affected row(s) directly instead of invalidating
+  and refetching every already-loaded page -- a folder scrolled deep no longer turns one arriving
+  or changed message into hundreds of requests
 
 - A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
   already carried the requested flag -- only rows that actually changed count

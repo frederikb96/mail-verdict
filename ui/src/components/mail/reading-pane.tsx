@@ -10,6 +10,10 @@ import {
   Archive,
   Ban,
   ThumbsUp,
+  ThumbsDown,
+  MailOpen,
+  Mail as MailIcon,
+  FileDown,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -20,16 +24,22 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ReplyBox } from "@/components/mail/reply-box";
 import { DraftEditor } from "@/components/mail/draft-editor";
 import { ThreadMessage } from "@/components/mail/thread-message";
+import { BulkPanel } from "@/components/mail/bulk-panel";
+import { api } from "@/lib/api";
 import { useMailAction, useThread } from "@/hooks/use-mails";
+import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
+import { useSelection } from "@/hooks/use-selection";
 import { selectedMailIdAtom } from "@/lib/atoms";
 
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
   const setSelectedMailId = useSetAtom(selectedMailIdAtom);
+  const { count: selectionCount } = useSelection();
   const { data: thread, isLoading } = useThread(mailId);
   const mailAction = useMailAction();
+  const verdictFeedback = useVerdictFeedback();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
   const [confirmExpunge, setConfirmExpunge] = useState(false);
@@ -45,8 +55,8 @@ export function ReadingPane() {
   // means the reversible move-to-trash button already above it.
   const isInTrash =
     folders?.find((f) => f.id === primary?.folder_id)?.special_use === "trash";
-  // Junk offers "not spam" instead of "spam" -- classifying an already-junked
-  // message as spam again is a no-op the API doesn't need to see.
+  // Junk offers "remove from junk" instead of "move to junk" -- classifying
+  // an already-junked message as spam again is a no-op the API doesn't need.
   const isInJunk =
     folders?.find((f) => f.id === primary?.folder_id)?.special_use === "junk";
 
@@ -85,6 +95,13 @@ export function ReadingPane() {
     });
   };
 
+  // More than one message selected replaces the reading pane with the
+  // bulk panel entirely; a single-or-no selection leaves it exactly as
+  // below, whatever message (if any) happens to be open.
+  if (selectionCount > 1) {
+    return <BulkPanel />;
+  }
+
   if (!mailId) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
@@ -121,18 +138,62 @@ export function ReadingPane() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Subject and top-level actions apply to the message the user opened */}
+      {/* Subject and the consolidated action row for the opened message. */}
       <div className="flex items-start justify-between gap-4 border-b p-4">
         <h2 className="text-lg font-semibold leading-tight">
           {primary.subject ?? "(no subject)"}
         </h2>
-        {/* The consolidated action row for the opened message. */}
         <div className="flex shrink-0 items-center gap-1">
           {messages.length > 1 && (
             <Badge variant="secondary" className="mr-1">
               {messages.length} messages
             </Badge>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() =>
+              mailAction.mutate({
+                mailId: primary.id,
+                accountId: primary.account_id,
+                action: { action: primary.is_flagged ? "unflag" : "flag" },
+              })
+            }
+            title={primary.is_flagged ? "Unstar" : "Star"}
+            aria-label={primary.is_flagged ? "Unstar" : "Star"}
+          >
+            <Star
+              className={
+                primary.is_flagged ? "h-4 w-4 fill-yellow-400 text-yellow-400" : "h-4 w-4"
+              }
+            />
+          </Button>
+          <a
+            href={api.mails.rawUrl(primary.id)}
+            download={`${primary.subject ?? "message"}.eml`}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Download as .eml"
+            aria-label="Download as .eml"
+          >
+            <FileDown className="h-4 w-4" />
+          </a>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() =>
+              mailAction.mutate({
+                mailId: primary.id,
+                accountId: primary.account_id,
+                action: { action: primary.is_seen ? "mark_unread" : "mark_read" },
+              })
+            }
+            title={primary.is_seen ? "Mark as unread" : "Mark as read"}
+            aria-label={primary.is_seen ? "Mark as unread" : "Mark as read"}
+          >
+            {primary.is_seen ? <MailIcon className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -149,6 +210,41 @@ export function ReadingPane() {
           >
             <Archive className="h-4 w-4" />
           </Button>
+          {/* The verdict thumb corrects the model's classification; the
+              Junk control below it moves the message on the server. Two
+              different actions, kept visually apart in the row. */}
+          {primary.verdict?.is_spam && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                verdictFeedback.mutate({
+                  mailId: primary.id, accountId: primary.account_id, isSpam: false,
+                })
+              }
+              title="Mark verdict as not spam"
+              aria-label="Mark verdict as not spam"
+            >
+              <ThumbsUp className="h-4 w-4" />
+            </Button>
+          )}
+          {primary.verdict && !primary.verdict.is_spam && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() =>
+                verdictFeedback.mutate({
+                  mailId: primary.id, accountId: primary.account_id, isSpam: true,
+                })
+              }
+              title="Mark verdict as spam"
+              aria-label="Mark verdict as spam"
+            >
+              <ThumbsDown className="h-4 w-4" />
+            </Button>
+          )}
           {isInJunk ? (
             <Button
               variant="ghost"
@@ -161,8 +257,8 @@ export function ReadingPane() {
                   action: { action: "not_spam" },
                 })
               }
-              title="Not spam"
-              aria-label="Not spam"
+              title="Remove from Junk"
+              aria-label="Remove from Junk"
             >
               <ThumbsUp className="h-4 w-4" />
             </Button>
@@ -178,8 +274,8 @@ export function ReadingPane() {
                   action: { action: "spam" },
                 })
               }
-              title="Spam"
-              aria-label="Spam"
+              title="Move to Junk"
+              aria-label="Move to Junk"
             >
               <Ban className="h-4 w-4" />
             </Button>

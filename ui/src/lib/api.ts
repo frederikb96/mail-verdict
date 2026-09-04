@@ -58,6 +58,7 @@ import type {
   QueueResponse,
   RespondRequest,
   SearchResponse,
+  SelectionSnapshotResponse,
   StageCreateRequest,
   StageTypeOut,
   StageUpdateRequest,
@@ -382,6 +383,16 @@ export const api = {
         method: "POST",
         body: JSON.stringify(body),
       });
+    },
+
+    /** Mints a "select all matching" snapshot: an instant and a count from
+     * one statement, so a following bulk-action's scope can carry the
+     * instant back without the two ever disagreeing. */
+    selection(
+      accountId: string,
+      params: { folder_id: string; filter?: "unread" | "all" },
+    ): Promise<SelectionSnapshotResponse> {
+      return request(`/accounts/${accountId}/messages/selection${qs(params)}`);
     },
   },
 

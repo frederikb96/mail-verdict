@@ -1,14 +1,17 @@
 /**
- * Client-held mail selection and the bulk action that consumes it.
+ * Client-held mail selection, its gestures, and the bulk action that
+ * consumes it.
  *
- * Selection lives entirely in Jotai — there is no server-side selection
- * state and no network round-trip per checkbox click. A bulk action sends
- * either the selected id list or a scope descriptor (for "select all" over
- * a folder larger than what is fetched client-side).
+ * Selection lives entirely in Jotai (`store/selection-atom.ts`) as a
+ * predicate plus included/excluded id sets -- see lib/selection.ts for the
+ * shape and the pure functions every gesture below is built from. A bulk
+ * action sends either the explicit id set or a scope descriptor (for
+ * "select all" over a folder larger than what is fetched client-side, or
+ * both together when rows have been added on top of a predicate).
  */
 
 import { useCallback } from "react";
-import { type InfiniteData, useMutation, useQueryClient } from "@tanstack/react-query";
+import { type InfiniteData, type QueryClient, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
@@ -16,12 +19,21 @@ import { ACTION_LABELS, UNDOABLE_ACTIONS, updateFolderCounts } from "@/hooks/use
 import { useToast } from "@/hooks/use-toast";
 import { selectedMailIdAtom } from "@/lib/atoms";
 import {
-  lastClickedMailIdAtom,
-  selectedMailIdsAtom,
-  selectionCountAtom,
-  selectionScopeAtom,
-} from "@/store/selection-atom";
-import type { BulkActionTarget, BulkActionType, MessageListResponse } from "@/types/api";
+  EMPTY_SELECTION,
+  extendRange,
+  isRowSelected,
+  toggleRow,
+  type SelectableRow,
+  type SelectionPredicate,
+  type SelectionState,
+} from "@/lib/selection";
+import { selectionAtom, selectionCountAtom } from "@/store/selection-atom";
+import type {
+  BulkActionScope,
+  BulkActionTarget,
+  BulkActionType,
+  MessageListResponse,
+} from "@/types/api";
 
 /** Bulk phrasing for the success toast an undoable bulk action shows. */
 const BULK_UNDO_PHRASING: Record<string, string> = {
@@ -30,161 +42,189 @@ const BULK_UNDO_PHRASING: Record<string, string> = {
   spam: "marked as spam",
 };
 
-/** Read current selection state. */
+/** Read current selection state and whether a given row is ticked. */
 export function useSelection() {
-  const selectedIds = useAtomValue(selectedMailIdsAtom);
+  const state = useAtomValue(selectionAtom);
   const count = useAtomValue(selectionCountAtom);
-  return { selectedIds, count };
+  const isSelected = useCallback((row: SelectableRow) => isRowSelected(state, row), [state]);
+  return { state, count, isSelected };
 }
 
-/** Toggle a single mail's selection. Clears any active select-all scope. */
-export function useToggleSelection() {
-  const setSelectedIds = useSetAtom(selectedMailIdsAtom);
-  const setLastClicked = useSetAtom(lastClickedMailIdAtom);
-  const setScope = useSetAtom(selectionScopeAtom);
+/** The gestures a row's checkbox, ctrl+click and shift+click drive. */
+export function useSelectionGestures() {
+  const [state, setState] = useAtom(selectionAtom);
 
-  return useCallback(
-    (mailId: string) => {
-      setScope(null);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        if (next.has(mailId)) next.delete(mailId);
-        else next.add(mailId);
-        return next;
-      });
-      setLastClicked(mailId);
-    },
-    [setSelectedIds, setLastClicked, setScope],
+  const toggle = useCallback(
+    (row: SelectableRow) => setState((s) => toggleRow(s, row)),
+    [setState],
   );
-}
 
-/** Select every mail between the last-clicked anchor and a target (shift-click). */
-export function useRangeSelection() {
-  const setSelectedIds = useSetAtom(selectedMailIdsAtom);
-  const setLastClicked = useSetAtom(lastClickedMailIdAtom);
-  const setScope = useSetAtom(selectionScopeAtom);
-
-  return useCallback(
-    (visibleIds: string[], fromId: string, toId: string) => {
-      const fromIdx = visibleIds.indexOf(fromId);
-      const toIdx = visibleIds.indexOf(toId);
-      if (fromIdx === -1 || toIdx === -1) return;
-      const [start, end] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
-      const range = visibleIds.slice(start, end + 1);
-      setScope(null);
-      setSelectedIds((prev) => {
-        const next = new Set(prev);
-        for (const id of range) next.add(id);
-        return next;
-      });
-      setLastClicked(toId);
-    },
-    [setSelectedIds, setLastClicked, setScope],
+  const shiftRange = useCallback(
+    (visibleIds: string[], rowsById: ReadonlyMap<string, SelectableRow>, targetId: string) =>
+      setState((s) => extendRange(s, visibleIds, rowsById, targetId)),
+    [setState],
   );
+
+  return { state, toggle, shiftRange };
 }
 
-/** Select every mail currently fetched into the list, or an entire folder via scope. */
+/** Mint a "select all matching" predicate over a whole folder, and clear it. */
 export function useSelectAll() {
-  const setSelectedIds = useSetAtom(selectedMailIdsAtom);
-  const setScope = useSetAtom(selectionScopeAtom);
-
-  const selectFetched = useCallback(
-    (mailIds: string[]) => {
-      setScope(null);
-      setSelectedIds(new Set(mailIds));
-    },
-    [setSelectedIds, setScope],
-  );
+  const setState = useSetAtom(selectionAtom);
 
   const selectFolderScope = useCallback(
-    (folderId: string, filter?: "unread" | "all") => {
-      setSelectedIds(new Set());
-      setScope({ folderId, filter });
+    async (accountId: string, folderId: string, filter: "all" | "unread", count: number) => {
+      const snapshot = await api.messages.selection(accountId, { folder_id: folderId, filter });
+      const predicate: SelectionPredicate = {
+        accountId, folderId, filter,
+        snapshotAt: snapshot.snapshot_at,
+        count: snapshot.count,
+      };
+      setState({ ...EMPTY_SELECTION, predicate });
+      return count;
     },
-    [setSelectedIds, setScope],
+    [setState],
   );
 
-  return { selectFetched, selectFolderScope };
+  return { selectFolderScope };
 }
 
-/** Clear the selection and any active select-all scope. */
+/** Clear the selection entirely: predicate, explicit ids, and the anchor. */
 export function useClearSelection() {
-  const setSelectedIds = useSetAtom(selectedMailIdsAtom);
-  const setLastClicked = useSetAtom(lastClickedMailIdAtom);
-  const setScope = useSetAtom(selectionScopeAtom);
-
-  return useCallback(() => {
-    setSelectedIds(new Set());
-    setLastClicked(null);
-    setScope(null);
-  }, [setSelectedIds, setLastClicked, setScope]);
+  const setState = useSetAtom(selectionAtom);
+  return useCallback(() => setState(EMPTY_SELECTION), [setState]);
 }
 
-/** Execute a bulk action on the current selection (ids or scope). */
+/** Find which account a set of mail ids belongs to, from whatever list
+ * caches currently hold them -- needed because a unified-view selection
+ * can span accounts, and a bulk-action request is scoped to one. */
+function groupIdsByAccount(qc: QueryClient, ids: readonly string[]): Map<string, string[]> {
+  const byId = new Map<string, string>();
+  for (const [, data] of qc.getQueriesData<InfiniteData<{ messages: { id: string; account_id: string }[] }>>(
+    { queryKey: ["mails"] },
+  )) {
+    for (const page of data?.pages ?? []) {
+      for (const m of page.messages) byId.set(m.id, m.account_id);
+    }
+  }
+  for (const [, data] of qc.getQueriesData<InfiniteData<{ messages: { id: string; account_id: string }[] }>>(
+    { queryKey: ["unified", "mails"] },
+  )) {
+    for (const page of data?.pages ?? []) {
+      for (const m of page.messages) byId.set(m.id, m.account_id);
+    }
+  }
+  const grouped = new Map<string, string[]>();
+  for (const id of ids) {
+    const accountId = byId.get(id);
+    if (!accountId) continue;
+    const bucket = grouped.get(accountId) ?? [];
+    bucket.push(id);
+    grouped.set(accountId, bucket);
+  }
+  return grouped;
+}
+
+/** Build the request bodies a bulk action sends -- one per affected
+ * account, since the API is scoped to a single account per request. A
+ * predicate selection is always single-account by construction (minted
+ * over one account's folder); an explicit-id selection may span several
+ * in the unified view, so it is grouped by each id's real account rather
+ * than sent under whichever account the UI happens to have selected. */
+function buildBulkRequests(
+  qc: QueryClient,
+  state: SelectionState,
+): Array<{ accountId: string; target: BulkActionTarget }> {
+  if (state.predicate) {
+    const scope: BulkActionScope = {
+      folder_id: state.predicate.folderId,
+      filter: state.predicate.filter,
+      snapshot_at: state.predicate.snapshotAt,
+      exclude_ids: Array.from(state.excluded),
+    };
+    const target: BulkActionTarget = { scope };
+    if (state.included.size > 0) target.ids = Array.from(state.included);
+    return [{ accountId: state.predicate.accountId, target }];
+  }
+  const grouped = groupIdsByAccount(qc, Array.from(state.included));
+  return Array.from(grouped.entries()).map(([accountId, ids]) => ({
+    accountId, target: { ids },
+  }));
+}
+
+interface BulkActionVars {
+  action: BulkActionType;
+  /** Resolved synchronously at `.mutate()` call time, before onMutate's
+   * optimistic cache strip runs -- resolving this inside mutationFn
+   * instead would read the cache *after* the ids it needs have already
+   * been removed from it (onMutate always runs first). `targetFolderId`
+   * is per-request rather than shared, because a unified-view move can
+   * span accounts that each have their own id for "the same" folder. */
+  requests: Array<{ accountId: string; target: BulkActionTarget; targetFolderId?: string }>;
+}
+
+/** Execute a bulk action on the current selection (ids, scope, or both). */
 export function useBulkAction() {
   const qc = useQueryClient();
-  const selectedIds = useAtomValue(selectedMailIdsAtom);
-  const scope = useAtomValue(selectionScopeAtom);
+  const state = useAtomValue(selectionAtom);
   const clearSelection = useClearSelection();
   // Same reasoning as useMailAction: a bulk action that carries the open
   // message out of its folder must not leave the reading pane pointed at it.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const { push: pushToast } = useToast();
 
-  return useMutation({
-    mutationFn: ({
-      accountId,
-      action,
-      targetFolderId,
-    }: {
-      accountId: string;
-      action: BulkActionType;
-      targetFolderId?: string;
-    }) => {
-      const target: BulkActionTarget = scope
-        ? { scope: { folder_id: scope.folderId, filter: scope.filter } }
-        : { ids: Array.from(selectedIds) };
-      return api.messages
-        .bulkAction(accountId, { action, target_folder_id: targetFolderId, ...target })
-        .then((data) => {
-          // The endpoint answers 200 even when it did nothing, carrying the
-          // reason in `errors` -- throw so this reaches onError exactly like
-          // the single-row action's HTTPException does, rollback included.
-          if (!data.success) {
-            throw new Error(data.errors.join("; ") || `Could not ${action}`);
-          }
-          return data;
-        });
+  const mutation = useMutation({
+    mutationFn: async ({ action, requests }: BulkActionVars) => {
+      if (requests.length === 0) {
+        return { success: true, action, affected_count: 0, errors: [] };
+      }
+      const results = await Promise.all(
+        requests.map(({ accountId, target, targetFolderId }) =>
+          api.messages.bulkAction(accountId, { action, target_folder_id: targetFolderId, ...target }),
+        ),
+      );
+      const affected_count = results.reduce((n, r) => n + r.affected_count, 0);
+      const errors = results.flatMap((r) => r.errors);
+      const success = results.every((r) => r.success);
+      // The endpoint answers 200 even when it did nothing, carrying the
+      // reason in `errors` -- throw so this reaches onError exactly like
+      // the single-row action's HTTPException does, rollback included.
+      if (!success) {
+        throw new Error(errors.join("; ") || `Could not ${action}`);
+      }
+      return { success, action, affected_count, errors };
     },
 
-    onMutate: async ({ accountId, action }) => {
+    onMutate: async ({ action }) => {
       await qc.cancelQueries({ queryKey: ["mails"] });
 
       const prevMailQueries = qc.getQueriesData({ queryKey: ["mails"] });
-      const prevFolders = qc.getQueryData(["folders", accountId]);
-      const prevFolderOrder = qc.getQueryData(["folder-order", accountId]);
+      const prevFolders = qc.getQueriesData({ queryKey: ["folders"] });
+      const prevFolderOrder = qc.getQueriesData({ queryKey: ["folder-order"] });
 
       // A scope-based action doesn't know which ids are affected client-side;
       // only optimistically update the explicit-id case, invalidate for scope.
       const removesFromList = ["move", "trash", "expunge", "archive", "spam"].includes(action);
+      const explicitIds = state.predicate ? null : new Set(state.included);
 
-      const wasSelected = removesFromList && selectedMailId != null && (
-        scope
+      const wasSelected =
+        removesFromList &&
+        selectedMailId != null &&
+        (state.predicate
           ? qc.getQueryData<{ folder_id?: string }>(["mail", selectedMailId])?.folder_id ===
-            scope.folderId
-          : selectedIds.has(selectedMailId)
-      );
+            state.predicate.folderId
+          : explicitIds?.has(selectedMailId));
       if (wasSelected) setSelectedMailId(null);
 
       // Captured alongside folderCounts so an undoable action can move each
-      // id straight back to the folder it came from -- only meaningful for
-      // the explicit-id case: a scope can span far more messages than are
-      // loaded client-side, so there is nothing here to reconstruct an undo
-      // from.
-      const mailIdsByFolder = new Map<string, string[]>();
+      // id straight back to the folder (and account) it came from -- only
+      // meaningful for the explicit-id case: a predicate can span far more
+      // messages than are loaded client-side, so there is nothing here to
+      // reconstruct an undo from.
+      const mailIdsByFolder = new Map<string, Array<{ id: string; accountId: string }>>();
 
-      if (removesFromList && !scope) {
-        const folderCounts = new Map<string, { total: number; unread: number }>();
+      if (removesFromList && explicitIds) {
+        const folderCounts = new Map<string, { total: number; unread: number; accountId: string }>();
 
         qc.setQueriesData<InfiniteData<MessageListResponse>>(
           { queryKey: ["mails"] },
@@ -195,13 +235,14 @@ export function useBulkAction() {
               pages: old.pages.map((page) => ({
                 ...page,
                 messages: page.messages.filter((m) => {
-                  if (!selectedIds.has(m.id)) return true;
-                  const counts = folderCounts.get(m.folder_id) ?? { total: 0, unread: 0 };
+                  if (!explicitIds.has(m.id)) return true;
+                  const counts =
+                    folderCounts.get(m.folder_id) ?? { total: 0, unread: 0, accountId: m.account_id };
                   counts.total++;
                   if (!m.is_seen) counts.unread++;
                   folderCounts.set(m.folder_id, counts);
                   const ids = mailIdsByFolder.get(m.folder_id) ?? [];
-                  ids.push(m.id);
+                  ids.push({ id: m.id, accountId: m.account_id });
                   mailIdsByFolder.set(m.folder_id, ids);
                   return false;
                 }),
@@ -211,17 +252,17 @@ export function useBulkAction() {
         );
 
         for (const [folderId, counts] of folderCounts) {
-          updateFolderCounts(qc, accountId, folderId, -counts.total, -counts.unread);
+          updateFolderCounts(qc, counts.accountId, folderId, -counts.total, -counts.unread);
         }
       }
 
       return {
-        prevMailQueries, prevFolders, prevFolderOrder, accountId, wasSelected, selectedMailId,
+        prevMailQueries, prevFolders, prevFolderOrder, wasSelected, selectedMailId,
         mailIdsByFolder,
       };
     },
 
-    onSuccess: (data, { accountId, action }, ctx) => {
+    onSuccess: (data, { action }, ctx) => {
       if (!UNDOABLE_ACTIONS.includes(action) || ctx.mailIdsByFolder.size === 0) return;
       const mailIdsByFolder = ctx.mailIdsByFolder;
       const requested = [...mailIdsByFolder.values()].reduce((n, ids) => n + ids.length, 0);
@@ -239,12 +280,25 @@ export function useBulkAction() {
         {
           label: "Undo",
           onClick: async () => {
+            // Each source folder's ids grouped by their real account -- a
+            // unified-view undo can span accounts the same way the action
+            // it reverses could. The account is the one captured when the
+            // row left the cache, not re-derived from it -- by now the row
+            // is gone from the cache the derivation would read.
             await Promise.all(
-              [...mailIdsByFolder.entries()].map(([folderId, ids]) =>
-                api.messages.bulkAction(accountId, {
-                  action: "move", target_folder_id: folderId, ids,
-                }),
-              ),
+              [...mailIdsByFolder.entries()].flatMap(([folderId, entries]) => {
+                const byAccount = new Map<string, string[]>();
+                for (const { id, accountId } of entries) {
+                  const bucket = byAccount.get(accountId) ?? [];
+                  bucket.push(id);
+                  byAccount.set(accountId, bucket);
+                }
+                return [...byAccount.entries()].map(([accountId, ids]) =>
+                  api.messages.bulkAction(accountId, {
+                    action: "move", target_folder_id: folderId, ids,
+                  }),
+                );
+              }),
             );
             qc.invalidateQueries({ queryKey: ["mails"] });
             qc.invalidateQueries({ queryKey: ["mail"] });
@@ -264,11 +318,15 @@ export function useBulkAction() {
           qc.setQueryData(key, data);
         }
       }
-      if (ctx.prevFolders && ctx.accountId) {
-        qc.setQueryData(["folders", ctx.accountId], ctx.prevFolders);
+      if (ctx.prevFolders) {
+        for (const [key, data] of ctx.prevFolders as Array<[readonly unknown[], unknown]>) {
+          qc.setQueryData(key, data);
+        }
       }
-      if (ctx.prevFolderOrder && ctx.accountId) {
-        qc.setQueryData(["folder-order", ctx.accountId], ctx.prevFolderOrder);
+      if (ctx.prevFolderOrder) {
+        for (const [key, data] of ctx.prevFolderOrder as Array<[readonly unknown[], unknown]>) {
+          qc.setQueryData(key, data);
+        }
       }
       if (ctx.wasSelected && ctx.selectedMailId) {
         setSelectedMailId(ctx.selectedMailId);
@@ -282,4 +340,27 @@ export function useBulkAction() {
       invalidateAllFolderCaches(qc);
     },
   });
+
+  // Resolves `requests` here, synchronously, before onMutate's optimistic
+  // cache strip can run -- see BulkActionVars. `targetFolderId` may be a
+  // per-account resolver rather than one shared id, for a unified-view
+  // move where each account has its own id for "the same" folder.
+  const mutate = useCallback(
+    (vars: {
+      action: BulkActionType;
+      targetFolderId?: string | ((accountId: string) => string | undefined);
+    }) => {
+      const requests = buildBulkRequests(qc, state).map((r) => ({
+        ...r,
+        targetFolderId:
+          typeof vars.targetFolderId === "function"
+            ? vars.targetFolderId(r.accountId)
+            : vars.targetFolderId,
+      }));
+      mutation.mutate({ action: vars.action, requests });
+    },
+    [mutation, qc, state],
+  );
+
+  return { ...mutation, mutate };
 }

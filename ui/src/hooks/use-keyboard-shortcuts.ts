@@ -11,7 +11,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import { selectedMailIdAtom, selectedAccountIdAtom } from "@/lib/atoms";
 import { useMailAction } from "@/hooks/use-mails";
-import { useToggleSelection } from "@/hooks/use-selection";
+import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
 import type { MessageSummary } from "@/types/api";
 
@@ -45,7 +45,8 @@ export function useKeyboardShortcuts({
   const setSelectedMailId = useSetAtom(selectedMailIdAtom);
   const accountId = useAtomValue(selectedAccountIdAtom);
   const mailAction = useMailAction();
-  const toggleSelection = useToggleSelection();
+  const { toggle: toggleSelection } = useSelectionGestures();
+  const clearSelection = useClearSelection();
 
   const getFocusedMail = useCallback((): MessageSummary | null => {
     if (focusedIndex < 0 || focusedIndex >= mails.length) return null;
@@ -80,13 +81,14 @@ export function useKeyboardShortcuts({
         case "Escape": {
           e.preventDefault();
           setSelectedMailId(null);
+          clearSelection();
           break;
         }
         case "x": {
           e.preventDefault();
           const mail = getFocusedMail();
           if (mail) {
-            toggleSelection(mail.id);
+            toggleSelection(mail);
           }
           break;
         }
@@ -176,6 +178,7 @@ export function useKeyboardShortcuts({
     getFocusedMail,
     mailAction,
     toggleSelection,
+    clearSelection,
     scrollToIndex,
   ]);
 }

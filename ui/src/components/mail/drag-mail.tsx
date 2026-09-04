@@ -2,10 +2,11 @@
 
 import { useDraggable } from "@dnd-kit/core";
 import { useAtomValue } from "jotai";
-import { selectedMailIdsAtom, selectionModeAtom } from "@/store/selection-atom";
+import { isRowSelected, selectionSize, type SelectableRow } from "@/lib/selection";
+import { selectionAtom } from "@/store/selection-atom";
 
 interface DragMailProps {
-  mailId: string;
+  row: SelectableRow;
   accountId?: string;
   folderId?: string;
   children: React.ReactNode;
@@ -13,22 +14,28 @@ interface DragMailProps {
 
 /**
  * Draggable wrapper for a mail list item.
- * When dragging a selected mail, all selected mails move together.
+ *
+ * A row that is part of the current multi-selection (predicate or
+ * explicit) drags the whole selection -- the drop handler resolves it the
+ * same way a bulk-action button would, since a predicate selection can
+ * cover far more messages than are loaded to enumerate into a payload
+ * here. A row outside the selection, or a selection of one, drags just
+ * itself.
  */
-export function DragMail({ mailId, accountId, folderId, children }: DragMailProps) {
-  const selectedIds = useAtomValue(selectedMailIdsAtom);
-  const selectionMode = useAtomValue(selectionModeAtom);
-  const isInSelection = selectedIds.has(mailId);
+export function DragMail({ row, accountId, folderId, children }: DragMailProps) {
+  const selection = useAtomValue(selectionAtom);
+  const size = selectionSize(selection);
+  const isInSelection = size > 1 && isRowSelected(selection, row);
 
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `mail-${mailId}`,
+    id: `mail-${row.id}`,
     data: {
       type: "mail",
-      mailId,
+      mailId: row.id,
       accountId,
       folderId,
-      mailIds: isInSelection ? Array.from(selectedIds) : [mailId],
-      count: isInSelection ? selectedIds.size : 1,
+      isSelectionDrag: isInSelection,
+      count: isInSelection ? size : 1,
     },
   });
 
@@ -38,15 +45,15 @@ export function DragMail({ mailId, accountId, folderId, children }: DragMailProp
       {...listeners}
       {...attributes}
       data-testid="mail-row"
-      data-mail-id={mailId}
+      data-mail-id={row.id}
       className="relative"
       style={{ opacity: isDragging ? 0.5 : 1 }}
     >
       {children}
       {/* Drag count badge */}
-      {isDragging && selectionMode && isInSelection && selectedIds.size > 1 && (
+      {isDragging && isInSelection && (
         <div className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-xs font-medium text-primary-foreground">
-          {selectedIds.size}
+          {size}
         </div>
       )}
     </div>

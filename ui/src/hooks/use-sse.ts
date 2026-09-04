@@ -12,7 +12,13 @@ import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import { mailKeys } from "@/hooks/use-mails";
+import {
+  invalidateMailListsBounded,
+  mailKeys,
+  refreshMailFromServer,
+  removeMailFromAllListCaches,
+  removeMailFromCache,
+} from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
 import type { OutboxStatus, SSEEvent } from "@/types/api";
 
@@ -95,7 +101,11 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
-          queryClient.invalidateQueries({ queryKey: ["mails"] });
+          // A truly new row's data isn't in the event -- only a fetch gets
+          // it, and a shallowly-loaded list gets one immediately; a deeply
+          // scrolled one is marked stale and catches up on its own later,
+          // rather than this firing hundreds of page refetches at once.
+          invalidateMailListsBounded(queryClient);
           if (data.folder_id) {
             invalidateAllFolderCaches(queryClient);
           }
@@ -111,10 +121,21 @@ export function useSSE(accountId?: string) {
           // Message events carry the row's id as `id`, not `message_id`
           // (that name is verdict.issued's own convention).
           if (data.id) {
-            queryClient.invalidateQueries({ queryKey: ["mail", data.id] });
             queryClient.invalidateQueries({ queryKey: mailKeys.thread(data.id) });
+            if (data.changed?.includes("folder_id")) {
+              // Moved out of whatever folder cache held it; the folder it
+              // moved into (if currently viewed) catches up via the bounded
+              // refetch below rather than a fetch reconstructing the row.
+              removeMailFromCache(queryClient, data.id);
+              invalidateMailListsBounded(queryClient);
+            } else {
+              // Only the changed columns' new names are on the event, not
+              // their values -- one bounded fetch of this row patches both
+              // its detail cache and every list row for it, never a full
+              // list refetch.
+              void refreshMailFromServer(queryClient, data.id);
+            }
           }
-          queryClient.invalidateQueries({ queryKey: ["mails"] });
           invalidateAllFolderCaches(queryClient);
         } catch {
           // Ignore
@@ -123,8 +144,17 @@ export function useSSE(accountId?: string) {
 
       source.addEventListener("mail.deleted", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
-        queryClient.invalidateQueries({ queryKey: ["mails"] });
-        queryClient.invalidateQueries({ queryKey: ["unified"] });
+        try {
+          const data: SSEEvent = JSON.parse(e.data);
+          if (data.id) {
+            removeMailFromAllListCaches(queryClient, data.id);
+          } else {
+            invalidateMailListsBounded(queryClient);
+          }
+        } catch {
+          invalidateMailListsBounded(queryClient);
+        }
+        queryClient.invalidateQueries({ queryKey: ["unified", "folders"] });
         queryClient.invalidateQueries({ queryKey: ["folders"] });
       });
 
@@ -156,8 +186,11 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries({ queryKey: ["sync-status"] });
       });
 
-      // A folder finished syncing (including initial backfill) — refetch
-      // its message list and counts.
+      // A folder finished syncing (including initial backfill) — a full
+      // refetch is the right cost here (unlike mail.new/mail.updated,
+      // this fires once per sync pass, not once per message, and a
+      // resync can shift page contents arbitrarily) so this stays a
+      // plain invalidate rather than the bounded helper above.
       source.addEventListener("folder.synced", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["mails"] });
