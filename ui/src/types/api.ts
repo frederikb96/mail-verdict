@@ -483,6 +483,10 @@ export interface OutboxCreateRequest {
   /** The messages.id of a draft this row replaces -- editing or sending a
    * draft leaves no duplicate behind. Requires PostIMAP >= 1.4.0. */
   replaces_message_id?: string;
+  /** Aligned 1:1 with the uploaded attachment files: null for an
+   * ordinary attachment, or the content id a matching cid:<value>
+   * reference inside body_html resolves to for an inline image. */
+  inline_attachment_content_ids?: (string | null)[];
 }
 
 /** A message's body as safe-to-send HTML, for a reply or forward quote. */
@@ -511,6 +515,17 @@ export interface OutboxResponse {
   created_at: string;
   updated_at: string;
 }
+
+/** A send still held in its undo window -- not yet an outbox row at all.
+ * Distinguished from OutboxResponse by the presence of send_after. */
+export interface PendingSendResponse {
+  id: string;
+  account_id: string;
+  send_after: string;
+  created_at: string;
+}
+
+export type OutboxCreateResult = OutboxResponse | PendingSendResponse;
 
 // --- Notification centre ---
 

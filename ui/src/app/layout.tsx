@@ -10,6 +10,7 @@ import { MailDndProvider } from "@/components/mail/dnd-provider";
 import { ConnectionIndicator } from "@/components/layout/connection-indicator";
 import { ErrorBoundary } from "@/components/error/error-boundary";
 import { OutboxDeadBanner } from "@/components/mail/outbox-dead-banner";
+import { UndoSendBanner } from "@/components/mail/undo-send-banner";
 import { ToastContainer } from "@/components/common/toast-container";
 
 const geistSans = Geist({
@@ -60,6 +61,7 @@ export default function RootLayout({
                     </div>
                   </div>
                   <OutboxDeadBanner />
+                  <UndoSendBanner />
                   <ErrorBoundary section="content">
                     <div className="min-h-0 flex-1 overflow-y-auto">
                       {children}

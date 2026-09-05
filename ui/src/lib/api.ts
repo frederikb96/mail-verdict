@@ -48,7 +48,9 @@ import type {
   NotificationCountResponse,
   NotificationResponse,
   OutboxCreateRequest,
+  OutboxCreateResult,
   OutboxResponse,
+  PendingSendResponse,
   PipelineDocument,
   PipelineHealthEntry,
   PipelineRevisionSummary,
@@ -327,8 +329,12 @@ export const api = {
      * Sends or saves a draft. Multipart when attachments are present so the
      * server can stream files straight into outbox_attachments without an
      * orphaned-upload lifecycle; JSON otherwise.
+     *
+     * A send with a nonzero undo window comes back as a PendingSendResponse
+     * instead of an OutboxResponse -- not yet in outbox at all. Callers
+     * distinguish the two by the presence of send_after.
      */
-    create(data: OutboxCreateRequest, attachments?: File[]): Promise<OutboxResponse> {
+    create(data: OutboxCreateRequest, attachments?: File[]): Promise<OutboxCreateResult> {
       if (!attachments || attachments.length === 0) {
         return request("/outbox", {
           method: "POST",
@@ -348,6 +354,18 @@ export const api = {
       status?: string;
     }): Promise<OutboxResponse[]> {
       return request(`/outbox${qs(params)}`);
+    },
+
+    /** Sends still inside their undo window, for the undo banner. */
+    listPending(params: { account_id?: string }): Promise<PendingSendResponse[]> {
+      return request(`/outbox/pending${qs(params)}`);
+    },
+
+    /** Cancels a send still inside its undo window. Throws (via request's
+     * own non-2xx handling) once it's too late -- already sent, or
+     * already cancelled. */
+    cancelPending(id: string): Promise<void> {
+      return request(`/outbox/pending/${id}/cancel`, { method: "POST" });
     },
   },
 

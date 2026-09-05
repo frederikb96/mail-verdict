@@ -774,6 +774,14 @@ class OutboxCreateRequest(BaseModel):
         "or sending a draft leaves no duplicate behind. Requires PostIMAP "
         "service_version >= 1.4.0.",
     )
+    inline_attachment_content_ids: list[str | None] | None = Field(
+        default=None,
+        description="Aligned 1:1 with the uploaded 'attachments' files: null "
+        "for an ordinary attachment, or the content id a matching "
+        "cid:<value> reference inside body_html resolves to for an inline "
+        "image. Omitted or shorter than 'attachments' treats the missing "
+        "entries as null.",
+    )
 
 
 class OutboxAttachmentSummary(BaseModel):
@@ -808,6 +816,22 @@ class OutboxResponse(BaseModel):
     attachments: list[OutboxAttachmentSummary] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PendingSendResponse(BaseModel):
+    """A send held in MailVerdict's own staging table for its undo window.
+
+    Not an outbox row -- inserting into outbox is irreversible, so a send
+    with a nonzero undo window is held here first and moved into outbox
+    only once send_after passes uncancelled. See outbox/pending.py.
+    """
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    send_after: datetime
+    created_at: datetime
 
     model_config = {"from_attributes": True}
 

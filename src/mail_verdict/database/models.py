@@ -11,7 +11,8 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
-  calendar_links_revision (created by Alembic, fully managed by MailVerdict)
+  calendar_links_revision, pending_sends, pending_send_attachments
+  (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
 consumer database role has no REFERENCES grant on those tables, and
@@ -35,6 +36,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     FetchedValue,
+    ForeignKey,
     Index,
     Integer,
     LargeBinary,
@@ -416,6 +418,14 @@ class OutboxAttachment(Base):
     filename: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # Insert-only, like every other column here. Set, the attachment is
+    # embedded inline (Content-Disposition: inline, a Content-ID header
+    # carrying this value) instead of offered as a download, and a
+    # matching cid:<content_id> reference in body_html resolves to it --
+    # the mechanism the compose editor's own inline images use. NULL
+    # composes an ordinary attachment, exactly as before this column had
+    # a use.
+    content_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("idx_outbox_attachments_outbox_id", "outbox_id"),)
 
@@ -1224,4 +1234,67 @@ class PipelineFolderState(Base):
     account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
     backfill_completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
+    )
+
+
+class PendingSend(Base):
+    """A send held for its undo window before it becomes a real outbox row.
+
+    Not the outbox -- inserting there is PostIMAP's own signal to send,
+    with no consumer-writable hold, so a send with a nonzero undo window
+    is composed and staged here instead. The periodic worker in
+    outbox/pending.py moves a row into outbox once send_after passes with
+    cancelled_at still NULL, in the same transaction that deletes it from
+    here, so a row is never both live in outbox and still cancellable.
+    Column set mirrors postimap.actions.insert_outbox()'s own arguments,
+    since that is what a due row is eventually passed to.
+    """
+
+    __tablename__ = "pending_sends"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    from_addr: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_addrs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    cc_addrs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    bcc_addrs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    in_reply_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    msg_references: Mapped[list[str] | None] = mapped_column(
+        "references", ARRAY(Text), nullable=True,
+    )
+    replaces_message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    send_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Set the moment Undo is pressed; NULL is the only state the worker's
+    # claim query picks up. A row is deleted once it turns into a real
+    # outbox insert, so this never needs a third "sent" state of its own.
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index("idx_pending_sends_due", "send_after", postgresql_where=cancelled_at.is_(None)),
+    )
+
+
+class PendingSendAttachment(Base):
+    """An attachment for a PendingSend, moved into outbox_attachments
+    (content_id included) once the send itself moves into outbox."""
+
+    __tablename__ = "pending_send_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    pending_send_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("pending_sends.id", ondelete="CASCADE"), nullable=False,
+    )
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_pending_send_attachments_pending_send_id", "pending_send_id"),
     )

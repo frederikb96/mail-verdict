@@ -23,6 +23,7 @@ from mail_verdict.database.models import (
     Folder,
     Message,
     Outbox,
+    OutboxAttachment,
     Verdict,
     VerdictSource,
 )
@@ -623,3 +624,59 @@ class TestInsertOutboxReplacesMessageId:
             row = result.scalar_one()
 
         assert row.replaces_message_id is None
+
+
+class TestInsertOutboxAttachmentContentId:
+    """insert_outbox's fourth, optional attachment-tuple element -- the
+    inline-image content id a matching cid:<value> reference in body_html
+    resolves to."""
+
+    @pytest.mark.asyncio
+    async def test_a_three_tuple_attachment_still_works_with_no_content_id(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Every caller of insert_outbox predating this column still
+        passes a plain (filename, content_type, data) tuple -- it must
+        keep working unchanged."""
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            outbox = await insert_outbox(
+                session, account_id=account_id, kind="draft",
+                to_addrs=["them@example.com"], subject="s", body_text="b",
+                attachments=[("a.txt", "text/plain", b"hello")],
+            )
+            await session.commit()
+            outbox_id = outbox.id
+
+        async with migrated_db.session() as session:
+            result = await session.execute(
+                select(OutboxAttachment).where(OutboxAttachment.outbox_id == outbox_id)
+            )
+            row = result.scalar_one()
+
+        assert row.filename == "a.txt"
+        assert row.content_id is None
+
+    @pytest.mark.asyncio
+    async def test_a_four_tuple_attachment_carries_its_content_id(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _message_id = await _seed_account_folder_message(session)
+            outbox = await insert_outbox(
+                session, account_id=account_id, kind="send",
+                to_addrs=["them@example.com"], subject="s",
+                body_text="b", body_html='<img src="cid:img1">',
+                attachments=[("pic.png", "image/png", b"\x89PNG", "img1")],
+            )
+            await session.commit()
+            outbox_id = outbox.id
+
+        async with migrated_db.session() as session:
+            result = await session.execute(
+                select(OutboxAttachment).where(OutboxAttachment.outbox_id == outbox_id)
+            )
+            row = result.scalar_one()
+
+        assert row.content_id == "img1"
+        assert row.filename == "pic.png"

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Save, Loader2, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow } from "lucide-react";
+import { Save, Loader2, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +38,7 @@ const CATEGORIES = [
   { key: "semantic", label: "Semantic search", icon: Sparkles },
   { key: "retry", label: "Retry", icon: Repeat },
   { key: "pipeline", label: "Pipeline", icon: Workflow },
+  { key: "outbox", label: "Outbox", icon: Undo2 },
 ] as const;
 
 // ai's read-only credential status: computed on every GET from whether a

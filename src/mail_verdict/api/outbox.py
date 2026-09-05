@@ -19,7 +19,15 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   alternative from HTML on this producer's behalf. The MCP
   send_mail/draft_mail tools only ever accept body_text, so neither sees
   this path.
+
+  A send (never a draft) with settings.outbox.undo_send_seconds above
+  zero is staged in pending_sends instead of inserted immediately -- the
+  response is a PendingSendResponse rather than an OutboxResponse, and the
+  caller distinguishes the two by the presence of send_after. See
+  outbox/pending.py.
 GET /api/outbox — list outbox rows, for the outbox/status view
+GET /api/outbox/pending — list not-yet-sent, not-yet-cancelled staged sends
+POST /api/outbox/pending/{id}/cancel — cancel one before its window passes
 """
 
 from __future__ import annotations
@@ -38,20 +46,27 @@ from mail_verdict.api.schemas import (
     OutboxAttachmentSummary,
     OutboxCreateRequest,
     OutboxResponse,
+    PendingSendResponse,
 )
 from mail_verdict.config import get_config
 from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
+from mail_verdict.outbox.pending import cancel_pending_send, list_pending_sends, stage_send
 from mail_verdict.postimap.actions import insert_outbox
-from mail_verdict.postimap.contract import read_postimap_info, supports_draft_edit
+from mail_verdict.postimap.contract import (
+    read_postimap_info,
+    supports_draft_edit,
+    supports_inline_attachments,
+)
+from mail_verdict.settings.service import get_settings_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/outbox", tags=["outbox"])
 
-_AttachmentTuple = tuple[str, str | None, bytes]
+_AttachmentTuple = tuple[str, str | None, bytes, str | None]
 
 # Read size for the chunked cap in _read_capped_attachment -- arbitrary,
 # just small enough that an oversized upload is caught within a few reads
@@ -130,9 +145,18 @@ async def _parse_request(
                 ),
             )
 
-        attachments: list[tuple[str, str | None, bytes]] = []
+        # Aligned 1:1 with `uploads` by the client; missing or short is
+        # padded with None (an ordinary, non-inline attachment) rather than
+        # rejected -- the field is new and optional, and every existing
+        # caller (the MCP tools never reach this branch at all, but a
+        # hand-built multipart request predating this field is still
+        # exactly as valid as it always was).
+        content_ids = list(payload.inline_attachment_content_ids or [])[: len(uploads)]
+        content_ids += [None] * (len(uploads) - len(content_ids))
+
+        attachments: list[_AttachmentTuple] = []
         total = 0
-        for value in uploads:
+        for value, content_id in zip(uploads, content_ids, strict=True):
             content = await _read_capped_attachment(value, limits.max_attachment_bytes)
             total += len(content)
             # Checked as the total grows rather than at the end: the point is
@@ -142,7 +166,9 @@ async def _parse_request(
                     status_code=413,
                     detail="Attachments exceed the total size limit for one message",
                 )
-            attachments.append((value.filename or "attachment", value.content_type, content))
+            attachments.append(
+                (value.filename or "attachment", value.content_type, content, content_id),
+            )
         return payload, attachments
 
     try:
@@ -159,8 +185,8 @@ async def _parse_request(
         raise RequestValidationError(exc.errors()) from exc
 
 
-@router.post("", response_model=OutboxResponse, status_code=201)
-async def create_outbox(request: Request) -> OutboxResponse:
+@router.post("", response_model=None, status_code=201)
+async def create_outbox(request: Request) -> OutboxResponse | PendingSendResponse:
     """
     Send a message or save a draft.
 
@@ -169,6 +195,11 @@ async def create_outbox(request: Request) -> OutboxResponse:
     messages on that folder's next sync. This response is the outbox row
     to render meanwhile; its status transitions are evented over SSE as
     outbox.updated.
+
+    A send with settings.outbox.undo_send_seconds above zero returns a
+    PendingSendResponse instead -- distinguishable from OutboxResponse by
+    the presence of send_after -- and is not yet in outbox at all; see
+    stage_send() below.
     """
     payload, attachments = await _parse_request(request)
 
@@ -183,25 +214,39 @@ async def create_outbox(request: Request) -> OutboxResponse:
         raise HTTPException(
             status_code=400, detail="body_text is required whenever body_html is set",
         )
-    # A quoted reply or forward may still carry the display-only
-    # data-x-src/data-x-style placeholder the quote endpoint (api/mails.py)
-    # rewrites remote images to, unrestored if the quoted sender was never
-    # allowlisted -- restoring it here, on every outbox row regardless of
-    # whether it is sent immediately or only saved as a draft, is what
-    # keeps a quoted image reaching whoever this goes to, independent of
-    # this account's own allowlist. sanitize_outbound_html has no
-    # allowlist entry for either placeholder and would drop the image
-    # outright rather than pass it through unrecognised.
-    body_html = (
-        sanitize_outbound_html(restore_remote_images(payload.body_html))
-        if payload.body_html
-        else None
-    )
-
     db = get_db_connection()
     async with db.session() as session:
+        info = await read_postimap_info(session)
+        # An inline image needs a matching outbox_attachments.content_id,
+        # which does not exist as a column before PostIMAP 1.7.0 -- an
+        # older instance gets an ordinary, non-inline attachment instead
+        # of a raw "column does not exist" error, and a cid: reference in
+        # the composed HTML is dropped the same as any other cid: image
+        # with nothing attached to resolve it, rather than left dangling.
+        inline_attachments_ok = info is not None and supports_inline_attachments(info)
+        if not inline_attachments_ok:
+            attachments = [
+                (filename, ctype, data, None) for filename, ctype, data, *_ in attachments
+            ]
+
+        # A quoted reply or forward may still carry the display-only
+        # data-x-src/data-x-style placeholder the quote endpoint (api/mails.py)
+        # rewrites remote images to, unrestored if the quoted sender was never
+        # allowlisted -- restoring it here, on every outbox row regardless of
+        # whether it is sent immediately or only saved as a draft, is what
+        # keeps a quoted image reaching whoever this goes to, independent of
+        # this account's own allowlist. sanitize_outbound_html has no
+        # allowlist entry for either placeholder and would drop the image
+        # outright rather than pass it through unrecognised.
+        body_html = (
+            sanitize_outbound_html(
+                restore_remote_images(payload.body_html), allow_cid=inline_attachments_ok,
+            )
+            if payload.body_html
+            else None
+        )
+
         if payload.replaces_message_id is not None:
-            info = await read_postimap_info(session)
             if info is None or not supports_draft_edit(info):
                 raise HTTPException(
                     status_code=501,
@@ -239,6 +284,35 @@ async def create_outbox(request: Request) -> OutboxResponse:
         from_addr = await resolve_send_from_addr(
             session, payload.account_id, payload.identity_id,
         )
+
+        # Settings are only ever consulted for a send -- a draft has no
+        # undo window to hold, so this stays untouched for a caller (a
+        # bare FastAPI() mounting just this router, in tests among them)
+        # that never initialised the settings service at all.
+        undo_seconds = (
+            get_settings_service().get("outbox").get("undo_send_seconds", 0)
+            if payload.kind == "send"
+            else 0
+        )
+        if payload.kind == "send" and undo_seconds > 0:
+            pending = await stage_send(
+                session,
+                account_id=payload.account_id,
+                from_addr=from_addr,
+                to_addrs=payload.to or None,
+                cc_addrs=payload.cc,
+                bcc_addrs=payload.bcc,
+                subject=payload.subject,
+                body_text=payload.body_text,
+                body_html=body_html,
+                in_reply_to=payload.in_reply_to,
+                references=payload.references,
+                replaces_message_id=payload.replaces_message_id,
+                attachments=attachments,
+                undo_seconds=undo_seconds,
+            )
+            return PendingSendResponse.model_validate(pending)
+
         outbox = await insert_outbox(
             session,
             account_id=payload.account_id,
@@ -290,6 +364,34 @@ async def list_outbox(
             attachments_by_outbox.setdefault(att.outbox_id, []).append(att)
 
     return [_to_response(o, attachments_by_outbox.get(o.id, [])) for o in rows]
+
+
+@router.get("/pending", response_model=list[PendingSendResponse])
+async def list_outbox_pending(account_id: uuid.UUID | None = None) -> list[PendingSendResponse]:
+    """List sends still inside their undo window, soonest first -- for the
+    undo banner to rehydrate from on a fresh page load."""
+    db = get_db_connection()
+    async with db.session() as session:
+        rows = await list_pending_sends(session, account_id)
+    return [PendingSendResponse.model_validate(r) for r in rows]
+
+
+@router.post("/pending/{pending_send_id}/cancel", status_code=204)
+async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
+    """Cancel a send still inside its undo window.
+
+    404 covers both "never existed" and "already sent or already
+    cancelled" -- the client has no use for telling them apart, and by the
+    time this call reaches the database either one is simply "too late".
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        cancelled = await cancel_pending_send(session, pending_send_id)
+    if not cancelled:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No cancellable pending send {pending_send_id}; it may already be sent.",
+        )
 
 
 def _to_response(outbox: Outbox, attachments: list[OutboxAttachment]) -> OutboxResponse:

@@ -9,6 +9,7 @@ Callers (api/, rules/, spam/) never construct this SQL themselves.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any, cast
 
 from sqlalchemy import any_, delete, insert, or_, text, update
@@ -574,7 +575,10 @@ async def insert_outbox(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     replaces_message_id: uuid.UUID | None = None,
-    attachments: list[tuple[str, str | None, bytes]] | None = None,
+    attachments: Sequence[
+        tuple[str, str | None, bytes] | tuple[str, str | None, bytes, str | None]
+    ]
+    | None = None,
 ) -> Outbox:
     """
     Insert an outbox row -- a send (kind="send") or a draft (kind="draft").
@@ -606,7 +610,10 @@ async def insert_outbox(
             service_version 1.4.0 onward; gate the call site on
             postimap.contract.supports_draft_edit() first.
         attachments: (filename, content_type, data) tuples, inserted into
-            outbox_attachments before the row is picked up
+            outbox_attachments before the row is picked up. A fourth
+            element, content_id, is optional -- set, it embeds the
+            attachment inline for a matching cid:<content_id> reference in
+            body_html instead of offering it as a download.
 
     Returns:
         The inserted Outbox row (flushed, not yet committed)
@@ -628,13 +635,15 @@ async def insert_outbox(
     session.add(outbox)
     await session.flush()
 
-    for filename, content_type, data in attachments or []:
+    for attachment in attachments or []:
+        filename, content_type, data, *rest = attachment
         session.add(
             OutboxAttachment(
                 outbox_id=outbox.id,
                 filename=filename,
                 content_type=content_type,
                 data=data,
+                content_id=rest[0] if rest else None,
             )
         )
 
