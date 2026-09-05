@@ -675,13 +675,26 @@ def _rewrite_cid_references(
 
 
 @router.get("/{message_id}/thread", response_model=ThreadResponse)
-async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
+async def get_thread(
+    message_id: uuid.UUID,
+    load_images: bool = Query(default=True, description="Load remote images if allowed"),
+) -> ThreadResponse:
     """
     Get every message in this message's conversation, across folders, ascending.
 
     This is how a Sent reply appears inside the thread it belongs to --
     thread_id groups across folders, not just within the one the anchor
     message happens to be in.
+
+    load_images defaults to true here, unlike get_message's own default
+    of false: the reading pane calls this endpoint with no query string
+    at all and has always shown an allowlisted sender's images the
+    moment the thread opens, with no separate "load images" click --
+    changing the default would be a real, user-visible regression for
+    zero benefit, since is_sender_image_allowed is what actually decides
+    trust. The parameter exists so a caller that does want the pre-image
+    state (get_message's own use, or a future one) has a way to ask for
+    it, the same shape both endpoints now share.
     """
     db = get_db_connection()
     async with db.session() as session:
@@ -715,7 +728,7 @@ async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
                 images_allowed = await is_sender_image_allowed(m.account_id, m.from_addr)
                 body_html, has_blocked = (
                     (restore_remote_images(body_html), False)
-                    if images_allowed
+                    if images_allowed and load_images
                     else strip_remote_images(body_html)
                 )
             else:

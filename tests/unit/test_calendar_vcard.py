@@ -110,6 +110,36 @@ class TestPhoto:
         assert parsed.photo.kind == "embedded"
         assert parsed.photo.url == f"data:image/jpeg;base64,{payload}"
 
+    def test_a_v4_photos_declared_type_cannot_serve_arbitrary_html(self) -> None:
+        """GET /contacts/:id/photo streams extract_photo_bytes()'s mime
+        straight into Content-Type with no Content-Disposition -- a
+        hostile record in a shared address book (or one imported from
+        somewhere) must not be able to name text/html or image/svg+xml
+        and have this application serve it as same-origin markup."""
+        payload = base64.b64encode(b"<script>alert(1)</script>").decode()
+        card = (
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Hostile Photo\r\n"
+            f"PHOTO:data:text/html;base64,{payload}\r\nEND:VCARD\r\n"
+        )
+        decoded = vcard.extract_photo_bytes(card)
+        assert decoded is not None
+        mime, raw = decoded
+        assert mime != "text/html"
+        assert mime == "application/octet-stream"  # the payload sniffs as none of the four
+        assert raw == b"<script>alert(1)</script>"
+
+    def test_a_v4_photos_declared_jpeg_type_is_still_trusted(self) -> None:
+        """The fix narrows what is trusted; it must not stop trusting an
+        ordinary declared type this module already produces itself."""
+        payload = base64.b64encode(b"fake-jpeg-bytes").decode()
+        card = (
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Photo\r\n"
+            f"PHOTO:data:image/jpeg;base64,{payload}\r\nEND:VCARD\r\n"
+        )
+        decoded = vcard.extract_photo_bytes(card)
+        assert decoded is not None
+        assert decoded[0] == "image/jpeg"
+
     def test_remote_url_photo_is_never_treated_as_embedded(self) -> None:
         card = (
             "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Remote Photo\r\n"

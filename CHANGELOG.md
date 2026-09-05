@@ -200,6 +200,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   form-encodable content type), but the send endpoint parses its multipart body by hand, and
   multipart crosses origins with no preflight. A write whose `Sec-Fetch-Site` is `cross-site`, or
   whose `Origin` does not match this application's own host, is now refused outright.
+- A contact's embedded photo could declare an arbitrary Content-Type for the raw bytes streamed
+  back by its own endpoint, with no `Content-Disposition` -- a hostile record in a shared or
+  imported address book could have this application serve markup from its own origin. The declared
+  type is now trusted only when it is one of the four image types this application ever produces
+  itself, falling back to sniffing the actual bytes otherwise.
+- The "images blocked" banner did not count a legacy `background=` attribute among what it had
+  blocked, so a message whose only remote reference was a table background reported nothing
+  suppressed -- and that attribute was never restored for an allowlisted sender at all, contrary to
+  what the sanitizer's own comment already said it existed for. Both now match every other remote
+  reference.
+- The thread endpoint the reading pane actually uses restored an allowlisted sender's remote
+  content unconditionally, with no way to ask for the pre-image state the message-detail endpoint
+  already supports; it now accepts the same `load_images` parameter, defaulting to the behaviour
+  it already had.
 
 ## [4.0.0] - 2026-09-05
 

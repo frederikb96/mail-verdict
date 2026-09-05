@@ -44,6 +44,15 @@ _DATA_X_STYLESHEET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The legacy background= attribute's own neutralised marker -- counted
+# toward has_remote for the same reason data-x-style is: a table
+# background is a remote fetch exactly like a tracking pixel, and the
+# banner must say so.
+_DATA_X_BG_RE = re.compile(
+    r'\bdata-x-bg\s*=\s*["\'][^"\']*["\']',
+    re.IGNORECASE,
+)
+
 
 def strip_remote_images(html: str) -> tuple[str, bool]:
     """
@@ -64,6 +73,7 @@ def strip_remote_images(html: str) -> tuple[str, bool]:
         or bool(_DATA_X_SRC_RE.search(html))
         or bool(_DATA_X_STYLE_RE.search(html))
         or bool(_DATA_X_STYLESHEET_RE.search(html))
+        or bool(_DATA_X_BG_RE.search(html))
     )
     stripped = _REMOTE_IMG_RE.sub("", html)
     stripped = _DATA_X_SRC_RE.sub("", stripped)
@@ -178,6 +188,17 @@ def _restore_stylesheets(html: str) -> str:
     return _STYLE_TAG_WITH_PRESERVED_RE.sub(_restore_one_stylesheet, html)
 
 
+def _restore_one_bg(match: re.Match[str]) -> str:
+    """The legacy background= attribute, restored the same way data-x-src
+    is -- sanitizer.py's own comment on why it is kept rewritten rather
+    than stripped outright is exactly this: so an allowlisted sender can
+    get it back."""
+    url = match.group(1)
+    if _SAFE_SCHEME_RE.match(url):
+        return f'background="{url}"'
+    return ""
+
+
 def restore_remote_images(html: str) -> str:
     """
     Restore data-x-src attributes back to src for rendering with images allowed.
@@ -194,6 +215,12 @@ def restore_remote_images(html: str) -> str:
     html = re.sub(
         r'\bdata-x-src\s*=\s*["\']([^"\']*)["\']',
         _restore_if_safe,
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r'\bdata-x-bg\s*=\s*["\']([^"\']*)["\']',
+        _restore_one_bg,
         html,
         flags=re.IGNORECASE,
     )
