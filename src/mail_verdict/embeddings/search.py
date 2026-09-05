@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 
 Strictness = Literal["loose", "balanced", "strict"]
 
-# Relative-to-best-match factor per strictness position (§2.3 of the
-# retrieval design): an absolute similarity floor cannot work here --
+# Relative-to-best-match factor per strictness position: an absolute
+# similarity floor cannot work here --
 # observed top similarity for a real query moves between 0.41 and 0.59
 # depending on query length and language, so a fixed cutoff returns
 # everything for one query and nothing for another. Relative-to-the-best-
@@ -104,7 +104,7 @@ async def semantic_search(
     """
     Find the messages whose current-model vector is closest to a query
     vector, cut down by a strictness level relative to the best match in
-    this pool rather than an absolute floor (see module docstring, §2.3).
+    this pool rather than an absolute floor (see the module docstring).
 
     Args:
         db: Database connection
