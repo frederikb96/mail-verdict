@@ -135,6 +135,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   optimistic change instead of the header waiting on a slower cache that only settled a full round
   trip later. The same fix reaches the unified view, whose own list previously kept showing a
   message's old flag/read state after any action taken from a per-account view.
+- A spam verdict -- the model's own classification, or a correction submitted through the thumbs
+  up/down -- now announces itself live: the reading pane's verdict badge in a second open browser
+  updates without a reload. Previously the event this depends on was never actually emitted for
+  either source, only ever wired to be received.
 
 ## [4.0.0] - 2026-09-05
 

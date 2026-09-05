@@ -227,6 +227,14 @@ async def apply_effects(
                     "verdict recorded" if recorded else "already had a verdict for this key",
                 )
             )
+            if recorded and event_ring is not None:
+                await event_ring.add(
+                    current.account_id, "verdict.issued",
+                    {
+                        "message_id": str(current.message_id), "is_spam": effect.is_spam,
+                        "source": "ai", "account_id": str(current.account_id),
+                    },
+                )
 
         elif isinstance(effect, Notify):
             if event_ring is not None and apply:

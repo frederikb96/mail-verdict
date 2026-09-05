@@ -233,8 +233,15 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           if (data.message_id) {
+            // The single-message detail cache and the reading pane's own
+            // thread cache both carry a copy of the verdict -- the header's
+            // thumb-up/thumb-down reads from the latter, so missing it here
+            // is the same stale-header shape mark-read/unread already had.
             queryClient.invalidateQueries({
               queryKey: ["mail", data.message_id],
+            });
+            queryClient.invalidateQueries({
+              queryKey: ["thread", data.message_id],
             });
           }
         } catch {
