@@ -176,8 +176,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead of always whichever calendar happens to sort first
 - The event editor now asks before discarding typed content on Escape, an outside click, the
   close button or Cancel, the same prompt the composer already has
-- The calendar settings' event-duration field shows a human label instead of its raw JSONB key
 - The DAV account card's sync timestamp no longer reads "Synced now ago" for a recent sync
+- Creating or editing an event with an end before its start is refused with a readable error
+  instead of silently accepted. A CalDAV server has no objection to an inverted range, but every
+  range query the month view issues then excludes it -- the object existed on the server with no
+  route back to it from this application. The editor's own Save button is disabled the same way,
+  with the reason shown, from the moment the two fields disagree rather than only once
+  submitted
 
 ## [3.1.1] - 2026-09-03
 
