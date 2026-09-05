@@ -138,7 +138,7 @@ function DavAccountCard({ account }: { account: DavAccountResponse }) {
           <div className="truncate">{account.discovery_url}</div>
           <div className="text-muted-foreground">Synced</div>
           <div>
-            {account.last_polled_at ? formatRelativeDate(account.last_polled_at) + " ago" : "never"}
+            {account.last_polled_at ? formatRelativeDate(account.last_polled_at) : "never"}
           </div>
         </div>
 
