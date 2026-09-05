@@ -141,6 +141,36 @@ class TestSettingsServiceUpdate:
         assert service._repo.upsert_category.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_update_accepts_a_value_for_a_nullable_setting(self) -> None:
+        """
+        A setting whose default is None is nullable, not None-only. Inferring
+        the expected type from the default's value makes NoneType the only
+        thing it will ever accept, so the setting can never be set at all --
+        and the write fails at the API with a type error naming NoneType,
+        which reads as a caller mistake rather than a validator one.
+        """
+        service = _make_service()
+        await service.load()
+        service._repo.get_category = AsyncMock(
+            return_value={"default_calendar_id": "a-calendar-id"}
+        )
+
+        result = await service.update("calendar", {"default_calendar_id": "a-calendar-id"})
+
+        assert result["default_calendar_id"] == "a-calendar-id"
+
+    @pytest.mark.asyncio
+    async def test_update_still_accepts_clearing_a_nullable_setting(self) -> None:
+        """Clearing it back to None stays allowed."""
+        service = _make_service()
+        await service.load()
+        service._repo.get_category = AsyncMock(return_value={"default_calendar_id": None})
+
+        result = await service.update("calendar", {"default_calendar_id": None})
+
+        assert result["default_calendar_id"] is None
+
+    @pytest.mark.asyncio
     async def test_bulk_import_rejects_a_wrongly_typed_value(self) -> None:
         """
         bulk_import() must reject a value update() would reject too --

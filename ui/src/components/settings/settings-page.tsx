@@ -261,7 +261,7 @@ function ProviderKeyField({
         <Button
           size="sm"
           variant="outline"
-          aria-label={`Save ${label} API key`}
+          aria-label={`Store the ${label} key`}
           onClick={() => save(value)}
           disabled={!touched || updateSettings.isPending}
         >
@@ -271,7 +271,7 @@ function ProviderKeyField({
           <Button
             size="sm"
             variant="ghost"
-            aria-label={`Clear ${label} API key`}
+            aria-label={`Remove the ${label} key`}
             onClick={() => save("")}
             disabled={updateSettings.isPending}
           >

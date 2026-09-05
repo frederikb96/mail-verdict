@@ -211,7 +211,18 @@ async def get_contact_photo(contact_id: uuid.UUID) -> Response:
     photo = vcard.parse_contact(obj.data).photo
     if photo is None or photo.kind != "embedded":
         raise HTTPException(status_code=404, detail="Contact has no embedded photo")
-    mime, raw = vcard.decode_photo_data_url(photo.url)
+    try:
+        mime, raw = vcard.decode_photo_data_url(photo.url)
+    except ValueError as exc:
+        # A stored photo that will not decode is a property of the card, not
+        # a fault in this request -- a server can truncate a long PHOTO value
+        # on write, and the card then keeps an unusable one indefinitely. The
+        # index still advertises it, so this is requested again on every row
+        # that renders the sender; a 500 with a traceback per row is the wrong
+        # answer to a card that simply has no usable photo.
+        raise HTTPException(
+            status_code=404, detail="Contact's photo cannot be decoded"
+        ) from exc
     return Response(
         content=raw,
         media_type=mime,

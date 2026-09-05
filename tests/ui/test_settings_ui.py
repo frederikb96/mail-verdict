@@ -76,11 +76,12 @@ class TestProviderKeyFormUi:
         fresh install) names that reason rather than failing silently."""
         page.goto(f"{app_server}/settings")
 
-        # get_by_label matches by substring, and "Save Anthropic API key"
-        # contains this label whole -- exact=True is what keeps the two apart.
+        # The button's own name deliberately does not contain the input's --
+        # a name that contains another makes every locator over this form a
+        # strict-mode violation waiting for whoever writes the next test.
         key_input = page.get_by_label("Anthropic API key", exact=True)
         expect(key_input).to_be_visible(timeout=15_000)
-        save_button = page.get_by_role("button", name="Save Anthropic API key", exact=True)
+        save_button = page.get_by_role("button", name="Store the Anthropic key", exact=True)
         expect(save_button).to_be_disabled()
 
         key_input.fill("sk-test-not-a-real-key")

@@ -116,6 +116,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A calendar can be chosen as the default for new events again. The setting existed and
+  everything downstream of it worked, but no value could ever be stored: a setting whose default is
+  `null` had its expected type inferred from that `null`, so the only value it would accept was
+  `null` itself, and the save failed with a type error naming `NoneType`
+- A contact whose stored photo cannot be decoded answers 404 rather than 500. A server that
+  truncates a long photo on write leaves the card holding an unusable one indefinitely, and the
+  photo index still advertises it -- so every row rendering that sender asked again and got a
+  traceback
 - The mail list holds the reader's scroll position when a message leaves the folder from
   somewhere above them (a classification run, a rule, a drag) while they are scrolled deep in --
   previously only mail arriving at the very top was compensated, so any other row count change

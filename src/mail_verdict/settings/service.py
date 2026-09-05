@@ -108,7 +108,14 @@ class SettingsService:
         for key, value in data.items():
             if key not in defaults:
                 continue
-            expected = type(defaults[key])
+            default = defaults[key]
+            if default is None:
+                # A None default marks the setting nullable and carries no
+                # type to infer, so the only thing knowable here is that
+                # clearing it is allowed. Inferring `NoneType` instead makes
+                # None the only value the setting will ever accept.
+                continue
+            expected = type(default)
             if expected is float and isinstance(value, int) and not isinstance(value, bool):
                 coerced[key] = float(value)
                 continue
