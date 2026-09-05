@@ -441,33 +441,38 @@ def _row_haystack(m: Message, fields: frozenset[str]) -> str:
     return " ".join(parts)
 
 
-def _fallback_haystack() -> Any:
-    """Subject + from, concatenated -- the only two fields the trigram
-    fallback tier ever considers. Body is never trigram-matched here --
-    that is the 18-second-per-query cost this whole rewrite exists to
-    stop running."""
-    return func.coalesce(Message.subject, "") + " " + func.coalesce(Message.from_addr, "")
+def _fallback_token_predicate(token: str) -> Any:
+    """A token matches the fallback tier literally, or -- pg_trgm's word-
+    similarity operator, never the word_similarity() function call --
+    close enough that a typo doesn't lose the hit. Subject and from_addr
+    only: body is never trigram-matched here, that is the
+    18-second-per-query cost this whole rewrite exists to stop running.
 
-
-def _fallback_token_predicate(haystack: Any, token: str, threshold: float = 0.6) -> Any:
-    """A token matches the fallback tier literally, or -- pg_trgm's
-    word_similarity -- close enough that a typo doesn't lose the hit.
-    0.6 (vs. the primary path's no-threshold-at-all) was validated
-    against real typos, not chosen: a dropped letter and a transposition
-    both clear it comfortably.
+    The operator form (`column %> token`) is required for a trigram index
+    to serve this at all -- verified by EXPLAIN across all three
+    spellings: `column %> 'token'` and `'token' <% column` both use the
+    index, `word_similarity(token, column) >= threshold` is a sequential
+    scan every time despite computing the identical answer. Its threshold
+    is `pg_trgm.word_similarity_threshold`, a session GUC the operator
+    reads rather than an argument it takes -- see
+    search_messages_fallback, which sets it to the 0.6 validated against
+    real typos before this runs.
 
     An '@' token is left literal-only: two unrelated addresses sharing a
-    domain score *higher* on word_similarity than a genuine typo does, so
+    domain score *higher* on word similarity than a genuine typo does, so
     there is no threshold that keeps the typo and drops the collision. An
     address is a literal identifier someone is typing exactly, not prose
     worth typo-tolerance over.
     """
     escaped = _ilike_escape(token)
+    pattern = f"%{escaped}%"
     if "@" in token:
-        return haystack.ilike(f"%{escaped}%")
+        return or_(Message.subject.ilike(pattern), Message.from_addr.ilike(pattern))
     return or_(
-        haystack.ilike(f"%{escaped}%"),
-        func.word_similarity(token, haystack) >= threshold,
+        Message.subject.ilike(pattern),
+        Message.from_addr.ilike(pattern),
+        Message.subject.op("%>")(token),
+        Message.from_addr.op("%>")(token),
     )
 
 
@@ -916,28 +921,28 @@ class MessageRepository:
         """
         if not tokens:
             return []
-        haystack = _fallback_haystack()
         async with self._db.session() as session:
-            base = select(Message, haystack.label("haystack")).where(
-                Message.expunged_at.is_(None)
-            )
-            if account_id is not None:
-                base = base.where(Message.account_id == account_id)
-            if folder_ids is not None:
-                base = base.where(Message.folder_id.in_(folder_ids))
-            sub = base.subquery()
-            msg = aliased(Message, sub)
+            # pg_trgm.word_similarity_threshold is a session GUC the %>
+            # operator reads rather than an argument it takes -- SET
+            # LOCAL scopes the 0.6 validated against real typos to this
+            # transaction only. See _fallback_token_predicate for why the
+            # operator form is required at all.
+            await session.execute(text("SET LOCAL pg_trgm.word_similarity_threshold = 0.6"))
 
+            stmt = select(Message).where(Message.expunged_at.is_(None))
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
+            if folder_ids is not None:
+                stmt = stmt.where(Message.folder_id.in_(folder_ids))
             stmt = (
-                select(msg, sub.c.haystack)
-                .where(*[_fallback_token_predicate(sub.c.haystack, t) for t in tokens])
-                .order_by(desc(sub.c.received_at).nulls_last(), desc(sub.c.id))
+                stmt.where(*[_fallback_token_predicate(t) for t in tokens])
+                .order_by(desc(Message.received_at).nulls_last(), desc(Message.id))
                 .limit(limit)
             )
             result = await session.execute(stmt)
             return [
-                (m, _build_snippet(haystack_text, tokens))
-                for m, haystack_text in result.all()
+                (m, _build_snippet(f"{m.subject or ''} {m.from_addr or ''}", tokens))
+                for m in result.scalars().all()
             ]
 
 
