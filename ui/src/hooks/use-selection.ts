@@ -73,7 +73,7 @@ export function useSelectAll() {
   const setState = useSetAtom(selectionAtom);
 
   const selectFolderScope = useCallback(
-    async (accountId: string, folderId: string, filter: "all" | "unread", count: number) => {
+    async (accountId: string, folderId: string, filter: "all" | "unread") => {
       const snapshot = await api.messages.selection(accountId, { folder_id: folderId, filter });
       const predicate: SelectionPredicate = {
         accountId, folderId, filter,
@@ -81,7 +81,6 @@ export function useSelectAll() {
         count: snapshot.count,
       };
       setState({ ...EMPTY_SELECTION, predicate });
-      return count;
     },
     [setState],
   );

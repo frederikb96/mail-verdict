@@ -44,9 +44,8 @@ const CATEGORIES = [
 // merging (settings_api.py's _apply_credential_writes), so editing it here
 // would silently do nothing. The key fields themselves (anthropic_api_key,
 // openai_api_key) never appear in a GET response at all -- they are
-// write-only, and this UI has no form for setting one; that goes through
-// the API directly (see the README's provider key table) until this page
-// grows one.
+// write-only, so the generic renderer below never draws them either way;
+// ProviderKeySettings is their own dedicated form.
 const COMPUTED_SETTINGS: Record<string, string[]> = {
   ai: [
     "anthropic_api_key_configured",
@@ -55,6 +54,16 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
     "openai_api_key_hint",
   ],
 };
+
+/** A raw settings key read as a sentence rather than the key itself --
+ * "default_event_duration_minutes" reads as "Default event duration
+ * minutes". Display only, in the generic renderer that draws whatever
+ * fields a category's GET happens to return; onChange still keys by the
+ * real name. */
+function humanizeSettingKey(key: string): string {
+  const [first, ...rest] = key.split("_");
+  return [first.charAt(0).toUpperCase() + first.slice(1), ...rest].join(" ");
+}
 
 function SettingField({
   name,
@@ -68,7 +77,7 @@ function SettingField({
   if (typeof value === "boolean") {
     return (
       <div className="flex items-center justify-between">
-        <Label className="text-sm">{name}</Label>
+        <Label className="text-sm">{humanizeSettingKey(name)}</Label>
         <input
           type="checkbox"
           checked={value}
@@ -82,7 +91,7 @@ function SettingField({
   if (typeof value === "number") {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{name}</Label>
+        <Label className="text-sm">{humanizeSettingKey(name)}</Label>
         <Input
           type="number"
           value={value}
@@ -95,7 +104,7 @@ function SettingField({
   if (typeof value === "object" && value !== null) {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{name}</Label>
+        <Label className="text-sm">{humanizeSettingKey(name)}</Label>
         <Textarea
           value={JSON.stringify(value, null, 2)}
           rows={4}
@@ -119,7 +128,7 @@ function SettingField({
 
   return (
     <div className="grid gap-1.5">
-      <Label className="text-sm">{name}</Label>
+      <Label className="text-sm">{humanizeSettingKey(name)}</Label>
       <Input
         type={isPassword ? "password" : "text"}
         value={String(value ?? "")}
@@ -188,32 +197,100 @@ function CategorySettings({
   );
 }
 
-/** Read-only status line for the AI category's provider keys -- the fields
- * `CategorySettings` deliberately excludes above. */
-function ProviderKeyStatus({ settings }: { settings: Record<string, unknown> }) {
+/**
+ * One provider's key: masked input, Save, and Clear -- the form
+ * `CategorySettings`'s generic renderer cannot offer, since the field it
+ * writes (`${provider}_api_key`) never appears in a GET (write-only) and
+ * the read-only status fields it renders instead are excluded from it by
+ * `COMPUTED_SETTINGS`.
+ *
+ * The input always starts empty -- there is nothing to prefill it with --
+ * so an unmodified, untouched field is never sent on Save; only typing
+ * (or pressing Clear) marks it dirty. That is what stops an idle Save
+ * from wiping out a key nobody meant to touch.
+ */
+function ProviderKeyField({
+  providerKey,
+  label,
+  settings,
+}: {
+  providerKey: string;
+  label: string;
+  settings: Record<string, unknown>;
+}) {
+  const [value, setValue] = useState("");
+  const [touched, setTouched] = useState(false);
+  const updateSettings = useUpdateSettings();
+
+  const configured = settings[`${providerKey}_api_key_configured`] === true;
+  const hint = settings[`${providerKey}_api_key_hint`];
+  const fieldName = `${providerKey}_api_key`;
+
+  const save = (nextValue: string) => {
+    updateSettings.mutate(
+      { category: "ai", data: { [fieldName]: nextValue } },
+      { onSuccess: () => { setValue(""); setTouched(false); } },
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-baseline gap-2">
+        <span className="font-medium">{label}</span>
+        <span className="text-xs text-muted-foreground">
+          {configured ? `configured (…${hint})` : "not configured"}
+        </span>
+      </div>
+      <div className="flex gap-2">
+        <Input
+          type="password"
+          autoComplete="off"
+          aria-label={`${label} API key`}
+          placeholder={configured ? "Replace key" : "Paste key"}
+          value={value}
+          onChange={(e) => { setValue(e.target.value); setTouched(true); }}
+          className="w-56"
+        />
+        <Button
+          size="sm"
+          variant="outline"
+          aria-label={`Save ${label} API key`}
+          onClick={() => save(value)}
+          disabled={!touched || updateSettings.isPending}
+        >
+          Save
+        </Button>
+        {configured && (
+          <Button
+            size="sm"
+            variant="ghost"
+            aria-label={`Clear ${label} API key`}
+            onClick={() => save("")}
+            disabled={updateSettings.isPending}
+          >
+            Clear
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Every provider key, each its own field -- the fields `CategorySettings`
+ * deliberately excludes above. */
+function ProviderKeySettings({ settings }: { settings: Record<string, unknown> }) {
   const providers: { key: string; label: string }[] = [
     { key: "anthropic", label: "Anthropic" },
     { key: "openai", label: "OpenAI" },
   ];
   return (
-    <div className="flex flex-col gap-1 rounded-md border bg-muted/30 p-3 text-sm">
-      {providers.map(({ key, label }) => {
-        const configured = settings[`${key}_api_key_configured`] === true;
-        const hint = settings[`${key}_api_key_hint`];
-        return (
-          <div key={key} className="flex items-center justify-between gap-2">
-            <span>{label}</span>
-            <span className="text-muted-foreground">
-              {configured ? `configured (…${hint})` : "not configured"}
-            </span>
-          </div>
-        );
-      })}
-      <p className="mt-1 text-xs text-muted-foreground">
-        Set through <span className="font-mono">PUT /api/settings/ai</span> (
-        <span className="font-mono">anthropic_api_key</span> /{" "}
-        <span className="font-mono">openai_api_key</span>) or the matching environment
-        variable -- there is no form for it here yet.
+    <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3 text-sm">
+      {providers.map(({ key, label }) => (
+        <ProviderKeyField key={key} providerKey={key} label={label} settings={settings} />
+      ))}
+      <p className="text-xs text-muted-foreground">
+        Keys are encrypted at rest and never shown again once saved -- clearing one falls back to
+        the matching environment variable, if set.
       </p>
     </div>
   );
@@ -334,7 +411,7 @@ export function SettingsPage() {
               <Card>
                 <CardContent className="flex flex-col gap-4 pt-6">
                   {key === "ai" && allSettings?.ai && (
-                    <ProviderKeyStatus settings={allSettings.ai} />
+                    <ProviderKeySettings settings={allSettings.ai} />
                   )}
                   {allSettings?.[key] ? (
                     <CategorySettings category={key} settings={allSettings[key]} />

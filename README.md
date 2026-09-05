@@ -85,8 +85,8 @@ repeat it.
 Configuration comes from that file, then a sparse override file, then environment variables — and
 the application refuses to start on anything missing rather than quietly substituting a fallback.
 Anything that changes at runtime — the AI provider and model, spam behaviour, rules, and provider
-API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API,
-not in a file.
+API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API or
+the Settings page, not in a file.
 
 A handful of values stay environment variables regardless, because they either gate config loading
 itself or are the fallback path for a deployment that would rather not put a key in the database:

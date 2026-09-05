@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Search can be scoped to exactly the folders and fields you mean, and remembers the choice.
-  Opening it offers a folder picker (every folder selected by default, with select-all/deselect-
-  all) and toggles for subject/from/to/body -- both enforced by the query itself, not filtered
+- Search can be scoped to exactly the folders and fields you mean, and remembers the choice --
+  the query text included, so opening a result and pressing Back returns to the same search.
+  Opening it offers a folder picker (every folder selected by default, with a select-all; there
+  is deliberately no way to deselect down to zero, which would search unscoped rather than
+  nothing) and toggles for subject/from/to/body -- both enforced by the query itself, not filtered
   afterward, so a scoped search stays scoped across every page. Matching is fuzzy rather than a
   plain substring test (a typo still finds the message; pg_trgm's `word_similarity`, left out for
   an `@` token since two unrelated addresses sharing a domain score higher on it than a genuine
@@ -80,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A predicate-based bulk action ("select all") or a folder-wide menu action shows a heads-up that
   it may take a while on a large folder -- the write itself is one statement over however many
   rows match, resolved server-side before the request returns
+- A provider API key can now be entered, replaced and cleared from Settings -- a masked field per
+  provider with its own Save and Clear, rather than only through the API directly
 
 ### Changed
 
@@ -113,9 +117,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   replaying every page it had loaded, for the same reason
 - A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
   already carried the requested flag -- only rows that actually changed count
-
-### Fixed
-
 - A message's `<title>`, `<head>`, or similar document-structure markup no longer renders as
   visible copy at the top of the message. Stripping such a tag kept its text and hoisted it into
   the body -- correct for a stray inline tag, wrong for one that was never meant to be read
@@ -131,7 +132,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The liveness probe answers from a plain background socket on its own port, independent of the
   application's event loop. A handler that blocks that loop (heavy concurrent load, a bug) no
   longer risks the pod being restarted for merely being busy — only a genuinely dead or hung
-  process fails it now. The readiness probe (`/api/health`) is unaffected and still reflects load
+  process fails it now. The readiness probe (`/api/health`) now reflects PostIMAP contract
+  confirmation only, once made — it no longer re-checks database connectivity on every request,
+  so a pool exhausted by load can no longer take the pod out of the Service rotation over it,
+  but nor does an outage there by itself any more once the pod has become ready
 - The calendar month view no longer costs several seconds per request regardless of how much it
   returns, and no longer holds up every other request while it works. A long-running recurring
   series (a daily reminder set up years ago is all it takes) was re-walked from its own start
@@ -165,6 +169,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings category the interface expects but the server didn't return now explains that the
   interface and the server may disagree on which categories exist, rather than saying nothing
   more than "No settings available for this category"
+- Search's folder picker only offers the account currently being searched -- picking a folder
+  from another account produced a query that could never match, shown as an ordinary
+  "No results found" rather than the account/folder mismatch it actually was
+- Semantic search with no AI provider configured now says so, rather than showing the same
+  empty state a genuine no-match search gives
+- A recurring calendar series that takes too long to expand runs on its own bounded thread pool
+  rather than the one every other background job shares, so a retried request against the same
+  pathological object can no longer starve unrelated work by slowly exhausting shared workers
+- A DAV account's "Synced" time no longer reads "Synced now ago" (or "Synced Yesterday ago") for
+  a sync that just completed or completed yesterday
+- A settings field's label reads as a sentence ("Default event duration minutes") rather than
+  its raw key name
+
+### Removed
+
+- `GET /api/health/live` -- liveness moved to a plain background socket on its own port (see
+  Fixed above), which isn't part of this API at all. Anything that used to curl the old route
+  needs the chart's own `livenessPort` instead
 
 ## [3.1.1] - 2026-09-03
 

@@ -1409,7 +1409,8 @@ class TestEventLoopNotBlocked:
 
         @app.get("/live")
         async def live() -> dict[str, str]:
-            """Shaped after /api/health/live in server.py: a literal
+            """Shaped after the liveness listener in server.py (its own
+            background socket, not part of this API): a literal
             constant, no database, no await on anything at all."""
             return {"status": "alive"}
 

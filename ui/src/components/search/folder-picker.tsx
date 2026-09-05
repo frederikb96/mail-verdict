@@ -20,13 +20,21 @@ interface FolderPickerProps {
   /** null means every folder -- see search-prefs.ts. */
   selectedIds: string[] | null;
   onChange: (ids: string[] | null) => void;
+  /** Narrows the offered (and counted) folders to one account, matching
+   * whatever account the search itself is scoped to -- omitted (or the
+   * unified view) offers every account's folders. Without this, picking
+   * a folder that belongs to an account the search isn't scoped to
+   * produces a query that can never match, presented as "No results". */
+  accountId?: string;
 }
 
-export function FolderPicker({ selectedIds, onChange }: FolderPickerProps) {
-  const { options, isLoading } = useSearchFolders();
+export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerProps) {
+  const { options, isLoading } = useSearchFolders(accountId);
   const allIds = useMemo(() => options.map((o) => o.folder.id), [options]);
 
-  const effectiveSelected = selectedIds ?? allIds;
+  // A stored `[]` from before empty scopes were refused reads the same as
+  // null here rather than reproducing the bug that refusal exists to fix.
+  const effectiveSelected = selectedIds === null || selectedIds.length === 0 ? allIds : selectedIds;
   const selectedSet = useMemo(() => new Set(effectiveSelected), [effectiveSelected]);
 
   const groups = useMemo(() => {
@@ -39,22 +47,31 @@ export function FolderPicker({ selectedIds, onChange }: FolderPickerProps) {
     return Array.from(byAccount.values());
   }, [options]);
 
+  const setSelection = (nextIds: string[]) => {
+    // Mirrors the field toggles' own guard ("at least one field must stay
+    // selected"): an empty folder scope reads as "search nothing" here but
+    // is sent to the server as "no restriction" (an absent query param),
+    // so refuse to reach it rather than silently searching every folder.
+    if (nextIds.length === 0) return;
+    // Selecting back up to everything collapses to "all" (null) rather
+    // than writing out every id, so a folder created later is still
+    // included by default instead of silently excluded.
+    onChange(nextIds.length >= allIds.length ? null : nextIds);
+  };
+
   const toggleFolder = (id: string, checked: boolean) => {
     const next = new Set(effectiveSelected);
     if (checked) next.add(id);
     else next.delete(id);
-    // Selecting back up to everything collapses to "all" (null) rather
-    // than writing out every id, so a folder created later is still
-    // included by default instead of silently excluded.
-    onChange(next.size >= allIds.length ? null : Array.from(next));
+    setSelection(Array.from(next));
   };
 
+  // effectiveSelected can no longer be empty (see above), so this is
+  // "all" or "some of them" -- never "none".
   const label =
-    selectedIds === null || effectiveSelected.length === allIds.length
+    effectiveSelected.length === allIds.length
       ? "All folders"
-      : effectiveSelected.length === 0
-        ? "No folders"
-        : `${effectiveSelected.length} of ${allIds.length} folders`;
+      : `${effectiveSelected.length} of ${allIds.length} folders`;
 
   return (
     <Popover>
@@ -66,14 +83,12 @@ export function FolderPicker({ selectedIds, onChange }: FolderPickerProps) {
       <PopoverContent align="start" className="w-72 p-0">
         <div className="flex items-center justify-between border-b px-3 py-2 text-xs">
           <span className="font-medium text-muted-foreground">Search in</span>
-          <div className="flex gap-3">
-            <button type="button" className="text-primary hover:underline" onClick={() => onChange(null)}>
-              Select all
-            </button>
-            <button type="button" className="text-primary hover:underline" onClick={() => onChange([])}>
-              Deselect all
-            </button>
-          </div>
+          {/* No "Deselect all" -- its only possible outcome is the empty
+              scope setSelection() refuses. A folder can still be narrowed
+              down to one by unchecking the rest individually. */}
+          <button type="button" className="text-primary hover:underline" onClick={() => onChange(null)}>
+            Select all
+          </button>
         </div>
         <div className="max-h-72 overflow-y-auto p-1">
           {isLoading && (

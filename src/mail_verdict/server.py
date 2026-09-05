@@ -97,8 +97,8 @@ def start_liveness_server(host: str, port: int) -> tuple[ThreadingHTTPServer, Th
     Start the liveness listener: its own socket, its own thread, no asyncio.
 
     A `ThreadingHTTPServer` so one slow or stuck client can never make the
-    next probe queue behind it. Called at process startup rather than from
-    the async `lifespan` below, so liveness is already answering before
+    next probe queue behind it. Called from `lifespan` below, deliberately
+    as its very first action, so liveness is already answering before
     anything that could be slow -- the database connection among it -- has
     even been attempted.
 
@@ -582,10 +582,10 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
             logger.debug("Readiness probe contract check timed out (pool exhausted)")
         except RuntimeError as e:
             # Database not initialized
-            logger.debug(f"Readiness probe failed: database not initialized: {e}")
+            logger.debug("Readiness probe failed: database not initialized: %s", e)
         except Exception as e:
             # Any other error, just use the cached flag
-            logger.warning(f"Readiness probe contract check error: {e}", exc_info=False)
+            logger.warning("Readiness probe contract check error: %s", e, exc_info=False)
 
         ready = _contract_ok
         return JSONResponse(

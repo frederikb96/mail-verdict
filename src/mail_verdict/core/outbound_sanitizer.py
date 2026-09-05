@@ -13,8 +13,15 @@ mail actually needs -- the quote bar, a monospace code block, unwrapped
 list items -- are set by this pass itself rather than passed through. The
 one exception is the two fixed class values the compose editor's own
 quote wrapper writes (gmail_quote, gmail_attr) -- the shape Gmail keys its
-quote-collapsing UI on -- allowed by exact value rather than by name, so
-nothing a quoted message's own content contributes can produce them.
+quote-collapsing UI on -- allowed by exact value rather than by name.
+Exact-value matching stops a quoted message's own content from combining
+one of those values onto an attribute that already carries something
+else; it does not stop a sender simply writing `class="gmail_quote"`
+outright, which passes unchanged. That is harmless today only because the
+editor's node view (quoted-message-node.ts) takes the first blockquote
+and the first `.gmail_attr` in document order, and the wrapper's own
+markup is always written first -- a forged one from a quoted sender can
+only ever land after it.
 """
 
 from __future__ import annotations
