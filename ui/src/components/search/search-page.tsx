@@ -32,6 +32,7 @@ import {
   selectedFolderIdAtom,
   selectedMailIdAtom,
   isUnifiedViewAtom,
+  pendingAroundMailIdAtom,
 } from "@/lib/atoms";
 import type { SearchField, SearchStrictness } from "@/types/api";
 
@@ -59,6 +60,7 @@ export function SearchPage() {
   const setSelectedAccountId = useSetAtom(selectedAccountIdAtom);
   const setSelectedFolderId = useSetAtom(selectedFolderIdAtom);
   const setSelectedMailId = useSetAtom(selectedMailIdAtom);
+  const setPendingAroundMailId = useSetAtom(pendingAroundMailIdAtom);
 
   const [fields, setFields] = useAtom(searchFieldsAtom);
   const [folderIds, setFolderIds] = useAtom(searchFolderIdsAtom);
@@ -133,6 +135,10 @@ export function SearchPage() {
       setSelectedAccountId(mail.account_id);
       setSelectedFolderId(mail.folder_id);
       setSelectedMailId(mail.id);
+      // A hit far down a large folder is not in the window the mail list
+      // ordinarily fetches -- this centres its very first page on it
+      // instead of the newest edge. See mail-list.tsx's own reveal step.
+      setPendingAroundMailId({ id: mail.id, threadId: mail.thread_id });
       router.push("/");
     },
   });

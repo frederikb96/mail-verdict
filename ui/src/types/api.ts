@@ -45,6 +45,10 @@ export interface MessageListResponse {
   messages: MessageSummary[];
   has_more: boolean;
   next_cursor: string | null;
+  /** Set only on a page fetched with `around` or `after` -- an ordinary
+   * page always starts at the newest edge and has nothing newer. */
+  has_more_newer: boolean;
+  prev_cursor: string | null;
 }
 
 export interface MessageDetail extends MessageSummary {

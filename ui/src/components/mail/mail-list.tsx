@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { AlertCircle, Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
 
 import { MailListItem } from "@/components/mail/mail-list-item";
@@ -31,6 +31,8 @@ import {
   isUnifiedViewAtom,
   selectedUnifiedFolderAtom,
   threadedViewAtom,
+  pendingAroundMailIdAtom,
+  mailArrivedAtom,
 } from "@/lib/atoms";
 import { selectionModeAtom } from "@/store/selection-atom";
 import type { SelectableRow } from "@/lib/selection";
@@ -108,7 +110,49 @@ export function MailList() {
   // scope below and for `VList`'s own identity further down: a change to
   // any of them is a genuinely different list, not the same one showing
   // different rows.
-  const listIdentity = `${accountId}:${folderId}:${isUnifiedView}:${selectedUnifiedFolder}:${threaded}`;
+  const baseListIdentity = `${accountId}:${folderId}:${isUnifiedView}:${selectedUnifiedFolder}:${threaded}`;
+
+  // A one-shot signal from wherever a message was opened from outside the
+  // ordinary newest-first browsing flow (search, currently the only such
+  // entry point): centre this list's very first page on that message
+  // instead of the newest edge. Captured into a ref keyed on
+  // baseListIdentity, computed during render the same way the scroll
+  // correction below is -- not re-read reactively from the atom -- so it
+  // survives the atom being cleared immediately after, and a folder
+  // switch or a live update arriving later never resurrects it for a
+  // list it was never meant for.
+  const pendingAroundMail = useAtomValue(pendingAroundMailIdAtom);
+  const setPendingAroundMailId = useSetAtom(pendingAroundMailIdAtom);
+  const capturedAroundRef = useRef<{
+    baseListIdentity: string;
+    around: { id: string; threadId: string } | null;
+  }>({ baseListIdentity, around: pendingAroundMail });
+  if (capturedAroundRef.current.baseListIdentity !== baseListIdentity) {
+    capturedAroundRef.current = { baseListIdentity, around: pendingAroundMail };
+  }
+  const aroundId = capturedAroundRef.current.around?.id ?? null;
+  const aroundThreadId = capturedAroundRef.current.around?.threadId ?? null;
+
+  // Bumped when the reader deliberately jumps back to the newest edge
+  // (see the "N new" banner below) -- forces a fresh VList identity even
+  // though aroundId returns to null, which a folder switch never needs
+  // since baseListIdentity itself already changes there.
+  const [jumpNonce, setJumpNonce] = useState(0);
+  // "N new" for a window that isn't at the newest edge -- see find.md's
+  // non-tail obligations, and the effects further down that maintain it.
+  const [newerArrivalCount, setNewerArrivalCount] = useState(0);
+  const jumpToLatest = useCallback(() => {
+    capturedAroundRef.current = { baseListIdentity, around: null };
+    setJumpNonce((n) => n + 1);
+    setNewerArrivalCount(0);
+  }, [baseListIdentity]);
+
+  const listIdentity = `${baseListIdentity}:${aroundId ?? ""}:${jumpNonce}`;
+
+  useEffect(() => {
+    if (pendingAroundMail) setPendingAroundMailId(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseListIdentity]);
 
   // A selection is scoped to the list it was made in (see
   // effectiveSelectionAtom): a change to any of these four values is
@@ -146,6 +190,7 @@ export function MailList() {
     isUnifiedView ? null : accountId,
     folderId,
     threaded,
+    aroundId,
   );
 
   const { data: folders } = useFolders(isUnifiedView ? null : accountId);
@@ -159,6 +204,11 @@ export function MailList() {
     hasNextPage,
     fetchNextPage,
   } = result;
+  // Only ever meaningful for the single-account query -- useUnifiedMails
+  // has no getPreviousPageParam, so these stay permanently false/no-op
+  // there, consistent with aroundId not being offered for the unified
+  // view either.
+  const { hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage } = singleAccountResult;
 
   const allMails: (MessageSummary | UnifiedMessageSummary)[] =
     data?.pages.flatMap((p) => p.messages) ?? [];
@@ -237,6 +287,90 @@ export function MailList() {
     if (delta !== 0) handle.scrollTo(correction.oldScrollOffset + delta);
   }, [allMailIds]);
 
+  // Reveal step for a window opened around a target rather than at the
+  // newest edge: once the row that represents it has loaded, position it
+  // in the upper third rather than leaving it wherever the fetch happened
+  // to place it -- through the same scroll writer as every other
+  // positioning in this file, not a second one. In threaded mode the
+  // target is represented by its *thread's* row (a different id, per the
+  // server's own resolution), so the match is on thread_id there instead
+  // of on the id itself -- matching on id would never find it and the
+  // reveal would silently never fire. Fires once per list identity: a
+  // live update reshaping rows above the target afterward must not yank
+  // it back into view a second time.
+  const revealedListIdentityRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!aroundId) return;
+    if (revealedListIdentityRef.current === listIdentity) return;
+    const targetIndex = threaded
+      ? allMails.findIndex((m) => m.thread_id === aroundThreadId)
+      : allMailIds.indexOf(aroundId);
+    if (targetIndex < 0) return;
+
+    // VList's own viewportSize comes from a ResizeObserver, which never
+    // fires within the same synchronous effect pass that mounts it --
+    // reading it here, on first mount, is reliably 0. A bounded poll
+    // across animation frames is what waits for the real measurement
+    // without a fixed, guessable delay; capped so a viewport that
+    // somehow never measures still gets a plain top-aligned reveal
+    // rather than nothing at all.
+    let cancelled = false;
+    let framesLeft = 20;
+    const tryReveal = () => {
+      if (cancelled) return;
+      const handle = vlistRef.current;
+      if (!handle) return;
+      if (handle.viewportSize > 0 || framesLeft <= 0) {
+        handle.scrollToIndex(targetIndex, { align: "start", offset: -handle.viewportSize / 3 });
+        revealedListIdentityRef.current = listIdentity;
+        return;
+      }
+      framesLeft -= 1;
+      requestAnimationFrame(tryReveal);
+    };
+    tryReveal();
+    return () => {
+      cancelled = true;
+    };
+  }, [aroundId, aroundThreadId, threaded, listIdentity, allMails, allMailIds]);
+
+  // A live arrival must not be appended into this window (nothing here
+  // does that; the around-anchored page keeps fetching the same fixed
+  // neighbourhood around aroundId regardless of what arrives further
+  // out), so the only thing missing is telling the reader something
+  // exists beyond it -- newerArrivalCount above, maintained here.
+  const mailArrived = useAtomValue(mailArrivedAtom);
+  useEffect(() => {
+    if (isUnifiedView || !mailArrived) return;
+    if (mailArrived.accountId !== accountId || mailArrived.folderId !== folderId) return;
+    if (!hasPreviousPage) return; // already at the edge -- nothing hidden above
+    setNewerArrivalCount((n) => n + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mailArrived]);
+
+  // The catch-up step: paging all the way back to the edge can still
+  // leave one message missing, if it arrived in the gap between the page
+  // that reaches the edge landing and this flag flipping. One more fetch
+  // closes it; otherwise the count genuinely reflects nothing left to
+  // load and clears.
+  const prevHasPreviousPageRef = useRef(hasPreviousPage);
+  useEffect(() => {
+    const was = prevHasPreviousPageRef.current;
+    prevHasPreviousPageRef.current = hasPreviousPage;
+    if (!was || hasPreviousPage) return;
+    if (
+      mailArrived &&
+      mailArrived.accountId === accountId &&
+      mailArrived.folderId === folderId &&
+      !allMailIds.includes(mailArrived.messageId)
+    ) {
+      fetchPreviousPage();
+    } else {
+      setNewerArrivalCount(0);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasPreviousPage]);
+
   const scrollToIndex = useCallback(
     (index: number) => {
       vlistRef.current?.scrollToIndex(index, { align: "nearest" });
@@ -257,8 +391,16 @@ export function MailList() {
       ) {
         fetchNextPage();
       }
+      // Growing back toward the newest edge -- only ever reachable once a
+      // page has opened away from it (aroundId, or having paged this far
+      // already). The resulting prepend is handled by the same
+      // shift/anchor mechanism above; nothing extra is needed here beyond
+      // triggering the fetch.
+      if (offset < 200 && hasPreviousPage && !isFetchingPreviousPage) {
+        fetchPreviousPage();
+      }
     },
-    [hasNextPage, isFetchingNextPage, fetchNextPage],
+    [hasNextPage, isFetchingNextPage, fetchNextPage, hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage],
   );
 
   const handleAction = useCallback(
@@ -378,6 +520,15 @@ export function MailList() {
         threaded={threaded}
         loadedCount={allMailIds.length}
       />
+      {newerArrivalCount > 0 && (
+        <button
+          type="button"
+          onClick={jumpToLatest}
+          className="flex w-full items-center justify-center gap-2 border-b bg-accent/30 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent/50"
+        >
+          {newerArrivalCount} new message{newerArrivalCount > 1 ? "s" : ""} -- jump to latest
+        </button>
+      )}
       {allMails.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
           <InboxIcon className="h-12 w-12 opacity-50" />

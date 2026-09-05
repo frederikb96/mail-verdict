@@ -146,6 +146,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   half newer and half older, with a cursor in both directions -- the server capability the
   "open a search result and land on it" flow needs, since a hit far down a large folder is
   simply not in the window an ordinary newest-first page fetches.
+- Opening a search result now lands the mail list on that message in its own upper third,
+  wherever it sits in the folder -- previously it selected the message but only ever loaded the
+  newest page, so a hit from months back was simply never reached. A window opened this way that
+  isn't at the newest edge grows in either direction as you scroll, and a live arrival while it's
+  open surfaces as a "N new -- jump to latest" banner rather than silently reshaping the window.
 
 ## [4.0.0] - 2026-09-05
 

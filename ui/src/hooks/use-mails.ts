@@ -60,8 +60,8 @@ export const UNDO_TOAST_LABELS: Record<string, string> = {
 };
 
 export const mailKeys = {
-  list: (accountId?: string, folderId?: string, threaded?: boolean) =>
-    ["mails", accountId, folderId, threaded ? "threaded" : "flat"].filter(
+  list: (accountId?: string, folderId?: string, threaded?: boolean, aroundId?: string) =>
+    ["mails", accountId, folderId, threaded ? "threaded" : "flat", aroundId].filter(
       Boolean,
     ) as string[],
   detail: (id: string) => ["mail", id] as const,
@@ -105,24 +105,58 @@ export function hasFewEnoughPagesToEagerlyRefetch(query: { state: { data?: unkno
   return (data?.pages?.length ?? 0) <= EAGER_REFETCH_MAX_PAGES;
 }
 
+/**
+ * One page's fetch shape -- opaque to the caller, threaded through
+ * TanStack's own pageParam rather than read from anywhere else, so a
+ * refetch (SSE-triggered or otherwise) always re-issues the exact
+ * request that produced the page it's replacing. "initial"/"around" only
+ * ever appears as the very first page's own param; every later page is
+ * "before" (continuing older) or "after" (continuing newer, only
+ * reachable once a page ever opened away from the newest edge).
+ */
+type MailListPageParam =
+  | { kind: "initial" }
+  | { kind: "around"; id: string }
+  | { kind: "before"; cursor: string }
+  | { kind: "after"; cursor: string };
+
+/**
+ * aroundId centres the *first* fetch of a fresh query key on that message
+ * instead of the newest edge -- see mail-list.tsx, which captures it once
+ * per list identity rather than re-reading it reactively, and folds it
+ * into the query key so a centred window is a genuinely different cached
+ * list from an edge-anchored one under the same account/folder.
+ */
 export function useMailList(
   accountId: string | null,
   folderId: string | null,
   threaded: boolean,
+  aroundId?: string | null,
 ) {
   return useInfiniteQuery({
-    queryKey: mailKeys.list(accountId ?? undefined, folderId ?? undefined, threaded),
-    queryFn: ({ pageParam }) =>
-      api.mails.list({
-        account_id: accountId!,
-        folder_id: folderId ?? undefined,
-        threaded,
-        before: pageParam ?? undefined,
-        limit: 50,
-      }),
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? lastPage.next_cursor : undefined,
+    queryKey: mailKeys.list(
+      accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
+    ),
+    queryFn: ({ pageParam }: { pageParam: MailListPageParam }) => {
+      const base = { account_id: accountId!, folder_id: folderId ?? undefined, threaded };
+      switch (pageParam.kind) {
+        case "around":
+          return api.mails.list({ ...base, around: pageParam.id, limit: 50 });
+        case "before":
+          return api.mails.list({ ...base, before: pageParam.cursor, limit: 50 });
+        case "after":
+          return api.mails.list({ ...base, after: pageParam.cursor, limit: 50 });
+        case "initial":
+          return api.mails.list({ ...base, limit: 50 });
+      }
+    },
+    initialPageParam: (
+      aroundId ? { kind: "around", id: aroundId } : { kind: "initial" }
+    ) as MailListPageParam,
+    getNextPageParam: (lastPage): MailListPageParam | undefined =>
+      lastPage.has_more ? { kind: "before", cursor: lastPage.next_cursor! } : undefined,
+    getPreviousPageParam: (firstPage): MailListPageParam | undefined =>
+      firstPage.has_more_newer ? { kind: "after", cursor: firstPage.prev_cursor! } : undefined,
     enabled: !!accountId && !!folderId,
     staleTime: 30_000,
     placeholderData: keepPreviousData,

@@ -257,6 +257,8 @@ export const api = {
       folder_id?: string;
       threaded?: boolean;
       before?: string;
+      after?: string;
+      around?: string;
       limit?: number;
     }): Promise<MessageListResponse> {
       const { account_id, ...rest } = params;
