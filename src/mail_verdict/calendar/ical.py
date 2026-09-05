@@ -107,17 +107,59 @@ def _occurrence_identity(occurrence: Any) -> tuple[Any, ...]:
     return (str(occurrence.get("UID", "")), instant("DTSTART"), instant("RECURRENCE-ID"))
 
 
-def validate_rrule_frequency(rrule: str) -> None:
-    """Refuse FREQ=SECONDLY or FREQ=MINUTELY -- expand_instances()'s
-    MAX_EXPANDED_OCCURRENCES guard already stops either from freezing a
-    read, but an event this application originates has no reason to ever
-    carry one, and rejecting it at the point of creation or edit is
-    cheaper than storing an object no view will ever fully render."""
+# Combined with a FREQ coarser than the part itself, BYSECOND or
+# BYMINUTE *widens* a series rather than narrowing it (RFC 5545
+# §3.3.10) -- FREQ=DAILY;BYMINUTE=0,15,30,45 recurs every fifteen
+# minutes, exactly the density FREQ=MINUTELY already refuses, so the two
+# need the identical refusal. BYHOUR is left alone: it multiplies a
+# series by at most 24, which is ordinary ("medication reminder, twice
+# a day") rather than pathological, and expand_instances()'s own
+# MAX_EXPANDED_OCCURRENCES guard still catches that scale within a
+# bounded window.
+_DENSE_BY_PARTS = ("BYSECOND", "BYMINUTE")
+
+
+def validate_rrule_frequency(rrule: str, *, count_exempt_at_most: int | None = None) -> None:
+    """Refuse a recurrence rule dense enough to never finish expanding.
+
+    expand_instances()'s own MAX_EXPANDED_OCCURRENCES guard cannot help
+    with this: recurring-ical-events' between() materialises every
+    occurrence in one call, so the walk itself -- not its result --
+    already happened before that guard ever runs (see
+    _bounded_between()'s own docstring). Refusing the rule's own text
+    before it is ever stored or expanded is what actually bounds it, at
+    the point of creation or edit for an event this application
+    originates, at intake for one that arrives by mail (calendar/
+    intake.py), and again here for anything already stored, since a
+    stored object proves nothing about which of those paths it passed
+    through -- expand_instances() calls this on every VEVENT it is about
+    to walk, not only for a series this application ever validated
+    itself.
+
+    count_exempt_at_most lets a caller accept an otherwise-dense rule
+    whose own COUNT bounds the series to no more than that many
+    occurrences *ever*, regardless of window or distance from DTSTART --
+    the library still has to walk that many, but never more, so the cost
+    is the same whether FREQ is YEARLY or SECONDLY. Only expand_instances()
+    passes this: a rule this application originates is refused outright
+    whatever its COUNT says, since nothing it can create legitimately
+    needs FREQ=SECONDLY in the first place, but a small COUNT already
+    stored (a DAV-synced ten-second alarm, say) has no reason to be
+    refused on read merely for naming a frequency this application would
+    never have created itself.
+    """
     parsed = _parse_rrule_value(rrule)
+    if count_exempt_at_most is not None:
+        count_values = parsed.get("COUNT")
+        if count_values and int(count_values[0]) <= count_exempt_at_most:
+            return
     freq_values = parsed.get("FREQ")
     freq = str(freq_values[0]).upper() if freq_values else ""
     if freq in ("SECONDLY", "MINUTELY"):
         raise ValueError(f"FREQ={freq} recurs too frequently to be usable")
+    dense_part = next((part for part in _DENSE_BY_PARTS if parsed.get(part)), None)
+    if dense_part is not None:
+        raise ValueError(f"{dense_part} recurs too frequently to be usable")
 
 
 def recurrence_id_to_datetime(recurrence_id: str) -> datetime:
@@ -491,9 +533,24 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
         TooManyOccurrencesError: the series actually produced more than
             MAX_EXPANDED_OCCURRENCES occurrences in this window -- see
             _bounded_between().
+        ValueError: a stored RRULE is too dense to expand safely -- see
+            validate_rrule_frequency().
     """
     cal = _parse_calendar(data)
     vevents = [c for c in cal.walk() if c.name == "VEVENT"]
+    # Every store-time path validates the RRULE it writes, but a stored
+    # object proves nothing about which path it passed through -- a row
+    # from before this check existed, or one a bug in some other writer
+    # let through. recurring-ical-events' own walk is what actually hangs
+    # (_bounded_between()'s MAX_EXPANDED_OCCURRENCES only ever sees the
+    # result of a call that already finished), so this has to run before
+    # that call rather than bound it afterward.
+    for component in vevents:
+        for rrule_prop in _as_list(component.get("RRULE")):
+            validate_rrule_frequency(
+                rrule_prop.to_ical().decode("utf-8"),
+                count_exempt_at_most=MAX_EXPANDED_OCCURRENCES,
+            )
     is_recurring = any(c.get("RRULE") or c.get("RDATE") for c in vevents)
     query = recurring_ical_events.of(cal)
     occurrences = (

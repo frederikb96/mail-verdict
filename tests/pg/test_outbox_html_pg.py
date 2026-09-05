@@ -270,6 +270,47 @@ class TestMessageQuote:
         assert '<img src="https://sender.example/pic.png">' in out
         assert "data-x-src" not in out
 
+
+class TestThreadLoadImagesGate:
+    """get_message only restores an allowlisted sender's remote content
+    when load_images is also true; get_thread used to restore it
+    unconditionally, the moment the sender was allowlisted, with no way
+    for a caller to ask for the pre-image state -- the same predicate,
+    answered two different ways depending on which endpoint asked. The
+    reading pane's own default (no query string at all) keeps behaving
+    exactly as it always has."""
+
+    def test_default_behaviour_is_unchanged_for_an_allowlisted_sender(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        html = '<p>see</p><img src="https://sender.example/pic.png">'
+        account_id, message_id = client.portal.call(
+            _seed_account_with_message, migrated_db, html, "see", "sender@example.com",
+        )
+        client.portal.call(_allowlist_sender, migrated_db, account_id, "sender@example.com")
+        with patch(_MAILS_TARGET, return_value=migrated_db):
+            resp = client.get(f"/messages/{message_id}/thread")
+        assert resp.status_code == 200, resp.text
+        out = resp.json()["messages"][0]["body_html"]
+        assert 'src="https://sender.example/pic.png"' in out
+        assert "data-x-src" not in out
+
+    def test_load_images_false_still_withholds_it(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        html = '<p>see</p><img src="https://sender.example/pic.png">'
+        account_id, message_id = client.portal.call(
+            _seed_account_with_message, migrated_db, html, "see", "sender@example.com",
+        )
+        client.portal.call(_allowlist_sender, migrated_db, account_id, "sender@example.com")
+        with patch(_MAILS_TARGET, return_value=migrated_db):
+            resp = client.get(f"/messages/{message_id}/thread", params={"load_images": "false"})
+        assert resp.status_code == 200, resp.text
+        message = resp.json()["messages"][0]
+        assert "src=" not in message["body_html"]
+        assert message["images_allowed"] is True  # the sender IS allowlisted --
+        assert message["has_blocked_images"] is True  # this render just did not ask for it
+
     def test_a_cid_image_is_dropped_since_nothing_is_attached_to_the_quote(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:

@@ -60,7 +60,11 @@ mirror, which is what keeps it simple.
   server and rendered in an isolated shadow root — every escaping declaration dropped, every
   remote reference gated behind the same allowlist that governs images. A message opens dark when
   it declares its own dark-mode support and light otherwise, judged from its own colours when it
-  declares nothing; a toggle in its header always overrides either default.
+  declares nothing; a toggle in its header always overrides either default. The image block does
+  not extend to the message body itself: a newly arrived message's subject, sender and a
+  truncated body go to the configured model provider twice, once for spam classification and once
+  for the embedding that powers semantic search — a deliberate design choice, not something a
+  setting turns off.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail, and
   read, create, edit and delete calendar events and contacts.
 

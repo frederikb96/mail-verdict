@@ -235,6 +235,78 @@ class TestOversizedAndHostileMarkupIsContained:
             assert hit, "the message's fixed overlay covers the sidebar"
 
 
+class TestStyleSmugglingCannotOverlayTheApplication:
+    """A sender who writes this application's own internal
+    data-x-stylesheet attribute directly, then gets allowlisted for
+    images, must not have their CSS treated any differently from a
+    message that arrived through the ordinary <style> path -- the
+    allowlist is consent to fetch their images, never to their styling
+    escaping the reading pane."""
+
+    def test_a_smuggled_stylesheet_cannot_capture_clicks_across_the_window(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        rendering_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        sender = "style-smuggler@example.com"
+        # An HTML parser stays in attribute-value state until the closing
+        # quote regardless of what it contains, so a literal </style> here
+        # never closes the outer tag -- it becomes the value of
+        # data-x-stylesheet, which the restore path later splices back in
+        # as the tag's own raw content once this sender is allowlisted.
+        payload = (
+            '<style data-x-stylesheet="p{}</style><style>'
+            ":host{contain:none !important}"
+            ".x{position:fixed;top:0;left:0;right:0;bottom:0;"
+            "z-index:2147483647;background:red;display:block}"
+            '</style>">p{color:blue}</style>'
+            '<a class="x" href="https://attacker.example/phish">click me</a>'
+        )
+        target = _deliver_html(
+            api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
+            inbox_folder["id"], "UI smuggled stylesheet test", payload, sender=sender,
+        )
+        # A generous timeout: delivering the message above starts a
+        # background embedding call that can hold the event loop for a
+        # while, and this request has nothing to do with proving the
+        # actual finding -- see the module-level failures-under-load note
+        # in the repo's own working notes.
+        resp = api_client.post(
+            f"/api/accounts/{rendering_account['id']}/image-exceptions",
+            json={"type": "sender", "value": sender},
+            timeout=90.0,
+        )
+        assert resp.status_code == 201, resp.text
+
+        page.goto(app_server)
+        select_account(page, rendering_account)
+        mail_row(page, target["id"]).click()
+
+        body = page.locator('[data-testid="email-body"]')
+        expect(body).to_be_visible(timeout=15_000)
+
+        viewport = page.viewport_size
+        assert viewport is not None
+        hits = page.evaluate(
+            "(step) => { let n = 0; "
+            "for (let y = step / 2; y < window.innerHeight; y += step) { "
+            "for (let x = step / 2; x < window.innerWidth; x += step) { "
+            "const el = document.elementFromPoint(x, y); "
+            "if (el && el.closest('a.x')) n++; "
+            "} } return n; }",
+            40,
+        )
+        assert hits == 0, (
+            f"the sender's smuggled stylesheet captured {hits} probe points -- its own "
+            "CSS is escaping the reading pane exactly as an ordinary <style> block's "
+            "would be blocked from doing"
+        )
+
+
 class TestStructuralMarkupDoesNotLeakAsVisibleCopy:
     def test_a_head_title_does_not_render_as_body_text(
         self,

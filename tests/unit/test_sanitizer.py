@@ -120,6 +120,51 @@ class TestSafeTagPreservation:
         assert "<ul>" in result
         assert "<li>" in result
 
+    def test_an_id_and_its_fragment_link_survive(self) -> None:
+        """A long newsletter's own table of contents -- an in-page link
+        to one of its own headings -- can only work if both the id and
+        the #fragment href it targets survive. Neither can collide with
+        anything of this application's own inside an isolated shadow
+        root, so both are allowed."""
+        html = '<a href="#toc-1">Jump</a><h2 id="toc-1">Section</h2>'
+        result = sanitize_email_html(html)
+        assert 'href="#toc-1"' in result
+        assert 'id="toc-1"' in result
+
+    @pytest.mark.parametrize(
+        "tag",
+        [
+            "figure", "figcaption", "details", "summary", "small", "mark",
+            "section", "article", "header", "footer", "nav", "cite", "kbd",
+        ],
+    )
+    def test_structural_tags_matching_the_clients_own_allowlist_survive(
+        self, tag: str,
+    ) -> None:
+        """Already in the client's own DOMPurify allowlist
+        (email-renderer.tsx) -- unwrapped here only because this list had
+        never been brought up to match it, which made the client entries
+        dead rather than doing anything."""
+        result = sanitize_email_html(f"<{tag}>x</{tag}>")
+        assert f"<{tag}>" in result
+
+    def test_wbr_survives(self) -> None:
+        """A void element -- no content of its own to round-trip, unlike
+        the tags above."""
+        assert "<wbr" in sanitize_email_html("one<wbr>two")
+
+    def test_table_structure_tags_survive_in_their_own_valid_context(self) -> None:
+        """caption/col/colgroup are only valid HTML inside a <table> --
+        the ordinary HTML5 tree construction rules drop them anywhere
+        else, which is not this sanitizer's own doing."""
+        result = sanitize_email_html(
+            "<table><caption>Totals</caption><colgroup><col></colgroup>"
+            "<tbody><tr><td>1</td></tr></tbody></table>"
+        )
+        assert "<caption>Totals</caption>" in result
+        assert "<colgroup>" in result
+        assert "<col" in result
+
 
 class TestEdgeCases:
     """Tests for edge cases."""
@@ -241,8 +286,8 @@ class TestContentCannotEscapeItsBox:
     @pytest.mark.parametrize(
         "declaration",
         [
-            "position:fixed", "position:absolute", "position:sticky",
-            "z-index:99999", "transform:translate(0,-100px)",
+            "position:fixed", "position:absolute",
+            "z-index:99999",
             "top:0", "left:0", "inset:0",
         ],
     )
@@ -252,6 +297,33 @@ class TestContentCannotEscapeItsBox:
         out = sanitize_email_html(f'<div style="{declaration};color:red">x</div>')
         assert prop not in out
         assert "color:red" in out, "ordinary layout must survive"
+
+    def test_position_sticky_is_allowed_by_value(self) -> None:
+        """Clipped by the same overflow/containment as ordinary flow
+        content -- it cannot escape the way fixed/absolute can, so it is
+        the one position value the blanket property drop does not take."""
+        out = sanitize_email_html('<div style="position:sticky;top:0;color:red">x</div>')
+        assert "position:sticky" in out
+        assert "top" not in out
+        assert "color:red" in out
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            "transform:translate(0,-100px)", "translate:0 -100px",
+            "rotate:45deg", "scale:2", "perspective:100px",
+        ],
+    )
+    def test_transforms_are_allowed_now_that_host_cannot_be_argued_with(
+        self, declaration: str,
+    ) -> None:
+        """A transform cannot resolve outside `contain: layout paint`'s own
+        containing block once :host is not sender-writable -- real
+        rendering fidelity for no new capability."""
+        prop = declaration.split(":")[0]
+        out = sanitize_email_html(f'<div style="{declaration};color:red">x</div>')
+        assert f"{prop}:" in out
+        assert "color:red" in out
 
     def test_a_full_page_overlay_is_defused(self) -> None:
         """The whole shape, not just one property of it."""
@@ -307,12 +379,16 @@ class TestCssParsingCannotBeSyntaxedAround:
         assert "z-index" not in out
         assert "2147483647" not in out
 
-    def test_a_vendor_prefixed_transform_is_caught_under_its_bare_name(self) -> None:
-        """A browser honours -webkit-transform exactly like transform."""
+    def test_a_vendor_prefixed_name_is_caught_under_its_bare_form(self) -> None:
+        """_canonical_property_name folds any vendor prefix onto the name
+        it varies, whichever property carries one -- transform itself no
+        longer escapes (see TestContentCannotEscapeItsBox), so this proves
+        the folding mechanism against position instead, the synthetic
+        -moz- prefix standing in for whichever real one a browser ships."""
         out = sanitize_email_html(
-            '<div style="-webkit-transform:translate(0,-9999px);color:red">x</div>'
+            '<div style="-moz-position:fixed;color:red">x</div>'
         )
-        assert "transform" not in out
+        assert "position" not in out
         assert "color:red" in out
 
     def test_an_escaped_url_function_name_cannot_hide_a_tracking_pixel(self) -> None:
@@ -539,6 +615,52 @@ class TestDataImagesRenderAsDocumented:
         assert ' src="https' not in out
 
 
+class TestASenderCannotWriteTheInternalPreservationAttributesDirectly:
+    """data-x-src, data-x-bg, data-x-style and data-x-stylesheet are this
+    application's own protocol for a neutralised remote reference, added
+    by rewrite_remote_images strictly *after* nh3.clean runs -- never
+    something nh3 should see, let alone keep, in a sender's own input.
+    Keeping them off nh3's allowlist is what stops a sender writing one
+    directly and having its value restored later as if this module had
+    produced it itself (see image_sanitizer.py's restore path)."""
+
+    def test_a_sender_authored_data_x_style_is_stripped(self) -> None:
+        out = sanitize_email_html(
+            '<p data-x-style="position:fixed;top:0;left:0">hi</p>'
+        )
+        assert "data-x-style" not in out
+        assert "<p>hi</p>" in out
+
+    def test_a_sender_authored_data_x_stylesheet_is_stripped(self) -> None:
+        """The attribute the reported overlay actually used: written
+        directly on a <style> tag, its value never filtered by anything
+        -- nh3 must never keep a copy that did not come from
+        _rewrite_style_tag."""
+        out = sanitize_email_html(
+            '<style data-x-stylesheet="p{}</style><script>bad()</script>">'
+            "p{color:blue}</style>"
+        )
+        assert "data-x-stylesheet" not in out
+        assert "<script" not in out
+        assert "color:blue" in out
+
+    def test_a_sender_authored_data_x_src_is_stripped(self) -> None:
+        out = sanitize_email_html('<img data-x-src="https://tracker.example/p.gif">')
+        assert "data-x-src" not in out
+
+    def test_a_sender_authored_data_x_bg_is_stripped(self) -> None:
+        out = sanitize_email_html(
+            '<table><tr><td data-x-bg="https://tracker.example/p.gif">x</td></tr></table>'
+        )
+        assert "data-x-bg" not in out
+
+    def test_the_real_attribute_the_module_produces_still_survives(self) -> None:
+        """The fix removes a sender's own copy, not the module's -- a
+        real remote image still comes back rewritten exactly as before."""
+        out = sanitize_email_html('<img src="https://tracker.example/p.gif">')
+        assert 'data-x-src="https://tracker.example/p.gif"' in out
+
+
 class TestStylesheetPreservation:
     """A message's own <style> block is sanitised rather than deleted.
 
@@ -575,15 +697,17 @@ class TestStylesheetPreservation:
     def test_keyframes_survive_with_their_declarations_filtered(self) -> None:
         """The keyframe selectors (0%, 100%) are not ordinary CSS selectors,
         but the declarations inside them get exactly the same treatment --
-        transform escapes the box, so it is dropped, from a keyframe rule
-        exactly like from an ordinary one."""
+        position:fixed escapes the box, so it is dropped, from a keyframe
+        rule exactly like from an ordinary one. transform is allowed now
+        (see TestContentCannotEscapeItsBox), which is why this uses
+        position rather than transform to prove the same-filter claim."""
         out = sanitize_email_html(
-            "<style>@keyframes spin { 0% { opacity: 0; transform: rotate(0); } "
+            "<style>@keyframes spin { 0% { opacity: 0; position: fixed; } "
             "100% { opacity: 1; } }</style>"
         )
         assert "@keyframes spin" in out
         assert "opacity:0" in out
-        assert "transform" not in out
+        assert "position" not in out
 
     def test_font_face_survives_with_a_remote_font_neutralised(self) -> None:
         out = sanitize_email_html(
@@ -627,6 +751,67 @@ class TestStylesheetPreservation:
         assert "url(about:blank)" in out
         assert "tracker.example" not in out.split("data-x-stylesheet")[0]
         assert "data-x-stylesheet" in out
+
+    def test_a_host_rule_cannot_switch_off_its_own_containment(self) -> None:
+        """contain: layout paint on :host is what confines a message that
+        gets past the sanitizer at all -- a message's own rule targeting
+        :host must never be able to switch that off, no allowlist
+        involved."""
+        out = sanitize_email_html(
+            "<style>:host { contain: none !important; overflow: visible !important } "
+            "p { color: red }</style>"
+        )
+        assert "contain" not in out
+        assert "overflow" not in out
+        assert "color:red" in out
+
+    def test_host_context_and_root_are_refused_the_same_way(self) -> None:
+        out = sanitize_email_html(
+            "<style>:host-context(.dark) { contain: none } "
+            ":root { overflow: visible } "
+            "p { color: red }</style>"
+        )
+        assert "contain" not in out
+        assert "overflow" not in out
+        assert "color:red" in out
+
+    def test_a_body_selector_is_left_alone(self) -> None:
+        """The single most common pattern in real email CSS -- a body{}
+        reset -- is not touched: neither html nor body is in ALLOWED_TAGS,
+        so nh3 always unwraps a sender's own copy of either tag, and the
+        isolated shadow root this stylesheet survives into has no html or
+        body of its own for such a selector to match either way. Refusing
+        it would be a pure usability cost for a selector that cannot
+        reach anything."""
+        out = sanitize_email_html("<style>body { color: red; margin: 0 }</style>")
+        assert "color:red" in out
+        assert "margin:0" in out
+
+    def test_a_host_rule_hidden_behind_an_ordinary_selector_in_a_list_is_still_refused(
+        self,
+    ) -> None:
+        """A selector list is one prelude -- the whole thing is refused
+        even when an ordinary selector shares it with :host, rather than
+        only the branch that would otherwise be found first."""
+        out = sanitize_email_html("<style>.ok, :host { contain: none }</style>")
+        assert "contain" not in out
+
+    def test_a_hex_escaped_host_selector_is_still_caught(self) -> None:
+        """Matched at the token level, after tinycss2 has already resolved
+        the escape into a single ident value -- the same class of bypass
+        _canonical_property_name's own tests close for declaration names
+        (``p\\6fsition``), here for a selector instead. A CSS comment
+        cannot hide inside an identifier's own characters the way it can
+        between a name and its colon -- it splits the identifier into two
+        separate tokens rather than merging into one, so it is not a
+        comparable bypass for a selector name; the escape is."""
+        out = sanitize_email_html(r"<style>:\68 ost { contain: none } p { color: red }</style>")
+        assert "contain" not in out
+        assert "color:red" in out
+
+    def test_an_ordinary_class_selector_is_unaffected(self) -> None:
+        out = sanitize_email_html("<style>.hostess { color: red }</style>")
+        assert "color:red" in out
 
     def test_a_stylesheet_with_nothing_remote_carries_no_preserved_copy(self) -> None:
         out = sanitize_email_html("<style>p { color: blue; }</style>")

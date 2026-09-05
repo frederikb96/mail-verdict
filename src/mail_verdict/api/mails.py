@@ -675,13 +675,26 @@ def _rewrite_cid_references(
 
 
 @router.get("/{message_id}/thread", response_model=ThreadResponse)
-async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
+async def get_thread(
+    message_id: uuid.UUID,
+    load_images: bool = Query(default=True, description="Load remote images if allowed"),
+) -> ThreadResponse:
     """
     Get every message in this message's conversation, across folders, ascending.
 
     This is how a Sent reply appears inside the thread it belongs to --
     thread_id groups across folders, not just within the one the anchor
     message happens to be in.
+
+    load_images defaults to true here, unlike get_message's own default
+    of false: the reading pane calls this endpoint with no query string
+    at all and has always shown an allowlisted sender's images the
+    moment the thread opens, with no separate "load images" click --
+    changing the default would be a real, user-visible regression for
+    zero benefit, since is_sender_image_allowed is what actually decides
+    trust. The parameter exists so a caller that does want the pre-image
+    state (get_message's own use, or a future one) has a way to ask for
+    it, the same shape both endpoints now share.
     """
     db = get_db_connection()
     async with db.session() as session:
@@ -715,7 +728,7 @@ async def get_thread(message_id: uuid.UUID) -> ThreadResponse:
                 images_allowed = await is_sender_image_allowed(m.account_id, m.from_addr)
                 body_html, has_blocked = (
                     (restore_remote_images(body_html), False)
-                    if images_allowed
+                    if images_allowed and load_images
                     else strip_remote_images(body_html)
                 )
             else:
@@ -873,13 +886,18 @@ async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
 
     body_html, body_text, account_id, from_addr = row
     if body_html:
-        # restore_remote_images is a no-op unless body_html already carries
-        # a data-x-src/data-x-style marker -- which it never should, since
-        # create_outbox() restores before anything is stored -- but is
-        # cheap defensive normalisation before the outbound sanitiser,
-        # which has no allowlist entry for either marker and would drop
-        # the image outright rather than pass it through unrecognised.
-        sanitized = sanitize_outbound_html(restore_remote_images(body_html))
+        # restore_remote_images must never run on the raw column: it
+        # splices a data-x-style/data-x-stylesheet marker's stored value
+        # back in as markup or raw <style> content, and a sender can write
+        # one of those attribute names directly in the mail they send.
+        # sanitize_email_html runs first so nh3 strips a sender-authored
+        # copy before anything is restored, and rewrite_remote_images
+        # (which sanitize_email_html already includes) re-derives real
+        # markers from whatever remote references the message actually
+        # has -- restoring those is what this endpoint needs, to quote a
+        # remote image as the sender's own absolute URL rather than as
+        # this reader's internal placeholder.
+        sanitized = sanitize_outbound_html(restore_remote_images(sanitize_email_html(body_html)))
         display_html = rewrite_remote_images(sanitized)
         if await is_sender_image_allowed(account_id, from_addr):
             display_html = restore_remote_images(display_html)

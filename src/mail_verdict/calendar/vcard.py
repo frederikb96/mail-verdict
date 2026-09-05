@@ -202,14 +202,31 @@ def detect_photo(data: str) -> ContactPhoto | None:
 _DATA_URL_RE = re.compile(r"^data:([\w.+-]+/[\w.+-]+)?;base64,(.*)$", re.DOTALL)
 
 
+# The full MIME strings _MIME_BY_TYPE_PARAM already maps a vCard TYPE
+# param onto -- reused here so a data: URL's own declared type is checked
+# against the identical allowlist rather than trusted outright. A data:
+# URL's type is plain text the URL's own author wrote, and this function
+# feeds it straight to GET /contacts/:id/photo's Content-Type with no
+# Content-Disposition -- an attacker-controlled vCard could otherwise
+# have this application serve arbitrary HTML or SVG from its own origin.
+_ALLOWED_PHOTO_MIME_TYPES = frozenset(_MIME_BY_TYPE_PARAM.values())
+
+
 def decode_photo_data_url(data_url: str) -> tuple[str, bytes]:
     """The inverse of `_extract_photo`'s embedded case -- what the editor's
-    file picker hands back after reading a chosen image as a data URL."""
+    file picker hands back after reading a chosen image as a data URL.
+
+    The declared type is trusted only when it is one of the four this
+    module otherwise ever produces; anything else falls back to sniffing
+    the actual bytes, the same fallback the embedded-photo branches
+    already use for a TYPE param outside that set.
+    """
     match = _DATA_URL_RE.match(data_url.strip())
     if not match:
         raise ValueError("Photo must be a base64 data URL")
-    mime = match.group(1) or "application/octet-stream"
     raw = base64.b64decode(match.group(2))
+    declared = (match.group(1) or "").lower()
+    mime = declared if declared in _ALLOWED_PHOTO_MIME_TYPES else _sniff_mime(raw)
     return mime, raw
 
 

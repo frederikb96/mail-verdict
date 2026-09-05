@@ -13,6 +13,8 @@ from __future__ import annotations
 import html
 import re
 
+from mail_verdict.core.sanitizer import refilter_style_declarations, refilter_stylesheet_css
+
 _REMOTE_IMG_RE = re.compile(
     r"<img\b[^>]*?\bsrc\s*=\s*[\"'](?:https?://)[^\"']*[\"'][^>]*/?>",
     re.IGNORECASE,
@@ -42,6 +44,15 @@ _DATA_X_STYLESHEET_RE = re.compile(
     re.IGNORECASE,
 )
 
+# The legacy background= attribute's own neutralised marker -- counted
+# toward has_remote for the same reason data-x-style is: a table
+# background is a remote fetch exactly like a tracking pixel, and the
+# banner must say so.
+_DATA_X_BG_RE = re.compile(
+    r'\bdata-x-bg\s*=\s*["\'][^"\']*["\']',
+    re.IGNORECASE,
+)
+
 
 def strip_remote_images(html: str) -> tuple[str, bool]:
     """
@@ -62,6 +73,7 @@ def strip_remote_images(html: str) -> tuple[str, bool]:
         or bool(_DATA_X_SRC_RE.search(html))
         or bool(_DATA_X_STYLE_RE.search(html))
         or bool(_DATA_X_STYLESHEET_RE.search(html))
+        or bool(_DATA_X_BG_RE.search(html))
     )
     stripped = _REMOTE_IMG_RE.sub("", html)
     stripped = _DATA_X_SRC_RE.sub("", stripped)
@@ -93,18 +105,25 @@ def _restore_if_safe(match: re.Match[str]) -> str:
 def _restore_one_style(match: re.Match[str]) -> str:
     """Put a preserved style back, dropping any url() that is not http(s).
 
-    The stored value is the sender's original CSS, so it gets the same
-    scheme check the src path gets -- allowing a sender to load images is
-    not consent to a javascript: or data: url reappearing in a rule.
+    The stored value re-runs the same escaping/parse-error filter
+    sanitizer.py applies at store time (refilter_style_declarations)
+    rather than being trusted outright -- data-x-style is no longer
+    something a sender can write directly, but a stored value proves
+    nothing about how it got there, and this is what stops the two paths
+    drifting apart again in the future. Only after that does it get the
+    same scheme check the src path gets -- allowing a sender to load
+    images is not consent to a javascript: or data: url reappearing in a
+    rule.
     """
-    original = match.group(1)
+    original = html.unescape(match.group(1))
+    refiltered = refilter_style_declarations(original)
     safe = re.sub(
         r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)",
         lambda m: m.group(0) if _SAFE_SCHEME_RE.match(m.group(1)) else "url(about:blank)",
-        original,
+        refiltered,
         flags=re.IGNORECASE,
     )
-    return f'style="{safe}"'
+    return f'style="{html.escape(safe, quote=True)}"'
 
 
 def _restore_styles(html: str) -> str:
@@ -135,18 +154,30 @@ def _restore_one_stylesheet(match: re.Match[str]) -> str:
 
     A <style> tag's content is never entity-decoded by a browser, so the
     preserved value -- HTML-attribute-escaped at sanitize time, since that
-    is what it was stored as -- is unescaped before it is spliced back in
-    as raw text, not after. The same scheme check the inline-style path
-    gets still applies to every url() in it: a sender's own consent to
-    fetch their stylesheet's images is not consent to a javascript: or
-    data: url reappearing in a rule.
+    is what it was stored as -- is unescaped before anything else runs on
+    it. It is then re-run through the same rule/declaration filter
+    sanitizer.py applies at store time (refilter_stylesheet_css) rather
+    than trusted outright: data-x-stylesheet is no longer something a
+    sender can write directly, but a stored value proves nothing about how
+    it got there, and splicing an unfiltered string in as a <style> tag's
+    raw content is exactly the route a sender's own `</style>` once used
+    to break out of the tag entirely. Falling back to the tag's own safe
+    content -- what rendered by default before any allowlisting -- if
+    re-filtering rejects the value outright is safer than rendering
+    nothing. Only once that filter has run does the same scheme check the
+    inline-style path gets still apply to every url() in it: a sender's
+    own consent to fetch their stylesheet's images is not consent to a
+    javascript: or data: url reappearing in a rule.
     """
-    before_attr, preserved_encoded, after_attr, _safe_content, close_tag = match.groups()
+    before_attr, preserved_encoded, after_attr, safe_content, close_tag = match.groups()
     preserved = html.unescape(preserved_encoded)
+    refiltered = refilter_stylesheet_css(preserved)
+    if not refiltered:
+        return f"{before_attr}{after_attr}>{safe_content}{close_tag}"
     restored = re.sub(
         r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)",
         lambda m: m.group(0) if _SAFE_SCHEME_RE.match(m.group(1)) else "url(about:blank)",
-        preserved,
+        refiltered,
         flags=re.IGNORECASE,
     )
     return f"{before_attr}{after_attr}>{restored}{close_tag}"
@@ -155,6 +186,17 @@ def _restore_one_stylesheet(match: re.Match[str]) -> str:
 def _restore_stylesheets(html: str) -> str:
     """Swap each <style> block's neutralised content for its preserved original."""
     return _STYLE_TAG_WITH_PRESERVED_RE.sub(_restore_one_stylesheet, html)
+
+
+def _restore_one_bg(match: re.Match[str]) -> str:
+    """The legacy background= attribute, restored the same way data-x-src
+    is -- sanitizer.py's own comment on why it is kept rewritten rather
+    than stripped outright is exactly this: so an allowlisted sender can
+    get it back."""
+    url = match.group(1)
+    if _SAFE_SCHEME_RE.match(url):
+        return f'background="{url}"'
+    return ""
 
 
 def restore_remote_images(html: str) -> str:
@@ -173,6 +215,12 @@ def restore_remote_images(html: str) -> str:
     html = re.sub(
         r'\bdata-x-src\s*=\s*["\']([^"\']*)["\']',
         _restore_if_safe,
+        html,
+        flags=re.IGNORECASE,
+    )
+    html = re.sub(
+        r'\bdata-x-bg\s*=\s*["\']([^"\']*)["\']',
+        _restore_one_bg,
         html,
         flags=re.IGNORECASE,
     )

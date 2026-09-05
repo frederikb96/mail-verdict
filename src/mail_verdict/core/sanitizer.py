@@ -20,6 +20,14 @@ ALLOWED_TAGS = {
     "img", "ins", "li", "ol", "p", "pre", "q", "s", "span", "strong",
     "style", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
     "tr", "u", "ul", "center", "font",
+    # Plain structural/semantic tags with no attribute or behaviour this
+    # module treats specially -- already in the client's own DOMPurify
+    # allowlist (email-renderer.tsx), and unwrapped here only because this
+    # list had never been brought up to match it. None of them can do
+    # anything past what an ordinary inline wrapper already can.
+    "figure", "figcaption", "details", "summary", "small", "mark",
+    "section", "article", "header", "footer", "nav", "cite", "caption",
+    "col", "colgroup", "kbd", "wbr",
 }
 
 # A tag outside ALLOWED_TAGS has its own tag stripped, but by default only
@@ -44,7 +52,7 @@ CONTENT_STRIPPED_TAGS = {
 
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
-    "img": {"src", "data-x-src", "alt", "width", "height", "title"},
+    "img": {"src", "alt", "width", "height", "title"},
     # type="cite" is how nearly every mail client marks a reply's own
     # quoted original -- purely informational, so allowing it through
     # costs nothing, and it is the one signal the reading pane's own
@@ -54,24 +62,38 @@ ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     # can turn it into data-x-bg. Stripping it outright would block the
     # remote fetch too, but would also lose it permanently -- an allowlisted
     # sender could never get their background back.
-    "td": {"colspan", "rowspan", "align", "valign", "width", "background", "data-x-bg"},
-    "th": {"colspan", "rowspan", "align", "valign", "width", "background", "data-x-bg"},
-    "table": {
-        "border", "cellpadding", "cellspacing", "width", "align",
-        "background", "data-x-bg",
-    },
+    "td": {"colspan", "rowspan", "align", "valign", "width", "background"},
+    "th": {"colspan", "rowspan", "align", "valign", "width", "background"},
+    "table": {"border", "cellpadding", "cellspacing", "width", "align", "background"},
     "font": {"color", "size", "face"},
     "div": {"align"},
     "p": {"align"},
     # media scopes a stylesheet the same way a media query inside it would
     # -- kept for the ESPs that write `<style media="(prefers-color-scheme:
     # dark)">` rather than wrapping the whole block in an @media rule.
-    # data-x-stylesheet is this tag's own preserved original, the same role
-    # data-x-style plays for an inline style attribute -- see
-    # _rewrite_style_tag in image_sanitizer's sibling, rewrite_remote_images.
-    "style": {"media", "data-x-stylesheet"},
-    "*": {"class", "style", "data-x-style", "dir", "lang"},
+    "style": {"media"},
+    # An id cannot collide with anything of this application's own inside
+    # an isolated shadow root, so a long newsletter's own table of
+    # contents (an in-page #fragment link to one of its own headings) can
+    # actually work -- see email-renderer.tsx's click handler for the
+    # other half of this.
+    "*": {"class", "style", "dir", "lang", "id"},
 }
+
+# data-x-src, data-x-bg, data-x-style and data-x-stylesheet are this
+# application's own protocol for a neutralised remote reference, never a
+# sender's -- they are added by rewrite_remote_images below, which runs
+# strictly *after* nh3.clean, so keeping them out of ALLOWED_ATTRIBUTES
+# loses nothing a sender could legitimately write. It closes a sender
+# writing one of these names directly: nh3 would otherwise keep it
+# unfiltered, since none of the regexes above -- which only ever match a
+# plain `style=`/`src=`/`background=` -- run against an attribute already
+# named data-x-*, and the restoration path in image_sanitizer.py splices
+# whatever it finds there back into the page as markup or raw <style>
+# content. See refilter_style_declarations and refilter_stylesheet_css
+# below for the second half of the fix: restoring re-runs the same
+# filter this module already applies at store time, rather than trusting
+# that a stored value was necessarily produced by it.
 
 _SRC_RE = re.compile(r'\bsrc\s*=\s*"([^"]*)"', re.IGNORECASE)
 _SRC_SINGLE_RE = re.compile(r"\bsrc\s*=\s*'([^']*)'", re.IGNORECASE)
@@ -102,10 +124,17 @@ _ESCAPING_PROPERTIES = frozenset({
     "top", "right", "bottom", "left",
     "inset", "inset-block", "inset-block-start", "inset-block-end",
     "inset-inline", "inset-inline-start", "inset-inline-end",
-    "transform", "transform-origin", "transform-style", "transform-box",
-    "translate", "rotate", "scale",
-    "perspective", "perspective-origin",
 })
+
+# transform/translate/rotate/scale/perspective are deliberately not in
+# _ESCAPING_PROPERTIES above: with :host no longer sender-writable (see
+# _selector_escapes_containment), `contain: layout paint` is a real
+# containing block a transform cannot resolve outside of, exactly like an
+# ordinary margin cannot -- dropping them bought no protection past what
+# containment already provides, at the cost of rendering fidelity for
+# ordinary modern mail. position stays fully dropped except for one
+# value -- see _is_allowed_sticky_position -- since fixed/absolute
+# genuinely change what box the content resolves against.
 
 _VENDOR_PREFIX_RE = re.compile(r"^-[a-z]+-")
 
@@ -167,11 +196,12 @@ def _filter_declarations(nodes: list[Node]) -> list[Declaration]:
     comments and escapes are resolved before any name is compared, which
     closes the class rather than the instance.
 
-    Message layout does not need any of the escaping declarations, so they
-    are dropped rather than inspected -- a value allowlist is a longer list
-    to keep correct and buys nothing here. Anything that fails to parse as
-    an ordinary declaration carries no layout value an email needs either,
-    and is dropped along with it.
+    Message layout does not need most of what an escaping property's value
+    could be, so the property is dropped by name rather than inspected --
+    position is the one exception, since sticky needs the name kept but
+    is not itself escaping (see _is_allowed_position_value). Anything that
+    fails to parse as an ordinary declaration carries no layout value an
+    email needs either, and is dropped along with it.
 
     Shared by an inline style attribute and a message's own stylesheet --
     _parsed_declarations parses text into this shape, and a qualified rule
@@ -183,12 +213,34 @@ def _filter_declarations(nodes: list[Node]) -> list[Declaration]:
     for node in nodes:
         if node.type != "declaration":
             continue
-        if _canonical_property_name(node.lower_name) in _ESCAPING_PROPERTIES:
+        name = _canonical_property_name(node.lower_name)
+        if name in _ESCAPING_PROPERTIES and not _is_allowed_position_value(name, node.value):
             continue
         if _contains_parse_error(node.value):
             continue
         kept.append(node)
     return kept
+
+
+# sticky is the one position value _ESCAPING_PROPERTIES's blanket "position"
+# entry would otherwise drop along with fixed/absolute -- it is clipped by
+# the same overflow/containment as ordinary flow content and cannot escape
+# the box a fixed or absolute value can, so it is allowed by value rather
+# than by carving position out of the escaping-properties list entirely.
+_ALLOWED_POSITION_VALUES = frozenset({"sticky", "-webkit-sticky"})
+
+
+def _is_allowed_position_value(name: str, value: list[Node]) -> bool:
+    """Whether an otherwise-escaping declaration's value is the one
+    exception _ESCAPING_PROPERTIES carries for its own name."""
+    if name != "position":
+        return False
+    tokens = [t for t in value if t.type not in ("whitespace", "comment")]
+    return (
+        len(tokens) == 1
+        and tokens[0].type == "ident"
+        and tokens[0].lower_value in _ALLOWED_POSITION_VALUES
+    )
 
 
 def _parsed_declarations(style: str) -> list[Declaration]:
@@ -392,6 +444,51 @@ def _sanitize_declaration_block(
     return f"{header}{{{blocked}}}", f"{header}{{{preserved}}}", True
 
 
+# A selector naming any of these argues with the containment a message is
+# rendered inside rather than styling the message's own content -- see
+# _selector_escapes_containment. html/body are deliberately not here: a
+# real ``<html>``/``<body>`` element never exists for such a selector to
+# match in either surface a message's own <style> block survives into --
+# neither is in ALLOWED_TAGS above, so nh3 always unwraps a sender's own
+# copy, and the isolated shadow root this content is otherwise rendered
+# into has no html/body of its own either. Refusing them would cost the
+# single most common pattern in real email CSS (a body{} reset) for a
+# selector that cannot reach anything.
+_FORBIDDEN_SELECTOR_PSEUDOS = frozenset({"host", "host-context", "root"})
+
+
+def _selector_escapes_containment(prelude: list[Node]) -> bool:
+    """Whether a selector's own tokens name the shadow host or the
+    isolated stylesheet's own document root.
+
+    `contain: layout paint` on `:host` is what confines a message that
+    gets past the sanitizer at all (see email-renderer.tsx) -- a rule
+    targeting `:host`, `:host-context()` or `:root` can switch that
+    containment off from inside the message's own stylesheet. No
+    legitimate mail styles the element it is rendered into.
+
+    Walked at the token level, after tinycss2 has already resolved
+    comments and escapes -- the same reason property names are compared
+    this way in _filter_declarations: a hex-escaped ``:\\68 ost`` parses
+    as the real thing in every browser and would slip a string search
+    over the serialized selector. A selector list (``.foo, :host``) is
+    one prelude with every branch's tokens present, so scanning the whole
+    thing catches a forbidden selector hidden behind an ordinary one
+    rather than only the first.
+    """
+    for i, tok in enumerate(prelude):
+        if tok.type == "literal" and tok.value == ":" and i + 1 < len(prelude):
+            nxt = prelude[i + 1]
+            name = (
+                nxt.lower_value if nxt.type == "ident"
+                else nxt.lower_name if nxt.type == "function"
+                else None
+            )
+            if name in _FORBIDDEN_SELECTOR_PSEUDOS:
+                return True
+    return False
+
+
 def _sanitize_rule(rule: Node) -> tuple[str, str, bool] | None:
     """One top-level or nested rule, reduced to (safe, preserved, has_remote)
     or dropped entirely.
@@ -406,6 +503,8 @@ def _sanitize_rule(rule: Node) -> tuple[str, str, bool] | None:
     """
     if rule.type == "qualified-rule":
         if _contains_parse_error(rule.prelude):
+            return None
+        if _selector_escapes_containment(rule.prelude):
             return None
         selector = tinycss2.serialize(rule.prelude).strip()
         if not selector:
@@ -497,6 +596,40 @@ def _sanitize_stylesheet(css: str) -> tuple[str, str, bool]:
     if _reintroduces_a_style_close_tag(safe) or _reintroduces_a_style_close_tag(preserved):
         return "", "", False
     return safe, preserved, has_remote
+
+
+def refilter_style_declarations(css: str) -> str:
+    """Re-run the escaping/parse-error filter over an inline style's
+    declarations, url()s left untouched.
+
+    _rewrite_style already applies this exact filter once, at store time,
+    to build the value it hands to the sender-gated restoration path in
+    image_sanitizer.py -- this is that same filter, exposed so restoring a
+    preserved value re-runs it rather than trusts that the stored value
+    was actually produced this way. A stored attribute proves nothing
+    about how it got there; keeping data-x-style out of the sender-facing
+    allowlist above is what closes the direct route, and re-filtering here
+    is what stops the two paths drifting apart again in the future.
+    """
+    return _serialize_declarations(_parsed_declarations(css))
+
+
+def refilter_stylesheet_css(css: str) -> str:
+    """The same re-filtering as refilter_style_declarations, for a whole
+    <style> block's preserved content rather than one attribute's value.
+
+    Returns "" if the input is oversized, or would reintroduce a literal
+    </style> sequence once spliced back in as the tag's own raw text
+    content -- the same two guards _sanitize_stylesheet already applies at
+    store time, re-applied here rather than trusted to have already held.
+    """
+    if len(css) > MAX_STYLESHEET_CHARS:
+        return ""
+    rules = tinycss2.parse_stylesheet(css, skip_comments=True, skip_whitespace=True)
+    _, preserved, _ = _sanitize_rule_list(rules)
+    if _reintroduces_a_style_close_tag(preserved):
+        return ""
+    return preserved
 
 
 _STYLE_TAG_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style\s*>)", re.IGNORECASE | re.DOTALL)

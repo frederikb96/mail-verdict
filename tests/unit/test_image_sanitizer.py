@@ -57,6 +57,17 @@ class TestStripRemoteImages:
         assert result == html
         assert has_remote is False
 
+    def test_a_legacy_table_background_counts_toward_has_remote(self) -> None:
+        """A message whose only remote reference is a table's own
+        background= attribute must not report nothing blocked -- the same
+        tracker pixel by a different attribute name."""
+        sanitized = sanitize_email_html(
+            '<table background="https://tracker.example/p.gif"><tr><td>x</td></tr></table>'
+        )
+        assert "data-x-bg" in sanitized  # otherwise this test proves nothing
+        _, has_remote = strip_remote_images(sanitized)
+        assert has_remote is True
+
 
 class TestRestoreRemoteImages:
     """Tests for restoring data-x-src back to src."""
@@ -168,3 +179,22 @@ class TestCssRestoration:
             '<div style="background:url(javascript:alert(1))">x</div>'
         )
         assert "javascript:" not in restore_remote_images(blocked)
+
+    def test_allowing_a_sender_restores_a_legacy_table_background_too(self) -> None:
+        """data-x-bg was rewritten from background= for exactly this --
+        an allowlisted sender's table background should come back the
+        same way their images do, not stay lost forever."""
+        blocked = sanitize_email_html(
+            '<table background="https://t.test/p.gif"><tr><td>x</td></tr></table>'
+        )
+        restored = restore_remote_images(blocked)
+        assert 'background="https://t.test/p.gif"' in restored
+        assert "data-x-bg" not in restored
+
+    def test_restoring_a_table_background_does_not_revive_a_dangerous_scheme(self) -> None:
+        blocked = sanitize_email_html(
+            '<table background="javascript:alert(1)"><tr><td>x</td></tr></table>'
+        )
+        restored = restore_remote_images(blocked)
+        assert "javascript:" not in restored
+        assert "background=" not in restored

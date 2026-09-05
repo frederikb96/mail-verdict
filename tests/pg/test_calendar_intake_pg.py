@@ -365,6 +365,67 @@ class TestImport:
         assert master.uid == uid
 
     @pytest.mark.asyncio
+    async def test_a_pathological_rrule_is_quarantined_not_imported(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """An invitation naming one of this application's own identities
+        as an attendee auto-imports with no other check -- an attacker
+        writes that line themselves -- and a REQUEST's recurrence rule
+        used to be stored exactly as the sender wrote it. FREQ=SECONDLY
+        expanded over even a single day does not return; this is the
+        actual entry point the finding demonstrated, proven here without
+        ever calling expand_instances() at all, since decide() must never
+        auto-import something no view could ever safely render."""
+        uid = _new_uid()
+        bomb = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nMETHOD:REQUEST\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            "DTSTAMP:20260901T120000Z\r\nDTSTART:20260910T090000Z\r\nDTEND:20260910T100000Z\r\n"
+            "SUMMARY:Kickoff\r\nSEQUENCE:0\r\nRRULE:FREQ=SECONDLY\r\n"
+            "ORGANIZER;CN=Anna Mueller:mailto:anna@example.com\r\n"
+            "ATTENDEE;CN=Freddy;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;"
+            "RSVP=TRUE:mailto:freddy@work.example\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        async with migrated_db.session() as session:
+            account_id, folder_id, identity_id = await _seed_mail_account_folder_and_identity(
+                session, email="freddy@work.example",
+            )
+            assert identity_id is not None
+            _dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _link_intake_calendar(
+                session, collection_id=collection_id, identity_id=identity_id,
+            )
+            mail_id = await _seed_message_with_ics(
+                session, account_id=account_id, folder_id=folder_id,
+                data=bomb, message_id_hdr="<bomb1@example.com>",
+            )
+
+        await _handler(migrated_db).handle_message_event(_insert_event(mail_id, account_id))
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT status, object_id, reason FROM calendar_intake "
+                        "WHERE account_id = :a"
+                    ),
+                    {"a": account_id},
+                )
+            ).one()
+            object_count = (
+                await session.execute(
+                    text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                    {"c": collection_id},
+                )
+            ).scalar_one()
+        assert row.status == "unlinked"
+        assert row.object_id is None
+        assert row.reason is not None and "recurrence" in row.reason
+        assert object_count == 0
+
+    @pytest.mark.asyncio
     async def test_addressed_but_not_an_attendee_is_not_auto_imported(
         self, migrated_db: DatabaseConnection,
     ) -> None:

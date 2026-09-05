@@ -252,6 +252,23 @@ async def import_invitation(
     message = await _load_message(message_id)
     data, invitation = await _parsed_invitation(message)
 
+    # A CANCEL never introduces a recurrence rule -- mark_cancelled()
+    # only ever writes STATUS:CANCELLED onto the object already stored.
+    # calendar/intake.py's own auto-import quarantines the identical
+    # rule instead of refusing outright, but confirming by hand is a
+    # synchronous action with a response the person sees immediately, so
+    # refusing here is not the silent drop that quarantining elsewhere is
+    # for -- it is the same check, reported plainly rather than reasoned
+    # about at a distance.
+    if invitation.method != "CANCEL" and invitation.master.rrule is not None:
+        try:
+            ical.validate_rrule_frequency(invitation.master.rrule)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"This invitation's recurrence rule is not supported: {exc}",
+            ) from exc
+
     db = get_db_connection()
     collection_repo = CollectionRepository(db)
     object_repo = DavObjectRepository(db)

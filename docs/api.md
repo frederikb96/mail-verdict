@@ -239,3 +239,10 @@ raw `RRULE` value where recurrence applies, the same full RFC 5545 vocabulary th
 accepts, not a fixed preset. Reach for the REST API when the MCP surface does not cover what's
 needed (folder or pipeline management, queue control, settings, or creating/deleting a calendar
 or address book itself) or when building the browser UI.
+
+Anything reading mail through this server puts sender-controlled text — subject, body, an
+attachment's content — into whatever is reading it, on the same connection that can also send,
+move and delete. Nothing in the code can stop a message from containing text aimed at that
+reader rather than at a person; the mitigation is on the client side, in how permissive a config
+is granted. Do not auto-approve the writing tools (send, move, delete, create/edit/delete
+calendar and contact objects) for an agent that also reads mail from senders it has not vetted.

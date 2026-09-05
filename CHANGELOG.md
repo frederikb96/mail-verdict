@@ -174,6 +174,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a second open browser too, the same way a verdict already did -- the tag itself lives in a
   table of this application's own, which nothing had ever announced a change to.
 
+### Security
+
+- A sender could write this application's own internal style-preservation attribute directly,
+  rather than have the sanitizer produce it -- and once that sender was allowlisted for images, the
+  restore path spliced the stored value back in as raw markup with every CSS filter bypassed. The
+  sanitizer now strips those attribute names from a sender's own input, and restoring a preserved
+  stylesheet re-runs the same declaration filter rather than trusting the stored value. The
+  message-quote endpoint had a second, unauthenticated route to the same defect: it restored a
+  preserved stylesheet before the sanitizer ever ran rather than after.
+- A message's own stylesheet could target `:host`, `:host-context()` or `:root` and switch off the
+  containment (`contain: layout paint` on the shadow host) that keeps its other styling inside the
+  reading pane -- no allowlisting needed. Those selectors are now dropped along with the escaping
+  declarations the sanitizer already refuses.
+- An emailed invitation auto-imports when one of the account's own identities is among its
+  attendees -- a line an attacker writes themselves -- and its recurrence rule was stored
+  unvalidated. A dense enough one (`FREQ=SECONDLY`, or `BYSECOND`/`BYMINUTE` widening a coarser
+  frequency) never finishes expanding and strands the calendar's expansion pool permanently after a
+  few page loads. The rule is now refused before it is ever stored, on both the automatic import
+  and the manual "add to calendar" confirmation, and again on read for anything already stored --
+  quarantined for a person to review rather than silently dropped, and bounding a rule with its own
+  small `COUNT` is still accepted, since that already caps the cost regardless of frequency.
+- Nothing checked where a state-changing request came from. Most endpoints were accidentally safe
+  from a browser-mediated cross-site write (the framework itself refuses a JSON body sent as a
+  form-encodable content type), but the send endpoint parses its multipart body by hand, and
+  multipart crosses origins with no preflight. A write whose `Sec-Fetch-Site` is `cross-site`, or
+  whose `Origin` does not match this application's own host, is now refused outright.
+- A contact's embedded photo could declare an arbitrary Content-Type for the raw bytes streamed
+  back by its own endpoint, with no `Content-Disposition` -- a hostile record in a shared or
+  imported address book could have this application serve markup from its own origin. The declared
+  type is now trusted only when it is one of the four image types this application ever produces
+  itself, falling back to sniffing the actual bytes otherwise.
+- The "images blocked" banner did not count a legacy `background=` attribute among what it had
+  blocked, so a message whose only remote reference was a table background reported nothing
+  suppressed -- and that attribute was never restored for an allowlisted sender at all, contrary to
+  what the sanitizer's own comment already said it existed for. Both now match every other remote
+  reference.
+- The thread endpoint the reading pane actually uses restored an allowlisted sender's remote
+  content unconditionally, with no way to ask for the pre-image state the message-detail endpoint
+  already supports; it now accepts the same `load_images` parameter, defaulting to the behaviour
+  it already had.
+- A message's stylesheet may now use `transform`/`translate`/`rotate`/`scale`/`perspective` and
+  `position: sticky` -- with a sender no longer able to argue with its own containment, none of
+  these can leave the box a message is rendered into any more than a margin can, so dropping them
+  bought no protection past what containment already provides. `position: fixed`/`absolute` and
+  every other stacking/offset property genuinely change what box the content resolves against and
+  stay refused. An `id` can no longer collide with anything of this application's own inside an
+  isolated shadow root, so a long newsletter's own in-page links to its own headings now work, and
+  a handful of structural tags already in the reading pane's client-side allowlist (figure,
+  details, summary, section, nav, and others) are no longer unwrapped server-side before ever
+  reaching it. An allowlisted sender's table background is restored the same way their images are
+  (see the fix above).
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

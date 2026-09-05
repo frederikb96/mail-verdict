@@ -117,6 +117,91 @@ def build_content_security_policy(script_hashes: frozenset[str]) -> str:
     )
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
+
+def _same_origin(origin: bytes, host: bytes) -> bool:
+    """Whether an Origin header's authority matches this request's own Host.
+
+    Scheme is deliberately not part of the comparison: this application
+    is routinely reached through a TLS-terminating proxy, so the Host it
+    sees is the plain-http one the proxy forwards while a browser's own
+    Origin is https -- comparing schemes would refuse a browser's own
+    same-origin request the moment TLS termination is in the picture.
+    """
+    try:
+        origin_text = origin.decode("latin-1")
+        host_text = host.decode("latin-1")
+    except UnicodeDecodeError:
+        return False
+    authority = origin_text.split("://", 1)[-1]
+    return authority == host_text
+
+
+async def _refuse_cross_site(send: Send) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 403,
+            "headers": [(b"content-type", b"application/json")],
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": b'{"detail":"Cross-site request refused"}',
+        }
+    )
+
+
+class OriginCheckMiddleware:
+    """Refuses a state-changing request a browser itself says is cross-site.
+
+    Nothing in this application checks who a request is from (see the
+    README's own Access section) -- an authenticating proxy in front is
+    the whole of it, and that only ever covers a browser arriving at the
+    front door. Every write is otherwise reachable by anything with
+    network access to the pod regardless of origin, which this
+    middleware does not change; what it closes is narrower: a hostile
+    page loaded in the same browser as an authenticated session making a
+    write on that session's behalf. Most endpoints already refuse this
+    by accident -- a JSON body sent as a form-encodable content type is
+    a 422 before any handler runs -- but /api/outbox parses multipart by
+    hand, and multipart is exactly the shape that crosses origins with
+    no preflight.
+
+    Sec-Fetch-Site, sent by every browser this application needs to
+    support, settles the question outright when present. Origin is the
+    fallback for a request that omits it, and is only ever compared when
+    the browser chose to send it -- a request carrying neither header is
+    not a browser fetch this policy has any business judging, and this
+    application is explicitly meant to be driven by non-browser clients
+    (curl, MCP, an agent) that send neither.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] in _SAFE_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope["headers"])
+        sec_fetch_site = headers.get(b"sec-fetch-site")
+        if sec_fetch_site is not None:
+            if sec_fetch_site == b"cross-site":
+                await _refuse_cross_site(send)
+                return
+        else:
+            origin = headers.get(b"origin")
+            if origin is not None and not _same_origin(origin, headers.get(b"host", b"")):
+                await _refuse_cross_site(send)
+                return
+
+        await self.app(scope, receive, send)
+
+
 class SecurityHeadersMiddleware:
     """Adds a fixed set of response headers, CSP included, to every response."""
 
