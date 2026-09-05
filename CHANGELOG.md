@@ -19,8 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   sidebar by default and never expanded for a month view, even when named explicitly -- there is
   nothing a VEVENT-shaped expansion could ever find in one, so its objects are no longer fetched
   or parsed at all. It can still be shown deliberately from the manage-calendars dialog.
-- A month view that exceeds its shared expansion budget now says so in the response, rather than
-  looking exactly like an empty month.
+- A month view that exceeds its shared expansion budget now says so, both in the response and as
+  a warning next to the month title, rather than looking exactly like an empty month.
+- The manage-calendars dialog is redesigned around the width fix above: a calendar can be renamed
+  in place, and the row no longer duplicates the identity/invitation editing the Settings page
+  already validates -- it links there instead. The dialog now works at a phone width as well as a
+  desktop one.
 
 ## [4.0.0] - 2026-09-05
 

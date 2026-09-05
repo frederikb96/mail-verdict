@@ -364,7 +364,7 @@ export function SettingsPage() {
         <UnifiedOrder />
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div id="calendar" className="flex flex-col gap-3">
         <SectionHeading>Calendar</SectionHeading>
         <CalendarLinksCard />
         <Card>
