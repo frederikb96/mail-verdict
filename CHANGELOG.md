@@ -176,6 +176,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Editing a contact's photo or categories now removes every existing line of that kind rather
   than only the first -- a card carrying more than one (legal, and produced by some servers) kept
   the extras around after a replacement
+- A contact whose birthday is a real but unrecognized value (a stray Feb 29 outside a leap year,
+  for instance) says so in the detail view and the editor instead of silently disappearing;
+  editing an unrelated field and saving leaves it exactly as it was
+- A shift-click extending a range selection in the contacts list no longer also selects the
+  row's own text as a side effect
+- The contact detail's edit and delete buttons have accessible names
 
 ## [3.1.1] - 2026-09-03
 
