@@ -25,6 +25,12 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   response is a PendingSendResponse rather than an OutboxResponse, and the
   caller distinguishes the two by the presence of send_after. See
   outbox/pending.py.
+
+  Staging belongs to this endpoint alone, deliberately. The undo window
+  exists because a person just pressed Send and may want the few seconds
+  back; nothing is watching one on behalf of the MCP send tool or the
+  calendar's iTIP replies, so both of those insert an outbox row directly
+  and go at once. Their own descriptions say so.
 GET /api/outbox — list outbox rows, for the outbox/status view. A send
   still inside its undo window is listed alongside real outbox rows,
   represented with status="pending" and the same id create_outbox()
@@ -124,6 +130,20 @@ async def _read_capped_attachment(value: UploadFile, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def require_recipients(
+    to: list[str] | None, cc: list[str] | None, bcc: list[str] | None,
+) -> None:
+    """A send addressed to nobody can never leave, so it is refused where
+    it is offered rather than accepted and failed later -- a caller that
+    got a success-shaped answer has no reason to look again. A draft is
+    exempt: an address is exactly what a draft is still missing."""
+    if any(addr.strip() for addrs in (to, cc, bcc) for addr in addrs or []):
+        return
+    raise HTTPException(
+        status_code=400, detail="A send needs at least one recipient in to, cc or bcc.",
+    )
+
+
 async def _parse_request(
     request: Request,
 ) -> tuple[OutboxCreateRequest, list[_AttachmentTuple]]:
@@ -215,6 +235,9 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
     stage_send() below.
     """
     payload, attachments = await _parse_request(request)
+
+    if payload.kind == "send":
+        require_recipients(payload.to, payload.cc, payload.bcc)
 
     if payload.body_html and not payload.body_text:
         # Nodemailer does not derive a text/plain alternative from HTML on
