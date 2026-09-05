@@ -139,6 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   up/down -- now announces itself live: the reading pane's verdict badge in a second open browser
   updates without a reload. Previously the event this depends on was never actually emitted for
   either source, only ever wired to be received.
+- Changing a calendar's colour, visibility or linked identity now reaches a second open browser
+  live, the same as renaming it already did -- that local preference lives in a table of this
+  application's own, which nothing had ever announced a change to.
 
 ## [4.0.0] - 2026-09-05
 

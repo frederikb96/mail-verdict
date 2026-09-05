@@ -22,6 +22,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     AddressbookCreateRequest,
     AddressbookSummaryResponse,
@@ -185,6 +186,16 @@ async def update_calendar(
     prefs: CalendarPrefs | None
     if prefs_fields:
         prefs = await prefs_repo.update(collection_id, **prefs_fields)
+        # calendar_prefs is MailVerdict-owned, so unlike display_name above
+        # (a write to PostIMAP's own dav_collections, already announced via
+        # postimap_events) nothing else tells a second open browser this
+        # calendar's colour, visibility or identity link just changed.
+        event_ring = get_event_ring()
+        if event_ring is not None:
+            await event_ring.add(
+                collection.account_id, "calendar.collection",
+                {"dav_account_id": str(collection.account_id), "calendar_id": str(collection_id)},
+            )
     else:
         prefs = await prefs_repo.get(collection_id)
 
