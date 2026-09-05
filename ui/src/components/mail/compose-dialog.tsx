@@ -23,6 +23,7 @@ import { ComposeForm, type ComposeFormControls } from "@/components/mail/compose
 import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { useAccounts } from "@/hooks/use-accounts";
 import { composeIntentAtom, selectedAccountIdAtom } from "@/lib/atoms";
+import { cn } from "@/lib/utils";
 
 /**
  * New-mail dialog, reachable from the sidebar and also opened from anywhere
@@ -37,6 +38,7 @@ export function ComposeDialog() {
   const [composeIntent, setComposeIntent] = useAtom(composeIntentAtom);
   const [isDirty, setIsDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
 
   useEffect(() => {
@@ -79,7 +81,15 @@ export function ComposeDialog() {
         <PenSquare className="h-4 w-4" />
         Compose
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent
+        className={cn("max-w-lg", maximized && "flex flex-col")}
+        // Inline, not a class: the base component's own sm:max-w-sm is a
+        // responsive-variant utility, generated later in the stylesheet
+        // than a plain max-w-none override regardless of which comes
+        // last in the class attribute -- only inline style is guaranteed
+        // to win over it at every viewport width.
+        style={maximized ? { width: "95vw", height: "92vh", maxWidth: "none" } : undefined}
+      >
         <DialogHeader>
           <DialogTitle>New Message</DialogTitle>
         </DialogHeader>
@@ -113,6 +123,7 @@ export function ComposeDialog() {
             defaultSubject={composeIntent?.subject}
             onDone={closeAndClearIntent}
             onDirtyChange={setIsDirty}
+            onMaximizedChange={setMaximized}
             onControlsReady={(controls) => {
               controlsRef.current = controls;
             }}

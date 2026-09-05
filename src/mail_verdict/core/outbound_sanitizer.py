@@ -43,7 +43,10 @@ ALLOWED_TAGS = {
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href"},
     "blockquote": {"type"},
-    "img": {"src", "alt"},
+    # width/height are plain attributes, not a style declaration -- every
+    # mail client honours them, and the editor's own resize handles write
+    # them directly rather than a CSS width nh3 would strip anyway.
+    "img": {"src", "alt", "width", "height"},
     "td": {"colspan", "rowspan"},
     "th": {"colspan", "rowspan"},
 }
@@ -84,7 +87,7 @@ _LIST_ITEM_PARAGRAPH_RE = re.compile(r"<li><p>(.*?)</p>", re.DOTALL)
 _IMG_NO_SRC_RE = re.compile(r"<img(?![^>]*\bsrc=)[^>]*>")
 
 
-def sanitize_outbound_html(html: str) -> str:
+def sanitize_outbound_html(html: str, *, allow_cid: bool = False) -> str:
     """
     Make browser-composed, pasted or quoted HTML safe to send as mail.
 
@@ -95,7 +98,22 @@ def sanitize_outbound_html(html: str) -> str:
     accept no class or stylesheet for -- the quote bar, a monospace code
     block -- are set directly, never read from the input, since nh3 has
     already dropped whatever style attribute it carried.
+
+    Args:
+        allow_cid: The compose API's own call site sets this for a
+            message it is about to insert itself, where a cid: reference
+            is the compose editor's own inline image and the matching
+            outbox_attachments row is inserted alongside it in the same
+            request -- see api/outbox.py. Left off (the default, and what
+            the quote endpoint in api/mails.py always uses) a cid: image
+            is dropped entirely rather than surviving as a reference to an
+            attachment on a different, already-sent message that this one
+            never carries -- a quoted original's own inline image, which
+            nothing here re-attaches.
     """
+    url_schemes = {"http", "https", "mailto"}
+    if allow_cid:
+        url_schemes.add("cid")
     cleaned = nh3.clean(
         html,
         tags=ALLOWED_TAGS,
@@ -105,7 +123,7 @@ def sanitize_outbound_html(html: str) -> str:
         # in, so nh3's default of injecting them is switched off rather
         # than allowlisted away tag by tag.
         link_rel=None,
-        url_schemes={"http", "https", "mailto"},
+        url_schemes=url_schemes,
         # A relative URL has no scheme for url_schemes to judge at all, so
         # without this a message's own /api/... attachment URL -- which
         # means nothing outside this application -- would otherwise pass

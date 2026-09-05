@@ -7,6 +7,7 @@ import {
   Italic,
   Link2,
   List,
+  ListChecks,
   ListOrdered,
   Quote,
   RemoveFormatting,
@@ -117,6 +118,13 @@ export function EditorToolbar({ editor }: EditorToolbarProps) {
         title="Numbered list"
       >
         <ListOrdered />
+      </ToolbarButton>
+      <ToolbarButton
+        active={editor.isActive("taskList")}
+        onClick={() => editor.chain().focus().toggleTaskList().run()}
+        title="Checklist"
+      >
+        <ListChecks />
       </ToolbarButton>
       <ToolbarButton
         active={editor.isActive("blockquote")}

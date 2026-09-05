@@ -90,7 +90,9 @@ def build_content_security_policy(script_hashes: frozenset[str]) -> str:
     img-src allows any http(s) origin because a message's own image-consent
     system, not this policy, is what decides whether a remote image loads
     at all -- once a sender is allowed, their image host is whatever they
-    chose.
+    chose. blob: is for the compose editor's own pasted images -- each one
+    is an object URL the browser mints locally for the pasted File, never
+    a network origin, so it carries none of the image-consent question.
 
     Args:
         script_hashes: CSP sources for the UI's own inline scripts, from
@@ -105,7 +107,7 @@ def build_content_security_policy(script_hashes: frozenset[str]) -> str:
             "default-src 'self'",
             f"script-src {script_src}",
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: http: https:",
+            "img-src 'self' data: http: https: blob:",
             "object-src 'none'",
             "frame-src 'none'",
             "frame-ancestors 'none'",

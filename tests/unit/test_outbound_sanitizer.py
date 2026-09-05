@@ -55,15 +55,33 @@ class TestImages:
         out = sanitize_outbound_html(html)
         assert 'src="https://example.com/a.png"' in out
 
-    def test_a_cid_image_is_dropped_entirely(self) -> None:
+    def test_a_cid_image_is_dropped_entirely_by_default(self) -> None:
         """Nothing is attached to the outgoing message for a cid: reference
         to resolve against, so the tag disappears rather than being left
-        as a broken image."""
+        as a broken image -- the shape a quoted original's own inline
+        image is in, which api/mails.py's quote endpoint never re-attaches."""
         html = '<p>before</p><img src="cid:abc123"><p>after</p>'
         out = sanitize_outbound_html(html)
         assert "<img" not in out
         assert "before" in out
         assert "after" in out
+
+    def test_a_cid_image_survives_with_allow_cid(self) -> None:
+        """The compose API's own call site opts in for exactly the case a
+        cid: reference is real: the compose editor's own inline image,
+        with the matching outbox_attachments row inserted alongside it in
+        the same request."""
+        html = '<p>before</p><img src="cid:abc123" alt="a"><p>after</p>'
+        out = sanitize_outbound_html(html, allow_cid=True)
+        assert 'src="cid:abc123"' in out
+        assert "before" in out
+        assert "after" in out
+
+    def test_an_image_keeps_its_resized_dimensions(self) -> None:
+        html = '<img src="cid:abc123" width="200" height="100">'
+        out = sanitize_outbound_html(html, allow_cid=True)
+        assert 'width="200"' in out
+        assert 'height="100"' in out
 
     def test_a_local_attachment_url_is_dropped_entirely(self) -> None:
         """The display-only /api/messages/... URL a message's own detail
