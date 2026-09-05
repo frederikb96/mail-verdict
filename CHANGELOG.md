@@ -177,6 +177,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The composer's To/Cc/Bcc field keeps its accessible name once it holds a chip -- its visible
   placeholder disappears at that point (correctly, next to a chip it would read oddly), which
   previously took the field's only name with it
+- Double-clicking Send no longer queues the same message twice. The button's own disabled state
+  was reacting to react-query's isPending a render late, which two clicks landing before that
+  render both slipped past; the submission itself is now guarded directly
+- Trashing (or archiving, marking spam, or otherwise moving out of its folder) the message a
+  reply or forward is in progress against no longer discards that reply with no prompt. The
+  action itself still goes through -- and remains undoable exactly as before -- but the reply box
+  underneath it is no longer unmounted along with the reading pane's old content
 
 ## [3.1.1] - 2026-09-03
 

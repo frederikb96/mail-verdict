@@ -9,11 +9,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import { useToast } from "@/hooks/use-toast";
-import { selectedMailIdAtom } from "@/lib/atoms";
+import { activeReplyDirtyForMailIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 import type {
   FolderOrderResponse,
   FolderResponse,
@@ -299,8 +299,11 @@ export function useMailAction() {
   // Selected mail lives in the same store every action initiator (list row,
   // reading pane, bulk toolbar) reads from, so clearing it here reaches all
   // of them: once the open message leaves its folder, nothing keeps acting
-  // on it under a reading pane that still shows its old content.
+  // on it under a reading pane that still shows its old content -- except
+  // a reply or forward in progress against it, which the clear would take
+  // down too. See activeReplyDirtyForMailId below.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const activeReplyDirtyForMailId = useAtomValue(activeReplyDirtyForMailIdAtom);
   const { push: pushToast } = useToast();
 
   const mailAction = useMutation({
@@ -319,7 +322,13 @@ export function useMailAction() {
 
       const act = action.action;
       const removesFromList = LEAVES_FOLDER_ACTIONS.includes(act);
-      const wasSelected = removesFromList && mailId === selectedMailId;
+      // A reply or forward in progress against this same message must not
+      // be discarded by unmounting the reading pane out from under it --
+      // reply-box.tsx is what sets this atom while dirty. The action
+      // itself still goes through (trashing from a row is independent of
+      // whatever is being typed below it); only the selection stays put.
+      const hasDirtyReply = mailId === activeReplyDirtyForMailId;
+      const wasSelected = removesFromList && mailId === selectedMailId && !hasDirtyReply;
       if (wasSelected) setSelectedMailId(null);
 
       const mailInfo = findMailInCache(qc, mailId);

@@ -483,3 +483,102 @@ class TestCloseAndDiscard:
         expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
             "Unsaved compose text.",
         )
+
+
+class TestDoubleSubmitGuard:
+    def test_double_clicking_send_queues_the_message_only_once(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        editor_account: dict[str, Any],
+    ) -> None:
+        """Nothing guarded the mutation itself, only the button's disabled
+        attribute -- react-query's own isPending is the state as of the
+        last render, so two clicks landing before React re-renders both
+        read it as false and both fire."""
+        subject = f"UI double-send test {uuid.uuid4()}"
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
+        dialog.get_by_role("textbox", name="Subject").fill(subject)
+        dialog.get_by_test_id("mail-editor-body").fill("Sent from a double-click.")
+
+        dialog.get_by_role("button", name="Send", exact=True).dblclick()
+        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+
+        def _outbox_rows() -> list[dict[str, Any]] | None:
+            resp = api_client.get("/api/outbox", params={"account_id": editor_account["id"]})
+            assert resp.status_code == 200, resp.text
+            rows = [row for row in resp.json() if row["subject"] == subject]
+            return rows or None
+
+        wait_for(_outbox_rows, description=f"Outbox row for {subject!r}")
+        # A genuine second send would already have landed by the time the
+        # first one settles -- give it the same window rather than checking
+        # the instant the first row appears.
+        page.wait_for_timeout(1500)
+        rows = _outbox_rows() or []
+        assert len(rows) == 1, f"expected exactly one outbox row for {subject!r}, got {rows}"
+
+
+class TestTrashingTheOpenMessageKeepsAnInProgressReply:
+    def test_trashing_the_message_you_are_replying_to_keeps_the_reply_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Reported as: reply box open with typed text, hover the row,
+        Move to trash -- the message and the reply box both vanished with
+        no prompt, and Undo only restored the message, not the reply.
+        Trashing (unlike sending) is already reversible on its own, so the
+        fix is to stop the reading pane from unmounting the reply, not to
+        prompt before an action that was never in question."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"UI trash-keeps-reply test {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+            message_id=f"<editor-trash-{uuid.uuid4()}@example.com>",
+            body="Original body for the trash-keeps-reply test.",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply worth keeping.")
+        expect(body).to_contain_text("A reply worth keeping.")
+
+        row = mail_row(page, target["id"])
+        row.hover()
+        row.get_by_title("Move to trash").click()
+        expect(page.get_by_text("Moved to trash")).to_be_visible(timeout=10_000)
+
+        # The reply box must not have been unmounted along with the reading
+        # pane's old content -- the typed text is still exactly what it
+        # was, not silently discarded.
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply worth keeping.",
+        )

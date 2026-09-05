@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSetAtom } from "jotai";
 import { Forward, Loader2, Reply, ReplyAll } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -13,6 +14,7 @@ import { buildForward, buildReply } from "@/lib/reply";
 import { matchIdentity } from "@/lib/identities";
 import { useIdentities } from "@/hooks/use-identities";
 import { api } from "@/lib/api";
+import { activeReplyDirtyForMailIdAtom } from "@/lib/atoms";
 import type { MessageDetail } from "@/types/api";
 
 interface ReplyBoxProps {
@@ -45,6 +47,18 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [loading, setLoading] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
+  const setActiveReplyDirtyForMailId = useSetAtom(activeReplyDirtyForMailIdAtom);
+
+  // Read by useMailAction: while this is dirty, a "leaves folder" action
+  // taken on this same message from somewhere else (a row's own hover
+  // control, a keyboard shortcut) must not clear the open selection --
+  // that would unmount this box along with it, discarding whatever was
+  // typed with no prompt at all. Cleared on unmount too, so a stale id
+  // never outlives the box that set it.
+  useEffect(() => {
+    setActiveReplyDirtyForMailId(isDirty ? source.id : null);
+    return () => setActiveReplyDirtyForMailId(null);
+  }, [isDirty, source.id, setActiveReplyDirtyForMailId]);
 
   const { data: identities } = useIdentities(source.account_id);
   // A reply and a forward alike go out as whichever of the account's

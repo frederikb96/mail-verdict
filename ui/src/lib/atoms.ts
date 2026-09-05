@@ -23,6 +23,17 @@ export const isUnifiedViewAtom = atom<boolean>((get) => {
 /** Currently selected mail ID */
 export const selectedMailIdAtom = atom<string | null>(null);
 
+/** The id of the message a reply/forward is currently in progress against,
+ * while that reply has unsaved content -- null otherwise. useMailAction
+ * reads this to decide whether a "leaves folder" action (trash, archive,
+ * move, spam) taken on the open message from somewhere else (a row's own
+ * hover control, a keyboard shortcut) may still clear the selection: doing
+ * so unmounts the reading pane, and with it the reply box, discarding
+ * whatever was typed with no prompt at all. Keyed by mail id rather than a
+ * plain boolean since the write and the read happen in different
+ * components that only agree on which message they mean. */
+export const activeReplyDirtyForMailIdAtom = atom<string | null>(null);
+
 /** Whether the mail list groups messages into conversations. Defaults on. */
 export const threadedViewAtom = atomWithStorage<boolean>(
   "mailverdict:threaded",
