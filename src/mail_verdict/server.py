@@ -43,6 +43,7 @@ from starlette.types import ASGIApp
 
 from mail_verdict import __version__
 from mail_verdict.api.security_headers import (
+    OriginCheckMiddleware,
     SecurityHeadersMiddleware,
     build_content_security_policy,
     compute_inline_script_hashes,
@@ -540,9 +541,11 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
             async with lifespan(app):
                 yield
 
-    # MailVerdict has no auth layer of its own: the deployment model is an
-    # authenticating proxy in front of it (see README). Nothing here checks
-    # a header or a key.
+    # MailVerdict has no authentication layer of its own: the deployment
+    # model is an authenticating proxy in front of it (see README).
+    # Nothing here checks a header or a key against who the caller is.
+    # OriginCheckMiddleware below is a narrower thing -- not identity, only
+    # whether a browser itself says a write crosses origins.
     app = FastAPI(title="MailVerdict", lifespan=combined_lifespan)
 
     config = get_config()
@@ -552,6 +555,7 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
     )
+    app.add_middleware(OriginCheckMiddleware)
 
     script_hashes = compute_inline_script_hashes(ui_build_dir)
     app.add_middleware(

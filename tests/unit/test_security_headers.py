@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 from starlette.types import ASGIApp
 
 from mail_verdict.api.security_headers import (
+    OriginCheckMiddleware,
     SecurityHeadersMiddleware,
     build_content_security_policy,
     compute_inline_script_hashes,
@@ -135,6 +136,57 @@ class TestSecurityHeadersMiddleware:
         resp = client.get("/stream")
         assert resp.text == "chunk-1chunk-2"
         assert resp.headers["content-security-policy"] == "default-src 'self'"
+
+class TestOriginCheckMiddleware:
+    """A state-changing request a browser itself says is cross-site is
+    refused before it ever reaches a handler."""
+
+    def _app(self) -> ASGIApp:
+        async def ok(request: object) -> PlainTextResponse:  # noqa: ARG001
+            return PlainTextResponse("ok")
+
+        app = Starlette(routes=[Route("/read", ok), Route("/write", ok, methods=["POST"])])
+        return OriginCheckMiddleware(app)
+
+    def test_a_safe_method_is_never_gated(self) -> None:
+        """A cross-site GET is a read, not what this middleware exists for."""
+        client = TestClient(self._app())
+        resp = client.get(
+            "/read", headers={"sec-fetch-site": "cross-site", "origin": "https://attacker.example"},
+        )
+        assert resp.status_code == 200
+
+    def test_sec_fetch_site_cross_site_is_refused(self) -> None:
+        client = TestClient(self._app())
+        resp = client.post("/write", headers={"sec-fetch-site": "cross-site"})
+        assert resp.status_code == 403
+
+    def test_sec_fetch_site_same_origin_is_allowed(self) -> None:
+        client = TestClient(self._app())
+        resp = client.post("/write", headers={"sec-fetch-site": "same-origin"})
+        assert resp.status_code == 200
+
+    def test_a_mismatched_origin_is_refused_when_sec_fetch_site_is_absent(self) -> None:
+        """The fallback for a browser that omits Sec-Fetch-Site -- POST
+        /api/outbox's own multipart body is exactly the shape this
+        covers, since it crosses origins with no preflight at all."""
+        client = TestClient(self._app())
+        resp = client.post("/write", headers={"origin": "https://attacker.example"})
+        assert resp.status_code == 403
+
+    def test_a_matching_origin_is_allowed(self) -> None:
+        client = TestClient(self._app())
+        resp = client.post("/write", headers={"origin": "http://testserver", "host": "testserver"})
+        assert resp.status_code == 200
+
+    def test_neither_header_present_is_allowed(self) -> None:
+        """Not a browser fetch this policy has any business judging --
+        this application is explicitly meant to be driven by curl, MCP,
+        and an agent, none of which send either header."""
+        client = TestClient(self._app())
+        resp = client.post("/write")
+        assert resp.status_code == 200
+
 
 class TestCspExemptionMatchesWholePaths:
     """A path that merely starts with a documentation route must keep its policy.

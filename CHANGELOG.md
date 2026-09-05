@@ -195,6 +195,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and the manual "add to calendar" confirmation, and again on read for anything already stored --
   quarantined for a person to review rather than silently dropped, and bounding a rule with its own
   small `COUNT` is still accepted, since that already caps the cost regardless of frequency.
+- Nothing checked where a state-changing request came from. Most endpoints were accidentally safe
+  from a browser-mediated cross-site write (the framework itself refuses a JSON body sent as a
+  form-encodable content type), but the send endpoint parses its multipart body by hand, and
+  multipart crosses origins with no preflight. A write whose `Sec-Fetch-Site` is `cross-site`, or
+  whose `Origin` does not match this application's own host, is now refused outright.
 
 ## [4.0.0] - 2026-09-05
 
