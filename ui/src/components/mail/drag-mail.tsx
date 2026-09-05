@@ -3,7 +3,7 @@
 import { useDraggable } from "@dnd-kit/core";
 import { useAtomValue } from "jotai";
 import { isRowSelected, selectionSize, type SelectableRow } from "@/lib/selection";
-import { selectionAtom } from "@/store/selection-atom";
+import { effectiveSelectionAtom } from "@/store/selection-atom";
 
 interface DragMailProps {
   row: SelectableRow;
@@ -23,7 +23,10 @@ interface DragMailProps {
  * itself.
  */
 export function DragMail({ row, accountId, folderId, children }: DragMailProps) {
-  const selection = useAtomValue(selectionAtom);
+  // The effective selection, not the raw one -- a selection made in a
+  // folder the reader has since left must not drag as "the whole
+  // selection" here either, the same guard bulk actions apply.
+  const selection = useAtomValue(effectiveSelectionAtom);
   const size = selectionSize(selection);
   const isInSelection = size > 1 && isRowSelected(selection, row);
 

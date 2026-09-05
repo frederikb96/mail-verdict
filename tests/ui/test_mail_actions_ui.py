@@ -881,6 +881,64 @@ class TestMailActionsUi:
         )
         assert resp.status_code == 204, resp.text
 
+    def test_an_account_that_never_connected_shows_its_error_in_the_mail_view(
+        self, page: Page, app_server: str, api_client: httpx.Client,
+    ) -> None:
+        """A never-connected account (`error`, `last_full_sync IS NULL`)
+        has no folder for the auto-select effect to land on, so the mail
+        view previously spun "Loading folders..." forever with nothing
+        telling the reader why -- the same information the Accounts page
+        already shows correctly. Reads the same predicate that page uses
+        rather than a second one computed here."""
+        email = unique_email("never-connects")
+        resp = api_client.post(
+            "/api/accounts",
+            json={
+                "name": email,
+                "imap_host": "nonexistent-host-does-not-resolve.invalid",
+                "imap_port": 993,
+                "imap_user": email,
+                "imap_password": "wrong",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        account = resp.json()
+        account["email"] = email
+
+        def _errored() -> dict[str, Any] | None:
+            detail = api_client.get(f"/api/accounts/{account['id']}").json()
+            return detail if detail["state"] == "error" else None
+
+        detail = wait_for(_errored, timeout_s=30.0, description="account settles into error")
+        assert detail["state_error"], "expected a state_error message once erroring"
+
+        page.goto(app_server)
+        select_account(page, account)
+        expect(page.get_by_text(detail["state_error"], exact=True)).to_be_visible(timeout=10_000)
+
+    def test_create_folder_naming_an_existing_one_shows_the_conflict(
+        self,
+        page: Page,
+        app_server: str,
+        ui_account: dict[str, Any],
+        junk_folder: dict[str, Any],
+    ) -> None:
+        """The server rejects a folder name already live on the account
+        with 409 -- the dialog surfaces it as a toast rather than doing
+        nothing visible and leaving only a console error."""
+        page.goto(app_server)
+        select_account(page, ui_account)
+        page.get_by_role("button", name="Manage folders", exact=True).click()
+
+        dialog = page.get_by_role("dialog", name="Manage folders")
+        expect(dialog).to_be_visible(timeout=15_000)
+        dialog.get_by_placeholder("New folder name").fill(junk_folder["imap_name"])
+        dialog.get_by_role("button", name="Create", exact=True).click()
+
+        expect(page.get_by_text("Could not create folder:", exact=False)).to_be_visible(
+            timeout=10_000,
+        )
+
     def test_manage_folders_offers_no_delete_for_special_use_folders(
         self,
         page: Page,
@@ -1225,6 +1283,226 @@ class TestMailActionsUi:
         expect(page.get_by_text(f"{inbox_total} selected", exact=True)).to_be_visible(
             timeout=10_000,
         )
+
+    def test_navigating_away_clears_the_selection_rather_than_leaving_it_actionable(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        junk_folder: dict[str, Any],
+    ) -> None:
+        """A selection is scoped to the list it was made in. Switching to a
+        different folder must make the selection banner and the bulk
+        toolbar disappear entirely -- not just stop showing them, but
+        actually give up the selection -- rather than leave them up and
+        actionable against whatever folder happens to be on screen when a
+        button is finally pressed. Proves both halves the selection can be
+        in: a folder-wide "select all" predicate, and a hand-picked pair of
+        explicit rows."""
+        subjects = [f"Scope guard {i} {uuid.uuid4()}" for i in range(2)]
+        targets = [
+            _deliver_to_inbox(
+                api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+                inbox_folder["id"], subject,
+            )
+            for subject in subjects
+        ]
+        target_ids = {t["id"] for t in targets}
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        first_row = mail_row(page, targets[0]["id"])
+        second_row = mail_row(page, targets[1]["id"])
+        expect(first_row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        # Predicate half: "select all" over the whole folder.
+        first_row.hover()
+        first_row.get_by_role("checkbox").click()
+        page.get_by_role("button", name="Select", exact=True).click()
+        page.get_by_role("menuitem", name="Every message in this folder", exact=True).click()
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_be_visible(timeout=10_000)
+
+        _open_folder(page, junk_folder)
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_have_count(0, timeout=10_000)
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0)
+
+        _open_folder(page, inbox_folder)
+        expect(first_row).to_be_visible(timeout=15_000)
+        expect(first_row.get_by_role("checkbox")).not_to_be_checked()
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0)
+        remaining = {
+            m["id"] for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+        }
+        assert target_ids <= remaining, (
+            "a stale predicate selection must not have been actionable in the "
+            "folder navigated to -- both seed messages should still be in INBOX"
+        )
+
+        # Explicit-id half: two hand-picked rows, no predicate.
+        first_row.hover()
+        first_row.get_by_role("checkbox").click()
+        second_row.hover()
+        second_row.get_by_role("checkbox").click()
+        expect(page.get_by_text("2 selected", exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_be_visible(timeout=10_000)
+
+        _open_folder(page, junk_folder)
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_have_count(0, timeout=10_000)
+
+        _open_folder(page, inbox_folder)
+        expect(first_row).to_be_visible(timeout=15_000)
+        expect(second_row).to_be_visible(timeout=15_000)
+        expect(first_row.get_by_role("checkbox")).not_to_be_checked()
+        expect(second_row.get_by_role("checkbox")).not_to_be_checked()
+        remaining = {
+            m["id"] for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+        }
+        assert target_ids <= remaining, (
+            "a stale explicit-id selection must not have been actionable in "
+            "the folder navigated to -- both seed messages should still be in INBOX"
+        )
+
+    def test_selection_does_not_survive_account_switch_calendar_roundtrip_or_threading_toggle(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The guard covers every shape where the list a selection was made
+        against stops being the list on screen, not only a folder switch
+        (covered above): switching accounts, navigating away to another
+        view and back, and toggling threading -- each changes what the
+        selection's ids even mean, or (for the view round-trip) leaves the
+        reader unsure whether a page they haven't looked at in a while
+        still reflects what they ticked."""
+        second_email = unique_email("second-account")
+        resp = api_client.post(
+            "/api/accounts",
+            json={
+                "name": second_email,
+                "imap_host": DOVECOT_ALIAS,
+                "imap_port": DOVECOT_IMAP_PORT,
+                "imap_user": second_email,
+                "imap_password": DOVECOT_PASSWORD,
+                "smtp_host": MAILPIT_ALIAS,
+                "smtp_port": MAILPIT_SMTP_PORT,
+                "smtp_user": second_email,
+                "smtp_password": "unused",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        second_account = resp.json()
+        second_account["email"] = second_email
+        wait_for_account_active(api_client, second_account["id"])
+
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        # Account switch.
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+        select_account(page, second_account)
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
+
+        select_account(page, ui_account)
+        expect(row).to_be_visible(timeout=15_000)
+        expect(row.get_by_role("checkbox")).not_to_be_checked()
+
+        # Navigate away to another view (Calendar) and back.
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+        page.get_by_role("link", name="Calendar", exact=True).click()
+        page.wait_for_timeout(800)
+        page.get_by_role("link", name="Mail", exact=True).click()
+        expect(row).to_be_visible(timeout=15_000)
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
+        expect(row.get_by_role("checkbox")).not_to_be_checked()
+
+        # Threading toggle.
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
+
+
+def _rect(locator: Any) -> dict[str, float]:
+    box = locator.bounding_box()
+    assert box is not None, "locator resolved to no element with a layout box"
+    return box
+
+
+def _overlaps(a: dict[str, float], b: dict[str, float]) -> bool:
+    ax0, ax1 = a["x"], a["x"] + a["width"]
+    ay0, ay1 = a["y"], a["y"] + a["height"]
+    bx0, bx1 = b["x"], b["x"] + b["width"]
+    by0, by1 = b["y"], b["y"] + b["height"]
+    return max(ax0, bx0) < min(ax1, bx1) and max(ay0, by0) < min(ay1, by1)
+
+
+class TestRowControlLayoutUi:
+    """The row's persistent controls -- the star once a message is
+    flagged, the read/unread icon, its timestamp -- sit in the row's own
+    header line rather than in the floating group that only appears on
+    hover. A message with no body renders no snippet, which is the row's
+    shortest shape and the one with the least room to spare; a floating
+    group sized or positioned to assume there is always a third line
+    lands on top of the header line's own controls on exactly this shape.
+    """
+
+    def test_the_header_lines_own_controls_are_never_covered_by_the_hover_only_ones(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        subject = f"No snippet {uuid.uuid4()}"
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], subject, body="",
+        )
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+        # The hover-revealed group opacity-transitions in; give it time to
+        # actually reach its resting position before reading its box.
+        page.wait_for_timeout(300)
+
+        read_icon = _rect(row.get_by_title("Mark as read"))
+        timestamp = _rect(row.locator("span.text-xs.text-muted-foreground").first)
+        # "Archive"/"Move to Junk" alone, not exact: threading is on by
+        # default for this account's shared view state, which appends
+        # " (latest message in thread)" to both titles.
+        archive = _rect(row.get_by_title(re.compile(r"^Archive")))
+        junk = _rect(row.get_by_title(re.compile(r"^Move to Junk")))
+
+        assert not _overlaps(read_icon, archive)
+        assert not _overlaps(read_icon, junk)
+        assert not _overlaps(timestamp, archive)
+        assert not _overlaps(timestamp, junk)
 
 
 def _channels(colour: str) -> list[float]:

@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue } from "jotai";
-import { Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
+import { AlertCircle, Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
 
 import { MailListItem } from "@/components/mail/mail-list-item";
 import { UnifiedMailItem } from "@/components/mail/unified-mail-item";
@@ -13,6 +13,8 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
 import { useFolders } from "@/hooks/use-folders";
+import { useAccount } from "@/hooks/use-accounts";
+import { accountConnectionState, useSyncStatus } from "@/hooks/use-sync-status";
 import { useUnifiedMails } from "@/hooks/use-unified-view";
 import { useClearSelection, useSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
@@ -94,6 +96,34 @@ export function MailList() {
   const clearSelection = useClearSelection();
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
+
+  // A selection is scoped to the list it was made in (see
+  // effectiveSelectionAtom): a change to any of these four values is
+  // already a scope mismatch, so the guard alone empties it for a folder
+  // switch, an account switch and a threading toggle. It does NOT cover
+  // leaving the mail view for another one (Calendar, say) and coming back
+  // to the very same folder -- none of these four values change across
+  // that round trip, so the guard sees no mismatch at all. This effect is
+  // what actually clears it for that case: `MailList` unmounts when the
+  // route changes and this runs again on the fresh mount, regardless of
+  // whether any of its own dependencies moved. It is not a belt-and-braces
+  // convenience on top of the guard -- for the view-round-trip shape, it
+  // is the only thing that does the clearing.
+  useEffect(() => {
+    clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, folderId, isUnifiedView, selectedUnifiedFolder, threaded]);
+
+  // An account stuck in `error` with no completed sync pass never gets a
+  // folder to auto-select, so the loading state below would otherwise
+  // spin forever with nothing telling the reader why -- the Accounts page
+  // already has this predicate; read it from the same place rather than
+  // recomputing "is this account broken" here.
+  const { data: currentAccount } = useAccount(isUnifiedView ? null : accountId);
+  const { data: currentSyncStatus } = useSyncStatus(isUnifiedView ? null : accountId);
+  const neverConnected =
+    !!currentAccount &&
+    accountConnectionState(currentAccount, currentSyncStatus) === "never_connected";
 
   // Threading is a single-account concept (thread_id groups per-account folders).
   const unifiedResult = useUnifiedMails(
@@ -269,6 +299,16 @@ export function MailList() {
   }
 
   if (!folderId && !isUnifiedView) {
+    if (neverConnected) {
+      return (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+          <AlertCircle className="h-8 w-8 text-destructive" />
+          <p className="text-sm text-destructive">
+            {currentAccount?.state_error ?? "This account has never connected"}
+          </p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
         <Loader2 className="h-8 w-8 animate-spin opacity-50" />

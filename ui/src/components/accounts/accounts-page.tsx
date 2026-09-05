@@ -53,7 +53,7 @@ import {
   useUpdateAccount,
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
-import { useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
+import { accountConnectionState, useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
 import type {
   AccountCreateRequest,
   AccountResponse,
@@ -101,12 +101,7 @@ function AccountCard({
   const triggerSync = useTriggerSync();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  // PostIMAP retries a failed account unboundedly with exponential backoff, so
-  // "error" means "having a bad time", not "dead". An account that has completed
-  // a full sync before is being retried and recovers on its own; one that never
-  // has is misconfigured and needs the user. last_full_sync separates the two.
-  const hasSyncedBefore = syncStatus?.last_full_sync != null;
-  const isRetrying = account.state === "error" && hasSyncedBefore;
+  const isRetrying = accountConnectionState(account, syncStatus) === "retrying";
 
   const badgeInfo = isRetrying
     ? { variant: "outline" as const, label: "Retrying" }

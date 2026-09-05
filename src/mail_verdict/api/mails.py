@@ -834,6 +834,24 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
             resolved.update(await _resolve_explicit_ids(session, account_id, request.ids))
         message_ids = list(resolved)
 
+    # A caller that showed a count to a user before sending this request
+    # (an "empty this folder" confirmation, most concretely) repeats it
+    # back here -- checked against what actually resolves now, not what
+    # was true when it was minted. Mirrors folder deletion's own
+    # confirm_message_count gate: a stale or optimistically-adjusted count
+    # must not be able to make an irreversible write look confirmed when
+    # it wasn't. Most actions pass nothing and skip this entirely.
+    confirmed = request.confirm_message_count
+    if confirmed is not None and confirmed != len(message_ids):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This resolves to {len(message_ids)} message(s) now, not the "
+                f"{confirmed} confirmed. Repeat the request "
+                f"with confirm_message_count={len(message_ids)} to proceed."
+            ),
+        )
+
     if not message_ids:
         return BulkActionResponse(success=True, action=request.action, affected_count=0)
 

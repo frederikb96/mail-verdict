@@ -127,7 +127,12 @@ export function MailListItem({
         </div>
       </div>
 
-      {/* Content -- always the row's full width; controls float over it. */}
+      {/* Content -- always the row's full width; the hover-only controls
+          below float over it. Star (once flagged) and the read/unread icon
+          are the two controls a row shows *persistently*, not only on
+          hover, so they live here instead -- a real, reserved slot next to
+          the timestamp, never the row's vertical centre line, which for a
+          two-line row (no snippet) sits across the very text above. */}
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
         <div className="flex items-center gap-2">
           {/* Unread dot */}
@@ -145,9 +150,47 @@ export function MailListItem({
           {mail.pending_sync && (
             <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
           )}
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {formatRelativeDate(mail.received_at)}
-          </span>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <button
+              className={cn(
+                "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+                !mail.is_flagged && revealOnHoverClass,
+              )}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAction?.(mail.id, mail.is_flagged ? "unflag" : "flag");
+              }}
+              title={mail.is_flagged ? "Unstar" : "Star"}
+              aria-label={mail.is_flagged ? "Unstar" : "Star"}
+            >
+              <Star
+                className={cn(
+                  "h-3.5 w-3.5",
+                  mail.is_flagged
+                    ? "fill-yellow-400 text-yellow-400"
+                    : "text-muted-foreground",
+                )}
+              />
+            </button>
+            <button
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read");
+              }}
+              title={mail.is_seen ? "Mark as unread" : "Mark as read"}
+              aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
+            >
+              {mail.is_seen ? (
+                <MailIcon className="h-3.5 w-3.5" />
+              ) : (
+                <MailOpen className="h-3.5 w-3.5" />
+              )}
+            </button>
+            <span className="text-xs text-muted-foreground">
+              {formatRelativeDate(mail.received_at)}
+            </span>
+          </div>
         </div>
         <div className="flex items-center gap-1.5 truncate text-sm text-muted-foreground">
           <span className="truncate">{mail.subject ?? "(no subject)"}</span>
@@ -165,35 +208,26 @@ export function MailListItem({
       </div>
 
       {/*
-        Floating controls: positioned over the row rather than reserved in
-        its flex layout, vertically centered so they never cover the
-        timestamp sitting at the very top of the row. Every button stays
-        in the DOM at all times -- only opacity/pointer-events toggle on
-        hover or focus -- so nothing shifts under the pointer as the row
-        reveals itself.
+        Floating controls: only ever offered on hover or keyboard focus, a
+        momentary interaction, so they stay positioned over the row rather
+        than reserved in its flex layout. Star and read/unread are not in
+        this group: both can be visible with no hover at all (a flagged
+        star, the read icon always), so they live in the header line above
+        instead, in a slot that's never covering text -- which is why this
+        group is anchored from the top (`top-9`) rather than from the
+        bottom: the row's shortest shape has no room to spare below the
+        header line, and a bottom anchor's own position shifts with row
+        height, so it can end up right against that line rather than
+        clear of it. All four sit in one row rather than Delete stacked
+        in a row of its own above this one, for the same reason: no
+        clearance left over for a second band. Delete keeps a wider gap
+        from its neighbours instead, and its own hover colour, so a reach
+        for Archive or Junk doesn't land on it by mistake. Every button
+        here stays in the DOM at all times -- only opacity/pointer-events
+        toggle on hover or focus -- so nothing shifts under the pointer as
+        the row reveals itself.
       */}
-      <div className="pointer-events-none absolute inset-y-0 right-2 flex items-center gap-0.5">
-        <button
-          className={cn(
-            "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            !mail.is_flagged && revealOnHoverClass,
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAction?.(mail.id, mail.is_flagged ? "unflag" : "flag");
-          }}
-          title={mail.is_flagged ? "Unstar" : "Star"}
-          aria-label={mail.is_flagged ? "Unstar" : "Star"}
-        >
-          <Star
-            className={cn(
-              "h-4 w-4",
-              mail.is_flagged
-                ? "fill-yellow-400 text-yellow-400"
-                : "text-muted-foreground",
-            )}
-          />
-        </button>
+      <div className="pointer-events-none absolute top-9 right-2 flex items-center gap-0.5">
         <button
           className={cn(
             "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
@@ -240,38 +274,20 @@ export function MailListItem({
           </button>
         )}
         <button
-          className="pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          className={cn(
+            "pointer-events-auto ml-2 rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
+            revealOnHoverClass,
+          )}
           onClick={(e) => {
             e.stopPropagation();
-            onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read");
+            onAction?.(mail.id, "trash");
           }}
-          title={mail.is_seen ? "Mark as unread" : "Mark as read"}
-          aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
+          title={`Move to trash${threadSuffix}`}
+          aria-label={`Move to trash${threadSuffix}`}
         >
-          {mail.is_seen ? (
-            <MailIcon className="h-4 w-4" />
-          ) : (
-            <MailOpen className="h-4 w-4" />
-          )}
+          <Trash2 className="h-4 w-4 text-muted-foreground" />
         </button>
       </div>
-
-      {/* Delete sits apart from the rest, lower right, so a reach for
-          Archive or Junk doesn't land on it by mistake. */}
-      <button
-        className={cn(
-          "absolute bottom-1.5 right-2 rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
-          revealOnHoverClass,
-        )}
-        onClick={(e) => {
-          e.stopPropagation();
-          onAction?.(mail.id, "trash");
-        }}
-        title={`Move to trash${threadSuffix}`}
-        aria-label={`Move to trash${threadSuffix}`}
-      >
-        <Trash2 className="h-4 w-4 text-muted-foreground" />
-      </button>
     </div>
   );
 }

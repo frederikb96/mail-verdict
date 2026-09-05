@@ -379,6 +379,10 @@ export type BulkActionTarget = { ids?: string[]; scope?: BulkActionScope };
 export type BulkActionRequest = BulkActionTarget & {
   action: BulkActionType;
   target_folder_id?: string;
+  /** Repeats back a count already shown to the user before this request
+   * was sent -- the server 409s naming the current count if it disagrees,
+   * rather than acting on a number nobody actually confirmed. */
+  confirm_message_count?: number;
 };
 
 export interface BulkActionResponse {

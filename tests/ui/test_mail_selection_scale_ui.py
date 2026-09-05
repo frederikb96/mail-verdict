@@ -128,6 +128,83 @@ class TestLargeMailboxSelectionUi:
         expect(second_row.get_by_role("checkbox")).not_to_be_checked()
         expect(third_row.get_by_role("checkbox")).to_be_checked()
 
+    def test_shift_click_after_a_ctrl_click_untick_extends_rather_than_deselects(
+        self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
+    ) -> None:
+        """A shift-click always selects the range it spans, never
+        deselects it, whatever the anchor row's own ticked state happens
+        to be -- Outlook and Gmail both treat shift-click as "extend the
+        selection to here" unconditionally. Reproduces the shape that
+        made this a product decision: tick a range, ctrl-click-untick one
+        row in the middle (making it the anchor, unticked), then
+        shift-click further along. Before this was fixed, that shift-click
+        painted the whole range with the anchor's own (unticked) state,
+        so ticking one row off *lost* five others; it must instead pick
+        up every row the range spans, including the one just unticked."""
+        account_id, _folder_id, message_ids = big_mailbox
+        rows = [mail_row(page, message_ids[-1 - i]) for i in range(7)]
+
+        _open_big_mailbox(page, app_server, account_id)
+        expect(rows[0]).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        # Tick rows 0..4 (5 selected): a checkbox click sets the anchor,
+        # a shift-click on row 4's text extends the range to it.
+        rows[0].hover()
+        rows[0].get_by_role("checkbox").click()
+        rows[4].click(modifiers=["Shift"])
+        expect(page.get_by_text("5 selected", exact=True)).to_be_visible(timeout=10_000)
+
+        # Ctrl-click-untick row 2: a plain checkbox click toggles that one
+        # row and becomes the new (now-unticked) anchor.
+        rows[2].get_by_role("checkbox").click()
+        expect(page.get_by_text("4 selected", exact=True)).to_be_visible(timeout=10_000)
+
+        # Shift-click row 6, extending from the unticked anchor at row 2.
+        rows[6].click(modifiers=["Shift"])
+        expect(page.get_by_text("7 selected", exact=True)).to_be_visible(timeout=10_000)
+        for i in range(7):
+            expect(rows[i].get_by_role("checkbox")).to_be_checked()
+
+    def test_predicate_trash_confirm_names_the_action_it_performs(
+        self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
+    ) -> None:
+        """A predicate's destructive-action confirm dialog names what it
+        is actually about to do -- "Move to trash" -- rather than
+        ConfirmDialog's own default "Delete permanently" leaking through,
+        which it did for every action this dialog serves (move, spam,
+        trash alike): a reversible move confirmed with a button that
+        reads like an irreversible deletion. Cancelled rather than
+        confirmed -- this mailbox is shared with other tests in this
+        module."""
+        account_id, _folder_id, message_ids = big_mailbox
+        top_row = mail_row(page, message_ids[-1])
+
+        _open_big_mailbox(page, app_server, account_id)
+        expect(top_row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        top_row.hover()
+        top_row.get_by_role("checkbox").click()
+        page.get_by_role("button", name="Select", exact=True).click()
+        page.get_by_role("menuitem", name="Every message in this folder", exact=True).click()
+        # Not pinned to _MAILBOX_SIZE exactly: an earlier test in this
+        # module may have inserted one more message into the same shared
+        # mailbox.
+        expect(page.get_by_text(re.compile(r"^\d+ selected$"))).to_be_visible(timeout=15_000)
+
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to trash", exact=True,
+        ).click()
+
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_be_visible(timeout=10_000)
+        expect(dialog.get_by_text(re.compile(r"^Move to trash \d+ messages\?$"))).to_be_visible()
+        expect(dialog.get_by_role("button", name="Delete permanently")).to_have_count(0)
+        expect(dialog.get_by_role("button", name="Move to trash", exact=True)).to_be_visible()
+        dialog.get_by_role("button", name="Cancel", exact=True).click()
+        expect(dialog).to_have_count(0)
+
     def test_scrolling_does_not_grow_the_persisted_query_cache(
         self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
     ) -> None:
@@ -215,6 +292,42 @@ class TestLargeMailboxSelectionUi:
         assert len(list_requests) <= 3, (
             f"a single arriving message issued {len(list_requests)} requests to "
             f"the mail list endpoint on a deeply-scrolled folder: "
+            f"{[r.url for r in list_requests]}"
+        )
+
+    def test_refocusing_the_window_does_not_replay_every_loaded_page(
+        self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
+    ) -> None:
+        """TanStack's own refetch-on-window-focus replays an infinite
+        query's every already-fetched page exactly the way a plain
+        invalidate does -- unaffected by the bounded helper that guards
+        the SSE path, and reachable by nothing more than alt-tabbing back
+        to the browser. `visibilitychange` is what its focus manager
+        actually listens for; the document need not really have been
+        hidden for it to treat this as a refocus."""
+        account_id, _folder_id, _message_ids = big_mailbox
+
+        _open_big_mailbox(page, app_server, account_id)
+        expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
+
+        list_area = page.locator('[data-testid="mail-row"]').first
+        list_area.hover()
+        for _ in range(40):
+            page.mouse.wheel(0, 4000)
+        page.wait_for_timeout(2000)
+
+        list_requests: list[Request] = []
+        page.on(
+            "request",
+            lambda req: list_requests.append(req) if "/messages" in req.url else None,
+        )
+
+        page.evaluate("() => window.dispatchEvent(new Event('visibilitychange'))")
+        page.wait_for_timeout(3000)
+
+        assert len(list_requests) <= 3, (
+            f"refocusing the window issued {len(list_requests)} requests to the "
+            f"mail list endpoint on a deeply-scrolled folder: "
             f"{[r.url for r in list_requests]}"
         )
 

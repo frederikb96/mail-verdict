@@ -200,6 +200,18 @@ export function AppSidebar() {
     setSelectedFolderId,
   ]);
 
+  // Auto-select the first unified folder when switching into the unified
+  // view -- without this, the list area reads "No messages in this
+  // folder" (the same empty state a genuinely empty folder shows) rather
+  // than the honest "nothing chosen yet" it actually is, until the reader
+  // clicks one by hand.
+  useEffect(() => {
+    if (!isUnified || selectedUnifiedFolder) return;
+    if (unifiedFolders && unifiedFolders.length > 0) {
+      setSelectedUnifiedFolder(unifiedFolders[0].unified_name);
+    }
+  }, [isUnified, selectedUnifiedFolder, unifiedFolders, setSelectedUnifiedFolder]);
+
   /** Select a folder and navigate to the mail view if on a different page. */
   const handleFolderSelect = (folderId: string) => {
     setSelectedFolderId(folderId);
