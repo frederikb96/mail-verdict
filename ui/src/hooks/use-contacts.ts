@@ -101,6 +101,33 @@ export function useContactByEmail(email: string | null) {
   });
 }
 
+/** The whole address book's sender-avatar photos, for a mail or search
+ * list row to read synchronously as it renders -- one request per
+ * distinct account rendered (TanStack Query dedupes identical keys
+ * across however many rows call this with the same `accountId`), never
+ * one per row and never re-fetched as rows scroll into view. A long
+ * staleTime matters more here than for the rest of this file: a list can
+ * hold thousands of rows across a session, and none of them should pay
+ * for a background refetch just by staying mounted.
+ *
+ * `refetchOnMount: false` overrides this app's global "always" default
+ * (providers.tsx) specifically for this query -- with that default left
+ * in place, virtualization defeats the dedup above entirely: every row
+ * that scrolls into view mounts a fresh `useQuery` call, and "always"
+ * means each one refetches regardless of the identical key already
+ * holding fresh data. A scroll through a large mailbox reissued this
+ * request dozens of times before this override, one per batch of rows
+ * mounting -- exactly the per-viewport-entry request this hook exists to
+ * not have. */
+export function useContactPhotoIndex(accountId: string | null) {
+  return useQuery({
+    queryKey: ["contact-photo-index", accountId ?? "none"],
+    queryFn: () => api.contacts.photoIndex(accountId),
+    staleTime: 5 * 60_000,
+    refetchOnMount: false,
+  });
+}
+
 /** Debounced, abortable search for the compose recipient autocomplete. The
  * server does the filtering (`filter={null}` on the combobox); this hook
  * only owns the debounce and cancellation of the in-flight request. */

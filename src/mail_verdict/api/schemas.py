@@ -1348,6 +1348,30 @@ class ContactListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class ContactPhotoIndexEntry(BaseModel):
+    """One row's worth of what a sender-avatar lookup needs, already
+    resolved server-side -- never `kind`/`url` for a caller to re-judge.
+    `photo_url` is always safe to put directly in an `<img src>`: either
+    this application's own same-origin photo endpoint (an embedded
+    photo, fetched only for a contact actually rendered on screen and
+    cacheable by the browser after that), or -- only once the account
+    given to the index request has that sender allowlisted -- the
+    photo's real third-party address, exactly as an allowlisted
+    message's own remote images are handled."""
+
+    contact_id: uuid.UUID
+    photo_url: str
+
+
+class ContactPhotoIndexResponse(BaseModel):
+    """Keyed by lower-cased email address. One request for the whole
+    address book, meant to be cached client-side with a long staleTime
+    and read synchronously as list rows render -- never one request per
+    row or per sender scrolled into view."""
+
+    by_email: dict[str, ContactPhotoIndexEntry]
+
+
 class ContactSearchHitOut(BaseModel):
     contact_id: uuid.UUID
     name: str

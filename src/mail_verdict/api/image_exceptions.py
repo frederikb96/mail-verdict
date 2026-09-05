@@ -13,7 +13,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from mail_verdict.api.schemas import (
     ImageExceptionCreate,
@@ -24,6 +24,50 @@ from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, ImageException, ImageExceptionType
 
 logger = logging.getLogger(__name__)
+
+
+async def is_sender_image_allowed(account_id: uuid.UUID, from_addr: str | None) -> bool:
+    """
+    Whether a sender's remote content is on this account's allowlist --
+    the message body's own remote images and a remote-URL contact photo
+    keyed to the same sender both mean the same thing by this check, so
+    both call this rather than each matching sender/domain on their own.
+
+    Args:
+        account_id: Account to check exceptions for
+        from_addr: Sender email address
+
+    Returns:
+        True if sender or domain is in the exception allowlist
+    """
+    if not from_addr:
+        return False
+
+    email = extract_sender_email(from_addr)
+    domain = extract_sender_domain(from_addr)
+
+    db = get_db_connection()
+    async with db.session() as session:
+        conditions = []
+        if email:
+            conditions.append(
+                (ImageException.exception_type == ImageExceptionType.SENDER)
+                & (ImageException.value == email)
+            )
+        if domain:
+            conditions.append(
+                (ImageException.exception_type == ImageExceptionType.DOMAIN)
+                & (ImageException.value == domain)
+            )
+        if not conditions:
+            return False
+
+        result = await session.execute(
+            select(ImageException.id)
+            .where(ImageException.account_id == account_id, or_(*conditions))
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
 router = APIRouter(prefix="/accounts/{account_id}/image-exceptions", tags=["image-exceptions"])
 

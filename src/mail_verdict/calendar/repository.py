@@ -339,6 +339,22 @@ class DavObjectRepository:
                     return obj
         return None
 
+    async def list_ids_and_data(self) -> list[tuple[uuid.UUID, str]]:
+        """Every non-deleted contact's id and raw vCard body -- not paged,
+        unlike `search_contacts`. The one caller (the sender-avatar photo
+        index) has to match against the whole address book regardless of
+        where alphabetically a contact sits, and a page of embedded photo
+        bytes is exactly the size problem that endpoint exists to avoid --
+        selecting only `id, data` here keeps this proportional to address
+        book size, not to what any one contact's `data` happens to hold."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(DavObject.id, DavObject.data).where(
+                    DavObject.kind == "addressbook", DavObject.deleted_at.is_(None),
+                )
+            )
+            return [(row.id, row.data) for row in result.all()]
+
     async def get_unresolved_errors(
         self, object_ids: list[uuid.UUID],
     ) -> dict[uuid.UUID, str]:

@@ -10,15 +10,21 @@ in isolation.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import concurrent.futures
 import uuid
 from typing import Any
 
 import httpx
 import pytest
-from playwright.sync_api import Browser, Page, expect
+from playwright.sync_api import Browser, Page, Request, expect
 
+from mail_verdict.config.loader import DatabaseConfig
+from mail_verdict.database.connection import DatabaseConnection
 from tests.e2e.helpers import wait_for_dav_account_active, wait_for_dav_collection
 from tests.setup.dav_helpers import create_addressbook, discover
+from tests.setup.large_mailbox import build_large_mailbox
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
     mail_row,
@@ -449,3 +455,166 @@ class TestSenderAvatar:
         photo = header.locator('[data-slot="avatar-image"]')
         expect(photo).to_be_visible(timeout=10_000)
         assert photo.get_attribute("src") == photo_data_url
+
+    def test_a_matching_contacts_embedded_photo_shows_in_the_mail_list_row_too(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        rendering_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        avatar_addressbook: dict[str, Any],
+    ) -> None:
+        """The reading pane isn't the only place a sender's avatar shows --
+        the mail list row does too, read from one bulk photo index rather
+        than a request of its own (see mail-list-item.tsx)."""
+        sender_email = "list-photo-sender@example.com"
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": avatar_addressbook["id"],
+                "summary": "List Photo Sender",
+                "emails": [{"email": sender_email}],
+                "photo_data_url": _TINY_GIF,
+            },
+        )
+        assert created.status_code == 201, created.text
+        contact_id = created.json()["id"]
+
+        target = _deliver_html(
+            api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
+            inbox_folder["id"], "UI list avatar photo test",
+            "<p>hello</p>",
+            sender=f"List Photo Sender <{sender_email}>",
+        )
+
+        page.goto(app_server)
+        select_account(page, rendering_account)
+
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        photo = row.locator('[data-slot="avatar-image"]')
+        expect(photo).to_be_visible(timeout=10_000)
+        # The index's photo_url for an embedded photo is this application's
+        # own same-origin endpoint, not the raw data: URI -- keeps the bulk
+        # index itself free of photo bytes (see get_photo_index).
+        assert photo.get_attribute("src") == f"/api/contacts/{contact_id}/photo"
+
+        streamed = api_client.get(f"/api/contacts/{contact_id}/photo")
+        assert streamed.status_code == 200
+        assert streamed.headers["content-type"] == "image/gif"
+        assert streamed.content == base64.b64decode(_TINY_GIF.split(",", 1)[1])
+
+
+_AVATAR_SCALE_MAILBOX_SIZE = 1200
+
+
+@pytest.fixture(scope="module")
+def avatar_scale_mailbox(postgres_url: str) -> tuple[str, str]:
+    """A bare account with `_AVATAR_SCALE_MAILBOX_SIZE` messages spread
+    across 50 distinct senders (`seed_large_mailbox`'s own convention),
+    to prove the photo index against a mailbox large enough that the
+    client never holds every row -- the same scale
+    test_mail_selection_scale_ui.py uses for the same reason. Bridged
+    through its own thread the way that module's `big_mailbox` fixture
+    is, for the same reason: Playwright's sync API makes a loop appear
+    "running" on the main thread for the duration of the browser
+    fixtures, and asyncio.run() refuses to nest inside one already
+    running."""
+
+    async def _seed() -> tuple[str, str]:
+        connection = DatabaseConnection(
+            DatabaseConfig(url=postgres_url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+        )
+        await connection.init()
+        try:
+            async with connection.session() as session:
+                account_id, _folder_id, _message_ids = await build_large_mailbox(
+                    session, _AVATAR_SCALE_MAILBOX_SIZE,
+                )
+                await session.commit()
+        finally:
+            await connection.close()
+        return str(account_id), f"large-mailbox-{account_id}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _seed()).result()
+
+
+class TestAvatarPhotoIndexAtScale:
+    """The photo index exists specifically so a virtualized list over many
+    thousand messages never ties a network call to a row entering the
+    viewport -- proven here against the scale the concern is about,
+    rather than against the handful of rows the other tests in this
+    module seed."""
+
+    def test_one_request_serves_the_whole_scroll_and_virtualization_still_holds(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        avatar_addressbook: dict[str, Any],
+        avatar_scale_mailbox: tuple[str, str],
+    ) -> None:
+        account_id, account_name = avatar_scale_mailbox
+        # seed_large_mailbox cycles 50 senders as sender{n}@example.com;
+        # matching one of them puts a real photo on roughly 1 row in 50
+        # without needing this test to control individual messages.
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": avatar_addressbook["id"],
+                "summary": "Scale Sender",
+                "emails": [{"email": "sender0@example.com"}],
+                "photo_data_url": _TINY_GIF,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        photo_index_requests: list[str] = []
+
+        def _record(req: Request) -> None:
+            if "/contacts/photo-index" in req.url:
+                photo_index_requests.append(req.url)
+
+        page.on("request", _record)
+
+        page.goto(app_server)
+        select_account(page, {"name": account_name})
+
+        rows = page.locator('[data-testid="mail-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+        assert len(photo_index_requests) == 1, photo_index_requests
+
+        # Scroll deep enough to unload and remount rows repeatedly -- the
+        # same "hover the list, 30 wheel steps of 4000px" shape
+        # test_mail_selection_scale_ui.py uses to prove virtualization
+        # survives a long scroll (the hover matters: a wheel event
+        # targets whatever is under the pointer, not the page as a
+        # whole). One row in 50 matches the seeded contact, so a
+        # virtualized DOM shows it only while that row happens to be
+        # mounted -- checked after every step rather than assuming it
+        # lands in view at either endpoint.
+        rows.first.hover()
+        photo = rows.locator('[data-slot="avatar-image"]').first
+        seen_the_photo = photo.count() > 0
+        for _ in range(30):
+            page.mouse.wheel(0, 4000)
+            seen_the_photo = seen_the_photo or photo.count() > 0
+        mounted_at_bottom = rows.count()
+        assert mounted_at_bottom < 60, (
+            f"{mounted_at_bottom} mail rows mounted at once -- virtualization "
+            "looks broken, not just a wide viewport"
+        )
+        assert len(photo_index_requests) == 1, (
+            f"expected exactly one photo-index request for the whole scroll, got "
+            f"{len(photo_index_requests)}: {photo_index_requests}"
+        )
+
+        for _ in range(30):
+            page.mouse.wheel(0, -4000)
+            seen_the_photo = seen_the_photo or photo.count() > 0
+        expect(rows.first).to_be_visible(timeout=10_000)
+        assert len(photo_index_requests) == 1, photo_index_requests
+        assert seen_the_photo, "the seeded contact's photo never appeared across the scroll"

@@ -167,10 +167,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings category the interface expects but the server didn't return now explains that the
   interface and the server may disagree on which categories exist, rather than saying nothing
   more than "No settings available for this category"
-- A sender's avatar in an open thread now shows their address-book contact's photo, when one
-  matches -- an embedded photo renders with no request of its own; a remote photo URL only
-  renders once the sender is on the same allowlist that already gates the message's own remote
-  images
+- A sender's avatar -- in an open thread, in the mail list and in the unified view -- now shows
+  their address-book contact's photo, when one matches. An embedded photo renders with no request
+  of its own; a remote photo URL only renders once the sender is on the same allowlist that
+  already gates the message's own remote images. The mail list reads every row's photo from one
+  bulk lookup per account rather than a request per row or per sender scrolled into view
 - A contact photo far larger than any reasonable upload is rejected server-side rather than
   reaching the vCard and the CardDAV server it syncs to unbounded
 - Editing a contact's photo or categories now removes every existing line of that kind rather

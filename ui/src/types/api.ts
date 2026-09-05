@@ -993,6 +993,20 @@ export interface ContactListResponse {
   next_cursor: string | null;
 }
 
+/** Already resolved server-side -- always safe to put straight into an
+ * `<img src>`. See ContactPhotoIndexResponse. */
+export interface ContactPhotoIndexEntry {
+  contact_id: string;
+  photo_url: string;
+}
+
+/** One request for the whole address book's sender-avatar photos, keyed
+ * by lower-cased email -- meant to be cached with a long staleTime and
+ * read synchronously as mail rows render, never re-requested per row. */
+export interface ContactPhotoIndexResponse {
+  by_email: Record<string, ContactPhotoIndexEntry>;
+}
+
 export interface ContactSearchHit {
   contact_id: string;
   name: string;
