@@ -116,6 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A toast announces itself to a screen reader. The stack had no role and no live region, so a
+  failed write said nothing at all to anyone not looking at that corner of the screen
 - A calendar can be chosen as the default for new events again. The setting existed and
   everything downstream of it worked, but no value could ever be stored: a setting whose default is
   `null` had its expected type inferred from that `null`, so the only value it would accept was
