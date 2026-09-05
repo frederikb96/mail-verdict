@@ -17,13 +17,24 @@ import asyncio
 import concurrent.futures
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
+import httpx
 import pytest
 from playwright.sync_api import Page, expect
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, Table, Text, Uuid, insert, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from tests.e2e.helpers import wait_for_dav_account_active, wait_for_dav_collection
+from tests.setup.dav_helpers import create_addressbook, discover
 from tests.ui.helpers import unique_email
+
+from tests.setup.containers import RADICALE_ALIAS, RADICALE_PORT  # isort: skip
+
+# A real GIF, not a placeholder string -- see test_mail_rendering_ui.py's
+# own copy of this constant for why the avatar test needs actual image
+# bytes rather than an arbitrary base64 string.
+_TINY_GIF = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
 
 _MATCH_COUNT = 1500
 _MARKER = "scaletestmarker"
@@ -255,3 +266,137 @@ class TestQueryPersistence:
         page.go_back()
         expect(page).to_have_url(f"{app_server}/search")
         expect(search_input).to_have_value(_MARKER)
+
+
+_AVATAR_MARKER = "searchavatartestmarker"
+_AVATAR_SENDER = "search-avatar-sender@example.com"
+
+
+def _seed_avatar_fixture(postgres_url: str) -> tuple[str, str]:
+    """One account, one folder, one message from `_AVATAR_SENDER` -- the
+    single row this class's avatar test needs, seeded the same way
+    `_seed_scale_fixture` above is, but for a single, specific sender
+    rather than a spread of them."""
+
+    async def _run() -> tuple[str, str]:
+        engine = create_async_engine(postgres_url)
+        account_id = uuid.uuid4()
+        folder_id = uuid.uuid4()
+        async with engine.begin() as conn:
+            email = unique_email("search-avatar")
+            await conn.execute(
+                text(
+                    "INSERT INTO accounts "
+                    "(id, name, imap_host, imap_port, imap_user, imap_password) "
+                    "VALUES (:id, :name, 'imap.example.com', 993, :email, "
+                    "'\\x00' || convert_to('pw', 'UTF8'))"
+                ),
+                {"id": account_id, "name": email, "email": email},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO folders (id, account_id, imap_name) "
+                    "VALUES (:id, :account_id, 'INBOX')"
+                ),
+                {"id": folder_id, "account_id": account_id},
+            )
+            table = Table(
+                "messages", MetaData(),
+                Column("id", Uuid), Column("account_id", Uuid), Column("folder_id", Uuid),
+                Column("imap_uid", BigInteger), Column("thread_id", Uuid),
+                Column("message_id", Text),
+                Column("subject", Text), Column("from_addr", Text),
+                Column("received_at", DateTime(timezone=True)),
+            )
+            message_id = uuid.uuid4()
+            await conn.execute(
+                insert(table),
+                [{
+                    "id": message_id, "account_id": account_id, "folder_id": folder_id,
+                    "imap_uid": 1, "thread_id": uuid.uuid4(),
+                    "message_id": f"<{message_id}@search-avatar.example.com>",
+                    "subject": f"{_AVATAR_MARKER} hello",
+                    "from_addr": f"Avatar Sender <{_AVATAR_SENDER}>",
+                    "received_at": datetime(2026, 1, 1, tzinfo=UTC),
+                }],
+            )
+        await engine.dispose()
+        return str(account_id), str(folder_id)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _run()).result()
+
+
+@pytest.fixture(scope="module")
+def avatar_fixture(postgres_url: str) -> tuple[str, str]:
+    return _seed_avatar_fixture(postgres_url)
+
+
+@pytest.fixture(scope="module")
+def search_avatar_addressbook_owner(radicale_endpoint: tuple[str, int]) -> str:
+    """An address book on the real Radicale server, owned by a fresh
+    principal -- see test_contacts_ui.py's `ui_addressbook_owner`, the
+    same pattern for the same reason."""
+    host, port = radicale_endpoint
+    base_url = f"http://{host}:{port}/"
+    username = f"search-avatar-{uuid.uuid4().hex[:8]}"
+    with httpx.Client(auth=(username, "unused"), timeout=10.0) as client:
+        principal = discover(client, base_url)
+        create_addressbook(client, principal, "search-avatar-book", "Search Avatar Book")
+    return username
+
+
+@pytest.fixture(scope="module")
+def search_avatar_addressbook(
+    api_client: httpx.Client, search_avatar_addressbook_owner: str,
+) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/dav-accounts",
+        json={
+            "name": f"Radicale-{uuid.uuid4().hex[:8]}",
+            "discovery_url": f"http://{RADICALE_ALIAS}:{RADICALE_PORT}/",
+            "username": search_avatar_addressbook_owner,
+            "password": "unused",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    dav_account = resp.json()
+    wait_for_dav_account_active(api_client, dav_account["id"])
+    return wait_for_dav_collection(api_client, dav_account["id"], "Search Avatar Book")
+
+
+class TestSenderAvatar:
+    """A search result row shows the same sender avatar the mail list and
+    the reading pane do -- read from the same bulk photo index, not a
+    request of its own (see search-result-row.tsx)."""
+
+    def test_a_matching_contacts_embedded_photo_shows_in_a_search_result_row(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        avatar_fixture: tuple[str, str],
+        search_avatar_addressbook: dict[str, Any],
+    ) -> None:
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": search_avatar_addressbook["id"],
+                "summary": "Avatar Sender",
+                "emails": [{"email": _AVATAR_SENDER}],
+                "photo_data_url": _TINY_GIF,
+            },
+        )
+        assert created.status_code == 201, created.text
+        contact_id = created.json()["id"]
+
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_AVATAR_MARKER)
+
+        row = page.locator('[data-testid="search-result-row"]').first
+        expect(row).to_be_visible(timeout=15_000)
+        photo = row.locator('[data-slot="avatar-image"]')
+        expect(photo).to_be_visible(timeout=10_000)
+        assert photo.get_attribute("src") == f"/api/contacts/{contact_id}/photo"
