@@ -11,6 +11,7 @@ import { useMemo, useState } from "react";
 import { useAtomValue } from "jotai";
 import { format, isSameDay, isToday, isWeekend, weekDays, weekNumber } from "@/lib/dates";
 import {
+  allDayInstant,
   assignLanes,
   WEEK_NUMBER_GUTTER_WIDTH,
   type SelectEventHandler,
@@ -71,8 +72,10 @@ export function MonthWeekRow({
       const spansMultipleDays = !isSameDay(start, new Date(end.getTime() - 1));
 
       if (e.all_day || spansMultipleDays) {
-        const startCol = Math.max(0, dayDiff(weekStart, start));
-        const endCol = Math.min(6, dayDiff(weekStart, new Date(end.getTime() - 1)));
+        const spanStart = e.all_day ? allDayInstant(e.dtstart) : start;
+        const spanEnd = e.all_day ? allDayInstant(e.dtend) : end;
+        const startCol = Math.max(0, dayDiff(weekStart, spanStart));
+        const endCol = Math.min(6, dayDiff(weekStart, new Date(spanEnd.getTime() - 1)));
         if (endCol < 0 || startCol > 6) continue;
         spanningItems.push({
           key: `${e.object_id}:${e.recurrence_id ?? "master"}`,

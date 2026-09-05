@@ -21,6 +21,7 @@ import { useCalendars } from "@/hooks/use-calendars";
 import { useDeleteEvent, useEventDetail } from "@/hooks/use-events";
 import { resolveCalendarColor } from "@/components/calendar/colors";
 import {
+  allDayInstant,
   deriveEventLook,
   eventDeletionNotice,
   isEventOrganizedBySelf,
@@ -174,7 +175,7 @@ export function EventPopover() {
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {event.all_day
-                      ? format(new Date(event.dtstart), "EEE, MMM d") + " · All day"
+                      ? format(allDayInstant(event.dtstart), "EEE, MMM d") + " · All day"
                       : `${format(new Date(event.dtstart), "EEE, MMM d · HH:mm")} – ${format(new Date(event.dtend), "HH:mm")}`}
                   </p>
                 </div>

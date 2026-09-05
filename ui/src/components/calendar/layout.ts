@@ -46,6 +46,22 @@ export type SelectEventHandler = (
  * header and each week row so the two stay aligned. */
 export const WEEK_NUMBER_GUTTER_WIDTH = 28;
 
+/** The calendar day an all-day event's dtstart/dtend names, as a local
+ * midnight Date. RFC 5545 VALUE=DATE carries no zone at all, and the API
+ * always encodes such a value as literal UTC midnight of the day it
+ * names (see calendar/ical.py's _to_datetime) -- so the day has to be
+ * read from the UTC date components, never from the instant's reading in
+ * the viewer's own zone. Reading it the ordinary way places a multi-day
+ * event a day late east of UTC and every all-day event a day early west
+ * of it, since the same stored instant crosses local midnight either
+ * way. A timed value, including one that merely spans midnight, is left
+ * to its own ordinary instant-based placement, which already accounts
+ * for the viewer's zone correctly. */
+export function allDayInstant(iso: string): Date {
+  const d = new Date(iso);
+  return new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+
 // --- Month view: spanning-bar lane assignment ---
 
 export interface SpanningItem {
