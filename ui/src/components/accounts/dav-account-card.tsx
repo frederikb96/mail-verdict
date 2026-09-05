@@ -232,7 +232,7 @@ export function DavAccountsSection() {
             <Plus className="mr-1 h-4 w-4" />
             Add server
           </DialogTrigger>
-          <DialogContent className="max-w-lg">
+          <DialogContent size="lg">
             <DialogHeader>
               <DialogTitle>Add a CalDAV/CardDAV server</DialogTitle>
             </DialogHeader>

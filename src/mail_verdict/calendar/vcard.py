@@ -105,6 +105,23 @@ def _split_content_line(line: str) -> tuple[str, dict[str, str], str] | None:
     return name, params, value
 
 
+def is_group(data: str) -> bool:
+    """Whether a vCard's own KIND property names it a group rather than
+    a person -- Nextcloud writes one such record per address-book group,
+    indistinguishable from an ordinary contact by any property PostIMAP
+    parses (its `summary`/`emails` columns come from FN/EMAIL exactly the
+    same way for both). No support for what a group's members are; only
+    for not presenting one as a person with no address."""
+    for line in _unfold_lines(data):
+        parsed = _split_content_line(line)
+        if parsed is None:
+            continue
+        name, _params, value = parsed
+        if name == "KIND":
+            return value.strip().lower() == "group"
+    return False
+
+
 _MIME_BY_TYPE_PARAM = {
     "JPEG": "image/jpeg", "JPG": "image/jpeg", "PNG": "image/png",
     "GIF": "image/gif", "WEBP": "image/webp",
@@ -156,6 +173,32 @@ def _extract_photo(data: str) -> ContactPhoto | None:
     return None
 
 
+def detect_photo(data: str) -> ContactPhoto | None:
+    """Whether a card carries a photo and where it comes from, with no
+    byte-level work at all -- unlike `_extract_photo`, this never
+    base64-decodes or re-encodes anything, so its cost is proportional
+    to the vCard's own text rather than to its photo. Every reader that
+    only needs to know a photo exists and where to fetch it -- a list
+    row, the sender-photo index, an autocomplete hit -- uses this;
+    `extract_photo_bytes()` below is the one place actual bytes are
+    produced, for one contact at a time, on request."""
+    for line in _unfold_lines(data):
+        parsed = _split_content_line(line)
+        if parsed is None:
+            continue
+        name, params, value = parsed
+        if name != "PHOTO":
+            continue
+        value = value.strip()
+        if not value:
+            return None
+        encoding = params.get("ENCODING", "").lower()
+        if encoding in ("b", "base64") or "BASE64" in params or value.startswith("data:"):
+            return ContactPhoto(kind="embedded", url="")
+        return ContactPhoto(kind="url", url=value)
+    return None
+
+
 _DATA_URL_RE = re.compile(r"^data:([\w.+-]+/[\w.+-]+)?;base64,(.*)$", re.DOTALL)
 
 
@@ -168,6 +211,40 @@ def decode_photo_data_url(data_url: str) -> tuple[str, bytes]:
     mime = match.group(1) or "application/octet-stream"
     raw = base64.b64decode(match.group(2))
     return mime, raw
+
+
+def extract_photo_bytes(data: str) -> tuple[str, bytes] | None:
+    """The real, one-shot decode of an embedded PHOTO -- what
+    `GET /contacts/:id/photo` streams. Reads the raw vCard text
+    directly rather than going through `_extract_photo`'s re-encoded
+    `data:` URI and decoding that a second time; `None` for a card with
+    no photo, a third-party `kind="url"` photo (nothing to stream), or
+    a stored value that will not decode."""
+    for line in _unfold_lines(data):
+        parsed = _split_content_line(line)
+        if parsed is None:
+            continue
+        name, params, value = parsed
+        if name != "PHOTO":
+            continue
+        value = value.strip()
+        if not value:
+            return None
+        encoding = params.get("ENCODING", "").lower()
+        if encoding in ("b", "base64") or "BASE64" in params:
+            try:
+                raw_bytes = base64.b64decode("".join(value.split()))
+            except (ValueError, binascii.Error):
+                return None
+            mime = _MIME_BY_TYPE_PARAM.get(params.get("TYPE", "").upper()) or _sniff_mime(raw_bytes)
+            return mime, raw_bytes
+        if value.startswith("data:"):
+            try:
+                return decode_photo_data_url(value)
+            except ValueError:
+                return None
+        return None  # a bare third-party URL has no bytes to stream
+    return None
 
 
 def _set_photo(card: Any, photo_data_url: str) -> None:
@@ -197,8 +274,15 @@ def _address_text(value: object) -> str:
     return ", ".join(p for p in parts if p)
 
 
-def parse_contact(data: str) -> ParsedContact:
-    """Parse a whole VCARD body into its structured fields."""
+def parse_contact(data: str, *, decode_photo: bool = True) -> ParsedContact:
+    """Parse a whole VCARD body into its structured fields.
+
+    `decode_photo=False` skips the base64 round-trip an embedded photo
+    would otherwise cost and reports only its presence and kind (see
+    `detect_photo()`) -- every caller that renders many contacts at once
+    (a list page, the sender-photo index, an autocomplete hit) passes
+    this, since none of them needs the bytes themselves; a single
+    contact's own detail view can afford the real ones."""
     card = vobject.readOne(data)
 
     summary = str(card.fn.value) if hasattr(card, "fn") else ""
@@ -238,7 +322,7 @@ def parse_contact(data: str) -> ParsedContact:
         cat_value = card.categories.value
         categories = list(cat_value) if isinstance(cat_value, list) else [str(cat_value)]
 
-    photo = _extract_photo(data)
+    photo = _extract_photo(data) if decode_photo else detect_photo(data)
 
     return ParsedContact(
         summary=summary, emails=emails, organization=organization, title=title,

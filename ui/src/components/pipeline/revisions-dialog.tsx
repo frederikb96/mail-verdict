@@ -28,7 +28,7 @@ export function RevisionsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[80vh] max-w-md overflow-y-auto">
+      <DialogContent size="md" className="max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Revision history</DialogTitle>
         </DialogHeader>

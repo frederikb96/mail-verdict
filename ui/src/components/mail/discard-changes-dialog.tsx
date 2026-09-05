@@ -28,7 +28,7 @@ export function DiscardChangesDialog({
 }: DiscardChangesDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Save this message?</DialogTitle>
         </DialogHeader>

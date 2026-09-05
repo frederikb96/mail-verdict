@@ -34,7 +34,7 @@ export function RecurrenceScopeDialog({
 }: RecurrenceScopeDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-sm">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Change recurring event</DialogTitle>
         </DialogHeader>

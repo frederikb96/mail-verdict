@@ -31,6 +31,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   re-marked read, and reopening a message that was left unread this way marks it read again on
   that fresh look, rather than being remembered as already-read for the rest of the session.
 
+### Mail list
+
+- A touch drag no longer fights scrolling: a vertical swipe scrolls the list exactly like any
+  other page, with no drag ghost and nothing picked up, while desktop drag-and-drop is unchanged.
+  A genuine long press on a touch device instead selects that message and enters multi-select.
+- Select-all is now offered in a threaded folder, not only the flat view -- it selects every
+  message in every matching conversation server-side, without loading them, and a single
+  always-visible checkbox above the list both starts and clears a whole-folder selection.
+- A new spam review screen lists every message the classifier currently calls spam with no
+  ruling yet, across every account and folder including Junk. A thumb up confirms it; a thumb
+  down corrects it and, for a message the pipeline already moved to Junk, moves it back to the
+  inbox. Accept-all and reject-all apply the same to everything currently listed.
+
+### Calendar
+
+- A dialog now renders at the width it actually asks for. The shared dialog component's own
+  default width was silently winning over every caller's override regardless of source order --
+  Tailwind emits responsive rules after plain ones, so a caller's plain `max-w-lg` never stood a
+  chance against the component's own `sm:max-w-sm`. A `size` prop replaces the raw override at
+  every call site, keeping the override in the same modifier group as the default so the last one
+  applied is the one that wins.
+- A to-do-only calendar collection (a Nextcloud task list, most commonly) is hidden from the
+  sidebar by default and never expanded for a month view, even when named explicitly -- there is
+  nothing a VEVENT-shaped expansion could ever find in one, so its objects are no longer fetched
+  or parsed at all. It can still be shown deliberately from the manage-calendars dialog.
+- A month view that exceeds its shared expansion budget now says so, both in the response and as
+  a warning next to the month title, rather than looking exactly like an empty month.
+- The manage-calendars dialog is redesigned around the width fix above: a calendar can be renamed
+  in place, and the row no longer duplicates the identity/invitation editing the Settings page
+  already validates -- it links there instead. The dialog now works at a phone width as well as a
+  desktop one.
+
+### Contacts
+
+- Fixed the contacts screen never loading, and everything else in the application stalling while
+  it tried: the sender-photo index parsed and decoded every contact's embedded photo on the
+  request thread, with nothing yielding the event loop, so a real address book blocked every other
+  request in the process for as long as the scan ran. The scan now runs on a bounded worker pool
+  with a timeout, the same pattern the calendar's month view already uses, and no longer decodes a
+  photo's bytes at all -- a contact's `photo.url` now always points at this application's own
+  `GET /contacts/{id}/photo`, fetched only for a contact actually rendered on screen and cacheable
+  by the browser afterward, instead of an inline `data:` URI computed for every row whether or not
+  anything displays it. Listing a page of contacts also no longer opens one database session per
+  row to re-fetch the same handful of address books nearly every row already fetched
+- A Nextcloud address-book group vCard no longer appears in the contacts list or search results
+  looking like a person with no address
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

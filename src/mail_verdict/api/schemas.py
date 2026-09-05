@@ -483,6 +483,40 @@ class FeedbackResponse(BaseModel):
     message: str | None = None
 
 
+class SpamReviewItem(BaseModel):
+    """A message whose latest verdict called it spam and has not been
+    ruled on -- cross-account and cross-folder, since the review screen is
+    a view over verdicts rather than a folder. Carries account_id since a
+    row here can belong to any account, not just the one currently open."""
+
+    message_id: uuid.UUID
+    account_id: uuid.UUID
+    folder_id: uuid.UUID
+    is_junk: bool = Field(
+        description="Whether folder_id's special_use is junk -- what the "
+        "review screen uses to decide whether rejecting the verdict also "
+        "moves the message back to the inbox.",
+    )
+    subject: str | None = None
+    from_addr: str | None = None
+    received_at: datetime | None = None
+    snippet: str | None = None
+    verdict_id: uuid.UUID
+    model_used: str | None = None
+    reasoning: str | None = None
+    verdict_created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SpamReviewListResponse(BaseModel):
+    """Paginated, newest-verdict-first."""
+
+    items: list[SpamReviewItem]
+    has_more: bool
+    next_cursor: str | None = None
+
+
 # --- Notification schemas ---
 
 
@@ -1204,6 +1238,10 @@ class EventDeleteRequest(BaseModel):
 
 class EventListResponse(BaseModel):
     events: list[EventInstanceOut]
+    # True when the shared expansion budget ran out before every visible
+    # calendar's objects could be walked -- events is then a false empty
+    # or partial result, not an honest "nothing this month".
+    truncated: bool = False
 
 
 class RespondRequest(BaseModel):
@@ -1330,9 +1368,11 @@ class ContactAddressIO(BaseModel):
 
 
 class ContactPhotoOut(BaseModel):
-    """`kind="embedded"` -- `url` is a self-contained `data:` URI, already
-    in the mirror, safe to render with no network request. `kind="url"`
-    -- `url` is a third party's address; a caller must run it through the
+    """`kind="embedded"` -- `url` is this application's own
+    `GET /contacts/:id/photo`, fetched only for a contact actually
+    rendered on screen and cacheable by the browser after that (the
+    same shape `ContactPhotoIndexEntry` already uses). `kind="url"` --
+    `url` is a third party's address; a caller must run it through the
     same remote-content allowlist any other remote image does before ever
     putting it in an `<img src>`, never fetch it unconditionally."""
 
