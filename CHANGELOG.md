@@ -210,6 +210,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   do not define; where it is missing, every mouse drag threw and drag-and-drop was unavailable
   entirely.
 - User-facing text that read `--` now uses a real dash, as the rest of the application does.
+- Which writes announce themselves to a second open browser is now derived from the code rather
+  than tracked by hand, so a write added later that tells nobody fails a test instead of being
+  discovered in use. Two places it found are recorded with what a second browser sees instead: the
+  identity-to-calendar mapping is replaced without an event, and a new account's preferences row
+  is carried by the account's own notification.
 
 ## [4.0.0] - 2026-09-05
 
