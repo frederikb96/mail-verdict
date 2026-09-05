@@ -36,7 +36,7 @@ function PendingSendRow({ row }: { row: PendingSendResponse }) {
         onClick={() =>
           cancel.mutate(row.id, {
             onSuccess: () => pushToast("Send cancelled", "success"),
-            onError: () => pushToast("Too late -- the message already sent", "warning"),
+            onError: () => pushToast("Too late — the message already sent", "warning"),
           })
         }
       >

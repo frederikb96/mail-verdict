@@ -226,6 +226,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   match exactly, and a test keeps them matching, since whichever of them is stricter silently
   decides what a message may contain. An allowlisted sender's table background is restored the same
   way their images are (see the fix above).
+### Fixed
+
+- Sender avatars now appear against a large address book. The lookup that finds them read every
+  contact card through a full vCard parser, which spends its time on the embedded photo the scan
+  does not even want -- so on a book of fifteen hundred photo-carrying contacts it ran out of its
+  own time budget and returned an empty result, silently, every five minutes forever, leaving
+  every avatar in the mail list, the unified list and the search results as initials. It now asks
+  each card only the two questions it has, and takes the addresses from a column that is already
+  parsed. Reading a card is between seven and thirty times cheaper as a result, wherever contacts
+  are read.
+- A scan that does still run out of budget now returns the part of the address book it reached and
+  says so, instead of returning nothing at all -- which was indistinguishable from an address book
+  with no photos in it.
+- Scrolling a large address book no longer stalls every other request the server is handling:
+  a page of contacts is read off the event loop, as the avatar lookup already was. On a page of
+  two hundred contacts carrying photos, an unrelated request that touches nothing went from
+  waiting up to fifty seconds to a third of a second.
+- A page of contacts is now the length it asked for. Address-book group cards were dropped after
+  the database had already applied the page limit, so any page containing one came back short and
+  the client's idea of where the next page started disagreed with the server's.
+- A checklist now arrives at the recipient as a checklist. The composer's checkbox is a form
+  control, which no mail client renders and which the outbound allowlist drops, so a ticked item
+  and an unticked one used to arrive byte for byte identical, as an ordinary bullet list. Each
+  item now carries a ballot box, ticked or empty, matching the markers the plain-text alternative
+  already wrote.
+- A send with no recipient at all is refused when it is offered, with a message saying why,
+  instead of being accepted and then failing on its own a few seconds later. A draft may still
+  have none.
+- The undo-send window applies to sends made through the interface. An agent's send through the
+  MCP tool, and the calendar's own invitation and RSVP messages, go at once — nobody is watching
+  a grace period on their behalf — and both the tool descriptions and the API reference now say
+  so rather than reading as though every send behaved alike.
+- Drag-and-drop no longer depends on a browser global that desktop browsers without touch support
+  do not define; where it is missing, every mouse drag threw and drag-and-drop was unavailable
+  entirely.
+- User-facing text that read `--` now uses a real dash, as the rest of the application does.
+- Which writes announce themselves to a second open browser is now derived from the code rather
+  than tracked by hand, so a write added later that tells nobody fails a test instead of being
+  discovered in use. Two places it found are recorded with what a second browser sees instead: the
+  identity-to-calendar mapping is replaced without an event, and a new account's preferences row
+  is carried by the account's own notification.
 
 ## [4.0.0] - 2026-09-05
 

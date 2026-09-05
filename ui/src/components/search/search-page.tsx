@@ -293,7 +293,7 @@ export function SearchPage() {
     !showEmptyPrompt && !showNoFolderSelected && !isLoading && !showError && results.length === 0;
   const errorMessage =
     semantic && error instanceof ApiError && error.status === 503
-      ? "Semantic search is unavailable -- no AI provider is configured for it."
+      ? "Semantic search is unavailable — no AI provider is configured for it."
       : error?.message || "Search failed.";
 
   return (

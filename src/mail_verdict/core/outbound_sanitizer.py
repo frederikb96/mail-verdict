@@ -60,12 +60,21 @@ ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
 # to reconstruct itself when a saved draft is reopened -- without it here,
 # every draft carrying a quote would lose that marker on its first save
 # and never round-trip back into the node again.
+#
+# data-checked is a checklist item's ticked state. It survives nh3 only so
+# that the pass below can read it back off normalised markup and write a
+# ballot-box glyph in its place -- matching it in the input instead would
+# mean matching however the producer happened to quote it. The attribute
+# itself is gone from the output; no mail client would render it, and a
+# checkbox element is not the answer either, since clients strip form
+# controls.
 ALLOWED_TAG_ATTRIBUTE_VALUES: dict[str, dict[str, set[str]]] = {
     "div": {
         "class": {"gmail_quote", "gmail_attr"},
         "data-quoted-message": {"true"},
     },
     "blockquote": {"class": {"gmail_quote"}},
+    "li": {"data-checked": {"true", "false"}},
 }
 
 # Gmail's own quote-bar values -- the shape every client recognises and
@@ -78,8 +87,17 @@ _PRE_OPEN_RE = re.compile(r"<pre([^>]*)>")
 # ProseMirror's own list serialisation wraps each item's direct text in a
 # paragraph, so a plain string substitution is safe here rather than a full
 # HTML parse. Word and Gmail both apply their own per-<p> margin, which
-# otherwise renders as a blank line per bullet.
-_LIST_ITEM_PARAGRAPH_RE = re.compile(r"<li><p>(.*?)</p>", re.DOTALL)
+# otherwise renders as a blank line per bullet. A checklist item wraps that
+# paragraph in a div as well, which would otherwise put the glyph below on
+# a line of its own.
+_LIST_ITEM_PARAGRAPH_RE = re.compile(r"<li([^>]*)><p>(.*?)</p>", re.DOTALL)
+_LIST_ITEM_DIV_PARAGRAPH_RE = re.compile(r"<li([^>]*)><div><p>(.*?)</p></div>", re.DOTALL)
+# What a checklist becomes on the wire: a ballot box, ticked or not. Every
+# client renders a character; none of them renders a form control. The
+# separator is a non-breaking space so the box never ends a line on its own.
+_TICKED = "\u2611\u00a0"
+_UNTICKED = "\u2610\u00a0"
+_TASK_ITEM_RE = re.compile(r'<li data-checked="(true|false)">')
 # nh3 strips a disallowed src (a cid: reference, or a local /api/... URL
 # with nothing on the other end for a recipient) rather than the whole
 # tag, leaving a bare <img> with nothing to show. There is nothing to
@@ -130,7 +148,11 @@ def sanitize_outbound_html(html: str, *, allow_cid: bool = False) -> str:
         # straight through.
         url_relative="deny",
     )
-    cleaned = _LIST_ITEM_PARAGRAPH_RE.sub(r"<li>\1", cleaned)
+    cleaned = _LIST_ITEM_DIV_PARAGRAPH_RE.sub(r"<li\1>\2", cleaned)
+    cleaned = _LIST_ITEM_PARAGRAPH_RE.sub(r"<li\1>\2", cleaned)
+    cleaned = _TASK_ITEM_RE.sub(
+        lambda m: f"<li>{_TICKED if m.group(1) == 'true' else _UNTICKED}", cleaned,
+    )
     cleaned = _IMG_NO_SRC_RE.sub("", cleaned)
     cleaned = _BLOCKQUOTE_OPEN_RE.sub(
         lambda m: f'<blockquote{m.group(1)} style="{_BLOCKQUOTE_STYLE}">', cleaned,

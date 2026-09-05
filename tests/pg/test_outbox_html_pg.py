@@ -1,16 +1,17 @@
 """
 The outbound HTML path against a real database: a compose POST stores
-sanitised body_html, refuses HTML with no text alternative, restores a
-quoted image's display-only placeholder to a real URL before it reaches
-the row, and a message's own quote endpoint turns its raw
-body_html/body_text into the shape the composer renders locally.
+sanitised body_html, refuses HTML with no text alternative and a send with
+no recipient at all, restores a quoted image's display-only placeholder to
+a real URL before it reaches the row, and a message's own quote endpoint
+turns its raw body_html/body_text into the shape the composer renders
+locally.
 """
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -188,6 +189,113 @@ class TestOutboxHtmlSanitisation:
         assert stored is not None
         assert 'src="https://sender.example/pic.png"' in stored
         assert "data-x-src" not in stored
+
+    def test_a_checklist_reaches_the_row_as_ticked_and_unticked_items(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """What the composer serialises is a checkbox input, which no mail
+        client renders and which this allowlist drops -- so without a
+        substitution a ticked item and an unticked one arrive byte for
+        byte the same, as an ordinary bullet list."""
+        account_id = client.portal.call(_seed_account, migrated_db)
+        html = (
+            '<ul data-type="taskList">'
+            '<li data-checked="true" data-type="taskItem">'
+            '<label><input type="checkbox" checked="checked"><span></span></label>'
+            "<div><p>done thing</p></div></li>"
+            '<li data-checked="false" data-type="taskItem">'
+            '<label><input type="checkbox"><span></span></label>'
+            "<div><p>open thing</p></div></li></ul>"
+        )
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "draft",
+                    "to": ["them@example.com"], "subject": "hi",
+                    "body_text": "- [x] done thing\n- [ ] open thing",
+                    "body_html": html,
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        stored = client.portal.call(_outbox_body_html, migrated_db, uuid.UUID(resp.json()["id"]))
+        assert stored is not None
+        assert "<li>\u2611\u00a0done thing</li>" in stored, stored
+        assert "<li>\u2610\u00a0open thing</li>" in stored, stored
+        assert "data-checked" not in stored
+
+
+class TestASendNeedsARecipient:
+    """A send addressed to nobody cannot leave, and used to be accepted
+    with a created status and then fail on its own some seconds later --
+    by which time the caller has a success-shaped answer and no reason to
+    look again."""
+
+    def test_a_send_with_no_recipient_is_refused_where_it_is_offered(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account, migrated_db)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": [], "cc": [], "bcc": [],
+                    "subject": "nowhere", "body_text": "nowhere",
+                },
+            )
+        assert resp.status_code == 400, resp.text
+        assert "recipient" in resp.json()["detail"].lower()
+
+    def test_a_blank_recipient_is_no_recipient(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account, migrated_db)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": ["   "], "subject": "nowhere", "body_text": "nowhere",
+                },
+            )
+        assert resp.status_code == 400, resp.text
+
+    def test_a_bcc_only_send_is_accepted(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Blind copy is still a recipient. This one has to reach the
+        insert, so it needs the settings this bare app never started --
+        the refusals above answer before settings are ever consulted."""
+        account_id = client.portal.call(_seed_account, migrated_db)
+        settings = Mock()
+        settings.get.return_value = {"undo_send_seconds": 0}
+        with patch(_OUTBOX_TARGET, return_value=migrated_db), patch(
+            "mail_verdict.api.outbox.get_settings_service", return_value=settings,
+        ):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": [], "bcc": ["them@example.com"],
+                    "subject": "hi", "body_text": "hi",
+                },
+            )
+        assert resp.status_code == 201, resp.text
+
+    def test_a_draft_with_no_recipient_is_still_accepted(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account, migrated_db)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "draft",
+                    "to": [], "subject": "later", "body_text": "later",
+                },
+            )
+        assert resp.status_code == 201, resp.text
 
 
 class TestDraftQuoteRoundTrip:

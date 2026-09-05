@@ -1032,6 +1032,9 @@ export interface ContactPhotoIndexEntry {
  * read synchronously as mail rows render, never re-requested per row. */
 export interface ContactPhotoIndexResponse {
   by_email: Record<string, ContactPhotoIndexEntry>;
+  /** The scan stopped before reaching the end of the address book, so an
+   * address missing from `by_email` may still have a photo. */
+  partial: boolean;
 }
 
 export interface ContactSearchHit {

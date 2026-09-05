@@ -446,6 +446,61 @@ class TestFallbackTier:
         assert page.total == 1
 
 
+class TestADecoyDoesNotSurfaceBesideTheRealMatch:
+    """A one-word query against a mailbox that also holds messages merely
+    resembling it. The near-misses are the point: a search that reaches
+    for a fuzzy stage while it already has real hits returns all of them
+    together, and the message that actually contains the word stops being
+    the answer."""
+
+    @pytest.mark.asyncio
+    async def test_a_one_word_query_returns_only_the_message_carrying_that_word(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            real_match = await _seed_message(
+                session, account_id, inbox_id, uid=1,
+                subject="New climbing shoes arrived",
+                from_addr="shop@example.com",
+                body_text="Your order is on its way.",
+            )
+            # Shares its opening trigrams with the query without sharing
+            # the word -- what a fuzzy stage running alongside the primary
+            # one would hand back.
+            await _seed_message(
+                session, account_id, inbox_id, uid=2,
+                subject="Can the climate benefit from war?",
+                from_addr="newsletter@example.com",
+                body_text="A long argument about the climate and conflict.",
+            )
+            await _seed_message(
+                session, account_id, inbox_id, uid=3,
+                subject="Kibana Monitoring CLEAR [alert] cluster health",
+                from_addr="alerts@example.com",
+                body_text="Cluster health is green again.",
+            )
+            # The same subject in another language: a text search matches
+            # words, so this is not expected to be found either.
+            await _seed_message(
+                session, account_id, inbox_id, uid=4,
+                subject="Neue Kletterschuhe sind da",
+                from_addr="shop@example.de",
+                body_text="Deine Bestellung ist unterwegs.",
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="climbing", account_id=account_id, folder_ids=None,
+            fields=["subject", "from", "to", "body"], before=None, limit=50,
+        )
+        assert [r.id for r in page.results] == [real_match], [
+            (r.subject, r.match_tier) for r in page.results
+        ]
+        assert page.results[0].match_tier == 0
+        assert page.total == 1
+
+
 class TestTsqueryInjection:
     """Raw user text is tokenized through Postgres's own parser before it
     ever reaches tsquery syntax -- a query built entirely of tsquery

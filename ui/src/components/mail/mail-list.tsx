@@ -583,7 +583,7 @@ export function MailList() {
           onClick={jumpToLatest}
           className="flex w-full items-center justify-center gap-2 border-b bg-accent/30 px-3 py-1.5 text-sm font-medium text-foreground hover:bg-accent/50"
         >
-          {newerArrivalCount} new message{newerArrivalCount > 1 ? "s" : ""} -- jump to latest
+          {newerArrivalCount} new message{newerArrivalCount > 1 ? "s" : ""} — jump to latest
         </button>
       )}
       {isFiltering && isLoading ? (

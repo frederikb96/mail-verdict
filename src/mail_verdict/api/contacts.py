@@ -17,6 +17,7 @@ import asyncio
 import base64
 import concurrent.futures
 import logging
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -95,20 +96,18 @@ def _photo_out(contact_id: uuid.UUID, photo: vcard.ContactPhoto | None) -> Conta
     return ContactPhotoOut(kind=photo.kind, url=url)
 
 
-async def _to_response(
-    obj: DavObject, *, collection: DavCollection | None = None,
+def _build_response(
+    contact_id: uuid.UUID,
+    collection_id: uuid.UUID,
+    parsed: vcard.ParsedContact,
+    collection: DavCollection | None,
 ) -> ContactResponse:
-    """Structured detail for one contact. Never decodes an embedded
-    photo's bytes -- see `_photo_out()` -- so a caller already holding
-    the contact's address book (a page of `list_contacts`) can pass it
-    in and skip re-fetching the same handful of collections per row."""
-    parsed = vcard.parse_contact(obj.data, decode_photo=False)
-    if collection is None:
-        collection_repo = CollectionRepository(get_db_connection())
-        collection = await collection_repo.get_by_id(obj.collection_id)
+    """One contact's response from an already-parsed card -- so a caller
+    that parsed a whole page off the event loop builds its rows without
+    parsing anything again."""
     return ContactResponse(
-        id=obj.id,
-        addressbook_id=obj.collection_id,
+        id=contact_id,
+        addressbook_id=collection_id,
         addressbook_name=(collection.display_name or collection.slug) if collection else "",
         read_only=collection.read_only if collection else False,
         summary=parsed.summary,
@@ -121,8 +120,22 @@ async def _to_response(
         urls=parsed.urls,
         notes=parsed.notes,
         categories=parsed.categories,
-        photo=_photo_out(obj.id, parsed.photo),
+        photo=_photo_out(contact_id, parsed.photo),
     )
+
+
+async def _to_response(
+    obj: DavObject, *, collection: DavCollection | None = None,
+) -> ContactResponse:
+    """Structured detail for one contact. Never decodes an embedded
+    photo's bytes -- see `_photo_out()` -- so a caller already holding
+    the contact's address book can pass it in and skip re-fetching the
+    same collection per row."""
+    parsed = vcard.parse_contact(obj.data, decode_photo=False)
+    if collection is None:
+        collection_repo = CollectionRepository(get_db_connection())
+        collection = await collection_repo.get_by_id(obj.collection_id)
+    return _build_response(obj.id, obj.collection_id, parsed, collection)
 
 
 @router.get("", response_model=ContactListResponse)
@@ -133,25 +146,45 @@ async def list_contacts(
     cursor: str | None = None,
 ) -> ContactListResponse:
     """List contacts, paged -- never an unpaged fetch, an address book can
-    hold thousands of rows."""
+    hold thousands of rows.
+
+    Group cards are dropped after the database has already applied the
+    limit, so a page can come back short of what was asked for; it is
+    refilled by reading on from where the last batch ended rather than
+    by returning fewer rows than requested. The cursor is therefore how
+    far into the underlying order this page read, not a multiple of the
+    page size -- a client counting rows and a server counting rows agree
+    however many groups the book holds."""
     await _require_support()
-    offset = _decode_cursor(cursor)
+    scanned = _decode_cursor(cursor)
     repo = DavObjectRepository(get_db_connection())
     addressbook_ids = [addressbook_id] if addressbook_id is not None else None
-    rows, has_more = await repo.search_contacts(addressbook_ids, q, limit=limit, offset=offset)
-    # A Nextcloud address-book group is stored as an ordinary vCard --
-    # PostIMAP has no concept of one -- so it must never reach the list
-    # looking like a person with no address.
-    rows = [row for row in rows if not vcard.is_group(row.data)]
+    parsed_rows: list[tuple[uuid.UUID, uuid.UUID, vcard.ParsedContact]] = []
+    has_more = False
+    while len(parsed_rows) < limit:
+        rows, has_more = await repo.search_contacts(
+            addressbook_ids, q, limit=limit - len(parsed_rows), offset=scanned,
+        )
+        if not rows:
+            break
+        scanned += len(rows)
+        parsed_rows.extend(
+            await _parse_page([(row.id, row.collection_id, row.data) for row in rows])
+        )
+        if not has_more:
+            break
     # One query for every address book a row on this page belongs to,
     # instead of one per row -- almost every contact on a page shares
     # the same handful of address books.
     collection_repo = CollectionRepository(get_db_connection())
-    collections = await collection_repo.get_by_ids(list({row.collection_id for row in rows}))
+    collections = await collection_repo.get_by_ids(
+        list({collection_id for _, collection_id, _ in parsed_rows})
+    )
     contacts = [
-        await _to_response(row, collection=collections.get(row.collection_id)) for row in rows
+        _build_response(contact_id, collection_id, parsed, collections.get(collection_id))
+        for contact_id, collection_id, parsed in parsed_rows
     ]
-    next_cursor = _encode_cursor(offset + limit) if has_more else None
+    next_cursor = _encode_cursor(scanned) if has_more else None
     return ContactListResponse(contacts=contacts, has_more=has_more, next_cursor=next_cursor)
 
 
@@ -190,14 +223,20 @@ async def resolve_contact_by_email(email: str = Query(min_length=1)) -> ContactR
 # A thread that outlives its own timeout keeps occupying whatever pool it
 # was submitted to until it eventually finishes on its own -- see
 # api/calendar_events.py's identical `_EXPANSION_EXECUTOR`, the pattern
-# this copies. A dedicated, bounded pool contains that to the photo scan
+# this copies. A dedicated, bounded pool contains that to reading cards
 # alone, rather than letting one pathological or oversized address book
 # eventually starve every unrelated asyncio.to_thread() call sharing the
 # loop's own default executor.
-_PHOTO_SCAN_TIMEOUT_SECONDS = 10.0
-_PHOTO_SCAN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=4, thread_name_prefix="contacts-photo-scan",
+_CARD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="contacts-cards",
 )
+
+# The photo scan stops itself at this point and reports what it has. The
+# outer wait below is a backstop for a thread that never reaches its own
+# deadline check at all, and only that path can produce nothing.
+_PHOTO_SCAN_BUDGET_SECONDS = 8.0
+_PHOTO_SCAN_TIMEOUT_SECONDS = 10.0
+_DEADLINE_CHECK_EVERY = 32
 
 # A url-kind photo's own candidate emails, deferred out of the thread pool
 # since resolving them needs an awaited, per-account allowlist check that
@@ -206,13 +245,33 @@ _UrlPhotoCandidate = tuple[uuid.UUID, str, list[str]]
 
 
 def _scan_photos_sync(
-    rows: list[tuple[uuid.UUID, str]],
-) -> tuple[dict[str, ContactPhotoIndexEntry], list[_UrlPhotoCandidate]]:
+    rows: list[tuple[uuid.UUID, str, list[str] | None]], deadline: float,
+) -> tuple[dict[str, ContactPhotoIndexEntry], list[_UrlPhotoCandidate], bool]:
+    """Whether each card carries a photo and which addresses it is
+    reachable at -- never a full parse. A card is mostly its embedded
+    photo, and a general parser's cost is proportional to what it is
+    handed, so asking `detect_photo`/`is_group` the two questions this
+    scan actually has is an order of magnitude cheaper over an address
+    book of any size. The addresses come from the column PostIMAP
+    already parses EMAIL into, so they usually cost nothing at all.
+
+    Returns what it read plus whether it stopped early."""
     embedded: dict[str, ContactPhotoIndexEntry] = {}
     url_candidates: list[_UrlPhotoCandidate] = []
-    for contact_id, data in rows:
+    for index, (contact_id, data, column_emails) in enumerate(rows):
+        if index % _DEADLINE_CHECK_EVERY == 0 and time.monotonic() >= deadline:
+            return embedded, url_candidates, True
         try:
-            parsed = vcard.parse_contact(data, decode_photo=False)
+            photo = vcard.detect_photo(data)
+            if photo is None or vcard.is_group(data):
+                continue
+            # The column is empty for a card this application has just
+            # created and PostIMAP has not parsed back yet; reading the
+            # addresses off that card costs the same walk again, and
+            # only for those.
+            emails = column_emails or vcard.detect_emails(data)
+            if not emails:
+                continue
         except Exception:
             # A single malformed vCard must never take the whole index
             # down with it -- catch broadly, the same reasoning
@@ -220,28 +279,25 @@ def _scan_photos_sync(
             # parse failure there.
             logger.warning("Skipping contact %s in photo index", contact_id, exc_info=True)
             continue
-        if parsed.photo is None or not parsed.emails or vcard.is_group(data):
-            continue
-        if parsed.photo.kind == "embedded":
+        if photo.kind == "embedded":
             entry = ContactPhotoIndexEntry(
                 contact_id=contact_id, photo_url=f"/api/contacts/{contact_id}/photo",
             )
-            for contact_email in parsed.emails:
-                embedded[contact_email.email.strip().lower()] = entry
+            for email in emails:
+                embedded[email.strip().lower()] = entry
         else:
-            url_candidates.append(
-                (contact_id, parsed.photo.url, [e.email for e in parsed.emails])
-            )
-    return embedded, url_candidates
+            url_candidates.append((contact_id, photo.url, list(emails)))
+    return embedded, url_candidates, False
 
 
 async def _scan_photos(
-    rows: list[tuple[uuid.UUID, str]],
-) -> tuple[dict[str, ContactPhotoIndexEntry], list[_UrlPhotoCandidate]]:
+    rows: list[tuple[uuid.UUID, str, list[str] | None]],
+) -> tuple[dict[str, ContactPhotoIndexEntry], list[_UrlPhotoCandidate], bool]:
     loop = asyncio.get_running_loop()
+    deadline = time.monotonic() + _PHOTO_SCAN_BUDGET_SECONDS
     try:
         return await asyncio.wait_for(
-            loop.run_in_executor(_PHOTO_SCAN_EXECUTOR, _scan_photos_sync, rows),
+            loop.run_in_executor(_CARD_EXECUTOR, _scan_photos_sync, rows, deadline),
             timeout=_PHOTO_SCAN_TIMEOUT_SECONDS,
         )
     except TimeoutError:
@@ -249,7 +305,35 @@ async def _scan_photos(
             "Photo index scan exceeded %.0fs for %d contacts; returning none of them",
             _PHOTO_SCAN_TIMEOUT_SECONDS, len(rows),
         )
-        return {}, []
+        return {}, [], True
+
+
+def _parse_page_sync(
+    rows: list[tuple[uuid.UUID, uuid.UUID, str]],
+) -> list[tuple[uuid.UUID, uuid.UUID, vcard.ParsedContact]]:
+    """Drop the page's group cards and parse the rest. Both questions
+    are proportional to a card's own text, and a page of an address book
+    carrying embedded photos is megabytes of it -- enough to stall every
+    other request in the process for seconds if it ran on the loop."""
+    parsed: list[tuple[uuid.UUID, uuid.UUID, vcard.ParsedContact]] = []
+    for contact_id, collection_id, data in rows:
+        # A Nextcloud address-book group is stored as an ordinary vCard --
+        # PostIMAP has no concept of one -- so it must never reach the list
+        # looking like a person with no address.
+        if vcard.is_group(data):
+            continue
+        parsed.append((contact_id, collection_id, vcard.parse_contact(data, decode_photo=False)))
+    return parsed
+
+
+async def _parse_page(
+    rows: list[tuple[uuid.UUID, uuid.UUID, str]],
+) -> list[tuple[uuid.UUID, uuid.UUID, vcard.ParsedContact]]:
+    """No budget, unlike the photo scan: a page is bounded by its own
+    limit, and cutting one short would hand back fewer rows than were
+    asked for -- exactly what the paging loop above exists to avoid."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_CARD_EXECUTOR, _parse_page_sync, rows)
 
 
 @router.get("/photo-index", response_model=ContactPhotoIndexResponse)
@@ -276,21 +360,24 @@ async def get_photo_index(
 
     The address book is read whole -- there is no cheaper affordance
     upstream to page it with -- but scanning it for photos runs off the
-    event loop with a bounded timeout (`_scan_photos`), so a large one
+    event loop with a bounded budget (`_scan_photos`), so a large one
     slows this request rather than every request the server is
-    currently handling.
+    currently handling. A scan that runs out of budget returns the part
+    of the book it did read and says so in `partial`, because a caller
+    cannot otherwise tell an address book with no photos from one whose
+    photos were never looked at.
     """
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
-    rows = await repo.list_ids_and_data()
-    by_email, url_candidates = await _scan_photos(rows)
+    rows = await repo.list_photo_scan_rows()
+    by_email, url_candidates, partial = await _scan_photos(rows)
     if account_id is not None:
         for contact_id, url, emails in url_candidates:
             entry = ContactPhotoIndexEntry(contact_id=contact_id, photo_url=url)
             for email in emails:
                 if await is_sender_image_allowed(account_id, email):
                     by_email[email.strip().lower()] = entry
-    return ContactPhotoIndexResponse(by_email=by_email)
+    return ContactPhotoIndexResponse(by_email=by_email, partial=partial)
 
 
 @router.get("/{contact_id}/photo")

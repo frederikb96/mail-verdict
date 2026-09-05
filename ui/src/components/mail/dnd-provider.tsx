@@ -70,7 +70,11 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
     const data = event.active.data.current;
     if (data?.type !== "mail") return;
 
-    if (event.activatorEvent instanceof TouchEvent) {
+    // The event's own type, not `instanceof TouchEvent`: that constructor
+    // is undefined in a desktop browser with no touch support, where the
+    // expression throws on every mouse drag and takes drag-and-drop out
+    // entirely rather than falling through to the mouse branch below.
+    if (event.activatorEvent.type.startsWith("touch")) {
       // A long press: select the row under the finger (unless it's
       // already part of a multi-selection being pressed on, which stays
       // as it is) and never show a drag ghost or perform a move -- touch

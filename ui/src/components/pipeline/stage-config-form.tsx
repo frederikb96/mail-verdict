@@ -80,7 +80,7 @@ function JsonField({
             onChange(JSON.parse(e.target.value));
             setError(null);
           } catch {
-            setError("Invalid JSON -- not saved until this parses");
+            setError("Invalid JSON — not saved until this parses");
           }
         }}
       />

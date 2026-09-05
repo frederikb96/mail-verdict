@@ -71,6 +71,7 @@ from mail_verdict.api.contacts import (
     update_contact as _update_contact,
 )
 from mail_verdict.api.identities import resolve_send_from_addr
+from mail_verdict.api.outbox import require_recipients
 from mail_verdict.api.schemas import (
     ContactAddressIO,
     ContactCreateRequest,
@@ -564,6 +565,8 @@ async def _create_outbox_row(
     identity_id: str | None,
 ) -> dict[str, Any]:
     """Shared insert path for send_mail and draft_mail."""
+    if kind == "send":
+        require_recipients(to, cc, bcc)
     db = get_db_connection()
     account_uuid = uuid.UUID(account_id)
     async with db.session() as session:
@@ -611,8 +614,11 @@ async def send_mail(
     Send an email through the given account's SMTP settings.
 
     Inserts an outbox row; PostIMAP composes and sends it, then appends a
-    copy to Sent. This is irreversible once accepted by the SMTP server --
-    there is no undo-send.
+    copy to Sent. This is irreversible once accepted by the SMTP server.
+
+    It also goes at once. The undo window the REST POST /outbox offers a
+    person is not applied here and cannot be cancelled from here -- there
+    is nobody watching a grace period on an agent's behalf.
 
     Args:
         account_id: Account UUID to send from (must have smtp_host/smtp_port set)

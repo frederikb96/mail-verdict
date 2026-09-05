@@ -52,7 +52,7 @@ export function FolderRowMenu({
   const warnIfSlow = (label: string, count: number) => {
     if (count > 0) {
       pushToast(
-        `${label} ${count} message${count === 1 ? "" : "s"} -- this can take a while for a large folder.`,
+        `${label} ${count} message${count === 1 ? "" : "s"} — this can take a while for a large folder.`,
         "info",
         6000,
       );

@@ -465,7 +465,9 @@ async def _send_itip(
 ) -> None:
     """Send an .ics attachment over the identity's own outbox -- never a
     direct SMTP call, matching how this application sends everything
-    else."""
+    else. Inserted directly, so it goes at once: the undo window POST
+    /outbox offers a person is not applied to a scheduling message, and
+    the same is true of the RSVP reply in respond_to_event below."""
     mailed_ics = ical.with_method(event_data, method)
     content_type = f"text/calendar; method={method}; charset=utf-8"
     db = get_db_connection()

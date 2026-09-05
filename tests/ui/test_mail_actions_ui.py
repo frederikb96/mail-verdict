@@ -43,6 +43,7 @@ from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
     drag_row_to_folder,
     folder,
+    folder_button,
     mail_row,
     select_account,
     unique_email,
@@ -192,7 +193,7 @@ def _deliver_and_move(
 
 
 def _open_folder(page: Page, folder_row: dict[str, Any]) -> None:
-    folder(page, folder_row["id"]).get_by_role("button").click()
+    folder_button(page, folder_row["id"]).click()
 
 
 def _badge_count(page: Page, folder_id: str) -> int:
@@ -767,7 +768,7 @@ class TestMailActionsUi:
         _open_folder(page, drafts_folder)
         mail_row(page, draft["id"]).click()
         expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
-        expect(page.get_by_role("textbox", name="Subject")).to_have_value(subject)
+        expect(page.get_by_role("textbox", name="Subject", exact=True)).to_have_value(subject)
 
         page.get_by_role("button", name="Send", exact=True).click()
         # Sending a draft is still a send, so it stages the same as any
@@ -1256,7 +1257,7 @@ class TestMailActionsUi:
         page.wait_for_timeout(300)
         assert _scroll_top() > 0, "expected scrolling INBOX to have moved it off the top"
 
-        folder(page, junk_folder["id"]).get_by_role("button").click()
+        folder_button(page, junk_folder["id"]).click()
         expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
         page.wait_for_timeout(300)
 

@@ -3,8 +3,10 @@ Opening a message from search when it sits far down its folder -- the
 mail list has to answer a question it never had to before: a fetch
 window centred on a message rather than the newest edge (GET
 /accounts/:id/messages?around=...), and revealing that message in the
-upper third once it loads, through the same scroll writer as every
-other positioning in mail-list.tsx.
+upper third of the list once it loads, through the same scroll writer as
+every other positioning in mail-list.tsx. The third is a third of the
+list's own scrolling viewport, which is what the reveal itself measures
+against -- the list is not the whole browser window.
 
 Seeded directly into the mirror, the same shape test_search_ui.py's own
 scale fixture uses -- these tests never touch IMAP, only what the
@@ -146,31 +148,36 @@ class TestOpenSearchResultLandsDeepInTheFolder:
         assert row_box is not None
         # The row's own nearest scrolling ancestor is the actual viewport
         # the reveal positions against -- not the page body, and not
-        # assumed from markup structure that could change.
-        container_top = target_row.evaluate(
+        # assumed from markup structure that could change. Both the offset
+        # and the third it is compared against have to come from that same
+        # element: the list sits below the application's own header, so a
+        # third of the browser window is a different number entirely, and
+        # comparing one to the other reads as the reveal being off by
+        # about half a row when it is exact.
+        container = target_row.evaluate(
             """(el) => {
                 let node = el.parentElement;
                 while (node && node !== document.body) {
                     const style = getComputedStyle(node);
                     if (style.overflowY === "auto" || style.overflowY === "scroll") {
-                        return node.getBoundingClientRect().top;
+                        const box = node.getBoundingClientRect();
+                        return { top: box.top, height: box.height };
                     }
                     node = node.parentElement;
                 }
-                return 0;
+                return null;
             }"""
         )
-        viewport_size = page.viewport_size
-        assert viewport_size is not None
-        viewport_height = viewport_size["height"]
+        assert container is not None, "the mail list has no scrolling ancestor to measure against"
+        list_height = container["height"]
 
-        offset_from_top = row_box["y"] - container_top
-        target_offset = viewport_height / 3
-        # Within about a tenth of a third of the viewport height, per the
-        # row's own acceptance bound.
-        assert abs(offset_from_top - target_offset) < viewport_height / 30, (
+        offset_from_top = row_box["y"] - container["top"]
+        target_offset = list_height / 3
+        # Within about a tenth of a third of the list's own height.
+        assert abs(offset_from_top - target_offset) < list_height / 30, (
             f"opened message sits {offset_from_top:.0f}px from the list's own top, "
-            f"expected close to viewport_height/3 = {target_offset:.0f}px"
+            f"expected close to a third of the {list_height:.0f}px list = "
+            f"{target_offset:.0f}px"
         )
 
         # Going back returns to the search results unchanged.
