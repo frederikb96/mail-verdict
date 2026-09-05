@@ -1,6 +1,6 @@
 [project]
 name = "mail-verdict"
-version = "3.1.1"
+version = "4.0.0"
 description = "AI-powered email management: spam detection, smart rules, and vector search"
 readme = "README.md"
 requires-python = ">=3.13"

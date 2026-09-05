@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-09-05
+
 ### Added
 
 - Search can be scoped to exactly the folders and fields you mean, and remembers the choice --
