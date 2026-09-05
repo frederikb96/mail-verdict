@@ -148,6 +148,23 @@ including one started from the same checkout a second time. It warns rather than
 `ui/build` doesn't exist, since the API alone is often enough — build the frontend first if you
 need pages to render.
 
+### A corpus the size of a real account
+
+```bash
+python scripts/devstack.py --large
+```
+
+The default corpus is seventeen messages, four events and three contacts — enough to see a screen
+render, not enough to see it behave. `--large` additionally seeds what a personal account actually
+holds: over a thousand threaded messages across several folders, thirty calendar collections of
+which most are to-do-only (what a Nextcloud task list is), a few thousand calendar objects
+including series that started years ago, and a few thousand contacts across several address books,
+a fifth of them carrying an embedded photo and grouped both ways an address book groups people.
+Seeding and the first sync take several minutes.
+
+`scripts/seed_large.py` does the seeding and runs against any stack on its own, given the host
+ports to reach; `--scale` shrinks every count proportionally.
+
 ## Frontend
 
 ```bash

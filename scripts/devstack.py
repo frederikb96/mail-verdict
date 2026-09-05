@@ -55,6 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.seed_dev import DEFAULT_DAV_USER, seed_calendar  # noqa: E402
+from scripts.seed_large import seed_calendars, seed_contacts, seed_mail  # noqa: E402
 from tests.setup.containers import (  # noqa: E402
     DOVECOT_ALIAS,
     DOVECOT_IMAP_PORT,
@@ -150,6 +151,12 @@ def main() -> int:
     parser.add_argument(
         "--to", default=DEFAULT_RECIPIENT,
         help="mailbox to seed with the test corpus and add as the account",
+    )
+    parser.add_argument(
+        "--large", action="store_true",
+        help="also seed the corpus a real account has -- thousands of messages across "
+             "folders, thirty calendar collections and a few thousand contacts "
+             "(see scripts/seed_large.py). Takes a few minutes and syncs for longer.",
     )
     args = parser.parse_args()
 
@@ -272,6 +279,12 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
             delivered += 1
         print(f"Delivered {delivered} messages.")
 
+        if args.large:
+            dovecot_imap_port = int(dovecot.get_exposed_port(DOVECOT_IMAP_PORT))
+            print("Seeding the large mail corpus over IMAP ...")
+            written = seed_mail(dovecot_host, dovecot_imap_port, mailbox=args.to)
+            print(f"Appended {sum(written.values())} messages: {written}")
+
         api = httpx.Client(base_url=base_url, timeout=10.0)
         resp = api.post(
             "/api/accounts",
@@ -300,6 +313,12 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         radicale_port = int(radicale.get_exposed_port(RADICALE_PORT))
         print("Seeding a calendar and address book on Radicale ...")
         seed_calendar(radicale_host, radicale_port, DEFAULT_DAV_USER)
+
+        if args.large:
+            print("Seeding the large calendar set on Radicale ...")
+            print(seed_calendars(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
+            print("Seeding the large address book on Radicale ...")
+            print(seed_contacts(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
 
         resp = api.post(
             "/api/dav-accounts",

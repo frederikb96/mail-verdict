@@ -72,14 +72,26 @@ def discover_home_sets(client: httpx.Client, principal_url: str) -> tuple[str | 
     return calendar_home, addressbook_home
 
 
-def mkcalendar(client: httpx.Client, url: str, display_name: str) -> None:
+def mkcalendar(
+    client: httpx.Client, url: str, display_name: str, components: list[str] | None = None,
+) -> None:
     """MKCALENDAR at `url`, which must end in '/'. RFC 4791 says MKCALENDAR only ever
     targets a non-existent resource; Radicale reports one already there as 405 or 409
     ('resource-must-be-null'), both treated as success here so seeding the same slug
-    twice is idempotent."""
+    twice is idempotent.
+
+    `components` sets supported-calendar-component-set -- `["VTODO"]` makes a
+    to-do-only collection, which is what a Nextcloud task list is."""
+    component_set = ""
+    if components:
+        comps = "".join(f'<C:comp name="{name}"/>' for name in components)
+        component_set = (
+            f"<C:supported-calendar-component-set>{comps}"
+            "</C:supported-calendar-component-set>"
+        )
     body = f"""<?xml version="1.0" encoding="utf-8"?>
 <C:mkcalendar xmlns:D="{_DAV_NS}" xmlns:C="{_CAL_NS}">
-  <D:set><D:prop><D:displayname>{display_name}</D:displayname></D:prop></D:set>
+  <D:set><D:prop><D:displayname>{display_name}</D:displayname>{component_set}</D:prop></D:set>
 </C:mkcalendar>""".encode()
     resp = client.request(
         "MKCALENDAR", url, content=body,
@@ -142,12 +154,13 @@ def discover(client: httpx.Client, base_url: str) -> TestPrincipal:
 
 def create_calendar(
     client: httpx.Client, principal: TestPrincipal, slug: str, display_name: str = "Test Calendar",
+    components: list[str] | None = None,
 ) -> str:
     """MKCALENDAR a fresh calendar under the discovered calendar home. Returns its URL."""
     if principal.calendar_home is None:
         raise RuntimeError("Principal has no calendar-home-set")
     url = urljoin(principal.calendar_home, f"{slug}/")
-    mkcalendar(client, url, display_name)
+    mkcalendar(client, url, display_name, components)
     return url
 
 
