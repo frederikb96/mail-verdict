@@ -66,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   carries only inline styling is judged by the colours that survive: dark only when its own
   root-level styling sets background and text colour together, so it reads safely on either
   canvas, light in every other case. The per-message toggle still overrides either default.
+- A sender's own `@media (prefers-color-scheme: dark)` rule inside its `<style>` block now
+  actually applies in a genuinely dark browser, rather than being silently dropped: the
+  client-side defense-in-depth sanitiser parses the message with the browser's own HTML parser,
+  and a `<style>` tag that is the very first thing in the message -- an ordinary shape for a
+  template that opens with its dark-mode rules before any visible markup -- was being placed in
+  the parsed document's `<head>` rather than its `<body>`, which this pass only ever returns the
+  body of.
 - A reply's own quoted original collapses behind a "Show quoted text" control by default, the
   same treatment the composer already gives an outgoing quote -- detected from a `type="cite"`
   blockquote or an ordinary mail client's own quote class, so an unrelated blockquote a sender
@@ -155,6 +162,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   right beside "Group by conversation" -- the same search mechanism the search page uses, so a
   filtered row carries every ordinary action (star, archive, spam, trash, mark read/unread), not
   a read-only preview. Clearing it restores the folder exactly as it was.
+- A sweep of every write path against a table this application owns (rather than one PostIMAP
+  mirrors and already announces on its own): account preferences (emoji, spam toggle, folder
+  order), a folder's own preferences (visibility, display name, unified name, special-use
+  override), application settings, sending identities, the pipeline/rules document, and
+  acknowledging a notification all now reach a second open browser live -- previously each of
+  these changed only for the browser that made the change, and everywhere else waited on a
+  reload or an incidental cache expiry. A send still inside its undo window, and its
+  cancellation, are announced the same way, so a second viewer's outbox list agrees with the
+  first's throughout the window rather than only once it ends. A rule that tags a message reaches
+  a second open browser too, the same way a verdict already did -- the tag itself lives in a
+  table of this application's own, which nothing had ever announced a change to.
 
 ## [4.0.0] - 2026-09-05
 

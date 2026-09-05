@@ -37,7 +37,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from mail_verdict.api.events import get_event_ring
+from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
     PipelineDocumentOut,
     PipelineHealthEntryOut,
@@ -126,6 +126,23 @@ def _check_base_revision(current: PipelineDefinition, base_revision: int | None)
         )
 
 
+async def _announce_pipeline_changed() -> None:
+    """
+    Push pipeline.document_changed to every connected viewer.
+
+    The base_revision/StaleRevisionError machinery in this module exists
+    precisely because more than one editor is expected at once -- an
+    agent and the UI, most notably -- so a second editor finding out only
+    from their own next save getting a 409 is exactly the gap this run is
+    closing. The document is not account-scoped, so there is no single
+    account_id to key the event on (see broadcast_event).
+    """
+    event_ring = get_event_ring()
+    if event_ring is None:
+        return
+    await broadcast_event(get_db_connection(), event_ring, "pipeline.document_changed", {})
+
+
 async def _write(
     repo: PipelineRevisionRepository, *, enabled: bool, stages: list[StageDefinition],
     note: str, expected_base_revision: int | None,
@@ -155,6 +172,7 @@ async def _write(
             status_code=409,
             detail=f"base_revision {exc.expected} is stale -- current revision is {exc.actual}",
         ) from None
+    await _announce_pipeline_changed()
     return PipelineDefinition(revision=revision, enabled=enabled, stages=tuple(stages))
 
 
@@ -202,6 +220,7 @@ async def replace_pipeline(request: PipelineWriteRequest) -> PipelineDocumentOut
             status_code=409,
             detail=f"base_revision {exc.expected} is stale -- current revision is {exc.actual}",
         ) from None
+    await _announce_pipeline_changed()
     written = PipelineDefinition(revision=revision, enabled=request.enabled, stages=tuple(stages))
     return await _document_out(written)
 

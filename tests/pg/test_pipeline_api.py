@@ -20,6 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.pipeline import router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.settings.credentials import ProviderCredentialRepository
@@ -450,3 +451,54 @@ def test_dry_run_reports_a_misconfigured_stage_instead_of_crashing(
     body = resp.json()
     assert body["status"] == "failed"
     assert "does not resolve" in body["skip_reason"]
+
+
+def test_replacing_the_document_announces_itself(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    """The document's own base_revision/StaleRevisionError machinery exists
+    because more than one editor is expected at once -- an agent and the
+    UI, most notably -- so a second editor needs the new revision pushed
+    to it rather than finding out only from their own next save's 409."""
+    account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    event_ring = EventRing()
+    client.portal.call(event_ring.add, account_id, "test.seed", {})
+    seq_before = event_ring.get_latest_seq()
+
+    with (
+        patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db),
+        patch("mail_verdict.api.pipeline.get_event_ring", return_value=event_ring),
+    ):
+        resp = client.put("/pipeline", json={"enabled": True, "stages": []})
+    assert resp.status_code == 200, resp.text
+
+    new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+    matching = [e for e in new_events if e["event_type"] == "pipeline.document_changed"]
+    assert len(matching) == 1, f"expected one pipeline.document_changed event, got {new_events!r}"
+
+
+def test_adding_a_stage_announces_itself(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+    _put(client, migrated_db, {"enabled": True, "stages": []})
+    event_ring = EventRing()
+    client.portal.call(event_ring.add, account_id, "test.seed", {})
+    seq_before = event_ring.get_latest_seq()
+
+    with (
+        patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db),
+        patch("mail_verdict.api.pipeline.get_event_ring", return_value=event_ring),
+    ):
+        resp = client.post(
+            "/pipeline/stages",
+            json={
+                "stage_id": f"s-{uuid.uuid4().hex[:8]}", "type": "match",
+                "config": {"when": {}, "effects": []},
+            },
+        )
+    assert resp.status_code == 200, resp.text
+
+    new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+    matching = [e for e in new_events if e["event_type"] == "pipeline.document_changed"]
+    assert len(matching) == 1, f"expected one pipeline.document_changed event, got {new_events!r}"

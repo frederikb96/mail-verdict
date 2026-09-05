@@ -21,6 +21,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.database.connection import get_db_connection
 from mail_verdict.settings import SettingCategory, get_settings_service
 from mail_verdict.settings.ai_validation import validate_ai_settings
 from mail_verdict.settings.credentials import (
@@ -73,6 +75,27 @@ async def _ai_credential_status() -> dict[str, Any]:
 async def _with_ai_credential_status(data: dict[str, Any]) -> dict[str, Any]:
     """Augment an ai settings dict with credential status, in place semantics."""
     return {**data, **(await _ai_credential_status())}
+
+
+async def _announce_settings_changed(category: str | None = None) -> None:
+    """
+    Push settings.changed to every connected viewer.
+
+    The settings table is MailVerdict's own, with nothing upstream to fire
+    a notification on a write to it -- a category changed here reaches
+    another open tab only if something pushes it by hand. Broadcast rather
+    than scoped to one account: a setting is not account-scoped either, so
+    there is no single account_id to key the event on (see broadcast_event).
+
+    Args:
+        category: The category that changed, when one write touched only
+            one -- omitted for import_settings, which may touch several
+    """
+    event_ring = get_event_ring()
+    if event_ring is None:
+        return
+    data: dict[str, Any] = {"category": category} if category else {}
+    await broadcast_event(get_db_connection(), event_ring, "settings.changed", data)
 
 
 async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
@@ -157,6 +180,7 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
         result = await service.update(category, data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _announce_settings_changed(category)
     if category == "ai":
         result = await _with_ai_credential_status(result)
     return result
@@ -186,5 +210,6 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         result = await service.bulk_import(data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _announce_settings_changed()
     result["ai"] = await _with_ai_credential_status(result["ai"])
     return result

@@ -47,6 +47,7 @@ from pydantic import ValidationError
 from sqlalchemy import desc, select
 from starlette.datastructures import UploadFile
 
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.identities import resolve_send_from_addr
 from mail_verdict.api.schemas import (
     OutboxAttachmentSummary,
@@ -323,6 +324,19 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
                 attachments=attachments,
                 undo_seconds=undo_seconds,
             )
+            # PendingSend is MailVerdict's own staging table -- the real
+            # outbox insert it eventually becomes fires outbox.updated via
+            # PostIMAP's own trigger, but this row does not exist there
+            # yet, so a second connected viewer of the outbox list never
+            # sees it appear for the length of the undo window without a
+            # push of our own. Reuses outbox.updated: the client's own
+            # handler for it invalidates ["outbox"] and only acts further
+            # on data.status/data.itip, both absent here.
+            event_ring = get_event_ring()
+            if event_ring is not None:
+                await event_ring.add(
+                    payload.account_id, "outbox.updated", {"id": str(pending.id)},
+                )
             return PendingSendResponse.model_validate(pending)
 
         outbox = await insert_outbox(
@@ -428,11 +442,21 @@ async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
     """
     db = get_db_connection()
     async with db.session() as session:
+        account_id = await session.scalar(
+            select(PendingSend.account_id).where(PendingSend.id == pending_send_id)
+        )
         cancelled = await cancel_pending_send(session, pending_send_id)
     if not cancelled:
         raise HTTPException(
             status_code=404,
             detail=f"No cancellable pending send {pending_send_id}; it may already be sent.",
+        )
+    # See create_outbox's own stage_send push above -- the undo banner in
+    # another connected tab needs to know this row is gone too.
+    event_ring = get_event_ring()
+    if event_ring is not None and account_id is not None:
+        await event_ring.add(
+            account_id, "outbox.updated", {"id": str(pending_send_id)},
         )
 
 

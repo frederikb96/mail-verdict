@@ -38,6 +38,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import IdentityCreate, IdentityResponse, IdentityUpdate
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Identity
@@ -77,6 +78,16 @@ async def _clear_default(
     for identity in result.scalars().all():
         identity.is_default = False
     await session.flush()
+
+
+async def _announce_identity_changed(account_id: uuid.UUID) -> None:
+    """Push identity.changed -- Identity is MailVerdict's own table, so
+    nothing upstream announces a create/update/delete here, and the
+    compose "from" selector, reply/forward and RSVP all read the same
+    list another open tab may be showing."""
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await event_ring.add(account_id, "identity.changed", {"account_id": str(account_id)})
 
 
 @router.get("", response_model=list[IdentityResponse])
@@ -130,7 +141,9 @@ async def create_identity(request: IdentityCreate) -> IdentityResponse:
                 detail=f"{email!r} is already an identity on this account",
             ) from exc
         await session.refresh(identity)
-        return _to_response(identity)
+        response = _to_response(identity)
+    await _announce_identity_changed(request.account_id)
+    return response
 
 
 @router.patch("/{identity_id}", response_model=IdentityResponse)
@@ -179,7 +192,10 @@ async def update_identity(identity_id: uuid.UUID, request: IdentityUpdate) -> Id
                 detail=f"{attempted_email!r} is already an identity on this account",
             ) from exc
         await session.refresh(identity)
-        return _to_response(identity)
+        response = _to_response(identity)
+        changed_account_id = identity.account_id
+    await _announce_identity_changed(changed_account_id)
+    return response
 
 
 @router.delete("/{identity_id}", status_code=204)
@@ -213,6 +229,7 @@ async def delete_identity(identity_id: uuid.UUID) -> None:
                 await session.execute(
                     update(Identity).where(Identity.id == successor_id).values(is_default=True)
                 )
+    await _announce_identity_changed(account_id)
 
 
 async def resolve_send_from_addr(

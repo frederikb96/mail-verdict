@@ -7,11 +7,13 @@ PostIMAP's own sync_notifications table and grants.
 from __future__ import annotations
 
 import uuid
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.notifications import (
     acknowledge,
     acknowledge_all,
@@ -129,3 +131,47 @@ async def test_api_ack_all_endpoint(migrated_db: DatabaseConnection) -> None:
 
     count = await get_unacknowledged_count(account_id)
     assert count.unacknowledged == 0
+
+
+_NOTIFICATIONS_EVENT_RING_TARGET = "mail_verdict.api.notifications.get_event_ring"
+
+
+@pytest.mark.asyncio
+async def test_acknowledging_one_announces_itself(migrated_db: DatabaseConnection) -> None:
+    """acknowledged_at is a consumer's own read state -- PostIMAP's own
+    contract fires a notification event only on insert, never on this
+    update, so a second device sharing the account's mailbox needs this
+    pushed by hand or its bell badge never catches up."""
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        notification_id = await _seed_notification(session, account_id=account_id)
+
+    event_ring = EventRing()
+    await event_ring.add(account_id, "test.seed", {})
+    seq_before = event_ring.get_latest_seq()
+
+    with patch(_NOTIFICATIONS_EVENT_RING_TARGET, return_value=event_ring):
+        await acknowledge(account_id, notification_id)
+
+    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    matching = [e for e in new_events if e["event_type"] == "notification.new"]
+    assert len(matching) == 1, f"expected one notification.new event, got {new_events!r}"
+
+
+@pytest.mark.asyncio
+async def test_acknowledging_all_announces_itself(migrated_db: DatabaseConnection) -> None:
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        await _seed_notification(session, account_id=account_id)
+        await _seed_notification(session, account_id=account_id)
+
+    event_ring = EventRing()
+    await event_ring.add(account_id, "test.seed", {})
+    seq_before = event_ring.get_latest_seq()
+
+    with patch(_NOTIFICATIONS_EVENT_RING_TARGET, return_value=event_ring):
+        await acknowledge_all(account_id)
+
+    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    matching = [e for e in new_events if e["event_type"] == "notification.new"]
+    assert len(matching) == 1, f"expected one notification.new event, got {new_events!r}"

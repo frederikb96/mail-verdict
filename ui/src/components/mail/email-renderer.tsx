@@ -500,6 +500,17 @@ export function EmailRenderer({
       // Client-side sanitization as defense-in-depth (backend uses nh3)
       const processedHtml = DOMPurify.sanitize(html, {
         ALLOW_UNKNOWN_PROTOCOLS: false,
+        // Without this, a message whose *first* content is its own <style>
+        // block -- an ordinary shape for a template that opens with its
+        // dark-mode rules before any visible markup -- has that block
+        // silently dropped: DOMPurify parses the dirty string with the
+        // browser's own HTML parser and returns only doc.body, and the
+        // HTML parsing algorithm inserts a <style> encountered before any
+        // other body content into <head> rather than <body>. FORCE_BODY
+        // prepends a throwaway element first, so the parser is already in
+        // "in body" by the time it reaches the message's own <style> tag,
+        // and the tag allowlist below strips the throwaway element back out.
+        FORCE_BODY: true,
         ALLOWED_TAGS: [
           "a", "abbr", "address", "article", "b", "blockquote", "br",
           "caption", "center", "cite", "code", "col", "colgroup", "dd",

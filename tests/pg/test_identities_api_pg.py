@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.identities import router as identities_router
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.database.connection import DatabaseConnection
@@ -84,6 +85,7 @@ async def _outbox_from_addr(migrated_db: DatabaseConnection, outbox_id: uuid.UUI
 
 _IDENTITIES_TARGET = "mail_verdict.api.identities.get_db_connection"
 _OUTBOX_TARGET = "mail_verdict.api.outbox.get_db_connection"
+_IDENTITIES_EVENT_RING_TARGET = "mail_verdict.api.identities.get_event_ring"
 
 
 class TestIdentityCreate:
@@ -368,3 +370,92 @@ class TestOutboxIdentityResolution:
                 },
             )
         assert resp.status_code == 404
+
+
+class TestIdentityChangeAnnouncesItself:
+    """Identity is MailVerdict's own table -- nothing upstream fires a
+    notification on a write to it, so a create/update/delete reaches
+    another connected viewer (the compose "from" selector, most notably)
+    only if this pushes identity.changed by hand."""
+
+    def test_creating_an_identity_announces_itself(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id, _ = client.portal.call(_seed_two_accounts, migrated_db)
+        event_ring = EventRing()
+        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        seq_before = event_ring.get_latest_seq()
+
+        with (
+            patch(_IDENTITIES_TARGET, return_value=migrated_db),
+            patch(_IDENTITIES_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            resp = client.post(
+                "/identities",
+                json={"account_id": str(account_id), "address": "work@example.com"},
+            )
+        assert resp.status_code == 201, resp.text
+
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, str(account_id),
+        )
+        matching = [e for e in new_events if e["event_type"] == "identity.changed"]
+        assert len(matching) == 1, f"expected one identity.changed event, got {new_events!r}"
+
+    def test_updating_an_identity_announces_itself(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id, _ = client.portal.call(_seed_two_accounts, migrated_db)
+        with patch(_IDENTITIES_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/identities",
+                json={"account_id": str(account_id), "address": "work@example.com"},
+            )
+        identity_id = created.json()["id"]
+
+        event_ring = EventRing()
+        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        seq_before = event_ring.get_latest_seq()
+
+        with (
+            patch(_IDENTITIES_TARGET, return_value=migrated_db),
+            patch(_IDENTITIES_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            resp = client.patch(
+                f"/identities/{identity_id}", json={"display_name": "Work"},
+            )
+        assert resp.status_code == 200, resp.text
+
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, str(account_id),
+        )
+        matching = [e for e in new_events if e["event_type"] == "identity.changed"]
+        assert len(matching) == 1, f"expected one identity.changed event, got {new_events!r}"
+
+    def test_deleting_an_identity_announces_itself(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id, _ = client.portal.call(_seed_two_accounts, migrated_db)
+        with patch(_IDENTITIES_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/identities",
+                json={"account_id": str(account_id), "address": "work@example.com"},
+            )
+        identity_id = created.json()["id"]
+
+        event_ring = EventRing()
+        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        seq_before = event_ring.get_latest_seq()
+
+        with (
+            patch(_IDENTITIES_TARGET, return_value=migrated_db),
+            patch(_IDENTITIES_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            resp = client.delete(f"/identities/{identity_id}")
+        assert resp.status_code == 204, resp.text
+
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, str(account_id),
+        )
+        matching = [e for e in new_events if e["event_type"] == "identity.changed"]
+        assert len(matching) == 1, f"expected one identity.changed event, got {new_events!r}"

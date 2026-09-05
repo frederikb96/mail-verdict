@@ -281,6 +281,9 @@ export type SSEEventType =
   | "calendar.account"
   | "contact.object"
   | "contact.collection"
+  | "settings.changed"
+  | "identity.changed"
+  | "pipeline.document_changed"
   | "resync";
 
 export interface SSEEvent {
@@ -317,6 +320,9 @@ export interface SSEEvent {
   addressbook_id?: string;
   /** Present on outbox.updated when the row is an iTIP reply, not a mail send. */
   itip?: "reply";
+  /** The settings category that changed, on settings.changed -- omitted
+   * when one write touched several (bulk import). */
+  category?: string;
 }
 
 export interface ImageExceptionResponse {
