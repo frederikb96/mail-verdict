@@ -1226,6 +1226,92 @@ class TestMailActionsUi:
             timeout=10_000,
         )
 
+    def test_navigating_away_clears_the_selection_rather_than_leaving_it_actionable(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        junk_folder: dict[str, Any],
+    ) -> None:
+        """A selection is scoped to the list it was made in. Switching to a
+        different folder must make the selection banner and the bulk
+        toolbar disappear entirely -- not just stop showing them, but
+        actually give up the selection -- rather than leave them up and
+        actionable against whatever folder happens to be on screen when a
+        button is finally pressed. Proves both halves the selection can be
+        in: a folder-wide "select all" predicate, and a hand-picked pair of
+        explicit rows."""
+        subjects = [f"Scope guard {i} {uuid.uuid4()}" for i in range(2)]
+        targets = [
+            _deliver_to_inbox(
+                api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+                inbox_folder["id"], subject,
+            )
+            for subject in subjects
+        ]
+        target_ids = {t["id"] for t in targets}
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        first_row = mail_row(page, targets[0]["id"])
+        second_row = mail_row(page, targets[1]["id"])
+        expect(first_row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        # Predicate half: "select all" over the whole folder.
+        first_row.hover()
+        first_row.get_by_role("checkbox").click()
+        page.get_by_role("button", name="Select", exact=True).click()
+        page.get_by_role("menuitem", name="Every message in this folder", exact=True).click()
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_be_visible(timeout=10_000)
+
+        _open_folder(page, junk_folder)
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_have_count(0, timeout=10_000)
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0)
+
+        _open_folder(page, inbox_folder)
+        expect(first_row).to_be_visible(timeout=15_000)
+        expect(first_row.get_by_role("checkbox")).not_to_be_checked()
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0)
+        remaining = {
+            m["id"] for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+        }
+        assert target_ids <= remaining, (
+            "a stale predicate selection must not have been actionable in the "
+            "folder navigated to -- both seed messages should still be in INBOX"
+        )
+
+        # Explicit-id half: two hand-picked rows, no predicate.
+        first_row.hover()
+        first_row.get_by_role("checkbox").click()
+        second_row.hover()
+        second_row.get_by_role("checkbox").click()
+        expect(page.get_by_text("2 selected", exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_be_visible(timeout=10_000)
+
+        _open_folder(page, junk_folder)
+        expect(page.get_by_role("toolbar", name="Bulk actions")).to_have_count(0, timeout=10_000)
+
+        _open_folder(page, inbox_folder)
+        expect(first_row).to_be_visible(timeout=15_000)
+        expect(second_row).to_be_visible(timeout=15_000)
+        expect(first_row.get_by_role("checkbox")).not_to_be_checked()
+        expect(second_row.get_by_role("checkbox")).not_to_be_checked()
+        remaining = {
+            m["id"] for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+        }
+        assert target_ids <= remaining, (
+            "a stale explicit-id selection must not have been actionable in "
+            "the folder navigated to -- both seed messages should still be in INBOX"
+        )
+
 
 def _channels(colour: str) -> list[float]:
     """The three channels of a computed `rgb(...)` / `rgba(...)` value."""

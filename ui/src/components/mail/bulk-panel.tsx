@@ -22,8 +22,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useBulkAction, useSelection } from "@/hooks/use-selection";
+import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import { useToast } from "@/hooks/use-toast";
-import { selectedAccountIdAtom } from "@/lib/atoms";
+import { isUnifiedViewAtom, selectedAccountIdAtom } from "@/lib/atoms";
 import type { BulkActionType } from "@/types/api";
 
 /** A batch is not atomic and cannot be undone -- these confirm with a
@@ -31,23 +32,39 @@ import type { BulkActionType } from "@/types/api";
  * offering an "Undo" that has nowhere to enumerate a source folder from. */
 const DESTRUCTIVE_SCOPE_ACTIONS: BulkActionType[] = ["move", "trash", "spam", "expunge"];
 
+/** A "Move to" target: either one account's folder id, or (in the unified
+ * view, over an explicit-id selection that can span accounts) a resolver
+ * from each affected account to its own id for "the same" folder -- the
+ * same per-account resolution dnd-provider.tsx already does for a drag. */
+type MoveTarget = string | ((accountId: string) => string | undefined);
+
 interface PendingAction {
   action: BulkActionType;
-  targetFolderId?: string;
+  targetFolderId?: MoveTarget;
   label: string;
 }
 
 export function BulkPanel() {
   const { count, state } = useSelection();
   const accountId = useAtomValue(selectedAccountIdAtom);
+  const isUnifiedView = useAtomValue(isUnifiedViewAtom);
   const bulkAction = useBulkAction();
-  const { data: orderData } = useFolderOrder(state.predicate?.accountId ?? accountId);
+  // A predicate is only ever minted over one real account's folder (never
+  // the unified view -- see canOfferFolder in selection-banner.tsx), so it
+  // always has its own concrete accountId to scope this to. Without a
+  // predicate, in the unified view, there is no single account to ask --
+  // useUnifiedFolders below is what lists the move targets there instead.
+  const { data: orderData } = useFolderOrder(
+    state.predicate ? state.predicate.accountId : isUnifiedView ? null : accountId,
+  );
+  const { data: unifiedFoldersData } = useUnifiedFolders();
   const [pending, setPending] = useState<PendingAction | null>(null);
   const { push: pushToast } = useToast();
 
   const folders = orderData?.folders ?? [];
+  const showUnifiedMoveTargets = isUnifiedView && !state.predicate;
 
-  const execute = (action: BulkActionType, targetFolderId: string | undefined, label: string) => {
+  const execute = (action: BulkActionType, targetFolderId: MoveTarget | undefined, label: string) => {
     // A predicate write is resolved as one statement over however many
     // rows match -- measured at tens of seconds for a large folder, all
     // of it server-side before the request even returns. Say so up front
@@ -62,7 +79,7 @@ export function BulkPanel() {
     bulkAction.mutate({ action, targetFolderId });
   };
 
-  const run = (action: BulkActionType, targetFolderId: string | undefined, label: string) => {
+  const run = (action: BulkActionType, targetFolderId: MoveTarget | undefined, label: string) => {
     if (state.predicate && DESTRUCTIVE_SCOPE_ACTIONS.includes(action)) {
       setPending({ action, targetFolderId, label });
       return;
@@ -115,14 +132,30 @@ export function BulkPanel() {
             <ChevronDown className="h-3 w-3" />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="center" className="max-h-60 overflow-y-auto">
-            {folders.map((folder) => (
-              <DropdownMenuItem
-                key={folder.folder_id}
-                onClick={() => run("move", folder.folder_id, `Move to ${folder.imap_name}`)}
-              >
-                {folder.imap_name}
-              </DropdownMenuItem>
-            ))}
+            {showUnifiedMoveTargets
+              ? (unifiedFoldersData ?? []).map((uf) => (
+                  <DropdownMenuItem
+                    key={uf.unified_name}
+                    onClick={() =>
+                      run(
+                        "move",
+                        (forAccountId) =>
+                          uf.folders.find((f) => f.account_id === forAccountId)?.folder_id,
+                        `Move to ${uf.unified_name}`,
+                      )
+                    }
+                  >
+                    {uf.unified_name}
+                  </DropdownMenuItem>
+                ))
+              : folders.map((folder) => (
+                  <DropdownMenuItem
+                    key={folder.folder_id}
+                    onClick={() => run("move", folder.folder_id, `Move to ${folder.imap_name}`)}
+                  >
+                    {folder.imap_name}
+                  </DropdownMenuItem>
+                ))}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

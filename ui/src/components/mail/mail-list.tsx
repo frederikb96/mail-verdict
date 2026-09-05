@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue } from "jotai";
 import { Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
@@ -94,6 +94,16 @@ export function MailList() {
   const clearSelection = useClearSelection();
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
+
+  // A selection is scoped to the list it was made in (see
+  // effectiveSelectionAtom) and already reads as empty the moment any of
+  // these change -- this clears the underlying atom to match, so a
+  // selection abandoned by navigating away doesn't silently reappear
+  // ticked if the reader navigates back to the same list later.
+  useEffect(() => {
+    clearSelection();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, folderId, isUnifiedView, selectedUnifiedFolder, threaded]);
 
   // Threading is a single-account concept (thread_id groups per-account folders).
   const unifiedResult = useUnifiedMails(

@@ -223,6 +223,18 @@ class BulkActionRequest(BaseModel):
     )
     ids: list[uuid.UUID] | None = None
     scope: BulkActionScope | None = None
+    confirm_message_count: int | None = Field(
+        default=None,
+        description=(
+            "For a caller that showed the count to a user before this "
+            "request was ever sent (an 'empty this folder' confirmation, "
+            "for instance): repeat back the count that was confirmed. The "
+            "request fails with a 409 naming the count actually resolved "
+            "now if the two disagree, rather than acting on a number "
+            "nobody agreed to. Omitted, no check runs -- most actions "
+            "confirm nothing and have no count to repeat back."
+        ),
+    )
 
     @model_validator(mode="after")
     def _at_least_one_of_ids_or_scope(self) -> BulkActionRequest:

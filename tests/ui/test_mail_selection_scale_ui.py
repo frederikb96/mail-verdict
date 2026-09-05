@@ -218,6 +218,42 @@ class TestLargeMailboxSelectionUi:
             f"{[r.url for r in list_requests]}"
         )
 
+    def test_refocusing_the_window_does_not_replay_every_loaded_page(
+        self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
+    ) -> None:
+        """TanStack's own refetch-on-window-focus replays an infinite
+        query's every already-fetched page exactly the way a plain
+        invalidate does -- unaffected by the bounded helper that guards
+        the SSE path, and reachable by nothing more than alt-tabbing back
+        to the browser. `visibilitychange` is what its focus manager
+        actually listens for; the document need not really have been
+        hidden for it to treat this as a refocus."""
+        account_id, _folder_id, _message_ids = big_mailbox
+
+        _open_big_mailbox(page, app_server, account_id)
+        expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
+
+        list_area = page.locator('[data-testid="mail-row"]').first
+        list_area.hover()
+        for _ in range(40):
+            page.mouse.wheel(0, 4000)
+        page.wait_for_timeout(2000)
+
+        list_requests: list[Request] = []
+        page.on(
+            "request",
+            lambda req: list_requests.append(req) if "/messages" in req.url else None,
+        )
+
+        page.evaluate("() => window.dispatchEvent(new Event('visibilitychange'))")
+        page.wait_for_timeout(3000)
+
+        assert len(list_requests) <= 3, (
+            f"refocusing the window issued {len(list_requests)} requests to the "
+            f"mail list endpoint on a deeply-scrolled folder: "
+            f"{[r.url for r in list_requests]}"
+        )
+
     def test_bulk_action_over_the_whole_mailbox_stays_bounded(
         self, page: Page, app_server: str, big_mailbox: tuple[str, str, list[str]],
     ) -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -115,6 +116,26 @@ async def _is_seen_by_id(
         return dict(result.all())
 
 
+async def _is_expunged_by_id(
+    migrated_db: DatabaseConnection, message_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, bool]:
+    async with migrated_db.session() as session:
+        result = await session.execute(
+            select(Message.id, Message.expunged_at).where(Message.id.in_(message_ids))
+        )
+        return {mid: expunged_at is not None for mid, expunged_at in result.all()}
+
+
+async def _seed_one_account_two_messages_in_one_folder(
+    migrated_db: DatabaseConnection,
+) -> tuple[uuid.UUID, uuid.UUID, list[uuid.UUID]]:
+    async with migrated_db.session() as session:
+        account_a, inbox_a, _junk_a = await _seed_account_two_folders(session)
+        ids = await _seed_messages(session, account_a, inbox_a, 2)
+        await session.commit()
+    return account_a, inbox_a, ids
+
+
 class TestSingleMoveCrossAccount:
     def test_move_into_another_accounts_folder_is_rejected(
         self, client: TestClient, migrated_db: DatabaseConnection,
@@ -197,4 +218,80 @@ class TestBulkActionAffectedCountReflectsReality:
         assert resp.status_code == 200
         # 2 supplied real ids + 1 nonexistent one; only 2 can ever be
         # affected, and the response must say so rather than 3.
+        assert resp.json()["affected_count"] == len(ids)
+
+
+class TestBulkActionConfirmMessageCount:
+    """confirm_message_count -- the guard against an irreversible
+    whole-scope write (emptying a folder, most concretely) acting on a
+    different count than whatever number a caller showed a user before
+    sending the request."""
+
+    def test_a_mismatched_count_is_rejected_and_nothing_is_touched(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_a, inbox_a, ids = client.portal.call(
+            _seed_one_account_two_messages_in_one_folder, migrated_db,
+        )
+        snapshot_at = datetime.now(UTC).isoformat()
+
+        with patch("mail_verdict.api.mails.get_db_connection", return_value=migrated_db):
+            resp = client.post(
+                f"/accounts/{account_a}/messages/bulk-action",
+                json={
+                    "action": "expunge",
+                    "scope": {
+                        "folder_id": str(inbox_a), "filter": "all", "snapshot_at": snapshot_at,
+                    },
+                    # Both messages actually resolve; this names a count
+                    # that disagrees with it, as if a message had left the
+                    # folder between whatever showed this count and now.
+                    "confirm_message_count": 5,
+                },
+            )
+        assert resp.status_code == 409
+        assert "2" in resp.text  # the count the response should report back
+
+        by_id = client.portal.call(_is_expunged_by_id, migrated_db, ids)
+        assert not any(by_id.values()), "a rejected request must not have expunged anything"
+
+    def test_a_matching_count_proceeds(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_a, inbox_a, ids = client.portal.call(
+            _seed_one_account_two_messages_in_one_folder, migrated_db,
+        )
+        snapshot_at = datetime.now(UTC).isoformat()
+
+        with patch("mail_verdict.api.mails.get_db_connection", return_value=migrated_db):
+            resp = client.post(
+                f"/accounts/{account_a}/messages/bulk-action",
+                json={
+                    "action": "expunge",
+                    "scope": {
+                        "folder_id": str(inbox_a), "filter": "all", "snapshot_at": snapshot_at,
+                    },
+                    "confirm_message_count": len(ids),
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["affected_count"] == len(ids)
+
+        by_id = client.portal.call(_is_expunged_by_id, migrated_db, ids)
+        assert all(by_id.values())
+
+    def test_omitted_entirely_runs_no_check(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Every other bulk action sends nothing here and must keep working
+        exactly as before -- the field is opt-in, not a new requirement on
+        the whole endpoint."""
+        account_a, ids = client.portal.call(_seed_one_account_and_two_messages, migrated_db)
+
+        with patch("mail_verdict.api.mails.get_db_connection", return_value=migrated_db):
+            resp = client.post(
+                f"/accounts/{account_a}/messages/bulk-action",
+                json={"action": "mark_read", "ids": [str(i) for i in ids]},
+            )
+        assert resp.status_code == 200
         assert resp.json()["affected_count"] == len(ids)

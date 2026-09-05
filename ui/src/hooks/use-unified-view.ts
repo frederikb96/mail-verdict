@@ -6,6 +6,7 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { hasFewEnoughPagesToEagerlyRefetch } from "@/hooks/use-mails";
 import type { UnifiedFolderResponse, UnifiedMessageListResponse } from "@/types/api";
 
 /** Fetch merged folder list across all accounts. */
@@ -30,6 +31,10 @@ export function useUnifiedMails(folderName: string | null) {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.next_cursor ?? undefined : undefined,
     enabled: !!folderName,
+    // Same reasoning and same bound as useMailList -- see
+    // hasFewEnoughPagesToEagerlyRefetch's docstring.
+    refetchOnWindowFocus: hasFewEnoughPagesToEagerlyRefetch,
+    refetchOnMount: hasFewEnoughPagesToEagerlyRefetch,
   });
 }
 

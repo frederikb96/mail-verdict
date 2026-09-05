@@ -113,6 +113,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   replaying every page it had loaded, for the same reason
 - A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
   already carried the requested flag -- only rows that actually changed count
+- A mail selection is now scoped to the account, folder (or unified folder) and threading mode it
+  was made against. Switching to a different folder, account or unified view, or toggling
+  threading, clears it instead of leaving the bulk toolbar up and actionable against the folder
+  now on screen -- previously a "select all" or a hand-picked set of rows survived the switch, and
+  confirming a destructive bulk action from a different folder acted on the one it was made in
+- Emptying a folder confirms with the same count the request enforces, minted once and shown to
+  the user before the confirmation dialog opens, rather than a client-cached folder count compared
+  against nothing -- a stale count now fails with a clear error instead of silently deleting
+  however many messages actually resolve
+- The bulk panel's "Move to" works from the unified view again: it no longer calls the
+  single-account folder-order endpoint with the literal account id "unified" (a 422 on every
+  open), and a cross-account selection resolves each account's own folder id for a shared unified
+  folder name instead of sending one account's id to another
+- A bulk action no longer silently drops a ticked row whose account can no longer be found in a
+  list cache (a live-update splice, a preceding action's cache reset, an evicted query) -- the
+  account a row belongs to is now recorded on the selection itself when it is ticked, not
+  re-derived from the cache at action time
+- `refetchOnWindowFocus` and `refetchOnMount` no longer replay every already-loaded page of a
+  deeply-scrolled mail list -- alt-tabbing back to the browser, or remounting the list, previously
+  bypassed the bound already guarding the live-update path and could turn one refocus into
+  hundreds of requests
 
 ### Fixed
 

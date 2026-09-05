@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useFolderBulkAction } from "@/hooks/use-selection";
 import { useToast } from "@/hooks/use-toast";
+import { api } from "@/lib/api";
 
 interface FolderRowMenuProps {
   accountId: string;
@@ -33,7 +34,14 @@ interface FolderRowMenuProps {
 export function FolderRowMenu({
   accountId, folderId, folderName, badgeCount, totalCount,
 }: FolderRowMenuProps) {
-  const [confirmEmpty, setConfirmEmpty] = useState(false);
+  // Minted the moment the menu item is clicked, not deferred to the
+  // confirm click -- the dialog must show the same count the request
+  // later confirms, never `totalCount` (the folder-list cache, up to 30s
+  // stale and patched optimistically elsewhere), and never a second mint
+  // taken silently later that could disagree with what was shown here.
+  const [confirmEmpty, setConfirmEmpty] = useState<{ snapshotAt: string; count: number } | null>(
+    null,
+  );
   const folderAction = useFolderBulkAction();
   const { push: pushToast } = useToast();
 
@@ -89,7 +97,12 @@ export function FolderRowMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
-            onClick={() => setConfirmEmpty(true)}
+            onClick={async () => {
+              const snapshot = await api.messages.selection(accountId, {
+                folder_id: folderId, filter: "all",
+              });
+              setConfirmEmpty({ snapshotAt: snapshot.snapshot_at, count: snapshot.count });
+            }}
           >
             Empty folder
           </DropdownMenuItem>
@@ -97,20 +110,24 @@ export function FolderRowMenu({
       </DropdownMenu>
 
       <ConfirmDialog
-        open={confirmEmpty}
-        onOpenChange={setConfirmEmpty}
+        open={confirmEmpty !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmEmpty(null);
+        }}
         title={`Empty ${folderName}?`}
         confirmLabel="Empty folder"
         description={
-          `This permanently deletes ${totalCount} message${totalCount === 1 ? "" : "s"} ` +
-          "from the mail server. It cannot be undone."
+          `This permanently deletes ${confirmEmpty?.count ?? 0} ` +
+          `message${confirmEmpty?.count === 1 ? "" : "s"} from the mail server. ` +
+          "It cannot be undone."
         }
         isConfirming={folderAction.isPending}
         onConfirm={() => {
-          warnIfSlow("Deleting", totalCount);
+          if (!confirmEmpty) return;
+          warnIfSlow("Deleting", confirmEmpty.count);
           folderAction.mutate(
-            { accountId, folderId, action: "expunge" },
-            { onSuccess: () => setConfirmEmpty(false) },
+            { accountId, folderId, action: "expunge", confirmedSnapshot: confirmEmpty },
+            { onSuccess: () => setConfirmEmpty(null) },
           );
         }}
       />

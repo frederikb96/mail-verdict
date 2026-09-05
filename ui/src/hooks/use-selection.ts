@@ -11,7 +11,7 @@
  */
 
 import { useCallback } from "react";
-import { type InfiniteData, type QueryClient, useMutation, useQueryClient } from "@tanstack/react-query";
+import { type InfiniteData, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
@@ -27,7 +27,12 @@ import {
   type SelectionPredicate,
   type SelectionState,
 } from "@/lib/selection";
-import { selectionAtom, selectionCountAtom } from "@/store/selection-atom";
+import {
+  currentListScopeAtom,
+  effectiveSelectionAtom,
+  selectionAtom,
+  selectionCountAtom,
+} from "@/store/selection-atom";
 import type {
   BulkActionScope,
   BulkActionTarget,
@@ -42,33 +47,43 @@ const BULK_UNDO_PHRASING: Record<string, string> = {
   spam: "marked as spam",
 };
 
-/** Read current selection state and whether a given row is ticked. */
+/** Read the selection as it applies to the list currently on screen, and
+ * whether a given row is ticked. Never the raw atom -- see
+ * effectiveSelectionAtom. */
 export function useSelection() {
-  const state = useAtomValue(selectionAtom);
+  const state = useAtomValue(effectiveSelectionAtom);
   const count = useAtomValue(selectionCountAtom);
   const isSelected = useCallback((row: SelectableRow) => isRowSelected(state, row), [state]);
   return { state, count, isSelected };
 }
 
-/** The gestures a row's checkbox, ctrl+click and shift+click drive. */
+/** The gestures a row's checkbox, ctrl+click and shift+click drive. Each
+ * one carries the list it's happening in, so a selection made in a folder
+ * the reader has since left is discarded rather than extended -- see
+ * selectionForScope. */
 export function useSelectionGestures() {
-  const [state, setState] = useAtom(selectionAtom);
+  const setState = useSetAtom(selectionAtom);
+  const scope = useAtomValue(currentListScopeAtom);
 
   const toggle = useCallback(
-    (row: SelectableRow) => setState((s) => toggleRow(s, row)),
-    [setState],
+    (row: SelectableRow) => setState((s) => toggleRow(s, row, scope)),
+    [setState, scope],
   );
 
   const shiftRange = useCallback(
     (visibleIds: string[], rowsById: ReadonlyMap<string, SelectableRow>, targetId: string) =>
-      setState((s) => extendRange(s, visibleIds, rowsById, targetId)),
-    [setState],
+      setState((s) => extendRange(s, visibleIds, rowsById, targetId, scope)),
+    [setState, scope],
   );
 
-  return { state, toggle, shiftRange };
+  return { toggle, shiftRange };
 }
 
-/** Mint a "select all matching" predicate over a whole folder, and clear it. */
+/** Mint a "select all matching" predicate over a whole folder, and clear it.
+ * `accountId`/`folderId` are the caller's own current values (always a real
+ * account, never the unified view -- see canOfferFolder in
+ * selection-banner.tsx), so the predicate's scope is recorded directly from
+ * them rather than re-read from elsewhere. */
 export function useSelectAll() {
   const setState = useSetAtom(selectionAtom);
 
@@ -80,7 +95,7 @@ export function useSelectAll() {
         snapshotAt: snapshot.snapshot_at,
         count: snapshot.count,
       };
-      setState({ ...EMPTY_SELECTION, predicate });
+      setState({ ...EMPTY_SELECTION, predicate, scope: { accountId, folderId, threaded: false } });
       return count;
     },
     [setState],
@@ -96,26 +111,36 @@ export function useClearSelection() {
 }
 
 /**
- * Acts on an entire folder from the sidebar's own hover menu -- mints a
- * fresh predicate snapshot and resolves it server-side in the same
- * request, independent of whatever row selection (if any) is active
- * elsewhere. Never touches the shared selection atom.
+ * Acts on an entire folder from the sidebar's own hover menu -- resolves a
+ * predicate snapshot server-side in the same request, independent of
+ * whatever row selection (if any) is active elsewhere. Never touches the
+ * shared selection atom.
  */
 export function useFolderBulkAction() {
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async ({
-      accountId, folderId, action,
+      accountId, folderId, action, confirmedSnapshot,
     }: {
       accountId: string;
       folderId: string;
       action: Extract<BulkActionType, "mark_read" | "expunge">;
+      /** A snapshot already minted (and its count already shown to the
+       * user) before this ran -- required for expunge, whose destructive
+       * confirmation dialog would otherwise show one count while a fresh
+       * mint taken only now silently acts on however many actually
+       * resolve. mark_read has no confirmation step and mints its own,
+       * fresh, every time. */
+      confirmedSnapshot?: { snapshotAt: string; count: number };
     }) => {
-      const snapshot = await api.messages.selection(accountId, { folder_id: folderId, filter: "all" });
+      const snapshot = confirmedSnapshot
+        ? { snapshot_at: confirmedSnapshot.snapshotAt, count: confirmedSnapshot.count }
+        : await api.messages.selection(accountId, { folder_id: folderId, filter: "all" });
       return api.messages.bulkAction(accountId, {
         action,
         scope: { folder_id: folderId, filter: "all", snapshot_at: snapshot.snapshot_at },
+        confirm_message_count: confirmedSnapshot ? snapshot.count : undefined,
       });
     },
     onSettled: () => {
@@ -132,44 +157,14 @@ export function useFolderBulkAction() {
   });
 }
 
-/** Find which account a set of mail ids belongs to, from whatever list
- * caches currently hold them -- needed because a unified-view selection
- * can span accounts, and a bulk-action request is scoped to one. */
-function groupIdsByAccount(qc: QueryClient, ids: readonly string[]): Map<string, string[]> {
-  const byId = new Map<string, string>();
-  for (const [, data] of qc.getQueriesData<InfiniteData<{ messages: { id: string; account_id: string }[] }>>(
-    { queryKey: ["mails"] },
-  )) {
-    for (const page of data?.pages ?? []) {
-      for (const m of page.messages) byId.set(m.id, m.account_id);
-    }
-  }
-  for (const [, data] of qc.getQueriesData<InfiniteData<{ messages: { id: string; account_id: string }[] }>>(
-    { queryKey: ["unified", "mails"] },
-  )) {
-    for (const page of data?.pages ?? []) {
-      for (const m of page.messages) byId.set(m.id, m.account_id);
-    }
-  }
-  const grouped = new Map<string, string[]>();
-  for (const id of ids) {
-    const accountId = byId.get(id);
-    if (!accountId) continue;
-    const bucket = grouped.get(accountId) ?? [];
-    bucket.push(id);
-    grouped.set(accountId, bucket);
-  }
-  return grouped;
-}
-
 /** Build the request bodies a bulk action sends -- one per affected
  * account, since the API is scoped to a single account per request. A
  * predicate selection is always single-account by construction (minted
- * over one account's folder); an explicit-id selection may span several
- * in the unified view, so it is grouped by each id's real account rather
- * than sent under whichever account the UI happens to have selected. */
+ * over one account's folder); an explicit-id selection may span several in
+ * the unified view, so it is grouped by the account each id was ticked
+ * under -- carried in the selection itself, never re-derived from a list
+ * cache that may have since evicted or moved the row. */
 function buildBulkRequests(
-  qc: QueryClient,
   state: SelectionState,
 ): Array<{ accountId: string; target: BulkActionTarget }> {
   if (state.predicate) {
@@ -177,13 +172,18 @@ function buildBulkRequests(
       folder_id: state.predicate.folderId,
       filter: state.predicate.filter,
       snapshot_at: state.predicate.snapshotAt,
-      exclude_ids: Array.from(state.excluded),
+      exclude_ids: Array.from(state.excluded.keys()),
     };
     const target: BulkActionTarget = { scope };
-    if (state.included.size > 0) target.ids = Array.from(state.included);
+    if (state.included.size > 0) target.ids = Array.from(state.included.keys());
     return [{ accountId: state.predicate.accountId, target }];
   }
-  const grouped = groupIdsByAccount(qc, Array.from(state.included));
+  const grouped = new Map<string, string[]>();
+  for (const [id, accountId] of state.included) {
+    const bucket = grouped.get(accountId) ?? [];
+    bucket.push(id);
+    grouped.set(accountId, bucket);
+  }
   return Array.from(grouped.entries()).map(([accountId, ids]) => ({
     accountId, target: { ids },
   }));
@@ -200,10 +200,13 @@ interface BulkActionVars {
   requests: Array<{ accountId: string; target: BulkActionTarget; targetFolderId?: string }>;
 }
 
-/** Execute a bulk action on the current selection (ids, scope, or both). */
+/** Execute a bulk action on the current selection (ids, scope, or both).
+ * Reads the *effective* selection -- one no longer scoped to the list on
+ * screen resolves to nothing to act on, rather than to whatever list it
+ * was made in. */
 export function useBulkAction() {
   const qc = useQueryClient();
-  const state = useAtomValue(selectionAtom);
+  const state = useAtomValue(effectiveSelectionAtom);
   const clearSelection = useClearSelection();
   // Same reasoning as useMailAction: a bulk action that carries the open
   // message out of its folder must not leave the reading pane pointed at it.
@@ -242,7 +245,7 @@ export function useBulkAction() {
       // A scope-based action doesn't know which ids are affected client-side;
       // only optimistically update the explicit-id case, invalidate for scope.
       const removesFromList = ["move", "trash", "expunge", "archive", "spam"].includes(action);
-      const explicitIds = state.predicate ? null : new Set(state.included);
+      const explicitIds = state.predicate ? null : new Set(state.included.keys());
 
       const wasSelected =
         removesFromList &&
@@ -393,7 +396,7 @@ export function useBulkAction() {
       action: BulkActionType;
       targetFolderId?: string | ((accountId: string) => string | undefined);
     }) => {
-      const requests = buildBulkRequests(qc, state).map((r) => ({
+      const requests = buildBulkRequests(state).map((r) => ({
         ...r,
         targetFolderId:
           typeof vars.targetFolderId === "function"
@@ -402,7 +405,7 @@ export function useBulkAction() {
       }));
       mutation.mutate({ action: vars.action, requests });
     },
-    [mutation, qc, state],
+    [mutation, state],
   );
 
   return { ...mutation, mutate };

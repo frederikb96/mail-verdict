@@ -69,6 +69,32 @@ export const mailKeys = {
   quote: (id: string) => ["mail-quote", id] as const,
 };
 
+/**
+ * A live-mail-list infinite query is refetched by re-fetching every
+ * already-loaded page in sequence (TanStack has no partial-refetch for an
+ * infinite query) -- so invalidating, refocusing, or remounting one
+ * scrolled hundreds of pages deep would turn a single arriving message,
+ * or simply switching back to this tab, into hundreds of requests.
+ * `hasFewEnoughPagesToEagerlyRefetch` below is the one predicate every
+ * trigger is gated on, so a list past this depth never refetches eagerly
+ * regardless of which of the three actually fires; a shallowly-loaded list
+ * (the overwhelmingly common case) still refreshes immediately by any of
+ * them. Past the bound, a list is left stale rather than fetched -- it
+ * catches up once its query is torn down and rebuilt from scratch (a
+ * folder switch away and back), not from any of these three remaining
+ * observers of the same query object.
+ */
+const EAGER_REFETCH_MAX_PAGES = 3;
+
+/** Shared by the SSE-driven invalidate below and by useMailList's/
+ * useUnifiedMails's own refetchOnWindowFocus/refetchOnMount -- see
+ * EAGER_REFETCH_MAX_PAGES's docstring for why the same bound has to gate
+ * all three rather than only the one it was first written for. */
+export function hasFewEnoughPagesToEagerlyRefetch(query: { state: { data?: unknown } }): boolean {
+  const data = query.state.data as { pages?: unknown[] } | undefined;
+  return (data?.pages?.length ?? 0) <= EAGER_REFETCH_MAX_PAGES;
+}
+
 export function useMailList(
   accountId: string | null,
   folderId: string | null,
@@ -90,6 +116,8 @@ export function useMailList(
     enabled: !!accountId && !!folderId,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
+    refetchOnWindowFocus: hasFewEnoughPagesToEagerlyRefetch,
+    refetchOnMount: hasFewEnoughPagesToEagerlyRefetch,
   });
 }
 
@@ -210,26 +238,13 @@ export function updateMailInCache(
   );
 }
 
-/**
- * A live-mail-list infinite query is refetched by re-fetching every
- * already-loaded page in sequence (TanStack has no partial-refetch for an
- * infinite query) -- so invalidating one scrolled hundreds of pages deep
- * turns a single arriving message into hundreds of requests. Anything past
- * a small page count is marked stale with no eager fetch instead; it
- * catches up next time it is newly observed (folder switch, refocus)
- * rather than right now. A shallowly-loaded list (the overwhelmingly
- * common case) still refreshes immediately.
- */
-const EAGER_REFETCH_MAX_PAGES = 3;
-
 export function invalidateMailListsBounded(qc: QueryClient): void {
   for (const prefix of [["mails"], ["unified", "mails"]] as const) {
-    for (const [key, data] of qc.getQueriesData<InfiniteData<unknown>>({ queryKey: prefix })) {
-      const pageCount = data?.pages.length ?? 0;
+    for (const query of qc.getQueryCache().findAll({ queryKey: prefix })) {
       qc.invalidateQueries({
-        queryKey: key,
+        queryKey: query.queryKey,
         exact: true,
-        refetchType: pageCount <= EAGER_REFETCH_MAX_PAGES ? "active" : "none",
+        refetchType: hasFewEnoughPagesToEagerlyRefetch(query) ? "active" : "none",
       });
     }
   }
