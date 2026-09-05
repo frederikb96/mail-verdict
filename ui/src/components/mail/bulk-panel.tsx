@@ -71,7 +71,7 @@ export function BulkPanel() {
     // rather than leaving the panel looking hung while it works.
     if (state.predicate) {
       pushToast(
-        `Applying ${label.toLowerCase()} to ${count} messages -- this can take a while for a large selection.`,
+        `Applying ${label.toLowerCase()} to ${count} messages — this can take a while for a large selection.`,
         "info",
         6000,
       );
