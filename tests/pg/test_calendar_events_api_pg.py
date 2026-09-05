@@ -343,6 +343,91 @@ class TestVisibilityFiltering:
         assert "Disabled calendar" not in [e["summary"] for e in after.json()["events"]]
 
 
+class TestTaskListFiltering:
+    """A to-do-only collection (what PostIMAP reports for a Nextcloud task
+    list -- supported_components names VTODO and nothing else) never
+    contributes to a month view, even naming it explicitly -- there is
+    nothing a VEVENT-shaped expansion could ever find in one."""
+
+    async def _seed_task_list(self, db: DatabaseConnection) -> uuid.UUID:
+        async with db.session() as session:
+            _dav_account_id, collection_id = await _seed_calendar(session)
+            await session.execute(
+                text(
+                    "UPDATE dav_collections SET supported_components = '{VTODO}' "
+                    "WHERE id = :id"
+                ),
+                {"id": collection_id},
+            )
+            await session.commit()
+        return collection_id
+
+    def test_a_task_lists_events_never_appear_even_requested_explicitly(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        collection_id = client.portal.call(self._seed_task_list, migrated_db)
+        with patch(_TARGET, return_value=migrated_db), \
+             patch(_CALENDARS_TARGET, return_value=migrated_db):
+            # is_enabled/is_visible default true here since calendar_prefs
+            # was seeded with an explicit row by _seed_identity_and_link in
+            # other tests -- this one has no prefs row at all, so this also
+            # proves the filtering is not merely a side effect of the
+            # default-is_enabled-off behaviour calendars.py applies to a
+            # task list with no prefs row yet.
+            client.patch(f"/calendars/{collection_id}", json={"is_enabled": True})
+            client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(collection_id), "summary": "Should never show",
+                    "dtstart": "2026-09-12T10:00:00+00:00",
+                    "dtend": "2026-09-12T11:00:00+00:00",
+                },
+            )
+            default_list = client.get("/calendar/events", params={"month": "2026-09"})
+            assert "Should never show" not in [
+                e["summary"] for e in default_list.json()["events"]
+            ]
+
+            explicit = client.get(
+                "/calendar/events",
+                params={"month": "2026-09", "calendars": str(collection_id)},
+            )
+        assert "Should never show" not in [e["summary"] for e in explicit.json()["events"]]
+
+
+class TestExpansionTruncation:
+    """The whole month view's expansion shares one budget across every
+    visible calendar -- exceeding it returns zero events from all of them,
+    which is indistinguishable from an empty month unless the response
+    says so."""
+
+    def test_a_timed_out_expansion_is_reported_as_truncated(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Slow",
+                    "dtstart": "2026-09-13T10:00:00+00:00",
+                    "dtend": "2026-09-13T11:00:00+00:00",
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            with patch(
+                "mail_verdict.api.calendar_events._EXPANSION_TIMEOUT_SECONDS", 0.0,
+            ), patch(
+                "mail_verdict.calendar.ical.expand_instances",
+                side_effect=lambda *a, **kw: (time.sleep(0.2), [])[1],
+            ):
+                resp = client.get("/calendar/events", params={"month": "2026-09"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["truncated"] is True
+        assert resp.json()["events"] == []
+
+
 class TestRruleField:
     """The editor reopens an event to show its own recurrence, and needs a
     way to drop it -- both go through this field, not just ical.py."""

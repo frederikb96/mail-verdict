@@ -87,7 +87,7 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
         >
           <FolderPlus className="h-3.5 w-3.5" />
         </DialogTrigger>
-        <DialogContent className="max-w-md">
+        <DialogContent size="md">
           <DialogHeader>
             <DialogTitle>Manage folders</DialogTitle>
           </DialogHeader>

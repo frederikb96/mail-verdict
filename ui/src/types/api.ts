@@ -890,6 +890,10 @@ export interface EventDeleteRequest {
 
 export interface EventListResponse {
   events: EventInstance[];
+  /** True when the shared expansion budget ran out before every visible
+   * calendar's objects could be walked -- the month may be missing events
+   * rather than genuinely empty. */
+  truncated: boolean;
 }
 
 export interface RespondRequest {

@@ -79,7 +79,7 @@ export function ComposeDialog() {
         <PenSquare className="h-4 w-4" />
         Compose
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent size="lg">
         <DialogHeader>
           <DialogTitle>New Message</DialogTitle>
         </DialogHeader>

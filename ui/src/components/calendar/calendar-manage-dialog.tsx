@@ -1,11 +1,14 @@
 "use client";
 
-/** Create/delete calendars and edit a calendar's name, colour, identity link
- * and invitation intake -- the same facts calendar-links.tsx edits per
- * identity, here edited per calendar. */
+/** Create/delete calendars and edit a calendar's name and colour. Which
+ * identity a calendar belongs to, and which one receives invitations, is
+ * edited on the Settings page instead -- that surface already validates
+ * the one invariant this dialog used to let a person violate (an identity
+ * with linked calendars but none chosen to receive invitations). */
 
 import { useEffect, useState } from "react";
-import { Loader2, Plus, Settings2, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { Loader2, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
@@ -29,14 +32,8 @@ import { Switch } from "@/components/ui/switch";
 import { CALENDAR_PALETTE, resolveCalendarColor } from "@/components/calendar/colors";
 import { useCalendars, useCreateCalendar, useDeleteCalendar, useUpdateCalendar } from "@/hooks/use-calendars";
 import { useDavAccounts } from "@/hooks/use-dav-accounts";
-import { useIdentities } from "@/hooks/use-identities";
 import { cn } from "@/lib/utils";
-import type { Calendar, CalendarIntake } from "@/types/api";
-
-const INTAKE_LABELS: Record<CalendarIntake, string> = {
-  none: "Do nothing with invitations",
-  import_and_link: "Import invitations automatically",
-};
+import type { Calendar } from "@/types/api";
 
 /** A single swatch that opens the palette in a popover, instead of every
  * calendar permanently rendering all twelve colours as a row of buttons --
@@ -86,15 +83,62 @@ function ColorPicker({ calendar }: { calendar: Calendar }) {
 function CalendarRow({ calendar }: { calendar: Calendar }) {
   const updateCalendar = useUpdateCalendar();
   const deleteCalendar = useDeleteCalendar();
-  const { data: identities } = useIdentities();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [name, setName] = useState(calendar.display_name);
+
+  // The server's own name can change (another client renamed it, or the
+  // update above just landed) -- re-seed the local draft whenever it does,
+  // the same re-resolve-on-load fix a query-backed default needs elsewhere
+  // in this app, except here the query was already loaded and the value
+  // simply changed under it.
+  useEffect(() => {
+    setName(calendar.display_name);
+  }, [calendar.display_name]);
+
+  const commitRename = () => {
+    setRenaming(false);
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === calendar.display_name) {
+      setName(calendar.display_name);
+      return;
+    }
+    updateCalendar.mutate({ id: calendar.id, data: { display_name: trimmed } });
+  };
 
   return (
     <div className="flex flex-col gap-2 rounded-md border p-2">
       <div className="flex items-center gap-2">
         <ColorPicker calendar={calendar} />
-        <span className="flex-1 truncate text-sm">{calendar.display_name}</span>
-        {calendar.read_only && <span className="text-xs text-muted-foreground">Read-only</span>}
+        {renaming ? (
+          <Input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                setName(calendar.display_name);
+                setRenaming(false);
+              }
+            }}
+            className="h-7 min-w-0 flex-1"
+          />
+        ) : (
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1 truncate text-left text-sm"
+            onClick={() => setRenaming(true)}
+          >
+            <span className="truncate">{calendar.display_name}</span>
+            <Pencil className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="sr-only">Rename {calendar.display_name}</span>
+          </button>
+        )}
+        {calendar.read_only && (
+          <span className="shrink-0 text-xs text-muted-foreground">Read-only</span>
+        )}
         <Switch
           aria-label={`Show ${calendar.display_name} in the sidebar`}
           checked={calendar.is_enabled}
@@ -105,60 +149,11 @@ function CalendarRow({ calendar }: { calendar: Calendar }) {
         <Button
           variant="ghost"
           size="icon-xs"
-          className="text-destructive"
+          className="shrink-0 text-destructive"
           onClick={() => setConfirmDelete(true)}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2">
-        <div className="grid gap-1">
-          <Label className="text-xs">Identity</Label>
-          <Select
-            value={calendar.identity_id ?? "none"}
-            onValueChange={(v) =>
-              updateCalendar.mutate({
-                id: calendar.id,
-                data: { identity_id: v === "none" ? null : v },
-              })
-            }
-          >
-            <SelectTrigger size="sm">
-              <SelectValue>
-                {(v: string) => (v === "none" ? "None" : (identities?.find((i) => i.id === v)?.address ?? v))}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">None</SelectItem>
-              {identities?.map((i) => (
-                <SelectItem key={i.id} value={i.id}>
-                  {i.address}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-1">
-          <Label className="text-xs">Invitations</Label>
-          <Select
-            value={calendar.intake}
-            onValueChange={(v) =>
-              v && updateCalendar.mutate({ id: calendar.id, data: { intake: v as CalendarIntake } })
-            }
-          >
-            <SelectTrigger size="sm">
-              <SelectValue>{(v: CalendarIntake) => INTAKE_LABELS[v] ?? v}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(INTAKE_LABELS) as CalendarIntake[]).map((k) => (
-                <SelectItem key={k} value={k}>
-                  {INTAKE_LABELS[k]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
       </div>
 
       <ConfirmDialog
@@ -201,7 +196,7 @@ function NewCalendarForm() {
 
   return (
     <form
-      className="flex items-end gap-2"
+      className="flex flex-col gap-2 sm:flex-row sm:items-end"
       onSubmit={(e) => {
         e.preventDefault();
         if (!name || !davAccountId) return;
@@ -215,10 +210,10 @@ function NewCalendarForm() {
         <Label className="text-xs">New calendar name</Label>
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Personal" />
       </div>
-      <div className="grid gap-1">
+      <div className="grid gap-1 sm:w-40">
         <Label className="text-xs">Server</Label>
         <Select value={davAccountId} onValueChange={(v) => v && setDavAccountId(v)}>
-          <SelectTrigger className="w-40">
+          <SelectTrigger className="w-full">
             <SelectValue placeholder="Choose">
               {(v: string) => davAccounts?.find((a) => a.id === v)?.name ?? "Choose"}
             </SelectValue>
@@ -253,11 +248,11 @@ export function CalendarManageDialog() {
       <DialogTrigger render={<Button variant="ghost" size="icon-xs" aria-label="Manage calendars" />}>
         <Settings2 className="h-3.5 w-3.5" />
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent size="lg">
         <DialogHeader>
           <DialogTitle>Manage calendars</DialogTitle>
         </DialogHeader>
-        <div className="flex max-h-96 flex-col gap-2 overflow-y-auto">
+        <div className="flex max-h-96 flex-col gap-2 overflow-y-auto overflow-x-hidden">
           {calendars?.map((c) => (
             <CalendarRow key={c.id} calendar={c} />
           ))}
@@ -265,6 +260,14 @@ export function CalendarManageDialog() {
             <p className="py-4 text-center text-sm text-muted-foreground">No calendars yet</p>
           )}
         </div>
+        <p className="text-xs text-muted-foreground">
+          Which identity a calendar belongs to, and which one receives its invitations, is set on
+          the{" "}
+          <Link href="/settings#calendar" className="underline">
+            Settings
+          </Link>{" "}
+          page.
+        </p>
         <NewCalendarForm />
       </DialogContent>
     </Dialog>

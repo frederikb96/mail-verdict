@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Calendar
+
+- A dialog now renders at the width it actually asks for. The shared dialog component's own
+  default width was silently winning over every caller's override regardless of source order --
+  Tailwind emits responsive rules after plain ones, so a caller's plain `max-w-lg` never stood a
+  chance against the component's own `sm:max-w-sm`. A `size` prop replaces the raw override at
+  every call site, keeping the override in the same modifier group as the default so the last one
+  applied is the one that wins.
+- A to-do-only calendar collection (a Nextcloud task list, most commonly) is hidden from the
+  sidebar by default and never expanded for a month view, even when named explicitly -- there is
+  nothing a VEVENT-shaped expansion could ever find in one, so its objects are no longer fetched
+  or parsed at all. It can still be shown deliberately from the manage-calendars dialog.
+- A month view that exceeds its shared expansion budget now says so, both in the response and as
+  a warning next to the month title, rather than looking exactly like an empty month.
+- The manage-calendars dialog is redesigned around the width fix above: a calendar can be renamed
+  in place, and the row no longer duplicates the identity/invitation editing the Settings page
+  already validates -- it links there instead. The dialog now works at a phone width as well as a
+  desktop one.
+
 ### Contacts
 
 - Fixed the contacts screen never loading, and everything else in the application stalling while

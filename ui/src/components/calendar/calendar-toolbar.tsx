@@ -2,15 +2,17 @@
 
 import { useState } from "react";
 import { useAtom } from "jotai";
-import { ChevronLeft, ChevronRight, Plus } from "lucide-react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { MonthYearPicker } from "@/components/calendar/month-year-picker";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
-import { addDays, addMonths, addWeeks, format, startOfWeek, weekNumber } from "@/lib/dates";
+import { addDays, addMonths, addWeeks, format, monthChunkKey, startOfWeek, weekNumber } from "@/lib/dates";
 import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 import { useCalendarShortcuts } from "@/hooks/use-calendar-shortcuts";
+import { useEventChunk } from "@/hooks/use-events";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const VIEWS: { value: CalendarViewMode; label: string }[] = [
@@ -37,6 +39,13 @@ export function CalendarToolbar() {
   const navigate = useCalendarNavigate();
   const [createOpen, setCreateOpen] = useState(false);
   const isMobile = useIsMobile();
+  // calendarDateAtom tracks the month view's own scroll position (see
+  // month-scroller.tsx), so it is already a good proxy for "the month
+  // currently on screen" even before the toolbar's own navigation moves
+  // it -- reading the same chunk the month view itself renders from
+  // rather than fetching a second time.
+  const { data: monthEvents } = useEventChunk(monthChunkKey(date));
+  const showTruncationWarning = view === "month" && monthEvents?.truncated === true;
 
   // push: false -- prev/next never spends a history entry (navigate()'s
   // default push is for the changes worth one), but still keeps the URL
@@ -72,6 +81,16 @@ export function CalendarToolbar() {
           {titleFor(view, date)}
         </span>
       </MonthYearPicker>
+      {showTruncationWarning && (
+        <Tooltip>
+          <TooltipTrigger aria-label="Some events could not be loaded in time">
+            <AlertTriangle className="h-4 w-4 text-amber-500" />
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            This month has too much to expand in time -- some events may be missing.
+          </TooltipContent>
+        </Tooltip>
+      )}
 
       <div className="ml-auto flex items-center gap-2">
         <Tabs value={view} onValueChange={(v) => v && navigate({ view: v as CalendarViewMode })}>

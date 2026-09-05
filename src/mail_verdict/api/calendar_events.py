@@ -238,21 +238,27 @@ def _expand_all_sync(
 
 async def _expand_all(
     objects: list[DavObject], window_start: datetime, window_end: datetime,
-) -> dict[uuid.UUID, list[ical.ParsedEvent]]:
+) -> tuple[dict[uuid.UUID, list[ical.ParsedEvent]], bool]:
+    """Returns (expanded, truncated) -- truncated is True when the whole
+    batch missed its shared budget, so the caller can tell a person "the
+    month view came back empty because it ran out of time" apart from
+    "the month view came back empty because there is nothing in it",
+    which look identical without this."""
     loop = asyncio.get_running_loop()
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             loop.run_in_executor(
                 _EXPANSION_EXECUTOR, _expand_all_sync, objects, window_start, window_end,
             ),
             timeout=_EXPANSION_TIMEOUT_SECONDS,
         )
+        return result, False
     except TimeoutError:
         logger.warning(
             "Calendar expansion exceeded %.0fs for %d objects; returning none of them",
             _EXPANSION_TIMEOUT_SECONDS, len(objects),
         )
-        return {}
+        return {}, True
 
 
 @router.get("", response_model=EventListResponse)
@@ -274,6 +280,12 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
     requested_ids = {uuid.UUID(c) for c in calendars.split(",") if c} if calendars else None
     candidates: list[tuple[DavCollection, CalendarPrefs | None]] = []
     for collection, _account in pairs:
+        # A to-do-only collection (Nextcloud's task lists are the common
+        # case) never has a VEVENT to expand -- excluded unconditionally,
+        # even from an explicit `calendars` request, so its objects are
+        # never fetched from the DB at all, let alone parsed for nothing.
+        if not collection.supports_vevent:
+            continue
         if requested_ids is not None and collection.id not in requested_ids:
             continue
         prefs = all_prefs.get(collection.id)
@@ -320,7 +332,7 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
     identity_by_collection = {c.id: email for c, email in visible}
     read_only_by_collection = {c.id: c.read_only for c, _ in visible}
 
-    expanded = await _expand_all(objects, window_start, window_end)
+    expanded, truncated = await _expand_all(objects, window_start, window_end)
 
     events: list[EventInstanceOut] = []
     for obj in objects:
@@ -338,7 +350,7 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
                 )
             )
     events.sort(key=lambda e: e.dtstart)
-    return EventListResponse(events=events)
+    return EventListResponse(events=events, truncated=truncated)
 
 
 @router.get("/{object_id}", response_model=EventInstanceOut)
