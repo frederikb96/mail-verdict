@@ -52,15 +52,17 @@ class TestSettingsCategoriesUi:
         # Both new tabs render real, saved settings rather than the
         # "category is missing" fallback -- proves the category name here
         # actually matches what the server has under SettingCategory.
+        # Field labels are humanized from the raw key ("provider" ->
+        # "Provider"), which stays reachable as the label's title attribute.
         tablist.get_by_role("tab", name="Semantic search", exact=True).click()
-        expect(page.get_by_text("provider", exact=True)).to_be_visible(timeout=8_000)
+        expect(page.get_by_text("Provider", exact=True)).to_be_visible(timeout=8_000)
         with pytest.raises(AssertionError):
             expect(page.get_by_text("didn't return settings", exact=False)).to_be_visible(
                 timeout=8_000,
             )
 
         tablist.get_by_role("tab", name="Pipeline", exact=True).click()
-        expect(page.get_by_text("lease_seconds", exact=True)).to_be_visible(timeout=8_000)
+        expect(page.get_by_text("Lease seconds", exact=True)).to_be_visible(timeout=8_000)
 
 
 class TestProviderKeyFormUi:

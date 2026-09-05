@@ -59,7 +59,8 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
  * "default_event_duration_minutes" reads as "Default event duration
  * minutes". Display only, in the generic renderer that draws whatever
  * fields a category's GET happens to return; onChange still keys by the
- * real name. */
+ * real name. The raw key stays reachable as the label's title attribute,
+ * for cross-referencing against the API/config docs, which use it. */
 function humanizeSettingKey(key: string): string {
   const [first, ...rest] = key.split("_");
   return [first.charAt(0).toUpperCase() + first.slice(1), ...rest].join(" ");
@@ -77,7 +78,7 @@ function SettingField({
   if (typeof value === "boolean") {
     return (
       <div className="flex items-center justify-between">
-        <Label className="text-sm">{humanizeSettingKey(name)}</Label>
+        <Label className="text-sm" title={name}>{humanizeSettingKey(name)}</Label>
         <input
           type="checkbox"
           checked={value}
@@ -91,7 +92,7 @@ function SettingField({
   if (typeof value === "number") {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{humanizeSettingKey(name)}</Label>
+        <Label className="text-sm" title={name}>{humanizeSettingKey(name)}</Label>
         <Input
           type="number"
           value={value}
@@ -104,7 +105,7 @@ function SettingField({
   if (typeof value === "object" && value !== null) {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{humanizeSettingKey(name)}</Label>
+        <Label className="text-sm" title={name}>{humanizeSettingKey(name)}</Label>
         <Textarea
           value={JSON.stringify(value, null, 2)}
           rows={4}
