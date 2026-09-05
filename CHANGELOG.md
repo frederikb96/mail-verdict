@@ -130,6 +130,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   spends a few seconds staged for the undo window first: `GET /outbox` lists a still-staged send
   alongside real outbox rows (`status: "pending"`), and the row that eventually reaches PostIMAP's
   outbox table carries that same id rather than a new one.
+- Marking a message unread from the reading pane's own header no longer looks like it flipped
+  straight back to read: the header button and the list row beside it now update from the same
+  optimistic change instead of the header waiting on a slower cache that only settled a full round
+  trip later. The same fix reaches the unified view, whose own list previously kept showing a
+  message's old flag/read state after any action taken from a per-account view.
 
 ## [4.0.0] - 2026-09-05
 
