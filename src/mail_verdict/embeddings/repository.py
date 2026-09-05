@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from mail_verdict.database.models import Folder, Message, MessageEmbedding
 from mail_verdict.database.msg_key import compute_msg_key
@@ -49,20 +51,54 @@ EnqueueBatchResult = tuple[int, int]
 
 @dataclass(frozen=True)
 class EmbeddingStatus:
-    """Coverage snapshot for one model, optionally scoped to one account."""
+    """Coverage snapshot for one model, optionally scoped to one account.
+
+    encoded/pending/failed are plain message_embeddings row counts by
+    status. reachable/unreachable/shadowed further split "done" by
+    whether the row's message_id join hint actually resolves:
+
+    - reachable: a done row whose hint points at a live, non-expunged
+      message -- what semantic search can actually return.
+    - unreachable: a done row whose hint is dead (NULL, or points at a
+      message that no longer exists or is expunged).
+    - shadowed: an in-scope message with no embedding row of its own,
+      because a sibling message sharing its Message-ID header already
+      holds one (see enqueue_missing_batch/enqueue_one's dead-hint-only
+      repoint) -- headered mail only; see status()'s docstring.
+
+    A drift between what's stored and what's actually findable shows up
+    here as coverage below 1.0, instead of as a search that quietly
+    returns less than it should.
+    """
 
     model: str
     in_scope: int
     encoded: int
     pending: int
     failed: int
+    reachable: int
+    unreachable: int
+    shadowed: int
 
     @property
     def coverage(self) -> float:
-        """Fraction of in-scope messages already encoded, 1.0 if none are in scope."""
+        """Fraction of in-scope messages actually reachable by search,
+        1.0 if none are in scope."""
         if self.in_scope == 0:
             return 1.0
-        return self.encoded / self.in_scope
+        return self.reachable / self.in_scope
+
+
+async def _live_message_ids(
+    session: AsyncSession, message_ids: set[uuid.UUID],
+) -> set[uuid.UUID]:
+    """Which of these message ids resolve to a live, non-expunged row --
+    what "is this join hint dead?" comes down to, for both the repoint
+    guard below and status()'s reachable/unreachable split."""
+    result = await session.execute(
+        select(Message.id).where(Message.id.in_(message_ids), Message.expunged_at.is_(None))
+    )
+    return {row[0] for row in result.all()}
 
 
 class EmbeddingRepository:
@@ -155,6 +191,24 @@ class EmbeddingRepository:
             )
             existing_by_key = {(row.account_id, row.msg_key): row for row in existing.all()}
 
+            # A repoint candidate: an existing row under this key whose
+            # hint already points somewhere else. Only actually repointed
+            # below if that hint turns out to be dead -- see the comment
+            # after the liveness check for why.
+            repoint_candidates = {
+                found.id: found.message_id
+                for row in candidates
+                if (found := existing_by_key.get((row.account_id, keys_by_candidate[row.id])))
+                is not None
+                and found.message_id != row.id
+                and found.message_id is not None
+            }
+            live_hint_ids: set[uuid.UUID] = set()
+            if repoint_candidates:
+                live_hint_ids = await _live_message_ids(
+                    session, set(repoint_candidates.values())
+                )
+
             to_insert: list[dict[str, Any]] = []
             for row in candidates:
                 key = keys_by_candidate[row.id]
@@ -165,11 +219,27 @@ class EmbeddingRepository:
                         "message_id": row.id, "model": model,
                     })
                 elif found.message_id != row.id:
-                    await session.execute(
-                        update(MessageEmbedding)
-                        .where(MessageEmbedding.id == found.id)
-                        .values(message_id=row.id)
-                    )
+                    # Repoint only when the existing hint is dead (NULL,
+                    # or resolves to no live/non-expunged message) -- this
+                    # is the actual UIDVALIDITY-resync case, and it is
+                    # the only one that should ever move the hint.
+                    #
+                    # An anti-join candidate (this loop's `row`) that
+                    # reaches here despite the hint being alive is IMAP
+                    # storing one message under the same header in two
+                    # folders: `found` already has a live embedding under
+                    # this key, so `row` is that message's shadowed twin
+                    # and stays without an embedding of its own,
+                    # deterministically. Repointing unconditionally here
+                    # (the old behaviour) made the two twins swap which
+                    # one was searchable on every sweep forever.
+                    hint_id = repoint_candidates.get(found.id)
+                    if hint_id is None or hint_id not in live_hint_ids:
+                        await session.execute(
+                            update(MessageEmbedding)
+                            .where(MessageEmbedding.id == found.id)
+                            .values(message_id=row.id)
+                        )
 
             inserted = 0
             if to_insert:
@@ -195,8 +265,11 @@ class EmbeddingRepository:
 
         Mirrors enqueue_missing_batch's resync-repoint behaviour for one
         row: if this (account_id, msg_key, model) already exists under a
-        different message_id (a UIDVALIDITY resync), it is repointed
-        rather than duplicated, and nothing new is inserted.
+        different message_id, it is repointed rather than duplicated --
+        but only when that existing hint is dead (a genuine UIDVALIDITY
+        resync). A live existing hint means this message is a duplicate-
+        header twin of the one already embedded (IMAP storing one
+        message in two folders); nothing new is inserted either way.
 
         Args:
             account_id: Account the message belongs to
@@ -232,7 +305,15 @@ class EmbeddingRepository:
                 )
             )).one_or_none()
             if existing is not None:
-                if existing.message_id != message_id:
+                if existing.message_id is not None and existing.message_id != message_id:
+                    live = await _live_message_ids(session, {existing.message_id})
+                    if existing.message_id not in live:
+                        await session.execute(
+                            update(MessageEmbedding)
+                            .where(MessageEmbedding.id == existing.id)
+                            .values(message_id=message_id)
+                        )
+                elif existing.message_id is None:
                     await session.execute(
                         update(MessageEmbedding)
                         .where(MessageEmbedding.id == existing.id)
@@ -372,14 +453,27 @@ class EmbeddingRepository:
         self, *, model: str, account_id: uuid.UUID | None = None,
     ) -> EmbeddingStatus:
         """
-        Coverage snapshot for one model.
+        Coverage snapshot for one model -- see EmbeddingStatus's docstring
+        for what each count means, and coverage is reachable/in_scope
+        rather than encoded/in_scope, precisely so a join drift shows up
+        here rather than only as an empty search.
+
+        shadowed only covers headered mail (a message carrying a
+        Message-ID header shares it with a sibling in another folder --
+        the actual observed cause), the same limitation
+        enqueue_missing_batch's own docstring already carries for the
+        headerless-mail content-hash fallback: computing that hash for
+        every in-scope message with no embedding would duplicate
+        database/msg_key.py's algorithm in SQL for a case that, absent a
+        header, is vanishingly unlikely to collide in the first place.
 
         Args:
             model: Embedding model to report on
             account_id: Scope to one account, or None for every account
 
         Returns:
-            in_scope/encoded/pending/failed counts and their coverage ratio
+            in_scope/encoded/pending/failed/reachable/unreachable/shadowed
+            counts and the derived coverage ratio
         """
         async with self._db.session() as session:
             scope_stmt = (
@@ -411,7 +505,71 @@ class EmbeddingRepository:
                 counts_stmt = counts_stmt.where(MessageEmbedding.account_id == account_id)
             counts = (await session.execute(counts_stmt)).one()
 
+            done_hint_ids_stmt = select(MessageEmbedding.message_id).where(
+                MessageEmbedding.model == model,
+                MessageEmbedding.status == "done",
+                MessageEmbedding.message_id.is_not(None),
+            )
+            if account_id is not None:
+                done_hint_ids_stmt = done_hint_ids_stmt.where(
+                    MessageEmbedding.account_id == account_id
+                )
+            done_hint_ids = {
+                row[0] for row in (await session.execute(done_hint_ids_stmt)).all()
+            }
+            reachable = 0
+            if done_hint_ids:
+                reachable = len(await _live_message_ids(session, done_hint_ids))
+            unreachable = counts.encoded - reachable
+
+            # An in-scope, headered message with no embedding of its own,
+            # whose header is shared by a live sibling that DOES hold the
+            # current-model embedding -- the durable-drift scenario
+            # embeddings/search.py's module docstring and
+            # enqueue_missing_batch's repoint guard both describe.
+            own_embedding_exists = (
+                select(MessageEmbedding.id)
+                .where(
+                    MessageEmbedding.account_id == Message.account_id,
+                    MessageEmbedding.message_id == Message.id,
+                    MessageEmbedding.model == model,
+                )
+                .exists()
+            )
+            sibling = aliased(Message)
+            sibling_holds_embedding = (
+                select(MessageEmbedding.id)
+                .select_from(MessageEmbedding)
+                .join(sibling, sibling.id == MessageEmbedding.message_id)
+                .where(
+                    MessageEmbedding.account_id == Message.account_id,
+                    MessageEmbedding.model == model,
+                    sibling.account_id == Message.account_id,
+                    sibling.message_id == Message.message_id,
+                    sibling.id != Message.id,
+                    sibling.expunged_at.is_(None),
+                )
+                .exists()
+            )
+            shadowed_stmt = (
+                select(func.count())
+                .select_from(Message)
+                .join(Folder, Folder.id == Message.folder_id)
+                .where(
+                    Message.expunged_at.is_(None),
+                    Folder.deleted_at.is_(None),
+                    Folder.initial_sync_done.is_(True),
+                    Message.message_id.is_not(None),
+                    ~own_embedding_exists,
+                    sibling_holds_embedding,
+                )
+            )
+            if account_id is not None:
+                shadowed_stmt = shadowed_stmt.where(Message.account_id == account_id)
+            shadowed = (await session.execute(shadowed_stmt)).scalar_one()
+
             return EmbeddingStatus(
                 model=model, in_scope=in_scope,
                 encoded=counts.encoded, pending=counts.pending, failed=counts.failed,
+                reachable=reachable, unreachable=unreachable, shadowed=shadowed,
             )

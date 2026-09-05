@@ -106,6 +106,13 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "neighbor_hints_enabled": False,
         "neighbor_k": 5,
         "neighbor_min_similarity": 0.75,
+        # The semantic search endpoint's own fallback when a caller sends
+        # no strictness of its own (the search page always sends one, its
+        # own localStorage-persisted preference -- see search-prefs.ts;
+        # this only matters for another caller, e.g. the MCP tool). One
+        # of "loose"/"balanced"/"strict" -- see embeddings/search.py for
+        # what each resolves to.
+        "default_strictness": "balanced",
         # Retry backoff for a retryable provider error that is specific to
         # one payload (a connection drop, a 5xx, a timeout) rather than a
         # shared-resource throttle -- full jitter, see queue/backoff.py. A

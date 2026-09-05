@@ -469,7 +469,11 @@ async def test_semantic_search_orders_nearest_first(migrated_db: DatabaseConnect
 
     query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
     close_vector = [0.99] + [0.01] * (EMBEDDING_DIMENSIONS - 1)
-    far_vector = [0.0, 1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 2)
+    # cos ~= 0.71 relative to query -- angularly distinct from close
+    # (~0.93) but not the noise-level 0.0 an orthogonal vector would give,
+    # so it clears "loose"'s strictness cutoff below and this test proves
+    # ordering rather than the cutoff (covered separately).
+    far_vector = [0.7, 0.7] + [0.0] * (EMBEDDING_DIMENSIONS - 2)
 
     async with migrated_db.session() as session:
         for mail_id, vector in ((close_id, close_vector), (far_id, far_vector)):
@@ -480,10 +484,200 @@ async def test_semantic_search_orders_nearest_first(migrated_db: DatabaseConnect
                 )
             )
 
-    results = await semantic_search(
-        migrated_db, query_vector=query_vector, model=model, account_id=account_id, k=10,
+    outcome = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        k=10, strictness="loose",
     )
-    assert len(results) == 2
-    assert results[0].message.id == close_id
-    assert results[1].message.id == far_id
-    assert results[0].similarity > results[1].similarity
+    assert len(outcome.results) == 2
+    assert outcome.results[0].message.id == close_id
+    assert outcome.results[1].message.id == far_id
+    assert outcome.results[0].similarity > outcome.results[1].similarity
+
+
+@pytest.mark.asyncio
+async def test_strictness_drops_a_noise_level_neighbour_the_absolute_floor_catches(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A near-orthogonal neighbour (similarity ~0.0) is noise, not a
+    result -- even "loose" must drop it, since it sits far below both the
+    relative-to-best-match cutoff and the absolute floor."""
+    model = _unique_model()
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        close_id = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, subject="close",
+        )
+        noise_id = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, subject="noise",
+        )
+        await session.commit()
+
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
+    close_vector = [0.99] + [0.01] * (EMBEDDING_DIMENSIONS - 1)
+    noise_vector = [0.0, 1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 2)  # cos == 0.0
+
+    async with migrated_db.session() as session:
+        for mail_id, vector in ((close_id, close_vector), (noise_id, noise_vector)):
+            await session.execute(
+                MessageEmbedding.__table__.insert().values(
+                    account_id=account_id, msg_key=str(mail_id), message_id=mail_id,
+                    model=model, status="done", embedding=vector,
+                )
+            )
+
+    outcome = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        k=10, strictness="loose",
+    )
+    assert [r.message.id for r in outcome.results] == [close_id]
+    assert outcome.min_similarity_applied >= 0.25  # the absolute floor
+
+
+@pytest.mark.asyncio
+async def test_duplicate_header_pair_does_not_oscillate_and_is_reported_shadowed(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Two messages sharing one Message-ID header in two folders -- IMAP
+    routinely storing one mail twice -- collide on the embedding's unique
+    key, so only one can ever hold a vector. The reconciler must not flip
+    which one holds it on every sweep (observed in production: it did,
+    every ~30 seconds, forever), and status() must name the other one
+    shadowed rather than silently claiming full coverage."""
+    repo = EmbeddingRepository(migrated_db)
+    model = _unique_model()
+    header = f"<{uuid.uuid4()}@example.com>"
+    async with migrated_db.session() as session:
+        account_id, folder_a = await _seed_account_and_folder(session)
+        folder_b = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, initial_sync_done) "
+                "VALUES (:id, :account_id, 'Archive', true)"
+            ),
+            {"id": folder_b, "account_id": account_id},
+        )
+        twin_a = await _seed_message(
+            session, account_id=account_id, folder_id=folder_a, message_id_hdr=header,
+        )
+        twin_b = await _seed_message(
+            session, account_id=account_id, folder_id=folder_b, message_id_hdr=header,
+        )
+        await session.commit()
+
+    async def _current_hint() -> uuid.UUID:
+        async with migrated_db.session() as session:
+            return (
+                await session.execute(
+                    text(
+                        "SELECT message_id FROM message_embeddings "
+                        "WHERE model = :m AND account_id = :a"
+                    ),
+                    {"m": model, "a": account_id},
+                )
+            ).scalar_one()
+
+    await repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+    first_hint = await _current_hint()
+    assert first_hint in (twin_a, twin_b)
+
+    # Two more sweeps -- the old, unconditional-repoint behaviour flipped
+    # the hint to the other twin on every one of these.
+    await repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+    await repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+    assert await _current_hint() == first_hint
+
+    status = await repo.status(model=model, account_id=account_id)
+    assert status.shadowed == 1
+    assert status.reachable == 0  # the hint is still 'pending', not 'done'
+    assert status.in_scope == 2
+
+
+@pytest.mark.asyncio
+async def test_enqueue_one_does_not_oscillate_a_duplicate_header_pair(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The same guard, exercised through the single-message live-arrival
+    path rather than the batched sweep."""
+    repo = EmbeddingRepository(migrated_db)
+    model = _unique_model()
+    header = f"<{uuid.uuid4()}@example.com>"
+    async with migrated_db.session() as session:
+        account_id, folder_a = await _seed_account_and_folder(session)
+        folder_b = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, initial_sync_done) "
+                "VALUES (:id, :account_id, 'Archive', true)"
+            ),
+            {"id": folder_b, "account_id": account_id},
+        )
+        twin_a = await _seed_message(
+            session, account_id=account_id, folder_id=folder_a, message_id_hdr=header,
+        )
+        twin_b = await _seed_message(
+            session, account_id=account_id, folder_id=folder_b, message_id_hdr=header,
+        )
+        await session.commit()
+
+    inserted_a = await repo.enqueue_one(
+        account_id=account_id, message_id=twin_a, model=model,
+    )
+    assert inserted_a is True
+
+    inserted_b = await repo.enqueue_one(
+        account_id=account_id, message_id=twin_b, model=model,
+    )
+    assert inserted_b is False  # the key already exists, hint still alive -> no repoint
+
+    async with migrated_db.session() as session:
+        hint = (
+            await session.execute(
+                text(
+                    "SELECT message_id FROM message_embeddings "
+                    "WHERE model = :m AND account_id = :a"
+                ),
+                {"m": model, "a": account_id},
+            )
+        ).scalar_one()
+    assert hint == twin_a  # unchanged -- twin_a's hint was never dead
+
+
+@pytest.mark.asyncio
+async def test_status_reports_reachable_not_merely_encoded(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A done row whose join hint points at an expunged message must not
+    count toward coverage -- reachable is what search can actually
+    return, which is what coverage is now defined against."""
+    repo = EmbeddingRepository(migrated_db)
+    model = _unique_model()
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        mail_id = await _seed_message(session, account_id=account_id, folder_id=folder_id)
+        await session.commit()
+
+    await repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+    async with migrated_db.session() as session:
+        await session.execute(
+            text(
+                "UPDATE message_embeddings SET status = 'done', "
+                "embedding = CAST(:vec AS vector) WHERE model = :m AND account_id = :a"
+            ),
+            {"vec": str([0.1] * EMBEDDING_DIMENSIONS), "m": model, "a": account_id},
+        )
+        # The message this embedding's hint points at is later expunged --
+        # the hint itself is untouched, exactly what a dead hint is.
+        await session.execute(
+            text("UPDATE messages SET expunged_at = now() WHERE id = :id"),
+            {"id": mail_id},
+        )
+        await session.commit()
+
+    status = await repo.status(model=model, account_id=account_id)
+    assert status.encoded == 1
+    assert status.reachable == 0
+    assert status.unreachable == 1
+    # in_scope excludes the now-expunged message itself -- a dead hint's
+    # own row leaves scope the same way any expunged message does.
+    assert status.in_scope == 0
+    assert status.coverage == 1.0  # 0 in scope: vacuously fully covered
