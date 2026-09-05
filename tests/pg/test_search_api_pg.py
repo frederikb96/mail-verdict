@@ -1,8 +1,10 @@
 """
-Search API: fuzzy field-scoped matching, server-side folder scoping, newest-
-first keyset pagination, and a latency proof at large-mailbox scale --
-against a real Postgres schema, since the fuzzy matching and folder
-scoping both live in raw SQL this suite is the only thing that exercises.
+Search API: field-scoped prefix-tsquery matching, field-tier ranking, the
+trigram fallback tier, server-side folder scoping, tiered keyset
+pagination, and a latency proof at large-mailbox scale -- against a real
+Postgres schema, since the tsquery construction, the per-field scoping and
+the tier CASE all live in raw SQL this suite is the only thing that
+exercises.
 """
 
 from __future__ import annotations
@@ -84,7 +86,7 @@ class TestFieldScoping:
             q="quarterly", account_id=account_id, folder_ids=None,
             fields=["body"], before=None, limit=50,
         )
-        ids = {r.message_id for r in page.results}
+        ids = {r.id for r in page.results}
         assert ids == {body_hit}
         assert subject_hit not in ids
 
@@ -110,14 +112,14 @@ class TestFieldScoping:
         by_name_page = await search_messages(
             q="Alice", account_id=account_id, folder_ids=None, fields=["to"], before=None, limit=50,
         )
-        assert {r.message_id for r in by_name_page.results} == {by_name}
+        assert {r.id for r in by_name_page.results} == {by_name}
 
         by_addr_page = await search_messages(
             q="bob@example.com", account_id=account_id, folder_ids=None,
             fields=["to"], before=None, limit=50,
         )
-        assert {r.message_id for r in by_addr_page.results} == {by_addr}
-        assert unrelated not in {r.message_id for r in by_addr_page.results}
+        assert {r.id for r in by_addr_page.results} == {by_addr}
+        assert unrelated not in {r.id for r in by_addr_page.results}
 
 
 class TestFuzzyMatching:
@@ -138,7 +140,7 @@ class TestFuzzyMatching:
             q="reimbursment", account_id=account_id, folder_ids=None,
             fields=["subject"], before=None, limit=50,
         )
-        assert {r.message_id for r in page.results} == {hit}
+        assert {r.id for r in page.results} == {hit}
 
     @pytest.mark.asyncio
     async def test_unrelated_query_finds_nothing(self, migrated_db: DatabaseConnection) -> None:
@@ -173,13 +175,13 @@ class TestFolderScoping:
             q="invoice", account_id=account_id, folder_ids=[inbox_id],
             fields=["subject"], before=None, limit=50,
         )
-        assert {r.message_id for r in inbox_only.results} == {inbox_hit}
+        assert {r.id for r in inbox_only.results} == {inbox_hit}
 
         both = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
             fields=["subject"], before=None, limit=50,
         )
-        assert {r.message_id for r in both.results} == {inbox_hit, junk_hit}
+        assert {r.id for r in both.results} == {inbox_hit, junk_hit}
 
 
 class TestOrderingAndPagination:
@@ -198,7 +200,7 @@ class TestOrderingAndPagination:
             q="invoice", account_id=account_id, folder_ids=None,
             fields=["subject"], before=None, limit=50,
         )
-        assert [r.message_id for r in page.results] == [newer, older]
+        assert [r.id for r in page.results] == [newer, older]
 
     @pytest.mark.asyncio
     async def test_paging_through_cursor_visits_every_match_once(
@@ -219,7 +221,7 @@ class TestOrderingAndPagination:
                 q="invoice", account_id=account_id, folder_ids=None,
                 fields=["subject"], before=cursor, limit=3,
             )
-            seen.extend(r.message_id for r in page.results)
+            seen.extend(r.id for r in page.results)
             if not page.has_more:
                 break
             assert page.next_cursor is not None
@@ -262,14 +264,14 @@ class TestOrderingAndPagination:
             q="invoice", account_id=account_id, folder_ids=None,
             fields=["subject"], before=None, limit=1,
         )
-        assert [r.message_id for r in page.results] == [dated]
+        assert [r.id for r in page.results] == [dated]
         assert page.has_more and page.next_cursor is not None
 
         next_page = await search_messages(
             q="invoice", account_id=account_id, folder_ids=None,
             fields=["subject"], before=uuid.UUID(page.next_cursor), limit=1,
         )
-        assert [r.message_id for r in next_page.results] == [undated]
+        assert [r.id for r in next_page.results] == [undated]
         assert not next_page.has_more
 
 
@@ -289,7 +291,7 @@ class TestAccountScoping:
             q="invoice", account_id=account_a, folder_ids=None,
             fields=["subject"], before=None, limit=50,
         )
-        assert {r.message_id for r in page.results} == {own}
+        assert {r.id for r in page.results} == {own}
 
 
 class TestScale:
@@ -351,9 +353,207 @@ class TestScale:
         )
         elapsed = time.monotonic() - started
 
-        assert {r.message_id for r in page.results} == {marker_id}
+        assert {r.id for r in page.results} == {marker_id}
         # Generous bound for a committed regression test on shared CI
         # hardware -- see the search agent's report for the real number
         # measured against this same query at full mailbox scale.
         print(f"\nbody search over {count} messages: {elapsed*1000:.1f}ms")
         assert elapsed < 5.0, f"body search over {count} messages took {elapsed:.2f}s"
+
+
+class TestTierRanking:
+    """Ranked by field tier, not date and not ts_rank -- search_vector
+    carries no per-field weights, so ts_rank cannot express this."""
+
+    @pytest.mark.asyncio
+    async def test_subject_then_from_then_body_in_that_order(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            subject_hit = await _seed_message(
+                session, account_id, inbox_id, uid=1,
+                subject="zzqtierword report", from_addr="normal@example.com",
+                body_text="unrelated",
+            )
+            from_hit = await _seed_message(
+                session, account_id, inbox_id, uid=2,
+                subject="unrelated subject", from_addr="zzqtierword@example.com",
+                body_text="unrelated",
+            )
+            body_hit = await _seed_message(
+                session, account_id, inbox_id, uid=3,
+                subject="unrelated subject", from_addr="normal@example.com",
+                body_text="the zzqtierword appears here",
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="zzqtierword", account_id=account_id, folder_ids=None,
+            fields=["subject", "from", "to", "body"], before=None, limit=50,
+        )
+        assert [r.id for r in page.results] == [subject_hit, from_hit, body_hit]
+        assert [r.match_tier for r in page.results] == [0, 1, 3]
+
+
+class TestFallbackTier:
+    """The trigram fallback only ever fires when the primary tsquery
+    stage's first page came back empty -- an exact hit must never let an
+    unrelated near-miss surface alongside it from the fallback, and a
+    genuine typo must still find its match, at the fallback's own tier."""
+
+    @pytest.mark.asyncio
+    async def test_fallback_does_not_fire_when_primary_has_hits(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            exact_hit = await _seed_message(session, account_id, inbox_id, uid=1, subject="invoice")
+            # word_similarity-eligible under the fallback tier, but not a
+            # primary prefix match for "invoice" -- "invoic" is not a
+            # prefix of "invoice", it is the other way around.
+            near_miss = await _seed_message(
+                session, account_id, inbox_id, uid=2, subject="a completely unrelated invoic",
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="invoice", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+        )
+        ids = {r.id for r in page.results}
+        assert exact_hit in ids
+        assert near_miss not in ids
+        assert all(r.match_tier != 4 for r in page.results)
+
+    @pytest.mark.asyncio
+    async def test_fallback_fires_on_a_typo_at_its_own_tier(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            hit = await _seed_message(
+                session, account_id, inbox_id, uid=1, subject="reimbursement request",
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="reimbursment", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+        )
+        assert {r.id for r in page.results} == {hit}
+        assert page.results[0].match_tier == 4
+        assert page.total == 1
+
+
+class TestTsqueryInjection:
+    """Raw user text is tokenized through Postgres's own parser before it
+    ever reaches tsquery syntax -- a query built entirely of tsquery
+    metacharacters must not error, and must simply match nothing it has
+    no lexeme in common with."""
+
+    @pytest.mark.asyncio
+    async def test_pure_punctuation_query_finds_nothing_and_does_not_error(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            await _seed_message(session, account_id, inbox_id, uid=1, subject="invoice")
+            await session.commit()
+
+        page = await search_messages(
+            q="!!!", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+        )
+        assert page.results == []
+        assert page.total == 0
+
+    @pytest.mark.asyncio
+    async def test_query_containing_tsquery_operator_characters_does_not_error(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            await _seed_message(session, account_id, inbox_id, uid=1, subject="a b c")
+            await session.commit()
+
+        # Every extracted lexeme is required (an AND), and this subject
+        # has none of d/e/f -- an empty, error-free result is the correct
+        # answer, not a crash from a raw '&', '|', '!', ':' or "'"
+        # reaching tsquery syntax directly.
+        page = await search_messages(
+            q="a&b | c ! d:e ' f", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+        )
+        assert page.results == []
+
+
+class TestTotalCount:
+    """total is an exact count over the same candidate predicate the page
+    itself pages through -- computed once, not derived from how many
+    pages have loaded so far."""
+
+    @pytest.mark.asyncio
+    async def test_total_is_the_full_match_count_not_the_page_size(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            for i in range(5):
+                await _seed_message(session, account_id, inbox_id, uid=i + 1, subject="invoice")
+            await session.commit()
+
+        page = await search_messages(
+            q="invoice", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=2,
+        )
+        assert len(page.results) == 2
+        assert page.total == 5
+
+
+class TestKeysetAcrossTiers:
+    """A cursor carries a row's tier alongside (received_at, id) -- paging
+    across a tier boundary must neither repeat nor skip a row."""
+
+    @pytest.mark.asyncio
+    async def test_paging_across_a_tier_boundary_visits_every_match_once(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            expected = {
+                # Tier 0: token in subject.
+                await _seed_message(session, account_id, inbox_id, uid=1, subject="zzqcross report"),
+                await _seed_message(session, account_id, inbox_id, uid=2, subject="zzqcross memo"),
+                # Tier 1: token only in from_addr.
+                await _seed_message(
+                    session, account_id, inbox_id, uid=3,
+                    subject="x", from_addr="zzqcross@example.com",
+                ),
+                # Tier 3: token only in body.
+                await _seed_message(
+                    session, account_id, inbox_id, uid=4,
+                    subject="x", body_text="zzqcross mentioned here",
+                ),
+                await _seed_message(
+                    session, account_id, inbox_id, uid=5,
+                    subject="x", body_text="zzqcross again",
+                ),
+            }
+            await session.commit()
+
+        seen: list[uuid.UUID] = []
+        cursor: uuid.UUID | None = None
+        for _ in range(20):
+            page = await search_messages(
+                q="zzqcross", account_id=account_id, folder_ids=None,
+                fields=["subject", "from", "body"], before=cursor, limit=2,
+            )
+            seen.extend(r.id for r in page.results)
+            if not page.has_more:
+                break
+            assert page.next_cursor is not None
+            cursor = uuid.UUID(page.next_cursor)
+
+        assert set(seen) == expected
+        assert len(seen) == len(expected)  # no row repeated across pages

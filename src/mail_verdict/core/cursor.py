@@ -80,3 +80,39 @@ def after_cursor(
         received_at_col < cursor_received_at,
         and_(received_at_col == cursor_received_at, id_col < cursor_id),
     )
+
+
+def after_tier_cursor(
+    tier_col: ColumnElement[int],
+    received_at_col: InstrumentedAttribute[datetime | None],
+    id_col: InstrumentedAttribute[uuid.UUID],
+    cursor_tier: int,
+    cursor_received_at: datetime | None,
+    cursor_id: uuid.UUID,
+) -> ColumnElement[bool]:
+    """
+    Same shape as after_cursor, with one more leading sort key ahead of
+    (received_at, id) -- the search page's own ordering is (match tier,
+    received_at, id), tier ascending. A row is "after the cursor" either
+    because it sits in a strictly later tier, or because it shares the
+    cursor's own tier and after_cursor's ordering already places it later
+    within that tier -- always with NULLS LAST, which is the only
+    placement search itself ever uses.
+
+    Args:
+        tier_col: The match-tier expression driving the primary sort
+        received_at_col, id_col, cursor_received_at, cursor_id: As in
+            after_cursor
+        cursor_tier: tier of the last row of the previous page
+
+    Returns:
+        A predicate correct across a tier boundary, whether or not the
+        cursor row's received_at was NULL
+    """
+    return or_(
+        tier_col > cursor_tier,
+        and_(
+            tier_col == cursor_tier,
+            after_cursor(received_at_col, id_col, cursor_received_at, cursor_id, nulls_last=True),
+        ),
+    )
