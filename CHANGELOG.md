@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A checklist copied from a web page now pastes into the message editor as a checklist. Every
   renderer outside this application writes a checklist as a list item with a checkbox in front of
   the text, which the editor previously dropped, leaving a plain bullet list
+- Marking the message you are reading as unread from its own row in the list now works. The
+  reading pane's own button was protected against the read-on-open behaviour undoing it; the row's
+  identical control was not, so it looked dead
 - Selecting messages on a phone is no longer a dead end: a long press picks messages out as
   before, and the bulk actions now appear as a bar under the list. There is no reading pane to
   put them in on a phone, and no hover controls on a row either, so a selection made there had
