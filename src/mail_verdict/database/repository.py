@@ -625,69 +625,6 @@ class MessageRepository:
             )
             return list(result.scalars().all())
 
-    async def search_fulltext(
-        self,
-        account_id: uuid.UUID,
-        query: str,
-        *,
-        limit: int = 50,
-        fuzzy: bool = False,
-        similarity_threshold: float = 0.3,
-    ) -> list[Message]:
-        """
-        Full-text search on subject + body_text using tsvector.
-
-        Falls back to pg_trgm similarity for fuzzy matching.
-
-        Args:
-            account_id: Account scope
-            query: Search query string
-            limit: Max results
-            fuzzy: Enable pg_trgm fuzzy matching
-            similarity_threshold: Minimum trigram similarity score
-
-        Returns:
-            Messages ranked by relevance
-        """
-        # 'simple' matches the config PostIMAP's search_vector generated
-        # column is built with (see the search_vector column docstring in
-        # database/models.py); an 'english' query config would silently
-        # under-match against a 'simple' index config.
-        async with self._db.session() as session:
-            ts_query = func.websearch_to_tsquery("simple", query)
-
-            if fuzzy:
-                # Combined: tsvector rank + trigram similarity
-                rank = func.ts_rank(Message.search_vector, ts_query)
-                trgm_sim = func.similarity(Message.subject, query)
-                stmt = (
-                    select(Message)
-                    .where(
-                        Message.account_id == account_id,
-                        Message.expunged_at.is_(None),
-                        (Message.search_vector.op("@@")(ts_query))
-                        | (func.similarity(Message.subject, query) >= similarity_threshold)
-                        | (func.similarity(Message.body_text, query) >= similarity_threshold),
-                    )
-                    .order_by(desc(rank + trgm_sim))
-                    .limit(limit)
-                )
-            else:
-                rank = func.ts_rank(Message.search_vector, ts_query)
-                stmt = (
-                    select(Message)
-                    .where(
-                        Message.account_id == account_id,
-                        Message.expunged_at.is_(None),
-                        Message.search_vector.op("@@")(ts_query),
-                    )
-                    .order_by(desc(rank))
-                    .limit(limit)
-                )
-
-            result = await session.execute(stmt)
-            return list(result.scalars().all())
-
     async def search_fulltext_with_snippet(
         self,
         account_id: uuid.UUID | None,
