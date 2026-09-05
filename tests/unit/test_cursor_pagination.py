@@ -71,6 +71,7 @@ class TestMessageSummarySchema:
             account_id=uuid.uuid4(),
             folder_id=uuid.uuid4(),
             thread_id=uuid.uuid4(),
+            mirrored_at=datetime.now(timezone.utc),
         )
         assert summary.subject is None
         assert summary.is_seen is False
@@ -89,6 +90,7 @@ class TestMessageSummarySchema:
             from_addr="sender@example.com",
             to_addrs=["recipient@example.com"],
             received_at=now,
+            mirrored_at=now,
             is_seen=True,
             is_flagged=True,
         )
