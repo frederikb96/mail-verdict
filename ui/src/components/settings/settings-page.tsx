@@ -16,6 +16,7 @@ import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
 import { UnifiedOrder } from "@/components/settings/unified-order";
 import { CalendarLinksCard } from "@/components/settings/calendar-links";
+import { DefaultCalendarSetting } from "@/components/settings/default-calendar-setting";
 
 /**
  * Settings groups into three things Freddy actually goes looking for,
@@ -53,6 +54,11 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
     "openai_api_key_configured",
     "openai_api_key_hint",
   ],
+  // Rendered by DefaultCalendarSetting instead, below -- a bare calendar
+  // id typed into a text box is not a control anyone can use; it needs
+  // the same enabled/writable calendar list the event editor itself
+  // offers.
+  calendar: ["default_calendar_id"],
 };
 
 /** A raw settings key read as a sentence rather than the key itself --
@@ -368,9 +374,18 @@ export function SettingsPage() {
               Event defaults
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-col gap-4">
             {allSettings?.calendar ? (
-              <CategorySettings category="calendar" settings={allSettings.calendar} />
+              <>
+                <DefaultCalendarSetting
+                  value={
+                    typeof allSettings.calendar.default_calendar_id === "string"
+                      ? allSettings.calendar.default_calendar_id
+                      : ""
+                  }
+                />
+                <CategorySettings category="calendar" settings={allSettings.calendar} />
+              </>
             ) : (
               <div className="py-4 text-sm text-muted-foreground">
                 The server didn&apos;t return calendar settings -- the interface and the server

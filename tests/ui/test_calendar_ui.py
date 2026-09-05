@@ -548,6 +548,31 @@ class TestCalendarUi:
         expect(page.get_by_label("Title")).to_be_visible()
         expect(starts_input).to_have_value(f"0002{original[4:]}")
 
+    def test_escaping_a_dirty_event_editor_prompts_instead_of_discarding_silently(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: Escape closed the editor and threw
+        away whatever had been typed, with no warning at all -- the
+        composer got exactly this prompt this run, the event editor did
+        not."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill("Unsaved event title.")
+
+        page.keyboard.press("Escape")
+        confirm = page.get_by_role("dialog", name="Discard this event?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Cancel", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        # The editor's own content survived underneath -- Escape did not
+        # silently discard it, the actual failure being guarded.
+        expect(page.get_by_label("Title")).to_have_value("Unsaved event title.")
+
     def test_a_popover_whose_event_cannot_be_loaded_says_so(
         self,
         page: Page,
@@ -655,6 +680,47 @@ class TestCalendarUi:
 
         page.get_by_role("tab", name="Month", exact=True).click()
         expect(chip).to_be_visible(timeout=10_000)  # a bar in the month grid
+
+    def test_a_multi_day_all_day_event_does_not_gain_a_day_in_a_non_utc_browser(
+        self,
+        browser: Browser,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: an all-day dtstart/dtend is stored
+        as literal UTC midnight (RFC 5545 VALUE=DATE carries no zone at
+        all), and the month view read it back through the instant rather
+        than through its own UTC date components. In Europe/Berlin the
+        exclusive end (2026-09-21T00:00:00Z, midnight two hours into the
+        21st local) then fell on the 21st rather than the 20th, so the
+        event's own week row drew Fri-Sun correctly *and* the following
+        week's row drew a second, spurious one-day bar on the Monday --
+        two DOM chips sharing one object id where there must be one. The
+        suite's own host clock is UTC, where the same instant never
+        crosses midnight and the bug is invisible; Europe/Berlin is what
+        makes it visible."""
+        summary = f"Multi-day trip {uuid.uuid4()}"
+        created = api_client.post(
+            "/api/calendar/events",
+            json={
+                "calendar_id": calendar_collection["id"], "summary": summary,
+                "dtstart": "2026-09-18T00:00:00+00:00", "dtend": "2026-09-21T00:00:00+00:00",
+                "all_day": True,
+            },
+        )
+        assert created.status_code == 201, created.text
+        object_id = created.json()["object_id"]
+
+        context = browser.new_context(timezone_id="Europe/Berlin")
+        page = context.new_page()
+        try:
+            page.goto(f"{app_server}/calendar?view=month&date=2026-09-18")
+            chip = event_chip(page, object_id)
+            expect(chip.first).to_be_visible(timeout=15_000)
+            expect(chip).to_have_count(1)
+        finally:
+            context.close()
 
     def test_deleting_an_organised_event_with_guests_names_the_guest_count(
         self,
@@ -1016,6 +1082,67 @@ class TestCalendarUi:
         expect(dialog.get_by_text(dav_account["id"], exact=False)).to_have_count(0)
         expect(dialog.get_by_text("none", exact=True)).to_have_count(0)
 
+    def test_a_calendar_with_no_server_colour_gets_a_distinguishable_stable_one(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        radicale_base_url: str,
+        ui_calendar_owner: str,
+        dav_account: dict[str, Any],
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: a CalDAV collection with no
+        calendar-color property (a freshly created one commonly has none,
+        and MKCALENDAR in this suite's own fixtures never sets one)
+        resolved to an empty string everywhere a colour was read -- a
+        transparent chip fill, a sidebar checkbox identical to every
+        other uncoloured one, and a multi-day bar with no fill to tell it
+        apart from a single-day chip. The server colour must be the
+        default, not the only source."""
+        slug = f"personal-{uuid.uuid4().hex[:8]}"
+        with httpx.Client(auth=(ui_calendar_owner, "unused"), timeout=10.0) as dav_client:
+            principal = discover(dav_client, radicale_base_url)
+            create_calendar(dav_client, principal, slug, "Personal")
+        # A longer allowance than wait_for_dav_collection's own default: unlike
+        # every other caller of it (always a fixture, running before the rest
+        # of the module's setup contends for the same host), this one
+        # discovers a brand-new collection mid-suite, on top of whatever the
+        # module's other tests are already doing.
+        personal_collection = wait_for_dav_collection(
+            api_client, dav_account["id"], "Personal", timeout_s=60.0,
+        )
+
+        calendars = api_client.get("/api/calendars").json()
+        personal = next(c for c in calendars if c["id"] == str(personal_collection["id"]))
+        assert personal["color"] == "", (
+            "fixture drifted: this collection now carries a server colour"
+        )
+
+        page.goto(f"{app_server}/calendar")
+        work_checkbox = page.get_by_role("checkbox", name="Work")
+        personal_checkbox = page.get_by_role("checkbox", name="Personal")
+        expect(work_checkbox).to_be_visible(timeout=15_000)
+        expect(personal_checkbox).to_be_visible(timeout=15_000)
+
+        no_color = {"", "transparent", "rgba(0, 0, 0, 0)"}
+        work_border = work_checkbox.evaluate("(el) => el.style.borderColor")
+        personal_border = personal_checkbox.evaluate("(el) => el.style.borderColor")
+        assert work_border not in no_color, (
+            f"a calendar with no server colour must still render a distinguishable one, "
+            f"got {work_border!r}"
+        )
+        assert personal_border not in no_color
+        assert work_border != personal_border, (
+            "two calendars that both lack a server colour must not collide on the same one"
+        )
+
+        page.reload()
+        expect(work_checkbox).to_be_visible(timeout=15_000)
+        assert work_checkbox.evaluate("(el) => el.style.borderColor") == work_border, (
+            "the same calendar must keep the same colour across a reload"
+        )
+
     def test_unchecking_a_calendar_hides_its_events_immediately(
         self,
         page: Page,
@@ -1285,6 +1412,75 @@ class TestCalendarNavigation:
 
         expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
             f"March {target_year}", timeout=10_000,
+        )
+
+    def test_month_year_picker_writes_the_url_through_the_year_grid(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards, its reported shape: jumping
+        through the decade/year grid before picking a month left the URL
+        holding the *previous* pick rather than the new one, while the
+        title (calendarDateAtom, read straight into the toolbar) updated
+        at once -- so a reload or the back button lands on the wrong
+        month. A plain month pick with the year untouched writes the URL
+        fine, which is why that shorter path alone does not catch this."""
+        page.goto(f"{app_server}/calendar?view=month&date=2026-09-05")
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "September 2026", timeout=15_000,
+        )
+
+        page.get_by_test_id("calendar-toolbar-title").click()
+        page.get_by_role("button", name="Mar", exact=True).click()
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "March 2026", timeout=10_000,
+        )
+        expect(page).to_have_url(re.compile(r"[?&]date=2026-03-01(&|$)"), timeout=10_000)
+
+        page.get_by_test_id("calendar-toolbar-title").click()
+        page.get_by_role("button", name="2026", exact=True).click()
+        page.get_by_role("button", name="2020", exact=True).click()
+        page.get_by_role("button", name="Mar", exact=True).click()
+
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "March 2020", timeout=10_000,
+        )
+        expect(page).to_have_url(re.compile(r"[?&]date=2020-03-01(&|$)"), timeout=10_000)
+
+    def test_month_year_picker_writes_the_url_across_a_reload(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """The regression this guards, its reported shape: a picker pick
+        made right after a reload left the URL holding the *previous*
+        pick, under a title showing the new one -- so the picked month
+        never entered history and Back skipped straight past it to
+        whatever came before."""
+        page.goto(f"{app_server}/calendar?view=month&date=2026-10-23")
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "October 2026", timeout=15_000,
+        )
+
+        page.get_by_test_id("calendar-toolbar-title").click()
+        page.get_by_role("button", name="Nov", exact=True).click()
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "November 2026", timeout=10_000,
+        )
+        expect(page).to_have_url(re.compile(r"[?&]date=2026-11-01(&|$)"), timeout=10_000)
+
+        page.reload()
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "November 2026", timeout=15_000,
+        )
+
+        page.get_by_test_id("calendar-toolbar-title").click()
+        page.get_by_role("button", name="Jan", exact=True).click()
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "January 2026", timeout=10_000,
+        )
+        expect(page).to_have_url(re.compile(r"[?&]date=2026-01-01(&|$)"), timeout=10_000)
+
+        page.go_back()
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            "November 2026", timeout=10_000,
         )
 
     def test_time_grid_scroll_position_persists_across_view_changes(

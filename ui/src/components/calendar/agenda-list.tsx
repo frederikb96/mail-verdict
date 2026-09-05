@@ -12,7 +12,7 @@ import { useAtomValue } from "jotai";
 import { VList, type VListHandle } from "virtua";
 import { CalendarX2 } from "lucide-react";
 import { EventChip } from "@/components/calendar/event-chip";
-import type { SelectEventHandler } from "@/components/calendar/layout";
+import { allDayInstant, type SelectEventHandler } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useEventsForRange } from "@/hooks/use-events";
 import { calendarDateAtom } from "@/lib/atoms";
@@ -48,7 +48,7 @@ export function AgendaList({ onSelectEvent }: AgendaListProps) {
   const rows = useMemo<AgendaRow[]>(() => {
     const byDay = new Map<string, typeof events>();
     for (const e of events) {
-      const day = new Date(e.dtstart);
+      const day = e.all_day ? allDayInstant(e.dtstart) : new Date(e.dtstart);
       day.setHours(0, 0, 0, 0);
       const key = day.toISOString();
       if (!byDay.has(key)) byDay.set(key, []);

@@ -24,9 +24,29 @@ export function paletteColorForIndex(index: number): string {
   return CALENDAR_PALETTE[index % CALENDAR_PALETTE.length];
 }
 
-/** The colour a calendar renders with everywhere -- a user override wins. */
-export function resolveCalendarColor(calendar: Pick<Calendar, "color" | "color_override">): string {
-  return calendar.color_override ?? calendar.color;
+/** A stable palette index for a calendar with no colour of its own --
+ * keyed by its id rather than its position in whatever list it currently
+ * renders in, so the same calendar keeps the same colour across a reload
+ * or a reorder. A plain string hash (djb2), not cryptographic, only
+ * needs to spread ids evenly across twelve buckets. */
+function paletteColorForCalendarId(id: string): string {
+  let hash = 5381;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 33 + id.charCodeAt(i)) | 0;
+  }
+  return paletteColorForIndex(Math.abs(hash));
+}
+
+/** The colour a calendar renders with everywhere -- a user override wins,
+ * then the server's own colour. A CalDAV collection with neither (a
+ * freshly created one commonly has none) falls back to a palette colour
+ * derived from the calendar's own id, so it is never left to render as
+ * transparent or indistinguishable from every other uncoloured
+ * calendar. */
+export function resolveCalendarColor(
+  calendar: Pick<Calendar, "id" | "color" | "color_override">,
+): string {
+  return calendar.color_override || calendar.color || paletteColorForCalendarId(calendar.id);
 }
 
 /** Sets `--cal-color` and the derived surface variables an event chip reads.

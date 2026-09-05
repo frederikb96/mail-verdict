@@ -10,7 +10,12 @@ import { EventChip } from "@/components/calendar/event-chip";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
 import { TimeGridColumn } from "@/components/calendar/time-grid-column";
-import { assignLanes, type SelectEventHandler, type SpanningItem } from "@/components/calendar/layout";
+import {
+  allDayInstant,
+  assignLanes,
+  type SelectEventHandler,
+  type SpanningItem,
+} from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
 import { useEventsForRange, useUpdateEvent } from "@/hooks/use-events";
@@ -87,8 +92,12 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
       const spansMultipleDays = !isSameDay(start, new Date(end.getTime() - 1));
 
       if (e.all_day || spansMultipleDays) {
-        const startColIdx = days.findIndex((d) => isSameDay(d, start) || start < d);
-        const reversedIdx = [...days].reverse().findIndex((d) => isSameDay(d, new Date(end.getTime() - 1)) || d < end);
+        const spanStart = e.all_day ? allDayInstant(e.dtstart) : start;
+        const spanEnd = e.all_day ? allDayInstant(e.dtend) : end;
+        const startColIdx = days.findIndex((d) => isSameDay(d, spanStart) || spanStart < d);
+        const reversedIdx = [...days]
+          .reverse()
+          .findIndex((d) => isSameDay(d, new Date(spanEnd.getTime() - 1)) || d < spanEnd);
         const endColIdx = reversedIdx === -1 ? -1 : days.length - 1 - reversedIdx;
         if (startColIdx === -1 || endColIdx === -1 || endColIdx < startColIdx) continue;
         spanning.push({
