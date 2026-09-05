@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Contacts
+
+- Fixed the contacts screen never loading, and everything else in the application stalling while
+  it tried: the sender-photo index parsed and decoded every contact's embedded photo on the
+  request thread, with nothing yielding the event loop, so a real address book blocked every other
+  request in the process for as long as the scan ran. The scan now runs on a bounded worker pool
+  with a timeout, the same pattern the calendar's month view already uses, and no longer decodes a
+  photo's bytes at all -- a contact's `photo.url` now always points at this application's own
+  `GET /contacts/{id}/photo`, fetched only for a contact actually rendered on screen and cacheable
+  by the browser afterward, instead of an inline `data:` URI computed for every row whether or not
+  anything displays it. Listing a page of contacts also no longer opens one database session per
+  row to re-fetch the same handful of address books nearly every row already fetched
+- A Nextcloud address-book group vCard no longer appears in the contacts list or search results
+  looking like a person with no address
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

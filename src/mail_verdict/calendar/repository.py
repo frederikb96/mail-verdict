@@ -123,6 +123,19 @@ class CollectionRepository:
             )
             return [(c, a) for c, a in result.all()]
 
+    async def get_by_ids(self, collection_ids: list[uuid.UUID]) -> dict[uuid.UUID, DavCollection]:
+        """Every one of these collections, keyed by id, in a single
+        query -- for rendering a page of contacts without one session
+        per row re-fetching the same handful of address books nearly
+        every other row on the page already fetched."""
+        if not collection_ids:
+            return {}
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(DavCollection).where(DavCollection.id.in_(collection_ids))
+            )
+            return {c.id: c for c in result.scalars().all()}
+
 
 class DavObjectRepository:
     """Reads on dav_objects. Writes go through postimap/actions.py."""
