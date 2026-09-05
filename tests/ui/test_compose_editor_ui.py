@@ -582,3 +582,104 @@ class TestTrashingTheOpenMessageKeepsAnInProgressReply:
         expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
             "A reply worth keeping.",
         )
+
+
+class TestTrashingAnOlderThreadMessageKeepsAnInProgressReply:
+    # Two message deliveries plus a poll confirming they actually joined one
+    # thread before driving the browser at all -- legitimately slower than
+    # this module's other tests, which deliver one message each.
+    @pytest.mark.timeout(240)
+    def test_trashing_an_older_message_in_the_thread_keeps_the_reply_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A reply always targets the thread's newest message, while the
+        reading pane's own "open" message (mailId) can be an older one the
+        reader expanded within the same thread -- in the flat (non-threaded)
+        list each message is its own row, so trashing the older one
+        specifically is reachable on its own, and must not discard a reply
+        against the newest either. This is what matching on the thread
+        rather than on the single message id closes."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        stem = uuid.uuid4()
+        older_subject = f"UI thread-keeps-reply older {stem}"
+        newer_subject = f"Re: {older_subject}"
+        older_message_id = f"<older-{stem}@example.com>"
+
+        older = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"],
+            subject=older_subject, message_id=older_message_id,
+            body="Older message in the thread.",
+        )
+        deliver_message(
+            older, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find_older() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next(
+                (m for m in resp.json()["messages"] if m["subject"] == older_subject), None,
+            )
+
+        older_target = wait_for(_find_older, description=f"{older_subject!r} synced into INBOX")
+
+        newer = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"],
+            subject=newer_subject, message_id=f"<newer-{stem}@example.com>",
+            in_reply_to=older_message_id,
+            body="Newer message in the thread.",
+        )
+        deliver_message(
+            newer, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find_newer_on_same_thread() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            match = next(
+                (m for m in resp.json()["messages"] if m["subject"] == newer_subject), None,
+            )
+            # Confirmed joined onto the older message's own thread --
+            # otherwise the rest of this test would prove nothing at all.
+            return match if match and match["thread_id"] == older_target["thread_id"] else None
+
+        wait_for(
+            _find_newer_on_same_thread,
+            description=f"{newer_subject!r} synced onto the same thread as the older message",
+        )
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        mail_row(page, older_target["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply against the newest message.")
+        expect(body).to_contain_text("A reply against the newest message.")
+
+        row = mail_row(page, older_target["id"])
+        row.hover()
+        row.get_by_title("Move to trash").click()
+        expect(page.get_by_text("Moved to trash")).to_be_visible(timeout=10_000)
+
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply against the newest message.",
+        )
+
+        # Left as found, for whatever else in this module runs after it.
+        page.get_by_role("switch", name="Group by conversation").click()

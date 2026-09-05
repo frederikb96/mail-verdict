@@ -14,7 +14,7 @@ import { buildForward, buildReply } from "@/lib/reply";
 import { matchIdentity } from "@/lib/identities";
 import { useIdentities } from "@/hooks/use-identities";
 import { api } from "@/lib/api";
-import { activeReplyDirtyForMailIdAtom } from "@/lib/atoms";
+import { activeReplyDirtyForThreadIdAtom } from "@/lib/atoms";
 import type { MessageDetail } from "@/types/api";
 
 interface ReplyBoxProps {
@@ -47,18 +47,21 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [loading, setLoading] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
-  const setActiveReplyDirtyForMailId = useSetAtom(activeReplyDirtyForMailIdAtom);
+  const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
 
   // Read by useMailAction: while this is dirty, a "leaves folder" action
-  // taken on this same message from somewhere else (a row's own hover
-  // control, a keyboard shortcut) must not clear the open selection --
-  // that would unmount this box along with it, discarding whatever was
-  // typed with no prompt at all. Cleared on unmount too, so a stale id
-  // never outlives the box that set it.
+  // taken on any message in this same thread from somewhere else (a
+  // row's own hover control, a keyboard shortcut) must not clear the
+  // open selection -- that would unmount this box along with it,
+  // discarding whatever was typed with no prompt at all. Keyed by thread
+  // rather than by source.id: the reading pane's own "open" message can
+  // be an older one the reader expanded within this thread, and trashing
+  // that one must not discard a reply against the newest either. Cleared
+  // on unmount too, so a stale id never outlives the box that set it.
   useEffect(() => {
-    setActiveReplyDirtyForMailId(isDirty ? source.id : null);
-    return () => setActiveReplyDirtyForMailId(null);
-  }, [isDirty, source.id, setActiveReplyDirtyForMailId]);
+    setActiveReplyDirtyForThreadId(isDirty ? source.thread_id : null);
+    return () => setActiveReplyDirtyForThreadId(null);
+  }, [isDirty, source.thread_id, setActiveReplyDirtyForThreadId]);
 
   const { data: identities } = useIdentities(source.account_id);
   // A reply and a forward alike go out as whichever of the account's
