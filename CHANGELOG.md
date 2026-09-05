@@ -221,10 +221,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   every other stacking/offset property genuinely change what box the content resolves against and
   stay refused. An `id` can no longer collide with anything of this application's own inside an
   isolated shadow root, so a long newsletter's own in-page links to its own headings now work, and
-  a handful of structural tags already in the reading pane's client-side allowlist (figure,
-  details, summary, section, nav, and others) are no longer unwrapped server-side before ever
-  reaching it. An allowlisted sender's table background is restored the same way their images are
-  (see the fix above).
+  the structural tags the reading pane already accepts (figure, details, summary, section, nav and
+  the rest) are no longer unwrapped server-side before ever reaching it -- the two allowlists now
+  match exactly, and a test keeps them matching, since whichever of them is stricter silently
+  decides what a message may contain. An allowlisted sender's table background is restored the same
+  way their images are (see the fix above).
 
 ## [4.0.0] - 2026-09-05
 

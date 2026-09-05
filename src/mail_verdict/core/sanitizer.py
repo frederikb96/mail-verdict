@@ -21,13 +21,17 @@ ALLOWED_TAGS = {
     "style", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
     "tr", "u", "ul", "center", "font",
     # Plain structural/semantic tags with no attribute or behaviour this
-    # module treats specially -- already in the client's own DOMPurify
-    # allowlist (email-renderer.tsx), and unwrapped here only because this
-    # list had never been brought up to match it. None of them can do
-    # anything past what an ordinary inline wrapper already can.
+    # module treats specially. None of them can do anything past what an
+    # ordinary inline wrapper already can.
+    #
+    # This set and the client's own DOMPurify allowlist in
+    # email-renderer.tsx answer one question in two places, so the stricter
+    # of the two silently wins: a tag this list drops never reaches the
+    # client to be judged, and one the client drops is invisible however
+    # permissive this list is. test_sanitizer.py compares them.
     "figure", "figcaption", "details", "summary", "small", "mark",
     "section", "article", "header", "footer", "nav", "cite", "caption",
-    "col", "colgroup", "kbd", "wbr",
+    "col", "colgroup", "kbd", "wbr", "address", "dfn", "main",
 }
 
 # A tag outside ALLOWED_TAGS has its own tag stripped, but by default only

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
-from mail_verdict.core.sanitizer import sanitize_email_html
+from mail_verdict.core.sanitizer import ALLOWED_TAGS, sanitize_email_html
 
 
 class TestRemoteImageBlocking:
@@ -925,3 +928,37 @@ class TestStylesheetPreservation:
         )
         assert "<script>alert(1)</script>" not in out
         assert "<p>ok</p>" in out
+
+
+class TestTheTwoAllowlistsAgree:
+    """The server strips tags before the client ever sees them, and the
+    client strips whatever survives that. So the two allowlists answer one
+    question in two places and the stricter one silently wins -- a tag
+    added to either alone changes nothing a person can observe, which is
+    exactly why the divergence goes unnoticed. Derive the client's list
+    from its own source rather than restating it here."""
+
+    @staticmethod
+    def _client_allowed_tags() -> set[str]:
+        renderer = (
+            Path(__file__).resolve().parents[2]
+            / "ui"
+            / "src"
+            / "components"
+            / "mail"
+            / "email-renderer.tsx"
+        )
+        source = renderer.read_text(encoding="utf-8")
+        marker = "ALLOWED_TAGS: ["
+        start = source.index(marker) + len(marker)
+        end = source.index("]", start)
+        body = re.sub(r"//[^\n]*", "", source[start:end])
+        return set(re.findall(r'"([a-z0-9]+)"', body))
+
+    def test_neither_list_carries_a_tag_the_other_drops(self) -> None:
+        client = self._client_allowed_tags()
+        assert client, "could not read the client allowlist"
+        assert ALLOWED_TAGS == client, (
+            "server-only: "
+            f"{sorted(ALLOWED_TAGS - client)}; client-only: {sorted(client - ALLOWED_TAGS)}"
+        )
