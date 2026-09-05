@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -162,34 +164,57 @@ class TestFolderPicker:
         page.get_by_text("Select all", exact=True).click()
         expect(page.get_by_role("button", name="All folders", exact=True)).to_be_visible()
 
-    def test_the_last_folder_left_cannot_be_deselected(
+    def test_deselecting_all_disables_search_and_prompts_to_choose_one(
         self, page: Page, app_server: str, scale_fixture: tuple[str, str],
     ) -> None:
-        """An empty folder scope reads "unrestricted" on the wire (an
-        absent query param), so unchecking the last folder must refuse --
-        the same guard the field toggles already have. There is also no
-        "Deselect all" button any more, since its only possible outcome is
-        exactly that state."""
+        """Clearing every folder is a real, distinct client state -- not
+        the same as "no restriction", which is what an empty selection
+        reads as on the wire (an absent query param). Search is disabled
+        entirely rather than silently searching every folder, with an
+        explicit prompt to choose at least one -- what makes it possible
+        to clear the scope and then pick a different couple of folders,
+        rather than unchecking every one but the last by hand."""
         page.goto(f"{app_server}/search")
         trigger = page.get_by_role("button", name="All folders", exact=True)
         expect(trigger).to_be_visible(timeout=15_000)
         trigger.click()
 
-        expect(page.get_by_text("Deselect all", exact=True)).to_have_count(0)
+        page.get_by_text("Deselect all", exact=True).click()
+        page.keyboard.press("Escape")
+        expect(page.get_by_role("button", name="No folders", exact=True)).to_be_visible()
 
-        page.get_by_role("checkbox", name="Archive", exact=True).uncheck()
-        inbox_checkbox = page.get_by_role("checkbox", name="INBOX", exact=True)
-        expect(inbox_checkbox).to_be_checked()
-        # .uncheck() asserts its own postcondition (unchecked afterward) and
-        # raises when that doesn't hold -- exactly what refusing this click
-        # produces, so a plain .click() is what proves the refusal rather
-        # than failing the test on it.
-        inbox_checkbox.click()
-
-        # Refused: still checked, nothing collapsed to an empty scope.
-        expect(inbox_checkbox).to_be_checked()
+        search_input = page.get_by_placeholder("Search messages…")
+        search_input.fill(_MARKER)
+        expect(page.get_by_text("Select at least one folder to search")).to_be_visible(
+            timeout=10_000
+        )
+        with pytest.raises(AssertionError):
+            expect(page.get_by_text("No results found", exact=True)).to_be_visible(timeout=5_000)
 
         # Restore the default for any test running later in this module.
+        page.get_by_role("button", name="No folders", exact=True).click()
+        page.get_by_text("Select all", exact=True).click()
+        page.keyboard.press("Escape")
+        expect(page.get_by_role("button", name="All folders", exact=True)).to_be_visible()
+
+    def test_a_partial_selection_can_still_be_reduced_to_one(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """Unchecking down to a single folder (never zero) is still the
+        ordinary way to narrow the scope -- the empty state above is
+        reached deliberately, via Deselect all, not by unchecking
+        checkboxes one at a time down to none."""
+        page.goto(f"{app_server}/search")
+        trigger = page.get_by_role("button", name="All folders", exact=True)
+        expect(trigger).to_be_visible(timeout=15_000)
+        trigger.click()
+
+        page.get_by_role("checkbox", name="Archive", exact=True).uncheck()
+        page.keyboard.press("Escape")
+        expect(page.get_by_role("button", name="1 of 2 folders", exact=True)).to_be_visible()
+
+        # Restore the default for any test running later in this module.
+        page.get_by_role("button", name="1 of 2 folders", exact=True).click()
         page.get_by_text("Select all", exact=True).click()
         page.keyboard.press("Escape")
         expect(page.get_by_role("button", name="All folders", exact=True)).to_be_visible()
@@ -266,6 +291,128 @@ class TestQueryPersistence:
         page.go_back()
         expect(page).to_have_url(f"{app_server}/search")
         expect(search_input).to_have_value(_MARKER)
+
+
+class TestResultCount:
+    def test_shows_the_exact_total_not_the_page_size(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """total is an exact count over the full match set, computed
+        once -- not the number of rows the first page happened to load."""
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+
+        rows = page.locator('[data-testid="search-result-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+        expect(page.get_by_test_id("search-result-count")).to_have_text(
+            f"{_MATCH_COUNT} results", timeout=15_000
+        )
+        # Far fewer than _MATCH_COUNT rows are ever mounted (virtualized,
+        # per TestSearchVirtualization) -- proving the count is not just
+        # echoing len(results).
+        assert rows.count() < 150
+
+
+class TestResultsClearOnNewQuery:
+    def test_a_new_query_does_not_present_the_previous_querys_rows_as_current(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """No placeholderData: changing the query must not keep the
+        previous one's results on screen while the new request is in
+        flight, even briefly -- they clear, then the real answer arrives."""
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+
+        rows = page.locator('[data-testid="search-result-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+
+        search_input.fill("zzznotasinglematchforthisquery")
+        expect(page.get_by_text("No results found", exact=True)).to_be_visible(timeout=10_000)
+
+
+class TestLoadingIndicator:
+    def test_a_second_search_in_the_same_session_also_shows_a_spinner(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """keepPreviousData used to make isLoading true only for the very
+        first search of a session -- a second search rendered the first
+        search's stale rows with no spinner at all while its own request
+        was in flight. Delaying the response is what gives the skeleton
+        enough of a window to be observed in, without slowing the first
+        search this test also depends on."""
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+
+        rows = page.locator('[data-testid="search-result-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+
+        def _delay_response(route: Any) -> None:
+            time.sleep(0.6)
+            route.continue_()
+
+        page.route("**/api/search*", _delay_response)
+        try:
+            search_input.fill(f"{_MARKER} item 1")
+            expect(page.locator('[data-slot="skeleton"]').first).to_be_visible(timeout=10_000)
+        finally:
+            page.unroute("**/api/search*", _delay_response)
+
+
+class TestScrollPositionRestore:
+    def test_returning_from_an_opened_result_keeps_the_same_row_near_the_top(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """Scrolling deep into a virtualized list, opening a result and
+        going back must land on the same row rather than the top of the
+        list -- anchored on the row's own identity, read back from the
+        same persisted value the restore itself uses, not guessed from
+        DOM order (a virtualized list's first *mounted* row can sit
+        inside the render buffer above what's actually visible)."""
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+
+        rows = page.locator('[data-testid="search-result-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+
+        results_list = page.locator("#search-results-list")
+        results_list.hover()
+        page.mouse.wheel(0, 3000)
+        # Let the debounced-by-nothing onScroll handler persist the
+        # anchor -- it writes synchronously per scroll event, this is
+        # only waiting for the wheel gesture's own scroll events to land.
+        page.wait_for_timeout(400)
+
+        anchor = page.evaluate(
+            "JSON.parse(localStorage.getItem('mailverdict:search-scroll-anchor') || 'null')"
+        )
+        assert anchor is not None, "scrolling did not persist an anchor"
+        anchor_id = anchor["messageId"]
+
+        anchored_row = page.locator(f'[data-message-id="{anchor_id}"]')
+        expect(anchored_row).to_be_visible()
+        anchored_row.click()
+        expect(page).to_have_url(f"{app_server}/")
+
+        page.go_back()
+        expect(page).to_have_url(f"{app_server}/search")
+
+        # Visible again, and near the top of the viewport rather than
+        # merely present somewhere in the (very long) scrolled list.
+        expect(anchored_row).to_be_visible(timeout=10_000)
+        box = anchored_row.bounding_box()
+        list_box = results_list.bounding_box()
+        assert box is not None and list_box is not None
+        assert box["y"] - list_box["y"] < 100, (
+            f"restored row sits {box['y'] - list_box['y']:.0f}px from the list's top"
+        )
 
 
 _AVATAR_MARKER = "searchavatartestmarker"

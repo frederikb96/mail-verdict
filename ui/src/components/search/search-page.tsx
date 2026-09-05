@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { VList, type VListHandle } from "virtua";
-import { AlertCircle, Loader2, Search as SearchIcon } from "lucide-react";
+import { AlertCircle, Folder as FolderIcon, Loader2, Search as SearchIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -22,7 +22,10 @@ import {
   searchFieldsAtom,
   searchFolderIdsAtom,
   searchQueryAtom,
+  searchScrollAnchorAtom,
+  searchScrollCacheAtom,
   searchSemanticModeAtom,
+  searchStrictnessAtom,
 } from "@/lib/search-prefs";
 import {
   selectedAccountIdAtom,
@@ -30,7 +33,7 @@ import {
   selectedMailIdAtom,
   isUnifiedViewAtom,
 } from "@/lib/atoms";
-import type { SearchField } from "@/types/api";
+import type { SearchField, SearchStrictness } from "@/types/api";
 
 const FIELD_LABELS: Record<SearchField, string> = {
   subject: "Subject",
@@ -39,9 +42,13 @@ const FIELD_LABELS: Record<SearchField, string> = {
   body: "Body",
 };
 
-/** How near the bottom, in px, triggers the next page -- same threshold
- * the mail list and contact list use for their own VList. */
-const LOAD_MORE_MARGIN = 200;
+const STRICTNESS_LABELS: Record<SearchStrictness, string> = {
+  loose: "Loose",
+  balanced: "Balanced",
+  strict: "Strict",
+};
+
+const LOAD_MORE_SENTINEL_KEY = "__search-load-more__";
 
 export function SearchPage() {
   const [rawQuery, setRawQuery] = useAtom(searchQueryAtom);
@@ -56,18 +63,30 @@ export function SearchPage() {
   const [fields, setFields] = useAtom(searchFieldsAtom);
   const [folderIds, setFolderIds] = useAtom(searchFolderIdsAtom);
   const [semantic, setSemantic] = useAtom(searchSemanticModeAtom);
+  const [strictness, setStrictness] = useAtom(searchStrictnessAtom);
+  const [scrollAnchor, setScrollAnchor] = useAtom(searchScrollAnchorAtom);
+  const [scrollCache, setScrollCache] = useAtom(searchScrollCacheAtom);
 
   const vlistRef = useRef<VListHandle>(null);
 
-  // A search over thousands of unindexed rows shouldn't fire on every
-  // keystroke -- debounce like the compose recipient search does
-  // (use-contacts.ts's useContactSearch, 200ms).
+  // The backend is now single-digit-to-low-double-digit milliseconds
+  // (the trigram-over-every-body query this replaced was the thing that
+  // needed 250ms of debounce); 150ms still absorbs ordinary typing
+  // without a request per keystroke.
   useEffect(() => {
-    const timer = setTimeout(() => setQuery(rawQuery), 250);
+    const timer = setTimeout(() => setQuery(rawQuery), 150);
     return () => clearTimeout(timer);
   }, [rawQuery]);
 
   const searchAccountId = isUnified ? undefined : (selectedAccountId ?? undefined);
+
+  // An explicitly-cleared folder scope ([] -- see search-prefs.ts) means
+  // "search nothing", distinct from null ("every folder"). useSearchResults
+  // itself refuses to run the query in this state; this is only what the
+  // page shows instead of "No results found", which would read as a
+  // real, contentful answer rather than as nothing having been asked yet.
+  const hasFolderScope = folderIds === null || folderIds.length > 0;
+
   const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage, isError, error } =
     useSearchResults({
       query,
@@ -75,6 +94,7 @@ export function SearchPage() {
       folderIds,
       fields,
       semantic,
+      strictness,
     });
 
   // The picker's own options, scoped the same way the search itself is --
@@ -85,7 +105,11 @@ export function SearchPage() {
   const { options: scopedFolderOptions, isLoading: scopedFoldersLoading } =
     useSearchFolders(searchAccountId);
   useEffect(() => {
-    if (folderIds === null || scopedFoldersLoading) return;
+    // An explicit, deliberately-empty selection is left alone here -- it
+    // isn't "drifted outside what's visible under this account", it's a
+    // real state the reader chose, and this effect exists to catch the
+    // former, not silently undo the latter.
+    if (folderIds === null || folderIds.length === 0 || scopedFoldersLoading) return;
     const visibleIds = new Set(scopedFolderOptions.map((o) => o.folder.id));
     if (!folderIds.some((id) => visibleIds.has(id))) {
       // Falls back to "every folder in this scope" -- the same state the
@@ -98,6 +122,7 @@ export function SearchPage() {
   }, [searchAccountId, scopedFoldersLoading]);
 
   const results = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data]);
+  const total = data?.pages[0]?.total ?? 0;
 
   // A search result carries no account/folder context for opening -- it's
   // resolved from the message itself, then handed to the mail view's own
@@ -112,19 +137,132 @@ export function SearchPage() {
     },
   });
 
+  // One string identifying exactly this search -- keys the VList (so a
+  // genuinely new query starts at the top rather than inheriting the
+  // previous query's scroll offset, clamped) and ties a persisted scroll
+  // anchor/cache to the search it was captured under, so a return to a
+  // DIFFERENT search can never apply a stale one left over from another.
+  const listIdentity = useMemo(
+    () =>
+      [
+        semantic ? "semantic" : "fulltext",
+        query,
+        searchAccountId ?? "all",
+        (folderIds ?? []).slice().sort().join(","),
+        semantic ? strictness : [...fields].sort().join(","),
+      ].join("|"),
+    [semantic, query, searchAccountId, folderIds, strictness, fields],
+  );
+
+  // --- Scroll position restore-and-hold (SKILL.md) ---
+  //
+  // Anchored on the row's own identity, never a pixel offset. Restoring
+  // is a two-part job: scrollToIndex once the anchor's page has loaded,
+  // then hold that position while later rows mount and measure under it
+  // -- a row settling in above the anchor moves it, which a hold
+  // re-asserts against every render until something releases it.
+  const restorableAnchorId =
+    scrollAnchor?.listIdentity === listIdentity ? scrollAnchor.messageId : null;
+  const restorableCache =
+    scrollCache?.listIdentity === listIdentity ? scrollCache.cache : undefined;
+
+  const holdingRef = useRef(false);
+  const restoreAttemptedRef = useRef(false);
+  // The offset we ourselves last wrote via scrollToIndex, so the next
+  // onScroll event it produces can be told apart from the reader's own
+  // gesture -- the latter is what releases the hold.
+  const ownWriteOffsetRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    // A new list identity is a fresh attempt -- including one that
+    // failed to find its anchor and gave up (see below), which must not
+    // keep retrying against results that have since scrolled past it.
+    restoreAttemptedRef.current = false;
+    holdingRef.current = false;
+    ownWriteOffsetRef.current = null;
+  }, [listIdentity]);
+
+  const writeScrollToIndex = useCallback((index: number) => {
+    const handle = vlistRef.current;
+    if (!handle) return;
+    handle.scrollToIndex(index, { align: "start" });
+    ownWriteOffsetRef.current = handle.scrollOffset;
+  }, []);
+
+  useEffect(() => {
+    if (restoreAttemptedRef.current) return;
+    if (!restorableAnchorId || isLoading || results.length === 0) return;
+    const index = results.findIndex((r) => r.id === restorableAnchorId);
+    if (index === -1) {
+      // Not on the page(s) loaded so far. Semantic mode never has a
+      // further page to fetch, and fulltext gives up to the top rather
+      // than growing an unbounded fetch just to find a row that may no
+      // longer even match -- see the Friction note on a bounded
+      // widen-and-retry for a later pass.
+      restoreAttemptedRef.current = true;
+      return;
+    }
+    restoreAttemptedRef.current = true;
+    holdingRef.current = true;
+    writeScrollToIndex(index);
+  }, [restorableAnchorId, results, isLoading, writeScrollToIndex]);
+
+  // Re-assert every render while holding -- rows mounting and measuring
+  // below the anchor do not move it (below the viewport), but virtua's
+  // own cache warming as later rows are measured can still nudge the
+  // scroll offset; this keeps correcting it back until release.
+  useLayoutEffect(() => {
+    if (!holdingRef.current || !restorableAnchorId) return;
+    const index = results.findIndex((r) => r.id === restorableAnchorId);
+    if (index !== -1) writeScrollToIndex(index);
+  });
+
+  const persistAnchor = useCallback(
+    (offset: number) => {
+      const handle = vlistRef.current;
+      if (!handle) return;
+      const index = handle.findItemIndex(offset);
+      const row = results[index];
+      if (!row) return;
+      setScrollAnchor((prev) =>
+        prev?.messageId === row.id && prev.listIdentity === listIdentity
+          ? prev
+          : { listIdentity, messageId: row.id },
+      );
+      setScrollCache({ listIdentity, cache: handle.cache });
+    },
+    [results, listIdentity, setScrollAnchor, setScrollCache],
+  );
+
   const handleScroll = useCallback(
     (offset: number) => {
+      if (holdingRef.current) {
+        const expected = ownWriteOffsetRef.current;
+        const isOwnWrite = expected !== null && Math.abs(offset - expected) <= 1;
+        if (!isOwnWrite) {
+          // A deliberate gesture from the reader -- release the hold
+          // rather than fighting it on the very next render.
+          holdingRef.current = false;
+        } else {
+          return; // still settling from our own write; nothing else to do yet
+        }
+      }
+
       if (!vlistRef.current) return;
+      persistAnchor(offset);
+
+      // A viewport or two of margin, not the very edge -- the load
+      // happens off-screen rather than the reader watching it.
       const { scrollSize, viewportSize } = vlistRef.current;
       if (
-        scrollSize - offset - viewportSize < LOAD_MORE_MARGIN &&
+        scrollSize - offset - viewportSize < viewportSize * 1.5 &&
         hasNextPage &&
         !isFetchingNextPage
       ) {
         fetchNextPage();
       }
     },
-    [hasNextPage, isFetchingNextPage, fetchNextPage],
+    [hasNextPage, isFetchingNextPage, fetchNextPage, persistAnchor],
   );
 
   const toggleField = (field: SearchField) => {
@@ -139,12 +277,14 @@ export function SearchPage() {
     });
   };
 
-  const showEmptyPrompt = query.trim().length < 2;
+  const showEmptyPrompt = query.trim().length < 2 && hasFolderScope;
+  const showNoFolderSelected = !showEmptyPrompt && !hasFolderScope;
   // A failed query (a semantic search with no provider configured, most
   // commonly) reads as "No results found" otherwise -- a lie the user
   // will act on by rephrasing or giving up on the feature.
-  const showError = !showEmptyPrompt && isError;
-  const showNoResults = !showEmptyPrompt && !isLoading && !showError && results.length === 0;
+  const showError = !showEmptyPrompt && !showNoFolderSelected && isError;
+  const showNoResults =
+    !showEmptyPrompt && !showNoFolderSelected && !isLoading && !showError && results.length === 0;
   const errorMessage =
     semantic && error instanceof ApiError && error.status === 503
       ? "Semantic search is unavailable -- no AI provider is configured for it."
@@ -152,7 +292,14 @@ export function SearchPage() {
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
-      <h1 className="text-xl font-semibold">Search</h1>
+      <div className="flex items-baseline justify-between">
+        <h1 className="text-xl font-semibold">Search</h1>
+        {!showEmptyPrompt && !showNoFolderSelected && !isLoading && !showError && (
+          <span className="text-xs text-muted-foreground" data-testid="search-result-count">
+            {total} {total === 1 ? "result" : "results"}
+          </span>
+        )}
+      </div>
 
       <div className="relative">
         <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -189,6 +336,24 @@ export function SearchPage() {
             ))}
           </div>
         )}
+
+        {semantic && (
+          <div className="flex flex-wrap gap-1" data-testid="search-strictness">
+            {(Object.keys(STRICTNESS_LABELS) as SearchStrictness[]).map((level) => (
+              <button
+                key={level}
+                type="button"
+                onClick={() => setStrictness(level)}
+                className={cn(
+                  "rounded-full border px-2 py-0.5 text-xs",
+                  strictness === level ? "border-primary bg-primary/10" : "text-muted-foreground",
+                )}
+              >
+                {STRICTNESS_LABELS[level]}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-hidden rounded-lg border">
@@ -207,6 +372,16 @@ export function SearchPage() {
           </div>
         )}
 
+        {showNoFolderSelected && (
+          <div
+            className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground"
+            data-testid="search-no-folder-selected"
+          >
+            <FolderIcon className="h-12 w-12 opacity-50" />
+            <p>Select at least one folder to search</p>
+          </div>
+        )}
+
         {showError && (
           <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
             <AlertCircle className="h-12 w-12 opacity-50" />
@@ -222,21 +397,34 @@ export function SearchPage() {
         )}
 
         {!isLoading && results.length > 0 && (
-          <VList ref={vlistRef} className="h-full" itemSize={72} onScroll={handleScroll}>
-            {results.map((result) => (
-              <SearchResultRow
-                key={result.message_id}
-                result={result}
-                onOpen={openResult.mutate}
-              />
-            ))}
+          <VList
+            key={listIdentity}
+            id="search-results-list"
+            ref={vlistRef}
+            className="h-full"
+            itemSize={72}
+            cache={restorableCache}
+            onScroll={handleScroll}
+          >
+            {[
+              ...results.map((result) => (
+                <SearchResultRow key={result.id} result={result} onOpen={openResult.mutate} />
+              )),
+              // A sentinel row inside the list, not a sibling below it --
+              // "I scroll further down and see just a spinner there" is
+              // what a load-more indicator sitting inside the scrollable
+              // area, not clipped below the viewport, actually means.
+              isFetchingNextPage ? (
+                <div
+                  key={LOAD_MORE_SENTINEL_KEY}
+                  className="flex items-center justify-center py-3"
+                  data-testid="search-load-more-spinner"
+                >
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                </div>
+              ) : null,
+            ].filter((el): el is NonNullable<typeof el> => el !== null)}
           </VList>
-        )}
-
-        {isFetchingNextPage && (
-          <div className="flex items-center justify-center py-3">
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-          </div>
         )}
       </div>
     </div>

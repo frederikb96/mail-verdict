@@ -32,10 +32,14 @@ export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerP
   const { options, isLoading } = useSearchFolders(accountId);
   const allIds = useMemo(() => options.map((o) => o.folder.id), [options]);
 
-  // A stored `[]` from before empty scopes were refused reads the same as
-  // null here rather than reproducing the bug that refusal exists to fix.
-  const effectiveSelected = selectedIds === null || selectedIds.length === 0 ? allIds : selectedIds;
+  // An explicit [] is a real, distinct state -- "nothing selected",
+  // which search-page.tsx reads as "search disabled, choose a folder"
+  // rather than silently sending an absent restriction (see setSelection
+  // and search-page.tsx's hasFolderScope). Only a stored `null` means
+  // "every folder".
+  const effectiveSelected = selectedIds === null ? allIds : selectedIds;
   const selectedSet = useMemo(() => new Set(effectiveSelected), [effectiveSelected]);
+  const allSelected = allIds.length > 0 && effectiveSelected.length === allIds.length;
 
   const groups = useMemo(() => {
     const byAccount = new Map<string, { accountName: string; options: typeof options }>();
@@ -48,14 +52,11 @@ export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerP
   }, [options]);
 
   const setSelection = (nextIds: string[]) => {
-    // Mirrors the field toggles' own guard ("at least one field must stay
-    // selected"): an empty folder scope reads as "search nothing" here but
-    // is sent to the server as "no restriction" (an absent query param),
-    // so refuse to reach it rather than silently searching every folder.
-    if (nextIds.length === 0) return;
-    // Selecting back up to everything collapses to "all" (null) rather
-    // than writing out every id, so a folder created later is still
-    // included by default instead of silently excluded.
+    // An empty selection is now a real, meaningful state -- see
+    // effectiveSelected's comment above -- so it is passed through
+    // rather than refused. Selecting back up to everything collapses to
+    // "all" (null) rather than writing out every id, so a folder created
+    // later is still included by default instead of silently excluded.
     onChange(nextIds.length >= allIds.length ? null : nextIds);
   };
 
@@ -66,12 +67,12 @@ export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerP
     setSelection(Array.from(next));
   };
 
-  // effectiveSelected can no longer be empty (see above), so this is
-  // "all" or "some of them" -- never "none".
   const label =
-    effectiveSelected.length === allIds.length
-      ? "All folders"
-      : `${effectiveSelected.length} of ${allIds.length} folders`;
+    effectiveSelected.length === 0
+      ? "No folders"
+      : allSelected
+        ? "All folders"
+        : `${effectiveSelected.length} of ${allIds.length} folders`;
 
   return (
     <Popover>
@@ -83,11 +84,17 @@ export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerP
       <PopoverContent align="start" className="w-72 p-0">
         <div className="flex items-center justify-between border-b px-3 py-2 text-xs">
           <span className="font-medium text-muted-foreground">Search in</span>
-          {/* No "Deselect all" -- its only possible outcome is the empty
-              scope setSelection() refuses. A folder can still be narrowed
-              down to one by unchecking the rest individually. */}
-          <button type="button" className="text-primary hover:underline" onClick={() => onChange(null)}>
-            Select all
+          {/* Toggles between the two states a real empty selection makes
+              possible: with everything ticked, clearing it is now
+              reachable; from anywhere short of that, the button restores
+              "all" in one step rather than requiring every box checked
+              by hand. */}
+          <button
+            type="button"
+            className="text-primary hover:underline"
+            onClick={() => onChange(allSelected ? [] : null)}
+          >
+            {allSelected ? "Deselect all" : "Select all"}
           </button>
         </div>
         <div className="max-h-72 overflow-y-auto p-1">

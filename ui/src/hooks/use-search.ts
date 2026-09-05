@@ -1,40 +1,20 @@
 /** TanStack Query hooks for search operations. */
 
-import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { SearchField, SearchResult, SemanticSearchResult } from "@/types/api";
+import type { SearchField, SearchResult, SearchStrictness } from "@/types/api";
 
-/** The fulltext and semantic endpoints return different shapes (one
- * paginated, one a single ranked batch); the page and its row renderer
- * only ever need this common one. similarity is present in semantic mode
- * only. */
-export interface SearchResultItem {
-  message_id: string;
-  account_id: string;
-  folder_id: string;
-  subject: string | null;
-  from_addr: string | null;
-  received_at: string | null;
-  snippet: string | null;
-  is_seen: boolean;
-  is_flagged: boolean;
-  similarity?: number;
-}
+/** The fulltext and semantic endpoints already return the same shape --
+ * MessageSummary plus how the query matched (match_tier for fulltext,
+ * similarity for semantic) -- so the page and its row renderer consume
+ * SearchResult directly, with no separate per-mode mapping to reconcile. */
+export type SearchResultItem = SearchResult;
 
 interface SearchResultPage {
   items: SearchResultItem[];
   has_more: boolean;
   next_cursor: string | null;
-}
-
-function fromFulltext(r: SearchResult): SearchResultItem {
-  return { ...r };
-}
-
-function fromSemantic(r: SemanticSearchResult): SearchResultItem {
-  // No snippet: the semantic endpoint ranks by embedding similarity, not
-  // a highlighted excerpt over rendered text.
-  return { ...r, snippet: null };
+  total: number;
 }
 
 export const searchKeys = {
@@ -44,6 +24,7 @@ export const searchKeys = {
     accountId: string | undefined,
     folderIds: string[] | null,
     fields: SearchField[],
+    strictness: SearchStrictness,
   ) =>
     [
       "search",
@@ -51,26 +32,29 @@ export const searchKeys = {
       query,
       accountId ?? "all",
       folderIds ?? "all-folders",
-      semantic ? null : [...fields].sort(),
+      semantic ? strictness : [...fields].sort(),
     ] as const,
 };
 
 /**
- * Newest-first (fulltext) or nearest-first (semantic) search results,
- * paginated the same shape the mail list uses. Folder scoping and, in
- * fulltext mode, field scoping are both enforced server-side -- this hook
- * only forwards the current preferences and shapes the two response
- * bodies into one common page type.
+ * Newest-first (fulltext, ranked by field tier then date) or nearest-first
+ * (semantic) search results, paginated the same shape the mail list uses.
+ * Folder scoping and, in fulltext mode, field scoping are both enforced
+ * server-side -- this hook only forwards the current preferences.
  *
  * "Always newest first, no sort control" governs the fulltext list, not
  * semantic mode's own similarity ranking -- overriding that would remove
  * the entire reason semantic search exists, so it keeps ordering by
  * nearest match regardless of date.
  *
- * Semantic mode has no further pages: one embedding per message bounds
- * the corpus far below full-mailbox scale, and re-embedding the query
- * text on every scroll tick would be wasteful and slow. hasNextPage is
- * therefore always false once semantic mode's single page has loaded.
+ * Semantic mode has no further pages: the strictness cutoff bounds the
+ * result set naturally, so hasNextPage is always false once semantic
+ * mode's single page has loaded.
+ *
+ * No placeholderData/keepPreviousData: a new query's results must not be
+ * presented as if they were current while the request is in flight --
+ * otherwise isLoading never goes true past the very first search of a
+ * session, and the spinner that gates on it never appears again.
  */
 export function useSearchResults(params: {
   query: string;
@@ -78,21 +62,28 @@ export function useSearchResults(params: {
   folderIds: string[] | null;
   fields: SearchField[];
   semantic: boolean;
+  strictness: SearchStrictness;
 }) {
-  const { query, accountId, folderIds, fields, semantic } = params;
+  const { query, accountId, folderIds, fields, semantic, strictness } = params;
   const trimmed = query.trim();
+  // An explicitly-cleared folder scope ([] -- see search-prefs.ts) means
+  // "search nothing", never "no restriction" -- the server reads an
+  // absent folder_ids param as every folder, the opposite of what an
+  // empty selection means here. Disabling the query is what keeps that
+  // from silently becoming an unscoped search.
+  const hasFolderScope = folderIds === null || folderIds.length > 0;
 
   return useInfiniteQuery({
-    queryKey: searchKeys.results(semantic, trimmed, accountId, folderIds, fields),
+    queryKey: searchKeys.results(semantic, trimmed, accountId, folderIds, fields, strictness),
     queryFn: async ({ pageParam }): Promise<SearchResultPage> => {
       if (semantic) {
         const r = await api.search.semantic({
           q: trimmed,
           account_id: accountId,
           folder_ids: folderIds ?? undefined,
-          limit: 200,
+          strictness,
         });
-        return { items: r.results.map(fromSemantic), has_more: false, next_cursor: null };
+        return { items: r.results, has_more: false, next_cursor: null, total: r.results.length };
       }
       const r = await api.search.query({
         q: trimmed,
@@ -103,15 +94,15 @@ export function useSearchResults(params: {
         limit: 50,
       });
       return {
-        items: r.results.map(fromFulltext),
+        items: r.results,
         has_more: r.has_more,
         next_cursor: r.next_cursor,
+        total: r.total,
       };
     },
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : undefined),
-    enabled: trimmed.length >= 2,
+    enabled: trimmed.length >= 2 && hasFolderScope,
     staleTime: 30_000,
-    placeholderData: keepPreviousData,
   });
 }

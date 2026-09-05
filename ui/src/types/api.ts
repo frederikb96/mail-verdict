@@ -100,16 +100,19 @@ export interface MessageActionResponse {
 /** Which parts of a message the fulltext search endpoint scans. */
 export type SearchField = "subject" | "from" | "to" | "body";
 
-export interface SearchResult {
-  message_id: string;
-  account_id: string;
-  folder_id: string;
-  subject: string | null;
-  from_addr: string | null;
-  received_at: string | null;
-  snippet: string | null;
-  is_seen: boolean;
-  is_flagged: boolean;
+/** How tightly semantic results cluster around the best match -- relative
+ * to that match, not an absolute similarity floor (see the backend's
+ * embeddings/search.py). */
+export type SearchStrictness = "loose" | "balanced" | "strict";
+
+/** One search hit: MessageSummary's full shape (so a result carries the
+ * same row actions a mail-list row does) plus how the query matched it.
+ * Shared by both search endpoints -- match_tier is 0-4 and meaningful for
+ * GET /api/search, always its default for GET /api/embeddings/search,
+ * which reports similarity instead. */
+export interface SearchResult extends MessageSummary {
+  match_tier: number;
+  similarity: number | null;
 }
 
 export interface SearchResponse {
@@ -117,24 +120,15 @@ export interface SearchResponse {
   has_more: boolean;
   next_cursor: string | null;
   query: string;
-}
-
-export interface SemanticSearchResult {
-  message_id: string;
-  account_id: string;
-  folder_id: string;
-  subject: string | null;
-  from_addr: string | null;
-  received_at: string | null;
-  similarity: number;
-  is_seen: boolean;
-  is_flagged: boolean;
+  total: number;
 }
 
 export interface SemanticSearchResponse {
-  results: SemanticSearchResult[];
+  results: SearchResult[];
   query: string;
   model: string;
+  strictness: SearchStrictness;
+  min_similarity_applied: number;
 }
 
 export interface AccountResponse {
