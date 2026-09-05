@@ -651,12 +651,21 @@ def build_new_event(
 
     Raises:
         ValueError: tz is given with all_day, or is not a recognised
-            IANA zone name
+            IANA zone name; or dtend does not come after dtstart
     """
     if tz is not None:
         if all_day:
             raise ValueError("tz cannot be given for an all-day event")
         dtstart, dtend = _bind_to_zone(dtstart, dtend, tz)
+
+    # A CalDAV server accepts an inverted range without complaint, and
+    # every range query the API's own month view issues then excludes it
+    # -- it asks what overlaps a window, and an inverted event overlaps
+    # nothing. The object would exist on the server forever with no
+    # route back to it from this application, so this is the one place
+    # that must refuse it rather than merely warn.
+    if dtend <= dtstart:
+        raise ValueError("dtend must be after dtstart")
 
     cal = Calendar()
     cal.add("VERSION", "2.0")
@@ -779,6 +788,20 @@ def _apply_field_overrides(
             component, "DTEND",
             dtend.date() if is_all_day else _in_existing_zone(component, "DTEND", dtend),
         )
+    if dtstart is not None or dtend is not None:
+        # Checked after both fields above are applied, so moving only one
+        # of the two into an inversion against the other's existing value
+        # is caught too -- same reasoning as build_new_event's own check,
+        # and the same consequence: an inverted event overlaps nothing a
+        # range query asks for, so it would be unreachable the moment
+        # this write lands.
+        dtstart_prop = component.get("DTSTART")
+        dtend_prop = component.get("DTEND")
+        if dtstart_prop is not None and dtend_prop is not None:
+            start_value, end_value = dtstart_prop.dt, dtend_prop.dt
+            same_shape = isinstance(start_value, datetime) == isinstance(end_value, datetime)
+            if same_shape and end_value <= start_value:
+                raise ValueError("dtend must be after dtstart")
     if location is not None:
         _set(component, "LOCATION", location)
     if description is not None:

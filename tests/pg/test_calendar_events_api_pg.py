@@ -260,6 +260,26 @@ class TestCreateAndList:
             resp = client.get(f"/calendar/events/{uuid.uuid4()}")
         assert resp.status_code == 404
 
+    def test_create_with_dtend_before_dtstart_is_a_400(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A CalDAV server accepts an inverted range without complaint,
+        and every range query the API's own month view issues then
+        excludes it -- the object would exist on the server forever with
+        no route back to it from this application."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Backwards",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T09:00:00+00:00",
+                },
+            )
+        assert created.status_code == 400, created.text
+        assert "dtstart" in created.json()["detail"] or "dtend" in created.json()["detail"]
+
 
 class TestVisibilityFiltering:
     """The two independent levels a calendar can be hidden by: is_visible
@@ -1081,6 +1101,71 @@ class TestUpdateAndDelete:
             f"/calendar/events/{object_id}", params={}, follow_redirects=True,
         )
         assert still_there.status_code == 200
+
+    def test_update_scope_all_with_dtend_before_dtstart_is_a_400(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A CalDAV server accepts an inverted range without complaint,
+        and every range query the API's own month view issues then
+        excludes it -- the object would exist on the server forever with
+        no route back to it from this application."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Kickoff",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            # Only dtstart moves in this request -- dtend (11:00) is left
+            # untouched, so the inversion only exists once the two are
+            # compared against each other, not against anything in the
+            # request body alone.
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"dtstart": "2026-09-10T12:00:00+00:00", "scope": "all"},
+            )
+        assert updated.status_code == 400, updated.text
+        assert "dtstart" in updated.json()["detail"] or "dtend" in updated.json()["detail"]
+
+    def test_update_scope_this_with_dtend_before_dtstart_is_a_400(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The scope=this branch calls a different ical.py function
+        (edit_occurrence rather than replace_master_fields) than
+        scope=all, and had no try/except around it at all -- an inverted
+        range there raised ValueError straight through as an unhandled
+        500 rather than the 400 the create path and scope=all both
+        already gave."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Standup",
+                    "dtstart": "2026-09-01T09:00:00+00:00",
+                    "dtend": "2026-09-01T09:15:00+00:00",
+                    "rrule": "FREQ=WEEKLY;COUNT=4",
+                },
+            )
+            object_id = created.json()["object_id"]
+            listed = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+            second = listed.json()["events"][1]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={
+                    "dtend": "2026-09-01T08:00:00+00:00", "scope": "this",
+                    "recurrence_id": second["recurrence_id"],
+                },
+            )
+        assert updated.status_code == 400, updated.text
 
 
 class TestRespond:

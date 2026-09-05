@@ -724,6 +724,30 @@ class TestBuildAndEdit:
                 tz="Not/AZone",
             )
 
+    def test_build_new_event_with_dtend_before_dtstart_raises(self) -> None:
+        """A CalDAV server accepts an inverted range without complaint,
+        and every range query the month view issues then excludes it --
+        it would exist on the server with no route back to it from this
+        application, so this has to be refused rather than merely
+        warned about."""
+        with pytest.raises(ValueError, match="dtend must be after dtstart"):
+            ical.build_new_event(
+                summary="Standup",
+                dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 10, 9, 0, tzinfo=timezone.utc),
+            )
+
+    def test_build_new_event_with_equal_dtstart_and_dtend_raises(self) -> None:
+        """DTEND is exclusive (RFC 5545) -- the same instant as DTSTART
+        is a zero-length event, which the spec forbids the same way an
+        inverted one is."""
+        with pytest.raises(ValueError, match="dtend must be after dtstart"):
+            ical.build_new_event(
+                summary="Standup",
+                dtstart=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+                dtend=datetime(2026, 9, 10, 10, 0, tzinfo=timezone.utc),
+            )
+
     def test_replace_master_fields_bumps_sequence(self) -> None:
         updated = ical.replace_master_fields(_SIMPLE_EVENT, summary="Team sync (renamed)")
         master, _ = ical.parse_master_and_exceptions(updated)
@@ -1001,6 +1025,17 @@ class TestEditOccurrence:
         # reports the series it belongs to -- see
         # test_recurring_master_carries_exception.
         assert new_exception.rrule == "FREQ=WEEKLY;COUNT=4"
+
+    def test_moving_only_dtstart_past_the_existing_dtend_raises(self) -> None:
+        """The master's own DTEND is 20260901T100000Z, untouched by this
+        edit -- checked after both fields are applied so inverting one
+        against the other's *existing* value is caught too, not only an
+        inversion given directly in the same request."""
+        with pytest.raises(ValueError, match="dtend must be after dtstart"):
+            ical.edit_occurrence(
+                _RECURRING_EVENT, "20260901T090000Z",
+                dtstart=datetime(2026, 9, 1, 11, 0, tzinfo=timezone.utc),
+            )
 
 
 class TestParseItipMessage:
