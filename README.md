@@ -24,14 +24,16 @@ mirror, which is what keeps it simple.
   editing it in place, and sending one leaves no draft behind. Any message can be downloaded as a
   raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
-  is irreversible), keywords, drag-and-drop moves, and bulk actions over a selection or a whole
-  folder.
+  is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
+  touch device), and bulk actions over a selection or a whole folder, threaded or not.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens.
 - **Spam verdicts** — each new message is classified by a language model, with the reasoning
-  visible and a correction loop when it gets one wrong. Historical mail is never classified, and
-  nothing is classified twice.
+  visible and a correction loop when it gets one wrong. A dedicated review screen lists every
+  message currently called spam with no ruling yet, across every account and folder including
+  Junk, for confirming or correcting them singly or in bulk. Historical mail is never classified,
+  and nothing is classified twice.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
 - **Search** — fuzzy, typo-tolerant text search, scoped to whichever folders and fields (subject,
   from, to, body) you pick, newest first; plus semantic search over an embedding of every message
