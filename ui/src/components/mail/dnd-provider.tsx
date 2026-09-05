@@ -3,22 +3,24 @@
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   pointerWithin,
   useSensor,
   useSensors,
   type Active,
   type Announcements,
   type Over,
+  type DragCancelEvent,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useMailAction } from "@/hooks/use-mails";
-import { useBulkAction } from "@/hooks/use-selection";
+import { useBulkAction, useSelectionGestures } from "@/hooks/use-selection";
 import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 
 interface MailDndProviderProps {
@@ -34,27 +36,73 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
   const isUnified = useAtomValue(isUnifiedViewAtom);
   const mailAction = useMailAction();
   const bulkAction = useBulkAction();
+  const { toggle } = useSelectionGestures();
   const [dragData, setDragData] = useState<{
     count: number;
   } | null>(null);
+  // Set for the whole lifetime of a touch-activated drag -- read in
+  // onDragEnd/onDragCancel to skip the move entirely, since touch never
+  // drags to move (see handleDragStart below).
+  const touchSelectRef = useRef(false);
 
+  // Mouse keeps today's distance-based activation exactly as it was.
+  // Touch gets its own, time-based one: a quick swipe exceeds the 5px
+  // tolerance well before the 250ms delay elapses, so it cancels
+  // activation and the browser's native scroll takes over untouched --
+  // that's what stops a scroll gesture from ever picking a message up.
+  // A touch that stays still past the delay *is* a long press, which
+  // handleDragStart below turns into "select this row" rather than a drag.
   const sensors = useSensors(
-    useSensor(PointerSensor, {
+    useSensor(MouseSensor, {
       activationConstraint: {
         distance: 5,
+      },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 250,
+        tolerance: 5,
       },
     }),
   );
 
   function handleDragStart(event: DragStartEvent) {
     const data = event.active.data.current;
-    if (data?.type === "mail") {
-      setDragData({ count: data.count as number });
+    if (data?.type !== "mail") return;
+
+    if (event.activatorEvent instanceof TouchEvent) {
+      // A long press: select the row under the finger (unless it's
+      // already part of a multi-selection being pressed on, which stays
+      // as it is) and never show a drag ghost or perform a move -- touch
+      // long-press is "enter selection", not "start dragging".
+      touchSelectRef.current = true;
+      if (!data.isSelectionDrag) {
+        toggle({
+          id: data.mailId as string,
+          account_id: data.accountId as string,
+          folder_id: data.folderId as string,
+          is_seen: data.isSeen as boolean,
+          mirrored_at: data.mirroredAt as string | undefined,
+        });
+      }
+      return;
     }
+
+    touchSelectRef.current = false;
+    setDragData({ count: data.count as number });
+  }
+
+  function handleDragCancel(_event: DragCancelEvent) {
+    touchSelectRef.current = false;
+    setDragData(null);
   }
 
   function handleDragEnd(event: DragEndEvent) {
     setDragData(null);
+    if (touchSelectRef.current) {
+      touchSelectRef.current = false;
+      return;
+    }
 
     const { active, over } = event;
     if (!over) return;
@@ -133,6 +181,7 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
       accessibility={{ announcements }}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
     >
       {children}
       <DragOverlay>

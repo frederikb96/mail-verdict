@@ -16,6 +16,7 @@ import {
   Mail,
   Settings,
   Search,
+  ShieldAlert,
   UserCircle,
   ChevronDown,
   RefreshCw,
@@ -506,6 +507,15 @@ export function AppSidebar() {
             >
               <Contact className="h-4 w-4" />
               <span>Contacts</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/spam-review" />}
+              isActive={pathname === "/spam-review"}
+            >
+              <ShieldAlert className="h-4 w-4" />
+              <span>Spam review</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

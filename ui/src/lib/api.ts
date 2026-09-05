@@ -63,6 +63,7 @@ import type {
   SearchResponse,
   SelectionSnapshotResponse,
   SemanticSearchResponse,
+  SpamReviewListResponse,
   StageCreateRequest,
   StageTypeOut,
   StageUpdateRequest,
@@ -319,6 +320,15 @@ export const api = {
           body: JSON.stringify({ is_spam: isSpam }),
         },
       );
+    },
+
+    /** Every message currently classified spam with no user ruling yet,
+     * across every account and folder, newest verdict first. */
+    spamReview(params?: {
+      before?: string;
+      limit?: number;
+    }): Promise<SpamReviewListResponse> {
+      return request(`/verdicts/spam-review${qs(params ?? {})}`);
     },
   },
 

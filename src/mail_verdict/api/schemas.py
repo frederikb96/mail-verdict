@@ -483,6 +483,40 @@ class FeedbackResponse(BaseModel):
     message: str | None = None
 
 
+class SpamReviewItem(BaseModel):
+    """A message whose latest verdict called it spam and has not been
+    ruled on -- cross-account and cross-folder, since the review screen is
+    a view over verdicts rather than a folder. Carries account_id since a
+    row here can belong to any account, not just the one currently open."""
+
+    message_id: uuid.UUID
+    account_id: uuid.UUID
+    folder_id: uuid.UUID
+    is_junk: bool = Field(
+        description="Whether folder_id's special_use is junk -- what the "
+        "review screen uses to decide whether rejecting the verdict also "
+        "moves the message back to the inbox.",
+    )
+    subject: str | None = None
+    from_addr: str | None = None
+    received_at: datetime | None = None
+    snippet: str | None = None
+    verdict_id: uuid.UUID
+    model_used: str | None = None
+    reasoning: str | None = None
+    verdict_created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SpamReviewListResponse(BaseModel):
+    """Paginated, newest-verdict-first."""
+
+    items: list[SpamReviewItem]
+    has_more: bool
+    next_cursor: str | None = None
+
+
 # --- Notification schemas ---
 
 

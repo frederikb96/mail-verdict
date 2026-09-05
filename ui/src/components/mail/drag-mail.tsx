@@ -39,6 +39,11 @@ export function DragMail({ row, accountId, folderId, children }: DragMailProps) 
       folderId,
       isSelectionDrag: isInSelection,
       count: isInSelection ? size : 1,
+      // Carried so a touch long-press (handled in MailDndProvider, which
+      // has no other way to reach this row's own fields) can select it
+      // without dragging -- see the touch handling there.
+      isSeen: row.is_seen,
+      mirroredAt: row.mirrored_at,
     },
   });
 

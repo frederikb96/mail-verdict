@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### mv6-list
+
+- A touch drag no longer fights scrolling: a vertical swipe scrolls the list exactly like any
+  other page, with no drag ghost and nothing picked up, while desktop drag-and-drop is unchanged.
+  A genuine long press on a touch device instead selects that message and enters multi-select.
+- Select-all is now offered in a threaded folder, not only the flat view -- it selects every
+  message in every matching conversation server-side, without loading them, and a single
+  always-visible checkbox above the list both starts and clears a whole-folder selection.
+- A new spam review screen lists every message the classifier currently calls spam with no
+  ruling yet, across every account and folder including Junk. A thumb up confirms it; a thumb
+  down corrects it and, for a message the pipeline already moved to Junk, moves it back to the
+  inbox. Accept-all and reject-all apply the same to everything currently listed.
+
 ### Calendar
 
 - A dialog now renders at the width it actually asks for. The shared dialog component's own

@@ -1048,3 +1048,31 @@ export interface AddressbookSummary {
   read_only: boolean;
   total_count: number;
 }
+
+// --- Spam review ---
+
+/** A message whose latest verdict calls it spam, with no user ruling
+ * since -- cross-account and cross-folder, since the review screen is a
+ * view over verdicts rather than a folder. */
+export interface SpamReviewItem {
+  message_id: string;
+  account_id: string;
+  folder_id: string;
+  /** Whether folder_id's special_use is junk -- rejecting the verdict
+   * moves the message back to the inbox only when this is true. */
+  is_junk: boolean;
+  subject: string | null;
+  from_addr: string | null;
+  received_at: string | null;
+  snippet: string | null;
+  verdict_id: string;
+  model_used: string | null;
+  reasoning: string | null;
+  verdict_created_at: string;
+}
+
+export interface SpamReviewListResponse {
+  items: SpamReviewItem[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
