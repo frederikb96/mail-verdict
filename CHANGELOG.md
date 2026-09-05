@@ -30,10 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Compose can send an HTML body alongside the plain-text one: `POST /api/outbox` sanitises
   `body_html` for safe sending (a small, mail-client-safe tag vocabulary; no class or style
   attribute survives from the input) before it reaches the outbox row, and requires `body_text`
-  alongside it. `GET /api/messages/:id/quote` turns a message's raw body into the same safe shape
-  for quoting in a reply or forward, and for reopening a saved draft -- a remote image quotes as
-  its own absolute URL, and a `cid:` or other locally-meaningful reference is dropped rather than
-  left broken
+  alongside it. `GET /api/messages/:id/quote` turns a message's raw body into the shape the
+  composer renders locally for a reply, forward or reopened draft, for sending -- a `cid:` or
+  other locally-meaningful reference is dropped rather than left broken, and a remote image is
+  rewritten to the same privacy placeholder the reading pane uses (restored only once its sender
+  is allowlisted), so quoting a message never fetches its images without consent. Sending
+  restores whatever placeholder remains, so the quote a recipient sees still carries the original
+  image regardless of this account's own allowlist
 - Replying now sends from whichever of the account's identities the original message was
   addressed to, rather than always the starred default; a fresh compose still uses the default. A
   sending identity is selectable in the composer whenever an account has more than one
@@ -177,6 +180,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings category the interface expects but the server didn't return now explains that the
   interface and the server may disagree on which categories exist, rather than saying nothing
   more than "No settings available for this category"
+- Reopening a saved reply or forward draft carries its plain-text quote forward again -- it
+  previously came back empty, so the two MIME parts of a resaved draft disagreed, and sending an
+  untouched draft (nothing retyped) could fail outright since the text part had nothing in it at
+  all while the HTML part still carried the quote
+- A table pasted into the composer flattens to one paragraph per row with its cells kept apart,
+  rather than run together with nothing between them
+- The composer's To/Cc/Bcc field keeps its accessible name once it holds a chip -- its visible
+  placeholder disappears at that point (correctly, next to a chip it would read oddly), which
+  previously took the field's only name with it
+- Double-clicking Send no longer queues the same message twice. The button's own disabled state
+  was reacting to react-query's isPending a render late, which two clicks landing before that
+  render both slipped past; the submission itself is now guarded directly
+- Trashing (or archiving, marking spam, or otherwise moving out of its folder) any message in the
+  conversation a reply or forward is in progress against -- not only the exact one it quotes, but
+  any older message in the same thread the reader has expanded -- no longer discards that reply
+  with no prompt. The action itself still goes through -- and remains undoable exactly as before
+  -- but the reply box underneath it is no longer unmounted along with the reading pane's old
+  content
 
 ## [3.1.1] - 2026-09-03
 

@@ -1,8 +1,9 @@
 """
 The outbound HTML path against a real database: a compose POST stores
-sanitised body_html, refuses HTML with no text alternative, and a
-message's own quote endpoint turns its raw body_html/body_text into the
-same safe-to-send shape.
+sanitised body_html, refuses HTML with no text alternative, restores a
+quoted image's display-only placeholder to a real URL before it reaches
+the row, and a message's own quote endpoint turns its raw
+body_html/body_text into the shape the composer renders locally.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.api.mails import router as mails_router
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Outbox
+from mail_verdict.database.models import ImageException, ImageExceptionType, Outbox
 
 
 @pytest.fixture()
@@ -54,6 +55,7 @@ async def _seed_account(migrated_db: DatabaseConnection) -> uuid.UUID:
 
 async def _seed_account_with_message(
     migrated_db: DatabaseConnection, body_html: str | None, body_text: str | None,
+    from_addr: str | None = None,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     async with migrated_db.session() as session:
         account_id = await _insert_account(session)
@@ -70,18 +72,30 @@ async def _seed_account_with_message(
             text(
                 "INSERT INTO messages "
                 "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
-                "body_html, body_text) "
+                "from_addr, body_html, body_text) "
                 "VALUES (:id, :account_id, :folder_id, 1, :thread_id, :message_id, 'Original', "
-                ":body_html, :body_text)"
+                ":from_addr, :body_html, :body_text)"
             ),
             {
                 "id": message_id, "account_id": account_id, "folder_id": folder_id,
                 "thread_id": uuid.uuid4(), "message_id": f"<{message_id}@example.com>",
-                "body_html": body_html, "body_text": body_text,
+                "from_addr": from_addr, "body_html": body_html, "body_text": body_text,
             },
         )
         await session.commit()
     return account_id, message_id
+
+
+async def _allowlist_sender(
+    migrated_db: DatabaseConnection, account_id: uuid.UUID, email: str,
+) -> None:
+    async with migrated_db.session() as session:
+        session.add(
+            ImageException(
+                account_id=account_id, exception_type=ImageExceptionType.SENDER, value=email,
+            )
+        )
+        await session.commit()
 
 
 async def _outbox_body_html(migrated_db: DatabaseConnection, outbox_id: uuid.UUID) -> str | None:
@@ -149,6 +163,32 @@ class TestOutboxHtmlSanitisation:
         stored = client.portal.call(_outbox_body_html, migrated_db, uuid.UUID(resp.json()["id"]))
         assert stored is None
 
+    def test_a_quoted_images_display_placeholder_is_restored_before_it_reaches_the_row(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The quote endpoint may hand the composer a reply's image as a
+        display-only data-x-src placeholder when the quoted sender is not
+        allowlisted (see TestMessageQuote) -- restoring it here, on every
+        outbox row whether sent immediately or only saved as a draft, is
+        what lets whoever this reaches still see it, independent of
+        whether this account has ever allowlisted the original sender."""
+        account_id = client.portal.call(_seed_account, migrated_db)
+        html = '<p>fwd</p><img data-x-src="https://sender.example/pic.png">'
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "draft",
+                    "to": ["them@example.com"], "subject": "hi",
+                    "body_text": "fwd", "body_html": html,
+                },
+            )
+        assert resp.status_code == 201, resp.text
+        stored = client.portal.call(_outbox_body_html, migrated_db, uuid.UUID(resp.json()["id"]))
+        assert stored is not None
+        assert 'src="https://sender.example/pic.png"' in stored
+        assert "data-x-src" not in stored
+
 
 class TestDraftQuoteRoundTrip:
     def test_a_saved_quote_still_carries_its_marker_and_cite_type_after_storage(
@@ -199,16 +239,36 @@ class TestMessageQuote:
         assert "<script" not in out
         assert "color:red" not in out
 
-    def test_a_remote_image_quotes_as_its_own_absolute_url(
+    def test_a_remote_image_quotes_as_a_placeholder_when_the_sender_is_not_allowlisted(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
+        """Rendered locally by the composer's quote node, so an
+        unrewritten remote URL here would fetch on every reply, reply-all,
+        forward and reopened draft regardless of consent -- the same rule
+        the reading pane already applies, reused here."""
         html = '<p>see</p><img src="https://sender.example/pic.png">'
         _, message_id = client.portal.call(
-            _seed_account_with_message, migrated_db, html, "see",
+            _seed_account_with_message, migrated_db, html, "see", "sender@example.com",
         )
         with patch(_MAILS_TARGET, return_value=migrated_db):
             resp = client.get(f"/messages/{message_id}/quote")
-        assert 'src="https://sender.example/pic.png"' in resp.json()["html"]
+        out = resp.json()["html"]
+        assert '<img data-x-src="https://sender.example/pic.png">' in out
+        assert '<img src="https://sender.example/pic.png">' not in out
+
+    def test_a_remote_image_quotes_as_its_own_url_once_the_sender_is_allowlisted(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        html = '<p>see</p><img src="https://sender.example/pic.png">'
+        account_id, message_id = client.portal.call(
+            _seed_account_with_message, migrated_db, html, "see", "sender@example.com",
+        )
+        client.portal.call(_allowlist_sender, migrated_db, account_id, "sender@example.com")
+        with patch(_MAILS_TARGET, return_value=migrated_db):
+            resp = client.get(f"/messages/{message_id}/quote")
+        out = resp.json()["html"]
+        assert '<img src="https://sender.example/pic.png">' in out
+        assert "data-x-src" not in out
 
     def test_a_cid_image_is_dropped_since_nothing_is_attached_to_the_quote(
         self, client: TestClient, migrated_db: DatabaseConnection,

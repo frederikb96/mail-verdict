@@ -17,11 +17,14 @@ from playwright.sync_api import Page, expect
 
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
+    folder,
+    mail_row,
     select_account,
     unique_email,
     wait_for,
     wait_for_account_active,
     wait_for_folder,
+    wait_for_mailpit_message,
 )
 
 from tests.setup.containers import (  # isort: skip
@@ -89,6 +92,62 @@ def original_message(
     return wait_for(_find, description="Original message synced into INBOX")
 
 
+@pytest.fixture(scope="module")
+def drafts_folder(api_client: httpx.Client, editor_account: dict[str, Any]) -> dict[str, Any]:
+    return wait_for_folder(api_client, str(editor_account["id"]), "Drafts")
+
+
+@pytest.fixture(scope="module")
+def plain_text_message(
+    api_client: httpx.Client, dovecot_endpoint: tuple[str, int, int],
+    editor_account: dict[str, Any], inbox_folder: dict[str, Any],
+) -> dict[str, Any]:
+    """A distinct, plain-text-only original -- so the quote this test
+    reconstructs from a reopened draft's body_text has an unambiguous,
+    known plain-text form to check against, rather than whatever an
+    HTML-only message's own text alternative happens to be."""
+    host, _imap_port, lmtp_port = dovecot_endpoint
+    subject = "Plain text original"
+    message = build_eml(
+        sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+        message_id=f"<editor-plain-{uuid.uuid4()}@example.com>",
+        body="Original plain body line.",
+    )
+    deliver_message(
+        message, host, lmtp_port, sender="sender@example.com", recipient=editor_account["email"],
+    )
+
+    def _find() -> dict[str, Any] | None:
+        resp = api_client.get(
+            f"/api/accounts/{editor_account['id']}/messages",
+            params={"folder_id": inbox_folder["id"]},
+        )
+        return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+    return wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+
+def _trigger_sync(api_client: httpx.Client, account_id: str) -> None:
+    """Force an immediate sync -- a drafted or sent copy otherwise only
+    reappears on that folder's next periodic sync."""
+    resp = api_client.post(f"/api/accounts/{account_id}/sync")
+    assert resp.status_code == 200, resp.text
+
+
+def _list_folder(
+    api_client: httpx.Client, account_id: str, folder_id: str,
+) -> list[dict[str, Any]]:
+    resp = api_client.get(
+        f"/api/accounts/{account_id}/messages", params={"folder_id": folder_id},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["messages"]
+
+
+def _open_folder(page: Page, folder_row: dict[str, Any]) -> None:
+    folder(page, folder_row["id"]).get_by_role("button").click()
+
+
 def _open_thread(
     page: Page, app_server: str, account: dict[str, Any], message: dict[str, Any],
 ) -> None:
@@ -136,6 +195,29 @@ class TestPasteAndScroll:
         # Never as literal, visible source -- the exact failure reported.
         expect(body).not_to_contain_text("<strong>")
 
+    def test_a_pasted_table_keeps_a_separator_between_cells(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """The editor's schema has no table node, so a pasted one is
+        flattened -- correctly dropping the table but not the gap between
+        cells. Without that gap the two cells' text runs together
+        ("cell Acell B"), reading as corrupted rather than simplified."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        _dispatch_paste(
+            body,
+            "<table><tr><td>cell A</td><td>cell B</td></tr></table>",
+            "cell A\tcell B",
+        )
+
+        expect(body).to_contain_text("cell A")
+        expect(body).to_contain_text("cell B")
+        expect(body).not_to_contain_text("Acell")
+
     def test_long_content_scrolls_inside_the_composer_rather_than_growing_it(
         self, page: Page, app_server: str, editor_account: dict[str, Any],
     ) -> None:
@@ -158,6 +240,27 @@ class TestPasteAndScroll:
         viewport = page.viewport_size
         assert dialog_box is not None and viewport is not None
         assert dialog_box["height"] <= viewport["height"]
+
+
+class TestRecipientFieldAccessibleName:
+    def test_the_to_field_keeps_its_accessible_name_once_a_chip_exists(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """The visible placeholder disappears once there is a chip beside
+        it -- correct, it would read oddly otherwise -- but the field's
+        accessible name has to survive that. A locator by role and name is
+        exactly what a screen reader relies on too."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        to_field = dialog.get_by_role("combobox", name="To", exact=True)
+        to_field.click()
+        to_field.fill("chip-recipient@example.com")
+        page.keyboard.press("Enter")
+
+        expect(dialog.get_by_text("chip-recipient@example.com")).to_be_visible(timeout=10_000)
+        expect(dialog.get_by_role("combobox", name="To", exact=True)).to_be_visible(timeout=10_000)
 
 
 class TestReplyQuoting:
@@ -185,6 +288,135 @@ class TestReplyQuoting:
             "(el) => el.shadowRoot.querySelector('h1')?.textContent ?? ''",
         )
         assert quoted_heading == "Original heading"
+
+
+class TestReplyQuoteDoesNotLeakImages:
+    """A message from a sender who is not allowlisted shows no images when
+    read -- replying to it must not be a stronger signal than opening it,
+    the same rule collapsing the quote alone cannot enforce (display:none
+    does not stop an <img> from loading)."""
+
+    def test_replying_to_an_unallowlisted_sender_issues_no_image_request(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"UI reply image privacy test {uuid.uuid4()}"
+        message = build_eml(
+            sender="Untrusted Sender <untrusted-reply-sender@example.com>",
+            recipient=editor_account["email"], subject=subject,
+            message_id=f"<reply-image-{uuid.uuid4()}@example.com>",
+            body='<p>Hello</p><img src="https://tracker.invalid/pixel.gif">',
+            content_type="text/html; charset=utf-8",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="untrusted-reply-sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        third_party_requests: list[str] = []
+
+        def _record(req: object) -> None:
+            url = req.url  # type: ignore[attr-defined]
+            if "tracker.invalid" in url:
+                third_party_requests.append(url)
+
+        page.on("request", _record)
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        expect(page.locator('[data-testid="email-body"]')).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="Reply", exact=True).click()
+        expect(page.locator(".quoted-message-attribution")).to_be_visible(timeout=10_000)
+        toggle = page.locator(".quoted-message-toggle")
+        toggle.click()
+        expect(toggle).to_have_text("Hide quoted text")
+
+        host_shadow = page.locator('[data-testid="quoted-message-shadow-host"]')
+        image_count = host_shadow.evaluate(
+            "(el) => el.shadowRoot.querySelectorAll('img').length",
+        )
+        assert image_count == 1, "the quoted image itself must survive, only its fetch is blocked"
+
+        assert third_party_requests == [], (
+            f"quoting an unallowlisted sender fetched: {third_party_requests}"
+        )
+
+
+class TestDraftReopenPreservesTheQuote:
+    """A reply saved as a draft before anything was typed, reopened and
+    sent without typing anything either -- the shape that previously lost
+    the plain-text quote on reopen, and could fail outright on send since
+    the HTML part still carried one and the text part did not."""
+
+    def test_reopening_and_sending_an_untouched_reply_draft_keeps_the_quote(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        mailpit_http_url: str,
+        editor_account: dict[str, Any],
+        drafts_folder: dict[str, Any],
+        plain_text_message: dict[str, Any],
+    ) -> None:
+        subject = "Re: Plain text original"
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, plain_text_message["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+        expect(page.locator(".quoted-message-attribution")).to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Save draft", exact=True).click()
+        expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
+
+        _trigger_sync(api_client, editor_account["id"])
+        draft = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, editor_account["id"], drafts_folder["id"])
+                 if m["subject"] == subject), None,
+            ),
+            timeout_s=60.0, description=f"Draft {subject!r} synced into Drafts",
+        )
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        _open_folder(page, drafts_folder)
+        mail_row(page, draft["id"]).click()
+        expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
+        expect(page.locator(".quoted-message-attribution")).to_be_visible(timeout=10_000)
+
+        # Nothing typed -- the exact shape that previously 400'd, since the
+        # HTML part still carried the quote (isEmpty() is false, an atom
+        # node) while the reconstructed plain-text part came back empty.
+        page.get_by_role("button", name="Send", exact=True).click()
+        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+
+        mailpit_message = wait_for_mailpit_message(mailpit_http_url, subject)
+        raw = httpx.get(
+            f"{mailpit_http_url}/api/v1/message/{mailpit_message['ID']}/raw", timeout=10.0,
+        )
+        assert raw.status_code == 200, raw.text
+        assert "> Original plain body line." in raw.text, (
+            "expected the plain-text quote to survive the reopened draft; "
+            f"raw source:\n{raw.text}"
+        )
 
 
 class TestCloseAndDiscard:
@@ -251,3 +483,203 @@ class TestCloseAndDiscard:
         expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
             "Unsaved compose text.",
         )
+
+
+class TestDoubleSubmitGuard:
+    def test_double_clicking_send_queues_the_message_only_once(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        editor_account: dict[str, Any],
+    ) -> None:
+        """Nothing guarded the mutation itself, only the button's disabled
+        attribute -- react-query's own isPending is the state as of the
+        last render, so two clicks landing before React re-renders both
+        read it as false and both fire."""
+        subject = f"UI double-send test {uuid.uuid4()}"
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
+        dialog.get_by_role("textbox", name="Subject").fill(subject)
+        dialog.get_by_test_id("mail-editor-body").fill("Sent from a double-click.")
+
+        dialog.get_by_role("button", name="Send", exact=True).dblclick()
+        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+
+        def _outbox_rows() -> list[dict[str, Any]] | None:
+            resp = api_client.get("/api/outbox", params={"account_id": editor_account["id"]})
+            assert resp.status_code == 200, resp.text
+            rows = [row for row in resp.json() if row["subject"] == subject]
+            return rows or None
+
+        wait_for(_outbox_rows, description=f"Outbox row for {subject!r}")
+        # A genuine second send would already have landed by the time the
+        # first one settles -- give it the same window rather than checking
+        # the instant the first row appears.
+        page.wait_for_timeout(1500)
+        rows = _outbox_rows() or []
+        assert len(rows) == 1, f"expected exactly one outbox row for {subject!r}, got {rows}"
+
+
+class TestTrashingTheOpenMessageKeepsAnInProgressReply:
+    def test_trashing_the_message_you_are_replying_to_keeps_the_reply_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Reported as: reply box open with typed text, hover the row,
+        Move to trash -- the message and the reply box both vanished with
+        no prompt, and Undo only restored the message, not the reply.
+        Trashing (unlike sending) is already reversible on its own, so the
+        fix is to stop the reading pane from unmounting the reply, not to
+        prompt before an action that was never in question."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"UI trash-keeps-reply test {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+            message_id=f"<editor-trash-{uuid.uuid4()}@example.com>",
+            body="Original body for the trash-keeps-reply test.",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply worth keeping.")
+        expect(body).to_contain_text("A reply worth keeping.")
+
+        row = mail_row(page, target["id"])
+        row.hover()
+        row.get_by_title("Move to trash").click()
+        expect(page.get_by_text("Moved to trash")).to_be_visible(timeout=10_000)
+
+        # The reply box must not have been unmounted along with the reading
+        # pane's old content -- the typed text is still exactly what it
+        # was, not silently discarded.
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply worth keeping.",
+        )
+
+
+class TestTrashingAnOlderThreadMessageKeepsAnInProgressReply:
+    # Two message deliveries plus a poll confirming they actually joined one
+    # thread before driving the browser at all -- legitimately slower than
+    # this module's other tests, which deliver one message each.
+    @pytest.mark.timeout(240)
+    def test_trashing_an_older_message_in_the_thread_keeps_the_reply_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A reply always targets the thread's newest message, while the
+        reading pane's own "open" message (mailId) can be an older one the
+        reader expanded within the same thread -- in the flat (non-threaded)
+        list each message is its own row, so trashing the older one
+        specifically is reachable on its own, and must not discard a reply
+        against the newest either. This is what matching on the thread
+        rather than on the single message id closes."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        stem = uuid.uuid4()
+        older_subject = f"UI thread-keeps-reply older {stem}"
+        newer_subject = f"Re: {older_subject}"
+        older_message_id = f"<older-{stem}@example.com>"
+
+        older = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"],
+            subject=older_subject, message_id=older_message_id,
+            body="Older message in the thread.",
+        )
+        deliver_message(
+            older, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find_older() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next(
+                (m for m in resp.json()["messages"] if m["subject"] == older_subject), None,
+            )
+
+        older_target = wait_for(_find_older, description=f"{older_subject!r} synced into INBOX")
+
+        newer = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"],
+            subject=newer_subject, message_id=f"<newer-{stem}@example.com>",
+            in_reply_to=older_message_id,
+            body="Newer message in the thread.",
+        )
+        deliver_message(
+            newer, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find_newer_on_same_thread() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            match = next(
+                (m for m in resp.json()["messages"] if m["subject"] == newer_subject), None,
+            )
+            # Confirmed joined onto the older message's own thread --
+            # otherwise the rest of this test would prove nothing at all.
+            return match if match and match["thread_id"] == older_target["thread_id"] else None
+
+        wait_for(
+            _find_newer_on_same_thread,
+            description=f"{newer_subject!r} synced onto the same thread as the older message",
+        )
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        mail_row(page, older_target["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply against the newest message.")
+        expect(body).to_contain_text("A reply against the newest message.")
+
+        row = mail_row(page, older_target["id"])
+        row.hover()
+        row.get_by_title("Move to trash").click()
+        expect(page.get_by_text("Moved to trash")).to_be_visible(timeout=10_000)
+
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply against the newest message.",
+        )
+
+        # Left as found, for whatever else in this module runs after it.
+        page.get_by_role("switch", name="Group by conversation").click()

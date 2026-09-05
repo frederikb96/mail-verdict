@@ -106,6 +106,14 @@ export function ComposeForm({
   const [identityId, setIdentityId] = useState("");
   const [bodyDirty, setBodyDirty] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // A ref, not the mutation's own isPending: that is react-query's state as
+  // of the last render, so two submits reaching this handler in the same
+  // tick (a fast double-click or double Enter, before React has re-rendered
+  // the disabled button) would both read it as false and both fire. A ref
+  // is read and written synchronously, with no render in between, so the
+  // second one sees what the first just set.
+  const submittingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const { data: identities } = useIdentities(accountId);
   const createOutbox = useCreateOutbox();
@@ -169,11 +177,17 @@ export function ComposeForm({
   };
 
   const submit = (kind: "send" | "draft") => {
+    // Checked and set before anything else so a second call reaching this
+    // function while the first is still in flight -- whichever kind either
+    // one is -- returns immediately rather than mutating a second time.
+    if (submittingRef.current) return;
     const data = buildRequest(kind);
     if (kind === "send" && data.to.length === 0) {
       pushToast("Add at least one recipient", "warning");
       return;
     }
+    submittingRef.current = true;
+    setIsSubmitting(true);
     createOutbox.mutate(
       { data, attachments },
       {
@@ -186,6 +200,10 @@ export function ComposeForm({
         },
         onError: (err) => {
           pushToast(`Failed to queue message: ${err.message}`, "error", 0);
+        },
+        onSettled: () => {
+          submittingRef.current = false;
+          setIsSubmitting(false);
         },
       },
     );
@@ -319,7 +337,7 @@ export function ComposeForm({
             type="button"
             variant="outline"
             size="sm"
-            disabled={createOutbox.isPending}
+            disabled={isSubmitting}
             onClick={() => submit("draft")}
           >
             <Save className="mr-1 h-3.5 w-3.5" />
@@ -328,10 +346,10 @@ export function ComposeForm({
           <Button
             type="button"
             size="sm"
-            disabled={createOutbox.isPending}
+            disabled={isSubmitting}
             onClick={() => submit("send")}
           >
-            {createOutbox.isPending ? (
+            {isSubmitting ? (
               <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
             ) : (
               <Send className="mr-1 h-3.5 w-3.5" />
