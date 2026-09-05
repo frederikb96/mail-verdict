@@ -17,7 +17,7 @@ from playwright.sync_api import Page, expect
 
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
-    folder,
+    folder_button,
     mail_row,
     select_account,
     unique_email,
@@ -145,7 +145,7 @@ def _list_folder(
 
 
 def _open_folder(page: Page, folder_row: dict[str, Any]) -> None:
-    folder(page, folder_row["id"]).get_by_role("button").click()
+    folder_button(page, folder_row["id"]).click()
 
 
 def _open_thread(

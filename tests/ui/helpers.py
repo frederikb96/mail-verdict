@@ -42,6 +42,14 @@ def folder(page: Page, folder_id: str) -> Locator:
     return page.locator(f'[data-testid="folder"][data-folder-id="{folder_id}"]')
 
 
+def folder_button(page: Page, folder_id: str) -> Locator:
+    """The sidebar folder's own button. The options menu beside it is a
+    button too, inside the same item, so asking the item for its button
+    resolves to two and fails strict mode -- which reads as the folder
+    never having rendered."""
+    return folder(page, folder_id).locator('[data-slot="sidebar-menu-button"]')
+
+
 def event_chip(page: Page, object_id: str) -> Locator:
     """The clickable calendar event chip, by its object id -- month cell,
     time grid block or agenda row, whichever view is rendering it.
