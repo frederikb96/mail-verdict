@@ -142,6 +142,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Changing a calendar's colour, visibility or linked identity now reaches a second open browser
   live, the same as renaming it already did -- that local preference lives in a table of this
   application's own, which nothing had ever announced a change to.
+- The message list endpoint gained a new `around` parameter: a page centred on a given message,
+  half newer and half older, with a cursor in both directions -- the server capability the
+  "open a search result and land on it" flow needs, since a hit far down a large folder is
+  simply not in the window an ordinary newest-first page fetches.
 
 ## [4.0.0] - 2026-09-05
 

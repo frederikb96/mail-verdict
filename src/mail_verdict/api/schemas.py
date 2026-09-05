@@ -97,11 +97,21 @@ class MessageSummary(BaseModel):
 
 
 class MessageListResponse(BaseModel):
-    """Paginated message list response with cursor-based pagination."""
+    """Paginated message list response with cursor-based pagination.
+
+    has_more/next_cursor continue OLDER, as they always have. A page
+    fetched with `around` (see /accounts/{id}/messages) is not anchored
+    at the newest edge, so it can also have more content in the other
+    direction -- has_more_newer/prev_cursor continue NEWER from this
+    page's own first (newest) row. An ordinary page never sets these,
+    since it always starts at the newest edge already.
+    """
 
     messages: list[MessageSummary]
     has_more: bool
     next_cursor: str | None = None
+    has_more_newer: bool = False
+    prev_cursor: str | None = None
 
 
 class MessageDetail(BaseModel):
