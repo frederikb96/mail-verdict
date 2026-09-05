@@ -458,7 +458,12 @@ class TestSenderAvatar:
         header = page.locator('[data-testid="thread-message-header"]')
         photo = header.locator('[data-slot="avatar-image"]')
         expect(photo).to_be_visible(timeout=10_000)
-        assert photo.get_attribute("src") == photo_data_url
+        # An embedded photo is served from this application's own endpoint,
+        # never inline -- rendering the raw data URL in the DOM would carry
+        # the photo's bytes into every page load rather than a cacheable,
+        # separately-fetched request.
+        contact_id = created.json()["id"]
+        assert photo.get_attribute("src") == f"/api/contacts/{contact_id}/photo"
 
     def test_a_matching_contacts_embedded_photo_shows_in_the_mail_list_row_too(
         self,

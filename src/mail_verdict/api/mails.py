@@ -52,7 +52,7 @@ from mail_verdict.api.schemas import (
     VerdictResponse,
 )
 from mail_verdict.core.content_disposition import content_disposition
-from mail_verdict.core.cursor import after_cursor
+from mail_verdict.core.cursor import after_cursor, before_cursor
 from mail_verdict.core.image_sanitizer import restore_remote_images, strip_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.core.sanitizer import (
@@ -104,6 +104,50 @@ _DETAIL_DEFERRED_COLUMNS = (
 )
 
 
+def _flat_summary(m: Message) -> MessageSummary:
+    return MessageSummary(
+        id=m.id,
+        account_id=m.account_id,
+        folder_id=m.folder_id,
+        thread_id=m.thread_id,
+        subject=m.subject,
+        from_addr=m.from_addr,
+        to_addrs=m.to_addrs,
+        received_at=m.received_at,
+        is_seen=m.is_seen,
+        is_flagged=m.is_flagged,
+        is_answered=m.is_answered,
+        is_draft=m.is_draft,
+        is_truncated=m.is_truncated,
+        pending_sync=m.imap_uid is None,
+        snippet=m.body_text[:120] if m.body_text else None,
+        mirrored_at=m.created_at,
+    )
+
+
+def _threaded_summary(m: Message, thread_count: int, unread_in_thread: int) -> MessageSummary:
+    return MessageSummary(
+        id=m.id,
+        account_id=m.account_id,
+        folder_id=m.folder_id,
+        thread_id=m.thread_id,
+        subject=m.subject,
+        from_addr=m.from_addr,
+        to_addrs=m.to_addrs,
+        received_at=m.received_at,
+        is_seen=m.is_seen,
+        is_flagged=m.is_flagged,
+        is_answered=m.is_answered,
+        is_draft=m.is_draft,
+        is_truncated=m.is_truncated,
+        pending_sync=m.imap_uid is None,
+        snippet=m.body_text[:120] if m.body_text else None,
+        thread_count=thread_count,
+        unread_in_thread=unread_in_thread,
+        mirrored_at=m.created_at,
+    )
+
+
 @account_router.get("", response_model=MessageListResponse)
 async def list_messages(
     account_id: uuid.UUID,
@@ -113,7 +157,20 @@ async def list_messages(
     since: datetime | None = Query(default=None),
     before: uuid.UUID | None = Query(
         default=None,
-        description="Cursor: UUID of last message in previous page",
+        description="Cursor: UUID of last message in previous page -- fetches older",
+    ),
+    after: uuid.UUID | None = Query(
+        default=None,
+        description="Cursor: UUID of first message in previous page -- fetches newer",
+    ),
+    around: uuid.UUID | None = Query(
+        default=None,
+        description=(
+            "Centre a fresh page on this message instead of starting at the newest "
+            "edge -- half newer, half older. In threaded mode the target is resolved "
+            "to its thread's own representative row first. Mutually exclusive with "
+            "before/after."
+        ),
     ),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> MessageListResponse:
@@ -123,98 +180,298 @@ async def list_messages(
     threaded=true groups by thread_id: one row per conversation (its latest
     message, plus thread_count/unread_in_thread scoped to this same folder
     filter), ordered by that latest message's received_at.
-    Cursor pagination uses the `before` parameter (UUID of the last message
-    in the previous page). Stable under concurrent inserts.
+
+    Three ways to page. The plain call starts at the newest edge. `before`
+    continues older from a previous page's last row, exactly as it always
+    has. `after` continues newer from a previous page's first row -- only
+    meaningful once a page was ever centred away from the edge, since an
+    ordinary page already starts there and has nothing newer to fetch.
+    `around` centres a *fresh* page on a given message instead of the
+    newest edge -- half newer, half older -- resolving it to its thread's
+    own representative row first in threaded mode (the latest message in
+    its thread among those matching this list's own filters), since that
+    is the row the list actually renders; centring on the message itself
+    would return a window the list never shows. 404 if the message
+    doesn't exist, isn't in this account, or -- threaded -- its thread has
+    no member matching folder_id/is_seen/since here: "not a member of
+    this list" is a distinct answer from an ordinary empty page.
     """
+    if around is not None and (before is not None or after is not None):
+        raise HTTPException(
+            status_code=400, detail="around is mutually exclusive with before/after",
+        )
+
     db = get_db_connection()
     async with db.session() as session:
+        if around is not None:
+            return await _list_messages_around(
+                session, account_id, folder_id, threaded, is_seen, since, around, limit,
+            )
+
+        direction: Literal["older", "newer"] = "newer" if after is not None else "older"
+        cursor_param = after if after is not None else before
         cursor_received_at, cursor_id = None, None
-        if before is not None:
+        if cursor_param is not None:
             cursor_result = await session.execute(
-                select(Message.received_at, Message.id).where(Message.id == before)
+                select(Message.received_at, Message.id).where(Message.id == cursor_param)
             )
             cursor_row = cursor_result.one_or_none()
             if cursor_row is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid cursor: message {before} not found",
+                    detail=f"Invalid cursor: message {cursor_param} not found",
                 )
             cursor_received_at, cursor_id = cursor_row
 
         if threaded:
             rows = await _list_messages_threaded(
                 session, account_id, folder_id, is_seen, since,
-                cursor_received_at, cursor_id, limit,
+                cursor_received_at, cursor_id, limit, direction=direction,
             )
-            messages = [
-                MessageSummary(
-                    id=m.id,
-                    account_id=m.account_id,
-                    folder_id=m.folder_id,
-                    thread_id=m.thread_id,
-                    subject=m.subject,
-                    from_addr=m.from_addr,
-                    to_addrs=m.to_addrs,
-                    received_at=m.received_at,
-                    is_seen=m.is_seen,
-                    is_flagged=m.is_flagged,
-                    is_answered=m.is_answered,
-                    is_draft=m.is_draft,
-                    is_truncated=m.is_truncated,
-                    pending_sync=m.imap_uid is None,
-                    snippet=m.body_text[:120] if m.body_text else None,
-                    thread_count=thread_count,
-                    unread_in_thread=unread_in_thread,
-                    mirrored_at=m.created_at,
-                )
-                for m, thread_count, unread_in_thread in rows[:limit]
-            ]
-            has_more = len(rows) > limit
+            overflow = len(rows) > limit
+            page = rows[:limit]
+            if direction == "newer":
+                page = list(reversed(page))
+            messages = [_threaded_summary(m, tc, uc) for m, tc, uc in page]
         else:
-            stmt = (
-                select(Message)
-                .options(*_LIST_DEFERRED_COLUMNS)
-                .where(Message.expunged_at.is_(None), Message.account_id == account_id)
-                .order_by(desc(Message.received_at), desc(Message.id))
+            all_msgs = await _list_messages_flat_page(
+                session, account_id, folder_id, is_seen, since,
+                cursor_received_at, cursor_id, limit, direction=direction,
             )
-            if folder_id is not None:
-                stmt = stmt.where(Message.folder_id == folder_id)
-            if is_seen is not None:
-                stmt = stmt.where(Message.is_seen == is_seen)
-            if since is not None:
-                stmt = stmt.where(Message.received_at >= since)
-            if cursor_id is not None:
-                stmt = stmt.where(
-                    after_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
-                )
-            stmt = stmt.limit(limit + 1)
-            result = await session.execute(stmt)
-            all_msgs = list(result.scalars().all())
-            has_more = len(all_msgs) > limit
-            messages = [
-                MessageSummary(
-                    id=m.id,
-                    account_id=m.account_id,
-                    folder_id=m.folder_id,
-                    thread_id=m.thread_id,
-                    subject=m.subject,
-                    from_addr=m.from_addr,
-                    to_addrs=m.to_addrs,
-                    received_at=m.received_at,
-                    is_seen=m.is_seen,
-                    is_flagged=m.is_flagged,
-                    is_answered=m.is_answered,
-                    is_draft=m.is_draft,
-                    is_truncated=m.is_truncated,
-                    pending_sync=m.imap_uid is None,
-                    snippet=m.body_text[:120] if m.body_text else None,
-                    mirrored_at=m.created_at,
-                )
-                for m in all_msgs[:limit]
-            ]
+            overflow = len(all_msgs) > limit
+            page_msgs = all_msgs[:limit]
+            if direction == "newer":
+                page_msgs = list(reversed(page_msgs))
+            messages = [_flat_summary(m) for m in page_msgs]
+
+        # Only the direction actually explored by this fetch is a genuinely
+        # open question; the other stays at its safe default (nothing more)
+        # since an ordinary single-directional page never needs the server
+        # to answer it -- see the has_more_newer/prev_cursor field docs.
+        has_more = overflow if direction == "older" else False
+        has_more_newer = overflow if direction == "newer" else False
 
     next_cursor = str(messages[-1].id) if has_more and messages else None
-    return MessageListResponse(messages=messages, has_more=has_more, next_cursor=next_cursor)
+    prev_cursor = str(messages[0].id) if has_more_newer and messages else None
+    return MessageListResponse(
+        messages=messages, has_more=has_more, next_cursor=next_cursor,
+        has_more_newer=has_more_newer, prev_cursor=prev_cursor,
+    )
+
+
+async def _list_messages_around(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID | None,
+    threaded: bool,
+    is_seen: bool | None,
+    since: datetime | None,
+    around: uuid.UUID,
+    limit: int,
+) -> MessageListResponse:
+    """A page centred on `around` rather than the newest edge -- see
+    list_messages's own docstring for the threaded resolution and the
+    not-a-member answer."""
+    if threaded:
+        resolved = await _resolve_around_threaded(
+            session, account_id, folder_id, is_seen, since, around,
+        )
+    else:
+        flat_target = await _resolve_around_flat(
+            session, account_id, folder_id, is_seen, since, around,
+        )
+        resolved = (flat_target, 0, 0) if flat_target is not None else None
+
+    if resolved is None:
+        raise HTTPException(
+            status_code=404, detail=f"Message {around} is not a member of this list",
+        )
+    target, target_thread_count, target_unread_in_thread = resolved
+
+    # What's left after the target's own row is split roughly evenly; an
+    # odd remainder goes to the newer half, since catching up to a live
+    # tail is the direction most likely to matter again soon.
+    remaining = max(limit - 1, 0)
+    half_older = remaining // 2
+    half_newer = remaining - half_older
+
+    if threaded:
+        older_rows = await _list_messages_threaded(
+            session, account_id, folder_id, is_seen, since,
+            target.received_at, target.id, half_older, direction="older",
+        )
+        newer_rows = await _list_messages_threaded(
+            session, account_id, folder_id, is_seen, since,
+            target.received_at, target.id, half_newer, direction="newer",
+        )
+        has_more = len(older_rows) > half_older
+        has_more_newer = len(newer_rows) > half_newer
+        combined = [
+            *reversed(newer_rows[:half_newer]),
+            (target, target_thread_count, target_unread_in_thread),
+            *older_rows[:half_older],
+        ]
+        messages = [_threaded_summary(m, tc, uc) for m, tc, uc in combined]
+    else:
+        older_msgs = await _list_messages_flat_page(
+            session, account_id, folder_id, is_seen, since,
+            target.received_at, target.id, half_older, direction="older",
+        )
+        newer_msgs = await _list_messages_flat_page(
+            session, account_id, folder_id, is_seen, since,
+            target.received_at, target.id, half_newer, direction="newer",
+        )
+        has_more = len(older_msgs) > half_older
+        has_more_newer = len(newer_msgs) > half_newer
+        combined_msgs = [*reversed(newer_msgs[:half_newer]), target, *older_msgs[:half_older]]
+        messages = [_flat_summary(m) for m in combined_msgs]
+
+    next_cursor = str(messages[-1].id) if has_more and messages else None
+    prev_cursor = str(messages[0].id) if has_more_newer and messages else None
+    return MessageListResponse(
+        messages=messages, has_more=has_more, next_cursor=next_cursor,
+        has_more_newer=has_more_newer, prev_cursor=prev_cursor,
+    )
+
+
+async def _resolve_around_flat(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID | None,
+    is_seen: bool | None,
+    since: datetime | None,
+    around: uuid.UUID,
+) -> Message | None:
+    """The `around` target itself, if it matches this list's own filters --
+    None otherwise (it doesn't exist, isn't in this account, or is filtered
+    out), which the caller reports as "not a member of this list"."""
+    stmt = (
+        select(Message)
+        .options(*_LIST_DEFERRED_COLUMNS)
+        .where(
+            Message.id == around, Message.account_id == account_id,
+            Message.expunged_at.is_(None),
+        )
+    )
+    if folder_id is not None:
+        stmt = stmt.where(Message.folder_id == folder_id)
+    if is_seen is not None:
+        stmt = stmt.where(Message.is_seen == is_seen)
+    if since is not None:
+        stmt = stmt.where(Message.received_at >= since)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def _resolve_around_threaded(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID | None,
+    is_seen: bool | None,
+    since: datetime | None,
+    around: uuid.UUID,
+) -> tuple[Message, int, int] | None:
+    """Resolve `around` to the row that actually represents it in threaded
+    mode: the latest message in its own thread among those matching this
+    list's filters -- never `around` itself, which the list may not even
+    show (its thread's newest row, possibly a different message, is what
+    a threaded list renders). None means the thread has no member matching
+    the filters at all -- a thread existing is not enough, since every one
+    of its messages could still be filtered out (e.g. an unread-only view
+    where this thread is fully read)."""
+    thread_result = await session.execute(
+        select(Message.thread_id).where(
+            Message.id == around, Message.account_id == account_id,
+            Message.expunged_at.is_(None),
+        )
+    )
+    thread_id = thread_result.scalar_one_or_none()
+    if thread_id is None:
+        return None
+
+    filters = [
+        Message.account_id == account_id, Message.expunged_at.is_(None),
+        Message.thread_id == thread_id,
+    ]
+    if folder_id is not None:
+        filters.append(Message.folder_id == folder_id)
+    if is_seen is not None:
+        filters.append(Message.is_seen == is_seen)
+    if since is not None:
+        filters.append(Message.received_at >= since)
+
+    representative_result = await session.execute(
+        select(Message)
+        .options(*_LIST_DEFERRED_COLUMNS)
+        .where(*filters)
+        .order_by(desc(Message.received_at), desc(Message.id))
+        .limit(1)
+    )
+    representative = representative_result.scalar_one_or_none()
+    if representative is None:
+        return None
+
+    stats_result = await session.execute(
+        select(
+            func.count(Message.id),
+            func.count(case((Message.is_seen.is_(False), Message.id))),
+        ).where(*filters)
+    )
+    thread_count, unread_in_thread = stats_result.one()
+    return representative, thread_count, unread_in_thread
+
+
+async def _list_messages_flat_page(
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    folder_id: uuid.UUID | None,
+    is_seen: bool | None,
+    since: datetime | None,
+    cursor_received_at: datetime | None,
+    cursor_id: uuid.UUID | None,
+    limit: int,
+    *,
+    direction: Literal["older", "newer"] = "older",
+) -> list[Message]:
+    """
+    One page of ordinary (non-threaded) messages.
+
+    "older" (the default, and the only direction used before `around`
+    existed) is the ordinary continue-scrolling-down case, fetched newest
+    first. "newer" is its mirror, used to grow a window that opened away
+    from the newest edge back up toward it -- fetched oldest-of-the-newer
+    first (closest to the cursor), since a keyset predicate can only walk
+    forward from its cursor; the caller reverses it before rendering, since
+    the list itself is always newest-first regardless of which direction a
+    given page happened to be fetched in.
+    """
+    stmt = (
+        select(Message)
+        .options(*_LIST_DEFERRED_COLUMNS)
+        .where(Message.expunged_at.is_(None), Message.account_id == account_id)
+    )
+    if folder_id is not None:
+        stmt = stmt.where(Message.folder_id == folder_id)
+    if is_seen is not None:
+        stmt = stmt.where(Message.is_seen == is_seen)
+    if since is not None:
+        stmt = stmt.where(Message.received_at >= since)
+
+    if direction == "older":
+        stmt = stmt.order_by(desc(Message.received_at), desc(Message.id))
+        if cursor_id is not None:
+            stmt = stmt.where(
+                after_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
+            )
+    else:
+        stmt = stmt.order_by(Message.received_at.asc(), Message.id.asc())
+        if cursor_id is not None:
+            stmt = stmt.where(
+                before_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
+            )
+    stmt = stmt.limit(limit + 1)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def _list_messages_threaded(
@@ -226,6 +483,8 @@ async def _list_messages_threaded(
     cursor_received_at: datetime | None,
     cursor_id: uuid.UUID | None,
     limit: int,
+    *,
+    direction: Literal["older", "newer"] = "older",
 ) -> list[tuple[Message, int, int]]:
     """
     One row per thread_id: the latest message plus its thread's counts.
@@ -241,6 +500,10 @@ async def _list_messages_threaded(
     same folder filter as the rest of the list: a thread's count here means
     "messages in this thread within this folder", matching the per-folder
     browsing the list itself is scoped to.
+
+    direction: see _list_messages_flat_page's own docstring -- the same
+    "older" default / "newer" mirror, and the same reversal obligation on
+    the caller.
     """
     filters = [Message.account_id == account_id, Message.expunged_at.is_(None)]
     if folder_id is not None:
@@ -273,12 +536,19 @@ async def _list_messages_threaded(
     stmt = (
         select(latest, thread_stats.c.thread_count, thread_stats.c.unread_in_thread)
         .join(thread_stats, thread_stats.c.thread_id == latest.thread_id)
-        .order_by(desc(latest.received_at), desc(latest.id))
     )
-    if cursor_id is not None:
-        stmt = stmt.where(
-            after_cursor(latest.received_at, latest.id, cursor_received_at, cursor_id)
-        )
+    if direction == "older":
+        stmt = stmt.order_by(desc(latest.received_at), desc(latest.id))
+        if cursor_id is not None:
+            stmt = stmt.where(
+                after_cursor(latest.received_at, latest.id, cursor_received_at, cursor_id)
+            )
+    else:
+        stmt = stmt.order_by(latest.received_at.asc(), latest.id.asc())
+        if cursor_id is not None:
+            stmt = stmt.where(
+                before_cursor(latest.received_at, latest.id, cursor_received_at, cursor_id)
+            )
     stmt = stmt.limit(limit + 1)
 
     result = await session.execute(stmt)

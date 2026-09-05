@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.api.calendars import addressbooks_router, links_router
 from mail_verdict.api.calendars import router as calendars_router
 from mail_verdict.api.dav_accounts import router as dav_accounts_router
+from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.identities import router as identities_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
@@ -39,6 +40,7 @@ def client() -> Iterator[TestClient]:
 
 _DAV_ACCOUNTS_TARGET = "mail_verdict.api.dav_accounts.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
+_CALENDARS_EVENT_RING_TARGET = "mail_verdict.api.calendars.get_event_ring"
 _IDENTITIES_TARGET = "mail_verdict.api.identities.get_db_connection"
 
 
@@ -223,6 +225,53 @@ class TestCalendars:
             dav_account_id = await _seed_dav_account(session)
             await session.commit()
         return dav_account_id
+
+    def test_a_prefs_only_update_announces_itself_over_the_event_stream(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """calendar_prefs is MailVerdict-owned, so unlike a rename (a write
+        to PostIMAP's own dav_collections, already announced through
+        postimap_events) nothing tells a second open browser a calendar's
+        visibility just changed, unless this endpoint says so itself."""
+        dav_account_id = client.portal.call(self._seed, migrated_db)
+        event_ring = EventRing()
+
+        with (
+            patch(_CALENDARS_TARGET, return_value=migrated_db),
+            patch(_CALENDARS_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            created = client.post(
+                "/calendars",
+                json={
+                    "dav_account_id": str(dav_account_id), "display_name": "Work",
+                    "color": "#0082C9",
+                },
+            )
+            assert created.status_code == 201, created.text
+            calendar_id = created.json()["id"]
+            # replay_from(0, ...) reads as "gap too large" against a ring
+            # whose oldest retained id is 1 -- nothing has been added for
+            # this account yet, so a real baseline needs a seed event
+            # first, the same way a real client's own baseline is always
+            # an id it actually received rather than a bare 0.
+            client.portal.call(event_ring.add, dav_account_id, "test.seed", {})
+            seq_before = event_ring.get_latest_seq()
+
+            updated = client.patch(
+                f"/calendars/{calendar_id}", json={"is_visible": False},
+            )
+        assert updated.status_code == 200, updated.text
+
+        new_events = client.portal.call(
+            event_ring.replay_from, seq_before, str(dav_account_id),
+        )
+        matching = [e for e in new_events if e["event_type"] == "calendar.collection"]
+        assert len(matching) == 1, (
+            f"expected exactly one calendar.collection event, got {new_events!r}"
+        )
+        assert matching[0]["data"] == {
+            "dav_account_id": str(dav_account_id), "calendar_id": calendar_id,
+        }
 
     def test_delete_requires_confirmation(
         self, client: TestClient, migrated_db: DatabaseConnection,

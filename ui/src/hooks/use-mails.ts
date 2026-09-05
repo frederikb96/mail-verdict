@@ -60,8 +60,8 @@ export const UNDO_TOAST_LABELS: Record<string, string> = {
 };
 
 export const mailKeys = {
-  list: (accountId?: string, folderId?: string, threaded?: boolean) =>
-    ["mails", accountId, folderId, threaded ? "threaded" : "flat"].filter(
+  list: (accountId?: string, folderId?: string, threaded?: boolean, aroundId?: string) =>
+    ["mails", accountId, folderId, threaded ? "threaded" : "flat", aroundId].filter(
       Boolean,
     ) as string[],
   detail: (id: string) => ["mail", id] as const,
@@ -105,24 +105,58 @@ export function hasFewEnoughPagesToEagerlyRefetch(query: { state: { data?: unkno
   return (data?.pages?.length ?? 0) <= EAGER_REFETCH_MAX_PAGES;
 }
 
+/**
+ * One page's fetch shape -- opaque to the caller, threaded through
+ * TanStack's own pageParam rather than read from anywhere else, so a
+ * refetch (SSE-triggered or otherwise) always re-issues the exact
+ * request that produced the page it's replacing. "initial"/"around" only
+ * ever appears as the very first page's own param; every later page is
+ * "before" (continuing older) or "after" (continuing newer, only
+ * reachable once a page ever opened away from the newest edge).
+ */
+type MailListPageParam =
+  | { kind: "initial" }
+  | { kind: "around"; id: string }
+  | { kind: "before"; cursor: string }
+  | { kind: "after"; cursor: string };
+
+/**
+ * aroundId centres the *first* fetch of a fresh query key on that message
+ * instead of the newest edge -- see mail-list.tsx, which captures it once
+ * per list identity rather than re-reading it reactively, and folds it
+ * into the query key so a centred window is a genuinely different cached
+ * list from an edge-anchored one under the same account/folder.
+ */
 export function useMailList(
   accountId: string | null,
   folderId: string | null,
   threaded: boolean,
+  aroundId?: string | null,
 ) {
   return useInfiniteQuery({
-    queryKey: mailKeys.list(accountId ?? undefined, folderId ?? undefined, threaded),
-    queryFn: ({ pageParam }) =>
-      api.mails.list({
-        account_id: accountId!,
-        folder_id: folderId ?? undefined,
-        threaded,
-        before: pageParam ?? undefined,
-        limit: 50,
-      }),
-    initialPageParam: null as string | null,
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? lastPage.next_cursor : undefined,
+    queryKey: mailKeys.list(
+      accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
+    ),
+    queryFn: ({ pageParam }: { pageParam: MailListPageParam }) => {
+      const base = { account_id: accountId!, folder_id: folderId ?? undefined, threaded };
+      switch (pageParam.kind) {
+        case "around":
+          return api.mails.list({ ...base, around: pageParam.id, limit: 50 });
+        case "before":
+          return api.mails.list({ ...base, before: pageParam.cursor, limit: 50 });
+        case "after":
+          return api.mails.list({ ...base, after: pageParam.cursor, limit: 50 });
+        case "initial":
+          return api.mails.list({ ...base, limit: 50 });
+      }
+    },
+    initialPageParam: (
+      aroundId ? { kind: "around", id: aroundId } : { kind: "initial" }
+    ) as MailListPageParam,
+    getNextPageParam: (lastPage): MailListPageParam | undefined =>
+      lastPage.has_more ? { kind: "before", cursor: lastPage.next_cursor! } : undefined,
+    getPreviousPageParam: (firstPage): MailListPageParam | undefined =>
+      firstPage.has_more_newer ? { kind: "after", cursor: firstPage.prev_cursor! } : undefined,
     enabled: !!accountId && !!folderId,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
@@ -226,7 +260,15 @@ export function removeMailFromAllListCaches(qc: QueryClient, mailId: string) {
   );
 }
 
-/** Update a mail's properties in all infinite query caches. */
+/**
+ * Update a mail's properties in every infinite query cache that derives
+ * from it -- the per-account/folder list and the unified view's, which
+ * carries its own copy of the same fields under a different query key.
+ * Missing the unified branch here is the same bug as missing the thread
+ * cache below: three caches hold the same fact, and a patch that only
+ * reaches two of them leaves whichever screen reads the third showing
+ * stale data until the next unrelated refetch settles it.
+ */
 export function updateMailInCache(
   qc: QueryClient,
   mailId: string,
@@ -247,6 +289,47 @@ export function updateMailInCache(
       };
     },
   );
+  qc.setQueriesData<InfiniteData<{ messages: Array<{ id: string }> }>>(
+    { queryKey: ["unified", "mails"] },
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          messages: page.messages.map((m) =>
+            m.id === mailId ? { ...m, ...updates } : m,
+          ),
+        })),
+      };
+    },
+  );
+}
+
+/**
+ * Update a mail's properties in every ["thread", *] cache that currently
+ * holds it -- a thread is cached under the id it was first opened with,
+ * so the same message can appear in more than one such cache (or in
+ * none, if its thread was never opened). The reading pane's header
+ * controls read from this cache; the list row reads from the caches
+ * updateMailInCache above patches. Both describe the same fact and must
+ * change together, or the two disagree for a full round trip after any
+ * action -- this is what read as the mark-unread button "flipping back".
+ */
+export function updateMailInThreadCaches(
+  qc: QueryClient,
+  mailId: string,
+  updates: Partial<MessageSummary>,
+) {
+  qc.setQueriesData<ThreadResponse>({ queryKey: ["thread"] }, (old) => {
+    if (!old || !old.messages.some((m) => m.id === mailId)) return old;
+    return {
+      ...old,
+      messages: old.messages.map((m) =>
+        m.id === mailId ? { ...m, ...updates } : m,
+      ),
+    };
+  });
 }
 
 export function invalidateMailListsBounded(qc: QueryClient): void {
@@ -367,6 +450,7 @@ export function useMailAction() {
       if (!mailInfo) return { wasSelected, mailId };
 
       const prevMailQueries = qc.getQueriesData({ queryKey: ["mails"] });
+      const prevThreadQueries = qc.getQueriesData({ queryKey: ["thread"] });
       const prevFolders = qc.getQueryData(["folders", accountId]);
       const prevMailDetail = qc.getQueryData(["mail", mailId]);
 
@@ -379,39 +463,38 @@ export function useMailAction() {
           -1,
           mailInfo.isSeen ? 0 : -1,
         );
-      } else if (act === "flag") {
-        updateMailInCache(qc, mailId, { is_flagged: true });
-      } else if (act === "unflag") {
-        updateMailInCache(qc, mailId, { is_flagged: false });
-      } else if (act === "mark_read") {
-        updateMailInCache(qc, mailId, { is_seen: true });
-        if (!mailInfo.isSeen)
-          updateFolderCounts(qc, accountId, mailInfo.folderId, 0, -1);
-      } else if (act === "mark_unread") {
-        updateMailInCache(qc, mailId, { is_seen: false });
-        if (mailInfo.isSeen)
-          updateFolderCounts(qc, accountId, mailInfo.folderId, 0, 1);
-      } else if (act === "move") {
-        updateMailInCache(qc, mailId, { pending_sync: true });
-      }
-
-      // Update detail cache
-      if (prevMailDetail && !removesFromList) {
+      } else {
+        // Computed once and applied to every cache that derives from the
+        // same fact -- the list row, the reading pane's thread cache, and
+        // the single-message detail cache -- rather than three places each
+        // deciding "what changed" and drifting apart. Folder unread counts
+        // are the one derived value that isn't a plain field copy, so they
+        // stay their own branch below.
         const updates: Partial<MessageSummary> = {};
         if (act === "flag") updates.is_flagged = true;
         if (act === "unflag") updates.is_flagged = false;
         if (act === "mark_read") updates.is_seen = true;
         if (act === "mark_unread") updates.is_seen = false;
         if (act === "move") updates.pending_sync = true;
-        qc.setQueryData(["mail", mailId], {
-          ...(prevMailDetail as Record<string, unknown>),
-          ...updates,
-        });
+
+        updateMailInCache(qc, mailId, updates);
+        updateMailInThreadCaches(qc, mailId, updates);
+        if (prevMailDetail) {
+          qc.setQueryData(["mail", mailId], {
+            ...(prevMailDetail as Record<string, unknown>),
+            ...updates,
+          });
+        }
+
+        if (act === "mark_read" && !mailInfo.isSeen)
+          updateFolderCounts(qc, accountId, mailInfo.folderId, 0, -1);
+        if (act === "mark_unread" && mailInfo.isSeen)
+          updateFolderCounts(qc, accountId, mailInfo.folderId, 0, 1);
       }
 
       return {
-        prevMailQueries, prevFolders, prevMailDetail, accountId, mailId, wasSelected,
-        originalFolderId: mailInfo.folderId,
+        prevMailQueries, prevThreadQueries, prevFolders, prevMailDetail, accountId, mailId,
+        wasSelected, originalFolderId: mailInfo.folderId,
       };
     },
 
@@ -436,6 +519,13 @@ export function useMailAction() {
       if (!ctx) return;
       if (ctx.prevMailQueries) {
         for (const [key, data] of ctx.prevMailQueries as Array<
+          [readonly unknown[], unknown]
+        >) {
+          qc.setQueryData(key, data);
+        }
+      }
+      if (ctx.prevThreadQueries) {
+        for (const [key, data] of ctx.prevThreadQueries as Array<
           [readonly unknown[], unknown]
         >) {
           qc.setQueryData(key, data);

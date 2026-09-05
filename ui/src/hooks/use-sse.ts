@@ -11,6 +11,7 @@ import { useEffect, useRef } from "react";
 import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
+import { mailArrivedAtom } from "@/lib/atoms";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import {
   invalidateMailListsBounded,
@@ -59,6 +60,7 @@ const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" |
 
 export function useSSE(accountId?: string) {
   const setConnectionState = useSetAtom(sseConnectionStateAtom);
+  const setMailArrived = useSetAtom(mailArrivedAtom);
   const queryClient = useQueryClient();
   const { push: pushToast } = useToast();
   const lastEventIdRef = useRef<string | null>(null);
@@ -172,6 +174,9 @@ export function useSSE(accountId?: string) {
           const data: SSEEvent = JSON.parse(e.data);
           pendingNewOrMovedRef.current = true;
           if (data.folder_id) pendingFolderCountsRef.current = true;
+          if (data.id && data.account_id && data.folder_id) {
+            setMailArrived({ accountId: data.account_id, folderId: data.folder_id, messageId: data.id });
+          }
         } catch {
           // Ignore
         }
@@ -233,8 +238,15 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           if (data.message_id) {
+            // The single-message detail cache and the reading pane's own
+            // thread cache both carry a copy of the verdict -- the header's
+            // thumb-up/thumb-down reads from the latter, so missing it here
+            // is the same stale-header shape mark-read/unread already had.
             queryClient.invalidateQueries({
               queryKey: ["mail", data.message_id],
+            });
+            queryClient.invalidateQueries({
+              queryKey: ["thread", data.message_id],
             });
           }
         } catch {
@@ -355,5 +367,5 @@ export function useSSE(accountId?: string) {
       }
       setConnectionState("disconnected");
     };
-  }, [accountId, setConnectionState, queryClient, pushToast]);
+  }, [accountId, setConnectionState, setMailArrived, queryClient, pushToast]);
 }

@@ -9,7 +9,11 @@ nonzero undo window is therefore composed and written here first; the
 periodic worker below claims a due, uncancelled row and performs the real
 insert_outbox() write in the same transaction that removes it from this
 table, so a row is never simultaneously live in outbox and still
-cancellable.
+cancellable. The worker passes this row's own id into insert_outbox() as
+the outbox row's id, so a caller who accepted the send at staging time can
+keep resolving it under that same id once it lands in outbox -- see
+api/outbox.py's list_outbox(), which lists a still-staged row alongside
+real outbox rows for exactly this reason.
 """
 
 from __future__ import annotations
@@ -192,6 +196,7 @@ async def _process_due_sends(db: DatabaseConnection) -> None:
             try:
                 await insert_outbox(
                     session,
+                    id=row.id,
                     account_id=row.account_id,
                     kind="send",
                     from_addr=row.from_addr,

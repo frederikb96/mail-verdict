@@ -73,7 +73,7 @@ async def _paginate_all(account_id: uuid.UUID) -> list[uuid.UUID]:
     for _ in range(20):  # hard cap: a bug here can otherwise loop forever
         page = await list_messages(
             account_id=account_id, folder_id=None, threaded=False,
-            is_seen=None, since=None, before=cursor, limit=1,
+            is_seen=None, since=None, before=cursor, after=None, around=None, limit=1,
         )
         seen.extend(uuid.UUID(m.id) if isinstance(m.id, str) else m.id for m in page.messages)
         if not page.has_more:

@@ -82,6 +82,47 @@ def after_cursor(
     )
 
 
+def before_cursor(
+    received_at_col: InstrumentedAttribute[datetime | None],
+    id_col: InstrumentedAttribute[uuid.UUID],
+    cursor_received_at: datetime | None,
+    cursor_id: uuid.UUID,
+) -> ColumnElement[bool]:
+    """
+    The mirror of after_cursor: "every row before this cursor" in an
+    `ORDER BY received_at DESC, id DESC` list with Postgres's default
+    NULLS FIRST placement for DESC -- i.e. every row *newer* than the
+    cursor row. Paging a window centred on a message (rather than always
+    starting at the newest edge) needs to grow in this direction too, to
+    reach whatever is newer than where it opened; nothing before this
+    needed it, since ordinary pagination only ever continues older from
+    the previous page's own last row.
+
+    Args:
+        received_at_col: The nullable timestamp column driving the order
+        id_col: The tiebreaker column, unique and never null
+        cursor_received_at: received_at of the cursor row
+        cursor_id: id of the cursor row
+
+    Returns:
+        A predicate correct whether or not the cursor row had a NULL
+        received_at, and whether or not any earlier row does either.
+    """
+    if cursor_received_at is None:
+        # The cursor row is itself in the NULL group, which sorts first --
+        # nothing can be "before" it except the rest of that same group,
+        # ordered by a larger id first.
+        return and_(received_at_col.is_(None), id_col > cursor_id)
+    # The NULL group sorts entirely before any dated row, so it is always
+    # "before" a dated cursor; on top of that, the ordinary date/id
+    # comparison for two dated rows.
+    return or_(
+        received_at_col.is_(None),
+        received_at_col > cursor_received_at,
+        and_(received_at_col == cursor_received_at, id_col > cursor_id),
+    )
+
+
 def after_tier_cursor(
     tier_col: ColumnElement[int],
     received_at_col: InstrumentedAttribute[datetime | None],

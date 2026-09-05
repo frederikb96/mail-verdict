@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.outbox.pending import _process_due_sends
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 _OUTBOX_TARGET = "mail_verdict.api.outbox.get_db_connection"
@@ -141,6 +142,51 @@ class TestUndoSendWindow:
             second = client.post(f"/outbox/pending/{created['id']}/cancel")
         assert first.status_code == 204
         assert second.status_code == 404
+
+    def test_a_staged_send_is_followable_at_get_outbox_under_the_same_id(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The identity returned at acceptance stays resolvable at GET
+        /outbox -- the single place a caller who never learned about the
+        undo-send window at all can still find and follow a send -- and
+        turns into an ordinary status once the window passes, still under
+        that same id."""
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, -5.0)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": ["them@example.com"], "subject": "hi", "body_text": "hi",
+                },
+            ).json()
+
+            staged = client.get(f"/outbox?account_id={account_id}").json()
+            assert [row["id"] for row in staged] == [created["id"]]
+            assert staged[0]["status"] == "pending"
+            assert staged[0]["subject"] == "hi"
+
+            client.portal.call(_process_due_sends, migrated_db)
+
+            delivered = client.get(f"/outbox?account_id={account_id}").json()
+        assert [row["id"] for row in delivered] == [created["id"]]
+        assert delivered[0]["status"] == "pending"  # PostIMAP's own starting status
+
+    def test_filtering_by_a_status_other_than_pending_excludes_a_staged_send(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": ["them@example.com"], "subject": "hi", "body_text": "hi",
+                },
+            )
+            resp = client.get(f"/outbox?account_id={account_id}&status=dead")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == []
 
     def test_a_zero_second_window_sends_immediately_as_before(
         self, client: TestClient, migrated_db: DatabaseConnection,

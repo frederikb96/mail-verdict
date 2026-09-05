@@ -124,6 +124,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A Nextcloud address-book group vCard no longer appears in the contacts list or search results
   looking like a person with no address
 
+### Live updates
+
+- A send now stays resolvable under the same id from the moment it is accepted, whether or not it
+  spends a few seconds staged for the undo window first: `GET /outbox` lists a still-staged send
+  alongside real outbox rows (`status: "pending"`), and the row that eventually reaches PostIMAP's
+  outbox table carries that same id rather than a new one.
+- Marking a message unread from the reading pane's own header no longer looks like it flipped
+  straight back to read: the header button and the list row beside it now update from the same
+  optimistic change instead of the header waiting on a slower cache that only settled a full round
+  trip later. The same fix reaches the unified view, whose own list previously kept showing a
+  message's old flag/read state after any action taken from a per-account view.
+- A spam verdict -- the model's own classification, or a correction submitted through the thumbs
+  up/down -- now announces itself live: the reading pane's verdict badge in a second open browser
+  updates without a reload. Previously the event this depends on was never actually emitted for
+  either source, only ever wired to be received.
+- Changing a calendar's colour, visibility or linked identity now reaches a second open browser
+  live, the same as renaming it already did -- that local preference lives in a table of this
+  application's own, which nothing had ever announced a change to.
+- The message list endpoint gained a new `around` parameter: a page centred on a given message,
+  half newer and half older, with a cursor in both directions -- the server capability the
+  "open a search result and land on it" flow needs, since a hit far down a large folder is
+  simply not in the window an ordinary newest-first page fetches.
+- Opening a search result now lands the mail list on that message in its own upper third,
+  wherever it sits in the folder -- previously it selected the message but only ever loaded the
+  newest page, so a hit from months back was simply never reached. A window opened this way that
+  isn't at the newest edge grows in either direction as you scroll, and a live arrival while it's
+  open surfaces as a "N new -- jump to latest" banner rather than silently reshaping the window.
+- The mail list gained a quick filter (subject, sender, recipient) scoped to the open folder,
+  right beside "Group by conversation" -- the same search mechanism the search page uses, so a
+  filtered row carries every ordinary action (star, archive, spam, trash, mark read/unread), not
+  a read-only preview. Clearing it restores the folder exactly as it was.
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

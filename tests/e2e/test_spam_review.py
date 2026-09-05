@@ -16,10 +16,11 @@ import pytest
 from sqlalchemy import select
 from starlette.testclient import TestClient
 
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Message, VerdictSource
 from mail_verdict.database.repository import VerdictRepository
-from tests.e2e.helpers import unique_email, wait_for_account_active, wait_for_folder
+from tests.e2e.helpers import unique_email, wait_for, wait_for_account_active, wait_for_folder
 from tests.setup.containers import DOVECOT_ALIAS, DOVECOT_IMAP_PORT, DOVECOT_PASSWORD
 from tests.setup.mail_delivery import build_eml, deliver_message
 
@@ -217,3 +218,69 @@ class TestSpamReview:
         )
 
         assert str(message_id) not in _spam_review_ids(app_client)
+
+    @pytest.mark.asyncio
+    async def test_feedback_announces_itself_over_the_event_stream(
+        self,
+        app_client: TestClient,
+        synced_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        dovecot_endpoint: tuple[str, int, int],
+        db: DatabaseConnection,
+    ) -> None:
+        """A correction changes what every viewer of the message sees, not
+        only the browser that submitted it -- proven here by reading the
+        event straight out of the ring buffer rather than through a
+        browser's own EventSource, which is what actually carries it to a
+        second viewer."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        account_id = uuid.UUID(synced_account["id"])
+        subject = f"Feedback SSE seed {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=synced_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=synced_account["email"],
+        )
+        resp = app_client.post(f"/api/accounts/{synced_account['id']}/sync")
+        assert resp.status_code == 200, resp.text
+
+        def _find() -> dict[str, Any] | None:
+            for m in _list_inbox(app_client, synced_account["id"], inbox_folder):
+                if m["subject"] == subject:
+                    return m
+            return None
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+        message_id = uuid.UUID(target["id"])
+
+        await VerdictRepository(db).create_verdict(
+            mail_id=message_id, account_id=account_id, is_spam=True, source=VerdictSource.AI,
+        )
+
+        event_ring = get_event_ring()
+        assert event_ring is not None
+        # The global sequence counter is shared across every account this
+        # whole session has touched, so "everything since 0" reads as a
+        # gap too large to replay once other tests have pushed enough
+        # events to evict it from the ring -- snapshot the current seq
+        # instead, the same baseline a freshly connecting client gets.
+        seq_before = event_ring.get_latest_seq()
+
+        resp = app_client.post(
+            f"/api/mails/{message_id}/feedback",
+            params={"account_id": str(account_id)},
+            json={"is_spam": False},
+        )
+        assert resp.status_code == 200, resp.text
+
+        new_events = await event_ring.replay_from(seq_before, str(account_id))
+        matching = [
+            e for e in new_events
+            if e["event_type"] == "verdict.issued" and e["data"]["message_id"] == str(message_id)
+        ]
+        assert len(matching) == 1, f"expected exactly one verdict.issued event, got {new_events!r}"
+        assert matching[0]["data"]["is_spam"] is False
+        assert matching[0]["data"]["source"] == "user_feedback"

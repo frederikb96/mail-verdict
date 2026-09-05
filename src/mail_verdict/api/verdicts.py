@@ -17,6 +17,7 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import aliased
 
 from mail_verdict.api.deps import get_message_repo, get_verdict_repo
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.mails import _LIST_DEFERRED_COLUMNS
 from mail_verdict.api.schemas import (
     FeedbackRequest,
@@ -213,6 +214,20 @@ async def submit_feedback(
         ok = await feedback.handle_moved_to_spam(mail_id, account_id)
     else:
         ok = await feedback.handle_moved_from_spam(mail_id, account_id)
+
+    # A correction changes what every viewer of this message should see
+    # (the verdict badge, the reasoning), not only the browser that
+    # submitted it -- the same event the AI pipeline's own verdict fires,
+    # so a listener never needs to tell the two sources apart.
+    event_ring = get_event_ring()
+    if ok and event_ring is not None:
+        await event_ring.add(
+            account_id, "verdict.issued",
+            {
+                "message_id": str(mail_id), "is_spam": request.is_spam,
+                "source": "user_feedback", "account_id": str(account_id),
+            },
+        )
 
     return FeedbackResponse(
         success=ok,

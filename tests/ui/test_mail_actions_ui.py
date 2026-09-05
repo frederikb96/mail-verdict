@@ -28,6 +28,7 @@ open the contact editor). Both now pass.
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -240,6 +241,98 @@ class TestMailActionsUi:
 
         detail = api_client.get(f"/api/messages/{target['id']}").json()
         assert detail["is_seen"] is True
+
+    def test_mark_unread_from_the_header_agrees_with_the_row_immediately(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The reading pane's own mark-unread button used to derive its
+        label from a slower cache than the row beside it, so right after
+        clicking it the header still read 'Mark as unread' -- as if the
+        click had done nothing -- for however long the request took to
+        settle. The action's response is delayed here specifically to
+        prove the header updates before that response ever lands, not
+        because of it. Reopening the message afterwards marks it read
+        again, since the unread override only holds while it stays open."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"Unread header test {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"]):
+                if m["subject"] == subject:
+                    return m
+            return None
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+
+        toolbar = page.get_by_role("toolbar", name="Message actions")
+        header_button = toolbar.get_by_title("Mark as unread")
+        expect(header_button).to_be_visible(timeout=15_000)  # auto-read on open
+        expect(row.locator(".bg-blue-500")).to_have_count(0, timeout=10_000)
+
+        def _delay_action(route: Any) -> None:
+            time.sleep(2.0)
+            route.continue_()
+
+        page.route("**/api/messages/*/action", _delay_action)
+        try:
+            header_button.click()
+            # Both derive from the same fact and must agree the instant the
+            # click's own optimistic update applies -- well inside the 2s
+            # the action's response is being held back, so neither can be
+            # passing because the request already settled.
+            expect(toolbar.get_by_title("Mark as read")).to_be_visible(timeout=1_000)
+            expect(row.locator(".bg-blue-500")).to_be_visible(timeout=1_000)
+        finally:
+            page.unroute("**/api/messages/*/action", _delay_action)
+
+        # Give the delayed request room to actually settle before moving on.
+        expect(toolbar.get_by_title("Mark as read")).to_be_visible(timeout=5_000)
+        detail = api_client.get(f"/api/messages/{target['id']}").json()
+        assert detail["is_seen"] is False
+
+        # Closing and reopening the message is a fresh look at it -- the
+        # explicit-unread override only protects it while it stays open.
+        # Opening a different message first is what "closing" means here:
+        # the reading pane is never unmounted, only re-pointed.
+        other = next(
+            m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+            if m["id"] != target["id"]
+        )
+        api_client.post(f"/api/messages/{other['id']}/action", json={"action": "mark_read"})
+        mail_row(page, other["id"]).click()
+        # Already seen, and opening it triggers no mark_read of its own --
+        # the header settles on "Mark as unread" with nothing further to
+        # wait for, proving the reading pane actually re-pointed at it.
+        expect(toolbar.get_by_title("Mark as unread")).to_be_visible(timeout=15_000)
+
+        mail_row(page, target["id"]).click()
+        expect(toolbar.get_by_title("Mark as unread")).to_be_visible(timeout=15_000)
+
+        def _detail_is_seen() -> bool | None:
+            reopened = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if reopened["is_seen"] else None
+
+        wait_for(_detail_is_seen, description=f"{target['id']} marked read again on reopen")
 
     def test_undo_after_trash_restores_the_row(
         self,
@@ -594,13 +687,18 @@ class TestMailActionsUi:
 
         wait_for(_moved, timeout_s=30.0, description="Dragged row lands in Trash")
 
-    def test_compose_and_send_shows_a_toast_and_reaches_mailpit(
+    def test_compose_and_send_shows_the_undo_banner_and_reaches_mailpit(
         self,
         page: Page,
         app_server: str,
         mailpit_http_url: str,
         ui_account: dict[str, Any],
     ) -> None:
+        """A send at the default undo window is reported through the undo
+        banner rather than a toast -- the two would say the same thing
+        twice, and the banner is where cancelling it lives. Waiting for
+        Mailpit's own delivery already tolerates however long that window
+        takes to pass."""
         subject = f"UI send {uuid.uuid4()}"
 
         page.goto(app_server)
@@ -620,7 +718,9 @@ class TestMailActionsUi:
         )
         dialog.get_by_role("button", name="Send", exact=True).click()
 
-        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+        expect(page.get_by_text(re.compile(r"^Sending in \d+s\.\.\.$"))).to_be_visible(
+            timeout=10_000,
+        )
         wait_for_mailpit_message(mailpit_http_url, subject)
 
     def test_draft_save_reopen_send_leaves_drafts_empty(
@@ -670,7 +770,12 @@ class TestMailActionsUi:
         expect(page.get_by_role("textbox", name="Subject")).to_have_value(subject)
 
         page.get_by_role("button", name="Send", exact=True).click()
-        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+        # Sending a draft is still a send, so it stages the same as any
+        # other -- the undo banner, not the "Message queued" toast, is
+        # what actually appears here.
+        expect(page.get_by_text(re.compile(r"^Sending in \d+s\.\.\.$"))).to_be_visible(
+            timeout=10_000,
+        )
 
         _trigger_sync(api_client, ui_account["id"])
 
@@ -1531,6 +1636,69 @@ class TestMailActionsUi:
         expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
         page.get_by_role("switch", name="Group by conversation").click()
         expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
+
+    def test_the_in_folder_filter_renders_actionable_rows_and_clears_cleanly(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The quick filter is a second caller of the search mechanism, not
+        a new one -- proven here by taking a real action (star) on a
+        filtered row and confirming it reached the server the same way an
+        ordinary row's own star button does."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        marker = f"filtertest{uuid.uuid4().hex[:8]}"
+        subject = f"Quick filter {marker}"
+        message = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"]):
+                if m["subject"] == subject:
+                    return m
+            return None
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        # An ordinary, non-matching row is visible before filtering --
+        # this is what proves the filter actually narrows the folder
+        # rather than the folder merely happening to hold one message.
+        other = next(
+            m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+            if m["id"] != target["id"]
+        )
+        expect(mail_row(page, other["id"])).to_be_visible(timeout=15_000)
+
+        filter_input = page.get_by_placeholder("Filter this folder…")
+        filter_input.fill(marker)
+
+        target_row = mail_row(page, target["id"])
+        expect(target_row).to_be_visible(timeout=15_000)
+        expect(mail_row(page, other["id"])).to_have_count(0)
+
+        target_row.hover()
+        target_row.get_by_title("Star").click()
+
+        def _flagged() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["is_flagged"] else None
+
+        wait_for(_flagged, description=f"{target['id']} starred from a filtered row")
+
+        filter_input.fill("")
+        expect(mail_row(page, other["id"])).to_be_visible(timeout=15_000)
 
 
 def _rect(locator: Any) -> dict[str, float]:

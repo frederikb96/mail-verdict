@@ -16,10 +16,11 @@ mirror, which is what keeps it simple.
 
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
   list that stays smooth on large mailboxes, and unified views across accounts. Folders can be
-  created and deleted (renaming and re-nesting are an IMAP limitation, not implemented). Opening a
-  reply collapses the quoted original behind a "Show quoted text" control, and ctrl+F (or a
-  control beside the message's other icons) searches and highlights matches inside the open
-  message, which the browser's own find cannot reach.
+  created and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick
+  filter narrows the open folder by subject, sender or recipient, its rows carrying the same
+  actions an ordinary row does. Opening a reply collapses the quoted original behind a "Show
+  quoted text" control, and ctrl+F (or a control beside the message's other icons) searches and
+  highlights matches inside the open message, which the browser's own find cannot reach.
 - **Compose** — a rich-text editor with Markdown input rules, tables, checklists and pasted
   images, send, reply, reply-all, forward and drafts, with attachments. The panel resizes by
   dragging its top edge or expanding to fill the window. A reply or forward embeds the original as
@@ -44,7 +45,9 @@ mirror, which is what keeps it simple.
   pick, ranked by where a match lands and newest first within that, with a typo-tolerant fallback
   for a query the primary match misses entirely; plus semantic search over an embedding of every
   message, with a Loose/Balanced/Strict control, for finding mail by meaning rather than exact
-  words. Both remember the folder scope you chose.
+  words. Both remember the folder scope you chose. Opening a result lands on that message in its
+  folder wherever it sits, however far back, rather than only reaching whatever the newest page
+  happens to include.
 - **Calendars and contacts** — CalDAV and CardDAV servers mirrored the same way mail is: calendars
   with recurring events, RSVPs and per-occurrence editing, and address books with compose
   autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply

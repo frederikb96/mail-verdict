@@ -23,6 +23,38 @@ export const isUnifiedViewAtom = atom<boolean>((get) => {
 /** Currently selected mail ID */
 export const selectedMailIdAtom = atom<string | null>(null);
 
+/**
+ * A one-shot signal: the message a fresh mail-list view should centre its
+ * first page on, rather than starting at the newest edge -- set alongside
+ * selectedMailIdAtom when a message is opened from somewhere that doesn't
+ * know its place in the ordinary newest-first window (search, currently
+ * the only such entry point). mail-list.tsx captures it once per list
+ * identity and clears it immediately after, so it never survives past
+ * the list it was meant for.
+ *
+ * threadId travels with it for the reveal step: in threaded mode the
+ * server resolves `around` to the target's *thread's* representative
+ * row, a different id from the message itself, so finding which loaded
+ * row to scroll to needs the thread id, not the message id, to match on.
+ */
+export const pendingAroundMailIdAtom = atom<{ id: string; threadId: string } | null>(null);
+
+/**
+ * The most recent mail.new SSE arrival, by account/folder -- not a log,
+ * just the latest one, since a mail-list watching for "is there something
+ * newer than my own window" only needs to notice that the value changed,
+ * not replay every arrival it missed while unmounted. A window that is
+ * not at the newest edge (see find.md's non-tail obligations) must not
+ * append a live arrival into itself -- this is what lets it count how
+ * many it is missing instead, without holding a second subscription to
+ * the event stream.
+ */
+export const mailArrivedAtom = atom<{
+  accountId: string;
+  folderId: string;
+  messageId: string;
+} | null>(null);
+
 /** The thread id a reply/forward is currently in progress against, while
  * that reply has unsaved content -- null otherwise. useMailAction reads
  * this to decide whether a "leaves folder" action (trash, archive, move,
