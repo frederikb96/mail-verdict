@@ -97,6 +97,12 @@ export function MailList() {
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
 
+  // The same four values decide which list this is, for a selection's own
+  // scope below and for `VList`'s own identity further down: a change to
+  // any of them is a genuinely different list, not the same one showing
+  // different rows.
+  const listIdentity = `${accountId}:${folderId}:${isUnifiedView}:${selectedUnifiedFolder}:${threaded}`;
+
   // A selection is scoped to the list it was made in (see
   // effectiveSelectionAtom): a change to any of these four values is
   // already a scope mismatch, so the guard alone empties it for a folder
@@ -173,6 +179,17 @@ export function MailList() {
   //   snapshot-before/correct-after shape the scrolling skill uses for a
   //   prepend, generalised to a change anywhere above the reader rather
   //   than only at the top.
+  //
+  // Both assume the reader is still looking at the *same* list, one whose
+  // rows merely changed under them -- `nearestSurvivor` below finds
+  // nothing and leaves scrollOffset alone otherwise, since a genuinely
+  // different list shares no row ids with the old one to search for. A
+  // switch to a different list entirely is `VList`'s own `key` further
+  // down: without it, virtua carries its previous scrollOffset over to a
+  // shorter list's smaller scroll range unchanged, and only clamps it to
+  // fit -- landing partway down a list the reader never scrolled, at
+  // whatever offset the arithmetic of the two lists' heights happens to
+  // produce, rather than at the top.
   const prevDataRef = useRef(data);
   const prevMailIdsRef = useRef<string[]>([]);
   const [shiftForPrepend, setShiftForPrepend] = useState(false);
@@ -341,6 +358,7 @@ export function MailList() {
         </div>
       ) : (
         <VList
+          key={listIdentity}
           ref={vlistRef}
           className="flex-1"
           style={{ height: "100%" }}
