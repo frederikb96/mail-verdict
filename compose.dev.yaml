@@ -129,7 +129,7 @@ services:
   # seed a calendar and an address book before any dav_account exists,
   # the same role LMTP delivery plays for mail.
   radicale:
-    image: docker.io/tomsquest/docker-radicale:3.7.6.0
+    image: docker.io/tomsquest/docker-radicale:3.7.8.0
     container_name: mv-radicale-dev
     ports:
       - "15232:5232"
