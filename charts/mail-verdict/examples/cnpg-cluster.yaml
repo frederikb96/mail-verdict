@@ -87,3 +87,14 @@ stringData:
 # extension itself is not yet created in this database:
 #
 #   CREATE EXTENSION IF NOT EXISTS vector;
+#
+# And once, as a superuser, for fuzzy search:
+#
+#   CREATE EXTENSION IF NOT EXISTS pg_trgm;
+#
+# pg_trgm is trusted and ships with the stock image, so a role holding plain
+# CREATE on the database can install it itself and this step is unnecessary.
+# The role this chart connects as does not need that privilege for anything
+# else, so installing the extension once as a superuser is the narrower of
+# the two ways to satisfy the migration. Without either, MailVerdict's
+# migration fails at startup and the pod restarts rather than serving.

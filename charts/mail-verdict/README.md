@@ -33,9 +33,11 @@ create the database or install PostIMAP for you:
 3. **This chart**, pointed at the same database with MailVerdict's own role. Its own Alembic
    migrations run automatically on first start and create MailVerdict's owned tables -- there's no
    separate migration Job or Helm hook. One of those migrations requires the `vector` extension
-   (semantic search); see [`examples/cnpg-cluster.yaml`](examples/cnpg-cluster.yaml) for how to get
-   it onto a CNPG-managed database, since it is not a trusted extension and the stock PostgreSQL
-   image does not ship it.
+   (semantic search) and another the `pg_trgm` extension (fuzzy search); see
+   [`examples/cnpg-cluster.yaml`](examples/cnpg-cluster.yaml) for how to get both onto a
+   CNPG-managed database. `vector` is not a trusted extension and the stock PostgreSQL image does
+   not ship it at all; `pg_trgm` is trusted and does ship, but still needs either plain `CREATE` on
+   the database for the role this chart connects as, or one superuser `CREATE EXTENSION`.
 
 **PostIMAP is not a subchart.** It has its own release cadence, its own values surface, and its
 own chart; bundling it here would duplicate both and drift out of sync. See

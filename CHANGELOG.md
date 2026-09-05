@@ -90,6 +90,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A message can be switched to a dark canvas from a toggle in its header, remembered per message
   across reopening it
 
+- The chart declares a `startupProbe`. Migrations run to completion before the application
+  process starts, so nothing answers any port while one is in progress; a migration outlasting the
+  liveness budget was killed and restarted from the beginning rather than converging
+
 ### Changed
 
 - A contact carries a list of websites rather than a single one. `url` on a contact is now `urls`

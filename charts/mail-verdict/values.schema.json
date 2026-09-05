@@ -111,6 +111,9 @@
     "resources": {
       "type": "object"
     },
+    "startupProbe": {
+      "type": "object"
+    },
     "livenessProbe": {
       "type": "object"
     },

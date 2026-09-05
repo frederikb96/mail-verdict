@@ -81,6 +81,21 @@ resources:
     # the PG LISTEN/NOTIFY consumers and the spam pipeline under load.
     # cpu: 1000m
 
+startupProbe:
+  # -- Alembic runs to completion before the application process starts, so
+  # nothing answers any port while a migration is in progress. A migration
+  # that outlasts the liveness budget would otherwise be killed and restarted
+  # from the beginning, looping instead of converging. The failure budget is
+  # deliberately generous: it bounds how long a migration may take on a large
+  # mailbox, not how quickly a healthy pod answers, and polling a socket that
+  # answers instantly costs nothing once it is up.
+  httpGet:
+    path: /
+    port: liveness
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 60
+
 livenessProbe:
   # -- Answered by a background socket on its own thread and its own port
   # (`livenessPort` above), independent of the app's event loop -- a
@@ -95,12 +110,14 @@ livenessProbe:
   failureThreshold: 3
 
 readinessProbe:
-  # -- Checks if PostIMAP's contract version matches what this image was
-  # built against. Returns the cached contract status without blocking on
-  # database pool access, so a pod under heavy load is never removed from
-  # the service because the readiness probe timed out. If the contract check
-  # fails at startup, the pod is unready; once ready, it remains ready even
-  # through transient database issues.
+  # -- Checks PostIMAP's contract version against what this image was built
+  # against, and that the database answers. Both are bounded by
+  # `config.server.readiness_timeout_seconds`, and a timeout counts as busy
+  # rather than broken -- a loaded pod stays in the Service, which matters at
+  # one replica. Only an explicit failure takes it out: a database that
+  # errors, or was never initialised, is a pod that can serve nothing but
+  # 500s. Liveness is a separate socket on its own thread, so a slow answer
+  # here can never get the process restarted.
   enabled: true
   path: /api/health
   initialDelaySeconds: 10
