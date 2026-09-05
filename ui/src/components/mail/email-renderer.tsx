@@ -15,42 +15,113 @@ interface EmailRendererProps {
    * toggle is not offered without one, since there is nothing to key the
    * memory on. */
   messageId?: string;
+  /** Highlights every occurrence of this text in the rendered message --
+   * the reading pane's own in-message find, since the browser's own find
+   * cannot reach content inside this component's shadow root. Absent or
+   * blank clears any existing highlight. */
+  searchQuery?: string;
+  /** Which occurrence (0-indexed, in document order) carries the active
+   * highlight and is scrolled into view; ignored without a searchQuery. */
+  activeMatchIndex?: number;
+  /** Called after (re)computing matches for searchQuery, with the total
+   * found -- what a find bar's own "n of m" and step buttons need. */
+  onMatchCountChange?: (count: number) => void;
 }
 
 /** Which canvas a message body renders on -- see pickCanvas below. */
 type Canvas = "light" | "dark";
 
+/** A stylesheet's own dark-mode media query, or a color-scheme declaration
+ * naming dark support -- both live in a message's own (now sanitised
+ * rather than discarded) `<style>` block, or occasionally in an inline
+ * style on the document's root element. A plain substring search over the
+ * already-sanitised HTML is enough: this is a display default, not a
+ * security decision, and the manual toggle always has the final say
+ * regardless of what it returns. */
+const DARK_MODE_MEDIA_RE = /@media[^{]*prefers-color-scheme\s*:\s*dark/i;
+const COLOR_SCHEME_DARK_RE = /color-scheme\s*:[^;"'}]*\bdark\b/i;
+
+function declaresDarkModeSupport(html: string): boolean {
+  return DARK_MODE_MEDIA_RE.test(html) || COLOR_SCHEME_DARK_RE.test(html);
+}
+
+/** The two ways a root-level inline colour declaration goes wrong on a
+ * canvas the sender did not choose -- see isDarkSafeMessage below. */
+interface RootColorDeclaration {
+  color: boolean;
+  background: boolean;
+}
+
+/** How many levels into the document a colour declaration still counts as
+ * "the message's own colour scheme" rather than an isolated inline style
+ * on one link or one span deep inside it -- a template sets its overall
+ * background and text colour on the outer wrapper table or the body
+ * itself, within a couple of levels of the root. */
+const ROOT_COLOR_SCAN_DEPTH = 2;
+
+function collectRootColorDeclarations(doc: Document): RootColorDeclaration[] {
+  const declarations: RootColorDeclaration[] = [];
+  const walk = (el: Element, depth: number) => {
+    if (depth > ROOT_COLOR_SCAN_DEPTH) return;
+    const style = el.getAttribute("style");
+    if (style) {
+      const hasColor = /(?:^|;)\s*color\s*:/i.test(style);
+      const hasBackground = /(?:^|;)\s*background(?:-color)?\s*:/i.test(style);
+      if (hasColor || hasBackground) declarations.push({ color: hasColor, background: hasBackground });
+    }
+    for (const child of Array.from(el.children)) walk(child, depth + 1);
+  };
+  if (doc.body) walk(doc.body, 0);
+  return declarations;
+}
+
 /**
- * The canvas a given message body renders on by default, before any
+ * Whether a message's own root-level inline colours read safely on either
+ * canvas, judged from the colours that survive rather than from any
+ * declared intent.
+ *
+ * A shadow root isolates rules but not inherited properties, so `color`
+ * and `background` reach the message independently of each other -- a
+ * template that sets one without the other is safe only on the canvas it
+ * was written against, because the missing half comes from :host and a
+ * dark :host supplies dark text or a dark background exactly where the
+ * message assumed white. A template that always sets both together is
+ * safe on either: its own pair dominates wherever it applies, and :host
+ * only shows through the parts it left unstyled. Nothing declared at all
+ * is the majority case and is judged unsafe -- there is no positive
+ * evidence either way, and the failure mode of guessing wrong is opposite
+ * in severity (mildly disappointing on light, unreadable on dark).
+ */
+function isDarkSafeMessage(html: string): boolean {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const declarations = collectRootColorDeclarations(doc);
+  if (declarations.length === 0) return false;
+  return declarations.every((d) => d.color === d.background);
+}
+
+/**
+ * The canvas a given HTML message body renders on by default, before any
  * per-message choice is applied.
  *
- * Message HTML is written by senders against a light canvas, and most of
- * it sets only half of the pair. A dark canvas then supplies the other
- * half, and either way round the message cannot be read: a white
- * background with no text colour takes our light text (`color` inherits
- * straight through the shadow boundary), and dark text with no background
- * takes our near-black one. Fixing whichever half is in front of you
- * leaves the other shape exactly as broken, so the default canvas is
- * light for markup that was not authored here -- the link, quote and code
- * colours below with it, since those land on the sender's background too.
+ * A message that declares its own dark-mode support opens dark: it has
+ * told us it restyles itself for a dark canvas, and the same declaration
+ * survives sanitisation now (see sanitizer.py) rather than being stripped
+ * before this component ever sees it. Everything else -- most mail, which
+ * carries only inline styling -- falls back to judging the colours that
+ * survive: dark only when the message's own root-level styling reads
+ * safely on either canvas, light otherwise. Failing towards light is
+ * deliberate: light is the canvas mail is written for, so a wrong guess
+ * there is mildly disappointing, while the reverse guess is unreadable.
  *
- * The reader can always override the default with the per-message toggle
- * below. A message declaring its own dark-canvas support (a color-scheme
- * meta tag or media query) is not detected automatically here -- the
- * sanitizer strips the `<meta>`/`<style>` markup that would carry both the
- * declaration and the rules implementing it, so honouring the declaration
- * without those rules would put the message on a dark canvas with none of
- * what makes it readable there. Nothing today distinguishes "declares
- * support" from "declares support and kept the rules for it", so the
- * signal is not read at all.
- *
- * The plain-text wrapper is generated by this component and carries no
- * colours of its own, so it follows the theme like the rest of the
- * interface regardless.
+ * The reader can always override this default with the per-message toggle
+ * below, and the plain-text wrapper this component generates itself
+ * carries no colours of its own, so it follows the app's own theme
+ * instead of going through any of this.
  */
-function pickCanvas(hasHtml: boolean, theme: Canvas): Canvas {
-  if (!hasHtml) return theme;
-  return "light";
+function pickCanvas(html: string | null | undefined, theme: Canvas): Canvas {
+  if (!html) return theme;
+  if (declaresDarkModeSupport(html)) return "dark";
+  return isDarkSafeMessage(html) ? "dark" : "light";
 }
 
 const DARK_MODE_STORAGE_KEY = "mail-verdict:message-dark-mode";
@@ -154,7 +225,183 @@ export function getEmailStyles(canvas: Canvas): string {
       border-top: 1px solid ${isDark ? "#27272a" : "#e4e4e7"};
       margin: 1em 0;
     }
+    /* collapseQuotedReply below injects this pair around an incoming
+       reply's own quoted original -- the composer already collapses its
+       *outgoing* quote the same way, in quoted-message-node.ts. */
+    .quoted-reply-toggle {
+      display: inline-block;
+      font-size: 0.75rem;
+      color: ${isDark ? "#60a5fa" : "#2563eb"};
+      text-decoration: underline;
+      cursor: pointer;
+      background: none;
+      border: none;
+      padding: 0;
+      margin: 0.25em 0;
+    }
+    /* highlightSearchMatches below wraps every occurrence of the reading
+       pane's own in-message find in one of these; the active one gets a
+       stronger, more saturated fill so stepping between matches is
+       visible even though every match already stands out from the body. */
+    mark.search-match {
+      background: ${isDark ? "#78350f" : "#fef08a"};
+      color: inherit;
+    }
+    mark.search-match-active {
+      background: #f97316;
+      color: #1c1917;
+      box-shadow: 0 0 0 2px ${isDark ? "#fdba74" : "#c2410c"};
+    }
   `;
+}
+
+/** Class names real mail clients already give a reply's own quoted
+ * original -- Gmail's, mirrored by several others including this
+ * application's own composer (see quoted-message-node.ts), Thunderbird's,
+ * Yahoo Mail's and ProtonMail's. Matched on the element itself or a
+ * couple of ancestors, since a wrapper sometimes carries the class while
+ * the blockquote inside it does not. Deliberately not a generic "quote"
+ * match: an editorial pull-quote or callout a sender wrote on purpose
+ * carries no such class, and collapsing it would be wrong. */
+const REPLY_QUOTE_CLASS_RE = /\b(?:gmail_quote|moz-cite-prefix|yahoo_quoted|protonmail_quote)\b/i;
+const REPLY_QUOTE_ANCESTOR_DEPTH = 2;
+
+/** Whether a <blockquote> is a reply's quoted original rather than an
+ * ordinary quotation the sender wrote on purpose.
+ *
+ * `type="cite"` is the one signal nearly every mail client agrees on --
+ * Apple Mail, Thunderbird and this application's own composer all mark a
+ * reply's quote this way, and nothing else legitimately would (the
+ * sanitizer allowlists `type` on a blockquote for exactly this reading).
+ * The class-name check below catches the messages that omit it.
+ */
+function isReplyQuoteBlockquote(blockquote: Element): boolean {
+  if (blockquote.getAttribute("type")?.toLowerCase() === "cite") return true;
+  let node: Element | null = blockquote;
+  for (let depth = 0; node && depth <= REPLY_QUOTE_ANCESTOR_DEPTH; depth += 1) {
+    if (REPLY_QUOTE_CLASS_RE.test(node.className)) return true;
+    node = node.parentElement;
+  }
+  return false;
+}
+
+/**
+ * Collapse an incoming reply's own quoted original behind a toggle, the
+ * same treatment the composer already gives an *outgoing* quote.
+ *
+ * Only the first blockquote in the message recognised by
+ * isReplyQuoteBlockquote is touched -- a deeper, nested quote inside it
+ * (a reply to a reply) is already inside what gets hidden, and a
+ * qualifying blockquote that never appears leaves the message untouched.
+ * The toggle button and the hidden wrapper are plain markup with no
+ * behaviour of their own; wireQuotedReplyToggles below is what a click on
+ * the button actually does, attached once this string is in the live DOM.
+ */
+function collapseQuotedReply(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const blockquote = Array.from(doc.querySelectorAll("blockquote")).find(isReplyQuoteBlockquote);
+  if (!blockquote) return html;
+
+  const toggle = doc.createElement("button");
+  toggle.type = "button";
+  toggle.className = "quoted-reply-toggle";
+  toggle.textContent = "Show quoted text";
+
+  const body = doc.createElement("div");
+  body.className = "quoted-reply-body";
+  body.hidden = true;
+
+  blockquote.replaceWith(body);
+  body.append(blockquote);
+  body.before(toggle);
+
+  return doc.body.innerHTML;
+}
+
+/** Attached once collapseQuotedReply's markup is in the live shadow DOM --
+ * flips the adjacent quote's visibility and relabels the button that was
+ * clicked, mirroring quoted-message-node.ts's own applyCollapsed. */
+function wireQuotedReplyToggles(root: ShadowRoot): void {
+  for (const toggle of root.querySelectorAll<HTMLButtonElement>(".quoted-reply-toggle")) {
+    const body = toggle.nextElementSibling;
+    if (!(body instanceof HTMLElement) || !body.classList.contains("quoted-reply-body")) continue;
+    toggle.onclick = () => {
+      body.hidden = !body.hidden;
+      toggle.textContent = body.hidden ? "Show quoted text" : "Hide quoted text";
+    };
+  }
+}
+
+const SEARCH_MATCH_CLASS = "search-match";
+const SEARCH_MATCH_ACTIVE_CLASS = "search-match-active";
+
+/** Undo highlightSearchMatches below, restoring plain text nodes.
+ *
+ * Run before every new search rather than only when a query is cleared --
+ * otherwise a second search over content the first one already marked up
+ * would nest a <mark> inside a <mark>, doubling the count on each retype.
+ */
+function clearSearchHighlights(root: ShadowRoot): void {
+  for (const mark of Array.from(root.querySelectorAll(`mark.${SEARCH_MATCH_CLASS}`))) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    parent.replaceChild(document.createTextNode(mark.textContent ?? ""), mark);
+    parent.normalize();
+  }
+}
+
+/**
+ * Wrap every occurrence of `query` in the rendered message in a `<mark>`,
+ * case-insensitively, and return them in document order.
+ *
+ * A shadow root is opaque to the browser's own in-page find -- it never
+ * looks inside one -- which is the entire reason this exists rather than
+ * leaving ctrl+F to the browser. Walking text nodes directly (rather than
+ * matching against innerHTML, which would count and cut across tag
+ * boundaries) is what keeps a match from ever splitting inside a tag.
+ */
+function highlightSearchMatches(root: ShadowRoot, query: string): HTMLElement[] {
+  clearSearchHighlights(root);
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const lowerQuery = trimmed.toLowerCase();
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) => {
+      const parentTag = node.parentElement?.tagName;
+      return parentTag === "STYLE" || parentTag === "SCRIPT"
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const textNodes: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    textNodes.push(node as Text);
+  }
+
+  const marks: HTMLElement[] = [];
+  for (const textNode of textNodes) {
+    const text = textNode.textContent ?? "";
+    const lowerText = text.toLowerCase();
+    if (!lowerText.includes(lowerQuery)) continue;
+
+    const fragment = document.createDocumentFragment();
+    let start = 0;
+    let index = lowerText.indexOf(lowerQuery);
+    while (index !== -1) {
+      if (index > start) fragment.append(document.createTextNode(text.slice(start, index)));
+      const mark = document.createElement("mark");
+      mark.className = SEARCH_MATCH_CLASS;
+      mark.textContent = text.slice(index, index + trimmed.length);
+      fragment.append(mark);
+      marks.push(mark);
+      start = index + trimmed.length;
+      index = lowerText.indexOf(lowerQuery, start);
+    }
+    if (start < text.length) fragment.append(document.createTextNode(text.slice(start)));
+    textNode.parentNode?.replaceChild(fragment, textNode);
+  }
+  return marks;
 }
 
 /** Escape every character that can change the meaning of markup.
@@ -194,9 +441,13 @@ export function EmailRenderer({
   html,
   plainText,
   messageId,
+  searchQuery,
+  activeMatchIndex,
+  onMatchCountChange,
 }: EmailRendererProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const shadowRootRef = useRef<ShadowRoot | null>(null);
+  const searchMatchesRef = useRef<HTMLElement[]>([]);
   const { resolvedTheme } = useTheme();
   // The reader's explicit choice for this message, overriding both the
   // light default and a sender's own dark declaration. Starts unset -- it
@@ -213,7 +464,18 @@ export function EmailRenderer({
     setManualCanvas(readStoredCanvasChoice(messageId));
   }, [messageId]);
 
-  const canvas = manualCanvas ?? pickCanvas(Boolean(html), resolvedTheme);
+  // pickCanvas parses the message's own markup with DOMParser, which does
+  // not exist during a static export's build -- computed in an effect
+  // rather than during render, the same reason manualCanvas above is.
+  // "light" is a safe, non-crashing placeholder for the render or two
+  // before this settles, and also the correct fail-towards-light default
+  // if a message ever has no HTML to judge.
+  const [autoCanvas, setAutoCanvas] = useState<Canvas>("light");
+  useEffect(() => {
+    setAutoCanvas(pickCanvas(html, resolvedTheme));
+  }, [html, resolvedTheme]);
+
+  const canvas = manualCanvas ?? autoCanvas;
 
   const toggleCanvas = useCallback(() => {
     if (!messageId) return;
@@ -245,18 +507,24 @@ export function EmailRenderer({
           "figure", "font", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
           "header", "hr", "i", "img", "ins", "kbd", "li", "main", "mark",
           "nav", "ol", "p", "pre", "q", "s", "section", "small", "span",
-          "strong", "sub", "summary", "sup", "table", "tbody", "td",
+          // style is here for the same reason it is in the backend's own
+          // allowlist -- a message's own sanitised stylesheet, which is
+          // what pickCanvas's declaresDarkModeSupport reads. Dropping it
+          // here would still leave the canvas decision correct (that
+          // reads the raw html prop, before this pass) but the message's
+          // own dark-mode rule would never actually reach the browser.
+          "strong", "style", "sub", "summary", "sup", "table", "tbody", "td",
           "tfoot", "th", "thead", "tr", "u", "ul", "wbr",
         ],
         ALLOWED_ATTR: [
           "align", "alt", "border", "cellpadding", "cellspacing", "class",
           "color", "colspan", "dir", "face", "height", "href", "hspace",
-          "id", "lang", "role", "rowspan", "size", "src", "style",
+          "id", "lang", "media", "role", "rowspan", "size", "src", "style",
           "summary", "target", "title", "type", "valign", "vspace", "width",
         ],
       });
 
-      content = processedHtml;
+      content = collapseQuotedReply(processedHtml);
     } else if (plainText) {
       // Render plain text with preserved whitespace and linkified URLs
       // Sanitized like the HTML path rather than trusted for being "just
@@ -311,12 +579,46 @@ export function EmailRenderer({
 
     root.addEventListener("click", handleClick);
     root.addEventListener("error", handleImageError, true);
+    wireQuotedReplyToggles(root);
 
     return () => {
       root.removeEventListener("click", handleClick);
       root.removeEventListener("error", handleImageError, true);
     };
   }, [html, plainText]);
+
+  // Recompute the find highlight. Depends on html/plainText/canvas as well
+  // as searchQuery because the content-render effect above rebuilds
+  // shadowRoot.innerHTML on any of those and would otherwise wipe out
+  // marks this effect isn't re-running to replace.
+  useEffect(() => {
+    if (!shadowRootRef.current) return;
+    const root = shadowRootRef.current;
+    const marks = searchQuery ? highlightSearchMatches(root, searchQuery) : [];
+    if (!searchQuery) clearSearchHighlights(root);
+    searchMatchesRef.current = marks;
+    onMatchCountChange?.(marks.length);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, html, plainText, canvas]);
+
+  // Move the active highlight without recomputing every match -- stepping
+  // between them is one class toggle plus a scroll, not a re-search. Also
+  // depends on whatever the highlighting effect above depends on: within
+  // one commit React runs effects in declaration order, so by the time
+  // this one reads searchMatchesRef the effect above has already
+  // refreshed it for the new query -- without that, a fresh search leaves
+  // its first match with no active highlight until activeMatchIndex next
+  // changes on its own.
+  useEffect(() => {
+    const marks = searchMatchesRef.current;
+    marks.forEach((mark, index) => {
+      mark.classList.toggle(SEARCH_MATCH_ACTIVE_CLASS, index === activeMatchIndex);
+    });
+    if (activeMatchIndex != null) {
+      marks[activeMatchIndex]?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeMatchIndex, searchQuery, html, plainText, canvas]);
 
   return (
     <div className="flex flex-col">

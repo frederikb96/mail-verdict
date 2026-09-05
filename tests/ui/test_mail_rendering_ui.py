@@ -264,13 +264,10 @@ class TestStructuralMarkupDoesNotLeakAsVisibleCopy:
 
 
 class TestPerMessageDarkMode:
-    """Every message renders on a light canvas by default -- correct, since
-    mail is written assuming one -- and the reader can ask for dark with the
-    per-message toggle. A message declaring its own dark-canvas support is
-    not switched automatically: the sanitizer strips the `<meta>`/`<style>`
-    markup that carries both the declaration and the rules that would make
-    the message readable on a dark canvas, so there is nothing honest to
-    honour."""
+    """A message renders on a light canvas by default -- correct, since mail
+    is written assuming one -- unless it declares its own dark-mode support,
+    in which case it opens dark straight away; either way the reader can
+    override with the per-message toggle."""
 
     def test_the_toggle_switches_the_canvas_and_the_choice_survives_reopening(
         self,
@@ -319,7 +316,7 @@ class TestPerMessageDarkMode:
         expect(light_mode_button).to_be_visible(timeout=10_000)
         assert _host_background() == dark_bg
 
-    def test_a_message_declaring_dark_support_is_not_switched_automatically(
+    def test_a_message_declaring_dark_support_opens_dark_and_its_own_rule_applies(
         self,
         page: Page,
         app_server: str,
@@ -329,19 +326,23 @@ class TestPerMessageDarkMode:
         inbox_folder: dict[str, Any],
         browser: Browser,
     ) -> None:
-        """The shape a real ESP uses: declare `color-scheme`, then swap
-        colours in an `@media` block -- which the sanitizer strips along
-        with every other `<style>` tag's content. Honouring the
-        declaration without the rules it depends on would put the message
-        on a dark canvas with its light-mode inline colour still applied:
-        dark text on a dark background."""
+        """The shape a real ESP uses: an inline colour for the common case,
+        overridden with `!important` in an `@media (prefers-color-scheme:
+        dark)` block for a reader whose environment is actually dark --
+        `!important` is what real dark-mode email CSS guides all call for,
+        since an inline style otherwise always outranks a class rule
+        regardless of whether its media query matched. The stylesheet
+        survives sanitisation now, so the reading pane reads the
+        declaration and opens dark without a click -- and, since this
+        test's own browser context is genuinely dark, the message's own
+        media query fires for real too, so the light-mode inline colour is
+        never what is shown."""
         target = _deliver_html(
             api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
             inbox_folder["id"], "UI dark declared test",
-            '<meta name="color-scheme" content="light dark">'
             "<style>@media (prefers-color-scheme: dark) "
-            "{ .msg { color: #eee } }</style>"
-            '<p class="msg" style="color:#111">Assumes its own dark rules survived</p>',
+            "{ .msg { color: #eeeeee !important } }</style>"
+            '<p class="msg" style="color:#111111">Assumes its own dark rules survived</p>',
         )
 
         # A dedicated dark-scheme context: the shared page fixture's colour
@@ -356,13 +357,16 @@ class TestPerMessageDarkMode:
 
             body = dark_page.locator('[data-testid="email-body"]')
             expect(body).to_be_visible(timeout=15_000)
-            # Still light by default: the toggle offers to switch *to*
-            # dark, rather than already showing dark and offering to leave
-            # it -- the declaration alone is not honoured.
+            # Already dark: the toggle offers to switch *back* to light,
+            # rather than offering to enable dark -- the declaration alone
+            # is enough, with no click needed.
             toggle = dark_page.get_by_role(
-                "button", name="Enable dark message mode", exact=True,
+                "button", name="Switch this message to light mode", exact=True,
             )
             expect(toggle).to_be_visible(timeout=10_000)
+
+            msg = body.locator(".msg")
+            expect(msg).to_have_css("color", "rgb(238, 238, 238)")
         finally:
             context.close()
 

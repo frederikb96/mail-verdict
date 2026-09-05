@@ -99,6 +99,13 @@ class TestSafeTagPreservation:
         assert "<a " in result
         assert 'href="https://example.com"' in result
 
+    def test_preserves_a_reply_blockquotes_cite_type(self) -> None:
+        """Purely informational, and the one cross-client signal the
+        reading pane's quote-collapsing relies on."""
+        html = '<blockquote type="cite">quoted</blockquote>'
+        result = sanitize_email_html(html)
+        assert 'type="cite"' in result
+
     def test_preserves_tables(self) -> None:
         """Table tags pass through."""
         html = "<table><tr><td>Cell</td></tr></table>"
@@ -457,6 +464,8 @@ class TestStructuralTagsDoNotLeakTheirTextAsCopy:
         assert "<p>Hello</p>" in out
 
     def test_a_head_full_of_metadata_does_not_become_visible_copy(self) -> None:
+        """A <style> tag survives as sanitised CSS -- see
+        TestStylesheetPreservation -- but the metadata around it does not."""
         html = (
             "<html><head>"
             '<meta name="viewport" content="width=device-width">'
@@ -466,7 +475,7 @@ class TestStructuralTagsDoNotLeakTheirTextAsCopy:
         )
         out = sanitize_email_html(html)
         assert "Newsletter" not in out
-        assert "margin" not in out
+        assert "width=device-width" not in out
         assert "<p>Real content</p>" in out
 
     def test_an_outlook_xml_block_does_not_leak(self) -> None:
@@ -475,15 +484,17 @@ class TestStructuralTagsDoNotLeakTheirTextAsCopy:
         assert "Office namespace junk" not in out
         assert "<p>after</p>" in out
 
-    def test_a_style_hidden_behind_the_legacy_comment_trick_still_does_not_leak(
+    def test_a_style_hidden_behind_the_legacy_comment_trick_still_applies(
         self,
     ) -> None:
         """<style><!-- ... --></style> is how old newsletters hide CSS from
-        browsers that do not understand <style> -- the CSS must not leak
-        either as markup or, once unwrapped, as visible text."""
+        browsers that do not understand <style> -- real browsers, and
+        tinycss2, both ignore the comment markers and apply the rule
+        inside, so it belongs in the sanitised stylesheet rather than being
+        read as a decoy to strip."""
         html = "<style><!--\nbody { color: red; }\n--></style><p>ok</p>"
         out = sanitize_email_html(html)
-        assert "color" not in out
+        assert "color:red" in out
         assert "<p>ok</p>" in out
 
     def test_an_ordinary_unknown_tag_still_keeps_its_text(self) -> None:
@@ -526,3 +537,206 @@ class TestDataImagesRenderAsDocumented:
         out = sanitize_email_html('<img src="https://tracker.example.com/pixel.gif">')
         assert "data-x-src=" in out
         assert ' src="https' not in out
+
+
+class TestStylesheetPreservation:
+    """A message's own <style> block is sanitised rather than deleted.
+
+    Every major mail client renders a sender's stylesheet; what they all do
+    is sanitise it. The same declaration-level filter an inline style
+    attribute already gets is reused for a stylesheet's own rules, media
+    queries (including dark-mode ones) survive, @import does not, and every
+    network-fetching value is gated behind the same sender allowlist that
+    already governs remote images.
+    """
+
+    def test_an_ordinary_rule_survives(self) -> None:
+        out = sanitize_email_html("<style>p { color: red; }</style><p>hi</p>")
+        assert "<style>" in out
+        assert "color:red" in out
+        assert "<p>hi</p>" in out
+
+    def test_a_dark_mode_media_query_survives(self) -> None:
+        out = sanitize_email_html(
+            "<style>@media (prefers-color-scheme: dark) "
+            "{ body { color: #eee; background: #111; } }</style>"
+        )
+        assert "prefers-color-scheme: dark" in out
+        assert "color:#eee" in out
+        assert "background:#111" in out
+
+    def test_a_supports_query_survives(self) -> None:
+        out = sanitize_email_html(
+            "<style>@supports (display: grid) { .g { display: grid; } }</style>"
+        )
+        assert "@supports" in out
+        assert "display:grid" in out
+
+    def test_keyframes_survive_with_their_declarations_filtered(self) -> None:
+        """The keyframe selectors (0%, 100%) are not ordinary CSS selectors,
+        but the declarations inside them get exactly the same treatment --
+        transform escapes the box, so it is dropped, from a keyframe rule
+        exactly like from an ordinary one."""
+        out = sanitize_email_html(
+            "<style>@keyframes spin { 0% { opacity: 0; transform: rotate(0); } "
+            "100% { opacity: 1; } }</style>"
+        )
+        assert "@keyframes spin" in out
+        assert "opacity:0" in out
+        assert "transform" not in out
+
+    def test_font_face_survives_with_a_remote_font_neutralised(self) -> None:
+        out = sanitize_email_html(
+            '<style>@font-face { font-family: "Foo"; '
+            "src: url(https://fonts.example/foo.woff2); }</style>"
+        )
+        assert "@font-face" in out
+        assert "font-family" in out
+        assert "fonts.example" not in out.split("data-x-stylesheet")[0]
+        assert "data-x-stylesheet" in out
+
+    def test_import_is_refused_whatever_it_targets(self) -> None:
+        for prelude in ('url("https://evil.example/x.css")', 'url("data:text/css,x")'):
+            out = sanitize_email_html(f"<style>@import {prelude}; p {{ color: red; }}</style>")
+            assert "@import" not in out
+            assert "color:red" in out
+
+    def test_an_unknown_at_rule_is_dropped_by_default(self) -> None:
+        """The at-rule allowlist is exactly that -- an allowlist. Anything
+        not in it is denied, the same stance every other allowlist in this
+        module already takes."""
+        out = sanitize_email_html("<style>@page { margin: 1in; } p { color: red; }</style>")
+        assert "@page" not in out
+        assert "color:red" in out
+
+    def test_escaping_declarations_are_dropped_inside_a_stylesheet_too(self) -> None:
+        """The exact filter an inline style attribute gets, reused rather
+        than reimplemented for a stylesheet's own rules."""
+        out = sanitize_email_html(
+            "<style>.overlay { position: fixed; top: 0; z-index: 999; color: red; }"
+            "</style>"
+        )
+        assert "position" not in out
+        assert "z-index" not in out
+        assert "color:red" in out
+
+    def test_a_remote_url_is_neutralised_and_the_original_preserved(self) -> None:
+        out = sanitize_email_html(
+            "<style>.box { background: url(https://tracker.example/p.gif); }</style>"
+        )
+        assert "url(about:blank)" in out
+        assert "tracker.example" not in out.split("data-x-stylesheet")[0]
+        assert "data-x-stylesheet" in out
+
+    def test_a_stylesheet_with_nothing_remote_carries_no_preserved_copy(self) -> None:
+        out = sanitize_email_html("<style>p { color: blue; }</style>")
+        assert "data-x-stylesheet" not in out
+
+    def test_the_media_scoping_attribute_survives(self) -> None:
+        out = sanitize_email_html(
+            '<style media="(prefers-color-scheme: dark)">p { color: red; }</style>'
+        )
+        assert 'media="(prefers-color-scheme: dark)"' in out
+
+    def test_multiple_style_blocks_are_each_sanitised_independently(self) -> None:
+        out = sanitize_email_html(
+            "<style>.a { position: fixed; color: red; }</style>"
+            "<p>between</p>"
+            "<style>.b { color: blue; }</style>"
+        )
+        assert "position" not in out
+        assert "color:red" in out
+        assert "<p>between</p>" in out
+        assert "color:blue" in out
+
+    def test_an_oversized_stylesheet_is_dropped_rather_than_parsed(self) -> None:
+        from mail_verdict.core import sanitizer
+
+        big = ".x { color: red; }" * (sanitizer.MAX_STYLESHEET_CHARS // 10)
+        assert len(big) > sanitizer.MAX_STYLESHEET_CHARS
+        out = sanitize_email_html(f"<style>{big}</style><p>ok</p>")
+        assert "color:red" not in out
+        assert "<p>ok</p>" in out
+
+    def test_malformed_css_does_not_crash_and_yields_nothing_unsafe(self) -> None:
+        out = sanitize_email_html("<style>not valid css {{{ }} }</style><p>ok</p>")
+        assert "<p>ok</p>" in out
+
+    def test_allowing_the_sender_does_not_revive_an_escaping_declaration(self) -> None:
+        """The preserved original never had the escaping declaration in the
+        first place -- restoring remote images must not bring it back."""
+        from mail_verdict.core.image_sanitizer import restore_remote_images
+
+        out = sanitize_email_html(
+            "<style>.x { position: fixed; "
+            "background: url(https://tracker.example/p.gif); }</style>"
+        )
+        assert "position" not in restore_remote_images(out)
+
+    def test_a_blocked_stylesheet_counts_toward_has_blocked_images(self) -> None:
+        from mail_verdict.core.image_sanitizer import strip_remote_images
+
+        out = sanitize_email_html(
+            "<style>.x { background: url(https://tracker.example/p.gif); }</style>"
+        )
+        _, has_blocked = strip_remote_images(out)
+        assert has_blocked is True
+
+    def test_allowing_the_sender_restores_the_stylesheets_own_remote_url(self) -> None:
+        from mail_verdict.core.image_sanitizer import restore_remote_images
+
+        out = sanitize_email_html(
+            "<style>.x { background: url(https://tracker.example/p.gif); }</style>"
+        )
+        restored = restore_remote_images(out)
+        assert "tracker.example" in restored
+        assert "data-x-stylesheet" not in restored
+        assert "about:blank" not in restored.split("</style>")[0]
+
+    def test_allowing_the_sender_does_not_restore_a_non_http_scheme(self) -> None:
+        """Consenting to a sender's remote fetches is not consent to a
+        javascript: url reappearing in a rule -- the same scheme check an
+        inline style's restoration already gets. javascript: matches
+        neither an allowed local prefix nor the safe-scheme check, so it is
+        neutralised at sanitize time and stays neutralised at restore
+        time, the same as an inline style's."""
+        from mail_verdict.core.image_sanitizer import restore_remote_images
+
+        out = sanitize_email_html(
+            "<style>.x { background: url(javascript:alert(1)); }</style>"
+        )
+        assert "javascript:" not in restore_remote_images(out)
+
+    def test_the_legacy_html_comment_hiding_trick_does_not_hide_it_from_this_either(
+        self,
+    ) -> None:
+        """<!-- and --> are ignored at the top of a stylesheet by every
+        browser, and by tinycss2 the same way -- the rule inside still
+        applies, so it belongs in the sanitised output."""
+        out = sanitize_email_html("<style><!--\np { color: red; }\n--></style>")
+        assert "color:red" in out
+
+    def test_a_css_escape_that_decodes_to_a_closing_style_tag_drops_the_whole_block(
+        self,
+    ) -> None:
+        """A <style> tag's content is never entity-decoded by a browser, so
+        an HTML-escaped `</style` inside a CSS string is inert there -- but
+        a CSS *escape* that decodes to the same literal characters
+        reintroduces them the moment the sanitizer's own serialisation
+        writes the parsed value back out as tag content, at a point nh3's
+        real HTML parser never saw them contiguous. Nothing legitimate
+        needs that literal text in an email's own styling."""
+        out = sanitize_email_html(
+            '<style>.x { content: "\\3c/style\\3e<script>alert(1)</script>"; }'
+            "</style><p>ok</p>"
+        )
+        assert "<script>alert(1)</script>" not in out
+        assert "<p>ok</p>" in out
+
+    def test_the_same_escape_is_refused_inside_an_at_rule_selector_too(self) -> None:
+        out = sanitize_email_html(
+            '<style>[title="\\3c/style\\3e<script>alert(1)</script>"] '
+            "{ color: red; }</style><p>ok</p>"
+        )
+        assert "<script>alert(1)</script>" not in out
+        assert "<p>ok</p>" in out

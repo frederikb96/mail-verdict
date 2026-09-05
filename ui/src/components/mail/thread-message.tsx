@@ -47,12 +47,21 @@ export function ThreadMessage({
   onToggle,
   imagesAllowedOverride,
   onLoadImages,
+  searchQuery,
+  activeMatchIndex,
+  onMatchCountChange,
 }: {
   mail: MessageDetail;
   expanded: boolean;
   onToggle: () => void;
   imagesAllowedOverride: boolean;
   onLoadImages: () => void;
+  /** The reading pane's own in-message find -- see ReadingPane, which
+   * scopes these to whichever message is actually open rather than
+   * passing them to every message in the thread. */
+  searchQuery?: string;
+  activeMatchIndex?: number;
+  onMatchCountChange?: (count: number) => void;
 }) {
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
@@ -162,6 +171,9 @@ export function ThreadMessage({
             html={mail.body_html}
             plainText={mail.body_text}
             messageId={mail.id}
+            searchQuery={searchQuery}
+            activeMatchIndex={activeMatchIndex}
+            onMatchCountChange={onMatchCountChange}
           />
         </div>
       )}

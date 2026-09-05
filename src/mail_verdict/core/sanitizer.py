@@ -18,29 +18,38 @@ ALLOWED_TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div",
     "dl", "dt", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i",
     "img", "ins", "li", "ol", "p", "pre", "q", "s", "span", "strong",
-    "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr",
-    "u", "ul", "center", "font",
+    "style", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
+    "tr", "u", "ul", "center", "font",
 }
 
 # A tag outside ALLOWED_TAGS has its own tag stripped, but by default only
-# `script` and `style` also lose their text content -- every other
-# disallowed tag is unwrapped, hoisting its text into the surrounding body.
-# That is correct for a stray inline wrapper (a `<blink>` or a custom
-# element still ought to show its text), but wrong for a document-structure
-# tag: a `<title>` or `<head>` was never meant to be visible copy, and an
-# ESP-generated message routinely carries several kilobytes of exactly this
-# kind of markup ahead of the actual content, which is why it surfaces at
-# the very top of the rendered message. These lose their content along with
-# the tag; nh3's own defaults (script, style) are named explicitly too, so
-# the set does not depend on them not changing under us.
+# `script` also loses its text content -- every other disallowed tag is
+# unwrapped, hoisting its text into the surrounding body. That is correct
+# for a stray inline wrapper (a `<blink>` or a custom element still ought
+# to show its text), but wrong for a document-structure tag: a `<title>`
+# or `<head>` was never meant to be visible copy, and an ESP-generated
+# message routinely carries several kilobytes of exactly this kind of
+# markup ahead of the actual content, which is why it surfaces at the very
+# top of the rendered message. These lose their content along with the
+# tag; nh3's own default (script) is named explicitly too, so the set does
+# not depend on it not changing under us.
+#
+# `style` is deliberately absent from this set even though its content is
+# handled specially below: it is a real tag with real content a message
+# needs, sanitised rather than discarded -- see _sanitize_stylesheet.
 CONTENT_STRIPPED_TAGS = {
-    "script", "style", "title", "head", "meta", "xml", "noscript",
+    "script", "title", "head", "meta", "xml", "noscript",
     "iframe", "audio", "video", "object", "embed",
 }
 
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
     "img": {"src", "data-x-src", "alt", "width", "height", "title"},
+    # type="cite" is how nearly every mail client marks a reply's own
+    # quoted original -- purely informational, so allowing it through
+    # costs nothing, and it is the one signal the reading pane's own
+    # quote-collapsing can rely on across senders that omit a class name.
+    "blockquote": {"type"},
     # background is allowed through the sanitizer only so the rewrite below
     # can turn it into data-x-bg. Stripping it outright would block the
     # remote fetch too, but would also lose it permanently -- an allowlisted
@@ -54,6 +63,13 @@ ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "font": {"color", "size", "face"},
     "div": {"align"},
     "p": {"align"},
+    # media scopes a stylesheet the same way a media query inside it would
+    # -- kept for the ESPs that write `<style media="(prefers-color-scheme:
+    # dark)">` rather than wrapping the whole block in an @media rule.
+    # data-x-stylesheet is this tag's own preserved original, the same role
+    # data-x-style plays for an inline style attribute -- see
+    # _rewrite_style_tag in image_sanitizer's sibling, rewrite_remote_images.
+    "style": {"media", "data-x-stylesheet"},
     "*": {"class", "style", "data-x-style", "dir", "lang"},
 }
 
@@ -133,8 +149,8 @@ def _canonical_property_name(name: str) -> str:
     return _VENDOR_PREFIX_RE.sub("", name)
 
 
-def _parsed_declarations(style: str) -> list[Declaration]:
-    """Parse a style value, dropping the declarations that escape the box.
+def _filter_declarations(nodes: list[Node]) -> list[Declaration]:
+    """Drop the declarations that escape the box, from an already-parsed list.
 
     A shadow root isolates styles but does not create a containing block, so
     position:fixed is resolved against the viewport and the message can cover
@@ -156,11 +172,15 @@ def _parsed_declarations(style: str) -> list[Declaration]:
     to keep correct and buys nothing here. Anything that fails to parse as
     an ordinary declaration carries no layout value an email needs either,
     and is dropped along with it.
+
+    Shared by an inline style attribute and a message's own stylesheet --
+    _parsed_declarations parses text into this shape, and a qualified rule
+    or an @font-face block inside a <style> tag already comes tokenized this
+    way, so both call this rather than each carrying their own copy of the
+    filter.
     """
     kept = []
-    for node in tinycss2.parse_declaration_list(
-        style, skip_comments=True, skip_whitespace=True
-    ):
+    for node in nodes:
         if node.type != "declaration":
             continue
         if _canonical_property_name(node.lower_name) in _ESCAPING_PROPERTIES:
@@ -169,6 +189,13 @@ def _parsed_declarations(style: str) -> list[Declaration]:
             continue
         kept.append(node)
     return kept
+
+
+def _parsed_declarations(style: str) -> list[Declaration]:
+    """Parse a style attribute's value and filter it -- see _filter_declarations."""
+    return _filter_declarations(
+        tinycss2.parse_declaration_list(style, skip_comments=True, skip_whitespace=True)
+    )
 
 
 def _contains_parse_error(nodes: list[Node]) -> bool:
@@ -306,6 +333,195 @@ def _rewrite_style(match: re.Match[str], quote: str) -> str:
     )
 
 
+# A stylesheet block's own at-rules, allowlisted the same way tags and
+# attributes are -- an at-rule outside these two sets is dropped entirely
+# rather than inspected, since neither of them is where a mail template
+# has a genuine reason to reach.
+#
+# @media and @supports (and @keyframes, which nests the same shape of
+# qualified rule under a keyframe-selector prelude rather than an ordinary
+# one) all carry a nested rule list, parsed with parse_rule_list and
+# recursed into exactly like the stylesheet's own top level. @font-face
+# carries a plain declaration list instead, the same shape a qualified
+# rule's own block is.
+_RULE_LIST_AT_RULES = frozenset({
+    "media", "supports", "keyframes", "-webkit-keyframes", "-moz-keyframes",
+})
+_DECLARATION_AT_RULES = frozenset({"font-face"})
+
+# A page of CSS is already generous for anything an email template needs;
+# beyond it, dropping the block costs nothing an email needs and avoids
+# parsing something built to be expensive to parse.
+MAX_STYLESHEET_CHARS = 100_000
+
+
+def _sanitize_declaration_block(
+    header: str, content: list[Node],
+) -> tuple[str, str, bool] | None:
+    """A rule whose block is a plain declaration list -- a qualified rule's
+    own body, or an at-rule (@font-face) with no nested rules of its own.
+
+    Exactly the treatment an inline style attribute already gets in
+    _rewrite_style, reused rather than reimplemented: escaping declarations
+    are dropped outright, a remote url() is only neutralised so layout
+    survives, and the original -- url()s intact -- is kept for the same
+    sender-gated restoration an inline style's data-x-style already gets.
+    Returns None when nothing worth keeping remains.
+    """
+    declarations = _filter_declarations(
+        tinycss2.parse_declaration_list(content, skip_comments=True, skip_whitespace=True)
+    )
+    if not declarations:
+        return None
+    preserved = _serialize_declarations(declarations)
+    has_remote = any(_find_remote_url(decl.value) for decl in declarations)
+    if not has_remote:
+        body = f"{header}{{{preserved}}}"
+        return body, body, False
+
+    blocked_declarations = [
+        node
+        for node in tinycss2.parse_declaration_list(
+            preserved, skip_comments=True, skip_whitespace=True
+        )
+        if node.type == "declaration"
+    ]
+    for decl in blocked_declarations:
+        _neutralize_remote_urls(decl.value)
+    blocked = _serialize_declarations(blocked_declarations)
+    return f"{header}{{{blocked}}}", f"{header}{{{preserved}}}", True
+
+
+def _sanitize_rule(rule: Node) -> tuple[str, str, bool] | None:
+    """One top-level or nested rule, reduced to (safe, preserved, has_remote)
+    or dropped entirely.
+
+    An at-rule is only ever kept when its name is in one of the two
+    allowlists above -- the same allowlist-not-denylist stance ALLOWED_TAGS
+    and ALLOWED_ATTRIBUTES already take, rather than a list of at-rules
+    considered dangerous so far. @import is refused explicitly regardless
+    of what it targets: nothing here needs to pull in a second stylesheet,
+    remote or otherwise, and the rest of this module already treats a
+    remote fetch as something only an allowlisted sender may cause.
+    """
+    if rule.type == "qualified-rule":
+        if _contains_parse_error(rule.prelude):
+            return None
+        selector = tinycss2.serialize(rule.prelude).strip()
+        if not selector:
+            return None
+        return _sanitize_declaration_block(f"{selector} ", rule.content)
+
+    if rule.type != "at-rule" or rule.content is None:
+        # Comments and parse errors are already excluded by
+        # skip_comments/skip_whitespace above them; an at-rule with no
+        # block at all (such as @import) carries nothing a declaration
+        # filter can act on.
+        return None
+
+    name = rule.lower_at_keyword
+    if name == "import":
+        return None
+    if _contains_parse_error(rule.prelude):
+        return None
+    prelude = tinycss2.serialize(rule.prelude).strip()
+    header = f"@{name} {prelude} " if prelude else f"@{name} "
+
+    if name in _RULE_LIST_AT_RULES:
+        inner = tinycss2.parse_rule_list(rule.content, skip_comments=True, skip_whitespace=True)
+        safe_inner, preserved_inner, remote = _sanitize_rule_list(inner)
+        return f"{header}{{{safe_inner}}}", f"{header}{{{preserved_inner}}}", remote
+
+    if name in _DECLARATION_AT_RULES:
+        return _sanitize_declaration_block(header, rule.content)
+
+    return None
+
+
+def _sanitize_rule_list(rules: list[Node]) -> tuple[str, str, bool]:
+    """Every rule at one nesting level, concatenated.
+
+    Shared by the stylesheet's own top level and by @media/@supports/
+    @keyframes, which each nest the same shapes one level further in.
+    """
+    safe_parts: list[str] = []
+    preserved_parts: list[str] = []
+    has_remote = False
+    for rule in rules:
+        result = _sanitize_rule(rule)
+        if result is None:
+            continue
+        safe_text, preserved_text, remote = result
+        safe_parts.append(safe_text)
+        preserved_parts.append(preserved_text)
+        has_remote = has_remote or remote
+    return "".join(safe_parts), "".join(preserved_parts), has_remote
+
+
+_STYLE_CLOSE_RE = re.compile(r"</\s*style\b", re.IGNORECASE)
+
+
+def _reintroduces_a_style_close_tag(text: str) -> bool:
+    """Whether a rawtext-terminating sequence appears anywhere in this text.
+
+    A <style> tag's content is never entity-decoded by a browser, so a CSS
+    string escape that *decodes* to this sequence -- written by a sender as
+    e.g. ``content: "\\3c/style\\3e<script>..."`` -- reintroduces the
+    literal characters the moment the parsed value is serialised back out,
+    even though nh3's own real HTML parser never saw them contiguous in the
+    original message (see _rewrite_style_tag for why that parser is what
+    this module trusts for everything else). Nothing legitimate needs this
+    literal text in an email's own styling, so the whole stylesheet is
+    dropped rather than trusted to still be inert once it is spliced back
+    in as tag content -- unlike an inline style attribute's value, tag
+    content is exactly where such a sequence is dangerous.
+    """
+    return bool(_STYLE_CLOSE_RE.search(text))
+
+
+def _sanitize_stylesheet(css: str) -> tuple[str, str, bool]:
+    """A message's own <style> block, sanitised rather than discarded.
+
+    Returns (safe, preserved, has_remote): `safe` is what always renders,
+    every remote url() neutralised the same way an inline style's is;
+    `preserved` keeps those url()s intact for the sender-gated restoration
+    that already governs remote images, once permitted. Media queries,
+    including dark-mode ones, survive; @import does not, whatever it
+    targets; anything past a generous size is dropped outright rather than
+    parsed, so a pathological stylesheet costs nothing to render.
+    """
+    if len(css) > MAX_STYLESHEET_CHARS:
+        return "", "", False
+    rules = tinycss2.parse_stylesheet(css, skip_comments=True, skip_whitespace=True)
+    safe, preserved, has_remote = _sanitize_rule_list(rules)
+    if _reintroduces_a_style_close_tag(safe) or _reintroduces_a_style_close_tag(preserved):
+        return "", "", False
+    return safe, preserved, has_remote
+
+
+_STYLE_TAG_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style\s*>)", re.IGNORECASE | re.DOTALL)
+
+
+def _rewrite_style_tag(match: re.Match[str]) -> str:
+    """Sanitise one <style> block's content in place, keeping the tag.
+
+    nh3 has already parsed and reserialised the surrounding markup by the
+    time this runs, this tag's own rawtext content included -- verified to
+    be carried through unescaped, exactly as a real browser's parser would,
+    which is what makes matching `</style` on nh3's own output equivalent to
+    matching it on the original message. So the text this function reads
+    is exactly what a browser would treat as the element's content, and the
+    same holds in reverse for what it writes back.
+    """
+    open_tag, content, close_tag = match.group(1), match.group(2), match.group(3)
+    safe, preserved, has_remote = _sanitize_stylesheet(content)
+    if not has_remote:
+        return f"{open_tag}{safe}{close_tag}"
+    quote = '"'
+    attr = f' data-x-stylesheet="{_attr_value(preserved, quote)}"'
+    return f"{open_tag[:-1]}{attr}>{safe}{close_tag}"
+
+
 def rewrite_remote_images(html: str) -> str:
     """
     Replace img src, background and CSS url() references with data-x-*.
@@ -322,11 +538,30 @@ def rewrite_remote_images(html: str) -> str:
     Returns:
         HTML with remote images blocked
     """
+    # A <style> block's own content is CSS text, not markup, and the
+    # attribute-level rewrites below scan the *whole* string for
+    # `style="..."` / `src="..."` -- so it is sanitised and pulled out
+    # behind a token first, rather than left in place, for two reasons:
+    # CSS text can itself contain those substrings without meaning an
+    # attribute (a font stack's `src:` descriptor reads exactly like one),
+    # and the safe CSS this step just produced must not be handed to those
+    # regexes a second time. NUL bytes cannot appear in HTML nh3 produced,
+    # so a token built from one can never collide with real content.
+    style_blocks: dict[str, str] = {}
+
+    def _extract_style_block(match: re.Match[str]) -> str:
+        token = f"\x00STYLE-BLOCK-{len(style_blocks)}\x00"
+        style_blocks[token] = _rewrite_style_tag(match)
+        return token
+
+    html = _STYLE_TAG_RE.sub(_extract_style_block, html)
     html = _SRC_RE.sub(_rewrite_src, html)
     html = _SRC_SINGLE_RE.sub(_rewrite_src_single, html)
     html = _BG_RE.sub(_rewrite_bg, html)
     html = _STYLE_RE.sub(lambda m: _rewrite_style(m, '"'), html)
     html = _STYLE_SINGLE_RE.sub(lambda m: _rewrite_style(m, "'"), html)
+    for token, value in style_blocks.items():
+        html = html.replace(token, value)
     return html
 
 

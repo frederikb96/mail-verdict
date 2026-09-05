@@ -14,11 +14,16 @@ import {
   MailOpen,
   Mail as MailIcon,
   FileDown,
+  Search,
+  ChevronUp,
+  ChevronDown,
+  X,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ReplyBox } from "@/components/mail/reply-box";
@@ -31,6 +36,7 @@ import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
+import { isEditableElement } from "@/lib/utils";
 import { selectedMailIdAtom } from "@/lib/atoms";
 
 export function ReadingPane() {
@@ -85,6 +91,54 @@ export function ReadingPane() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primary?.id, primary?.is_seen, isDraft]);
+
+  // Finds text inside the specific message this pane has open -- the
+  // shadow root EmailRenderer draws it in is invisible to the browser's
+  // own ctrl+F, which is the entire reason this exists. Scoped to primary
+  // rather than every message in the thread, matching the singular
+  // framing of the feature; findQuery/activeMatchIndex only ever reach the
+  // one ThreadMessage instance whose mail.id === primary.id, below.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [activeMatchIndex, setActiveMatchIndex] = useState(0);
+  const [matchCount, setMatchCount] = useState(0);
+  const findInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setFindOpen(false);
+    setFindQuery("");
+    setActiveMatchIndex(0);
+    setMatchCount(0);
+  }, [mailId]);
+
+  useEffect(() => {
+    if (findOpen) findInputRef.current?.focus();
+  }, [findOpen]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!primary || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
+      // Already open: swallow the keystroke rather than falling through to
+      // isEditableElement below, which would otherwise defer to the
+      // browser's own find while focus sits inside the find input itself.
+      if (findOpen) {
+        e.preventDefault();
+        return;
+      }
+      if (isEditableElement(e.target)) return;
+      e.preventDefault();
+      setFindOpen(true);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [primary, findOpen]);
+
+  const stepMatch = (direction: 1 | -1) => {
+    setActiveMatchIndex((prev) => {
+      if (matchCount === 0) return 0;
+      return (prev + direction + matchCount) % matchCount;
+    });
+  };
 
   const toggle = (id: string) => {
     setExpandedIds((prev) => {
@@ -149,6 +203,16 @@ export function ReadingPane() {
               {messages.length} messages
             </Badge>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setFindOpen(true)}
+            title="Find in message"
+            aria-label="Find in message"
+          >
+            <Search className="h-4 w-4" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -330,19 +394,87 @@ export function ReadingPane() {
         }
       />
 
-      <div className="min-h-0 flex-1 overflow-auto">
-        {messages.map((m) => (
-          <ThreadMessage
-            key={m.id}
-            mail={m}
-            expanded={expandedIds.has(m.id)}
-            onToggle={() => toggle(m.id)}
-            imagesAllowedOverride={imageOverrides.has(m.id)}
-            onLoadImages={() =>
-              setImageOverrides((prev) => new Set(prev).add(m.id))
-            }
-          />
-        ))}
+      <div className="relative min-h-0 flex-1">
+        {findOpen && (
+          <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b bg-background p-2 shadow-sm">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <Input
+              ref={findInputRef}
+              value={findQuery}
+              onChange={(e) => {
+                setFindQuery(e.target.value);
+                setActiveMatchIndex(0);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  stepMatch(e.shiftKey ? -1 : 1);
+                } else if (e.key === "Escape") {
+                  setFindOpen(false);
+                }
+              }}
+              placeholder="Find in message"
+              aria-label="Find in message"
+              className="h-7 flex-1"
+            />
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {matchCount > 0
+                ? `${activeMatchIndex + 1} of ${matchCount}`
+                : findQuery
+                  ? "No matches"
+                  : ""}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              disabled={matchCount === 0}
+              onClick={() => stepMatch(-1)}
+              title="Previous match"
+              aria-label="Previous match"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              disabled={matchCount === 0}
+              onClick={() => stepMatch(1)}
+              title="Next match"
+              aria-label="Next match"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setFindOpen(false)}
+              title="Close find"
+              aria-label="Close find"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
+        <div className="h-full overflow-auto">
+          {messages.map((m) => (
+            <ThreadMessage
+              key={m.id}
+              mail={m}
+              expanded={expandedIds.has(m.id)}
+              onToggle={() => toggle(m.id)}
+              imagesAllowedOverride={imageOverrides.has(m.id)}
+              onLoadImages={() =>
+                setImageOverrides((prev) => new Set(prev).add(m.id))
+              }
+              searchQuery={findOpen && m.id === primary.id ? findQuery : undefined}
+              activeMatchIndex={findOpen && m.id === primary.id ? activeMatchIndex : undefined}
+              onMatchCountChange={m.id === primary.id ? setMatchCount : undefined}
+            />
+          ))}
+        </div>
       </div>
 
       {messages.length > 0 && (
