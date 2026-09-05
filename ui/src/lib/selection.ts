@@ -155,13 +155,17 @@ export function toggleRow(s: SelectionState, row: SelectableRow, scope: Selectio
  * Shift-click: extend from the anchor to `targetId` over `visibleIds` (the
  * loaded, in-order id list -- exact because the fetch window is append-only
  * from the top, so any two rendered rows have every row between them
- * loaded). Every row in the range takes on the anchor's own resulting
- * ticked state, computed once from `anchorBase` -- not each row's own
- * predicate membership -- so an "exclude" anchor excludes the whole range
- * and an "include" anchor includes it, with no per-row special case.
+ * loaded). A shift-click always *selects* the range, never deselects it --
+ * Outlook and Gmail both treat it as "extend the selection to here"
+ * unconditionally, and a person who unticked a row with ctrl-click and then
+ * shift-clicks is reaching for more rows, not fewer. Deselecting a block
+ * stays available through ctrl-click on each row, or clearing entirely.
+ * Recomputed once from `anchorBase` on every shift-click -- never from
+ * whatever a previous shift-click left behind, or a nearer one would leave
+ * a stale selected tail beyond the new target.
  *
- * With no anchor yet (the very first gesture), a shift-click behaves like
- * an ordinary toggle on the target row.
+ * With no anchor yet (the very first gesture), a shift-click selects the
+ * target row on its own, the same as any other shift-click's range of one.
  */
 export function extendRange(
   s: SelectionState,
@@ -173,21 +177,21 @@ export function extendRange(
   const scoped = selectionForScope(s, scope);
   const targetRow = rowsById.get(targetId);
   if (!targetRow) return scoped;
-  if (!scoped.anchorId || !scoped.anchorBase) return toggleRow(scoped, targetRow, scope);
+  if (!scoped.anchorId || !scoped.anchorBase) {
+    const next = setRowChecked(scoped, targetRow, true);
+    return {
+      ...next,
+      scope,
+      anchorId: targetRow.id,
+      anchorBase: { included: new Map(next.included), excluded: new Map(next.excluded) },
+    };
+  }
 
   const fromIdx = visibleIds.indexOf(scoped.anchorId);
   const toIdx = visibleIds.indexOf(targetId);
   if (fromIdx === -1 || toIdx === -1) return scoped;
   const [start, end] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
   const range = visibleIds.slice(start, end + 1);
-
-  const anchorRow = rowsById.get(scoped.anchorId);
-  const anchorBaseState: SelectionState = {
-    ...scoped,
-    included: scoped.anchorBase.included,
-    excluded: scoped.anchorBase.excluded,
-  };
-  const anchorChecked = anchorRow ? isRowSelected(anchorBaseState, anchorRow) : false;
 
   let next: SelectionState = {
     ...scoped,
@@ -196,7 +200,7 @@ export function extendRange(
   };
   for (const id of range) {
     const row = rowsById.get(id);
-    if (row) next = setRowChecked(next, row, anchorChecked);
+    if (row) next = setRowChecked(next, row, true);
   }
   return { ...next, scope, anchorId: scoped.anchorId, anchorBase: scoped.anchorBase };
 }

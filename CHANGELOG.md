@@ -114,10 +114,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A bulk mark-read/unmark-flag no longer reports every requested message as affected when some
   already carried the requested flag -- only rows that actually changed count
 - A mail selection is now scoped to the account, folder (or unified folder) and threading mode it
-  was made against. Switching to a different folder, account or unified view, or toggling
-  threading, clears it instead of leaving the bulk toolbar up and actionable against the folder
-  now on screen -- previously a "select all" or a hand-picked set of rows survived the switch, and
-  confirming a destructive bulk action from a different folder acted on the one it was made in
+  was made against. Switching to a different folder, account or unified view, toggling threading,
+  or navigating away to another part of the app and back, clears it instead of leaving the bulk
+  toolbar up and actionable against the folder now on screen -- previously a "select all" or a
+  hand-picked set of rows survived every one of those, and confirming a destructive bulk action
+  from a different folder acted on the one it was made in
+- Shift-click now always extends the selection to the row clicked, never deselects it -- ticking a
+  row off with ctrl-click and then shift-clicking further along previously painted the whole range
+  with that one row's now-unticked state, silently dropping rows that were already selected
+- The bulk panel's destructive-action confirmation now names the action it is about to take ("Move
+  to trash", "Move to Junk", "Move to <folder>") instead of always reading "Delete permanently",
+  the confirm dialog's own default leaking through for every action it serves
+- Switching to the unified view now selects its first folder automatically, the same way a
+  single account's own inbox already is -- previously the list area read "No messages in this
+  folder" until a folder was clicked by hand, indistinguishable from a folder that really was empty
+- An account that has never completed a sync pass (a wrong host or credentials) now shows its
+  error in the mail view itself, reading the same account-health signal the Accounts page already
+  used -- previously the mail view showed "Loading folders..." forever with no indication why
 - Emptying a folder confirms with the same count the request enforces, minted once and shown to
   the user before the confirmation dialog opens, rather than a client-cached folder count compared
   against nothing -- a stale count now fails with a clear error instead of silently deleting

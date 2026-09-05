@@ -881,6 +881,64 @@ class TestMailActionsUi:
         )
         assert resp.status_code == 204, resp.text
 
+    def test_an_account_that_never_connected_shows_its_error_in_the_mail_view(
+        self, page: Page, app_server: str, api_client: httpx.Client,
+    ) -> None:
+        """A never-connected account (`error`, `last_full_sync IS NULL`)
+        has no folder for the auto-select effect to land on, so the mail
+        view previously spun "Loading folders..." forever with nothing
+        telling the reader why -- the same information the Accounts page
+        already shows correctly. Reads the same predicate that page uses
+        rather than a second one computed here."""
+        email = unique_email("never-connects")
+        resp = api_client.post(
+            "/api/accounts",
+            json={
+                "name": email,
+                "imap_host": "nonexistent-host-does-not-resolve.invalid",
+                "imap_port": 993,
+                "imap_user": email,
+                "imap_password": "wrong",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        account = resp.json()
+        account["email"] = email
+
+        def _errored() -> dict[str, Any] | None:
+            detail = api_client.get(f"/api/accounts/{account['id']}").json()
+            return detail if detail["state"] == "error" else None
+
+        detail = wait_for(_errored, timeout_s=30.0, description="account settles into error")
+        assert detail["state_error"], "expected a state_error message once erroring"
+
+        page.goto(app_server)
+        select_account(page, account)
+        expect(page.get_by_text(detail["state_error"], exact=True)).to_be_visible(timeout=10_000)
+
+    def test_create_folder_naming_an_existing_one_shows_the_conflict(
+        self,
+        page: Page,
+        app_server: str,
+        ui_account: dict[str, Any],
+        junk_folder: dict[str, Any],
+    ) -> None:
+        """The server rejects a folder name already live on the account
+        with 409 -- the dialog surfaces it as a toast rather than doing
+        nothing visible and leaving only a console error."""
+        page.goto(app_server)
+        select_account(page, ui_account)
+        page.get_by_role("button", name="Manage folders", exact=True).click()
+
+        dialog = page.get_by_role("dialog", name="Manage folders")
+        expect(dialog).to_be_visible(timeout=15_000)
+        dialog.get_by_placeholder("New folder name").fill(junk_folder["imap_name"])
+        dialog.get_by_role("button", name="Create", exact=True).click()
+
+        expect(page.get_by_text("Could not create folder:", exact=False)).to_be_visible(
+            timeout=10_000,
+        )
+
     def test_manage_folders_offers_no_delete_for_special_use_folders(
         self,
         page: Page,
@@ -1311,6 +1369,78 @@ class TestMailActionsUi:
             "a stale explicit-id selection must not have been actionable in "
             "the folder navigated to -- both seed messages should still be in INBOX"
         )
+
+    def test_selection_does_not_survive_account_switch_calendar_roundtrip_or_threading_toggle(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The guard covers every shape where the list a selection was made
+        against stops being the list on screen, not only a folder switch
+        (covered above): switching accounts, navigating away to another
+        view and back, and toggling threading -- each changes what the
+        selection's ids even mean, or (for the view round-trip) leaves the
+        reader unsure whether a page they haven't looked at in a while
+        still reflects what they ticked."""
+        second_email = unique_email("second-account")
+        resp = api_client.post(
+            "/api/accounts",
+            json={
+                "name": second_email,
+                "imap_host": DOVECOT_ALIAS,
+                "imap_port": DOVECOT_IMAP_PORT,
+                "imap_user": second_email,
+                "imap_password": DOVECOT_PASSWORD,
+                "smtp_host": MAILPIT_ALIAS,
+                "smtp_port": MAILPIT_SMTP_PORT,
+                "smtp_user": second_email,
+                "smtp_password": "unused",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        second_account = resp.json()
+        second_account["email"] = second_email
+        wait_for_account_active(api_client, second_account["id"])
+
+        target = _list_folder(api_client, ui_account["id"], inbox_folder["id"])[0]
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+
+        # Account switch.
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+        select_account(page, second_account)
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
+
+        select_account(page, ui_account)
+        expect(row).to_be_visible(timeout=15_000)
+        expect(row.get_by_role("checkbox")).not_to_be_checked()
+
+        # Navigate away to another view (Calendar) and back.
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+        page.get_by_role("link", name="Calendar", exact=True).click()
+        page.wait_for_timeout(800)
+        page.get_by_role("link", name="Mail", exact=True).click()
+        expect(row).to_be_visible(timeout=15_000)
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
+        expect(row.get_by_role("checkbox")).not_to_be_checked()
+
+        # Threading toggle.
+        row.hover()
+        row.get_by_role("checkbox").click()
+        expect(page.get_by_text("1 selected", exact=True)).to_be_visible(timeout=10_000)
+        page.get_by_role("switch", name="Group by conversation").click()
+        expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
 
 
 def _channels(colour: str) -> list[float]:

@@ -315,3 +315,35 @@ class TestSelectionSurvivesItsRowLeavingTheCache:
                 "had already left the list cache when the action ran"
             ),
         )
+
+
+class TestUnifiedViewAutoSelectsAFolder:
+    """Switching into the unified view previously left no folder chosen
+    at all, so the list area read "No messages in this folder" -- the
+    same empty state a genuinely empty folder shows, which is honest for
+    neither case."""
+
+    def test_switching_to_unified_view_auto_selects_a_folder(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+    ) -> None:
+        account = _create_account(api_client, unique_email("unified-autoselect"))
+        inbox = wait_for_folder(api_client, account["id"], "INBOX")
+        unified_name = f"Unified Inbox {uuid.uuid4().hex[:8]}"
+        _set_unified_name(api_client, inbox["id"], unified_name)
+
+        msg = _deliver(
+            dovecot_endpoint, api_client, account["id"], inbox["id"],
+            account["email"], f"Unified autoselect {uuid.uuid4()}",
+        )
+
+        page.goto(app_server)
+        _select_unified_view(page)
+
+        # No folder click at all -- the first (only) unified folder should
+        # already be selected, and the message already visible.
+        expect(mail_row(page, msg["id"])).to_be_visible(timeout=15_000)
+        expect(page.get_by_text("No messages in this folder", exact=True)).to_have_count(0)

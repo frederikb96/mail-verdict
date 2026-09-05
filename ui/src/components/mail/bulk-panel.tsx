@@ -167,6 +167,7 @@ export function BulkPanel() {
         }}
         title={`${pending?.label ?? ""} ${count} messages?`}
         description="This acts on the whole selection as it stood when you selected it, resolved again at the moment you confirm. It cannot be undone."
+        confirmLabel={pending?.label}
         isConfirming={bulkAction.isPending}
         onConfirm={() => {
           if (!pending) return;
