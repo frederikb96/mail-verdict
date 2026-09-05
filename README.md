@@ -16,7 +16,10 @@ mirror, which is what keeps it simple.
 
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
   list that stays smooth on large mailboxes, and unified views across accounts. Folders can be
-  created and deleted (renaming and re-nesting are an IMAP limitation, not implemented).
+  created and deleted (renaming and re-nesting are an IMAP limitation, not implemented). Opening a
+  reply collapses the quoted original behind a "Show quoted text" control, and ctrl+F (or a
+  control beside the message's other icons) searches and highlights matches inside the open
+  message, which the browser's own find cannot reach.
 - **Compose** — a rich-text editor with Markdown input rules, send, reply, reply-all, forward and
   drafts, with attachments. A reply or forward embeds the original as a collapsible quote, replies
   thread correctly, and a sending identity is chosen for you — whichever address the original
@@ -43,10 +46,12 @@ mirror, which is what keeps it simple.
 - **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
   A sender's avatar shows their address-book photo when one exists — an embedded photo renders
   with no network request, a remote one follows the same allowlist as any other remote image —
-  and initials otherwise; never a lookup against an unrelated third party. Message HTML is
-  sanitized on the server and rendered in an isolated shadow root, on a light canvas by default —
-  mail is written assuming one, and cannot be recoloured reliably — with dark rendering available
-  per message through a toggle in its header.
+  and initials otherwise; never a lookup against an unrelated third party. Message HTML, including
+  a sender's own stylesheet, is sanitized on the server and rendered in an isolated shadow root —
+  every escaping declaration dropped, every remote reference gated behind the same allowlist that
+  governs images. A message opens dark when it declares its own dark-mode support and light
+  otherwise, judged from its own colours when it declares nothing; a toggle in its header always
+  overrides either default.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail, and
   read, create, edit and delete calendar events and contacts.
 

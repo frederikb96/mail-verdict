@@ -248,7 +248,7 @@ export function getEmailStyles(canvas: Canvas): string {
       color: inherit;
     }
     mark.search-match-active {
-      background: ${isDark ? "#f97316" : "#f97316"};
+      background: #f97316;
       color: #1c1917;
       box-shadow: 0 0 0 2px ${isDark ? "#fdba74" : "#c2410c"};
     }
@@ -507,13 +507,19 @@ export function EmailRenderer({
           "figure", "font", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
           "header", "hr", "i", "img", "ins", "kbd", "li", "main", "mark",
           "nav", "ol", "p", "pre", "q", "s", "section", "small", "span",
-          "strong", "sub", "summary", "sup", "table", "tbody", "td",
+          // style is here for the same reason it is in the backend's own
+          // allowlist -- a message's own sanitised stylesheet, which is
+          // what pickCanvas's declaresDarkModeSupport reads. Dropping it
+          // here would still leave the canvas decision correct (that
+          // reads the raw html prop, before this pass) but the message's
+          // own dark-mode rule would never actually reach the browser.
+          "strong", "style", "sub", "summary", "sup", "table", "tbody", "td",
           "tfoot", "th", "thead", "tr", "u", "ul", "wbr",
         ],
         ALLOWED_ATTR: [
           "align", "alt", "border", "cellpadding", "cellspacing", "class",
           "color", "colspan", "dir", "face", "height", "href", "hspace",
-          "id", "lang", "role", "rowspan", "size", "src", "style",
+          "id", "lang", "media", "role", "rowspan", "size", "src", "style",
           "summary", "target", "title", "type", "valign", "vspace", "width",
         ],
       });

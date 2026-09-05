@@ -117,15 +117,21 @@ export function ReadingPane() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
-        if (!primary || isEditableElement(e.target)) return;
+      if (!primary || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
+      // Already open: swallow the keystroke rather than falling through to
+      // isEditableElement below, which would otherwise defer to the
+      // browser's own find while focus sits inside the find input itself.
+      if (findOpen) {
         e.preventDefault();
-        setFindOpen(true);
+        return;
       }
+      if (isEditableElement(e.target)) return;
+      e.preventDefault();
+      setFindOpen(true);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [primary]);
+  }, [primary, findOpen]);
 
   const stepMatch = (direction: 1 | -1) => {
     setActiveMatchIndex((prev) => {
