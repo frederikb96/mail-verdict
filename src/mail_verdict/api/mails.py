@@ -59,7 +59,11 @@ from mail_verdict.core.image_sanitizer import (
     strip_remote_images,
 )
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
-from mail_verdict.core.sanitizer import declares_dark_mode_support, sanitize_email_html
+from mail_verdict.core.sanitizer import (
+    declares_dark_mode_support,
+    rewrite_remote_images,
+    sanitize_email_html,
+)
 from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import (
     Attachment,
@@ -573,23 +577,38 @@ def _text_to_html(text: str) -> str:
 @router.get("/{message_id}/quote", response_model=MessageQuoteResponse)
 async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
     """
-    A message's body as safe-to-send HTML, for embedding as a reply or
-    forward quote in the compose editor.
+    A message's body as HTML, shaped for local display, for embedding as a
+    reply or forward quote in the compose editor.
 
     Reads the raw body_html column rather than the display-shaped one
     get_message returns: that copy has cid: images rewritten to local,
-    unauthenticated attachment URLs and blocked remote images marked with
-    data-x-src, neither of which means anything to a message actually
-    being sent. Starting from the raw column and running it through the
-    same outbound sanitiser every other producer of outbox.body_html goes
-    through keeps that mapping in one place -- a remote image quotes as
-    the sender's own absolute URL, a cid: or locally-rewritten one simply
-    disappears, since there is nothing to attach it to.
+    unauthenticated attachment URLs, which means nothing to a message
+    actually being sent. Starting from the raw column and running it
+    through the same outbound sanitiser every other producer of
+    outbox.body_html goes through keeps that mapping in one place -- a
+    remote image quotes as the sender's own absolute URL, a cid: or
+    locally-rewritten one simply disappears, since there is nothing to
+    attach it to.
+
+    That real-URL form is then rewritten to the same data-x-src/data-x-bg
+    placeholder the reading pane uses, and restored only if this message's
+    own sender is already allowlisted -- the read path's own rule, applied
+    here too because the editor's quote node renders this HTML locally
+    (assigns it to innerHTML), where an unrewritten remote image would
+    fetch on every reply, reply-all, forward and reopened draft regardless
+    of whether the sender has ever been allowed to. Whatever placeholder
+    survives that is restored again, unconditionally, by create_outbox()
+    before a message actually leaves -- an allowlist decision about what
+    loads automatically in this reader is not a decision about what the
+    person being forwarded to gets to see.
     """
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
-            select(Message.body_html, Message.body_text).where(
+            select(
+                Message.body_html, Message.body_text,
+                Message.account_id, Message.from_addr,
+            ).where(
                 Message.id == message_id, Message.expunged_at.is_(None),
             )
         )
@@ -598,9 +617,19 @@ async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    body_html, body_text = row
+    body_html, body_text, account_id, from_addr = row
     if body_html:
-        return MessageQuoteResponse(html=sanitize_outbound_html(body_html))
+        # restore_remote_images is a no-op unless body_html already carries
+        # a data-x-src/data-x-style marker -- which it never should, since
+        # create_outbox() restores before anything is stored -- but is
+        # cheap defensive normalisation before the outbound sanitiser,
+        # which has no allowlist entry for either marker and would drop
+        # the image outright rather than pass it through unrecognised.
+        sanitized = sanitize_outbound_html(restore_remote_images(body_html))
+        display_html = rewrite_remote_images(sanitized)
+        if await _check_image_allowed(account_id, from_addr):
+            display_html = restore_remote_images(display_html)
+        return MessageQuoteResponse(html=display_html)
     if body_text:
         return MessageQuoteResponse(html=f"<p>{_text_to_html(body_text)}</p>")
     return MessageQuoteResponse(html="")

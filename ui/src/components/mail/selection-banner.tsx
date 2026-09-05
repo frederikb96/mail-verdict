@@ -23,7 +23,6 @@ interface SelectionBannerProps {
    * counts messages, so offering it here would contradict the rows shown. */
   threaded: boolean;
   loadedCount: number;
-  loadedIds: string[];
 }
 
 /**
@@ -34,7 +33,7 @@ interface SelectionBannerProps {
  * selection itself, the way Outlook's does.
  */
 export function SelectionBanner({
-  accountId, folderId, threaded, loadedCount, loadedIds,
+  accountId, folderId, threaded, loadedCount,
 }: SelectionBannerProps) {
   const selectionMode = useAtomValue(selectionModeAtom);
   const { count, state } = useSelection();
@@ -69,7 +68,7 @@ export function SelectionBanner({
           variant="link"
           size="sm"
           className="h-auto p-0 text-xs"
-          onClick={() => selectFolderScope(accountId!, folderId!, "all", folderTotal)}
+          onClick={() => selectFolderScope(accountId!, folderId!, "all")}
         >
           Select all {folderTotal} messages in {folder?.display_name ?? folder?.imap_name}
         </Button>
@@ -86,16 +85,14 @@ export function SelectionBanner({
           <DropdownMenuContent align="start">
             <DropdownMenuItem
               onClick={async () => {
-                const total = folder?.total_count ?? loadedIds.length;
-                await selectFolderScope(accountId!, folderId!, "all", total);
+                await selectFolderScope(accountId!, folderId!, "all");
               }}
             >
               Every message in this folder
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={async () => {
-                const total = folder?.unread_count ?? 0;
-                await selectFolderScope(accountId!, folderId!, "unread", total);
+                await selectFolderScope(accountId!, folderId!, "unread");
               }}
             >
               Every unread message in this folder

@@ -6,6 +6,7 @@ import { ArrowLeft, FileEdit, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ComposeForm, type ComposeFormControls } from "@/components/mail/compose-form";
 import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
+import { parseQuotedMessageAttrs } from "@/components/mail/editor/quoted-message-node";
 import { useMessageQuote } from "@/hooks/use-mails";
 import { useIdentities } from "@/hooks/use-identities";
 import { matchIdentity } from "@/lib/identities";
@@ -28,13 +29,28 @@ interface DraftEditorProps {
  *
  * The draft's body is reopened through GET /api/messages/:id/quote rather
  * than mail.body_html directly -- that field is display-shaped (cid:
- * images rewritten to local attachment URLs, blocked remote images
- * marked with data-x-src), neither of which means anything to a message
- * being edited and resent. The quote endpoint's own outbound sanitiser
- * pass is exactly the "make this safe to send again" step a reopened
- * draft needs too, and it is idempotent over content that already went
- * through it once when this draft was first saved.
+ * images rewritten to local attachment URLs), which means nothing to a
+ * message being edited and resent. The quote endpoint's own outbound
+ * sanitiser pass is exactly the "make this safe to send again" step a
+ * reopened draft needs too, and it is idempotent over content that
+ * already went through it once when this draft was first saved.
+ *
+ * ComposeForm's markdown export contributes nothing for an embedded quote
+ * (see quoted-message-node.ts), so a fresh reply or forward supplies the
+ * `> `-prefixed plain-text form separately, built from the message being
+ * quoted. Reopening a draft has no such message to hand -- only this
+ * draft's own already-combined body_text, which the quote wrapper's
+ * attribution line marks the start of, since that is exactly the text
+ * this same combination produced when the draft was first saved.
  */
+function draftQuotedText(bodyText: string | null, quoteHtml: string): string {
+  const attrs = parseQuotedMessageAttrs(quoteHtml);
+  if (!attrs || !bodyText) return "";
+  const marker = `\n\n${attrs.attribution}`;
+  const index = bodyText.indexOf(marker);
+  return index >= 0 ? bodyText.slice(index) : "";
+}
+
 export function DraftEditor({ mail, onDone }: DraftEditorProps) {
   const toAddrs = Array.isArray(mail.to_addrs) ? (mail.to_addrs as string[]) : [];
   const ccAddrs = Array.isArray(mail.cc_addrs) ? (mail.cc_addrs as string[]) : [];
@@ -43,6 +59,7 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
   const { data: quote, isLoading } = useMessageQuote(mail.id);
   const { data: identities } = useIdentities(mail.account_id);
   const defaultIdentityId = matchIdentity([mail.from_addr], identities);
+  const quotedText = quote ? draftQuotedText(mail.body_text, quote.html) : "";
 
   const [isDirty, setIsDirty] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -74,6 +91,7 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
             defaultSubject={mail.subject ?? ""}
             defaultIdentityId={defaultIdentityId}
             defaultBodyHtml={quote.html}
+            quotedText={quotedText}
             inReplyTo={mail.in_reply_to ?? undefined}
             references={mail.references ?? undefined}
             replacesMessageId={mail.id}

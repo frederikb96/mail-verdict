@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { VList, type VListHandle } from "virtua";
-import { Loader2, Search as SearchIcon } from "lucide-react";
+import { AlertCircle, Loader2, Search as SearchIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -13,13 +13,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { FolderPicker } from "@/components/search/folder-picker";
 import { SearchResultRow } from "@/components/search/search-result-row";
 
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useSearchResults } from "@/hooks/use-search";
+import { useSearchFolders } from "@/hooks/use-search-folders";
 import {
   ALL_SEARCH_FIELDS,
   searchFieldsAtom,
   searchFolderIdsAtom,
+  searchQueryAtom,
   searchSemanticModeAtom,
 } from "@/lib/search-prefs";
 import {
@@ -42,8 +44,8 @@ const FIELD_LABELS: Record<SearchField, string> = {
 const LOAD_MORE_MARGIN = 200;
 
 export function SearchPage() {
-  const [rawQuery, setRawQuery] = useState("");
-  const [query, setQuery] = useState("");
+  const [rawQuery, setRawQuery] = useAtom(searchQueryAtom);
+  const [query, setQuery] = useState(rawQuery);
   const router = useRouter();
   const selectedAccountId = useAtomValue(selectedAccountIdAtom);
   const isUnified = useAtomValue(isUnifiedViewAtom);
@@ -66,13 +68,34 @@ export function SearchPage() {
   }, [rawQuery]);
 
   const searchAccountId = isUnified ? undefined : (selectedAccountId ?? undefined);
-  const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useSearchResults({
-    query,
-    accountId: searchAccountId,
-    folderIds,
-    fields,
-    semantic,
-  });
+  const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage, isError, error } =
+    useSearchResults({
+      query,
+      accountId: searchAccountId,
+      folderIds,
+      fields,
+      semantic,
+    });
+
+  // The picker's own options, scoped the same way the search itself is --
+  // an explicit folder selection made under a different account can name
+  // no folder visible here, which the server ANDs into a query that can
+  // never match anything, presented as an ordinary "No results found"
+  // rather than the account-mismatch it actually is.
+  const { options: scopedFolderOptions, isLoading: scopedFoldersLoading } =
+    useSearchFolders(searchAccountId);
+  useEffect(() => {
+    if (folderIds === null || scopedFoldersLoading) return;
+    const visibleIds = new Set(scopedFolderOptions.map((o) => o.folder.id));
+    if (!folderIds.some((id) => visibleIds.has(id))) {
+      // Falls back to "every folder in this scope" -- the same state the
+      // picker already collapses to once every visible folder is ticked.
+      setFolderIds(null);
+    }
+    // Re-evaluate only when the account scope (or its folder list
+    // resolving) changes, not on every unrelated folder-list refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchAccountId, scopedFoldersLoading]);
 
   const results = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data]);
 
@@ -117,7 +140,15 @@ export function SearchPage() {
   };
 
   const showEmptyPrompt = query.trim().length < 2;
-  const showNoResults = !showEmptyPrompt && !isLoading && results.length === 0;
+  // A failed query (a semantic search with no provider configured, most
+  // commonly) reads as "No results found" otherwise -- a lie the user
+  // will act on by rephrasing or giving up on the feature.
+  const showError = !showEmptyPrompt && isError;
+  const showNoResults = !showEmptyPrompt && !isLoading && !showError && results.length === 0;
+  const errorMessage =
+    semantic && error instanceof ApiError && error.status === 503
+      ? "Semantic search is unavailable -- no AI provider is configured for it."
+      : error?.message || "Search failed.";
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
@@ -134,7 +165,7 @@ export function SearchPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <FolderPicker selectedIds={folderIds} onChange={setFolderIds} />
+        <FolderPicker selectedIds={folderIds} onChange={setFolderIds} accountId={searchAccountId} />
 
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           <Switch checked={semantic} onCheckedChange={setSemantic} />
@@ -173,6 +204,13 @@ export function SearchPage() {
           <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
             <SearchIcon className="h-12 w-12 opacity-50" />
             <p>Enter at least 2 characters to search</p>
+          </div>
+        )}
+
+        {showError && (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+            <AlertCircle className="h-12 w-12 opacity-50" />
+            <p>{errorMessage}</p>
           </div>
         )}
 

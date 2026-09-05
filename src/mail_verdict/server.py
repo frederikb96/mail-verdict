@@ -97,8 +97,8 @@ def start_liveness_server(host: str, port: int) -> tuple[ThreadingHTTPServer, Th
     Start the liveness listener: its own socket, its own thread, no asyncio.
 
     A `ThreadingHTTPServer` so one slow or stuck client can never make the
-    next probe queue behind it. Called at process startup rather than from
-    the async `lifespan` below, so liveness is already answering before
+    next probe queue behind it. Called from `lifespan` below, deliberately
+    as its very first action, so liveness is already answering before
     anything that could be slow -- the database connection among it -- has
     even been attempted.
 
@@ -549,50 +549,46 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     @api_router.get("/health")
     async def health() -> JSONResponse:
         """
-        Readiness: PostIMAP contract version confirmed.
+        Readiness: the PostIMAP contract is confirmed and the database answers.
 
-        Returns the cached contract version flag set during startup. If the
-        flag is false, attempts a non-blocking retry with a short timeout.
-        Does NOT block on database pool access -- a heavy load that exhausts
-        the pool does not starve the readiness probe.
+        Both checks are bounded by `config.server.readiness_timeout_seconds`,
+        and a timeout is treated as busy rather than broken -- a loaded pod
+        stays in the Service, which matters at one replica. Only an explicit
+        failure takes it out: a database that answers with an error, or that
+        was never initialised, is a pod that can serve nothing but 500s.
 
-        If the contract check fails at startup, the pod starts unready and
-        stays unready. A successful check enables readiness and the pod remains
-        ready through transient database issues (because readiness reflects
-        PostIMAP compatibility, not transient connectivity).
+        Liveness is a separate socket on its own thread, so a slow answer here
+        can never get the process restarted.
         """
         global _contract_ok
 
-        # If already confirmed, return immediately
-        if _contract_ok:
-            return JSONResponse(
-                status_code=200,
-                content={"status": "ready", "postimap_contract": "ok"},
-            )
+        timeout = config.server.readiness_timeout_seconds
+        db_state = "ok"
 
-        # If not yet confirmed, attempt retry with timeout to avoid blocking
-        # when the pool is exhausted. Use a short timeout since pool contention
-        # is the real issue -- we don't want to wait 5+ seconds here.
         try:
             db = get_db_connection()
-            # Try to check the contract with a 500ms timeout
-            _contract_ok = await asyncio.wait_for(_check_contract(db), timeout=0.5)
+            if not _contract_ok:
+                _contract_ok = await asyncio.wait_for(_check_contract(db), timeout=timeout)
+            elif not await asyncio.wait_for(db.health_check(), timeout=timeout):
+                db_state = "unreachable"
         except asyncio.TimeoutError:
-            # Pool is likely exhausted, return based on what we know
-            logger.debug("Readiness probe contract check timed out (pool exhausted)")
+            # Busy, not broken. Whatever was last established still stands.
+            db_state = "slow"
+            logger.debug("Readiness probe timed out after %ss", timeout)
         except RuntimeError as e:
-            # Database not initialized
-            logger.debug(f"Readiness probe failed: database not initialized: {e}")
+            db_state = "unreachable"
+            logger.warning("Readiness probe: database not initialised: %s", e)
         except Exception as e:
-            # Any other error, just use the cached flag
-            logger.warning(f"Readiness probe contract check error: {e}", exc_info=False)
+            db_state = "unreachable"
+            logger.warning("Readiness probe error: %s", e, exc_info=False)
 
-        ready = _contract_ok
+        ready = _contract_ok and db_state != "unreachable"
         return JSONResponse(
             status_code=200 if ready else 503,
             content={
                 "status": "ready" if ready else "not_ready",
                 "postimap_contract": "ok" if _contract_ok else "not confirmed",
+                "database": db_state,
             },
         )
 

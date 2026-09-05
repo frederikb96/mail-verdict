@@ -23,6 +23,36 @@ export interface MailEditorHandle {
   focus: () => void;
 }
 
+/**
+ * Flatten a pasted table to one paragraph per row, its cells joined by a
+ * visible gap rather than run together.
+ *
+ * The editor's schema (below) carries no table node -- deliberately small,
+ * the same reasoning quoted-message-node.ts gives for not parsing a quoted
+ * message's own markup into it either. Without a node to hold a cell
+ * boundary, ProseMirror's default HTML parsing has nowhere to put one, so
+ * adjacent cells' text arrives with nothing between them at all. Doing the
+ * flattening here, before that parse ever runs, is what turns the missing
+ * boundary into an actual character rather than markup a missing node type
+ * would just drop.
+ */
+function flattenPastedTables(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("table").forEach((table) => {
+    const replacement = document.createDocumentFragment();
+    table.querySelectorAll("tr").forEach((row) => {
+      const p = document.createElement("p");
+      Array.from(row.querySelectorAll("td, th")).forEach((cell, index) => {
+        if (index > 0) p.append(document.createTextNode("   "));
+        while (cell.firstChild) p.append(cell.firstChild);
+      });
+      replacement.append(p);
+    });
+    table.replaceWith(replacement);
+  });
+  return doc.body.innerHTML;
+}
+
 interface MailEditorProps {
   /** Initial content, as HTML -- either empty, a bare paragraph plus an
    * embedded quote (see quoted-message-node.ts's parseHTML), or a whole
@@ -89,7 +119,15 @@ export function MailEditor({
         // Markdown-rendered HTML source, as literal text, in the
         // text/plain flavour and offers no text/html at all -- the
         // raw-HTML-as-text failure this editor exists to fix.
-        if (clipboard.getData("text/html")) return false;
+        const html = clipboard.getData("text/html");
+        if (html) {
+          // A table is the one shape the default HTML parsing handles
+          // badly enough to need pre-processing -- see
+          // flattenPastedTables above.
+          if (!/<table[\s>]/i.test(html)) return false;
+          editorRef.current?.chain().focus().insertContent(flattenPastedTables(html)).run();
+          return true;
+        }
         const text = clipboard.getData("text/plain");
         if (!text) return false;
         editorRef.current?.chain().focus().insertContent(text, { contentType: "markdown" }).run();

@@ -154,7 +154,11 @@ class ThreadResponse(BaseModel):
 
 
 class MessageQuoteResponse(BaseModel):
-    """A message's body as safe-to-send HTML, for a reply or forward quote."""
+    """A message's body as HTML, shaped for local display in a reply or
+    forward quote -- remote images are placeholder-rewritten and restored
+    only if this message's sender is already allowlisted, the same rule
+    the reading pane applies. create_outbox() restores whatever
+    placeholder remains before the message actually leaves."""
 
     html: str
 

@@ -89,9 +89,17 @@ def build_eml(
     subject: str,
     body: str = "Test message body.",
     message_id: str | None = None,
+    in_reply_to: str | None = None,
     content_type: str = "text/plain; charset=utf-8",
 ) -> bytes:
-    """Build a minimal RFC822 message with CRLF line endings for LMTP delivery."""
+    """Build a minimal RFC822 message with CRLF line endings for LMTP delivery.
+
+    in_reply_to (an earlier message's own Message-ID, angle brackets
+    included) also sets References to that same value -- enough for
+    PostIMAP's own threading, which walks References/In-Reply-To against
+    (account_id, message_id) and joins a match's thread, to put both
+    messages on one thread_id.
+    """
     headers = [
         f"From: {sender}",
         f"To: {recipient}",
@@ -99,6 +107,9 @@ def build_eml(
     ]
     if message_id is not None:
         headers.append(f"Message-ID: {message_id}")
+    if in_reply_to is not None:
+        headers.append(f"In-Reply-To: {in_reply_to}")
+        headers.append(f"References: {in_reply_to}")
     headers += ["MIME-Version: 1.0", f"Content-Type: {content_type}"]
     lines = [*headers, "", body, ""]
     return "\r\n".join(lines).encode("utf-8")

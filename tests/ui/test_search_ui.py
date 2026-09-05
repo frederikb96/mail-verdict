@@ -58,6 +58,15 @@ def _seed_scale_fixture(postgres_url: str, count: int) -> tuple[str, str]:
                 ),
                 {"id": folder_id, "account_id": account_id},
             )
+            # A second, empty folder -- so the picker has more than one to
+            # offer. TestFolderPicker narrows to just this one and back.
+            await conn.execute(
+                text(
+                    "INSERT INTO folders (id, account_id, imap_name) "
+                    "VALUES (:id, :account_id, 'Archive')"
+                ),
+                {"id": uuid.uuid4(), "account_id": account_id},
+            )
             table = Table(
                 "messages", MetaData(),
                 Column("id", Uuid), Column("account_id", Uuid), Column("folder_id", Uuid),
@@ -120,7 +129,7 @@ class TestSearchVirtualization:
 
 
 class TestFolderPicker:
-    def test_defaults_to_all_folders_and_a_change_persists_across_reload(
+    def test_defaults_to_all_folders_and_a_narrowed_change_persists_across_reload(
         self, page: Page, app_server: str, scale_fixture: tuple[str, str],
     ) -> None:
         page.goto(f"{app_server}/search")
@@ -128,17 +137,50 @@ class TestFolderPicker:
         expect(trigger).to_be_visible(timeout=15_000)
 
         trigger.click()
-        page.get_by_text("Deselect all", exact=True).click()
-        expect(page.get_by_role("button", name="No folders", exact=True)).to_be_visible()
+        page.get_by_role("checkbox", name="Archive", exact=True).uncheck()
+        page.keyboard.press("Escape")
+        expect(page.get_by_role("button", name="1 of 2 folders", exact=True)).to_be_visible()
 
         page.reload()
-        expect(page.get_by_role("button", name="No folders", exact=True)).to_be_visible(
+        expect(page.get_by_role("button", name="1 of 2 folders", exact=True)).to_be_visible(
             timeout=15_000
         )
 
         # Restore the default for any test running later in this module.
-        page.get_by_role("button", name="No folders", exact=True).click()
+        page.get_by_role("button", name="1 of 2 folders", exact=True).click()
         page.get_by_text("Select all", exact=True).click()
+        expect(page.get_by_role("button", name="All folders", exact=True)).to_be_visible()
+
+    def test_the_last_folder_left_cannot_be_deselected(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """An empty folder scope reads "unrestricted" on the wire (an
+        absent query param), so unchecking the last folder must refuse --
+        the same guard the field toggles already have. There is also no
+        "Deselect all" button any more, since its only possible outcome is
+        exactly that state."""
+        page.goto(f"{app_server}/search")
+        trigger = page.get_by_role("button", name="All folders", exact=True)
+        expect(trigger).to_be_visible(timeout=15_000)
+        trigger.click()
+
+        expect(page.get_by_text("Deselect all", exact=True)).to_have_count(0)
+
+        page.get_by_role("checkbox", name="Archive", exact=True).uncheck()
+        inbox_checkbox = page.get_by_role("checkbox", name="INBOX", exact=True)
+        expect(inbox_checkbox).to_be_checked()
+        # .uncheck() asserts its own postcondition (unchecked afterward) and
+        # raises when that doesn't hold -- exactly what refusing this click
+        # produces, so a plain .click() is what proves the refusal rather
+        # than failing the test on it.
+        inbox_checkbox.click()
+
+        # Refused: still checked, nothing collapsed to an empty scope.
+        expect(inbox_checkbox).to_be_checked()
+
+        # Restore the default for any test running later in this module.
+        page.get_by_text("Select all", exact=True).click()
+        page.keyboard.press("Escape")
         expect(page.get_by_role("button", name="All folders", exact=True)).to_be_visible()
 
 
@@ -160,3 +202,56 @@ class TestSemanticMode:
 
         page.get_by_role("switch", name="Semantic search").click()
         expect(subject_toggle).to_be_visible(timeout=5_000)
+
+    def test_semantic_search_with_no_provider_names_the_cause(
+        self,
+        page: Page,
+        app_server: str,
+        scale_fixture: tuple[str, str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The provider key is resolved fresh on every call (env var
+        fallback included), not cached at server startup -- so this can
+        force the "no provider" case in-process even on a host whose own
+        shell has a real OPENAI_API_KEY exported, which would otherwise be
+        inherited here. The page must say so rather than show the
+        ordinary empty state, which reads as "rephrase and try again"."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+
+        page.get_by_role("switch", name="Semantic search").click()
+        search_input.fill(_MARKER)
+
+        expect(page.get_by_text("Semantic search is unavailable", exact=False)).to_be_visible(
+            timeout=15_000
+        )
+        with pytest.raises(AssertionError):
+            expect(page.get_by_text("No results found", exact=True)).to_be_visible(timeout=5_000)
+
+        # Restore the default for any test running later in this module.
+        page.get_by_role("switch", name="Semantic search").click()
+
+
+class TestQueryPersistence:
+    def test_a_query_survives_back_from_an_opened_result(
+        self, page: Page, app_server: str, scale_fixture: tuple[str, str],
+    ) -> None:
+        """The folder scope and semantic mode already survive a reload;
+        the typed query itself did not survive even a Back."""
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+
+        rows = page.locator('[data-testid="search-result-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+        rows.first.click()
+        expect(page).to_have_url(f"{app_server}/")
+
+        page.go_back()
+        expect(page).to_have_url(f"{app_server}/search")
+        expect(search_input).to_have_value(_MARKER)

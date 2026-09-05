@@ -11,12 +11,14 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   through api/identities.py to the from_addr the row is actually written
   with, falling back to the account's default identity and then to
   accounts.imap_user (PostIMAP's own fallback) if it has none. body_html
-  is passed through core/outbound_sanitizer.py before it reaches
-  insert_outbox() -- the boundary that makes composed, pasted and quoted
-  content safe to send -- and requires body_text alongside it, since
-  nothing derives a text/plain alternative from HTML on this producer's
-  behalf. The MCP send_mail/draft_mail tools only ever accept body_text,
-  so neither sees this path.
+  has any quoted image's display-only placeholder restored to a real URL
+  (see core/image_sanitizer.py), then is passed through
+  core/outbound_sanitizer.py before it reaches insert_outbox() -- the
+  boundary that makes composed, pasted and quoted content safe to send --
+  and requires body_text alongside it, since nothing derives a text/plain
+  alternative from HTML on this producer's behalf. The MCP
+  send_mail/draft_mail tools only ever accept body_text, so neither sees
+  this path.
 GET /api/outbox — list outbox rows, for the outbox/status view
 """
 
@@ -38,6 +40,7 @@ from mail_verdict.api.schemas import (
     OutboxResponse,
 )
 from mail_verdict.config import get_config
+from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
@@ -180,7 +183,20 @@ async def create_outbox(request: Request) -> OutboxResponse:
         raise HTTPException(
             status_code=400, detail="body_text is required whenever body_html is set",
         )
-    body_html = sanitize_outbound_html(payload.body_html) if payload.body_html else None
+    # A quoted reply or forward may still carry the display-only
+    # data-x-src/data-x-style placeholder the quote endpoint (api/mails.py)
+    # rewrites remote images to, unrestored if the quoted sender was never
+    # allowlisted -- restoring it here, on every outbox row regardless of
+    # whether it is sent immediately or only saved as a draft, is what
+    # keeps a quoted image reaching whoever this goes to, independent of
+    # this account's own allowlist. sanitize_outbound_html has no
+    # allowlist entry for either placeholder and would drop the image
+    # outright rather than pass it through unrecognised.
+    body_html = (
+        sanitize_outbound_html(restore_remote_images(payload.body_html))
+        if payload.body_html
+        else None
+    )
 
     db = get_db_connection()
     async with db.session() as session:

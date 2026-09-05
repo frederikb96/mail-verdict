@@ -18,12 +18,21 @@ export interface SearchFolderOption {
   accountName: string;
 }
 
-export function useSearchFolders(): {
+/**
+ * @param accountId Narrows the returned folders to one account -- omit for
+ *   every active account's folders (the unified view). Passing an id the
+ *   search itself is scoped to is what keeps the picker from offering a
+ *   folder the query can never match (server-side, account_id and
+ *   folder_id are ANDed).
+ */
+export function useSearchFolders(accountId?: string): {
   options: SearchFolderOption[];
   isLoading: boolean;
 } {
   const { data: accounts, isLoading: accountsLoading } = useAccounts();
-  const activeAccounts = (accounts ?? []).filter((a) => a.is_active);
+  const activeAccounts = (accounts ?? [])
+    .filter((a) => a.is_active)
+    .filter((a) => accountId === undefined || a.id === accountId);
 
   const results = useQueries({
     queries: activeAccounts.map((account) => ({

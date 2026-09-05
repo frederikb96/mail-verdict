@@ -14,7 +14,6 @@ Check status:
 
   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
   kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "mail-verdict.fullname" . }} 8080:{{ .Values.service.port }}
-  curl http://localhost:8080/api/health/live
   curl http://localhost:8080/api/health
 
 {{- if .Values.ingress.enabled }}

@@ -13,8 +13,16 @@ mail actually needs -- the quote bar, a monospace code block, unwrapped
 list items -- are set by this pass itself rather than passed through. The
 one exception is the two fixed class values the compose editor's own
 quote wrapper writes (gmail_quote, gmail_attr) -- the shape Gmail keys its
-quote-collapsing UI on -- allowed by exact value rather than by name, so
-nothing a quoted message's own content contributes can produce them.
+quote-collapsing UI on -- allowed by exact value rather than by name.
+Exact-value matching stops a quoted message's own content from combining
+one of these values with an extra token onto the same attribute; it does
+not stop a sender writing the value verbatim, which passes exactly like
+the composer's own wrapper. That forgery does not resolve to anything
+today only because quoted-message-node.ts always reads the first
+blockquote and the first .gmail_attr in document order, and the
+composer's own wrapper is always outermost -- so a forged nested one is
+never reached. The parser making that assumption is what keeps this an
+observation rather than a bug, not this allowlist.
 """
 
 from __future__ import annotations

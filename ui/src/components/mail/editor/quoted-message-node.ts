@@ -92,6 +92,31 @@ export function buildQuotedMessageHtml(attrs: QuotedMessageAttributes): string {
   return buildQuotedMessageElement(attrs).outerHTML;
 }
 
+/** The inverse of buildQuotedMessageElement -- pulled out so parseHTML
+ * below (reopening a draft inside the editor) and parseQuotedMessageAttrs
+ * (reading one outside it, before the editor exists -- see
+ * draft-editor.tsx) share one reconstruction rather than two that could
+ * drift apart. */
+function readQuotedMessageAttrs(wrapper: HTMLElement): QuotedMessageAttributes {
+  const blockquote = wrapper.querySelector("blockquote");
+  const attribution = wrapper.querySelector(".gmail_attr");
+  return {
+    html: blockquote ? blockquote.innerHTML : "",
+    attribution: attribution instanceof HTMLElement ? extractMultilineText(attribution) : "",
+  };
+}
+
+/** Find and read a quoted-message wrapper inside an arbitrary HTML
+ * string, outside of any editor instance -- a reopened draft's own quote,
+ * before ComposeForm has parsed it into the editor's document. Returns
+ * null when the string carries no such wrapper (a fresh compose, or a
+ * draft with no quote in it). */
+export function parseQuotedMessageAttrs(html: string): QuotedMessageAttributes | null {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const wrapper = doc.querySelector('div[data-quoted-message="true"]');
+  return wrapper instanceof HTMLElement ? readQuotedMessageAttrs(wrapper) : null;
+}
+
 export const QuotedMessage = Node.create({
   name: "quotedMessage",
   group: "block",
@@ -122,15 +147,7 @@ export const QuotedMessage = Node.create({
         // a saved HTML draft has to read them back out of that markup
         // the same way it wrote them, rather than from an attribute the
         // wrapper never carried.
-        getAttrs: (dom) => {
-          if (!(dom instanceof HTMLElement)) return false;
-          const blockquote = dom.querySelector("blockquote");
-          const attribution = dom.querySelector(".gmail_attr");
-          return {
-            html: blockquote ? blockquote.innerHTML : "",
-            attribution: attribution instanceof HTMLElement ? extractMultilineText(attribution) : "",
-          };
-        },
+        getAttrs: (dom) => (dom instanceof HTMLElement ? readQuotedMessageAttrs(dom) : false),
       },
     ];
   },

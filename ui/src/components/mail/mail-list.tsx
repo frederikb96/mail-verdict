@@ -333,7 +333,6 @@ export function MailList() {
         folderId={isUnifiedView ? null : folderId}
         threaded={threaded}
         loadedCount={allMailIds.length}
-        loadedIds={allMailIds}
       />
       {allMails.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">

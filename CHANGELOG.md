@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Search can be scoped to exactly the folders and fields you mean, and remembers the choice.
-  Opening it offers a folder picker (every folder selected by default, with select-all/deselect-
-  all) and toggles for subject/from/to/body -- both enforced by the query itself, not filtered
+- Search can be scoped to exactly the folders and fields you mean, and remembers the choice --
+  the query text included, so opening a result and pressing Back returns to the same search.
+  Opening it offers a folder picker (every folder selected by default, with a select-all; there
+  is deliberately no way to deselect down to zero, which would search unscoped rather than
+  nothing) and toggles for subject/from/to/body -- both enforced by the query itself, not filtered
   afterward, so a scoped search stays scoped across every page. Matching is fuzzy rather than a
   plain substring test (a typo still finds the message; pg_trgm's `word_similarity`, left out for
   an `@` token since two unrelated addresses sharing a domain score higher on it than a genuine
@@ -30,10 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Compose can send an HTML body alongside the plain-text one: `POST /api/outbox` sanitises
   `body_html` for safe sending (a small, mail-client-safe tag vocabulary; no class or style
   attribute survives from the input) before it reaches the outbox row, and requires `body_text`
-  alongside it. `GET /api/messages/:id/quote` turns a message's raw body into the same safe shape
-  for quoting in a reply or forward, and for reopening a saved draft -- a remote image quotes as
-  its own absolute URL, and a `cid:` or other locally-meaningful reference is dropped rather than
-  left broken
+  alongside it. `GET /api/messages/:id/quote` turns a message's raw body into the shape the
+  composer renders locally for a reply, forward or reopened draft, for sending -- a `cid:` or
+  other locally-meaningful reference is dropped rather than left broken, and a remote image is
+  rewritten to the same privacy placeholder the reading pane uses (restored only once its sender
+  is allowlisted), so quoting a message never fetches its images without consent. Sending
+  restores whatever placeholder remains, so the quote a recipient sees still carries the original
+  image regardless of this account's own allowlist
 - Replying now sends from whichever of the account's identities the original message was
   addressed to, rather than always the starred default; a fresh compose still uses the default. A
   sending identity is selectable in the composer whenever an account has more than one
@@ -80,6 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A predicate-based bulk action ("select all") or a folder-wide menu action shows a heads-up that
   it may take a while on a large folder -- the write itself is one statement over however many
   rows match, resolved server-side before the request returns
+- A provider API key can now be entered, replaced and cleared from Settings -- a masked field per
+  provider with its own Save and Clear, rather than only through the API directly
 
 ### Changed
 
@@ -94,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The calendar invitations panel replaces its one-column-per-linked-calendar table with a chip
   picker per identity, so the number of calendars in an account no longer decides the width of
   the page
+
+### Removed
+
+- `GET /api/health/live`. Liveness is answered by a plain socket on its own port instead, so a
+  deployment whose probe names that path must drop it and let the chart's own liveness probe
+  apply -- otherwise the probe fails every check after upgrading and the pod restart-loops
 
 ### Fixed
 
@@ -150,9 +163,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   catches up on new mail by any of the three triggers, including switching to another folder and
   back to it, since the cached pages survive that unobserved (a full page reload does catch up,
   as does any bulk action anywhere completing)
-
-### Fixed
-
 - A message's `<title>`, `<head>`, or similar document-structure markup no longer renders as
   visible copy at the top of the message. Stripping such a tag kept its text and hoisted it into
   the body -- correct for a stray inline tag, wrong for one that was never meant to be read
@@ -168,7 +178,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The liveness probe answers from a plain background socket on its own port, independent of the
   application's event loop. A handler that blocks that loop (heavy concurrent load, a bug) no
   longer risks the pod being restarted for merely being busy — only a genuinely dead or hung
-  process fails it now. The readiness probe (`/api/health`) is unaffected and still reflects load
+  process fails it now
+- Readiness (`/api/health`) checks the database again, and reports what it saw. A pod that had
+  lost its database entirely -- a rotated password, Postgres down, a pool permanently exhausted --
+  stayed Ready and kept taking traffic it could only answer with errors. The check is bounded by
+  `server.readiness_timeout_seconds`, and a timeout counts as busy rather than broken, so a merely
+  loaded pod stays in the Service; only an explicit failure takes it out. The response carries a
+  `database` field naming which of the three cases applied
 - The calendar month view no longer costs several seconds per request regardless of how much it
   returns, and no longer holds up every other request while it works. A long-running recurring
   series (a daily reminder set up years ago is all it takes) was re-walked from its own start
@@ -202,6 +218,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings category the interface expects but the server didn't return now explains that the
   interface and the server may disagree on which categories exist, rather than saying nothing
   more than "No settings available for this category"
+- Reopening a saved reply or forward draft carries its plain-text quote forward again -- it
+  previously came back empty, so the two MIME parts of a resaved draft disagreed, and sending an
+  untouched draft (nothing retyped) could fail outright since the text part had nothing in it at
+  all while the HTML part still carried the quote
+- A table pasted into the composer flattens to one paragraph per row with its cells kept apart,
+  rather than run together with nothing between them
+- The composer's To/Cc/Bcc field keeps its accessible name once it holds a chip -- its visible
+  placeholder disappears at that point (correctly, next to a chip it would read oddly), which
+  previously took the field's only name with it
+- Double-clicking Send no longer queues the same message twice. The button's own disabled state
+  was reacting to react-query's isPending a render late, which two clicks landing before that
+  render both slipped past; the submission itself is now guarded directly
+- Trashing (or archiving, marking spam, or otherwise moving out of its folder) any message in the
+  conversation a reply or forward is in progress against -- not only the exact one it quotes, but
+  any older message in the same thread the reader has expanded -- no longer discards that reply
+  with no prompt. The action itself still goes through -- and remains undoable exactly as before
+  -- but the reply box underneath it is no longer unmounted along with the reading pane's old
+  content
+- Search's folder picker only offers the account currently being searched -- picking a folder
+  from another account produced a query that could never match, shown as an ordinary
+  "No results found" rather than the account/folder mismatch it actually was
+- Semantic search with no AI provider configured now says so, rather than showing the same
+  empty state a genuine no-match search gives
+- A recurring calendar series that takes too long to expand runs on its own bounded thread pool
+  rather than the one every other background job shares, so a retried request against the same
+  pathological object can no longer starve unrelated work by slowly exhausting shared workers
+- A DAV account's "Synced" time no longer reads "Synced now ago" (or "Synced Yesterday ago") for
+  a sync that just completed or completed yesterday
+- A settings field's label reads as a sentence ("Default event duration minutes") rather than
+  its raw key name
+
 
 ## [3.1.1] - 2026-09-03
 

@@ -9,11 +9,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import { useToast } from "@/hooks/use-toast";
-import { selectedMailIdAtom } from "@/lib/atoms";
+import { activeReplyDirtyForThreadIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 import type {
   FolderOrderResponse,
   FolderResponse,
@@ -179,6 +179,7 @@ function findMailInCache(qc: QueryClient, mailId: string) {
           folderId: mail.folder_id,
           isSeen: mail.is_seen,
           isFlagged: mail.is_flagged,
+          threadId: mail.thread_id,
         };
     }
   }
@@ -324,8 +325,11 @@ export function useMailAction() {
   // Selected mail lives in the same store every action initiator (list row,
   // reading pane, bulk toolbar) reads from, so clearing it here reaches all
   // of them: once the open message leaves its folder, nothing keeps acting
-  // on it under a reading pane that still shows its old content.
+  // on it under a reading pane that still shows its old content -- except
+  // a reply or forward in progress against its thread, which the clear
+  // would take down too. See activeReplyDirtyForThreadId below.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const activeReplyDirtyForThreadId = useAtomValue(activeReplyDirtyForThreadIdAtom);
   const { push: pushToast } = useToast();
 
   const mailAction = useMutation({
@@ -344,10 +348,22 @@ export function useMailAction() {
 
       const act = action.action;
       const removesFromList = LEAVES_FOLDER_ACTIONS.includes(act);
-      const wasSelected = removesFromList && mailId === selectedMailId;
+      const mailInfo = findMailInCache(qc, mailId);
+      // A reply or forward in progress against this message's thread must
+      // not be discarded by unmounting the reading pane out from under it
+      // -- reply-box.tsx is what sets this atom while dirty. Matched on
+      // the thread rather than requiring mailId itself to be the reply's
+      // source: the reply always targets the thread's newest message,
+      // while the reading pane's own "open" message (mailId here) can be
+      // an older one the reader expanded, and trashing that older one
+      // must not throw the reply away either. The action itself still
+      // goes through (trashing from a row is independent of whatever is
+      // being typed below it); only the selection stays put.
+      const hasDirtyReply =
+        mailInfo != null && mailInfo.threadId === activeReplyDirtyForThreadId;
+      const wasSelected = removesFromList && mailId === selectedMailId && !hasDirtyReply;
       if (wasSelected) setSelectedMailId(null);
 
-      const mailInfo = findMailInCache(qc, mailId);
       if (!mailInfo) return { wasSelected, mailId };
 
       const prevMailQueries = qc.getQueriesData({ queryKey: ["mails"] });

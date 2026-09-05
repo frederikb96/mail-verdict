@@ -38,6 +38,7 @@ implemented here -- flagged in the report as unfinished.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -203,7 +204,17 @@ async def _to_instance(
 # abandons the wait rather than the underlying computation -- that
 # object's occurrences are simply missing from the response, the same
 # best-effort contract this view already keeps for a parse failure.
+#
+# A thread that outlives its own timeout keeps occupying whatever pool it
+# was submitted to until it eventually finishes on its own -- a
+# pathological object retried on every request permanently strands one
+# more worker. A dedicated, bounded pool contains that to calendar
+# expansion alone, rather than eventually starving every unrelated
+# asyncio.to_thread() call sharing the loop's own default executor.
 _EXPANSION_TIMEOUT_SECONDS = 10.0
+_EXPANSION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="calendar-expand",
+)
 
 
 def _expand_all_sync(
@@ -228,9 +239,12 @@ def _expand_all_sync(
 async def _expand_all(
     objects: list[DavObject], window_start: datetime, window_end: datetime,
 ) -> dict[uuid.UUID, list[ical.ParsedEvent]]:
+    loop = asyncio.get_running_loop()
     try:
         return await asyncio.wait_for(
-            asyncio.to_thread(_expand_all_sync, objects, window_start, window_end),
+            loop.run_in_executor(
+                _EXPANSION_EXECUTOR, _expand_all_sync, objects, window_start, window_end,
+            ),
             timeout=_EXPANSION_TIMEOUT_SECONDS,
         )
     except TimeoutError:
