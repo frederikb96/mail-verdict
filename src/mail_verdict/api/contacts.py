@@ -16,14 +16,17 @@ from __future__ import annotations
 import base64
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
+from mail_verdict.api.image_exceptions import is_sender_image_allowed
 from mail_verdict.api.schemas import (
     ContactAddressIO,
     ContactCreateRequest,
     ContactEmailIO,
     ContactListResponse,
     ContactPhoneIO,
+    ContactPhotoIndexEntry,
+    ContactPhotoIndexResponse,
     ContactPhotoOut,
     ContactResponse,
     ContactSearchHitOut,
@@ -149,6 +152,71 @@ async def resolve_contact_by_email(email: str = Query(min_length=1)) -> ContactR
     if obj is None:
         return None
     return await _to_response(obj)
+
+
+@router.get("/photo-index", response_model=ContactPhotoIndexResponse)
+async def get_photo_index(
+    account_id: uuid.UUID | None = Query(default=None),
+) -> ContactPhotoIndexResponse:
+    """
+    The whole address book's sender-avatar photos, by lower-cased email
+    -- one request for a mail or search list to cache (a long staleTime,
+    read synchronously as rows render) and never repeat per row or per
+    sender scrolled into view; a virtualized list over many thousand
+    messages cannot afford a network call tied to a row entering the
+    viewport.
+
+    No photo bytes travel here regardless of how large or how numerous
+    the address book's own photos are: an embedded photo's `photo_url`
+    is this application's own `GET /contacts/:id/photo`, which a caller
+    only ever fetches for a contact actually rendered on screen, and the
+    browser caches after that. A `kind="url"` photo is included only
+    once `account_id` is given and `is_sender_image_allowed` says that
+    address is on its allowlist -- the identical rule and the identical
+    check a message's own remote images are gated by; omitted otherwise,
+    the same as a contact with no photo at all.
+    """
+    await _require_support()
+    repo = DavObjectRepository(get_db_connection())
+    by_email: dict[str, ContactPhotoIndexEntry] = {}
+    for contact_id, data in await repo.list_ids_and_data():
+        parsed = vcard.parse_contact(data)
+        if parsed.photo is None or not parsed.emails:
+            continue
+        if parsed.photo.kind == "embedded":
+            entry = ContactPhotoIndexEntry(
+                contact_id=contact_id, photo_url=f"/api/contacts/{contact_id}/photo",
+            )
+            for contact_email in parsed.emails:
+                by_email[contact_email.email.strip().lower()] = entry
+        elif account_id is not None:
+            entry = ContactPhotoIndexEntry(contact_id=contact_id, photo_url=parsed.photo.url)
+            for contact_email in parsed.emails:
+                if await is_sender_image_allowed(account_id, contact_email.email):
+                    by_email[contact_email.email.strip().lower()] = entry
+    return ContactPhotoIndexResponse(by_email=by_email)
+
+
+@router.get("/{contact_id}/photo")
+async def get_contact_photo(contact_id: uuid.UUID) -> Response:
+    """Stream an embedded contact photo's decoded bytes -- what the
+    photo index's `photo_url` points to for a `kind="embedded"` entry.
+    A `kind="url"` photo is never served through here: the index already
+    resolves it straight to the sender's own address, once allowed."""
+    await _require_support()
+    repo = DavObjectRepository(get_db_connection())
+    obj = await repo.get_by_id(contact_id)
+    if obj is None or obj.deleted_at is not None or obj.kind != "addressbook":
+        raise HTTPException(status_code=404, detail="Contact not found")
+    photo = vcard.parse_contact(obj.data).photo
+    if photo is None or photo.kind != "embedded":
+        raise HTTPException(status_code=404, detail="Contact has no embedded photo")
+    mime, raw = vcard.decode_photo_data_url(photo.url)
+    return Response(
+        content=raw,
+        media_type=mime,
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.get("/{contact_id}", response_model=ContactResponse)

@@ -215,7 +215,11 @@ export function ContactList() {
                 key={row.contact.id}
                 style={{ height: 56 }}
                 className={cn(
-                  "group flex w-full cursor-pointer items-center gap-3 border-b px-3 hover:bg-accent/50",
+                  // select-none: a shift-click extending the checkbox range
+                  // selects the row's own text as a side effect otherwise --
+                  // the mail list's rows have nothing to select in the same
+                  // way and don't need this.
+                  "group flex w-full cursor-pointer select-none items-center gap-3 border-b px-3 hover:bg-accent/50",
                   selectedId === row.contact.id && "bg-accent",
                   checkedIds.has(row.contact.id) && "bg-accent/70",
                 )}

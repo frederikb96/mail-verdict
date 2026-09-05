@@ -21,6 +21,7 @@ import { EmailRenderer } from "@/components/mail/email-renderer";
 import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
 import { InvitationCard } from "@/components/mail/invitation-card";
+import { useContactByEmail } from "@/hooks/use-contacts";
 import { api } from "@/lib/api";
 import {
   extractSenderName,
@@ -56,6 +57,20 @@ export function ThreadMessage({
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
 
+  const { data: senderContact } = useContactByEmail(senderEmail);
+  // An embedded photo is a data: URI already in the mirror -- free to
+  // render. A URL photo is a third party's address, exactly like a
+  // remote image in the message body, so it only renders once this
+  // sender is on the same allowlist that gates the body's own images --
+  // never fetched unconditionally.
+  const imagesAllowed = mail.images_allowed || imagesAllowedOverride;
+  const senderPhotoUrl =
+    senderContact?.photo?.kind === "embedded"
+      ? senderContact.photo.url
+      : senderContact?.photo?.kind === "url" && imagesAllowed
+        ? senderContact.photo.url
+        : null;
+
   if (!expanded) {
     return (
       <button
@@ -65,7 +80,7 @@ export function ThreadMessage({
         className="flex w-full items-center gap-3 border-b px-4 py-2.5 text-left hover:bg-accent/50"
       >
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <InitialsAvatar name={senderName} size="sm" />
+        <InitialsAvatar name={senderName} size="sm" photoUrl={senderPhotoUrl} />
         <span
           className={mail.is_seen ? "font-medium" : "font-semibold"}
         >
@@ -94,7 +109,7 @@ export function ThreadMessage({
           className="flex items-start justify-between gap-4 text-left"
         >
           <div className="flex items-start gap-2">
-            <InitialsAvatar name={senderName} />
+            <InitialsAvatar name={senderName} photoUrl={senderPhotoUrl} />
             <div className="flex flex-col gap-0.5">
               <span className="font-medium">{senderName}</span>
               <span className="text-xs text-muted-foreground">
@@ -135,7 +150,7 @@ export function ThreadMessage({
           accountId={mail.account_id}
           senderEmail={senderEmail}
           senderDomain={senderEmail?.split("@")[1] ?? null}
-          imagesAllowed={mail.images_allowed || imagesAllowedOverride}
+          imagesAllowed={imagesAllowed}
           hasBlockedImages={mail.has_blocked_images}
           onLoadForMessage={onLoadImages}
         />
@@ -147,7 +162,6 @@ export function ThreadMessage({
             html={mail.body_html}
             plainText={mail.body_text}
             messageId={mail.id}
-            supportsDarkMode={mail.supports_dark_mode}
           />
         </div>
       )}

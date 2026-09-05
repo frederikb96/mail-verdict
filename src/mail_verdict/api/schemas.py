@@ -134,11 +134,6 @@ class MessageDetail(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     has_blocked_images: bool = False
     images_allowed: bool = False
-    # Whether the message's own markup (a color-scheme meta tag, property or
-    # media query) says it renders correctly on a dark canvas -- computed
-    # from the raw HTML before sanitizing strips the head/meta/style it
-    # lived in. Most mail never says either way, and defaults to False.
-    supports_dark_mode: bool = False
     created_at: datetime
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
@@ -1357,11 +1352,44 @@ class ContactListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+class ContactPhotoIndexEntry(BaseModel):
+    """One row's worth of what a sender-avatar lookup needs, already
+    resolved server-side -- never `kind`/`url` for a caller to re-judge.
+    `photo_url` is always safe to put directly in an `<img src>`: either
+    this application's own same-origin photo endpoint (an embedded
+    photo, fetched only for a contact actually rendered on screen and
+    cacheable by the browser after that), or -- only once the account
+    given to the index request has that sender allowlisted -- the
+    photo's real third-party address, exactly as an allowlisted
+    message's own remote images are handled."""
+
+    contact_id: uuid.UUID
+    photo_url: str
+
+
+class ContactPhotoIndexResponse(BaseModel):
+    """Keyed by lower-cased email address. One request for the whole
+    address book, meant to be cached client-side with a long staleTime
+    and read synchronously as list rows render -- never one request per
+    row or per sender scrolled into view."""
+
+    by_email: dict[str, ContactPhotoIndexEntry]
+
+
 class ContactSearchHitOut(BaseModel):
     contact_id: uuid.UUID
     name: str
     email: str
     source: Literal["contact", "recent", "typed"]
+
+
+# A generous cap on the data: URI's own string length, not a target size --
+# an uploader is expected to downscale before ever reaching this, but the
+# server refuses rather than accepting whatever a client sends unchecked.
+# ~1MB of raw photo bytes once the base64 overhead (4/3) is backed out,
+# which the vCard this becomes, and the CardDAV server storing it, can
+# both be expected to hold.
+_MAX_PHOTO_DATA_URL_LENGTH = 1_400_000
 
 
 class ContactCreateRequest(BaseModel):
@@ -1377,7 +1405,7 @@ class ContactCreateRequest(BaseModel):
     notes: str | None = None
     categories: list[str] = Field(default_factory=list)
     # A data: URI, as a browser's FileReader hands back an uploaded image.
-    photo_data_url: str | None = None
+    photo_data_url: str | None = Field(default=None, max_length=_MAX_PHOTO_DATA_URL_LENGTH)
 
 
 class ContactUpdateRequest(BaseModel):
@@ -1392,4 +1420,4 @@ class ContactUpdateRequest(BaseModel):
     notes: str | None = None
     categories: list[str] | None = None
     # "" clears an existing photo; None (unset) leaves it untouched.
-    photo_data_url: str | None = None
+    photo_data_url: str | None = Field(default=None, max_length=_MAX_PHOTO_DATA_URL_LENGTH)

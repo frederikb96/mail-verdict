@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import uuid
 from collections.abc import Iterator
 from unittest.mock import patch
@@ -13,6 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.contacts import router as contacts_router
+from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.database.connection import DatabaseConnection
 
 _TARGET = "mail_verdict.api.contacts.get_db_connection"
@@ -22,6 +24,7 @@ _TARGET = "mail_verdict.api.contacts.get_db_connection"
 def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(contacts_router)
+    app.include_router(image_exceptions_router)
     with TestClient(app) as c:
         yield c
 
@@ -283,3 +286,157 @@ class TestUpdateAndDelete:
 
             gone = client.get(f"/contacts/{contact_id}")
         assert gone.status_code == 404
+
+
+_IMAGE_EXCEPTIONS_TARGET = "mail_verdict.api.image_exceptions.get_db_connection"
+
+
+class TestPhotoIndex:
+    """`is_sender_image_allowed` (imported from api/image_exceptions.py)
+    resolves its own `get_db_connection()` independently of contacts.py's
+    -- any test reaching the `kind="url"` branch needs both patched, not
+    just `_TARGET`."""
+
+    def test_an_embedded_photo_is_keyed_by_every_email_and_streams_back(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        payload = base64.b64encode(b"fake-jpeg-bytes").decode()
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/contacts",
+                json={
+                    "addressbook_id": str(addressbook_id), "summary": "Photo Person",
+                    "emails": [{"email": "work@example.com"}, {"email": "home@example.com"}],
+                    "photo_data_url": f"data:image/jpeg;base64,{payload}",
+                },
+            )
+            assert created.status_code == 201, created.text
+            contact_id = created.json()["id"]
+
+            index = client.get("/contacts/photo-index")
+        assert index.status_code == 200
+        by_email = index.json()["by_email"]
+        assert by_email["work@example.com"]["contact_id"] == contact_id
+        assert by_email["work@example.com"] == by_email["home@example.com"]
+        photo_url = by_email["work@example.com"]["photo_url"]
+        assert photo_url == f"/api/contacts/{contact_id}/photo"
+
+        with patch(_TARGET, return_value=migrated_db):
+            photo = client.get(f"/contacts/{contact_id}/photo")
+        assert photo.status_code == 200
+        assert photo.headers["content-type"] == "image/jpeg"
+        assert photo.content == base64.b64decode(payload)
+
+    async def _seed_url_photo_contact(
+        self, db: DatabaseConnection, addressbook_id: uuid.UUID, email: str,
+    ) -> uuid.UUID:
+        object_id = uuid.uuid4()
+        async with db.session() as session:
+            dav_account_id = await session.scalar(
+                text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                {"id": addressbook_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO dav_objects "
+                    "(id, account_id, collection_id, kind, data, summary, emails) "
+                    "VALUES (:id, :account_id, :collection_id, 'addressbook', "
+                    "'BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Url Photo\r\n"
+                    "EMAIL:' || :email || '\r\n"
+                    "PHOTO;VALUE=URI:https://example.com/photo.jpg\r\nEND:VCARD\r\n', "
+                    "'Url Photo', ARRAY[:email])"
+                ),
+                {
+                    "id": object_id, "account_id": dav_account_id,
+                    "collection_id": addressbook_id, "email": email,
+                },
+            )
+            await session.commit()
+        return object_id
+
+    def test_a_url_photo_is_omitted_with_no_account_given(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        client.portal.call(
+            self._seed_url_photo_contact, migrated_db, addressbook_id, "url-noacct@example.com",
+        )
+        with patch(_TARGET, return_value=migrated_db):
+            index = client.get("/contacts/photo-index")
+        assert index.status_code == 200
+        assert "url-noacct@example.com" not in index.json()["by_email"]
+
+    def test_a_url_photo_is_omitted_when_the_sender_is_not_allowlisted(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        client.portal.call(
+            self._seed_url_photo_contact, migrated_db, addressbook_id, "url-blocked@example.com",
+        )
+        with patch(_TARGET, return_value=migrated_db), patch(
+            _IMAGE_EXCEPTIONS_TARGET, return_value=migrated_db,
+        ):
+            index = client.get(
+                "/contacts/photo-index", params={"account_id": str(uuid.uuid4())},
+            )
+        assert index.status_code == 200
+        assert "url-blocked@example.com" not in index.json()["by_email"]
+
+    async def _seed_account(self, db: DatabaseConnection) -> uuid.UUID:
+        account_id = uuid.uuid4()
+        async with db.session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO accounts (id, name, imap_host, imap_port, imap_user, "
+                    "imap_password) VALUES (:id, :name, 'imap.example.com', 993, "
+                    "'user@example.com', '\\x00' || convert_to('pw', 'UTF8'))"
+                ),
+                {"id": account_id, "name": f"acct-{account_id}"},
+            )
+            await session.commit()
+        return account_id
+
+    def test_a_url_photo_is_included_once_the_sender_is_allowlisted(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        contact_id = client.portal.call(
+            self._seed_url_photo_contact, migrated_db, addressbook_id, "url-allowed@example.com",
+        )
+        account_id = client.portal.call(self._seed_account, migrated_db)
+        with patch(_IMAGE_EXCEPTIONS_TARGET, return_value=migrated_db):
+            exc = client.post(
+                f"/accounts/{account_id}/image-exceptions",
+                json={"type": "sender", "value": "url-allowed@example.com"},
+            )
+            assert exc.status_code == 201, exc.text
+
+        with patch(_TARGET, return_value=migrated_db), patch(
+            _IMAGE_EXCEPTIONS_TARGET, return_value=migrated_db,
+        ):
+            index = client.get(
+                "/contacts/photo-index", params={"account_id": str(account_id)},
+            )
+        assert index.status_code == 200
+        entry = index.json()["by_email"]["url-allowed@example.com"]
+        assert entry["contact_id"] == str(contact_id)
+        assert entry["photo_url"] == "https://example.com/photo.jpg"
+
+    def test_the_photo_endpoint_404s_for_a_url_kind_photo(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        contact_id = client.portal.call(
+            self._seed_url_photo_contact, migrated_db, addressbook_id, "url-404@example.com",
+        )
+        with patch(_TARGET, return_value=migrated_db):
+            photo = client.get(f"/contacts/{contact_id}/photo")
+        assert photo.status_code == 404
+
+    def test_the_photo_endpoint_404s_for_an_unknown_contact(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        with patch(_TARGET, return_value=migrated_db):
+            photo = client.get(f"/contacts/{uuid.uuid4()}/photo")
+        assert photo.status_code == 404

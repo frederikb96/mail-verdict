@@ -159,7 +159,7 @@ def _extract_photo(data: str) -> ContactPhoto | None:
 _DATA_URL_RE = re.compile(r"^data:([\w.+-]+/[\w.+-]+)?;base64,(.*)$", re.DOTALL)
 
 
-def _decode_photo_data_url(data_url: str) -> tuple[str, bytes]:
+def decode_photo_data_url(data_url: str) -> tuple[str, bytes]:
     """The inverse of `_extract_photo`'s embedded case -- what the editor's
     file picker hands back after reading a chosen image as a data URL."""
     match = _DATA_URL_RE.match(data_url.strip())
@@ -174,7 +174,7 @@ def _set_photo(card: Any, photo_data_url: str) -> None:
     """Always written as ENCODING=b -- vobject serializes that form
     without backslash-escaping it, so it round-trips through
     `_extract_photo` unchanged however the reading side got there."""
-    mime, raw = _decode_photo_data_url(photo_data_url)
+    mime, raw = decode_photo_data_url(photo_data_url)
     line = card.add("photo")
     line.value = raw
     line.encoding_param = "b"
@@ -395,14 +395,18 @@ def apply_contact_fields(
             card.add("note").value = notes
 
     if categories is not None:
-        if hasattr(card, "categories"):
-            card.remove(card.categories)
+        # A card can legally carry more than one CATEGORIES line -- some
+        # servers produce that shape. `card.categories` (like `card.photo`
+        # below) is vobject's singular accessor and only ever names the
+        # first, which would leave every other one behind.
+        for line in list(getattr(card, "categories_list", [])):
+            card.remove(line)
         if categories:
             card.add("categories").value = categories
 
     if photo_data_url is not None:
-        if hasattr(card, "photo"):
-            card.remove(card.photo)
+        for line in list(getattr(card, "photo_list", [])):
+            card.remove(line)
         if photo_data_url:
             _set_photo(card, photo_data_url)
 

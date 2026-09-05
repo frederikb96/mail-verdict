@@ -379,6 +379,18 @@ export function ContactEditor({ open, onOpenChange, contact }: ContactEditorProp
 
           <div className="grid gap-1.5">
             <Label>Birthday</Label>
+            {contact?.birthday && !initialBirthday && (
+              // The stored value exists but isn't one of the three shapes
+              // this editor understands (or encodes a date that doesn't
+              // exist, e.g. Feb 29 outside a leap year) -- said explicitly
+              // rather than silently presenting as "no birthday set".
+              // Leaving the fields below untouched and saving keeps it
+              // exactly as it is; only touching them here replaces it.
+              <p className="text-xs text-muted-foreground">
+                This card has a birthday ({contact.birthday}) that can&apos;t be edited here.
+                Leaving the fields below alone keeps it unchanged.
+              </p>
+            )}
             <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <input
                 type="checkbox"

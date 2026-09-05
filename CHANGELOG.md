@@ -87,6 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   rows match, resolved server-side before the request returns
 - A provider API key can now be entered, replaced and cleared from Settings -- a masked field per
   provider with its own Save and Clear, rather than only through the API directly
+- A message can be switched to a dark canvas from a toggle in its header, remembered per message
+  across reopening it
 
 ### Changed
 
@@ -212,6 +214,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings field's label reads as a sentence ("Default event duration minutes") rather than
   its raw key name
 
+- A sender's avatar -- in an open thread, in the mail list and in the unified view -- now shows
+  their address-book contact's photo, when one matches. An embedded photo renders with no request
+  of its own; a remote photo URL only renders once the sender is on the same allowlist that
+  already gates the message's own remote images. The mail list reads every row's photo from one
+  bulk lookup per account rather than a request per row or per sender scrolled into view
+- A contact photo far larger than any reasonable upload is rejected server-side rather than
+  reaching the vCard and the CardDAV server it syncs to unbounded
+- Editing a contact's photo or categories now removes every existing line of that kind rather
+  than only the first -- a card carrying more than one (legal, and produced by some servers) kept
+  the extras around after a replacement
+- A contact whose birthday is a real but unrecognized value (a stray Feb 29 outside a leap year,
+  for instance) says so in the detail view and the editor instead of silently disappearing;
+  editing an unrelated field and saving leaves it exactly as it was
+- A shift-click extending a range selection in the contacts list no longer also selects the
+  row's own text as a side effect
+- The contact detail's edit and delete buttons have accessible names
 
 ## [3.1.1] - 2026-09-03
 

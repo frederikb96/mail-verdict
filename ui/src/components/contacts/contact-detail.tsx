@@ -63,13 +63,19 @@ export function ContactDetail({ contactId }: { contactId: string }) {
         </div>
         {!contact.read_only && (
           <div className="flex shrink-0 gap-1">
-            <Button variant="ghost" size="icon-sm" onClick={() => setEditorOpen(true)}>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Edit contact"
+              onClick={() => setEditorOpen(true)}
+            >
               <Pencil className="h-4 w-4" />
             </Button>
             <Button
               variant="ghost"
               size="icon-sm"
               className="text-destructive"
+              aria-label="Delete contact"
               onClick={() => setConfirmDelete(true)}
             >
               <Trash2 className="h-4 w-4" />
@@ -131,10 +137,18 @@ export function ContactDetail({ contactId }: { contactId: string }) {
           </div>
         )}
 
-        {contact.birthday && formatContactBirthday(contact.birthday) && (
+        {contact.birthday && (
           <div className="flex items-center gap-1.5 text-sm">
             <Cake className="h-3.5 w-3.5 text-muted-foreground" />
-            {formatContactBirthday(contact.birthday)}
+            {formatContactBirthday(contact.birthday) ?? (
+              // A real but unparseable value (e.g. a calendar date that
+              // doesn't exist, such as a stray Feb 29 in a non-leap year)
+              // -- shown rather than silently vanishing, so its presence
+              // on the card is not lost from view entirely.
+              <span className="italic text-muted-foreground">
+                Birthday could not be read
+              </span>
+            )}
           </div>
         )}
 

@@ -157,6 +157,30 @@ def contact_with_no_birthday(
     return resp.json()
 
 
+@pytest.fixture(scope="module")
+def contact_with_unparseable_birthday(
+    api_client: httpx.Client, addressbook: dict[str, Any],
+) -> dict[str, Any]:
+    """`19900229` -- vCard's basic (undelimited) date format, which is
+    legal and what several phone exporters write, but 1990 is not a leap
+    year, so this is not a real calendar date at all. Neither the client
+    nor the server rejects it at write time (a birthday is free text as
+    far as this application is concerned); it stores and round-trips
+    verbatim, and only rendering it needs to cope with it not being
+    parseable into a real date."""
+    resp = api_client.post(
+        "/api/contacts",
+        json={
+            "addressbook_id": addressbook["id"],
+            "summary": f"Unparseable Birthday {uuid.uuid4()}",
+            "emails": [{"email": f"{uuid.uuid4().hex[:8]}@example.com"}],
+            "birthday": "19900229",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
 class TestContactsUi:
     def test_creating_a_contact_from_the_editor_succeeds(
         self,
@@ -432,6 +456,59 @@ class TestBirthdayCrash:
         expect(page.get_by_text("Something went wrong", exact=False)).to_have_count(0)
 
 
+class TestUnparseableBirthday:
+    """`19900229` is vCard's own basic date format, correctly stored and
+    carried verbatim -- but it names a day that never existed (1990 is
+    not a leap year), so it is not one of the three shapes the birthday
+    parser understands. That must not mean it silently vanishes, and
+    editing an unrelated field must not silently discard it either."""
+
+    def test_the_detail_view_says_the_birthday_could_not_be_read(
+        self,
+        page: Page,
+        app_server: str,
+        contact_with_unparseable_birthday: dict[str, Any],
+    ) -> None:
+        name = contact_with_unparseable_birthday["summary"]
+        page.goto(f"{app_server}/contacts")
+        page.get_by_text(name, exact=True).click()
+
+        expect(page.get_by_role("heading", name=name, exact=True)).to_be_visible(timeout=10_000)
+        expect(page.get_by_text("Birthday could not be read", exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+    def test_saving_an_unrelated_edit_leaves_the_birthday_untouched(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        contact_with_unparseable_birthday: dict[str, Any],
+    ) -> None:
+        name = contact_with_unparseable_birthday["summary"]
+        contact_id = contact_with_unparseable_birthday["id"]
+        page.goto(f"{app_server}/contacts")
+        page.get_by_text(name, exact=True).click()
+        expect(page.get_by_role("heading", name=name, exact=True)).to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Edit contact", exact=True).click()
+        org_field = page.get_by_label("Organization", exact=True)
+        expect(org_field).to_be_visible(timeout=10_000)
+        org_field.fill("Acme Testing Co")
+        page.get_by_role("button", name="Save", exact=True).click()
+
+        def _organization_saved() -> bool | None:
+            resp = api_client.get(f"/api/contacts/{contact_id}")
+            assert resp.status_code == 200, resp.text
+            return resp.json()["organization"] == "Acme Testing Co" or None
+
+        wait_for(_organization_saved, description="Organization edit saved")
+
+        refetched = api_client.get(f"/api/contacts/{contact_id}")
+        assert refetched.status_code == 200, refetched.text
+        assert refetched.json()["birthday"] == "19900229"
+
+
 class TestUrlReflectsSelection:
     def test_opening_a_contact_updates_the_url_and_survives_the_back_button(
         self, page: Page, app_server: str, seeded_contact: dict[str, Any],
@@ -497,3 +574,38 @@ class TestMultiSelection:
             return all(c["summary"] not in names for c in resp.json()["contacts"]) or None
 
         wait_for(_all_deleted, description="Bulk-deleted contacts gone")
+
+    def test_shift_click_range_selection_does_not_select_page_text(
+        self, page: Page, app_server: str, api_client: httpx.Client, addressbook: dict[str, Any],
+    ) -> None:
+        """The browser's own shift-click-extends-a-selection behaviour is
+        independent of this component's range-selection logic -- hovering
+        a row's text before clicking its checkbox (exactly how a person
+        finds the checkbox to click) plants a native selection anchor
+        there, and a plain click leaves it inert, but a shift-click reads
+        as "extend the selection to here" unless the row opts out."""
+        names = [f"UI Multiselect Text {uuid.uuid4()}" for _ in range(2)]
+        for name in names:
+            resp = api_client.post(
+                "/api/contacts",
+                json={
+                    "addressbook_id": addressbook["id"], "summary": name,
+                    "emails": [{"email": f"{uuid.uuid4().hex[:8]}@example.com"}],
+                },
+            )
+            assert resp.status_code == 201, resp.text
+
+        shown_order = sorted(names)
+
+        page.goto(f"{app_server}/contacts")
+        first_checkbox = page.get_by_label(f"Select {shown_order[0]}")
+        expect(first_checkbox).to_be_hidden(timeout=10_000)
+        page.get_by_text(shown_order[0], exact=True).hover()
+        first_checkbox.click()
+
+        page.get_by_text(shown_order[1], exact=True).hover()
+        page.get_by_label(f"Select {shown_order[1]}").click(modifiers=["Shift"])
+
+        expect(page.get_by_text("2 selected", exact=True)).to_be_visible(timeout=10_000)
+        selected_text = page.evaluate("window.getSelection().toString()")
+        assert selected_text == "", f"shift-click also selected page text: {selected_text!r}"

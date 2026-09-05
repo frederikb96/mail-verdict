@@ -10,13 +10,21 @@ in isolation.
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import concurrent.futures
 import uuid
 from typing import Any
 
 import httpx
 import pytest
-from playwright.sync_api import Browser, Page, expect
+from playwright.sync_api import Browser, Page, Request, expect
 
+from mail_verdict.config.loader import DatabaseConfig
+from mail_verdict.database.connection import DatabaseConnection
+from tests.e2e.helpers import wait_for_dav_account_active, wait_for_dav_collection
+from tests.setup.dav_helpers import create_addressbook, discover
+from tests.setup.large_mailbox import build_large_mailbox
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
     mail_row,
@@ -33,6 +41,8 @@ from tests.setup.containers import (  # isort: skip
     DOVECOT_PASSWORD,
     MAILPIT_ALIAS,
     MAILPIT_SMTP_PORT,
+    RADICALE_ALIAS,
+    RADICALE_PORT,
 )
 
 # A real GIF, not a placeholder string -- a browser needs actual image bytes
@@ -71,6 +81,39 @@ def rendering_account(
 @pytest.fixture(scope="module")
 def inbox_folder(api_client: httpx.Client, rendering_account: dict[str, Any]) -> dict[str, Any]:
     return wait_for_folder(api_client, str(rendering_account["id"]), "INBOX")
+
+
+@pytest.fixture(scope="module")
+def avatar_addressbook_owner(radicale_endpoint: tuple[str, int]) -> str:
+    """An address book on the real Radicale server, owned by a fresh
+    principal -- see test_contacts_ui.py's `ui_addressbook_owner`, the
+    same pattern for the same reason."""
+    host, port = radicale_endpoint
+    base_url = f"http://{host}:{port}/"
+    username = f"avatar-{uuid.uuid4().hex[:8]}"
+    with httpx.Client(auth=(username, "unused"), timeout=10.0) as client:
+        principal = discover(client, base_url)
+        create_addressbook(client, principal, "avatar-book", "Avatar Book")
+    return username
+
+
+@pytest.fixture(scope="module")
+def avatar_addressbook(
+    api_client: httpx.Client, avatar_addressbook_owner: str,
+) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/dav-accounts",
+        json={
+            "name": f"Radicale-{uuid.uuid4().hex[:8]}",
+            "discovery_url": f"http://{RADICALE_ALIAS}:{RADICALE_PORT}/",
+            "username": avatar_addressbook_owner,
+            "password": "unused",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    dav_account = resp.json()
+    wait_for_dav_account_active(api_client, dav_account["id"])
+    return wait_for_dav_collection(api_client, dav_account["id"], "Avatar Book")
 
 
 def _list_folder(api_client: httpx.Client, account_id: str, folder_id: str) -> list[dict[str, Any]]:
@@ -222,9 +265,12 @@ class TestStructuralMarkupDoesNotLeakAsVisibleCopy:
 
 class TestPerMessageDarkMode:
     """Every message renders on a light canvas by default -- correct, since
-    mail is written assuming one -- but the reader can ask for dark, and a
-    message that declares its own dark-canvas support gets it without being
-    asked."""
+    mail is written assuming one -- and the reader can ask for dark with the
+    per-message toggle. A message declaring its own dark-canvas support is
+    not switched automatically: the sanitizer strips the `<meta>`/`<style>`
+    markup that carries both the declaration and the rules that would make
+    the message readable on a dark canvas, so there is nothing honest to
+    honour."""
 
     def test_the_toggle_switches_the_canvas_and_the_choice_survives_reopening(
         self,
@@ -273,7 +319,7 @@ class TestPerMessageDarkMode:
         expect(light_mode_button).to_be_visible(timeout=10_000)
         assert _host_background() == dark_bg
 
-    def test_a_message_declaring_dark_support_renders_dark_unasked(
+    def test_a_message_declaring_dark_support_is_not_switched_automatically(
         self,
         page: Page,
         app_server: str,
@@ -283,11 +329,19 @@ class TestPerMessageDarkMode:
         inbox_folder: dict[str, Any],
         browser: Browser,
     ) -> None:
+        """The shape a real ESP uses: declare `color-scheme`, then swap
+        colours in an `@media` block -- which the sanitizer strips along
+        with every other `<style>` tag's content. Honouring the
+        declaration without the rules it depends on would put the message
+        on a dark canvas with its light-mode inline colour still applied:
+        dark text on a dark background."""
         target = _deliver_html(
             api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
             inbox_folder["id"], "UI dark declared test",
             '<meta name="color-scheme" content="light dark">'
-            "<p>Renders dark on its own</p>",
+            "<style>@media (prefers-color-scheme: dark) "
+            "{ .msg { color: #eee } }</style>"
+            '<p class="msg" style="color:#111">Assumes its own dark rules survived</p>',
         )
 
         # A dedicated dark-scheme context: the shared page fixture's colour
@@ -302,23 +356,27 @@ class TestPerMessageDarkMode:
 
             body = dark_page.locator('[data-testid="email-body"]')
             expect(body).to_be_visible(timeout=15_000)
-            light_mode_button = dark_page.get_by_role(
-                "button", name="Switch this message to light mode", exact=True,
+            # Still light by default: the toggle offers to switch *to*
+            # dark, rather than already showing dark and offering to leave
+            # it -- the declaration alone is not honoured.
+            toggle = dark_page.get_by_role(
+                "button", name="Enable dark message mode", exact=True,
             )
-            expect(light_mode_button).to_be_visible(timeout=10_000)
+            expect(toggle).to_be_visible(timeout=10_000)
         finally:
             context.close()
 
 
 class TestSenderAvatar:
-    """The sender avatar renders from local data only -- initials derived
-    from the display name -- with no network request of any kind, for any
-    sender. Nothing here reads the remote-image allowlist: an avatar keyed
-    by address and fetched from a third party (Gravatar) was considered
-    and rejected, because it would tell that third party a message from
-    this address was opened, for a party outside the allowlist model
-    entirely -- the allowlist governs a sender's own published content,
-    not a lookup against an unrelated service."""
+    """A sender with no matching address-book contact gets initials --
+    derived from the display name, with no network request of any kind.
+    A sender who does match one gets that contact's photo instead, when it
+    has one: an embedded photo with no request of its own, a remote photo
+    URL only once the sender is allowlisted the same way any other remote
+    image is. Never a lookup keyed by address against an unrelated third
+    party (Gravatar) -- that was considered and rejected, since it would
+    tell that party a message from the address was opened, for every
+    sender, whether or not the sender is allowlisted."""
 
     def test_a_sender_gets_initials_and_no_network_request_at_all(
         self,
@@ -354,3 +412,209 @@ class TestSenderAvatar:
         fallback = header.locator('[data-slot="avatar-fallback"]')
         expect(fallback).to_have_text("AS", timeout=10_000)
         assert third_party_requests == [], f"unexpected third-party request: {third_party_requests}"
+
+    def test_a_sender_matching_a_contact_with_an_embedded_photo_gets_it_as_the_avatar(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        rendering_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        avatar_addressbook: dict[str, Any],
+    ) -> None:
+        sender_email = "photo-sender@example.com"
+        # A real GIF, not fabricated bytes -- the browser must actually
+        # decode this as an image for the avatar to render it rather than
+        # falling back to initials on a load error.
+        photo_data_url = _TINY_GIF
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": avatar_addressbook["id"],
+                "summary": "Photo Sender",
+                "emails": [{"email": sender_email}],
+                "photo_data_url": photo_data_url,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        target = _deliver_html(
+            api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
+            inbox_folder["id"], "UI avatar photo test",
+            "<p>hello</p>",
+            sender=f"Photo Sender <{sender_email}>",
+        )
+
+        page.goto(app_server)
+        select_account(page, rendering_account)
+        mail_row(page, target["id"]).click()
+
+        expect(page.locator('[data-testid="email-body"]')).to_be_visible(timeout=15_000)
+        header = page.locator('[data-testid="thread-message-header"]')
+        photo = header.locator('[data-slot="avatar-image"]')
+        expect(photo).to_be_visible(timeout=10_000)
+        assert photo.get_attribute("src") == photo_data_url
+
+    def test_a_matching_contacts_embedded_photo_shows_in_the_mail_list_row_too(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        rendering_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        avatar_addressbook: dict[str, Any],
+    ) -> None:
+        """The reading pane isn't the only place a sender's avatar shows --
+        the mail list row does too, read from one bulk photo index rather
+        than a request of its own (see mail-list-item.tsx)."""
+        sender_email = "list-photo-sender@example.com"
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": avatar_addressbook["id"],
+                "summary": "List Photo Sender",
+                "emails": [{"email": sender_email}],
+                "photo_data_url": _TINY_GIF,
+            },
+        )
+        assert created.status_code == 201, created.text
+        contact_id = created.json()["id"]
+
+        target = _deliver_html(
+            api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
+            inbox_folder["id"], "UI list avatar photo test",
+            "<p>hello</p>",
+            sender=f"List Photo Sender <{sender_email}>",
+        )
+
+        page.goto(app_server)
+        select_account(page, rendering_account)
+
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        photo = row.locator('[data-slot="avatar-image"]')
+        expect(photo).to_be_visible(timeout=10_000)
+        # The index's photo_url for an embedded photo is this application's
+        # own same-origin endpoint, not the raw data: URI -- keeps the bulk
+        # index itself free of photo bytes (see get_photo_index).
+        assert photo.get_attribute("src") == f"/api/contacts/{contact_id}/photo"
+
+        streamed = api_client.get(f"/api/contacts/{contact_id}/photo")
+        assert streamed.status_code == 200
+        assert streamed.headers["content-type"] == "image/gif"
+        assert streamed.content == base64.b64decode(_TINY_GIF.split(",", 1)[1])
+
+
+_AVATAR_SCALE_MAILBOX_SIZE = 1200
+
+
+@pytest.fixture(scope="module")
+def avatar_scale_mailbox(postgres_url: str) -> tuple[str, str]:
+    """A bare account with `_AVATAR_SCALE_MAILBOX_SIZE` messages spread
+    across 50 distinct senders (`seed_large_mailbox`'s own convention),
+    to prove the photo index against a mailbox large enough that the
+    client never holds every row -- the same scale
+    test_mail_selection_scale_ui.py uses for the same reason. Bridged
+    through its own thread the way that module's `big_mailbox` fixture
+    is, for the same reason: Playwright's sync API makes a loop appear
+    "running" on the main thread for the duration of the browser
+    fixtures, and asyncio.run() refuses to nest inside one already
+    running."""
+
+    async def _seed() -> tuple[str, str]:
+        connection = DatabaseConnection(
+            DatabaseConfig(url=postgres_url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+        )
+        await connection.init()
+        try:
+            async with connection.session() as session:
+                account_id, _folder_id, _message_ids = await build_large_mailbox(
+                    session, _AVATAR_SCALE_MAILBOX_SIZE,
+                )
+                await session.commit()
+        finally:
+            await connection.close()
+        return str(account_id), f"large-mailbox-{account_id}"
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _seed()).result()
+
+
+class TestAvatarPhotoIndexAtScale:
+    """The photo index exists specifically so a virtualized list over many
+    thousand messages never ties a network call to a row entering the
+    viewport -- proven here against the scale the concern is about,
+    rather than against the handful of rows the other tests in this
+    module seed."""
+
+    def test_one_request_serves_the_whole_scroll_and_virtualization_still_holds(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        avatar_addressbook: dict[str, Any],
+        avatar_scale_mailbox: tuple[str, str],
+    ) -> None:
+        account_id, account_name = avatar_scale_mailbox
+        # seed_large_mailbox cycles 50 senders as sender{n}@example.com;
+        # matching one of them puts a real photo on roughly 1 row in 50
+        # without needing this test to control individual messages.
+        created = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": avatar_addressbook["id"],
+                "summary": "Scale Sender",
+                "emails": [{"email": "sender0@example.com"}],
+                "photo_data_url": _TINY_GIF,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+        photo_index_requests: list[str] = []
+
+        def _record(req: Request) -> None:
+            if "/contacts/photo-index" in req.url:
+                photo_index_requests.append(req.url)
+
+        page.on("request", _record)
+
+        page.goto(app_server)
+        select_account(page, {"name": account_name})
+
+        rows = page.locator('[data-testid="mail-row"]')
+        expect(rows.first).to_be_visible(timeout=15_000)
+        assert len(photo_index_requests) == 1, photo_index_requests
+
+        # Scroll deep enough to unload and remount rows repeatedly -- the
+        # same "hover the list, 30 wheel steps of 4000px" shape
+        # test_mail_selection_scale_ui.py uses to prove virtualization
+        # survives a long scroll (the hover matters: a wheel event
+        # targets whatever is under the pointer, not the page as a
+        # whole). One row in 50 matches the seeded contact, so a
+        # virtualized DOM shows it only while that row happens to be
+        # mounted -- checked after every step rather than assuming it
+        # lands in view at either endpoint.
+        rows.first.hover()
+        photo = rows.locator('[data-slot="avatar-image"]').first
+        seen_the_photo = photo.count() > 0
+        for _ in range(30):
+            page.mouse.wheel(0, 4000)
+            seen_the_photo = seen_the_photo or photo.count() > 0
+        mounted_at_bottom = rows.count()
+        assert mounted_at_bottom < 60, (
+            f"{mounted_at_bottom} mail rows mounted at once -- virtualization "
+            "looks broken, not just a wide viewport"
+        )
+        assert len(photo_index_requests) == 1, (
+            f"expected exactly one photo-index request for the whole scroll, got "
+            f"{len(photo_index_requests)}: {photo_index_requests}"
+        )
+
+        for _ in range(30):
+            page.mouse.wheel(0, -4000)
+            seen_the_photo = seen_the_photo or photo.count() > 0
+        expect(rows.first).to_be_visible(timeout=10_000)
+        assert len(photo_index_requests) == 1, photo_index_requests
+        assert seen_the_photo, "the seeded contact's photo never appeared across the scroll"

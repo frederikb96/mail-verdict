@@ -2,10 +2,11 @@
 
 import { Star, Archive, Ban, ThumbsUp, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { extractSenderName, formatRelativeDate } from "@/lib/format";
+import { extractEmail, extractSenderName, formatRelativeDate } from "@/lib/format";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { useContactPhotoIndex } from "@/hooks/use-contacts";
 import type { MessageActionType, MessageSummary } from "@/types/api";
 
 type RowAction = Extract<
@@ -57,6 +58,13 @@ export function MailListItem({
   const senderName = extractSenderName(mail.from_addr);
   const threadSuffix = isThreaded ? " (latest message in thread)" : "";
 
+  // One request per account rendered (deduped/cached by TanStack Query
+  // across every row sharing it), never one per row -- see
+  // useContactPhotoIndex.
+  const { data: photoIndex } = useContactPhotoIndex(mail.account_id);
+  const senderEmail = extractEmail(mail.from_addr).toLowerCase();
+  const photoUrl = photoIndex?.by_email[senderEmail]?.photo_url ?? null;
+
   const handleRowClick = (e: React.MouseEvent) => {
     // ctrl/cmd+click and shift+click on the row's own text are selection
     // gestures, not "open" -- routed through the same toggle the checkbox
@@ -91,6 +99,7 @@ export function MailListItem({
       <div className="relative h-8 w-8 shrink-0">
         <InitialsAvatar
           name={senderName}
+          photoUrl={photoUrl}
           className={cn(
             "absolute inset-0",
             selectionMode

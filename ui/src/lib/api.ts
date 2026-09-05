@@ -19,6 +19,7 @@ import type {
   Contact,
   ContactCreateRequest,
   ContactListResponse,
+  ContactPhotoIndexResponse,
   ContactSearchHit,
   ContactUpdateRequest,
   DavAccountCreateRequest,
@@ -740,6 +741,13 @@ export const api = {
      * avatar/name lookup resolves against. */
     resolveByEmail(email: string): Promise<Contact | null> {
       return request(`/contacts/resolve${qs({ email })}`);
+    },
+    /** The whole address book's sender-avatar photos in one request --
+     * what a mail or search list reads from, never fetched per row.
+     * `accountId` gates a `kind="url"` photo through that account's own
+     * remote-content allowlist; omit it where no one account applies. */
+    photoIndex(accountId?: string | null): Promise<ContactPhotoIndexResponse> {
+      return request(`/contacts/photo-index${qs({ account_id: accountId ?? undefined })}`);
     },
     create(data: ContactCreateRequest): Promise<Contact> {
       return request("/contacts", { method: "POST", body: JSON.stringify(data) });
