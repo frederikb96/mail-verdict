@@ -512,6 +512,37 @@ class TestCalendarUi:
         )
         assert stored.utcoffset() == timedelta(hours=2)
 
+    def test_an_inverted_range_disables_save_with_a_reason_shown(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: nothing in the editor checked
+        Ends against Starts at all, so an event entered backwards saved
+        anyway -- the toast said "Event created" and the object landed on
+        the server with dtend before dtstart, unreachable to any range
+        query from that point on (an inverted event overlaps nothing a
+        query asks for). The server now refuses it too, but a silently
+        disabled Save with no reason shown is its own complaint."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(f"Backwards {uuid.uuid4()}")
+
+        starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
+        set_date_input(starts_input, "2026-09-10T10:00")
+        set_date_input(ends_input, "2026-09-10T09:00")
+
+        expect(page.get_by_text("Ends must be after Starts.")).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("button", name="Save", exact=True)).to_be_disabled()
+
+        # Fixing it re-enables Save -- this isn't a stuck, permanently
+        # disabled control once tripped once.
+        set_date_input(ends_input, "2026-09-10T11:00")
+        expect(page.get_by_text("Ends must be after Starts.")).to_have_count(0)
+        expect(page.get_by_role("button", name="Save", exact=True)).to_be_enabled()
+
     def test_retyping_the_year_in_the_editor_does_not_take_the_page_down(
         self, page: Page, app_server: str, calendar_collection: dict[str, Any],
     ) -> None:

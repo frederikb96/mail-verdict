@@ -525,12 +525,15 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
     if request.scope == "this":
         if request.recurrence_id is None:
             raise HTTPException(status_code=400, detail="scope=this requires recurrence_id")
-        updated_data = ical.edit_occurrence(
-            obj.data, request.recurrence_id,
-            summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
-            all_day=request.all_day, location=request.location,
-            description=request.description, bump_sequence=bump_sequence,
-        )
+        try:
+            updated_data = ical.edit_occurrence(
+                obj.data, request.recurrence_id,
+                summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
+                all_day=request.all_day, location=request.location,
+                description=request.description, bump_sequence=bump_sequence,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     else:
         try:
             updated_data = ical.replace_master_fields(

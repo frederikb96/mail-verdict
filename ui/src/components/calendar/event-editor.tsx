@@ -293,6 +293,19 @@ export function EventEditor({
     rrule !== initialSnapshot.current.rrule ||
     attendees !== initialSnapshot.current.attendees;
 
+  // Computed fresh from the current range on every render, not inside
+  // either date field's own onChange -- a value derived one field's
+  // updater at a time is exactly the race that let an inverted range
+  // through the one time it slipped past this: the *other* field's edit
+  // from the same render is not visible there yet. DTEND is exclusive
+  // (RFC 5545), so same-day is a valid single-day all-day event but an
+  // equal timed range is a zero-length one, forbidden the same as an
+  // inverted one -- the server's own check (ical.py's build_new_event)
+  // draws the line in the same place.
+  const rangeInvalid = allDay
+    ? new Date(range.end).getTime() < new Date(range.start).getTime()
+    : new Date(range.end).getTime() <= new Date(range.start).getTime();
+
   // The calendar list, and the default-calendar setting, each come from
   // their own query that can resolve after this opens (and independently
   // of each other), and neither the initialiser above nor the reset keyed
@@ -532,6 +545,11 @@ export function EventEditor({
                 />
               </div>
             </div>
+            {rangeInvalid && (
+              <p className="text-xs text-destructive">
+                {allDay ? "Ends must not be before Starts." : "Ends must be after Starts."}
+              </p>
+            )}
 
             <div className="grid gap-1.5">
               <Label>Calendar</Label>
@@ -634,7 +652,10 @@ export function EventEditor({
                 Cancel
               </Button>
               <Button
-                disabled={readOnly || !summary || !calendarId || createEvent.isPending || updateEvent.isPending}
+                disabled={
+                  readOnly || !summary || !calendarId || rangeInvalid ||
+                  createEvent.isPending || updateEvent.isPending
+                }
                 onClick={handleSave}
               >
                 {(createEvent.isPending || updateEvent.isPending) && (
