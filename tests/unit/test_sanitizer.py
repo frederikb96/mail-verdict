@@ -674,6 +674,67 @@ class TestStylesheetPreservation:
         assert "tracker.example" not in out.split("data-x-stylesheet")[0]
         assert "data-x-stylesheet" in out
 
+    def test_a_host_rule_cannot_switch_off_its_own_containment(self) -> None:
+        """contain: layout paint on :host is what confines a message that
+        gets past the sanitizer at all -- a message's own rule targeting
+        :host must never be able to switch that off, no allowlist
+        involved."""
+        out = sanitize_email_html(
+            "<style>:host { contain: none !important; overflow: visible !important } "
+            "p { color: red }</style>"
+        )
+        assert "contain" not in out
+        assert "overflow" not in out
+        assert "color:red" in out
+
+    def test_host_context_and_root_are_refused_the_same_way(self) -> None:
+        out = sanitize_email_html(
+            "<style>:host-context(.dark) { contain: none } "
+            ":root { overflow: visible } "
+            "p { color: red }</style>"
+        )
+        assert "contain" not in out
+        assert "overflow" not in out
+        assert "color:red" in out
+
+    def test_a_body_selector_is_left_alone(self) -> None:
+        """The single most common pattern in real email CSS -- a body{}
+        reset -- is not touched: neither html nor body is in ALLOWED_TAGS,
+        so nh3 always unwraps a sender's own copy of either tag, and the
+        isolated shadow root this stylesheet survives into has no html or
+        body of its own for such a selector to match either way. Refusing
+        it would be a pure usability cost for a selector that cannot
+        reach anything."""
+        out = sanitize_email_html("<style>body { color: red; margin: 0 }</style>")
+        assert "color:red" in out
+        assert "margin:0" in out
+
+    def test_a_host_rule_hidden_behind_an_ordinary_selector_in_a_list_is_still_refused(
+        self,
+    ) -> None:
+        """A selector list is one prelude -- the whole thing is refused
+        even when an ordinary selector shares it with :host, rather than
+        only the branch that would otherwise be found first."""
+        out = sanitize_email_html("<style>.ok, :host { contain: none }</style>")
+        assert "contain" not in out
+
+    def test_a_hex_escaped_host_selector_is_still_caught(self) -> None:
+        """Matched at the token level, after tinycss2 has already resolved
+        the escape into a single ident value -- the same class of bypass
+        _canonical_property_name's own tests close for declaration names
+        (``p\\6fsition``), here for a selector instead. A CSS comment
+        cannot hide inside an identifier's own characters the way it can
+        between a name and its colon -- it splits the identifier into two
+        separate tokens rather than merging into one, so it is not a
+        comparable bypass for a selector name; the escape is."""
+        out = sanitize_email_html(r"<style>:\68 ost { contain: none } p { color: red }</style>")
+        assert "contain" not in out
+        assert "color:red" in out
+
+    def test_an_ordinary_class_selector_is_unaffected(self) -> None:
+        out = sanitize_email_html("<style>.hostess { color: red }</style>")
+        assert "color:red" in out
+
     def test_a_stylesheet_with_nothing_remote_carries_no_preserved_copy(self) -> None:
         out = sanitize_email_html("<style>p { color: blue; }</style>")
         assert "data-x-stylesheet" not in out

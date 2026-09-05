@@ -401,6 +401,51 @@ def _sanitize_declaration_block(
     return f"{header}{{{blocked}}}", f"{header}{{{preserved}}}", True
 
 
+# A selector naming any of these argues with the containment a message is
+# rendered inside rather than styling the message's own content -- see
+# _selector_escapes_containment. html/body are deliberately not here: a
+# real ``<html>``/``<body>`` element never exists for such a selector to
+# match in either surface a message's own <style> block survives into --
+# neither is in ALLOWED_TAGS above, so nh3 always unwraps a sender's own
+# copy, and the isolated shadow root this content is otherwise rendered
+# into has no html/body of its own either. Refusing them would cost the
+# single most common pattern in real email CSS (a body{} reset) for a
+# selector that cannot reach anything.
+_FORBIDDEN_SELECTOR_PSEUDOS = frozenset({"host", "host-context", "root"})
+
+
+def _selector_escapes_containment(prelude: list[Node]) -> bool:
+    """Whether a selector's own tokens name the shadow host or the
+    isolated stylesheet's own document root.
+
+    `contain: layout paint` on `:host` is what confines a message that
+    gets past the sanitizer at all (see email-renderer.tsx) -- a rule
+    targeting `:host`, `:host-context()` or `:root` can switch that
+    containment off from inside the message's own stylesheet. No
+    legitimate mail styles the element it is rendered into.
+
+    Walked at the token level, after tinycss2 has already resolved
+    comments and escapes -- the same reason property names are compared
+    this way in _filter_declarations: a hex-escaped ``:\\68 ost`` parses
+    as the real thing in every browser and would slip a string search
+    over the serialized selector. A selector list (``.foo, :host``) is
+    one prelude with every branch's tokens present, so scanning the whole
+    thing catches a forbidden selector hidden behind an ordinary one
+    rather than only the first.
+    """
+    for i, tok in enumerate(prelude):
+        if tok.type == "literal" and tok.value == ":" and i + 1 < len(prelude):
+            nxt = prelude[i + 1]
+            name = (
+                nxt.lower_value if nxt.type == "ident"
+                else nxt.lower_name if nxt.type == "function"
+                else None
+            )
+            if name in _FORBIDDEN_SELECTOR_PSEUDOS:
+                return True
+    return False
+
+
 def _sanitize_rule(rule: Node) -> tuple[str, str, bool] | None:
     """One top-level or nested rule, reduced to (safe, preserved, has_remote)
     or dropped entirely.
@@ -415,6 +460,8 @@ def _sanitize_rule(rule: Node) -> tuple[str, str, bool] | None:
     """
     if rule.type == "qualified-rule":
         if _contains_parse_error(rule.prelude):
+            return None
+        if _selector_escapes_containment(rule.prelude):
             return None
         selector = tinycss2.serialize(rule.prelude).strip()
         if not selector:

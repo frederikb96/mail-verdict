@@ -183,6 +183,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   stylesheet re-runs the same declaration filter rather than trusting the stored value. The
   message-quote endpoint had a second, unauthenticated route to the same defect: it restored a
   preserved stylesheet before the sanitizer ever ran rather than after.
+- A message's own stylesheet could target `:host`, `:host-context()` or `:root` and switch off the
+  containment (`contain: layout paint` on the shadow host) that keeps its other styling inside the
+  reading pane -- no allowlisting needed. Those selectors are now dropped along with the escaping
+  declarations the sanitizer already refuses.
 
 ## [4.0.0] - 2026-09-05
 
