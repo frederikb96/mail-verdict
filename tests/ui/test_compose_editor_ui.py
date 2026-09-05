@@ -195,6 +195,29 @@ class TestPasteAndScroll:
         # Never as literal, visible source -- the exact failure reported.
         expect(body).not_to_contain_text("<strong>")
 
+    def test_a_pasted_table_keeps_a_separator_between_cells(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """The editor's schema has no table node, so a pasted one is
+        flattened -- correctly dropping the table but not the gap between
+        cells. Without that gap the two cells' text runs together
+        ("cell Acell B"), reading as corrupted rather than simplified."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        _dispatch_paste(
+            body,
+            "<table><tr><td>cell A</td><td>cell B</td></tr></table>",
+            "cell A\tcell B",
+        )
+
+        expect(body).to_contain_text("cell A")
+        expect(body).to_contain_text("cell B")
+        expect(body).not_to_contain_text("Acell")
+
     def test_long_content_scrolls_inside_the_composer_rather_than_growing_it(
         self, page: Page, app_server: str, editor_account: dict[str, Any],
     ) -> None:
@@ -217,6 +240,27 @@ class TestPasteAndScroll:
         viewport = page.viewport_size
         assert dialog_box is not None and viewport is not None
         assert dialog_box["height"] <= viewport["height"]
+
+
+class TestRecipientFieldAccessibleName:
+    def test_the_to_field_keeps_its_accessible_name_once_a_chip_exists(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """The visible placeholder disappears once there is a chip beside
+        it -- correct, it would read oddly otherwise -- but the field's
+        accessible name has to survive that. A locator by role and name is
+        exactly what a screen reader relies on too."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        to_field = dialog.get_by_role("combobox", name="To", exact=True)
+        to_field.click()
+        to_field.fill("chip-recipient@example.com")
+        page.keyboard.press("Enter")
+
+        expect(dialog.get_by_text("chip-recipient@example.com")).to_be_visible(timeout=10_000)
+        expect(dialog.get_by_role("combobox", name="To", exact=True)).to_be_visible(timeout=10_000)
 
 
 class TestReplyQuoting:

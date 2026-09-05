@@ -172,6 +172,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   previously came back empty, so the two MIME parts of a resaved draft disagreed, and sending an
   untouched draft (nothing retyped) could fail outright since the text part had nothing in it at
   all while the HTML part still carried the quote
+- A table pasted into the composer flattens to one paragraph per row with its cells kept apart,
+  rather than run together with nothing between them
+- The composer's To/Cc/Bcc field keeps its accessible name once it holds a chip -- its visible
+  placeholder disappears at that point (correctly, next to a chip it would read oddly), which
+  previously took the field's only name with it
 
 ## [3.1.1] - 2026-09-03
 

@@ -86,6 +86,12 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
           </ComboboxChip>
         ))}
         <ComboboxInput
+          // The visible placeholder is only shown while there are no chips
+          // yet (a chip beside it would read oddly) -- but the input's
+          // accessible name has to survive that, or a screen reader (and
+          // any test locating by role+name) finds an unnamed textbox the
+          // moment the first recipient is added.
+          aria-label={placeholder ?? "Recipients"}
           placeholder={value.length === 0 ? placeholder : undefined}
           onKeyDown={(e) => {
             // A highlighted suggestion owns Enter/Tab/comma -- let the
