@@ -373,6 +373,12 @@ class TestOccurrenceBound:
     before recurring-ical-events is ever asked to generate anything."""
 
     def test_secondly_over_a_day_is_refused(self) -> None:
+        """expand_instances() now refuses FREQ=SECONDLY on the RRULE's own
+        text (validate_rrule_frequency()) before recurring-ical-events is
+        ever asked to generate anything -- ValueError rather than
+        TooManyOccurrencesError, which only ever fires once that
+        generation has already finished and is what this class's own
+        docstring actually promises."""
         data = (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
@@ -388,7 +394,7 @@ class TestOccurrenceBound:
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
-        with pytest.raises(ical.TooManyOccurrencesError):
+        with pytest.raises(ValueError, match="SECONDLY"):
             ical.expand_instances(
                 data,
                 datetime(2026, 9, 1, tzinfo=timezone.utc),
@@ -398,7 +404,8 @@ class TestOccurrenceBound:
     def test_minutely_over_a_month_is_refused(self) -> None:
         """The finding's second amplifier: list_events' own calendar-month
         window, over a frequency the day-scale case alone would not
-        already cover the reasoning for."""
+        already cover the reasoning for. Refused the same way as
+        FREQ=SECONDLY above, on the RRULE's own text."""
         data = (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
@@ -414,7 +421,7 @@ class TestOccurrenceBound:
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
-        with pytest.raises(ical.TooManyOccurrencesError):
+        with pytest.raises(ValueError, match="MINUTELY"):
             ical.expand_instances(
                 data,
                 datetime(2026, 9, 1, tzinfo=timezone.utc),
@@ -452,6 +459,22 @@ class TestOccurrenceBound:
         with pytest.raises(ValueError, match="MINUTELY"):
             ical.replace_master_fields(_SIMPLE_EVENT, rrule="FREQ=MINUTELY")
 
+    def test_bysecond_is_refused_regardless_of_freq(self) -> None:
+        """BYSECOND widens whatever coarser FREQ it is paired with --
+        FREQ=DAILY;BYSECOND=... is exactly as dense as FREQ=SECONDLY."""
+        with pytest.raises(ValueError, match="BYSECOND"):
+            ical.validate_rrule_frequency("FREQ=DAILY;BYSECOND=0,15,30,45")
+
+    def test_byminute_is_refused_regardless_of_freq(self) -> None:
+        with pytest.raises(ValueError, match="BYMINUTE"):
+            ical.validate_rrule_frequency("FREQ=YEARLY;BYMINUTE=0,15,30,45")
+
+    def test_byhour_alone_is_accepted(self) -> None:
+        """BYHOUR multiplies a series by at most 24 -- ordinary rather
+        than pathological, and left alone deliberately (see
+        validate_rrule_frequency's own docstring)."""
+        ical.validate_rrule_frequency("FREQ=DAILY;BYHOUR=9,17")
+
     def test_recurrence_id_to_datetime_round_trips(self) -> None:
         assert ical.recurrence_id_to_datetime("20260908T090000Z") == datetime(
             2026, 9, 8, 9, 0, tzinfo=timezone.utc,
@@ -462,8 +485,19 @@ class TestOccurrenceBound:
         waved this through: FREQ=DAILY with BYHOUR/BYMINUTE/BYSECOND all
         enumerated is one occurrence per second wearing a DAILY hat --
         those parts widen a series when FREQ is coarser than they are,
-        they do not narrow it. The bound now measures real output, so
-        the RRULE's own spelling cannot walk around it."""
+        they do not narrow it.
+
+        Refused earlier now, and by a different exception, than when this
+        test was written: validate_rrule_frequency() refuses BYSECOND/
+        BYMINUTE outright (see its own docstring for why the bound this
+        test's name refers to cannot itself run first), so expand_instances()
+        never reaches query.between() for this payload at all. The window
+        here is adjacent to DTSTART specifically so that call -- if it ran
+        -- would finish and demonstrate the bound the old text-only guard
+        missed; that path is exercised directly in
+        TestOccurrenceBound instead, on an RRULE this test's own dense BY*
+        parts would now shadow before ever reaching it.
+        """
         data = (
             "BEGIN:VCALENDAR\r\n"
             "VERSION:2.0\r\n"
@@ -482,7 +516,7 @@ class TestOccurrenceBound:
             "END:VEVENT\r\n"
             "END:VCALENDAR\r\n"
         )
-        with pytest.raises(ical.TooManyOccurrencesError):
+        with pytest.raises(ValueError, match="BYSECOND|BYMINUTE"):
             ical.expand_instances(
                 data,
                 datetime(2026, 9, 1, tzinfo=timezone.utc),

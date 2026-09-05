@@ -358,6 +358,60 @@ class TestImportInvitation:
         assert body["calendar_id"] == str(collection_id)
         assert body["object_id"] is not None
 
+    def test_a_pathological_rrule_is_refused_rather_than_imported(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A person confirming this exact message by hand must not be
+        able to revive what calendar/intake.py's own auto-import already
+        quarantined -- refused with a plain error here, since this is a
+        synchronous action with a response the person sees immediately,
+        never the silent drop quarantining elsewhere guards against."""
+        uid = _new_uid()
+        bomb = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nMETHOD:REQUEST\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            "DTSTAMP:20260901T120000Z\r\nDTSTART:20260910T090000Z\r\nDTEND:20260910T100000Z\r\n"
+            "SUMMARY:Kickoff\r\nSEQUENCE:0\r\nRRULE:FREQ=SECONDLY\r\n"
+            "ORGANIZER;CN=Anna Mueller:mailto:anna@example.com\r\n"
+            "ATTENDEE;CN=Freddy;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;"
+            "RSVP=TRUE:mailto:freddy@work.example\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+
+        async def _seed(db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID]:
+            async with db.session() as session:
+                account_id, folder_id, _identity_id = (
+                    await _seed_mail_account_folder_and_identity(session, email=None)
+                )
+                _dav_account_id, collection_id = await _seed_dav_calendar(session)
+                mail_id = await _seed_message_with_ics(
+                    session, account_id=account_id, folder_id=folder_id, data=bomb,
+                )
+                await session.commit()
+            return mail_id, collection_id
+
+        mail_id, collection_id = client.portal.call(_seed, migrated_db)
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp = client.post(
+                f"/calendar/invitations/{mail_id}/import",
+                json={"calendar_id": str(collection_id)},
+            )
+        assert resp.status_code == 400, resp.text
+        assert "recurrence" in resp.json()["detail"]
+
+        async def _object_count(db: DatabaseConnection) -> int:
+            async with db.session() as session:
+                return (
+                    await session.execute(
+                        text("SELECT count(*) FROM dav_objects WHERE collection_id = :c"),
+                        {"c": collection_id},
+                    )
+                ).scalar_one()
+
+        assert client.portal.call(_object_count, migrated_db) == 0
+
     def test_import_with_link_sets_the_identity_as_intake(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:

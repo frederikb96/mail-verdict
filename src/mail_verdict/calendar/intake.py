@@ -266,6 +266,20 @@ class CalendarIntakeHandler:
                 status="unlinked", identity=identity,
                 reason="the calendar's DAV account is inactive",
             )
+        if invitation.master.rrule is not None:
+            try:
+                ical.validate_rrule_frequency(invitation.master.rrule)
+            except ValueError:
+                # Quarantined rather than silently dropped: the message
+                # still surfaces through api/invitations.py's GET, and a
+                # person can choose to import it anyway -- which runs
+                # into the identical check import_invitation() makes
+                # before writing, so confirming it by hand cannot revive
+                # what auto-import just refused.
+                return IntakeDecision(
+                    status="unlinked", identity=identity,
+                    reason="its recurrence rule is too dense to expand safely",
+                )
         return IntakeDecision(
             status="imported", dav_account_id=dav_account.id, collection_id=collection_id,
             identity=identity,

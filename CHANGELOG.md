@@ -187,6 +187,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   containment (`contain: layout paint` on the shadow host) that keeps its other styling inside the
   reading pane -- no allowlisting needed. Those selectors are now dropped along with the escaping
   declarations the sanitizer already refuses.
+- An emailed invitation auto-imports when one of the account's own identities is among its
+  attendees -- a line an attacker writes themselves -- and its recurrence rule was stored
+  unvalidated. A dense enough one (`FREQ=SECONDLY`, or `BYSECOND`/`BYMINUTE` widening a coarser
+  frequency) never finishes expanding and strands the calendar's expansion pool permanently after a
+  few page loads. The rule is now refused before it is ever stored, on both the automatic import
+  and the manual "add to calendar" confirmation, and again on read for anything already stored --
+  quarantined for a person to review rather than silently dropped, and bounding a rule with its own
+  small `COUNT` is still accepted, since that already caps the cost regardless of frequency.
 
 ## [4.0.0] - 2026-09-05
 
