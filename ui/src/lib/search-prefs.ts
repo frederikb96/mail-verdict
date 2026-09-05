@@ -7,7 +7,8 @@
  */
 
 import { atomWithStorage } from "jotai/utils";
-import type { SearchField } from "@/types/api";
+import type { CacheSnapshot } from "virtua";
+import type { SearchField, SearchStrictness } from "@/types/api";
 
 export const ALL_SEARCH_FIELDS: SearchField[] = ["subject", "from", "to", "body"];
 
@@ -38,3 +39,40 @@ export const searchSemanticModeAtom = atomWithStorage<boolean>(
  * result and pressing Back returns to the same search rather than an
  * empty box; the other two already survived a Back, this one did not. */
 export const searchQueryAtom = atomWithStorage<string>("mailverdict:search-query", "");
+
+/** How tightly semantic results cluster around the best match -- a
+ * position name, not a float: the underlying cutoff is relative to the
+ * best match in the pool, so a raw number would read as an absolute
+ * threshold it isn't (see the backend's embeddings/search.py). */
+export const searchStrictnessAtom = atomWithStorage<SearchStrictness>(
+  "mailverdict:search-strictness",
+  "balanced",
+);
+
+/** The result row at the top of the viewport, captured on scroll and
+ * restored on mount -- listIdentity ties it to the exact search it was
+ * captured under (query, mode, fields, folders, strictness -- the same
+ * key search-page.tsx keys its VList on), so a return to a *different*
+ * search can never apply a stale anchor left over from another one. */
+export interface SearchScrollAnchor {
+  listIdentity: string;
+  messageId: string;
+}
+export const searchScrollAnchorAtom = atomWithStorage<SearchScrollAnchor | null>(
+  "mailverdict:search-scroll-anchor",
+  null,
+);
+
+/** virtua's own measured-row-height cache, keyed to the same listIdentity
+ * as the anchor above. Restoring it alongside the anchor is what keeps a
+ * restored row from re-measuring and shoving the anchor out from under
+ * the reader (SKILL.md's restore-and-hold) -- the two are complementary,
+ * cache for heights and anchor for position. */
+export interface SearchScrollCache {
+  listIdentity: string;
+  cache: CacheSnapshot;
+}
+export const searchScrollCacheAtom = atomWithStorage<SearchScrollCache | null>(
+  "mailverdict:search-scroll-cache",
+  null,
+);

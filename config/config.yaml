@@ -52,3 +52,15 @@ database:
   # (pool_size + max_overflow - reserved_for_requests) minus whatever
   # every other running queue has already claimed.
   reserved_for_requests: 3
+
+search:
+  # Semantic search scans message_embeddings exactly rather than through
+  # its approximate HNSW index (embeddings/search.py) -- an approximate
+  # scan can silently return the wrong neighbourhood for a query far from
+  # every document, where an exact one cannot. Cost is linear in embedded
+  # message count, measured at roughly 18 microseconds per vector at 1536
+  # dimensions: 14,000 embedded messages took 254ms, 50,000 would take
+  # roughly 900ms, 200,000 roughly 3.6s. The embedding count is logged at
+  # startup against this ceiling; above it, the exact scan should be
+  # measured again rather than assumed to still be the right choice.
+  exact_scan_row_ceiling: 200000

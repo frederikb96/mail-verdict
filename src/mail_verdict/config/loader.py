@@ -277,6 +277,16 @@ class OutboxConfig(BaseModel):
     max_attachments: int
 
 
+class SearchConfig(BaseModel):
+    """The scale ceiling semantic search's exact scan is measured against
+    -- see config.yaml's own comment for the numbers. Not a behaviour
+    switch; nothing currently reads this to change what it does, it is
+    the threshold the startup log line (server.py) compares the embedded
+    message count against."""
+
+    exact_scan_row_ceiling: int
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -294,6 +304,7 @@ class InfraConfig(BaseModel):
     security: SecurityConfig
     outbox: OutboxConfig
     database: DatabaseConfig
+    search: SearchConfig
 
 
 _config_instance: InfraConfig | None = None
@@ -323,6 +334,7 @@ def get_config() -> InfraConfig:
                 security=SecurityConfig(**(cfg.get("security") or {})),
                 outbox=OutboxConfig(**(cfg.get("outbox") or {})),
                 database=DatabaseConfig(**database_cfg),
+                search=SearchConfig(**(cfg.get("search") or {})),
             )
         except ValidationError as exc:
             raise ConfigError(f"Invalid configuration: {exc}") from exc

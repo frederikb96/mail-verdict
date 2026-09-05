@@ -48,8 +48,8 @@ export function SearchResultRow({ result, onOpen }: SearchResultRowProps) {
     <button
       type="button"
       data-testid="search-result-row"
-      data-message-id={result.message_id}
-      onClick={() => onOpen(result.message_id)}
+      data-message-id={result.id}
+      onClick={() => onOpen(result.id)}
       className="flex w-full items-start gap-3 border-b px-4 py-3 text-left hover:bg-accent/50"
     >
       <InitialsAvatar name={senderName} photoUrl={photoUrl} className="mt-0.5" />

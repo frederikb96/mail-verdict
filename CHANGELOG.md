@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Search
+
+- Text search now ranks by where a match lands (subject, then subject-or-sender, then also
+  recipient, then body) rather than by date alone, and its recall stage is a prefix match over the
+  same index PostIMAP already maintains instead of a trigram scan over every message body -- a
+  search that used to take twenty seconds now answers in single-digit milliseconds. A trigram,
+  typo-tolerant fallback still exists, but only fires when that primary stage finds nothing on the
+  very first page, and only ever looks at subject and sender, never body. The response now carries
+  an exact total alongside the page, and semantic search takes a Loose/Balanced/Strict control
+  (persisted like the other search preferences) instead of an absolute similarity cutoff that moved
+  with query length and language; its retrieval also scans exactly rather than through an
+  approximate index, which was occasionally returning an unrelated cluster of near-duplicate mail
+  at a fraction of the right similarity
+- A new query now visibly clears the previous one's results and shows a spinner every time, not
+  only for the very first search of a session; the "load more" indicator now sits inside the
+  scrollable list rather than being clipped below it. Returning from an opened result lands back on
+  the same row in the search results rather than at the top
+- The folder scope picker can now be cleared to nothing -- a real, distinct state that disables
+  search with a prompt to choose at least one folder, rather than the empty state it collapsed to
+  previously being sent to the server as "no restriction" and unscoping the search
+- A message stored in two folders under the same header no longer permanently loses its place in
+  semantic search results, and the coverage figure now reports what search can actually reach
+  rather than what merely has an embedding row
+
 ### Compose
 
 - A send can be taken back for a few seconds after pressing Send: an undo banner appears

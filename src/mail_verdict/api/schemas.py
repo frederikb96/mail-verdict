@@ -287,31 +287,31 @@ class SelectionSnapshotResponse(BaseModel):
 SearchField = Literal["subject", "from", "to", "body"]
 
 
-class SearchResult(BaseModel):
-    """A single search result -- carries enough of the message (folder,
-    read/flagged state) for the search page's own row, distinct from the
-    mail list's MessageSummary and its full set of row actions."""
+class SearchResult(MessageSummary):
+    """One search hit: MessageSummary's full shape (so a result carries
+    the same row actions a mail-list row does -- flag, archive, spam,
+    trash, not just read/flagged display) plus how the query matched it.
 
-    message_id: uuid.UUID
-    account_id: uuid.UUID
-    folder_id: uuid.UUID
-    subject: str | None = None
-    from_addr: str | None = None
-    received_at: datetime | None = None
-    snippet: str | None = None
-    is_seen: bool = False
-    is_flagged: bool = False
+    Shared by both search endpoints: GET /api/search (match_tier
+    meaningful, 0-4 -- see MessageRepository's _match_tier and the
+    trigram fallback tier) and GET /api/embeddings/search (similarity
+    meaningful, match_tier always its default -- a semantic hit has no
+    field-tier concept of its own).
+    """
 
-    model_config = {"from_attributes": True}
+    match_tier: int = 0
+    similarity: float | None = None
 
 
 class SearchResponse(BaseModel):
-    """Paginated search results, newest first."""
+    """Paginated fulltext search results, ranked by field tier then
+    newest first."""
 
     results: list[SearchResult]
     has_more: bool
     next_cursor: str | None = None
     query: str
+    total: int
 
 
 # --- Account schemas ---
@@ -915,36 +915,42 @@ class QueuePatchRequest(BaseModel):
 
 
 class EmbeddingStatusResponse(BaseModel):
-    """Coverage snapshot for one embedding model."""
+    """Coverage snapshot for one embedding model.
+
+    encoded/pending/failed are message_embeddings row counts by status.
+    reachable/unreachable/shadowed further split "done": reachable is a
+    done row whose message_id join hint resolves to a live, non-expunged
+    message (what semantic search can actually return); unreachable is a
+    done row whose hint is dead; shadowed is an in-scope message with no
+    embedding of its own because a sibling sharing its Message-ID header
+    already holds one (see embeddings/repository.py's status()).
+    coverage is reachable/in_scope, not encoded/in_scope -- a drift shows
+    up here as coverage below 1.0 instead of as an empty search.
+    """
 
     model: str
     in_scope: int
     encoded: int
     pending: int
     failed: int
+    reachable: int
+    unreachable: int
+    shadowed: int
     coverage: float
 
 
-class SemanticSearchResult(BaseModel):
-    """One semantic search hit: the message and how close it was."""
-
-    message_id: uuid.UUID
-    account_id: uuid.UUID
-    folder_id: uuid.UUID
-    subject: str | None = None
-    from_addr: str | None = None
-    received_at: datetime | None = None
-    similarity: float
-    is_seen: bool = False
-    is_flagged: bool = False
-
-
 class SemanticSearchResponse(BaseModel):
-    """Semantic search results wrapper."""
+    """Semantic search results, nearest first. Single-page: the
+    strictness cutoff (see embeddings/search.py) bounds the result set
+    naturally, so there is no further page to fetch. min_similarity_applied
+    is what the relative strictness cutoff resolved to for this query, so
+    the UI can say why a result set came back small."""
 
-    results: list[SemanticSearchResult]
+    results: list[SearchResult]
     query: str
     model: str
+    strictness: Literal["loose", "balanced", "strict"]
+    min_similarity_applied: float
 
 
 # --- Pipeline configuration schemas ---

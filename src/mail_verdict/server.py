@@ -183,6 +183,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         FolderRepository,
         VerdictRepository,
     )
+    from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
+    from mail_verdict.embeddings.repository import EmbeddingRepository
     from mail_verdict.embeddings.worker import register_embeddings
     from mail_verdict.pipeline.enqueue import (
         build_reconciliation_timer,
@@ -243,6 +245,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _queue_manager.start()
     await _embedding_components.start()
     logger.info("Pipeline and embedding queues registered and started")
+
+    # Semantic search scans this count exactly rather than through an
+    # approximate index (embeddings/search.py) -- logged once at startup
+    # against config.search.exact_scan_row_ceiling so a mailbox that grows
+    # past the size that scan was measured at is visible rather than
+    # silently slower.
+    _semantic_model = str(
+        settings_service.get("semantic").get("model", DEFAULT_EMBEDDING_MODEL)
+    )
+    _embedding_status = await EmbeddingRepository(db).status(model=_semantic_model)
+    if _embedding_status.in_scope > config.search.exact_scan_row_ceiling:
+        logger.warning(
+            "Embedding corpus (%d in-scope messages) exceeds "
+            "config.search.exact_scan_row_ceiling (%d) -- semantic search's "
+            "exact-scan latency should be re-measured",
+            _embedding_status.in_scope, config.search.exact_scan_row_ceiling,
+        )
+    else:
+        logger.info(
+            "Embedding corpus: %d in-scope messages (exact-scan ceiling %d)",
+            _embedding_status.in_scope, config.search.exact_scan_row_ceiling,
+        )
 
     _pipeline_reconciler = build_reconciliation_timer(db, settings_service)
     await _pipeline_reconciler.start()

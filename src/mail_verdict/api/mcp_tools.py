@@ -777,8 +777,11 @@ async def semantic_search_mail(
 
     Returns:
         List of message summaries with a similarity score (0-1, higher is
-        closer), ranked nearest first. Only messages already encoded with
-        the currently configured model are searched -- see get_semantic_status
+        closer), ranked nearest first -- up to limit, or fewer if the
+        rest don't clear the account's configured strictness cutoff (see
+        embeddings/search.py: relative to the best match in the pool, not
+        an absolute floor). Only messages already encoded with the
+        currently configured model are searched -- see get_semantic_status
         for coverage.
     """
     from mail_verdict.embeddings.provider import (
@@ -791,16 +794,21 @@ async def semantic_search_mail(
 
     settings = get_settings_service().get("semantic")
     model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    strictness = settings.get("default_strictness", "balanced")
     provider = resolve_embedding_provider(
         str(settings.get("provider", "openai")), get_provider_credential_repo(),
     )
     vectors = await provider.embed_batch([query], model=model)
 
     aid = uuid.UUID(account_id) if account_id else None
-    hits = await semantic_search(
-        get_db_connection(), query_vector=vectors[0], model=model, account_id=aid, k=limit,
+    outcome = await semantic_search(
+        get_db_connection(), query_vector=vectors[0], model=model, account_id=aid,
+        k=limit, strictness=strictness,
     )
-    return [{**_message_summary(hit.message), "similarity": hit.similarity} for hit in hits]
+    return [
+        {**_message_summary(hit.message), "similarity": hit.similarity}
+        for hit in outcome.results
+    ]
 
 
 @mcp.tool(

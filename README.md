@@ -40,9 +40,11 @@ mirror, which is what keeps it simple.
   Junk, for confirming or correcting them singly or in bulk. Historical mail is never classified,
   and nothing is classified twice.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
-- **Search** — fuzzy, typo-tolerant text search, scoped to whichever folders and fields (subject,
-  from, to, body) you pick, newest first; plus semantic search over an embedding of every message
-  for finding mail by meaning rather than exact words. Both remember the folder scope you chose.
+- **Search** — text search scoped to whichever folders and fields (subject, from, to, body) you
+  pick, ranked by where a match lands and newest first within that, with a typo-tolerant fallback
+  for a query the primary match misses entirely; plus semantic search over an embedding of every
+  message, with a Loose/Balanced/Strict control, for finding mail by meaning rather than exact
+  words. Both remember the folder scope you chose.
 - **Calendars and contacts** — CalDAV and CardDAV servers mirrored the same way mail is: calendars
   with recurring events, RSVPs and per-occurrence editing, and address books with compose
   autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply

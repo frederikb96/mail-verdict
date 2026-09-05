@@ -21,16 +21,12 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query
 
-from mail_verdict.api.schemas import (
-    EmbeddingStatusResponse,
-    SemanticSearchResponse,
-    SemanticSearchResult,
-)
+from mail_verdict.api.schemas import EmbeddingStatusResponse, SearchResult, SemanticSearchResponse
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL, resolve_embedding_provider
 from mail_verdict.embeddings.repository import EmbeddingRepository
-from mail_verdict.embeddings.search import semantic_search
+from mail_verdict.embeddings.search import Strictness, semantic_search
 from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
 
@@ -65,7 +61,9 @@ async def get_status(
     status = await repo.status(model=model or _current_model(), account_id=account_id)
     return EmbeddingStatusResponse(
         model=status.model, in_scope=status.in_scope, encoded=status.encoded,
-        pending=status.pending, failed=status.failed, coverage=status.coverage,
+        pending=status.pending, failed=status.failed,
+        reachable=status.reachable, unreachable=status.unreachable, shadowed=status.shadowed,
+        coverage=status.coverage,
     )
 
 
@@ -94,7 +92,9 @@ async def trigger_backfill(
     status = await repo.status(model=model, account_id=account_id)
     return EmbeddingStatusResponse(
         model=status.model, in_scope=status.in_scope, encoded=status.encoded,
-        pending=status.pending, failed=status.failed, coverage=status.coverage,
+        pending=status.pending, failed=status.failed,
+        reachable=status.reachable, unreachable=status.unreachable, shadowed=status.shadowed,
+        coverage=status.coverage,
     )
 
 
@@ -105,11 +105,19 @@ async def search(
     folder_ids: list[uuid.UUID] | None = Query(
         default=None, description="Restrict to these folders; omit for no restriction",
     ),
-    limit: int = Query(default=20, ge=1, le=200),
-    min_similarity: float | None = Query(default=None, ge=0.0, le=1.0),
+    strictness: Strictness | None = Query(
+        default=None,
+        description=(
+            "How tightly results cluster around the best match: "
+            "loose/balanced/strict. Omit to use semantic.default_strictness."
+        ),
+    ),
 ) -> SemanticSearchResponse:
     """
-    Semantic search: nearest messages to the meaning of the query text.
+    Semantic search: nearest messages to the meaning of the query text,
+    cut down by strictness (relative to the best match, not an absolute
+    similarity floor -- see embeddings/search.py). Single-page: the
+    strictness cutoff bounds the result set naturally.
 
     Complements full-text search (GET /api/search) rather than replacing
     it -- literal search wins for a known sender or an exact phrase,
@@ -118,6 +126,7 @@ async def search(
     model = _current_model()
     settings = get_settings_service().get("semantic")
     provider_name = str(settings.get("provider", "openai"))
+    resolved_strictness: Strictness = strictness or settings.get("default_strictness", "balanced")
     cred_repo = get_provider_credential_repo()
 
     try:
@@ -129,21 +138,25 @@ async def search(
         logger.exception("Semantic search query embedding failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    hits = await semantic_search(
+    outcome = await semantic_search(
         get_db_connection(), query_vector=vectors[0], model=model,
-        account_id=account_id, folder_ids=folder_ids, k=limit,
-        min_similarity=min_similarity,
+        account_id=account_id, folder_ids=folder_ids, strictness=resolved_strictness,
     )
     return SemanticSearchResponse(
         results=[
-            SemanticSearchResult(
-                message_id=hit.message.id, account_id=hit.message.account_id,
-                folder_id=hit.message.folder_id,
+            SearchResult(
+                id=hit.message.id, account_id=hit.message.account_id,
+                folder_id=hit.message.folder_id, thread_id=hit.message.thread_id,
                 subject=hit.message.subject, from_addr=hit.message.from_addr,
-                received_at=hit.message.received_at, similarity=hit.similarity,
+                to_addrs=hit.message.to_addrs, received_at=hit.message.received_at,
                 is_seen=hit.message.is_seen, is_flagged=hit.message.is_flagged,
+                is_answered=hit.message.is_answered, is_draft=hit.message.is_draft,
+                pending_sync=hit.message.imap_uid is None,
+                is_truncated=hit.message.is_truncated, mirrored_at=hit.message.created_at,
+                similarity=hit.similarity,
             )
-            for hit in hits
+            for hit in outcome.results
         ],
         query=q, model=model,
+        strictness=resolved_strictness, min_similarity_applied=outcome.min_similarity_applied,
     )

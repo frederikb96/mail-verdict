@@ -63,6 +63,7 @@ import type {
   RespondRequest,
   SearchField,
   SearchResponse,
+  SearchStrictness,
   SelectionSnapshotResponse,
   SemanticSearchResponse,
   SpamReviewListResponse,
@@ -396,11 +397,13 @@ export const api = {
     }): Promise<SearchResponse> {
       return request(`/search${qs(params)}`);
     },
+    /** Single-page: the strictness cutoff bounds the result set naturally,
+     * so there is no limit/before to page with here. */
     semantic(params: {
       q: string;
       account_id?: string;
       folder_ids?: string[];
-      limit?: number;
+      strictness?: SearchStrictness;
     }): Promise<SemanticSearchResponse> {
       return request(`/embeddings/search${qs(params)}`);
     },

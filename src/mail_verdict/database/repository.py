@@ -13,11 +13,12 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Text, case, cast, delete, desc, func, or_, select
+from sqlalchemy import Text, and_, case, cast, delete, desc, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from mail_verdict.core.cursor import after_cursor
+from mail_verdict.core.cursor import after_tier_cursor
 from mail_verdict.database.models import (
     Account,
     AccountPrefs,
@@ -291,26 +292,6 @@ class FolderPrefsRepository:
 SEARCH_FIELDS = frozenset({"subject", "from", "to", "body"})
 
 
-def _search_haystack(fields: frozenset[str]) -> Any:
-    """One concatenated text expression over exactly the requested fields,
-    space-joined so a token can never straddle two fields it shouldn't."""
-    columns: list[Any] = []
-    if "subject" in fields:
-        columns.append(func.coalesce(Message.subject, ""))
-    if "from" in fields:
-        columns.append(func.coalesce(Message.from_addr, ""))
-    if "to" in fields:
-        columns.append(func.coalesce(cast(Message.to_addrs, Text), ""))
-    if "body" in fields:
-        columns.append(func.coalesce(Message.body_text, ""))
-    if not columns:
-        columns = [cast("", Text)]
-    expr = columns[0]
-    for col in columns[1:]:
-        expr = expr + " " + col
-    return expr
-
-
 def _ilike_escape(token: str) -> str:
     """Escape ILIKE's own wildcards in raw user input before wrapping it
     in %...% -- a query containing a literal % or _ must match that
@@ -318,28 +299,180 @@ def _ilike_escape(token: str) -> str:
     return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _fuzzy_token_predicate(haystack: Any, token: str, threshold: float = 0.4) -> Any:
-    """A token matches if it appears literally, or -- pg_trgm's
-    word_similarity, not similarity() -- if a substring of the (possibly
-    much longer) haystack is a near enough match to the short token that a
-    typo shouldn't lose the hit. similarity() compares two whole strings
-    and would systematically under-score a five-letter token against a
-    paragraph; word_similarity is the one meant for exactly this shape.
+async def _resolve_lexemes(session: AsyncSession, query: str) -> list[str]:
+    """The distinct lexemes Postgres's own 'simple' text search parser
+    extracts from the raw query -- the single tokenization every later
+    piece of a search (the prefix tsquery, the per-field ILIKE scope, the
+    match tier, the snippet) agrees on. Splitting on whitespace in Python
+    instead would let matching and the tsvector index quietly disagree on
+    what a "token" is; going through Postgres's own parser is also what
+    makes the tsquery injection-proof -- raw user text is never
+    interpolated into tsquery syntax directly, only tokenized first.
+    """
+    lexeme_col = func.unnest(func.to_tsvector("simple", query)).table_valued("lexeme").c.lexeme
+    result = await session.execute(select(lexeme_col).distinct())
+    return [row[0] for row in result.all()]
 
-    An '@' token is left literal-only. Measured directly: two unrelated
-    addresses sharing a domain score *higher* on word_similarity
-    ("bob@example.com" against "alice@example.com": 0.75) than a genuine
-    one-letter typo does ("reimbursment" against "reimbursement": 0.69) --
-    there is no threshold that keeps the second and drops the first. An
-    address is a literal identifier a user is typing exactly, not prose
+
+def _tsquery_text(tokens: list[str]) -> str | None:
+    """Prefix-AND tsquery syntax over already-tokenized lexemes (every
+    token required, `:*` for a prefix match). None -- not an empty string
+    -- for no lexemes at all (e.g. a query of pure punctuation), so
+    `to_tsquery('simple', NULL)`, and therefore `search_vector @@ NULL`,
+    is what "no results" resolves to: ordinary SQL NULL propagation
+    rather than a special case a caller has to remember to check for.
+
+    A lexeme carrying a single quote (the 'simple' config does not split
+    a contraction) is escaped the same way tsquery's own quoted-lexeme
+    syntax requires -- doubling it, the same rule SQL string literals
+    use.
+    """
+    if not tokens:
+        return None
+    return " & ".join(f"'{token.replace(chr(39), chr(39) * 2)}':*" for token in tokens)
+
+
+def _field_predicate(msg: Any, tokens: list[str], fields: frozenset[str]) -> Any:
+    """The exact field-scope restriction (every token must match at least
+    one of the toggled fields), checked per column against the candidate
+    set produced by _build_candidate_query -- never against one
+    concatenated haystack, which would let a token spanning two fields'
+    boundary match wrongly."""
+    conditions = []
+    for token in tokens:
+        pattern = f"%{_ilike_escape(token)}%"
+        parts = []
+        if "subject" in fields:
+            parts.append(msg.subject.ilike(pattern))
+        if "from" in fields:
+            parts.append(msg.from_addr.ilike(pattern))
+        if "to" in fields:
+            parts.append(cast(msg.to_addrs, Text).ilike(pattern))
+        if "body" in fields:
+            parts.append(msg.body_text.ilike(pattern))
+        conditions.append(or_(*parts))
+    return and_(*conditions)
+
+
+def _match_tier(msg: Any, tokens: list[str]) -> Any:
+    """Which field tier every token matches in, computed over the real
+    columns rather than through ts_rank -- PostIMAP's search_vector
+    carries no setweight labels, so ts_rank provably cannot tell a
+    subject hit from a body hit (observed: it ranks a body-only
+    newsletter above a subject match). A tier is also explainable to a
+    person, which is the property the ranking actually needs.
+
+    0: every token in subject
+    1: every token in subject or from_addr
+    2: every token in subject, from_addr or to_addrs
+    3: otherwise -- at least one token is a body-only match (the
+       candidate set is subject|from|body plus an explicit to_addrs
+       branch, so failing all three of the above can only mean body)
+    """
+
+    def _hits(*cols: Any) -> Any:
+        return and_(
+            *[or_(*[col.ilike(f"%{_ilike_escape(t)}%") for col in cols]) for t in tokens]
+        )
+
+    subject_tier = _hits(msg.subject)
+    from_tier = _hits(msg.subject, msg.from_addr)
+    to_tier = _hits(msg.subject, msg.from_addr, cast(msg.to_addrs, Text))
+    return case((subject_tier, 0), (from_tier, 1), (to_tier, 2), else_=3)
+
+
+def _build_candidate_query(
+    account_id: uuid.UUID | None,
+    tokens: list[str],
+    folder_ids: Sequence[uuid.UUID] | None,
+    fields: frozenset[str],
+) -> tuple[Any, Any] | None:
+    """The primary-recall candidate set: tsquery-matched rows (subject,
+    from_addr and body_text -- what search_vector covers) UNIONed with an
+    explicit to_addrs branch when 'to' is requested. search_vector does
+    not cover to_addrs at all, and folding the to_addrs check in as an OR
+    instead of a UNION measured 44x slower (647ms vs 14.7ms) -- it
+    defeats the GIN index and forces a full detoast of every row.
+
+    The union is wrapped in a subquery and re-aliased onto Message so a
+    caller can layer the per-field restriction and the tier computation
+    on top of one thing, the same shape whether or not the union ran.
+
+    Returns:
+        (subquery, aliased Message), or None when the query has no
+        lexemes at all -- nothing to build a candidate set from.
+    """
+    tsquery_text = _tsquery_text(tokens)
+    if tsquery_text is None:
+        return None
+    primary = Message.search_vector.op("@@")(func.to_tsquery("simple", tsquery_text))
+
+    base = select(Message).where(Message.expunged_at.is_(None))
+    if account_id is not None:
+        base = base.where(Message.account_id == account_id)
+    if folder_ids is not None:
+        base = base.where(Message.folder_id.in_(folder_ids))
+
+    candidate_stmt: Any = base.where(primary)
+    if "to" in fields:
+        to_predicate = and_(
+            *[cast(Message.to_addrs, Text).ilike(f"%{_ilike_escape(t)}%") for t in tokens]
+        )
+        candidate_stmt = candidate_stmt.union(base.where(to_predicate))
+
+    sub = candidate_stmt.subquery()
+    return sub, aliased(Message, sub)
+
+
+def _row_haystack(m: Message, fields: frozenset[str]) -> str:
+    """The same fields _field_predicate scoped to, concatenated for
+    _build_snippet -- built from the already-fetched ORM row rather than
+    a second SQL-computed column, since the candidate query already
+    returns full Message objects."""
+    parts: list[str] = []
+    if "subject" in fields:
+        parts.append(m.subject or "")
+    if "from" in fields:
+        parts.append(m.from_addr or "")
+    if "to" in fields:
+        parts.append(" ".join(m.to_addrs) if m.to_addrs else "")
+    if "body" in fields:
+        parts.append(m.body_text or "")
+    return " ".join(parts)
+
+
+def _fallback_token_predicate(token: str) -> Any:
+    """A token matches the fallback tier literally, or -- pg_trgm's word-
+    similarity operator, never the word_similarity() function call --
+    close enough that a typo doesn't lose the hit. Subject and from_addr
+    only: body is never trigram-matched here, that is the
+    18-second-per-query cost this whole rewrite exists to stop running.
+
+    The operator form (`column %> token`) is required for a trigram index
+    to serve this at all -- verified by EXPLAIN across all three
+    spellings: `column %> 'token'` and `'token' <% column` both use the
+    index, `word_similarity(token, column) >= threshold` is a sequential
+    scan every time despite computing the identical answer. Its threshold
+    is `pg_trgm.word_similarity_threshold`, a session GUC the operator
+    reads rather than an argument it takes -- see
+    search_messages_fallback, which sets it to the 0.6 validated against
+    real typos before this runs.
+
+    An '@' token is left literal-only: two unrelated addresses sharing a
+    domain score *higher* on word similarity than a genuine typo does, so
+    there is no threshold that keeps the typo and drops the collision. An
+    address is a literal identifier someone is typing exactly, not prose
     worth typo-tolerance over.
     """
     escaped = _ilike_escape(token)
+    pattern = f"%{escaped}%"
     if "@" in token:
-        return haystack.ilike(f"%{escaped}%")
+        return or_(Message.subject.ilike(pattern), Message.from_addr.ilike(pattern))
     return or_(
-        haystack.ilike(f"%{escaped}%"),
-        func.word_similarity(token, haystack) >= threshold,
+        Message.subject.ilike(pattern),
+        Message.from_addr.ilike(pattern),
+        Message.subject.op("%>")(token),
+        Message.from_addr.op("%>")(token),
     )
 
 
@@ -608,85 +741,208 @@ class MessageRepository:
             result = await session.execute(stmt)
             return [(row[0], row[1]) for row in result.all()]
 
+    async def tokenize(self, query: str) -> list[str]:
+        """The distinct lexemes Postgres's 'simple' parser extracts from a
+        raw search query -- computed once per request and threaded through
+        search_messages, search_messages_fallback, resolve_search_cursor
+        and count_search_candidates so every one of them agrees on what a
+        "token" is. See _resolve_lexemes for why this goes through
+        Postgres rather than a Python-side split.
+        """
+        async with self._db.session() as session:
+            return await _resolve_lexemes(session, query)
+
+    async def resolve_search_cursor(
+        self, message_id: uuid.UUID, tokens: list[str],
+    ) -> tuple[datetime | None, uuid.UUID, int] | None:
+        """
+        (received_at, id, tier) for a keyset cursor row.
+
+        search_messages orders by (tier, received_at, id), so a cursor
+        naming only the last row's id has to recover its tier too --
+        re-evaluated against the same tokens the search itself is using,
+        since tier depends on the query, not just the row.
+
+        Args:
+            message_id: The cursor row (GET /api/search's `before`)
+            tokens: This search's tokens, from tokenize()
+
+        Returns:
+            None if the message does not exist (an invalid cursor)
+        """
+        async with self._db.session() as session:
+            tier = _match_tier(Message, tokens)
+            stmt = select(Message.received_at, Message.id, tier).where(Message.id == message_id)
+            row = (await session.execute(stmt)).one_or_none()
+            if row is None:
+                return None
+            return (row[0], row[1], row[2])
+
+    async def count_search_candidates(
+        self,
+        account_id: uuid.UUID | None,
+        tokens: list[str],
+        *,
+        folder_ids: Sequence[uuid.UUID] | None = None,
+        fields: frozenset[str] = SEARCH_FIELDS,
+    ) -> int:
+        """
+        An exact count over the same candidate predicate search_messages
+        pages through -- computed once, not by summing pages, so the
+        number a person sees does not move as they scroll.
+
+        Args:
+            account_id, tokens, folder_ids, fields: As in search_messages
+
+        Returns:
+            0 when tokens has no lexemes at all
+        """
+        built = _build_candidate_query(account_id, tokens, folder_ids, fields)
+        if built is None:
+            return 0
+        _sub, msg = built
+        async with self._db.session() as session:
+            field_pred = _field_predicate(msg, tokens, fields)
+            stmt = select(func.count(msg.id)).where(field_pred)
+            return (await session.execute(stmt)).scalar_one()
+
     async def search_messages(
         self,
         account_id: uuid.UUID | None,
-        query: str,
+        tokens: list[str],
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
         fields: frozenset[str] = SEARCH_FIELDS,
         cursor_received_at: datetime | None = None,
         cursor_id: uuid.UUID | None = None,
+        cursor_tier: int | None = None,
         limit: int = 50,
-    ) -> list[tuple[Message, str | None]]:
+    ) -> list[tuple[Message, str | None, int]]:
         """
-        Fuzzy, field- and folder-scoped search, newest first, keyset-paged.
+        Field- and folder-scoped search, ranked by field tier then newest
+        first, keyset-paged.
+
+        The recall stage is a prefix-AND tsquery over search_vector
+        (subject, from_addr and body_text -- what PostIMAP's generated
+        column indexes), not trigram similarity: a bare ILIKE over every
+        body is already far cheaper than the trigram path this replaces,
+        and the indexed tsquery path is thousands of times cheaper again.
+        Every token is required, matched as a prefix so a partial word
+        still finds a hit. Ranking is by explicit field tier (see
+        _match_tier) rather than ts_rank, because search_vector carries
+        no per-field weights and ts_rank provably cannot tell a subject
+        hit from a body hit here.
 
         Unlike search_fulltext_with_snippet above (stemmed tsquery, ranked
-        by relevance -- what the MCP search tool still uses), this treats
-        every whitespace-split token of the query as required, matched
-        against one concatenated haystack built from exactly the toggled
-        fields: a literal substring, or -- pg_trgm's word_similarity --
-        close enough that a typo doesn't lose the hit. That is deliberately
-        not stemmed-tsquery recall (a plural does not automatically match
-        its singular): once results are ordered by date rather than
-        relevance, "matches" needs a single, predictable meaning rather
-        than one that silently depends on ts_rank.
+        by relevance -- what the MCP search tool still uses), the 'simple'
+        text search config applies no stemming at all, so a plural does
+        not automatically match its singular -- deliberate, since once
+        results are ranked by tier rather than by ts_rank, "matches" needs
+        a single, predictable meaning.
 
         folder_ids is enforced here, in the query itself -- a caller
         filtering the returned page instead would silently turn a scoped
         search into an unscoped one with a smaller page, and would make
         keyset pagination lose rows across page boundaries.
 
+        A query with no lexemes at all (tokens == []) returns no rows --
+        the caller (GET /api/search) is expected to have already checked
+        this via tokenize() before running search_messages_fallback or
+        count_search_candidates, rather than each of them repeating it.
+
         Args:
             account_id: Account scope, or None to search across every account
-            query: Raw query text
+            tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
             fields: Which of "subject"/"from"/"to"/"body" to search
-            cursor_received_at, cursor_id: Keyset cursor (core/cursor.py)
+            cursor_received_at, cursor_id, cursor_tier: Keyset cursor, from
+                resolve_search_cursor
             limit: Max rows
 
         Returns:
-            (Message, snippet) pairs ordered received_at DESC, id DESC.
-            snippet is None only when the matched text was empty.
+            (Message, snippet, tier) triples ordered (tier ASC,
+            received_at DESC NULLS LAST, id DESC). snippet is None only
+            when the matched text was empty.
         """
-        tokens = query.split()
-        if not tokens:
+        built = _build_candidate_query(account_id, tokens, folder_ids, fields)
+        if built is None:
             return []
+        _sub, msg = built
 
-        haystack = _search_haystack(fields)
         async with self._db.session() as session:
-            base = select(Message, haystack.label("haystack")).where(
-                Message.expunged_at.is_(None)
-            )
-            if account_id is not None:
-                base = base.where(Message.account_id == account_id)
-            if folder_ids is not None:
-                base = base.where(Message.folder_id.in_(folder_ids))
-            sub = base.subquery()
-            msg = aliased(Message, sub)
+            field_pred = _field_predicate(msg, tokens, fields)
+            tier = _match_tier(msg, tokens)
 
             stmt = (
-                select(msg, sub.c.haystack)
-                .where(*[_fuzzy_token_predicate(sub.c.haystack, t) for t in tokens])
-                # NULLS LAST: a message with no received_at (no date
-                # header at all) belongs at the bottom of a newest-first
-                # list, not pinned above every dated result the way
-                # Postgres's own DESC default would place it.
-                .order_by(desc(sub.c.received_at).nulls_last(), desc(sub.c.id))
+                select(msg, tier.label("tier"))
+                .where(field_pred)
+                .order_by(tier, desc(msg.received_at).nulls_last(), desc(msg.id))
             )
             if cursor_id is not None:
                 stmt = stmt.where(
-                    after_cursor(
-                        msg.received_at, msg.id, cursor_received_at, cursor_id, nulls_last=True,
+                    after_tier_cursor(
+                        tier, msg.received_at, msg.id,
+                        cursor_tier if cursor_tier is not None else 0,
+                        cursor_received_at, cursor_id,
                     )
                 )
             stmt = stmt.limit(limit)
 
             result = await session.execute(stmt)
             return [
-                (m, _build_snippet(haystack_text, tokens))
-                for m, haystack_text in result.all()
+                (m, _build_snippet(_row_haystack(m, fields), tokens), tier_value)
+                for m, tier_value in result.all()
+            ]
+
+    async def search_messages_fallback(
+        self,
+        account_id: uuid.UUID | None,
+        tokens: list[str],
+        *,
+        folder_ids: Sequence[uuid.UUID] | None = None,
+        limit: int = 50,
+    ) -> list[tuple[Message, str | None]]:
+        """
+        The trigram fallback tier: subject + from only, fired by the
+        endpoint solely when search_messages' first page came back empty
+        (and only for the first page -- a cursor never reaches this).
+        Body is deliberately never trigram-matched here, which is the
+        18-second-per-query cost the tsquery path above exists to avoid.
+
+        Args:
+            account_id: Account scope, or None to search across every account
+            tokens: This search's tokens, from tokenize()
+            folder_ids: Restrict to these folders, or None for no restriction
+            limit: Max rows
+
+        Returns:
+            (Message, snippet) pairs, newest first. Empty when tokens is
+            empty.
+        """
+        if not tokens:
+            return []
+        async with self._db.session() as session:
+            # pg_trgm.word_similarity_threshold is a session GUC the %>
+            # operator reads rather than an argument it takes -- SET
+            # LOCAL scopes the 0.6 validated against real typos to this
+            # transaction only. See _fallback_token_predicate for why the
+            # operator form is required at all.
+            await session.execute(text("SET LOCAL pg_trgm.word_similarity_threshold = 0.6"))
+
+            stmt = select(Message).where(Message.expunged_at.is_(None))
+            if account_id is not None:
+                stmt = stmt.where(Message.account_id == account_id)
+            if folder_ids is not None:
+                stmt = stmt.where(Message.folder_id.in_(folder_ids))
+            stmt = (
+                stmt.where(*[_fallback_token_predicate(t) for t in tokens])
+                .order_by(desc(Message.received_at).nulls_last(), desc(Message.id))
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return [
+                (m, _build_snippet(f"{m.subject or ''} {m.from_addr or ''}", tokens))
+                for m in result.scalars().all()
             ]
 
 
