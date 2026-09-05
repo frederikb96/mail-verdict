@@ -98,10 +98,17 @@ export function MailList() {
   const vlistRef = useRef<VListHandle>(null);
 
   // A selection is scoped to the list it was made in (see
-  // effectiveSelectionAtom) and already reads as empty the moment any of
-  // these change -- this clears the underlying atom to match, so a
-  // selection abandoned by navigating away doesn't silently reappear
-  // ticked if the reader navigates back to the same list later.
+  // effectiveSelectionAtom): a change to any of these four values is
+  // already a scope mismatch, so the guard alone empties it for a folder
+  // switch, an account switch and a threading toggle. It does NOT cover
+  // leaving the mail view for another one (Calendar, say) and coming back
+  // to the very same folder -- none of these four values change across
+  // that round trip, so the guard sees no mismatch at all. This effect is
+  // what actually clears it for that case: `MailList` unmounts when the
+  // route changes and this runs again on the fresh mount, regardless of
+  // whether any of its own dependencies moved. It is not a belt-and-braces
+  // convenience on top of the guard -- for the view-round-trip shape, it
+  // is the only thing that does the clearing.
   useEffect(() => {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps

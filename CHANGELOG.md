@@ -146,7 +146,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `refetchOnWindowFocus` and `refetchOnMount` no longer replay every already-loaded page of a
   deeply-scrolled mail list -- alt-tabbing back to the browser, or remounting the list, previously
   bypassed the bound already guarding the live-update path and could turn one refocus into
-  hundreds of requests
+  hundreds of requests. A side effect worth knowing: past that same bound, a list no longer
+  catches up on new mail by any of the three triggers, including switching to another folder and
+  back to it, since the cached pages survive that unobserved (a full page reload does catch up,
+  as does any bulk action anywhere completing)
 
 ### Fixed
 

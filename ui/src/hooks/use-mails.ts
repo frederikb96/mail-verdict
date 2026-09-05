@@ -79,10 +79,20 @@ export const mailKeys = {
  * trigger is gated on, so a list past this depth never refetches eagerly
  * regardless of which of the three actually fires; a shallowly-loaded list
  * (the overwhelmingly common case) still refreshes immediately by any of
- * them. Past the bound, a list is left stale rather than fetched -- it
- * catches up once its query is torn down and rebuilt from scratch (a
- * folder switch away and back), not from any of these three remaining
- * observers of the same query object.
+ * them.
+ *
+ * Past the bound, a list stays stale until its query is genuinely reset,
+ * not merely re-observed -- switching to another folder and back does
+ * NOT do this: the query keeps its cached pages for a full day
+ * (`gcTime`, in providers.tsx) with no observer, and `refetchOnMount`
+ * below is gated by this same bound, so remounting a still-deep query
+ * skips the refetch exactly as a background tab regaining focus would.
+ * What actually clears it: a full page reload (this query is excluded
+ * from the persisted cache, so a reload observes it with nothing in it
+ * and an uninitialized query always fetches, this bound or no), or any
+ * bulk action anywhere finishing, since its own completion resets every
+ * mail-list query -- including one the reader isn't currently looking at
+ * -- back to page one.
  */
 const EAGER_REFETCH_MAX_PAGES = 3;
 
