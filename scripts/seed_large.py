@@ -258,7 +258,11 @@ def seed_calendars(
     with httpx.Client(auth=(username, "unused"), timeout=30.0) as client:
         principal = discover(client, f"http://{host}:{port}/")
         for calendar_index, name in enumerate(EVENT_CALENDARS):
-            url = create_calendar(client, principal, name.lower(), name, ["VEVENT"])
+            # Calendars and address books share one collection root on a DAV
+            # server, so every slug here is prefixed -- an address book whose
+            # slug collides with an existing calendar's is reported as "already
+            # there" and its contacts are then written into the calendar.
+            url = create_calendar(client, principal, f"cal-{name.lower()}", name, ["VEVENT"])
             wanted = max(1, int(EVENTS_PER_CALENDAR * scale))
             for i in range(wanted):
                 uid = f"seed-ev-{calendar_index}-{i}"
@@ -350,7 +354,7 @@ def seed_contacts(
     with httpx.Client(auth=(username, "unused"), timeout=30.0) as client:
         principal = discover(client, f"http://{host}:{port}/")
         books = [
-            (name, create_addressbook(client, principal, name.lower(), name))
+            (name, create_addressbook(client, principal, f"book-{name.lower()}", name))
             for name in ADDRESS_BOOKS
         ]
         uids_by_book: dict[str, list[str]] = {name: [] for name, _ in books}

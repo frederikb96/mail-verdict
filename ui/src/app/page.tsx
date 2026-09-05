@@ -5,8 +5,10 @@ import {
   ResizablePanel,
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { BulkPanel } from "@/components/mail/bulk-panel";
 import { MailList } from "@/components/mail/mail-list";
 import { ReadingPane } from "@/components/mail/reading-pane";
+import { useSelection } from "@/hooks/use-selection";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useAtom } from "jotai";
 import { selectedMailIdAtom } from "@/lib/atoms";
@@ -16,6 +18,7 @@ import { Button } from "@/components/ui/button";
 export default function MailPage() {
   const isMobile = useIsMobile();
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const { count: selectionCount } = useSelection();
 
   // Mobile: show either mail list or reading pane (not both)
   if (isMobile) {
@@ -39,9 +42,15 @@ export default function MailPage() {
         </div>
       );
     }
+    // A phone has no reading pane to put the bulk panel in, and no hover
+    // controls on a row either -- without this a selection made by long
+    // press is a dead end.
     return (
       <div className="flex h-full flex-col overflow-hidden">
-        <MailList />
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <MailList />
+        </div>
+        {selectionCount > 0 && <BulkPanel compact />}
       </div>
     );
   }
