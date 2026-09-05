@@ -95,6 +95,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   picker per identity, so the number of calendars in an account no longer decides the width of
   the page
 
+### Removed
+
+- `GET /api/health/live`. Liveness is answered by a plain socket on its own port instead, so a
+  deployment whose probe names that path must drop it and let the chart's own liveness probe
+  apply -- otherwise the probe fails every check after upgrading and the pod restart-loops
+
 ### Fixed
 
 - The mail list holds the reader's scroll position when a message leaves the folder from
@@ -131,7 +137,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The liveness probe answers from a plain background socket on its own port, independent of the
   application's event loop. A handler that blocks that loop (heavy concurrent load, a bug) no
   longer risks the pod being restarted for merely being busy — only a genuinely dead or hung
-  process fails it now. The readiness probe (`/api/health`) is unaffected and still reflects load
+  process fails it now
+- Readiness (`/api/health`) checks the database again, and reports what it saw. A pod that had
+  lost its database entirely -- a rotated password, Postgres down, a pool permanently exhausted --
+  stayed Ready and kept taking traffic it could only answer with errors. The check is bounded by
+  `server.readiness_timeout_seconds`, and a timeout counts as busy rather than broken, so a merely
+  loaded pod stays in the Service; only an explicit failure takes it out. The response carries a
+  `database` field naming which of the three cases applied
 - The calendar month view no longer costs several seconds per request regardless of how much it
   returns, and no longer holds up every other request while it works. A long-running recurring
   series (a daily reminder set up years ago is all it takes) was re-walked from its own start

@@ -1409,8 +1409,8 @@ class TestEventLoopNotBlocked:
 
         @app.get("/live")
         async def live() -> dict[str, str]:
-            """Shaped after /api/health/live in server.py: a literal
-            constant, no database, no await on anything at all."""
+            """Shaped after the liveness listener: a literal constant, no
+            database, no await on anything at all."""
             return {"status": "alive"}
 
         months = ["2026-09", "2026-08", "2026-07", "2026-06", "2026-05", "2026-04"]

@@ -228,6 +228,7 @@ class ServerConfig(BaseModel):
     host: str
     port: int
     liveness_port: int
+    readiness_timeout_seconds: float
     log_level: str
     cors_origins: list[str] = Field(default_factory=list)
 

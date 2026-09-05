@@ -16,6 +16,10 @@ server:
   # when a handler blocks the asyncio event loop the rest of the app runs
   # on. Change the chart's matching container port alongside this.
   liveness_port: 8081
+  # How long the readiness probe waits for the database before deciding the
+  # answer is "busy" rather than "broken". A pod that is merely loaded stays
+  # in the Service; one whose database is genuinely unreachable leaves it.
+  readiness_timeout_seconds: 0.5
   log_level: INFO
   cors_origins: []            # same-origin serving by default; empty disables CORS
 

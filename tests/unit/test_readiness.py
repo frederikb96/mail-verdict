@@ -95,3 +95,45 @@ def test_readiness_skips_the_contract_check_once_confirmed(client: TestClient) -
 
     assert resp.status_code == 200
     mocked_check.assert_not_awaited()
+
+
+def test_readiness_leaves_the_service_when_the_database_is_unreachable(
+    client: TestClient,
+) -> None:
+    """A confirmed contract is not enough: a pod that cannot reach its database
+    can serve nothing but errors, so it must stop taking traffic."""
+    import mail_verdict.server as server_module
+
+    server_module._contract_ok = True
+    db = MagicMock()
+    db.health_check = AsyncMock(return_value=False)
+
+    with patch.object(server_module, "get_db_connection", return_value=db):
+        resp = client.get("/api/health")
+
+    assert resp.status_code == 503
+    assert resp.json()["database"] == "unreachable"
+
+
+def test_readiness_treats_a_slow_database_as_busy_rather_than_broken(
+    client: TestClient,
+) -> None:
+    """A loaded pod stays in the Service. At one replica, dropping out on
+    latency alone takes the whole service down for being busy."""
+    import asyncio
+
+    import mail_verdict.server as server_module
+
+    async def _never() -> bool:
+        await asyncio.sleep(3600)
+        return True
+
+    server_module._contract_ok = True
+    db = MagicMock()
+    db.health_check = _never
+
+    with patch.object(server_module, "get_db_connection", return_value=db):
+        resp = client.get("/api/health")
+
+    assert resp.status_code == 200
+    assert resp.json()["database"] == "slow"
