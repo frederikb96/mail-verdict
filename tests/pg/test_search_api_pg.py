@@ -228,6 +228,50 @@ class TestOrderingAndPagination:
         assert set(seen) == expected
         assert len(seen) == len(expected)  # no row repeated across pages
 
+    @pytest.mark.asyncio
+    async def test_a_message_with_no_received_at_sorts_last_and_is_still_visited(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A message with no date header at all (no received_at to sort
+        by) belongs at the bottom of a newest-first list -- not pinned
+        above every dated result, which is where Postgres's own DESC
+        default (NULLS FIRST) would otherwise put it."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            dated = await _seed_message(session, account_id, inbox_id, uid=1, subject="invoice")
+            # Inserted directly -- _seed_message's own default substitutes
+            # a received_at whenever None is passed, so it cannot produce
+            # a genuinely NULL one.
+            undated = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO messages "
+                    "(id, account_id, folder_id, imap_uid, thread_id, message_id, "
+                    "subject, received_at) "
+                    "VALUES (:id, :account_id, :folder_id, 2, :thread_id, :msg_id, "
+                    "'invoice', NULL)"
+                ),
+                {
+                    "id": undated, "account_id": account_id, "folder_id": inbox_id,
+                    "thread_id": uuid.uuid4(), "msg_id": f"<{undated}@example.com>",
+                },
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="invoice", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=1,
+        )
+        assert [r.message_id for r in page.results] == [dated]
+        assert page.has_more and page.next_cursor is not None
+
+        next_page = await search_messages(
+            q="invoice", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=uuid.UUID(page.next_cursor), limit=1,
+        )
+        assert [r.message_id for r in next_page.results] == [undated]
+        assert not next_page.has_more
+
 
 class TestAccountScoping:
     @pytest.mark.asyncio

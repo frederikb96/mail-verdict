@@ -36,7 +36,7 @@ import {
   useTriggerDavSync,
   useUpdateDavAccount,
 } from "@/hooks/use-dav-accounts";
-import { formatRelativeDate } from "@/lib/format";
+import { formatRelativeAgo } from "@/lib/format";
 import type { DavAccountResponse } from "@/types/api";
 
 const STATE_BADGES: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
@@ -138,7 +138,7 @@ function DavAccountCard({ account }: { account: DavAccountResponse }) {
           <div className="truncate">{account.discovery_url}</div>
           <div className="text-muted-foreground">Synced</div>
           <div>
-            {account.last_polled_at ? formatRelativeDate(account.last_polled_at) + " ago" : "never"}
+            {account.last_polled_at ? formatRelativeAgo(account.last_polled_at) : "never"}
           </div>
         </div>
 

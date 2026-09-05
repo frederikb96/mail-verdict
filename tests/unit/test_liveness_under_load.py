@@ -12,6 +12,16 @@ third thread is what makes this a real test: `AsyncClient.get()` awaited
 from a coroutine on the loop under test cannot even start running until
 the block clears, so it always measures an unblocked call and always
 passes, whatever is under test.
+
+The test above exercises `start_liveness_server()` directly rather than
+through `lifespan()` -- deliberately, since nothing there needs the
+database the full lifespan otherwise requires. That leaves one gap:
+`lifespan()` ceasing to call `start_liveness_server()` at all, or moving
+the call later, would break liveness in production while this suite kept
+passing. `test_lifespan_starts_liveness_before_database_init` below closes
+it -- it drives the real `lifespan()`, with everything after the liveness
+call short-circuited by a mocked `init_database` that raises immediately,
+so no database is needed there either.
 """
 
 from __future__ import annotations
@@ -21,12 +31,17 @@ import socket
 import threading
 import time
 from collections.abc import Iterator
+from unittest.mock import patch
 
 import httpx
 import pytest
 import uvicorn
+from fastapi import FastAPI
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
+
+from mail_verdict.config.loader import reset_config
+from tests.helpers.config_factory import make_config
 
 os.environ.setdefault(
     "MAIL_VERDICT_DATABASE_URL", "postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"
@@ -126,3 +141,49 @@ def test_liveness_answers_while_the_event_loop_is_blocked(running_app: _RunningA
 
     assert resp.status_code == 200
     assert elapsed < 0.3, f"liveness took {elapsed:.2f}s while the event loop was blocked"
+
+
+class _StoppedAfterLiveness(Exception):
+    """Raised by the mocked init_database() to abort lifespan() right
+    after the liveness listener starts, before anything DB-dependent
+    runs -- the ordering `start_liveness_server`'s own docstring claims."""
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_liveness_before_database_init() -> None:
+    from mail_verdict.server import lifespan
+
+    port = _free_port()
+    reset_config()
+    with patch(
+        "mail_verdict.config.loader._CONFIG",
+        make_config(server={"host": "127.0.0.1", "liveness_port": port}),
+    ):
+        liveness_server = liveness_thread = None
+        try:
+            with patch(
+                "mail_verdict.server.init_database", side_effect=_StoppedAfterLiveness(),
+            ):
+                with pytest.raises(_StoppedAfterLiveness):
+                    async with lifespan(FastAPI()):
+                        pass
+
+            # If start_liveness_server() ran before init_database() (the
+            # ordering this test exists to hold), the listener is already
+            # bound by the time the mock raises. A regression that moves
+            # it later never gets this far, and this request refuses the
+            # connection instead of answering -- init_database is mocked
+            # to raise immediately, so nothing else in lifespan() ever
+            # gets a chance to start it.
+            resp = httpx.get(f"http://127.0.0.1:{port}/", timeout=1.0)
+            assert resp.status_code == 200
+
+            import mail_verdict.server as server_module
+            liveness_server = server_module._liveness_server
+            liveness_thread = server_module._liveness_thread
+        finally:
+            if liveness_server is not None and liveness_thread is not None:
+                from mail_verdict.server import stop_liveness_server
+
+                stop_liveness_server(liveness_server, liveness_thread)
+            reset_config()

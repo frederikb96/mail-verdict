@@ -97,8 +97,8 @@ def start_liveness_server(host: str, port: int) -> tuple[ThreadingHTTPServer, Th
     Start the liveness listener: its own socket, its own thread, no asyncio.
 
     A `ThreadingHTTPServer` so one slow or stuck client can never make the
-    next probe queue behind it. Called at process startup rather than from
-    the async `lifespan` below, so liveness is already answering before
+    next probe queue behind it. Called from `lifespan` below, deliberately
+    as its very first action, so liveness is already answering before
     anything that could be slow -- the database connection among it -- has
     even been attempted.
 

@@ -6,14 +6,15 @@
  * sender, instead of the same markup duplicated at each call site.
  *
  * A photo pulled from the address book takes precedence here once one
- * exists to read -- nothing in the data model carries a contact photo
- * yet, so no caller passes one today. The `photoUrl` prop is what a
- * future caller would fill in, resolved from wherever that lookup ends
- * up living (a sender's address matched to a contact); this component
- * never fetches anything itself. Deliberately not a remote avatar
- * keyed by address, e.g. Gravatar -- that would tell a third party a
- * message from that address was opened, for every sender on the
- * remote-image allowlist, which is not what that allowlist is for. */
+ * exists to read. The address book itself carries photos and passes them
+ * for its own rows (contact-list.tsx, contact-detail.tsx) -- what's still
+ * missing is a mail sender's address resolved to a contact's photo, so a
+ * mail row's `photoUrl` stays unset and renders initials regardless. This
+ * component never fetches anything itself, resolved or not. Deliberately
+ * not a remote avatar keyed by address, e.g. Gravatar -- that would tell
+ * a third party a message from that address was opened, for every sender
+ * on the remote-image allowlist, which is not what that allowlist is
+ * for. */
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getInitials } from "@/lib/format";

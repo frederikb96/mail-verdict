@@ -11,8 +11,6 @@ interface EmailRendererProps {
   html?: string | null;
   /** Plain text fallback. */
   plainText?: string | null;
-  /** Whether remote images are allowed. */
-  imagesAllowed?: boolean;
   /** Identifies the message for remembering its dark-mode choice; the
    * toggle is not offered without one, since there is nothing to key the
    * memory on. */
@@ -163,25 +161,6 @@ export function getEmailStyles(canvas: Canvas): string {
   `;
 }
 
-/**
- * Strip remote images from HTML unless allowed.
- * Preserves inline data: URIs and cid: references.
- */
-function stripRemoteImages(html: string): {
-  html: string;
-  hadRemoteImages: boolean;
-} {
-  let hadRemoteImages = false;
-  const stripped = html.replace(
-    /<img\b[^>]*\bsrc\s*=\s*["']?(https?:\/\/[^"'\s>]+)["']?[^>]*\/?>/gi,
-    () => {
-      hadRemoteImages = true;
-      return "";
-    },
-  );
-  return { html: stripped, hadRemoteImages };
-}
-
 /** Escape every character that can change the meaning of markup.
  *
  * Quotes matter as much as angle brackets here: the linkifier below places a
@@ -218,14 +197,12 @@ export function linkifyText(escaped: string): string {
 export function EmailRenderer({
   html,
   plainText,
-  imagesAllowed = false,
   messageId,
   supportsDarkMode = false,
 }: EmailRendererProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const shadowRootRef = useRef<ShadowRoot | null>(null);
   const { resolvedTheme } = useTheme();
-  const [hasBlockedImages, setHasBlockedImages] = useState(false);
   // The reader's explicit choice for this message, overriding both the
   // light default and a sender's own dark declaration. Starts unset -- it
   // is loaded from localStorage in an effect below, once a messageId is
@@ -265,7 +242,7 @@ export function EmailRenderer({
 
     if (html) {
       // Client-side sanitization as defense-in-depth (backend uses nh3)
-      let processedHtml = DOMPurify.sanitize(html, {
+      const processedHtml = DOMPurify.sanitize(html, {
         ALLOW_UNKNOWN_PROTOCOLS: false,
         ALLOWED_TAGS: [
           "a", "abbr", "address", "article", "b", "blockquote", "br",
@@ -284,14 +261,6 @@ export function EmailRenderer({
           "summary", "target", "title", "type", "valign", "vspace", "width",
         ],
       });
-
-      if (!imagesAllowed) {
-        const result = stripRemoteImages(processedHtml);
-        processedHtml = result.html;
-        setHasBlockedImages(result.hadRemoteImages);
-      } else {
-        setHasBlockedImages(false);
-      }
 
       content = processedHtml;
     } else if (plainText) {
@@ -315,7 +284,7 @@ export function EmailRenderer({
 
     const styles = getEmailStyles(canvas);
     shadowRootRef.current.innerHTML = `<style>${styles}</style>${content}`;
-  }, [html, plainText, imagesAllowed, canvas]);
+  }, [html, plainText, canvas]);
 
   // Handle link clicks to open in new tab
   useEffect(() => {
@@ -357,11 +326,9 @@ export function EmailRenderer({
 
   return (
     <div className="flex flex-col">
-      {hasBlockedImages && (
-        <div className="flex items-center gap-2 bg-amber-500/10 px-4 py-2 text-sm text-amber-600 dark:text-amber-400">
-          <span>Remote images have been blocked for privacy.</span>
-        </div>
-      )}
+      {/* The blocked-images notice a reader actually sees is ImageBanner,
+          driven by the server's own has_blocked_images -- this component
+          never decides that itself. */}
       {/* html messages render on their own fixed canvas rather than the
           app's theme (see pickCanvas), so the choice needs a control of
           its own -- plain text already follows the theme and gets none. */}

@@ -33,3 +33,8 @@ export const searchSemanticModeAtom = atomWithStorage<boolean>(
   "mailverdict:search-semantic",
   false,
 );
+
+/** The typed query text -- persisted alongside scope and mode so opening a
+ * result and pressing Back returns to the same search rather than an
+ * empty box; the other two already survived a Back, this one did not. */
+export const searchQueryAtom = atomWithStorage<string>("mailverdict:search-query", "");

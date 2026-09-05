@@ -28,6 +28,18 @@ export function formatRelativeDate(dateStr: string | null): string {
   });
 }
 
+/** formatRelativeDate() plus the trailing "ago" a sentence like "Synced
+ * ... ago" needs -- only for the forms that read as a duration ("5m",
+ * "2h", "3d"). "now", "Yesterday" and an absolute date already read fine
+ * as a sentence's tail without it; appending "ago" to any of those reads
+ * as "Synced now ago" / "Synced Yesterday ago". */
+export function formatRelativeAgo(dateStr: string | null): string {
+  const relative = formatRelativeDate(dateStr);
+  if (relative === "now") return "just now";
+  if (/^\d+[mhd]$/.test(relative)) return `${relative} ago`;
+  return relative;
+}
+
 /** Format a full date for display in reading pane header. */
 export function formatFullDate(dateStr: string | null): string {
   if (!dateStr) return "";

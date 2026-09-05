@@ -52,15 +52,44 @@ class TestSettingsCategoriesUi:
         # Both new tabs render real, saved settings rather than the
         # "category is missing" fallback -- proves the category name here
         # actually matches what the server has under SettingCategory.
+        # Field labels are humanized from the raw key ("provider" ->
+        # "Provider"), which stays reachable as the label's title attribute.
         tablist.get_by_role("tab", name="Semantic search", exact=True).click()
-        expect(page.get_by_text("provider", exact=True)).to_be_visible(timeout=8_000)
+        expect(page.get_by_text("Provider", exact=True)).to_be_visible(timeout=8_000)
         with pytest.raises(AssertionError):
             expect(page.get_by_text("didn't return settings", exact=False)).to_be_visible(
                 timeout=8_000,
             )
 
         tablist.get_by_role("tab", name="Pipeline", exact=True).click()
-        expect(page.get_by_text("lease_seconds", exact=True)).to_be_visible(timeout=8_000)
+        expect(page.get_by_text("Lease seconds", exact=True)).to_be_visible(timeout=8_000)
+
+
+class TestProviderKeyFormUi:
+    def test_a_key_can_be_entered_and_the_missing_encryption_key_error_is_named(
+        self, page: Page, app_server: str,
+    ) -> None:
+        """There was no control anywhere in the application to set a
+        provider key -- only the API directly. This proves the form
+        exists and reaches PUT /api/settings/ai, and that a save refused
+        for lacking ENCRYPTION_KEY (the test stack's own state, same as a
+        fresh install) names that reason rather than failing silently."""
+        page.goto(f"{app_server}/settings")
+
+        # get_by_label matches by substring, and "Save Anthropic API key"
+        # contains this label whole -- exact=True is what keeps the two apart.
+        key_input = page.get_by_label("Anthropic API key", exact=True)
+        expect(key_input).to_be_visible(timeout=15_000)
+        save_button = page.get_by_role("button", name="Save Anthropic API key", exact=True)
+        expect(save_button).to_be_disabled()
+
+        key_input.fill("sk-test-not-a-real-key")
+        expect(save_button).to_be_enabled()
+        save_button.click()
+
+        expect(
+            page.get_by_text("ENCRYPTION_KEY must be configured", exact=False)
+        ).to_be_visible(timeout=8_000)
 
 
 @pytest.fixture(scope="module")

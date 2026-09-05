@@ -669,11 +669,17 @@ class MessageRepository:
             stmt = (
                 select(msg, sub.c.haystack)
                 .where(*[_fuzzy_token_predicate(sub.c.haystack, t) for t in tokens])
-                .order_by(desc(sub.c.received_at), desc(sub.c.id))
+                # NULLS LAST: a message with no received_at (no date
+                # header at all) belongs at the bottom of a newest-first
+                # list, not pinned above every dated result the way
+                # Postgres's own DESC default would place it.
+                .order_by(desc(sub.c.received_at).nulls_last(), desc(sub.c.id))
             )
             if cursor_id is not None:
                 stmt = stmt.where(
-                    after_cursor(msg.received_at, msg.id, cursor_received_at, cursor_id)
+                    after_cursor(
+                        msg.received_at, msg.id, cursor_received_at, cursor_id, nulls_last=True,
+                    )
                 )
             stmt = stmt.limit(limit)
 

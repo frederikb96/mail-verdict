@@ -146,7 +146,6 @@ export function ThreadMessage({
           <EmailRenderer
             html={mail.body_html}
             plainText={mail.body_text}
-            imagesAllowed={mail.images_allowed || imagesAllowedOverride}
             messageId={mail.id}
             supportsDarkMode={mail.supports_dark_mode}
           />
