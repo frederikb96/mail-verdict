@@ -1443,6 +1443,68 @@ class TestMailActionsUi:
         expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
 
 
+def _rect(locator: Any) -> dict[str, float]:
+    box = locator.bounding_box()
+    assert box is not None, "locator resolved to no element with a layout box"
+    return box
+
+
+def _overlaps(a: dict[str, float], b: dict[str, float]) -> bool:
+    ax0, ax1 = a["x"], a["x"] + a["width"]
+    ay0, ay1 = a["y"], a["y"] + a["height"]
+    bx0, bx1 = b["x"], b["x"] + b["width"]
+    by0, by1 = b["y"], b["y"] + b["height"]
+    return max(ax0, bx0) < min(ax1, bx1) and max(ay0, by0) < min(ay1, by1)
+
+
+class TestRowControlLayoutUi:
+    """The row's persistent controls -- the star once a message is
+    flagged, the read/unread icon, its timestamp -- sit in the row's own
+    header line rather than in the floating group that only appears on
+    hover. A message with no body renders no snippet, which is the row's
+    shortest shape and the one with the least room to spare; a floating
+    group sized or positioned to assume there is always a third line
+    lands on top of the header line's own controls on exactly this shape.
+    """
+
+    def test_the_header_lines_own_controls_are_never_covered_by_the_hover_only_ones(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        subject = f"No snippet {uuid.uuid4()}"
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], subject, body="",
+        )
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+        # The hover-revealed group opacity-transitions in; give it time to
+        # actually reach its resting position before reading its box.
+        page.wait_for_timeout(300)
+
+        read_icon = _rect(row.get_by_title("Mark as read"))
+        timestamp = _rect(row.locator("span.text-xs.text-muted-foreground").first)
+        # "Archive"/"Move to Junk" alone, not exact: threading is on by
+        # default for this account's shared view state, which appends
+        # " (latest message in thread)" to both titles.
+        archive = _rect(row.get_by_title(re.compile(r"^Archive")))
+        junk = _rect(row.get_by_title(re.compile(r"^Move to Junk")))
+
+        assert not _overlaps(read_icon, archive)
+        assert not _overlaps(read_icon, junk)
+        assert not _overlaps(timestamp, archive)
+        assert not _overlaps(timestamp, junk)
+
+
 def _channels(colour: str) -> list[float]:
     """The three channels of a computed `rgb(...)` / `rgba(...)` value."""
     numbers = re.findall(r"[\d.]+", colour)

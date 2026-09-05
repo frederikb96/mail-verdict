@@ -248,6 +248,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a sync that just completed or completed yesterday
 - A settings field's label reads as a sentence ("Default event duration minutes") rather than
   its raw key name
+- A row's star (once flagged) and read/unread icon no longer sit in the hover-only group
+  vertically centred across the whole row -- on a row with no snippet, that centring landed the
+  group across the header line's own icons and timestamp, covering one or the other depending on
+  which way the row happened to round. Both now live in the header line itself, in space reserved
+  for them rather than floated over it
 
 
 ## [3.1.1] - 2026-09-03
