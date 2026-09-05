@@ -83,19 +83,31 @@ export function useSelectionGestures() {
  * `accountId`/`folderId` are the caller's own current values (always a real
  * account, never the unified view -- see canOfferFolder in
  * selection-banner.tsx), so the predicate's scope is recorded directly from
- * them rather than re-read from elsewhere. */
+ * them rather than re-read from elsewhere.
+ *
+ * `threaded` is the *display* mode the predicate is being minted from, not
+ * a property of the predicate itself -- the predicate always matches raw
+ * messages in the folder, threaded or not, the same as a bulk action
+ * always resolves to messages. Selecting "everything" in a threaded folder
+ * therefore captures every message in every matching conversation, not
+ * only the latest-per-thread row shown -- an action like Archive removes
+ * the whole conversation from the folder, not just its representative row.
+ * It has to be recorded in `scope` regardless, or the very next render's
+ * `currentListScopeAtom` (which reflects the real display mode) reads as a
+ * mismatch against a hardcoded `false` and the predicate is discarded on
+ * the spot. */
 export function useSelectAll() {
   const setState = useSetAtom(selectionAtom);
 
   const selectFolderScope = useCallback(
-    async (accountId: string, folderId: string, filter: "all" | "unread") => {
+    async (accountId: string, folderId: string, filter: "all" | "unread", threaded: boolean) => {
       const snapshot = await api.messages.selection(accountId, { folder_id: folderId, filter });
       const predicate: SelectionPredicate = {
         accountId, folderId, filter,
         snapshotAt: snapshot.snapshot_at,
         count: snapshot.count,
       };
-      setState({ ...EMPTY_SELECTION, predicate, scope: { accountId, folderId, threaded: false } });
+      setState({ ...EMPTY_SELECTION, predicate, scope: { accountId, folderId, threaded } });
     },
     [setState],
   );

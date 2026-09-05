@@ -9,6 +9,7 @@ import { MailListItem } from "@/components/mail/mail-list-item";
 import { UnifiedMailItem } from "@/components/mail/unified-mail-item";
 import { DragMail } from "@/components/mail/drag-mail";
 import { SelectionBanner } from "@/components/mail/selection-banner";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
@@ -16,7 +17,12 @@ import { useFolders } from "@/hooks/use-folders";
 import { useAccount } from "@/hooks/use-accounts";
 import { accountConnectionState, useSyncStatus } from "@/hooks/use-sync-status";
 import { useUnifiedMails } from "@/hooks/use-unified-view";
-import { useClearSelection, useSelection, useSelectionGestures } from "@/hooks/use-selection";
+import {
+  useClearSelection,
+  useSelectAll,
+  useSelection,
+  useSelectionGestures,
+} from "@/hooks/use-selection";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import {
   selectedAccountIdAtom,
@@ -94,6 +100,7 @@ export function MailList() {
   const { isSelected } = useSelection();
   const { toggle, shiftRange } = useSelectionGestures();
   const clearSelection = useClearSelection();
+  const { selectFolderScope } = useSelectAll();
   const mailAction = useMailAction();
   const vlistRef = useRef<VListHandle>(null);
 
@@ -338,11 +345,31 @@ export function MailList() {
     <div className="flex h-full flex-col">
       {!isUnifiedView && (
         <div className="flex items-center justify-between border-b px-3 py-1.5">
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Switch checked={threaded} onCheckedChange={setThreaded} />
-            <Layers className="h-3 w-3" />
-            Group by conversation
-          </label>
+          <div className="flex items-center gap-3">
+            {/* One always-visible control for the whole folder: unchecked
+                mints a predicate over every message in it (no fetch of the
+                messages themselves), checked (any selection at all, not
+                just this control's own) clears it. The banner's own "every
+                unread" / clear-by-hand paths stay reachable once a
+                selection already exists. */}
+            <Checkbox
+              checked={selectionMode}
+              onCheckedChange={() => {
+                if (selectionMode) {
+                  clearSelection();
+                } else if (accountId && folderId) {
+                  selectFolderScope(accountId, folderId, "all", threaded);
+                }
+              }}
+              aria-label={selectionMode ? "Deselect all" : "Select all messages in this folder"}
+              title={selectionMode ? "Deselect all" : "Select all messages in this folder"}
+            />
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Switch checked={threaded} onCheckedChange={setThreaded} />
+              <Layers className="h-3 w-3" />
+              Group by conversation
+            </label>
+          </div>
         </div>
       )}
       <SelectionBanner

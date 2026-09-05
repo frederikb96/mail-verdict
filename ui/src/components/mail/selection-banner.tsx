@@ -19,8 +19,12 @@ interface SelectionBannerProps {
    * account's folder, so this offer doesn't apply there. */
   accountId: string | null;
   folderId: string | null;
-  /** A threaded row is a conversation, not a message -- the predicate
-   * counts messages, so offering it here would contradict the rows shown. */
+  /** A threaded row is a conversation, but the predicate this offers always
+   * matches raw messages -- selecting "everything" here selects every
+   * message in every matching conversation, not just the latest-per-thread
+   * row shown, so an action like Archive removes each whole conversation
+   * rather than only its representative row. Passed through to record
+   * against the mode the predicate was minted from, not to gate the offer. */
   threaded: boolean;
   loadedCount: number;
 }
@@ -44,7 +48,7 @@ export function SelectionBanner({
 
   if (!selectionMode) return null;
 
-  const canOfferFolder = !threaded && !!accountId && !!folderId && !state.predicate;
+  const canOfferFolder = !!accountId && !!folderId && !state.predicate;
   // The discoverable path: once every currently loaded row is ticked by
   // hand, offer to extend to the rest of the folder rather than making the
   // user find a menu for it.
@@ -68,7 +72,7 @@ export function SelectionBanner({
           variant="link"
           size="sm"
           className="h-auto p-0 text-xs"
-          onClick={() => selectFolderScope(accountId!, folderId!, "all")}
+          onClick={() => selectFolderScope(accountId!, folderId!, "all", threaded)}
         >
           Select all {folderTotal} messages in {folder?.display_name ?? folder?.imap_name}
         </Button>
@@ -85,14 +89,14 @@ export function SelectionBanner({
           <DropdownMenuContent align="start">
             <DropdownMenuItem
               onClick={async () => {
-                await selectFolderScope(accountId!, folderId!, "all");
+                await selectFolderScope(accountId!, folderId!, "all", threaded);
               }}
             >
               Every message in this folder
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={async () => {
-                await selectFolderScope(accountId!, folderId!, "unread");
+                await selectFolderScope(accountId!, folderId!, "unread", threaded);
               }}
             >
               Every unread message in this folder
