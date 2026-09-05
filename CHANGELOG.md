@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Message rendering and theming
+
+- A message's own `<style>` block is sanitised and kept rather than discarded: dangerous
+  declarations (positioning, stacking, transforms) are dropped with the same filter an inline
+  style attribute already gets, `@import` is refused outright, and a remote reference anywhere in
+  the stylesheet -- a background, a web font, a list marker -- is neutralised unless the sender is
+  already allowlisted for remote images, exactly like a remote `<img>`. Media queries, including
+  dark-mode ones, and `@font-face`/`@keyframes` survive; an oversized or malformed stylesheet is
+  dropped rather than parsed.
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

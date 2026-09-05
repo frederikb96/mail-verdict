@@ -10,6 +10,7 @@ Separate from the store-time nh3 XSS sanitizer in sanitizer.py.
 
 from __future__ import annotations
 
+import html
 import re
 
 _REMOTE_IMG_RE = re.compile(
@@ -27,6 +28,17 @@ _DATA_X_SRC_RE = re.compile(
 # pixel in CSS is blocked for the same reason and needs the same consent.
 _DATA_X_STYLE_RE = re.compile(
     r'\bdata-x-style\s*=\s*["\'][^"\']*["\']',
+    re.IGNORECASE,
+)
+
+# A <style> block whose own remote url() was neutralised at sanitize time --
+# a distinct attribute name from data-x-style above rather than a reused
+# one, because the two carry the value in different shapes: an inline
+# style attribute's preserved original is restored *into an attribute*,
+# while a <style> tag's is restored *into the tag's own text content*, and
+# reusing one name for both would let the wrong restoration path match.
+_DATA_X_STYLESHEET_RE = re.compile(
+    r'\bdata-x-stylesheet\s*=\s*["\'][^"\']*["\']',
     re.IGNORECASE,
 )
 
@@ -49,6 +61,7 @@ def strip_remote_images(html: str) -> tuple[str, bool]:
         bool(_REMOTE_IMG_RE.search(html))
         or bool(_DATA_X_SRC_RE.search(html))
         or bool(_DATA_X_STYLE_RE.search(html))
+        or bool(_DATA_X_STYLESHEET_RE.search(html))
     )
     stripped = _REMOTE_IMG_RE.sub("", html)
     stripped = _DATA_X_SRC_RE.sub("", stripped)
@@ -107,6 +120,43 @@ def _restore_styles(html: str) -> str:
     )
 
 
+# Captures a <style ...data-x-stylesheet="...">safe-css</style> block whole,
+# so the replacement can drop the attribute and swap the tag's own content
+# in one step rather than patching each half separately the way the
+# attribute-level restoration above does.
+_STYLE_TAG_WITH_PRESERVED_RE = re.compile(
+    r'(<style\b[^>]*?)\s+data-x-stylesheet\s*=\s*"([^"]*)"([^>]*)>(.*?)(</style\s*>)',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _restore_one_stylesheet(match: re.Match[str]) -> str:
+    """Put a <style> tag's preserved original CSS back as its own content.
+
+    A <style> tag's content is never entity-decoded by a browser, so the
+    preserved value -- HTML-attribute-escaped at sanitize time, since that
+    is what it was stored as -- is unescaped before it is spliced back in
+    as raw text, not after. The same scheme check the inline-style path
+    gets still applies to every url() in it: a sender's own consent to
+    fetch their stylesheet's images is not consent to a javascript: or
+    data: url reappearing in a rule.
+    """
+    before_attr, preserved_encoded, after_attr, _safe_content, close_tag = match.groups()
+    preserved = html.unescape(preserved_encoded)
+    restored = re.sub(
+        r"url\(\s*['\"]?\s*([^'\")]+?)\s*['\"]?\s*\)",
+        lambda m: m.group(0) if _SAFE_SCHEME_RE.match(m.group(1)) else "url(about:blank)",
+        preserved,
+        flags=re.IGNORECASE,
+    )
+    return f"{before_attr}{after_attr}>{restored}{close_tag}"
+
+
+def _restore_stylesheets(html: str) -> str:
+    """Swap each <style> block's neutralised content for its preserved original."""
+    return _STYLE_TAG_WITH_PRESERVED_RE.sub(_restore_one_stylesheet, html)
+
+
 def restore_remote_images(html: str) -> str:
     """
     Restore data-x-src attributes back to src for rendering with images allowed.
@@ -126,7 +176,8 @@ def restore_remote_images(html: str) -> str:
         html,
         flags=re.IGNORECASE,
     )
-    return _restore_styles(html)
+    html = _restore_styles(html)
+    return _restore_stylesheets(html)
 
 
 def extract_sender_domain(email_addr: str | None) -> str | None:
