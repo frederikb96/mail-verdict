@@ -1238,6 +1238,11 @@ class TestExpansionCost:
             assert len(instances) == 30
         elapsed = time.perf_counter() - started
 
-        assert elapsed < 2.5, (
+        # Deliberately loose: this guards an order-of-magnitude regression
+        # (one walk per series against one per probe per series), not a
+        # percentage. A tight budget measures how busy the host is rather
+        # than which strategy is in use, and fails whenever another suite
+        # is running beside this one.
+        assert elapsed < 10.0, (
             f"expanding five decades-old daily series took {elapsed:.2f}s"
         )
