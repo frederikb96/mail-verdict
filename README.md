@@ -20,12 +20,14 @@ mirror, which is what keeps it simple.
   reply collapses the quoted original behind a "Show quoted text" control, and ctrl+F (or a
   control beside the message's other icons) searches and highlights matches inside the open
   message, which the browser's own find cannot reach.
-- **Compose** — a rich-text editor with Markdown input rules, send, reply, reply-all, forward and
-  drafts, with attachments. A reply or forward embeds the original as a collapsible quote, replies
-  thread correctly, and a sending identity is chosen for you — whichever address the original
-  arrived at, or the account's starred default for a fresh message. Reopening a draft continues
-  editing it in place, and sending one leaves no draft behind. Any message can be downloaded as a
-  raw `.eml` file.
+- **Compose** — a rich-text editor with Markdown input rules, tables, checklists and pasted
+  images, send, reply, reply-all, forward and drafts, with attachments. The panel resizes by
+  dragging its top edge or expanding to fill the window. A reply or forward embeds the original as
+  a collapsible quote, replies thread correctly, and a sending identity is chosen for you —
+  whichever address the original arrived at, or the account's starred default for a fresh message.
+  Reopening a draft continues editing it in place, and sending one leaves no draft behind. A send
+  can be undone for a few seconds after pressing Send, held durably on the server rather than in
+  the browser. Any message can be downloaded as a raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
   touch device), and bulk actions over a selection or a whole folder, threaded or not.

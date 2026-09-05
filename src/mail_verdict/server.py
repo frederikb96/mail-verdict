@@ -70,6 +70,7 @@ _queue_manager: Any | None = None
 _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
+_pending_send_timer: Any | None = None
 _contract_ok: bool = False
 _liveness_server: ThreadingHTTPServer | None = None
 _liveness_thread: Thread | None = None
@@ -133,7 +134,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _postimap_listener, _spam_processor, _contract_ok
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
-    global _liveness_server, _liveness_thread
+    global _liveness_server, _liveness_thread, _pending_send_timer
 
     config = get_config()
 
@@ -246,6 +247,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_reconciler = build_reconciliation_timer(db, settings_service)
     await _pipeline_reconciler.start()
 
+    from mail_verdict.outbox.pending import build_pending_send_timer
+
+    _pending_send_timer = build_pending_send_timer(db)
+    await _pending_send_timer.start()
+
     async def _on_postimap_event(event: Any) -> None:
         """Dispatch a parsed postimap_events payload to EventRing, the
         pipeline's live-arrival enqueue, and the spam feedback listener."""
@@ -351,6 +357,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _postimap_listener.stop()
     if _pipeline_reconciler:
         await _pipeline_reconciler.stop()
+    if _pending_send_timer:
+        await _pending_send_timer.stop()
     if _embedding_components:
         await _embedding_components.stop()
     if _queue_manager:
@@ -363,6 +371,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _embedding_components = None
     _pipeline_notifier = None
     _pipeline_reconciler = None
+    _pending_send_timer = None
     _contract_ok = False
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider

@@ -15,6 +15,7 @@ import { matchIdentity } from "@/lib/identities";
 import { useIdentities } from "@/hooks/use-identities";
 import { api } from "@/lib/api";
 import { activeReplyDirtyForThreadIdAtom } from "@/lib/atoms";
+import { cn } from "@/lib/utils";
 import type { MessageDetail } from "@/types/api";
 
 interface ReplyBoxProps {
@@ -46,6 +47,7 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [quoteHtml, setQuoteHtml] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
   const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
 
@@ -92,6 +94,7 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     setForwardAttachments(null);
     setQuoteHtml(null);
     setIsDirty(false);
+    setMaximized(false);
   };
 
   if (!mode) {
@@ -131,7 +134,12 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     inReplyTo: string | undefined,
     references: string[] | undefined,
   ) => (
-    <div className="border-t p-3">
+    <div
+      className={cn(
+        "border-t p-3",
+        maximized && "fixed inset-0 z-50 flex flex-col overflow-y-auto bg-background",
+      )}
+    >
       <div className="mb-1 flex justify-end">
         <ComposeCloseButton
           isDirty={isDirty}
@@ -153,6 +161,7 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
         compact
         onDone={reset}
         onDirtyChange={setIsDirty}
+        onMaximizedChange={setMaximized}
         onControlsReady={(controls) => {
           controlsRef.current = controls;
         }}

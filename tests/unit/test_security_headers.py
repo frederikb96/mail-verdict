@@ -81,6 +81,14 @@ class TestBuildContentSecurityPolicy:
         script_src = next(part for part in csp.split("; ") if part.startswith("script-src"))
         assert "unsafe-inline" not in script_src
 
+    def test_img_src_allows_blob_for_the_compose_editors_pasted_images(self) -> None:
+        """A pasted image renders from a blob: object URL while composing --
+        without this the browser blocks it as a CSP violation and the
+        image never appears at all."""
+        csp = build_content_security_policy(frozenset())
+        img_src = next(part for part in csp.split("; ") if part.startswith("img-src"))
+        assert "blob:" in img_src.split()
+
 
 class TestSecurityHeadersMiddleware:
     """The ASGI middleware wiring."""

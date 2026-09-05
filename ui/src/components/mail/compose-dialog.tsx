@@ -23,6 +23,7 @@ import { ComposeForm, type ComposeFormControls } from "@/components/mail/compose
 import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { useAccounts } from "@/hooks/use-accounts";
 import { composeIntentAtom, selectedAccountIdAtom } from "@/lib/atoms";
+import { cn } from "@/lib/utils";
 
 /**
  * New-mail dialog, reachable from the sidebar and also opened from anywhere
@@ -37,6 +38,7 @@ export function ComposeDialog() {
   const [composeIntent, setComposeIntent] = useAtom(composeIntentAtom);
   const [isDirty, setIsDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [maximized, setMaximized] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
 
   useEffect(() => {
@@ -79,7 +81,14 @@ export function ComposeDialog() {
         <PenSquare className="h-4 w-4" />
         Compose
       </DialogTrigger>
-      <DialogContent size="lg">
+      <DialogContent
+        size="lg"
+        className={cn(maximized && "flex flex-col")}
+        // Inline rather than a class: the maximized size is viewport-relative and has
+        // to override the size prop's own max-width, which no utility class can do
+        // reliably across breakpoints.
+        style={maximized ? { width: "95vw", height: "92vh", maxWidth: "none" } : undefined}
+      >
         <DialogHeader>
           <DialogTitle>New Message</DialogTitle>
         </DialogHeader>
@@ -113,6 +122,7 @@ export function ComposeDialog() {
             defaultSubject={composeIntent?.subject}
             onDone={closeAndClearIntent}
             onDirtyChange={setIsDirty}
+            onMaximizedChange={setMaximized}
             onControlsReady={(controls) => {
               controlsRef.current = controls;
             }}

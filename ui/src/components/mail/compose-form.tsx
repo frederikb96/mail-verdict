@@ -16,11 +16,17 @@ import {
 import { RecipientField } from "@/components/contacts/recipient-field";
 import { MailEditorLazy } from "@/components/mail/editor/mail-editor-lazy";
 import { buildQuotedMessageHtml } from "@/components/mail/editor/quoted-message-node";
+import { rewriteInlineImageSrcs } from "@/components/mail/editor/inline-image";
 import type { MailEditorHandle } from "@/components/mail/editor/mail-editor";
+import {
+  ComposeResizeControlsBar,
+  useComposeResize,
+} from "@/components/mail/editor/resizable-panel";
 import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { useCreateOutbox } from "@/hooks/use-outbox";
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 import type { OutboxCreateRequest } from "@/types/api";
 
 /** A message quoted or forwarded into the composer -- see reply-box.tsx,
@@ -75,6 +81,11 @@ interface ComposeFormProps {
    * closing needs to ask first. */
   onDirtyChange?: (dirty: boolean) => void;
   onControlsReady?: (controls: ComposeFormControls) => void;
+  /** The resizable panel's maximize toggle, one level up -- "fill the
+   * window" is a different CSS change for a modal dialog than for a
+   * panel anchored at the bottom of the reading pane, so each host
+   * decides what its own maximized layout looks like. */
+  onMaximizedChange?: (maximized: boolean) => void;
 }
 
 /** Shared body for the new-mail dialog, the inline reply box, and the draft editor. */
@@ -96,7 +107,17 @@ export function ComposeForm({
   onDone,
   onDirtyChange,
   onControlsReady,
+  onMaximizedChange,
 }: ComposeFormProps) {
+  const resize = useComposeResize();
+  useEffect(() => {
+    onMaximizedChange?.(resize.isMaximized);
+    // onMaximizedChange is expected stable, the same reasoning
+    // onDirtyChange's own effect below gives -- only isMaximized itself
+    // should re-trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resize.isMaximized]);
+
   const [to, setTo] = useState<string[]>(defaultTo);
   const [cc, setCc] = useState<string[]>(defaultCc);
   const [bcc, setBcc] = useState<string[]>(defaultBcc);
@@ -156,23 +177,43 @@ export function ComposeForm({
     // isDirty's own definition duplicated.
   });
 
-  const buildRequest = (kind: "send" | "draft"): OutboxCreateRequest => {
+  /** The request body plus the full attachment file list -- a pasted
+   * image still referenced in the document (editorHandle's own
+   * getInlineImages(), which already excludes one that was since deleted)
+   * is appended after the picked-file attachments, in the same order its
+   * content id is appended to inline_attachment_content_ids, so the two
+   * lists line up positionally the way the API expects. */
+  const buildRequest = (
+    kind: "send" | "draft",
+  ): { data: OutboxCreateRequest; files: File[] } => {
     const empty = editorHandle.current?.isEmpty() ?? true;
-    const html = empty ? undefined : editorHandle.current?.getHTML();
+    const rawHtml = empty ? undefined : editorHandle.current?.getHTML();
+    const inlineImages = empty ? [] : (editorHandle.current?.getInlineImages() ?? []);
+    // The blob: src is only ever a display convenience for this browser
+    // tab -- the recipient's client resolves cid: against the matching
+    // inline attachment instead.
+    const html = rawHtml ? rewriteInlineImageSrcs(rawHtml) : rawHtml;
     const markdown = empty ? "" : (editorHandle.current?.getMarkdown() ?? "");
     return {
-      account_id: accountId,
-      kind,
-      to,
-      cc,
-      bcc,
-      subject,
-      body_text: `${markdown}${quotedText}`,
-      body_html: html,
-      in_reply_to: inReplyTo,
-      references,
-      identity_id: effectiveIdentityId || undefined,
-      replaces_message_id: replacesMessageId,
+      data: {
+        account_id: accountId,
+        kind,
+        to,
+        cc,
+        bcc,
+        subject,
+        body_text: `${markdown}${quotedText}`,
+        body_html: html,
+        in_reply_to: inReplyTo,
+        references,
+        identity_id: effectiveIdentityId || undefined,
+        replaces_message_id: replacesMessageId,
+        inline_attachment_content_ids: [
+          ...attachments.map(() => null),
+          ...inlineImages.map((image) => image.contentId),
+        ],
+      },
+      files: [...attachments, ...inlineImages.map((image) => image.file)],
     };
   };
 
@@ -181,7 +222,7 @@ export function ComposeForm({
     // function while the first is still in flight -- whichever kind either
     // one is -- returns immediately rather than mutating a second time.
     if (submittingRef.current) return;
-    const data = buildRequest(kind);
+    const { data, files } = buildRequest(kind);
     if (kind === "send" && data.to.length === 0) {
       pushToast("Add at least one recipient", "warning");
       return;
@@ -189,13 +230,19 @@ export function ComposeForm({
     submittingRef.current = true;
     setIsSubmitting(true);
     createOutbox.mutate(
-      { data, attachments },
+      { data, attachments: files },
       {
-        onSuccess: () => {
-          pushToast(
-            kind === "send" ? "Message queued for sending" : "Draft saved",
-            "success",
-          );
+        onSuccess: (result) => {
+          // A staged send (undo window above zero) is reported through
+          // the undo banner instead of a toast -- the two would say the
+          // same thing twice, and the banner is also where cancelling it
+          // lives.
+          if (!("send_after" in result)) {
+            pushToast(
+              kind === "send" ? "Message queued for sending" : "Draft saved",
+              "success",
+            );
+          }
           onDone();
         },
         onError: (err) => {
@@ -221,7 +268,12 @@ export function ComposeForm({
   }, []);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div
+      className={cn(
+        "flex flex-col gap-2",
+        resize.isMaximized && "h-full min-h-0 flex-1",
+      )}
+    >
       {!compact && <RecipientField value={to} onChange={setTo} placeholder="To" />}
       {compact && (
         <div className="grid grid-cols-[auto_1fr] items-center gap-2">
@@ -278,11 +330,14 @@ export function ComposeForm({
         </div>
       )}
 
+      <ComposeResizeControlsBar controls={resize} />
       <MailEditorLazy
         key={initialHtml}
         initialHtml={initialHtml}
         autoFocus={compact}
         compact={compact}
+        heightPx={resize.isMaximized ? undefined : resize.heightPx}
+        fillHeight={resize.isMaximized}
         onDirtyChange={setBodyDirty}
         onReady={(handle) => {
           editorHandle.current = handle;

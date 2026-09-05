@@ -4,9 +4,21 @@ import { useEffect, useRef } from "react";
 import { type Editor, EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
+import { TableKit } from "@tiptap/extension-table";
+import { TaskList } from "@tiptap/extension-task-list";
+import { TaskItem } from "@tiptap/extension-task-item";
 
 import { QuotedMessage } from "@/components/mail/editor/quoted-message-node";
 import { EditorToolbar } from "@/components/mail/editor/toolbar";
+import { MailLink } from "@/components/mail/editor/mail-link";
+import { CutLine } from "@/components/mail/editor/cut-line";
+import {
+  InlineImage,
+  type InlineImageEntry,
+  convertDataUriImages,
+  extractReferencedContentIds,
+  registerInlineImage,
+} from "@/components/mail/editor/inline-image";
 import { cn } from "@/lib/utils";
 
 export interface MailEditorHandle {
@@ -21,36 +33,12 @@ export interface MailEditorHandle {
   getMarkdown: () => string;
   isEmpty: () => boolean;
   focus: () => void;
-}
-
-/**
- * Flatten a pasted table to one paragraph per row, its cells joined by a
- * visible gap rather than run together.
- *
- * The editor's schema (below) carries no table node -- deliberately small,
- * the same reasoning quoted-message-node.ts gives for not parsing a quoted
- * message's own markup into it either. Without a node to hold a cell
- * boundary, ProseMirror's default HTML parsing has nowhere to put one, so
- * adjacent cells' text arrives with nothing between them at all. Doing the
- * flattening here, before that parse ever runs, is what turns the missing
- * boundary into an actual character rather than markup a missing node type
- * would just drop.
- */
-function flattenPastedTables(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  doc.querySelectorAll("table").forEach((table) => {
-    const replacement = document.createDocumentFragment();
-    table.querySelectorAll("tr").forEach((row) => {
-      const p = document.createElement("p");
-      Array.from(row.querySelectorAll("td, th")).forEach((cell, index) => {
-        if (index > 0) p.append(document.createTextNode("   "));
-        while (cell.firstChild) p.append(cell.firstChild);
-      });
-      replacement.append(p);
-    });
-    table.replaceWith(replacement);
-  });
-  return doc.body.innerHTML;
+  /** Every pasted image still referenced by the current document, each
+   * with the File compose-form.tsx uploads as an inline attachment on
+   * submit -- an image deleted from the document since it was pasted is
+   * simply absent here, which is what makes deleting it also drop the
+   * attachment it would otherwise have carried. */
+  getInlineImages: () => InlineImageEntry[];
 }
 
 interface MailEditorProps {
@@ -72,6 +60,13 @@ interface MailEditorProps {
    * ordinary props. A callback prop sidesteps that rather than fighting it.
    */
   onReady?: (handle: MailEditorHandle | null) => void;
+  /** Overrides the compact/default max-height cap below with a specific
+   * pixel value -- the resizable panel's drag handle (compose-form.tsx)
+   * grows or shrinks this rather than the whole surrounding form. */
+  heightPx?: number;
+  /** Fills its container's height instead of capping at a max-height --
+   * the maximized state of the resizable panel above. */
+  fillHeight?: boolean;
 }
 
 /**
@@ -84,6 +79,8 @@ export function MailEditor({
   compact = false,
   onDirtyChange,
   onReady,
+  heightPx,
+  fillHeight = false,
 }: MailEditorProps) {
   const initialJson = useRef<string | null>(null);
   // handlePaste is captured once by useEditor's own initial options, so a
@@ -91,16 +88,47 @@ export function MailEditor({
   // useEditor has not returned yet) would insert nothing on every paste.
   // A ref sidesteps that without re-creating the editor on every render.
   const editorRef = useRef<Editor | null>(null);
+  // Every pasted image's File, keyed by the content id its node carries --
+  // tracked here rather than in the editor's own document, so the File
+  // survives independently of however the node is later moved, resized
+  // or removed. getInlineImages() below is what makes "removed from the
+  // document" and "no longer uploaded" the same predicate.
+  const inlineImagesRef = useRef<Map<string, InlineImageEntry>>(new Map());
+
+  useEffect(
+    () => () => {
+      // Object URLs are not reclaimed by garbage collection -- only an
+      // explicit revoke releases the underlying blob, and the compose
+      // surface unmounting (sent, discarded, or the dialog closed) is the
+      // only point this editor instance is ever done with them.
+      for (const entry of inlineImagesRef.current.values()) {
+        URL.revokeObjectURL(entry.blobUrl);
+      }
+    },
+    [],
+  );
 
   const editor = useEditor({
     immediatelyRender: false,
     autofocus: autoFocus ? "end" : false,
     extensions: [
       StarterKit.configure({
-        link: { openOnClick: false, autolink: true, linkOnPaste: true },
+        link: false,
       }),
+      MailLink.configure({ openOnClick: false, autolink: true, linkOnPaste: true }),
       Markdown,
       QuotedMessage,
+      TableKit.configure({
+        // Column-drag resizing writes inline widths the outbound
+        // sanitizer strips anyway (no style survives on td/th), so it is
+        // switched off rather than producing a table that renders
+        // differently in the editor than in the sent message.
+        table: { resizable: false },
+      }),
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      InlineImage,
+      CutLine,
     ],
     content: initialHtml,
     editorProps: {
@@ -109,23 +137,59 @@ export function MailEditor({
         "data-testid": "mail-editor-body",
         class: "focus:outline-none",
       },
+      // Ctrl/Cmd-click opens a link's target in a new tab, the ordinary
+      // rich-text-editor convention -- a plain click keeps placing the
+      // cursor (openOnClick above is off for exactly that reason).
+      handleClick: (_view, _pos, event) => {
+        if (!(event.ctrlKey || event.metaKey)) return false;
+        const target = event.target as HTMLElement | null;
+        const link = target?.closest("a");
+        if (!link?.href) return false;
+        window.open(link.href, "_blank", "noopener,noreferrer");
+        return true;
+      },
       handlePaste: (_view, event) => {
         const clipboard = event.clipboardData;
         if (!clipboard) return false;
+
+        // An image on the clipboard (a screenshot tool, or a file
+        // manager's own copy) arrives as a file, not as an HTML or plain
+        // text flavour -- checked first since a source offering both an
+        // image file and some HTML alternative should still paste as the
+        // image.
+        const imageFile = Array.from(clipboard.files ?? []).find((f) =>
+          f.type.startsWith("image/"),
+        );
+        if (imageFile) {
+          const entry = registerInlineImage(imageFile);
+          inlineImagesRef.current.set(entry.contentId, entry);
+          editorRef.current
+            ?.chain()
+            .focus()
+            .insertContent({
+              type: "image",
+              attrs: { src: entry.blobUrl, alt: imageFile.name, "data-cid": entry.contentId },
+            })
+            .run();
+          return true;
+        }
+
         // HTML wins whenever the clipboard offers it -- ProseMirror's own
         // paste handling already does this correctly, re-parsed through
-        // the schema. This hook only covers what that handling cannot: a
-        // source (several note apps among them) that puts
-        // Markdown-rendered HTML source, as literal text, in the
-        // text/plain flavour and offers no text/html at all -- the
-        // raw-HTML-as-text failure this editor exists to fix.
+        // the schema, tables and checklists included. This hook only
+        // covers what that handling cannot: a source (several note apps
+        // among them) that puts Markdown-rendered HTML source, as literal
+        // text, in the text/plain flavour and offers no text/html at all
+        // -- the raw-HTML-as-text failure this editor exists to fix -- and
+        // an embedded base64 image, which convertDataUriImages turns into
+        // the same blob-plus-content-id shape a directly pasted image
+        // file gets, rather than leaving the payload in the document.
         const html = clipboard.getData("text/html");
         if (html) {
-          // A table is the one shape the default HTML parsing handles
-          // badly enough to need pre-processing -- see
-          // flattenPastedTables above.
-          if (!/<table[\s>]/i.test(html)) return false;
-          editorRef.current?.chain().focus().insertContent(flattenPastedTables(html)).run();
+          if (!/<img\b[^>]*\bsrc=["']data:/i.test(html)) return false;
+          const { html: converted, entries } = convertDataUriImages(html);
+          for (const entry of entries) inlineImagesRef.current.set(entry.contentId, entry);
+          editorRef.current?.chain().focus().insertContent(converted).run();
           return true;
         }
         const text = clipboard.getData("text/plain");
@@ -154,6 +218,12 @@ export function MailEditor({
       focus: () => {
         editor.chain().focus().run();
       },
+      getInlineImages: () => {
+        const referenced = extractReferencedContentIds(editor.getHTML());
+        return Array.from(inlineImagesRef.current.values()).filter((entry) =>
+          referenced.has(entry.contentId),
+        );
+      },
     });
     return () => onReady?.(null);
     // Deliberately keyed on `editor` alone: onReady is an identity the
@@ -164,14 +234,29 @@ export function MailEditor({
   if (!editor) return null;
 
   return (
-    <div className="mail-editor flex flex-col overflow-hidden rounded-md border">
+    <div className="mail-editor flex flex-1 flex-col overflow-hidden rounded-md border">
       <EditorToolbar editor={editor} />
       <div
         data-testid="mail-editor-scroll"
         className={cn(
-          "min-h-0 flex-1 overflow-y-auto px-3 py-2",
-          compact ? "max-h-[40vh]" : "max-h-[50vh]",
+          "min-h-0 overflow-y-auto px-3 py-2",
+          // flex-1 (flex-grow with a 0 basis) is what fillHeight actually
+          // needs to reach its container's height -- with an explicit
+          // pixel height instead, flex-basis:0 would still win the
+          // layout and collapse this back to content size, the same way
+          // it did before this was a fixed height rather than a cap.
+          fillHeight
+            ? "flex-1"
+            : heightPx
+              ? "shrink-0"
+              : (compact ? "max-h-[40vh]" : "max-h-[50vh]") + " flex-1",
         )}
+        // A fixed height, not a cap -- the drag handle is a resizable
+        // panel, not a ceiling content only reaches once it overflows.
+        // Dragging it taller has to grow the visible editing surface
+        // immediately, empty or not, the same as dragging any other
+        // resizable box.
+        style={!fillHeight && heightPx ? { height: heightPx } : undefined}
       >
         <EditorContent editor={editor} className="h-full" />
       </div>

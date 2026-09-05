@@ -2,7 +2,7 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, retry, pipeline, semantic, calendar.
+Categories: ai, retry, pipeline, semantic, calendar, outbox.
 
 "rules" is not one of them: a rule is a `match` stage in the pipeline
 now (see pipeline/stages/match.py), and `settings.rules` -- if a pre-
@@ -33,6 +33,7 @@ class SettingCategory(str, enum.Enum):
     PIPELINE = "pipeline"
     SEMANTIC = "semantic"
     CALENDAR = "calendar"
+    OUTBOX = "outbox"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -130,5 +131,13 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # event editor's own fallback (the first writable calendar) is
         # what a client uses meanwhile.
         "default_calendar_id": None,
+    },
+    SettingCategory.OUTBOX: {
+        # How long a send sits in MailVerdict's own staging table before
+        # the periodic worker (outbox/pending.py) turns it into a real
+        # outbox insert -- the window "undo send" cancels within. 0 skips
+        # staging entirely and inserts immediately, as every send did
+        # before this setting existed.
+        "undo_send_seconds": 5.0,
     },
 }

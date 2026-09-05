@@ -44,6 +44,15 @@ MIN_SYNC_NOTIFICATIONS_SERVICE_VERSION = (1, 3, 0)
 # does can break.
 MIN_DAV_SERVICE_VERSION = (1, 6, 0)
 
+# outbox_attachments.content_id -- an attachment embedded inline, addressed
+# from body_html by cid:<content_id>, rather than offered as a plain
+# download -- exists, and is granted, from this PostIMAP service version
+# onward. The column simply does not exist before it; inserting it against
+# an older PostIMAP fails with a raw "column does not exist" error rather
+# than a permission error, so this is checked before the insert is even
+# attempted, not just before a stricter grant.
+MIN_INLINE_ATTACHMENT_SERVICE_VERSION = (1, 7, 0)
+
 
 class ContractMismatchError(Exception):
     """Raised when the running PostIMAP's contract_version does not match."""
@@ -189,3 +198,18 @@ def supports_dav(info: PostimapVersionInfo) -> bool:
         True if service_version >= MIN_DAV_SERVICE_VERSION
     """
     return _parse_service_version(info.service_version) >= MIN_DAV_SERVICE_VERSION
+
+
+def supports_inline_attachments(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP has outbox_attachments.content_id.
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_INLINE_ATTACHMENT_SERVICE_VERSION
+    """
+    return (
+        _parse_service_version(info.service_version) >= MIN_INLINE_ATTACHMENT_SERVICE_VERSION
+    )
