@@ -174,6 +174,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a second open browser too, the same way a verdict already did -- the tag itself lives in a
   table of this application's own, which nothing had ever announced a change to.
 
+### Security
+
+- A sender could write this application's own internal style-preservation attribute directly,
+  rather than have the sanitizer produce it -- and once that sender was allowlisted for images, the
+  restore path spliced the stored value back in as raw markup with every CSS filter bypassed. The
+  sanitizer now strips those attribute names from a sender's own input, and restoring a preserved
+  stylesheet re-runs the same declaration filter rather than trusting the stored value. The
+  message-quote endpoint had a second, unauthenticated route to the same defect: it restored a
+  preserved stylesheet before the sanitizer ever ran rather than after.
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

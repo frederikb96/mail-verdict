@@ -539,6 +539,52 @@ class TestDataImagesRenderAsDocumented:
         assert ' src="https' not in out
 
 
+class TestASenderCannotWriteTheInternalPreservationAttributesDirectly:
+    """data-x-src, data-x-bg, data-x-style and data-x-stylesheet are this
+    application's own protocol for a neutralised remote reference, added
+    by rewrite_remote_images strictly *after* nh3.clean runs -- never
+    something nh3 should see, let alone keep, in a sender's own input.
+    Keeping them off nh3's allowlist is what stops a sender writing one
+    directly and having its value restored later as if this module had
+    produced it itself (see image_sanitizer.py's restore path)."""
+
+    def test_a_sender_authored_data_x_style_is_stripped(self) -> None:
+        out = sanitize_email_html(
+            '<p data-x-style="position:fixed;top:0;left:0">hi</p>'
+        )
+        assert "data-x-style" not in out
+        assert "<p>hi</p>" in out
+
+    def test_a_sender_authored_data_x_stylesheet_is_stripped(self) -> None:
+        """The attribute the reported overlay actually used: written
+        directly on a <style> tag, its value never filtered by anything
+        -- nh3 must never keep a copy that did not come from
+        _rewrite_style_tag."""
+        out = sanitize_email_html(
+            '<style data-x-stylesheet="p{}</style><script>bad()</script>">'
+            "p{color:blue}</style>"
+        )
+        assert "data-x-stylesheet" not in out
+        assert "<script" not in out
+        assert "color:blue" in out
+
+    def test_a_sender_authored_data_x_src_is_stripped(self) -> None:
+        out = sanitize_email_html('<img data-x-src="https://tracker.example/p.gif">')
+        assert "data-x-src" not in out
+
+    def test_a_sender_authored_data_x_bg_is_stripped(self) -> None:
+        out = sanitize_email_html(
+            '<table><tr><td data-x-bg="https://tracker.example/p.gif">x</td></tr></table>'
+        )
+        assert "data-x-bg" not in out
+
+    def test_the_real_attribute_the_module_produces_still_survives(self) -> None:
+        """The fix removes a sender's own copy, not the module's -- a
+        real remote image still comes back rewritten exactly as before."""
+        out = sanitize_email_html('<img src="https://tracker.example/p.gif">')
+        assert 'data-x-src="https://tracker.example/p.gif"' in out
+
+
 class TestStylesheetPreservation:
     """A message's own <style> block is sanitised rather than deleted.
 

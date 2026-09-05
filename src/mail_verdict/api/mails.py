@@ -873,13 +873,18 @@ async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
 
     body_html, body_text, account_id, from_addr = row
     if body_html:
-        # restore_remote_images is a no-op unless body_html already carries
-        # a data-x-src/data-x-style marker -- which it never should, since
-        # create_outbox() restores before anything is stored -- but is
-        # cheap defensive normalisation before the outbound sanitiser,
-        # which has no allowlist entry for either marker and would drop
-        # the image outright rather than pass it through unrecognised.
-        sanitized = sanitize_outbound_html(restore_remote_images(body_html))
+        # restore_remote_images must never run on the raw column: it
+        # splices a data-x-style/data-x-stylesheet marker's stored value
+        # back in as markup or raw <style> content, and a sender can write
+        # one of those attribute names directly in the mail they send.
+        # sanitize_email_html runs first so nh3 strips a sender-authored
+        # copy before anything is restored, and rewrite_remote_images
+        # (which sanitize_email_html already includes) re-derives real
+        # markers from whatever remote references the message actually
+        # has -- restoring those is what this endpoint needs, to quote a
+        # remote image as the sender's own absolute URL rather than as
+        # this reader's internal placeholder.
+        sanitized = sanitize_outbound_html(restore_remote_images(sanitize_email_html(body_html)))
         display_html = rewrite_remote_images(sanitized)
         if await is_sender_image_allowed(account_id, from_addr):
             display_html = restore_remote_images(display_html)

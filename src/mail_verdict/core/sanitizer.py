@@ -44,7 +44,7 @@ CONTENT_STRIPPED_TAGS = {
 
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
-    "img": {"src", "data-x-src", "alt", "width", "height", "title"},
+    "img": {"src", "alt", "width", "height", "title"},
     # type="cite" is how nearly every mail client marks a reply's own
     # quoted original -- purely informational, so allowing it through
     # costs nothing, and it is the one signal the reading pane's own
@@ -54,24 +54,33 @@ ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     # can turn it into data-x-bg. Stripping it outright would block the
     # remote fetch too, but would also lose it permanently -- an allowlisted
     # sender could never get their background back.
-    "td": {"colspan", "rowspan", "align", "valign", "width", "background", "data-x-bg"},
-    "th": {"colspan", "rowspan", "align", "valign", "width", "background", "data-x-bg"},
-    "table": {
-        "border", "cellpadding", "cellspacing", "width", "align",
-        "background", "data-x-bg",
-    },
+    "td": {"colspan", "rowspan", "align", "valign", "width", "background"},
+    "th": {"colspan", "rowspan", "align", "valign", "width", "background"},
+    "table": {"border", "cellpadding", "cellspacing", "width", "align", "background"},
     "font": {"color", "size", "face"},
     "div": {"align"},
     "p": {"align"},
     # media scopes a stylesheet the same way a media query inside it would
     # -- kept for the ESPs that write `<style media="(prefers-color-scheme:
     # dark)">` rather than wrapping the whole block in an @media rule.
-    # data-x-stylesheet is this tag's own preserved original, the same role
-    # data-x-style plays for an inline style attribute -- see
-    # _rewrite_style_tag in image_sanitizer's sibling, rewrite_remote_images.
-    "style": {"media", "data-x-stylesheet"},
-    "*": {"class", "style", "data-x-style", "dir", "lang"},
+    "style": {"media"},
+    "*": {"class", "style", "dir", "lang"},
 }
+
+# data-x-src, data-x-bg, data-x-style and data-x-stylesheet are this
+# application's own protocol for a neutralised remote reference, never a
+# sender's -- they are added by rewrite_remote_images below, which runs
+# strictly *after* nh3.clean, so keeping them out of ALLOWED_ATTRIBUTES
+# loses nothing a sender could legitimately write. It closes a sender
+# writing one of these names directly: nh3 would otherwise keep it
+# unfiltered, since none of the regexes above -- which only ever match a
+# plain `style=`/`src=`/`background=` -- run against an attribute already
+# named data-x-*, and the restoration path in image_sanitizer.py splices
+# whatever it finds there back into the page as markup or raw <style>
+# content. See refilter_style_declarations and refilter_stylesheet_css
+# below for the second half of the fix: restoring re-runs the same
+# filter this module already applies at store time, rather than trusting
+# that a stored value was necessarily produced by it.
 
 _SRC_RE = re.compile(r'\bsrc\s*=\s*"([^"]*)"', re.IGNORECASE)
 _SRC_SINGLE_RE = re.compile(r"\bsrc\s*=\s*'([^']*)'", re.IGNORECASE)
@@ -497,6 +506,40 @@ def _sanitize_stylesheet(css: str) -> tuple[str, str, bool]:
     if _reintroduces_a_style_close_tag(safe) or _reintroduces_a_style_close_tag(preserved):
         return "", "", False
     return safe, preserved, has_remote
+
+
+def refilter_style_declarations(css: str) -> str:
+    """Re-run the escaping/parse-error filter over an inline style's
+    declarations, url()s left untouched.
+
+    _rewrite_style already applies this exact filter once, at store time,
+    to build the value it hands to the sender-gated restoration path in
+    image_sanitizer.py -- this is that same filter, exposed so restoring a
+    preserved value re-runs it rather than trusts that the stored value
+    was actually produced this way. A stored attribute proves nothing
+    about how it got there; keeping data-x-style out of the sender-facing
+    allowlist above is what closes the direct route, and re-filtering here
+    is what stops the two paths drifting apart again in the future.
+    """
+    return _serialize_declarations(_parsed_declarations(css))
+
+
+def refilter_stylesheet_css(css: str) -> str:
+    """The same re-filtering as refilter_style_declarations, for a whole
+    <style> block's preserved content rather than one attribute's value.
+
+    Returns "" if the input is oversized, or would reintroduce a literal
+    </style> sequence once spliced back in as the tag's own raw text
+    content -- the same two guards _sanitize_stylesheet already applies at
+    store time, re-applied here rather than trusted to have already held.
+    """
+    if len(css) > MAX_STYLESHEET_CHARS:
+        return ""
+    rules = tinycss2.parse_stylesheet(css, skip_comments=True, skip_whitespace=True)
+    _, preserved, _ = _sanitize_rule_list(rules)
+    if _reintroduces_a_style_close_tag(preserved):
+        return ""
+    return preserved
 
 
 _STYLE_TAG_RE = re.compile(r"(<style\b[^>]*>)(.*?)(</style\s*>)", re.IGNORECASE | re.DOTALL)
