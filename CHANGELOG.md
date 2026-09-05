@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   already allowlisted for remote images, exactly like a remote `<img>`. Media queries, including
   dark-mode ones, and `@font-face`/`@keyframes` survive; an oversized or malformed stylesheet is
   dropped rather than parsed.
+- A message that declares its own dark-mode support now opens on a dark canvas, and one that
+  carries only inline styling is judged by the colours that survive: dark only when its own
+  root-level styling sets background and text colour together, so it reads safely on either
+  canvas, light in every other case. The per-message toggle still overrides either default.
+- A reply's own quoted original collapses behind a "Show quoted text" control by default, the
+  same treatment the composer already gives an outgoing quote -- detected from a `type="cite"`
+  blockquote or an ordinary mail client's own quote class, so an unrelated blockquote a sender
+  wrote on purpose is left alone.
+- Finds text inside the open message: ctrl+F, or a control beside the message's other icons,
+  opens a small search field over the message, highlights every match in the rendered content,
+  and steps between them with Enter/Shift+Enter or the up/down arrows.
 
 ## [4.0.0] - 2026-09-05
 

@@ -45,6 +45,11 @@ CONTENT_STRIPPED_TAGS = {
 ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href", "title", "target"},
     "img": {"src", "data-x-src", "alt", "width", "height", "title"},
+    # type="cite" is how nearly every mail client marks a reply's own
+    # quoted original -- purely informational, so allowing it through
+    # costs nothing, and it is the one signal the reading pane's own
+    # quote-collapsing can rely on across senders that omit a class name.
+    "blockquote": {"type"},
     # background is allowed through the sanitizer only so the rewrite below
     # can turn it into data-x-bg. Stripping it outright would block the
     # remote fetch too, but would also lose it permanently -- an allowlisted

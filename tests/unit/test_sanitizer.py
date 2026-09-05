@@ -99,6 +99,13 @@ class TestSafeTagPreservation:
         assert "<a " in result
         assert 'href="https://example.com"' in result
 
+    def test_preserves_a_reply_blockquotes_cite_type(self) -> None:
+        """Purely informational, and the one cross-client signal the
+        reading pane's quote-collapsing relies on."""
+        html = '<blockquote type="cite">quoted</blockquote>'
+        result = sanitize_email_html(html)
+        assert 'type="cite"' in result
+
     def test_preserves_tables(self) -> None:
         """Table tags pass through."""
         html = "<table><tr><td>Cell</td></tr></table>"
