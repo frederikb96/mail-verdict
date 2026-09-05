@@ -262,11 +262,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   do not define; where it is missing, every mouse drag threw and drag-and-drop was unavailable
   entirely.
 - User-facing text that read `--` now uses a real dash, as the rest of the application does.
+- Replacing the identity-to-calendar mapping now reaches a second open browser. It was written
+  with no event at all, so another tab kept the mapping it last fetched -- and, worse, kept the
+  revision its own next save is checked against, so that save was refused as stale rather than
+  merged.
 - Which writes announce themselves to a second open browser is now derived from the code rather
   than tracked by hand, so a write added later that tells nobody fails a test instead of being
-  discovered in use. Two places it found are recorded with what a second browser sees instead: the
-  identity-to-calendar mapping is replaced without an event, and a new account's preferences row
-  is carried by the account's own notification.
+  discovered in use. Where a write deliberately stays quiet, what a second browser sees instead is
+  recorded beside it.
 
 ## [4.0.0] - 2026-09-05
 

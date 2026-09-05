@@ -39,7 +39,11 @@ from mail_verdict.api.routes import all_routers
 from mail_verdict.database import models
 
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_ANNOUNCEMENT_MARKERS = ("event_ring", "broadcast_event")
+# A push, never a mention. Naming the ring is what a route does before
+# it decides whether to announce, so matching the name alone passes a
+# route that fetches the ring and then pushes on only one of its
+# branches -- the exact gap this file exists to find.
+_ANNOUNCEMENT_MARKERS = (r"event_ring\.add\(", r"_event_ring\.add\(", r"broadcast_event\(")
 _MIGRATIONS = Path(__file__).resolve().parents[2] / "alembic" / "versions"
 # Deep enough to reach a handler's helpers and the repository objects it
 # builds, without walking the whole application from every route.
@@ -70,10 +74,6 @@ _UNANNOUNCED: dict[str, str] = {
     "POST /embeddings/backfill": (
         "No browser surface calls this or watches it -- it is driven by an operator, and "
         "what it produces is read by search."
-    ),
-    "PUT /calendar/links": (
-        "The whole identity-to-calendar mapping is replaced without an event. A second open "
-        "browser keeps the links it last fetched until something else makes it refetch."
     ),
 }
 
@@ -184,7 +184,9 @@ def _writes_any(sources: list[str], model_names: set[str]) -> bool:
 
 
 def _mentions(sources: list[str], names: set[str]) -> bool:
-    pattern = re.compile(r"\b(" + "|".join(sorted(re.escape(n) for n in names)) + r")\b")
+    """`names` are regular expressions, so a marker can require a call
+    rather than an identifier."""
+    pattern = re.compile("|".join(sorted(names)))
     return any(pattern.search(source) for source in sources)
 
 

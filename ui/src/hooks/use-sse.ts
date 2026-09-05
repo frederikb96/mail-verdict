@@ -334,6 +334,15 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries({ queryKey: ["calendars"] });
       });
 
+      // The identity-to-calendar mapping is one document for the whole
+      // instance, replaced wholesale, and a viewer holds the base_revision
+      // its own next save is checked against -- so a second browser that
+      // missed this would have its save refused rather than merged.
+      source.addEventListener("calendar.links_changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["calendar-links"] });
+      });
+
       source.addEventListener("calendar.account", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["dav-accounts"] });

@@ -22,7 +22,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
-from mail_verdict.api.events import get_event_ring
+from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
     AddressbookCreateRequest,
     AddressbookSummaryResponse,
@@ -389,5 +389,15 @@ async def update_calendar_links(request: CalendarLinksUpdateRequest) -> Calendar
         await session.flush()
 
         await revision_repo.bump(session)
+
+    # calendar_prefs and the revision counter are both MailVerdict's own, so
+    # nothing upstream tells a second open browser the mapping changed --
+    # and it holds a base_revision that is now stale, so its next save would
+    # be refused with a 409 rather than merged. The document is one row for
+    # the whole instance rather than per account, which is what broadcasting
+    # rather than pushing to one account's ring is for.
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await broadcast_event(db, event_ring, "calendar.links_changed", {})
 
     return await get_calendar_links()

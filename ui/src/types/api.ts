@@ -278,6 +278,7 @@ export type SSEEventType =
   | "pipeline.run_finished"
   | "calendar.object"
   | "calendar.collection"
+  | "calendar.links_changed"
   | "calendar.account"
   | "contact.object"
   | "contact.collection"
