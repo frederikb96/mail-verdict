@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.deps import get_account_prefs_repo, get_folder_prefs_repo
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     FolderCreateRequest,
     FolderOrderItem,
@@ -154,6 +155,13 @@ async def update_folder_order(
     order_strs = [str(fid) for fid in request.order]
     prefs_repo = get_account_prefs_repo()
     await prefs_repo.update(account_id, folder_order=order_strs)
+
+    # AccountPrefs is MailVerdict's own table, with no PostIMAP trigger to
+    # announce this -- reusing folder.changed since the client already
+    # invalidates every folder-related cache (including the order) on it.
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await event_ring.add(account_id, "folder.changed", {"account_id": str(account_id)})
 
     return await get_folder_order(account_id)
 
@@ -424,4 +432,16 @@ async def update_folder_prefs(
 
     if response is None:
         raise HTTPException(status_code=404, detail="Folder not found")
+
+    # FolderPrefs is MailVerdict's own table, so a patch touching only
+    # visibility/display_name/unified_name/special_use_override writes
+    # nothing PostIMAP would fire a "folder" event for -- real_time is
+    # already covered, since set_folder_idle above writes a PostIMAP-owned
+    # column on the folders table itself.
+    if values:
+        event_ring = get_event_ring()
+        if event_ring is not None:
+            await event_ring.add(
+                response.account_id, "folder.changed", {"folder_id": str(folder_id)},
+            )
     return response

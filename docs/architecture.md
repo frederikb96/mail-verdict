@@ -88,6 +88,11 @@ Two deliberate details:
 - **A listener reconnect emits a resync event.** Notifications sent while the connection was down
   are gone for good, so clients are told once to invalidate everything rather than silently
   holding stale data.
+- **A write to a table this application owns rather than PostIMAP announces nothing on its own.**
+  Verdicts, account/folder preferences, settings, identities, the pipeline document and a still-
+  staged send all live here rather than under PostIMAP's own triggers, so each of those write
+  paths pushes its own event by hand. A table with no PostIMAP trigger and no such push simply
+  never reaches a second open browser.
 
 ## Owned tables carry no foreign keys onto PostIMAP's
 

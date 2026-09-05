@@ -26,6 +26,7 @@ from sqlalchemy import case, select
 from sqlalchemy import func as sa_func
 
 from mail_verdict.api.deps import get_account_prefs_repo
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     AccountCreateRequest,
     AccountResponse,
@@ -191,10 +192,22 @@ async def update_account(
         # changes, which reads as the app ignoring the user.
         await force_reconnect(db, account_id)
 
-    # Update prefs if any prefs fields were provided
+    # Update prefs if any prefs fields were provided. AccountPrefs is
+    # MailVerdict's own table, with no PostIMAP trigger of its own -- a
+    # patch touching only emoji/spam_enabled writes nothing PostIMAP
+    # would fire an "account" event for, so another connected viewer
+    # never sees it without a push of our own. account_values changing
+    # is already covered by that upstream trigger; this fires
+    # unconditionally when prefs changed so the two paths need no separate
+    # tracking of which one actually happened.
     if prefs_values:
         prefs_repo = get_account_prefs_repo()
         await prefs_repo.update(account_id, **prefs_values)
+        event_ring = get_event_ring()
+        if event_ring is not None:
+            await event_ring.add(
+                account_id, "account.changed", {"id": str(account_id), "op": "update"},
+            )
 
     # Re-fetch to return updated state
     async with db.session() as session:

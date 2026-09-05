@@ -91,6 +91,32 @@ async def push_verdict_event(
     )
 
 
+async def broadcast_event(
+    db: DatabaseConnection, event_ring: EventRing, event_type: str, data: dict[str, Any],
+) -> None:
+    """
+    Push one event to every account's ring.
+
+    EventRing keys everything by account_id, but some of what MailVerdict
+    itself owns is not account-scoped at all -- the pipeline document and
+    the global settings categories are each one row shared by the whole
+    instance, not one per account. The browser's own SSE connection has
+    no account filter either (useSSE() is called with none), so any one
+    account's ring reaches it; broadcasting to all of them is what stays
+    correct if a per-account filtered connection is ever added later.
+
+    Args:
+        db: Database connection to read the account list from
+        event_ring: Ring buffer to push the event into
+        event_type: SSE event type
+        data: Payload to send with every copy of the event
+    """
+    async with db.session() as session:
+        account_ids = (await session.execute(select(Account.id))).scalars().all()
+    for account_id in account_ids:
+        await event_ring.add(account_id, event_type, data)
+
+
 async def broadcast_resync(db: DatabaseConnection, event_ring: EventRing) -> None:
     """
     Push a resync event to every account.
@@ -107,10 +133,7 @@ async def broadcast_resync(db: DatabaseConnection, event_ring: EventRing) -> Non
         db: Database connection to read the account list from
         event_ring: Ring buffer to push the event into
     """
-    async with db.session() as session:
-        account_ids = (await session.execute(select(Account.id))).scalars().all()
-    for account_id in account_ids:
-        await event_ring.add(account_id, "resync", {})
+    await broadcast_event(db, event_ring, "resync", {})
 
 
 def _format_sse(event_id: int, event_type: str, data: dict[str, Any]) -> str:

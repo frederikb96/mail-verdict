@@ -17,12 +17,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.outbox.pending import _process_due_sends
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 _OUTBOX_TARGET = "mail_verdict.api.outbox.get_db_connection"
+_OUTBOX_EVENT_RING_TARGET = "mail_verdict.api.outbox.get_event_ring"
 
 
 @pytest.fixture()
@@ -219,3 +221,64 @@ class TestUndoSendWindow:
             )
         assert resp.status_code == 201, resp.text
         assert "send_after" not in resp.json()
+
+
+class TestPendingSendAnnouncesItself:
+    """PendingSend is MailVerdict's own staging table -- it does not exist
+    in outbox at all yet, so PostIMAP's own outbox trigger has nothing to
+    fire on. A second connected viewer of the outbox list needs staging
+    and cancellation pushed by hand, or the undo countdown never appears
+    or disappears for them."""
+
+    def test_staging_a_send_announces_itself(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        event_ring = EventRing()
+        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        seq_before = event_ring.get_latest_seq()
+
+        with (
+            patch(_OUTBOX_TARGET, return_value=migrated_db),
+            patch(_OUTBOX_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            resp = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": ["them@example.com"], "subject": "hi", "body_text": "hi",
+                },
+            )
+        assert resp.status_code == 201, resp.text
+
+        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        matching = [e for e in new_events if e["event_type"] == "outbox.updated"]
+        assert len(matching) == 1, f"expected one outbox.updated event, got {new_events!r}"
+
+    def test_cancelling_a_staged_send_announces_itself(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/outbox",
+                json={
+                    "account_id": str(account_id), "kind": "send",
+                    "to": ["them@example.com"], "subject": "hi", "body_text": "hi",
+                },
+            ).json()
+
+        event_ring = EventRing()
+        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        seq_before = event_ring.get_latest_seq()
+
+        with (
+            patch(_OUTBOX_TARGET, return_value=migrated_db),
+            patch(_OUTBOX_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            resp = client.post(f"/outbox/pending/{created['id']}/cancel")
+        assert resp.status_code == 204, resp.text
+
+        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        matching = [e for e in new_events if e["event_type"] == "outbox.updated"]
+        assert len(matching) == 1, f"expected one outbox.updated event, got {new_events!r}"

@@ -348,6 +348,36 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["addressbooks"] });
       });
+
+      // Settings are MailVerdict's own table -- nothing upstream announces
+      // a write to it, so a category changed in another tab reaches this
+      // one only via this event. Invalidating the bare ["settings"] prefix
+      // covers both the all-categories query and the single-category one.
+      source.addEventListener("settings.changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["settings"] });
+      });
+
+      // Identities are MailVerdict's own table too -- the compose "from"
+      // selector, reply/forward and RSVP all read the same list.
+      source.addEventListener("identity.changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: ["identities"] });
+      });
+
+      // The pipeline document's own optimistic-concurrency check
+      // (base_revision) exists because more than one editor is expected at
+      // once -- an agent and the UI, most notably -- so a second viewer
+      // needs the current revision pushed to it rather than finding out
+      // only when its own next save gets a 409.
+      source.addEventListener("pipeline.document_changed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        // Every pipeline query key is nested under this one prefix
+        // (document, health, revisions, stage-types), so one invalidate
+        // covers the lot -- a document change can move all three of the
+        // first, and the fourth never changes at runtime anyway.
+        queryClient.invalidateQueries({ queryKey: ["pipeline"] });
+      });
     }
 
     connect();

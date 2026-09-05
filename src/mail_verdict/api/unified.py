@@ -25,6 +25,7 @@ from sqlalchemy import func as sa_func
 from sqlalchemy.orm import defer
 
 from mail_verdict.api.deps import get_account_prefs_repo
+from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
     EmojiUpdate,
     UnifiedFolderOrderResponse,
@@ -75,6 +76,13 @@ async def set_account_emoji(
 
     prefs_repo = get_account_prefs_repo()
     await prefs_repo.update(account_id, emoji=request.emoji)
+
+    # AccountPrefs is MailVerdict's own table -- see api/accounts.py's
+    # update_account() for the same reasoning on its own emoji/spam_enabled
+    # patch path.
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await event_ring.add(account_id, "account.changed", {"id": str(account_id), "op": "update"})
 
     return {"emoji": request.emoji}
 
@@ -305,5 +313,14 @@ async def set_unified_folder_order(
                     data={"folder_order": request.order},
                 )
             )
+
+    # This Setting row is not account-scoped, so there is no single
+    # account_id to key the event on -- broadcast to every account's ring
+    # instead (see broadcast_event). Reuses folder.changed since the
+    # client already invalidates every folder-related cache, including
+    # the unified one, on it.
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await broadcast_event(db, event_ring, "folder.changed", {})
 
     return UnifiedFolderOrderResponse(order=request.order)

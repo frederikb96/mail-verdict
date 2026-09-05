@@ -19,6 +19,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Query
 
 from mail_verdict.api.deps import get_sync_notification_repo
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import NotificationCountResponse, NotificationResponse
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.postimap.actions import acknowledge_all_notifications, acknowledge_notification
@@ -72,6 +73,25 @@ async def get_unacknowledged_count(account_id: uuid.UUID) -> NotificationCountRe
     return NotificationCountResponse(unacknowledged=count)
 
 
+async def _announce_notifications_changed(account_id: uuid.UUID) -> None:
+    """
+    Push notification.new -- the same event a new notification's own
+    PostIMAP trigger fires, reused here for the opposite direction.
+
+    PostIMAP's own contract fires this only on insert, never on the
+    acknowledged_at update this endpoint makes (that column is a
+    consumer's own read state, not something PostIMAP's contract
+    considers worth a NOTIFY). Acknowledgement is explicitly account-wide
+    rather than per-person, so a second person or device looking at the
+    same mailbox's bell badge is exactly the case a push here is for --
+    reusing "notification.new" costs nothing, since the client's own
+    handler for it already does no more than re-query the list and count.
+    """
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await event_ring.add(account_id, "notification.new", {"account_id": str(account_id)})
+
+
 @router.post("/{notification_id}/ack", status_code=204)
 async def acknowledge(account_id: uuid.UUID, notification_id: int) -> None:
     """Acknowledge one notification."""
@@ -79,6 +99,7 @@ async def acknowledge(account_id: uuid.UUID, notification_id: int) -> None:
     db = get_db_connection()
     async with db.session() as session:
         await acknowledge_notification(session, notification_id)
+    await _announce_notifications_changed(account_id)
 
 
 @router.post("/ack-all", status_code=204)
@@ -88,3 +109,4 @@ async def acknowledge_all(account_id: uuid.UUID) -> None:
     db = get_db_connection()
     async with db.session() as session:
         await acknowledge_all_notifications(session, account_id)
+    await _announce_notifications_changed(account_id)
