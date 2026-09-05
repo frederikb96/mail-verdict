@@ -63,6 +63,44 @@ class TestSettingsCategoriesUi:
         expect(page.get_by_text("lease_seconds", exact=True)).to_be_visible(timeout=8_000)
 
 
+class TestDefaultCalendarSettingUi:
+    def test_choosing_a_default_calendar_persists_and_the_editor_opens_on_it(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        settings_calendar: dict[str, Any],
+    ) -> None:
+        """The regression this guards: no default calendar existed
+        anywhere -- not in settings, not in the manage dialog -- so a new
+        event always landed in whichever calendar sorted first
+        alphabetically. Proves both ends: the setting itself reaches the
+        server, and the event editor's own initial Calendar value actually
+        reads it back, not just the settings page displaying what it just
+        wrote."""
+        page.goto(f"{app_server}/settings")
+
+        default_calendar_select = page.get_by_label("Default calendar")
+        expect(default_calendar_select).to_be_visible(timeout=15_000)
+        default_calendar_select.click()
+        page.get_by_role("option", name=settings_calendar["display_name"], exact=True).click()
+
+        def _persisted() -> dict[str, Any] | None:
+            data = api_client.get("/api/settings/calendar").json()
+            return data if data.get("default_calendar_id") == settings_calendar["id"] else None
+
+        wait_for(_persisted, description="Default calendar setting saved")
+
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Personal")).to_be_visible(timeout=15_000)
+        page.get_by_role("button", name="New event", exact=True).click()
+
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+        calendar_select = sheet.locator('[data-slot="select-trigger"]').first
+        expect(calendar_select).to_have_text(settings_calendar["display_name"], timeout=10_000)
+
+
 @pytest.fixture(scope="module")
 def radicale_base_url(radicale_endpoint: tuple[str, int]) -> str:
     host, port = radicale_endpoint

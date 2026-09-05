@@ -123,5 +123,12 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # has -- a shorter snap than the default duration would let a
         # drag land on a boundary the click-created default never uses.
         "default_event_duration_minutes": 30,
+        # The calendar a new event's editor opens on when nothing more
+        # specific names one -- an id from dav_collections, unenforced by
+        # a foreign key the same way every other reference onto a
+        # PostIMAP-owned table is. None until a person picks one; the
+        # event editor's own fallback (the first writable calendar) is
+        # what a client uses meanwhile.
+        "default_calendar_id": None,
     },
 }

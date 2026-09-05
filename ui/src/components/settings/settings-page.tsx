@@ -8,11 +8,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
 import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
+import { useCalendars } from "@/hooks/use-calendars";
 import { useTheme } from "@/components/theme-provider";
 import { UnifiedOrder } from "@/components/settings/unified-order";
 import { CalendarLinksCard } from "@/components/settings/calendar-links";
@@ -54,6 +62,19 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
     "openai_api_key_configured",
     "openai_api_key_hint",
   ],
+  // Rendered by DefaultCalendarSetting instead, below -- a bare calendar
+  // id typed into a text box is not a control anyone can use; it needs
+  // the same enabled/writable calendar list the event editor itself
+  // offers.
+  calendar: ["default_calendar_id"],
+};
+
+// A raw settings key is what a person reading this page over the API
+// already sees; this page is not that. Only the keys actually rendered
+// by the generic SettingField below need an entry -- one not yet
+// mapped shows its raw key rather than nothing.
+const FIELD_LABELS: Record<string, string> = {
+  default_event_duration_minutes: "Default event duration (minutes)",
 };
 
 function SettingField({
@@ -65,10 +86,12 @@ function SettingField({
   value: unknown;
   onChange: (name: string, value: unknown) => void;
 }) {
+  const label = FIELD_LABELS[name] ?? name;
+
   if (typeof value === "boolean") {
     return (
       <div className="flex items-center justify-between">
-        <Label className="text-sm">{name}</Label>
+        <Label className="text-sm">{label}</Label>
         <input
           type="checkbox"
           checked={value}
@@ -82,7 +105,7 @@ function SettingField({
   if (typeof value === "number") {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{name}</Label>
+        <Label className="text-sm">{label}</Label>
         <Input
           type="number"
           value={value}
@@ -95,7 +118,7 @@ function SettingField({
   if (typeof value === "object" && value !== null) {
     return (
       <div className="grid gap-1.5">
-        <Label className="text-sm">{name}</Label>
+        <Label className="text-sm">{label}</Label>
         <Textarea
           value={JSON.stringify(value, null, 2)}
           rows={4}
@@ -119,7 +142,7 @@ function SettingField({
 
   return (
     <div className="grid gap-1.5">
-      <Label className="text-sm">{name}</Label>
+      <Label className="text-sm">{label}</Label>
       <Input
         type={isPassword ? "password" : "text"}
         value={String(value ?? "")}
@@ -184,6 +207,58 @@ function CategorySettings({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+// The Select primitive treats an empty item value as "no selection", the
+// same trap the event editor's own recurrence preset works around --
+// "None" needs a value of its own on the wire, distinct from the id an
+// actual calendar carries.
+const NO_DEFAULT_CALENDAR = "none";
+
+/** The one calendar setting that isn't a plain scalar CategorySettings can
+ * render generically: choosing a default calendar needs the same
+ * enabled/writable calendar list the event editor itself offers, not a
+ * raw id typed into a text box. Rendered beside CategorySettings in the
+ * same card; excluded from its generic render via COMPUTED_SETTINGS. */
+function DefaultCalendarSetting({ value }: { value: string }) {
+  const { data: calendars } = useCalendars();
+  const updateSettings = useUpdateSettings();
+  const writable = (calendars ?? []).filter((c) => !c.read_only && c.is_enabled);
+  const itemValue = value || NO_DEFAULT_CALENDAR;
+
+  return (
+    <div className="grid gap-1.5">
+      <Label htmlFor="default-calendar-select" className="text-sm">
+        Default calendar
+      </Label>
+      <Select
+        value={itemValue}
+        onValueChange={(v) =>
+          v &&
+          updateSettings.mutate({
+            category: "calendar",
+            data: { default_calendar_id: v === NO_DEFAULT_CALENDAR ? null : v },
+          })
+        }
+      >
+        <SelectTrigger id="default-calendar-select">
+          <SelectValue placeholder="None">
+            {(v: string) =>
+              v === NO_DEFAULT_CALENDAR ? "None" : (writable.find((c) => c.id === v)?.display_name ?? v)
+            }
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NO_DEFAULT_CALENDAR}>None</SelectItem>
+          {writable.map((c) => (
+            <SelectItem key={c.id} value={c.id}>
+              {c.display_name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }
@@ -290,9 +365,18 @@ export function SettingsPage() {
               Event defaults
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex flex-col gap-4">
             {allSettings?.calendar ? (
-              <CategorySettings category="calendar" settings={allSettings.calendar} />
+              <>
+                <DefaultCalendarSetting
+                  value={
+                    typeof allSettings.calendar.default_calendar_id === "string"
+                      ? allSettings.calendar.default_calendar_id
+                      : ""
+                  }
+                />
+                <CategorySettings category="calendar" settings={allSettings.calendar} />
+              </>
             ) : (
               <div className="py-4 text-sm text-muted-foreground">
                 The server didn&apos;t return calendar settings -- the interface and the server

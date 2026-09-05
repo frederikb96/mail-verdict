@@ -6,7 +6,7 @@
  * rest of the app uses it).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,7 +31,7 @@ import {
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
 import { eventDeletionNotice, isEventOrganizedBySelf } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
-import { useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
+import { useDefaultCalendarId, useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
 import { useCreateEvent, useDeleteEvent, useUpdateEvent } from "@/hooks/use-events";
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
@@ -202,6 +202,7 @@ export function EventEditor({
   const deleteEvent = useDeleteEvent();
   const { push: pushToast } = useToast();
   const durationMinutes = useDefaultEventDurationMinutes();
+  const defaultCalendarSetting = useDefaultCalendarId();
 
   // Offering a disabled calendar here would let an event land somewhere
   // that just vanished from the sidebar the manage dialog hid it from.
@@ -211,11 +212,21 @@ export function EventEditor({
     (c) => !c.read_only && (c.is_enabled || c.id === event?.calendar_id),
   );
 
+  // Only honoured while it still names a calendar this editor actually
+  // offers -- one picked as the default and later disabled or made
+  // read-only falls through to the ordinary first-writable fallback
+  // rather than handing the Select a value with no matching item.
+  const validDefaultCalendarSetting = writableCalendars.some(
+    (c) => c.id === defaultCalendarSetting,
+  )
+    ? defaultCalendarSetting
+    : undefined;
+
   const [summary, setSummary] = useState(event?.summary ?? "");
   const [allDay, setAllDay] = useState(event?.all_day ?? false);
   const [range, setRange] = useState(() => toDisplayRange(event, durationMinutes, defaultDate, dragRange));
   const [calendarId, setCalendarId] = useState(
-    event?.calendar_id ?? defaultCalendarId ?? writableCalendars[0]?.id ?? "",
+    event?.calendar_id ?? defaultCalendarId ?? validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
   );
   const [location, setLocation] = useState(event?.location ?? "");
   const [description, setDescription] = useState(event?.description ?? "");
@@ -226,31 +237,77 @@ export function EventEditor({
   const [scopeDialog, setScopeDialog] = useState<"save" | "delete" | null>(null);
   const [confirmSimpleDelete, setConfirmSimpleDelete] = useState(false);
   const [confirmUpdateNotice, setConfirmUpdateNotice] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+
+  // What counts as "unsaved work" for the close-confirmation below --
+  // deliberately not calendarId, the same way the composer's own isDirty
+  // skips which account a message sends from: a selection the system can
+  // fill in on its own (the race-catchup effect two below this one) is
+  // not a thing the person typed.
+  const initialSnapshot = useRef({
+    summary: event?.summary ?? "",
+    allDay: event?.all_day ?? false,
+    range: toDisplayRange(event, durationMinutes, defaultDate, dragRange),
+    location: event?.location ?? "",
+    description: event?.description ?? "",
+    rrule: event?.rrule ?? "",
+    attendees: (event?.attendees ?? []).map((a) => a.email).join(", "),
+  });
 
   useEffect(() => {
     if (!open) return;
-    setSummary(event?.summary ?? "");
-    setAllDay(event?.all_day ?? false);
-    setRange(toDisplayRange(event, durationMinutes, defaultDate, dragRange));
-    setCalendarId(event?.calendar_id ?? defaultCalendarId ?? writableCalendars[0]?.id ?? "");
-    setLocation(event?.location ?? "");
-    setDescription(event?.description ?? "");
-    setRrule(event?.rrule ?? "");
-    setAttendees((event?.attendees ?? []).map((a) => a.email).join(", "));
+    const nextSummary = event?.summary ?? "";
+    const nextAllDay = event?.all_day ?? false;
+    const nextRange = toDisplayRange(event, durationMinutes, defaultDate, dragRange);
+    const nextLocation = event?.location ?? "";
+    const nextDescription = event?.description ?? "";
+    const nextRrule = event?.rrule ?? "";
+    const nextAttendees = (event?.attendees ?? []).map((a) => a.email).join(", ");
+
+    setSummary(nextSummary);
+    setAllDay(nextAllDay);
+    setRange(nextRange);
+    setCalendarId(
+      event?.calendar_id ?? defaultCalendarId ?? validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
+    );
+    setLocation(nextLocation);
+    setDescription(nextDescription);
+    setRrule(nextRrule);
+    setAttendees(nextAttendees);
+
+    initialSnapshot.current = {
+      summary: nextSummary, allDay: nextAllDay, range: nextRange,
+      location: nextLocation, description: nextDescription, rrule: nextRrule,
+      attendees: nextAttendees,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, event?.object_id, event?.recurrence_id]);
 
-  // The calendar list comes from a query that can resolve after this opens,
-  // and neither the initialiser above nor the reset keyed on `open` runs
-  // again when it does -- so an editor opened first kept an empty calendar,
-  // a permanently disabled Save, and nothing said about why.
+  const isDirty =
+    summary !== initialSnapshot.current.summary ||
+    allDay !== initialSnapshot.current.allDay ||
+    range.start !== initialSnapshot.current.range.start ||
+    range.end !== initialSnapshot.current.range.end ||
+    location !== initialSnapshot.current.location ||
+    description !== initialSnapshot.current.description ||
+    rrule !== initialSnapshot.current.rrule ||
+    attendees !== initialSnapshot.current.attendees;
+
+  // The calendar list, and the default-calendar setting, each come from
+  // their own query that can resolve after this opens (and independently
+  // of each other), and neither the initialiser above nor the reset keyed
+  // on `open` runs again when either does -- so an editor opened first
+  // kept an empty calendar, a permanently disabled Save, and nothing said
+  // about why.
   useEffect(() => {
     if (!open) return;
     setCalendarId(
-      (current) => current || event?.calendar_id || defaultCalendarId || writableCalendars[0]?.id || "",
+      (current) =>
+        current || event?.calendar_id || defaultCalendarId ||
+        validDefaultCalendarSetting || writableCalendars[0]?.id || "",
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, calendars]);
+  }, [open, calendars, defaultCalendarSetting]);
 
   const calendar = calendars?.find((c) => c.id === calendarId);
   const readOnly = calendar?.read_only ?? false;
@@ -392,9 +449,33 @@ export function EventEditor({
     setConfirmSimpleDelete(true);
   };
 
+  // Every path that closes the editor without saving -- Escape, an
+  // outside click, the Sheet's own close button, and the explicit Cancel
+  // button below, which otherwise called onOpenChange(false) directly
+  // and so bypassed this entirely -- routes through here, the same gap
+  // the compose dialog closed: any one of them silently discarded a
+  // typed-in event with no warning at all.
+  const requestClose = () => {
+    if (isDirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    onOpenChange(false);
+  };
+
   return (
     <>
-      <Sheet open={open} onOpenChange={onOpenChange}>
+      <Sheet
+        open={open}
+        onOpenChange={(next, eventDetails) => {
+          if (!next) {
+            eventDetails.cancel();
+            requestClose();
+            return;
+          }
+          onOpenChange(next);
+        }}
+      >
         <SheetContent side="right" className="w-full sm:max-w-md">
           <SheetHeader>
             <SheetTitle>{mode === "create" ? "New event" : "Edit event"}</SheetTitle>
@@ -549,7 +630,7 @@ export function EventEditor({
               <span />
             )}
             <div className="flex gap-2">
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
+              <Button variant="outline" onClick={requestClose}>
                 Cancel
               </Button>
               <Button
@@ -604,6 +685,18 @@ export function EventEditor({
         onConfirm={() => {
           setConfirmUpdateNotice(false);
           doSave();
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        onOpenChange={setConfirmDiscard}
+        title="Discard this event?"
+        description="You have unsaved changes. They will be lost."
+        confirmLabel="Discard"
+        onConfirm={() => {
+          setConfirmDiscard(false);
+          onOpenChange(false);
         }}
       />
     </>
