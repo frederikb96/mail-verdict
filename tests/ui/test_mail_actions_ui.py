@@ -1637,6 +1637,69 @@ class TestMailActionsUi:
         page.get_by_role("switch", name="Group by conversation").click()
         expect(page.get_by_role("toolbar", name="Selection")).to_have_count(0, timeout=10_000)
 
+    def test_the_in_folder_filter_renders_actionable_rows_and_clears_cleanly(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The quick filter is a second caller of the search mechanism, not
+        a new one -- proven here by taking a real action (star) on a
+        filtered row and confirming it reached the server the same way an
+        ordinary row's own star button does."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        marker = f"filtertest{uuid.uuid4().hex[:8]}"
+        subject = f"Quick filter {marker}"
+        message = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"]):
+                if m["subject"] == subject:
+                    return m
+            return None
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        # An ordinary, non-matching row is visible before filtering --
+        # this is what proves the filter actually narrows the folder
+        # rather than the folder merely happening to hold one message.
+        other = next(
+            m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+            if m["id"] != target["id"]
+        )
+        expect(mail_row(page, other["id"])).to_be_visible(timeout=15_000)
+
+        filter_input = page.get_by_placeholder("Filter this folder…")
+        filter_input.fill(marker)
+
+        target_row = mail_row(page, target["id"])
+        expect(target_row).to_be_visible(timeout=15_000)
+        expect(mail_row(page, other["id"])).to_have_count(0)
+
+        target_row.hover()
+        target_row.get_by_title("Star").click()
+
+        def _flagged() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["is_flagged"] else None
+
+        wait_for(_flagged, description=f"{target['id']} starred from a filtered row")
+
+        filter_input.fill("")
+        expect(mail_row(page, other["id"])).to_be_visible(timeout=15_000)
+
 
 def _rect(locator: Any) -> dict[str, float]:
     box = locator.bounding_box()

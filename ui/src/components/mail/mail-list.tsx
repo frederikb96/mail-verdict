@@ -10,6 +10,7 @@ import { UnifiedMailItem } from "@/components/mail/unified-mail-item";
 import { DragMail } from "@/components/mail/drag-mail";
 import { SelectionBanner } from "@/components/mail/selection-banner";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction } from "@/hooks/use-mails";
@@ -17,6 +18,7 @@ import { useFolders } from "@/hooks/use-folders";
 import { useAccount } from "@/hooks/use-accounts";
 import { accountConnectionState, useSyncStatus } from "@/hooks/use-sync-status";
 import { useUnifiedMails } from "@/hooks/use-unified-view";
+import { useSearchResults, type SearchResultItem } from "@/hooks/use-search";
 import {
   useClearSelection,
   useSelectAll,
@@ -147,7 +149,26 @@ export function MailList() {
     setNewerArrivalCount(0);
   }, [baseListIdentity]);
 
-  const listIdentity = `${baseListIdentity}:${aroundId ?? ""}:${jumpNonce}`;
+  // The in-folder quick filter -- declared here (not alongside the query
+  // that consumes it further down) so its trimmed value can fold into
+  // listIdentity below: a changed filter is a genuinely different list,
+  // the same as a changed folder or account, and needs the VList key to
+  // change with it so the view starts at the top rather than clamping
+  // the old scrollOffset to a shorter result set. filterText is what the
+  // input shows, updated every keystroke; debouncedFilterText is what
+  // actually drives the query and the identity below, so typing doesn't
+  // fire a request (and, via isLoading, replace the input itself with a
+  // loading skeleton) per keystroke.
+  const [filterText, setFilterText] = useState("");
+  const [debouncedFilterText, setDebouncedFilterText] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedFilterText(filterText), 150);
+    return () => clearTimeout(timer);
+  }, [filterText]);
+  const trimmedFilter = debouncedFilterText.trim();
+  const isFiltering = !isUnifiedView && trimmedFilter.length >= 2;
+
+  const listIdentity = `${baseListIdentity}:${aroundId ?? ""}:${jumpNonce}:${trimmedFilter}`;
 
   useEffect(() => {
     if (pendingAroundMail) setPendingAroundMailId(null);
@@ -196,22 +217,44 @@ export function MailList() {
   const { data: folders } = useFolders(isUnifiedView ? null : accountId);
   const isJunkFolder = folders?.find((f) => f.id === folderId)?.special_use === "junk";
 
+  // The in-folder quick filter is a second caller of the same search
+  // mechanism the search page uses, not a new one -- scoped to the
+  // current account and folder, over the fields a mail reader would
+  // expect a filter to check. Not offered in the unified view (an empty
+  // folderIds array is the existing hook's own way to stay disabled,
+  // the same state an explicitly-cleared folder scope on the search page
+  // already means).
+  const filterResult = useSearchResults({
+    query: trimmedFilter,
+    accountId: accountId ?? undefined,
+    folderIds: !isUnifiedView && folderId ? [folderId] : [],
+    fields: ["subject", "from", "to"],
+    semantic: false,
+    strictness: "balanced",
+  });
+
   const result = isUnifiedView ? unifiedResult : singleAccountResult;
   const {
-    data,
     isLoading,
     isFetchingNextPage,
     hasNextPage,
     fetchNextPage,
-  } = result;
-  // Only ever meaningful for the single-account query -- useUnifiedMails
-  // has no getPreviousPageParam, so these stay permanently false/no-op
-  // there, consistent with aroundId not being offered for the unified
-  // view either.
+  } = isFiltering ? filterResult : result;
+  // Only ever meaningful for the single-account, unfiltered query --
+  // useUnifiedMails has no getPreviousPageParam (consistent with aroundId
+  // not being offered there either), and a filtered view has no window or
+  // live tail of its own to grow.
   const { hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage } = singleAccountResult;
 
-  const allMails: (MessageSummary | UnifiedMessageSummary)[] =
-    data?.pages.flatMap((p) => p.messages) ?? [];
+  // One reference to whichever query is actually driving the view --
+  // used below to detect "the underlying data object changed" the same
+  // way regardless of source, since allMails/allMailIds are freshly
+  // derived arrays every render and can never serve as that signal
+  // themselves.
+  const data = isFiltering ? filterResult.data : result.data;
+  const allMails: (MessageSummary | UnifiedMessageSummary | SearchResultItem)[] = isFiltering
+    ? (filterResult.data?.pages.flatMap((p) => p.items) ?? [])
+    : (result.data?.pages.flatMap((p) => p.messages) ?? []);
   const allMailIds = allMails.map((m) => m.id);
   const rowsById = useMemo(() => {
     const map = new Map<string, SelectableRow>();
@@ -341,7 +384,7 @@ export function MailList() {
   // exists beyond it -- newerArrivalCount above, maintained here.
   const mailArrived = useAtomValue(mailArrivedAtom);
   useEffect(() => {
-    if (isUnifiedView || !mailArrived) return;
+    if (isUnifiedView || isFiltering || !mailArrived) return;
     if (mailArrived.accountId !== accountId || mailArrived.folderId !== folderId) return;
     if (!hasPreviousPage) return; // already at the edge -- nothing hidden above
     setNewerArrivalCount((n) => n + 1);
@@ -393,14 +436,18 @@ export function MailList() {
       }
       // Growing back toward the newest edge -- only ever reachable once a
       // page has opened away from it (aroundId, or having paged this far
-      // already). The resulting prepend is handled by the same
+      // already), never while filtering (a filtered view has no window of
+      // its own to grow). The resulting prepend is handled by the same
       // shift/anchor mechanism above; nothing extra is needed here beyond
       // triggering the fetch.
-      if (offset < 200 && hasPreviousPage && !isFetchingPreviousPage) {
+      if (!isFiltering && offset < 200 && hasPreviousPage && !isFetchingPreviousPage) {
         fetchPreviousPage();
       }
     },
-    [hasNextPage, isFetchingNextPage, fetchNextPage, hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage],
+    [
+      hasNextPage, isFetchingNextPage, fetchNextPage,
+      isFiltering, hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage,
+    ],
   );
 
   const handleAction = useCallback(
@@ -438,7 +485,10 @@ export function MailList() {
     [allMailIds, rowsById, shiftRange, toggle],
   );
 
-  if (isLoading) {
+  // Not gated while filtering -- that loading state has to render inside
+  // the header row further down, alongside the filter input, or every
+  // keystroke's own fetch would blank the input it belongs to.
+  if (isLoading && !isFiltering) {
     return (
       <div className="flex flex-col">
         {Array.from({ length: 8 }).map((_, i) => (
@@ -512,6 +562,13 @@ export function MailList() {
               Group by conversation
             </label>
           </div>
+          <Input
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="Filter this folder…"
+            aria-label="Filter this folder by subject, sender or recipient"
+            className="h-7 w-48 text-xs"
+          />
         </div>
       )}
       <SelectionBanner
@@ -529,10 +586,17 @@ export function MailList() {
           {newerArrivalCount} new message{newerArrivalCount > 1 ? "s" : ""} -- jump to latest
         </button>
       )}
-      {allMails.length === 0 ? (
+      {isFiltering && isLoading ? (
+        <div className="flex flex-1 items-center justify-center gap-2 p-8 text-muted-foreground">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <span className="text-sm">Filtering…</span>
+        </div>
+      ) : allMails.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
           <InboxIcon className="h-12 w-12 opacity-50" />
-          <p className="text-sm">No messages in this folder</p>
+          <p className="text-sm">
+            {isFiltering ? "No messages match this filter" : "No messages in this folder"}
+          </p>
         </div>
       ) : (
         <VList
@@ -567,7 +631,7 @@ export function MailList() {
                   isChecked={isSelected(mail)}
                   selectionMode={selectionMode}
                   isJunk={isJunkFolder}
-                  isThreaded={threaded}
+                  isThreaded={!isFiltering && threaded}
                   onOpen={handleOpen}
                   onCheckToggle={handleCheckToggle}
                   onAction={handleAction}

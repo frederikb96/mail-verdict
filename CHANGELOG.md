@@ -151,6 +151,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   newest page, so a hit from months back was simply never reached. A window opened this way that
   isn't at the newest edge grows in either direction as you scroll, and a live arrival while it's
   open surfaces as a "N new -- jump to latest" banner rather than silently reshaping the window.
+- The mail list gained a quick filter (subject, sender, recipient) scoped to the open folder,
+  right beside "Group by conversation" -- the same search mechanism the search page uses, so a
+  filtered row carries every ordinary action (star, archive, spam, trash, mark read/unread), not
+  a read-only preview. Clearing it restores the folder exactly as it was.
 
 ## [4.0.0] - 2026-09-05
 
