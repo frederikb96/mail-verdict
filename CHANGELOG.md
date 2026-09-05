@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Compose
+
+- A send can be taken back for a few seconds after pressing Send: an undo banner appears
+  immediately, and the message only actually reaches the mail server once that window passes
+  uncancelled -- closing the browser during it does not stop the send, since the composed message
+  is held durably on the server the whole time, not in the browser. The window defaults to five
+  seconds and is configurable (Settings -> Outbox), zero meaning send immediately as before.
+- The compose panel can be resized by dragging its top edge, and expanded to fill the window with
+  a button next to it -- both the new-message dialog and the inline reply box, which previously
+  showed only a few lines with a long quote scrolled out of view below.
+- An image can be pasted into a message: it appears inline, can be resized by dragging its corner,
+  and reaches the recipient as a real inline attachment referenced from the HTML body, rather than
+  a bare download or a giant embedded data URL several mail clients refuse to render. Deleting a
+  pasted image removes the attachment along with it, so a sent message never carries an image
+  nothing in the body still points at.
+- Tables and checklists: a table pasted from a web page or a notes app survives as a real table,
+  and the toolbar gained a checklist button whose items tick while composing and survive being
+  sent.
+- Ctrl/Cmd+X with nothing selected cuts the whole current line, matching the convention most
+  editors already use for it. Hovering a link now shows its target, and Ctrl/Cmd-clicking one
+  opens it in a new tab instead of only ever placing the cursor.
+
 ## [4.0.0] - 2026-09-05
 
 ### Added
