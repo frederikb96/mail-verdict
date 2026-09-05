@@ -523,7 +523,9 @@ class TestKeysetAcrossTiers:
             account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
             expected = {
                 # Tier 0: token in subject.
-                await _seed_message(session, account_id, inbox_id, uid=1, subject="zzqcross report"),
+                await _seed_message(
+                    session, account_id, inbox_id, uid=1, subject="zzqcross report"
+                ),
                 await _seed_message(session, account_id, inbox_id, uid=2, subject="zzqcross memo"),
                 # Tier 1: token only in from_addr.
                 await _seed_message(
