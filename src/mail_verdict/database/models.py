@@ -587,6 +587,17 @@ class DavCollection(Base):
 
     __table_args__ = (Index("idx_dav_collections_account", "account_id"),)
 
+    @property
+    def supports_vevent(self) -> bool:
+        """Whether this collection's own component set can hold an event at
+        all -- a to-do-only calendar (Nextcloud's task lists are the common
+        case) reports `supported_components = ['VTODO']` and never produces
+        one. Fails open (True) when the set is missing or empty, since an
+        absent or unrecognised value must never hide a real calendar."""
+        if not self.supported_components:
+            return True
+        return "VEVENT" in self.supported_components
+
 
 class DavObject(Base):
     """One event, task, journal entry or contact -- PostIMAP-owned table.

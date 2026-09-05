@@ -1204,6 +1204,10 @@ class EventDeleteRequest(BaseModel):
 
 class EventListResponse(BaseModel):
     events: list[EventInstanceOut]
+    # True when the shared expansion budget ran out before every visible
+    # calendar's objects could be walked -- events is then a false empty
+    # or partial result, not an honest "nothing this month".
+    truncated: bool = False
 
 
 class RespondRequest(BaseModel):

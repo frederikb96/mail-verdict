@@ -93,7 +93,13 @@ def _to_response(
         color=collection.color or "",
         color_override=prefs.color_override if prefs else None,
         is_visible=prefs.is_visible if prefs else True,
-        is_enabled=prefs.is_enabled if prefs else True,
+        # A to-do-only collection defaults to hidden from the sidebar --
+        # it costs a real backfill and sync slot like any other calendar,
+        # but has nothing a month view can ever show. Only the *default*
+        # is different: once a person opts in through the manage dialog,
+        # that prefs row is what is read from then on, same as any other
+        # calendar's is_enabled.
+        is_enabled=prefs.is_enabled if prefs else collection.supports_vevent,
         read_only=collection.read_only,
         identity_id=prefs.identity_id if prefs else None,
         intake=_intake_state(prefs),

@@ -255,6 +255,40 @@ class TestCalendars:
             resp = client.patch(f"/calendars/{calendar_id}", json={"intake": "import_and_link"})
         assert resp.status_code == 400
 
+    async def _seed_task_list(self, db: DatabaseConnection) -> uuid.UUID:
+        """A to-do-only collection -- what PostIMAP reports for a
+        Nextcloud task list: `supported_components` names VTODO and
+        nothing else. Only PostIMAP's own sync ever writes this column,
+        so a real one is seeded directly rather than through POST
+        /calendars, which has no way to set it."""
+        async with db.session() as session:
+            dav_account_id = await _seed_dav_account(session)
+            collection_id = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO dav_collections "
+                    "(id, account_id, kind, slug, display_name, supported_components) "
+                    "VALUES (:id, :account_id, 'calendar', 'tasks', 'Tasks', '{VTODO}')"
+                ),
+                {"id": collection_id, "account_id": dav_account_id},
+            )
+            await session.commit()
+        return collection_id
+
+    def test_a_task_list_defaults_hidden_and_can_be_shown_deliberately(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        collection_id = client.portal.call(self._seed_task_list, migrated_db)
+        with patch(_CALENDARS_TARGET, return_value=migrated_db):
+            listed = client.get("/calendars")
+            task_list = next(c for c in listed.json() if c["id"] == str(collection_id))
+            assert task_list["supported_components"] == ["VTODO"]
+            assert task_list["is_enabled"] is False
+
+            shown = client.patch(f"/calendars/{collection_id}", json={"is_enabled": True})
+        assert shown.status_code == 200, shown.text
+        assert shown.json()["is_enabled"] is True
+
 
 class TestAddressbooks:
     async def _seed(self, db: DatabaseConnection) -> uuid.UUID:

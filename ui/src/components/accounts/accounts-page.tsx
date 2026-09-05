@@ -242,7 +242,7 @@ function AccountCard({
         )}
 
         <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-          <DialogContent className="max-w-md">
+          <DialogContent size="md">
             <DialogHeader>
               <DialogTitle>Delete &ldquo;{account.name}&rdquo;?</DialogTitle>
             </DialogHeader>
@@ -541,7 +541,7 @@ export function AccountsPage() {
             <Plus className="mr-1 h-4 w-4" />
             Add Account
           </DialogTrigger>
-          <DialogContent className="max-w-lg">
+          <DialogContent size="lg">
             <DialogHeader>
               <DialogTitle>
                 {editingAccount ? "Edit Account" : "Add Account"}

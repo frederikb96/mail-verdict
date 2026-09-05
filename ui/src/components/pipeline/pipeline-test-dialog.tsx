@@ -70,7 +70,7 @@ export function PipelineTestDialog({
         onOpenChange(o);
       }}
     >
-      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+      <DialogContent size="lg" className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
             {stageId ? `Test stage “${stageId}”` : "Test the whole pipeline"}
