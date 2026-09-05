@@ -124,6 +124,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A Nextcloud address-book group vCard no longer appears in the contacts list or search results
   looking like a person with no address
 
+### Live updates
+
+- A send now stays resolvable under the same id from the moment it is accepted, whether or not it
+  spends a few seconds staged for the undo window first: `GET /outbox` lists a still-staged send
+  alongside real outbox rows (`status: "pending"`), and the row that eventually reaches PostIMAP's
+  outbox table carries that same id rather than a new one.
+
 ## [4.0.0] - 2026-09-05
 
 ### Added

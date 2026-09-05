@@ -147,6 +147,11 @@ class TestProcessDueSends:
         assert outbox_row is not None
         assert outbox_row.subject == "hi"
         assert outbox_row.status == "pending"
+        # The identity a caller was handed at staging time is the same
+        # identity the real outbox row carries once the window passes --
+        # this is what lets a caller follow a send from acceptance through
+        # to delivery under one id (see api/outbox.py's list_outbox()).
+        assert outbox_row.id == pending_id
 
     @pytest.mark.asyncio
     async def test_attachments_move_along_with_the_send_content_id_included(

@@ -579,6 +579,7 @@ async def insert_outbox(
         tuple[str, str | None, bytes] | tuple[str, str | None, bytes, str | None]
     ]
     | None = None,
+    id: uuid.UUID | None = None,
 ) -> Outbox:
     """
     Insert an outbox row -- a send (kind="send") or a draft (kind="draft").
@@ -614,11 +615,18 @@ async def insert_outbox(
             element, content_id, is optional -- set, it embeds the
             attachment inline for a matching cid:<content_id> reference in
             body_html instead of offering it as a download.
+        id: Explicit primary key, optional. The column carries a Python-side
+            default (uuid.uuid4), so leaving this unset behaves exactly as
+            before; passed explicitly, it lets a caller that staged this
+            send under its own id (see outbox/pending.py) hand the real
+            outbox row the same identity, so it stays resolvable under the
+            id it was accepted with all the way through delivery.
 
     Returns:
         The inserted Outbox row (flushed, not yet committed)
     """
     outbox = Outbox(
+        id=id if id is not None else uuid.uuid4(),
         account_id=account_id,
         kind=kind,
         from_addr=from_addr,

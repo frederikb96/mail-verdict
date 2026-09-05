@@ -25,7 +25,13 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   response is a PendingSendResponse rather than an OutboxResponse, and the
   caller distinguishes the two by the presence of send_after. See
   outbox/pending.py.
-GET /api/outbox — list outbox rows, for the outbox/status view
+GET /api/outbox — list outbox rows, for the outbox/status view. A send
+  still inside its undo window is listed alongside real outbox rows,
+  represented with status="pending" and the same id create_outbox()
+  returned -- so a caller following the id it was handed at acceptance
+  finds it here whether or not the window has passed yet, and sees it
+  turn into an ordinary sent/failed/dead row once it has (see
+  outbox/pending.py).
 GET /api/outbox/pending — list not-yet-sent, not-yet-cancelled staged sends
 POST /api/outbox/pending/{id}/cancel — cancel one before its window passes
 """
@@ -52,7 +58,13 @@ from mail_verdict.config import get_config
 from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Message, Outbox, OutboxAttachment
+from mail_verdict.database.models import (
+    Message,
+    Outbox,
+    OutboxAttachment,
+    PendingSend,
+    PendingSendAttachment,
+)
 from mail_verdict.outbox.pending import cancel_pending_send, list_pending_sends, stage_send
 from mail_verdict.postimap.actions import insert_outbox
 from mail_verdict.postimap.contract import (
@@ -340,7 +352,16 @@ async def list_outbox(
     account_id: uuid.UUID | None = None,
     status: str | None = None,
 ) -> list[OutboxResponse]:
-    """List outbox rows, newest first, optionally scoped to an account/status."""
+    """List outbox rows, newest first, optionally scoped to an account/status.
+
+    A send still held in the undo-send staging table (not yet a real
+    outbox row at all) is included, represented with status="pending" --
+    the same value PostIMAP itself starts every accepted row at, so a
+    caller filtering or displaying by status sees no difference between
+    "queued by PostIMAP, not yet attempted" and "still inside its undo
+    window". Requesting a status other than "pending" excludes staged
+    rows, since neither describes them.
+    """
     db = get_db_connection()
     async with db.session() as session:
         stmt = select(Outbox).order_by(desc(Outbox.created_at))
@@ -351,19 +372,40 @@ async def list_outbox(
         result = await session.execute(stmt)
         rows = list(result.scalars().all())
 
-        if not rows:
-            return []
-
-        att_result = await session.execute(
-            select(OutboxAttachment).where(
-                OutboxAttachment.outbox_id.in_([o.id for o in rows])
-            )
-        )
         attachments_by_outbox: dict[uuid.UUID, list[OutboxAttachment]] = {}
-        for att in att_result.scalars().all():
-            attachments_by_outbox.setdefault(att.outbox_id, []).append(att)
+        if rows:
+            att_result = await session.execute(
+                select(OutboxAttachment).where(
+                    OutboxAttachment.outbox_id.in_([o.id for o in rows])
+                )
+            )
+            for att in att_result.scalars().all():
+                attachments_by_outbox.setdefault(att.outbox_id, []).append(att)
 
-    return [_to_response(o, attachments_by_outbox.get(o.id, [])) for o in rows]
+        responses = [_to_response(o, attachments_by_outbox.get(o.id, [])) for o in rows]
+
+        if status is None or status == "pending":
+            pending_rows = await list_pending_sends(session, account_id)
+            pending_attachments_by_send: dict[uuid.UUID, list[PendingSendAttachment]] = {}
+            if pending_rows:
+                pending_att_result = await session.execute(
+                    select(PendingSendAttachment).where(
+                        PendingSendAttachment.pending_send_id.in_(
+                            [p.id for p in pending_rows]
+                        )
+                    )
+                )
+                for pending_att in pending_att_result.scalars().all():
+                    pending_attachments_by_send.setdefault(
+                        pending_att.pending_send_id, []
+                    ).append(pending_att)
+            responses.extend(
+                _pending_to_response(p, pending_attachments_by_send.get(p.id, []))
+                for p in pending_rows
+            )
+
+    responses.sort(key=lambda r: r.created_at, reverse=True)
+    return responses
 
 
 @router.get("/pending", response_model=list[PendingSendResponse])
@@ -392,6 +434,37 @@ async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
             status_code=404,
             detail=f"No cancellable pending send {pending_send_id}; it may already be sent.",
         )
+
+
+def _pending_to_response(
+    pending: PendingSend, attachments: list[PendingSendAttachment],
+) -> OutboxResponse:
+    """Represent a still-staged send as an OutboxResponse, so list_outbox()
+    has one shape to return regardless of which table a row is currently
+    in. There is no separate updated_at for a staged row -- nothing about
+    it changes until it either becomes a real outbox row or is cancelled --
+    so created_at stands in for both."""
+    return OutboxResponse(
+        id=pending.id,
+        account_id=pending.account_id,
+        kind="send",
+        status="pending",
+        from_addr=pending.from_addr,
+        to=list(pending.to_addrs) if pending.to_addrs else [],
+        cc=list(pending.cc_addrs) if pending.cc_addrs else None,
+        bcc=list(pending.bcc_addrs) if pending.bcc_addrs else None,
+        subject=pending.subject,
+        error=None,
+        attachments=[
+            OutboxAttachmentSummary(
+                id=a.id, filename=a.filename, content_type=a.content_type,
+                size_bytes=len(a.data) if a.data else None,
+            )
+            for a in attachments
+        ],
+        created_at=pending.created_at,
+        updated_at=pending.created_at,
+    )
 
 
 def _to_response(outbox: Outbox, attachments: list[OutboxAttachment]) -> OutboxResponse:
