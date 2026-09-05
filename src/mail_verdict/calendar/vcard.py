@@ -78,14 +78,22 @@ def _type_param(line: object) -> str | None:
 
 def _unfold_lines(data: str) -> list[str]:
     """RFC 6350 line unfolding: a physical line starting with a single
-    SPACE or TAB continues the previous one."""
-    raw_lines = data.replace("\r\n", "\n").split("\n")
+    SPACE or TAB continues the previous one. Continuations are collected
+    and joined in one go rather than appended one at a time -- a folded
+    embedded photo runs to hundreds of physical lines, and appending to
+    the growing line copies it again on every one of them."""
     lines: list[str] = []
-    for raw in raw_lines:
+    pending: list[str] = []
+    for raw in data.replace("\r\n", "\n").split("\n"):
         if raw.startswith((" ", "\t")) and lines:
-            lines[-1] += raw[1:]
-        else:
-            lines.append(raw)
+            pending.append(raw[1:])
+            continue
+        if pending:
+            lines[-1] += "".join(pending)
+            pending.clear()
+        lines.append(raw)
+    if pending:
+        lines[-1] += "".join(pending)
     return lines
 
 
@@ -103,6 +111,30 @@ def _split_content_line(line: str) -> tuple[str, dict[str, str], str] | None:
         key, _, val = part.partition("=")
         params[key.upper()] = val
     return name, params, value
+
+
+def _without_photo(data: str) -> str:
+    """The card with its PHOTO property and every folded continuation of
+    it removed. An embedded photo is the overwhelming majority of a
+    card's bytes -- a 40 KB image is a ~55 KB base64 line on a card whose
+    remaining properties are a few hundred bytes -- and a general vCard
+    parser spends its time proportional to what it is handed. Nothing
+    reads PHOTO through that parser (`_extract_photo` and `detect_photo`
+    both read the raw text themselves), so removing it first costs
+    nothing and is what keeps parsing a page of contacts proportional to
+    the contacts rather than to their photos."""
+    out: list[str] = []
+    dropping = False
+    for raw in data.replace("\r\n", "\n").split("\n"):
+        if raw.startswith((" ", "\t")):
+            if not dropping:
+                out.append(raw)
+            continue
+        parsed = _split_content_line(raw)
+        dropping = parsed is not None and parsed[0] == "PHOTO"
+        if not dropping:
+            out.append(raw)
+    return "\r\n".join(out)
 
 
 def is_group(data: str) -> bool:
@@ -199,6 +231,23 @@ def detect_photo(data: str) -> ContactPhoto | None:
     return None
 
 
+def detect_emails(data: str) -> list[str]:
+    """Every address a card carries, read straight off its own text with
+    no general parse -- the same shape as `detect_photo` above. What the
+    `emails` column already holds for any card PostIMAP has parsed; this
+    is for one it has not yet, which is every card between this
+    application creating it and the round trip coming back."""
+    found: list[str] = []
+    for line in _unfold_lines(data):
+        parsed = _split_content_line(line)
+        if parsed is None:
+            continue
+        name, _params, value = parsed
+        if name == "EMAIL" and value.strip():
+            found.append(value.strip())
+    return found
+
+
 _DATA_URL_RE = re.compile(r"^data:([\w.+-]+/[\w.+-]+)?;base64,(.*)$", re.DOTALL)
 
 
@@ -283,7 +332,7 @@ def parse_contact(data: str, *, decode_photo: bool = True) -> ParsedContact:
     (a list page, the sender-photo index, an autocomplete hit) passes
     this, since none of them needs the bytes themselves; a single
     contact's own detail view can afford the real ones."""
-    card = vobject.readOne(data)
+    card = vobject.readOne(_without_photo(data))
 
     summary = str(card.fn.value) if hasattr(card, "fn") else ""
 

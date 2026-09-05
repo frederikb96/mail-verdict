@@ -1463,9 +1463,16 @@ class ContactPhotoIndexResponse(BaseModel):
     """Keyed by lower-cased email address. One request for the whole
     address book, meant to be cached client-side with a long staleTime
     and read synchronously as list rows render -- never one request per
-    row or per sender scrolled into view."""
+    row or per sender scrolled into view.
+
+    `partial` says the scan ran out of budget before reaching the end of
+    the address book, so `by_email` holds what it did reach and an
+    address absent from it may still have a photo. An index that covers
+    the whole book and one that covers none of it are otherwise the same
+    response, and a caller has no way to tell them apart."""
 
     by_email: dict[str, ContactPhotoIndexEntry]
+    partial: bool = False
 
 
 class ContactSearchHitOut(BaseModel):

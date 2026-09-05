@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.contacts import router as contacts_router
 from mail_verdict.api.image_exceptions import router as image_exceptions_router
+from mail_verdict.calendar import vcard
 from mail_verdict.calendar.repository import CollectionRepository
 from mail_verdict.database.connection import DatabaseConnection
 
@@ -646,3 +647,170 @@ class TestGroupVcardsAreNotListedAsContacts:
         summaries = [c["summary"] for c in listed.json()["contacts"]]
         assert "Anna Person" in summaries
         assert "Family Group" not in summaries
+
+    def test_a_page_holding_groups_is_still_the_length_it_asked_for(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Groups are dropped after the database has applied the limit,
+        so a page that contains one comes back short unless the reading
+        continues past it -- and a client paging by count then disagrees
+        with the server about where the next page starts."""
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        tiny_photo = base64.b64encode(b"tiny").decode()
+        client.portal.call(_seed_many_contacts, migrated_db, addressbook_id, 10, tiny_photo)
+        for name in ("Contact 1 Group", "Contact 4 Group", "Contact 7 Group"):
+            client.portal.call(self._seed_group_contact, migrated_db, addressbook_id, name)
+
+        seen: list[str] = []
+        cursor: str | None = None
+        with patch(_TARGET, return_value=migrated_db):
+            for _ in range(5):
+                params = {"addressbook_id": str(addressbook_id), "limit": 5}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                page = client.get("/contacts", params=params)
+                assert page.status_code == 200, page.text
+                body = page.json()
+                summaries = [c["summary"] for c in body["contacts"]]
+                assert all("Group" not in s for s in summaries), summaries
+                if body["has_more"]:
+                    assert len(summaries) == 5, (
+                        f"a page of 5 came back with {len(summaries)}: {summaries}"
+                    )
+                seen.extend(summaries)
+                cursor = body["next_cursor"]
+                if not body["has_more"]:
+                    break
+
+        assert cursor is None
+        assert len(seen) == len(set(seen)), seen
+        assert sorted(seen) == sorted(f"Contact {i}" for i in range(10)), seen
+
+
+class TestThePhotoIndexCoversALargeAddressBook:
+    """An index that ran out of budget and one built over an address book
+    with no photos at all are the same response to a client, and the
+    client re-runs it on a timer forever -- so every sender avatar in
+    every list falls back to initials with nothing anywhere saying why.
+    Two things have to hold: the scan is cheap enough that a real address
+    book finishes, and a scan that does not finish says so."""
+
+    def test_a_book_of_photo_carrying_contacts_is_indexed_whole(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        photo_payload = base64.b64encode(os.urandom(40_000)).decode()
+        client.portal.call(
+            _seed_many_contacts, migrated_db, addressbook_id, 1500, photo_payload,
+        )
+
+        started = time.perf_counter()
+        with patch(_TARGET, return_value=migrated_db):
+            index = client.get("/contacts/photo-index")
+        elapsed = time.perf_counter() - started
+
+        assert index.status_code == 200
+        body = index.json()
+        missing = [
+            f"contact{i}@example.com"
+            for i in range(1500)
+            if f"contact{i}@example.com" not in body["by_email"]
+        ]
+        assert not missing, (
+            f"{len(missing)} of 1500 contacts absent from the index after "
+            f"{elapsed:.1f}s, e.g. {missing[:3]}"
+        )
+        assert body["partial"] is False, f"the scan ran out of budget after {elapsed:.1f}s"
+
+    def test_a_scan_that_runs_out_of_budget_returns_what_it_read(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        tiny_photo = base64.b64encode(b"tiny").decode()
+        client.portal.call(_seed_many_contacts, migrated_db, addressbook_id, 200, tiny_photo)
+
+        real_detect_photo = vcard.detect_photo
+
+        def slow_detect_photo(data: str) -> vcard.ContactPhoto | None:
+            time.sleep(0.005)
+            return real_detect_photo(data)
+
+        with (
+            patch(_TARGET, return_value=migrated_db),
+            patch("mail_verdict.calendar.vcard.detect_photo", slow_detect_photo),
+            patch("mail_verdict.api.contacts._PHOTO_SCAN_BUDGET_SECONDS", 0.3),
+        ):
+            index = client.get("/contacts/photo-index")
+
+        assert index.status_code == 200
+        body = index.json()
+        assert body["partial"] is True
+        assert body["by_email"], "a scan that read part of the book returned none of it"
+
+
+class TestListingContactsDoesNotStarveTheServer:
+    """The sibling of `TestPhotoIndexDoesNotStarveTheServer`, for the
+    endpoint the interface actually scrolls: a page of contacts is
+    megabytes of vCard text, and reading it where every other request is
+    waiting stalls all of them. Same measurement discipline -- a handler
+    that touches nothing, polled by a client with its own connection
+    pool, with the timer started before the pacing sleep."""
+
+    @pytest.mark.asyncio
+    async def test_a_handler_touching_nothing_stays_fast_during_a_contact_page(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = await _seed(migrated_db)
+        photo_payload = base64.b64encode(os.urandom(40_000)).decode()
+        await _seed_many_contacts(
+            migrated_db, addressbook_id, count=250, photo_payload=photo_payload,
+        )
+
+        app = FastAPI()
+        app.include_router(contacts_router)
+
+        @app.get("/live")
+        async def live() -> dict[str, str]:
+            return {"status": "alive"}
+
+        live_timings: list[float] = []
+        burst_done = asyncio.Event()
+
+        async def poll_live(client: httpx.AsyncClient) -> None:
+            while not burst_done.is_set():
+                started = time.perf_counter()
+                await asyncio.sleep(0.01)
+                try:
+                    response = await asyncio.wait_for(client.get("/live"), timeout=5.0)
+                except TimeoutError:
+                    live_timings.append(time.perf_counter() - started)
+                    continue
+                live_timings.append(time.perf_counter() - started)
+                assert response.status_code == 200
+
+        async def fetch_page(client: httpx.AsyncClient) -> None:
+            response = await client.get(
+                "/contacts", params={"addressbook_id": str(addressbook_id), "limit": 200},
+            )
+            assert response.status_code == 200
+            assert len(response.json()["contacts"]) == 200
+
+        with patch(_TARGET, return_value=migrated_db):
+            transport = httpx.ASGITransport(app=app)
+            async with (
+                httpx.AsyncClient(transport=transport, base_url="http://test") as burst_client,
+                httpx.AsyncClient(transport=transport, base_url="http://test") as poll_client,
+            ):
+                poller = asyncio.create_task(poll_live(poll_client))
+                await fetch_page(burst_client)
+                burst_done.set()
+                await poller
+
+        assert len(live_timings) > 5, (
+            "the poller barely ran at all -- the event loop was not free enough "
+            "to service it while a page of contacts was being listed"
+        )
+        assert max(live_timings) < 0.5, (
+            f"a handler touching nothing took up to {max(live_timings):.2f}s to respond "
+            f"while a page of 200 contacts was being listed"
+        )

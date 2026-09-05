@@ -352,21 +352,22 @@ class DavObjectRepository:
                     return obj
         return None
 
-    async def list_ids_and_data(self) -> list[tuple[uuid.UUID, str]]:
-        """Every non-deleted contact's id and raw vCard body -- not paged,
-        unlike `search_contacts`. The one caller (the sender-avatar photo
-        index) has to match against the whole address book regardless of
-        where alphabetically a contact sits, and a page of embedded photo
-        bytes is exactly the size problem that endpoint exists to avoid --
-        selecting only `id, data` here keeps this proportional to address
-        book size, not to what any one contact's `data` happens to hold."""
+    async def list_photo_scan_rows(self) -> list[tuple[uuid.UUID, str, list[str] | None]]:
+        """Every non-deleted contact's id, raw vCard body and addresses --
+        not paged, unlike `search_contacts`. The one caller (the
+        sender-avatar photo index) has to match against the whole address
+        book regardless of where alphabetically a contact sits. The
+        addresses come from the column PostIMAP parses EMAIL into, so the
+        scan never parses a card for them; the body is still needed,
+        since whether a card carries a photo and whether it is a group
+        are both properties only the body holds."""
         async with self._db.session() as session:
             result = await session.execute(
-                select(DavObject.id, DavObject.data).where(
+                select(DavObject.id, DavObject.data, DavObject.emails).where(
                     DavObject.kind == "addressbook", DavObject.deleted_at.is_(None),
                 )
             )
-            return [(row.id, row.data) for row in result.all()]
+            return [(row.id, row.data, row.emails) for row in result.all()]
 
     async def get_unresolved_errors(
         self, object_ids: list[uuid.UUID],

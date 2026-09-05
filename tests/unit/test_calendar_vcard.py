@@ -213,3 +213,60 @@ class TestEdit:
         updated = vcard.apply_contact_fields(_SIMPLE_CARD, organization="")
         parsed = vcard.parse_contact(updated)
         assert parsed.organization is None
+
+
+def _card_with_photo(payload: str, *, folded: bool) -> str:
+    value = (
+        "\r\n ".join(payload[i:i + 75] for i in range(0, len(payload), 75))
+        if folded else payload
+    )
+    return _SIMPLE_CARD.replace(
+        "END:VCARD\r\n", f"PHOTO;ENCODING=b;TYPE=JPEG:{value}\r\nEND:VCARD\r\n",
+    )
+
+
+class TestAPhotoNeverReachesTheGeneralParser:
+    """A card is mostly its embedded photo, and nothing reads PHOTO
+    through vobject -- so the photo is removed before the parse rather
+    than parsed and thrown away. Every other property has to survive
+    that, including on the folded shape a real server writes."""
+
+    def test_every_other_field_survives_a_card_carrying_a_photo(self) -> None:
+        payload = base64.b64encode(b"\xff\xd8\xff" + b"x" * 4000).decode()
+        for folded in (False, True):
+            parsed = vcard.parse_contact(_card_with_photo(payload, folded=folded))
+            assert parsed.summary == "Anna Mueller"
+            assert [e.email for e in parsed.emails] == [
+                "anna@example.com", "anna.home@example.com",
+            ]
+            assert parsed.organization == "Example GmbH"
+            assert parsed.notes == "Met at a conference"
+            assert parsed.photo is not None
+            assert parsed.photo.kind == "embedded"
+
+    def test_a_folded_photo_decodes_to_the_same_bytes_as_an_unfolded_one(self) -> None:
+        raw = b"\xff\xd8\xff" + b"y" * 4000
+        payload = base64.b64encode(raw).decode()
+        for folded in (False, True):
+            decoded = vcard.extract_photo_bytes(_card_with_photo(payload, folded=folded))
+            assert decoded is not None
+            assert decoded == ("image/jpeg", raw)
+
+    def test_a_card_with_no_photo_is_unchanged_by_the_parse(self) -> None:
+        parsed = vcard.parse_contact(_SIMPLE_CARD)
+        assert parsed.photo is None
+        assert parsed.summary == "Anna Mueller"
+
+
+class TestDetectEmails:
+    """What a scan reads off a card PostIMAP has not parsed back into the
+    `emails` column yet."""
+
+    def test_reads_every_address_off_the_card(self) -> None:
+        assert vcard.detect_emails(_SIMPLE_CARD) == [
+            "anna@example.com", "anna.home@example.com",
+        ]
+
+    def test_a_card_with_no_address_reads_as_empty(self) -> None:
+        bare = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:No Details\r\nEND:VCARD\r\n"
+        assert vcard.detect_emails(bare) == []
