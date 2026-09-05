@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import os
+import time
 import uuid
 from collections.abc import Iterator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -15,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.contacts import router as contacts_router
 from mail_verdict.api.image_exceptions import router as image_exceptions_router
+from mail_verdict.calendar.repository import CollectionRepository
 from mail_verdict.database.connection import DatabaseConnection
 
 _TARGET = "mail_verdict.api.contacts.get_db_connection"
@@ -55,6 +60,47 @@ async def _seed(db: DatabaseConnection) -> uuid.UUID:
         _dav_account_id, collection_id = await _seed_addressbook(session)
         await session.commit()
     return collection_id
+
+
+async def _seed_many_contacts(
+    db: DatabaseConnection, addressbook_id: uuid.UUID, count: int, photo_payload: str,
+) -> None:
+    """`count` contacts in one address book, each carrying an embedded
+    photo -- the shape a real synced address book has, not an
+    adversarial one -- inserted in a single bulk statement rather than
+    one round trip per row."""
+    async with db.session() as session:
+        dav_account_id = await session.scalar(
+            text("SELECT account_id FROM dav_collections WHERE id = :id"),
+            {"id": addressbook_id},
+        )
+        rows = [
+            {
+                "id": uuid.uuid4(),
+                "account_id": dav_account_id,
+                "collection_id": addressbook_id,
+                "data": (
+                    "BEGIN:VCARD\r\nVERSION:3.0\r\n"
+                    f"FN:Contact {i}\r\n"
+                    f"EMAIL:contact{i}@example.com\r\n"
+                    f"PHOTO;ENCODING=b;TYPE=JPEG:{photo_payload}\r\n"
+                    "END:VCARD\r\n"
+                ),
+                "summary": f"Contact {i}",
+                "email": f"contact{i}@example.com",
+            }
+            for i in range(count)
+        ]
+        await session.execute(
+            text(
+                "INSERT INTO dav_objects "
+                "(id, account_id, collection_id, kind, data, summary, emails) "
+                "VALUES (:id, :account_id, :collection_id, 'addressbook', :data, "
+                ":summary, ARRAY[:email])"
+            ),
+            rows,
+        )
+        await session.commit()
 
 
 class TestCreateAndGet:
@@ -440,3 +486,163 @@ class TestPhotoIndex:
         with patch(_TARGET, return_value=migrated_db):
             photo = client.get(f"/contacts/{uuid.uuid4()}/photo")
         assert photo.status_code == 404
+
+
+class TestPhotoIndexDoesNotStarveTheServer:
+    """The photo-index endpoint scans every contact's vCard for its own
+    embedded photo. Proven behaviourally, against a real ASGI app on a
+    real event loop -- a handler that touches nothing at all, polled
+    while the scan is in flight -- rather than by asserting the source
+    calls a particular function, which would pass on code that still
+    blocks. The same shape as calendar_events's own
+    `test_a_handler_touching_nothing_stays_fast_during_a_calendar_burst`.
+
+    Running the scan on a worker thread does not make the handler free
+    of it entirely -- CPython's GIL still hands the interpreter back and
+    forth between the event loop thread and the worker thread, so a
+    handler touching nothing can still cost tens to a few hundred
+    milliseconds under load rather than the low single digits it costs
+    standing alone. What the fix rules out is what actually caused the
+    outage: seconds of complete unresponsiveness with nothing scheduled
+    at all."""
+
+    @pytest.mark.asyncio
+    async def test_a_handler_touching_nothing_stays_fast_during_a_photo_scan(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = await _seed(migrated_db)
+        photo_payload = base64.b64encode(os.urandom(40_000)).decode()
+        await _seed_many_contacts(
+            migrated_db, addressbook_id, count=1200, photo_payload=photo_payload,
+        )
+
+        app = FastAPI()
+        app.include_router(contacts_router)
+
+        @app.get("/live")
+        async def live() -> dict[str, str]:
+            """Shaped after the liveness listener in server.py: a literal
+            constant, no database, no await on anything at all."""
+            return {"status": "alive"}
+
+        live_timings: list[float] = []
+        burst_done = asyncio.Event()
+
+        async def poll_live(client: httpx.AsyncClient) -> None:
+            # started is captured before the pacing sleep, not after --
+            # a stalled event loop delays the sleep's own wakeup exactly
+            # as much as it would delay the request that follows it.
+            while not burst_done.is_set():
+                started = time.perf_counter()
+                await asyncio.sleep(0.01)
+                try:
+                    response = await asyncio.wait_for(client.get("/live"), timeout=5.0)
+                except TimeoutError:
+                    live_timings.append(time.perf_counter() - started)
+                    continue
+                live_timings.append(time.perf_counter() - started)
+                assert response.status_code == 200
+
+        async def fetch_photo_index(client: httpx.AsyncClient) -> None:
+            response = await client.get("/contacts/photo-index")
+            assert response.status_code == 200
+
+        with patch(_TARGET, return_value=migrated_db):
+            transport = httpx.ASGITransport(app=app)
+            # Two separate clients (two separate connection pools) --
+            # sharing one would let the pool's own concurrency limit
+            # serialize the poller behind the scan, which is a
+            # connection-pool artifact, not the event-loop defect this
+            # test exists to catch.
+            async with (
+                httpx.AsyncClient(transport=transport, base_url="http://test") as burst_client,
+                httpx.AsyncClient(transport=transport, base_url="http://test") as poll_client,
+            ):
+                poller = asyncio.create_task(poll_live(poll_client))
+                await fetch_photo_index(burst_client)
+                burst_done.set()
+                await poller
+
+        assert len(live_timings) > 5, (
+            "the poller barely ran at all -- the event loop was not free enough "
+            "to service it during the scan"
+        )
+        assert max(live_timings) < 1.0, (
+            f"a handler touching nothing took up to {max(live_timings):.2f}s "
+            f"to respond while a contacts photo scan was in flight"
+        )
+
+
+class TestListContactsBatchesCollectionLookups:
+    def test_a_page_makes_one_collection_lookup_not_one_per_contact(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        tiny_photo = base64.b64encode(b"tiny").decode()
+        client.portal.call(_seed_many_contacts, migrated_db, addressbook_id, 25, tiny_photo)
+        with (
+            patch(_TARGET, return_value=migrated_db),
+            patch.object(
+                CollectionRepository, "get_by_id", new=AsyncMock(return_value=None),
+            ) as mock_get_by_id,
+        ):
+            response = client.get(
+                "/contacts", params={"limit": 50, "addressbook_id": str(addressbook_id)},
+            )
+        assert response.status_code == 200
+        assert len(response.json()["contacts"]) == 25
+        mock_get_by_id.assert_not_called()
+
+
+class TestGroupVcardsAreNotListedAsContacts:
+    """A Nextcloud address-book group arrives as an ordinary vCard --
+    PostIMAP has no concept of one -- and must never be presented as a
+    person with no address."""
+
+    async def _seed_group_contact(
+        self, db: DatabaseConnection, addressbook_id: uuid.UUID, summary: str,
+    ) -> uuid.UUID:
+        object_id = uuid.uuid4()
+        async with db.session() as session:
+            dav_account_id = await session.scalar(
+                text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                {"id": addressbook_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO dav_objects "
+                    "(id, account_id, collection_id, kind, data, summary, emails) "
+                    "VALUES (:id, :account_id, :collection_id, 'addressbook', "
+                    "'BEGIN:VCARD\r\nVERSION:4.0\r\nKIND:group\r\nFN:' || :summary || "
+                    "'\r\nEND:VCARD\r\n', :summary, ARRAY[]::text[])"
+                ),
+                {
+                    "id": object_id, "account_id": dav_account_id,
+                    "collection_id": addressbook_id, "summary": summary,
+                },
+            )
+            await session.commit()
+        return object_id
+
+    def test_a_group_vcard_is_excluded_from_the_list(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/contacts",
+                json={
+                    "addressbook_id": str(addressbook_id), "summary": "Anna Person",
+                    "emails": [{"email": "anna@example.com"}],
+                },
+            )
+            assert created.status_code == 201, created.text
+            client.portal.call(
+                self._seed_group_contact, migrated_db, addressbook_id, "Family Group",
+            )
+
+            listed = client.get("/contacts", params={"addressbook_id": str(addressbook_id)})
+        assert listed.status_code == 200
+        summaries = [c["summary"] for c in listed.json()["contacts"]]
+        assert "Anna Person" in summaries
+        assert "Family Group" not in summaries

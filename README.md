@@ -41,9 +41,10 @@ mirror, which is what keeps it simple.
   autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply
   goes back over the identity's own outbox rather than the server's scheduling engine.
 - **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
-  A sender's avatar shows their address-book photo when one exists — an embedded photo renders
-  with no network request, a remote one follows the same allowlist as any other remote image —
-  and initials otherwise; never a lookup against an unrelated third party. Message HTML is
+  A sender's avatar shows their address-book photo when one exists — an embedded photo is served
+  from this application's own endpoint, never a third-party request, and a remote one follows the
+  same allowlist as any other remote image — and initials otherwise; never a lookup against an
+  unrelated third party. Message HTML is
   sanitized on the server and rendered in an isolated shadow root, on a light canvas by default —
   mail is written assuming one, and cannot be recoloured reliably — with dark rendering available
   per message through a toggle in its header.

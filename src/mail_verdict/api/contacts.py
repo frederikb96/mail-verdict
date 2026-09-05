@@ -13,7 +13,10 @@ Requires PostIMAP >= 1.6.0 -- see postimap/contract.py's MIN_DAV_SERVICE_VERSION
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import concurrent.futures
+import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query, Response
@@ -35,9 +38,11 @@ from mail_verdict.api.schemas import (
 from mail_verdict.calendar import vcard
 from mail_verdict.calendar.repository import CollectionRepository, DavObjectRepository
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import DavObject
+from mail_verdict.database.models import DavCollection, DavObject
 from mail_verdict.postimap.actions import create_object, delete_object, replace_object_data
 from mail_verdict.postimap.contract import read_postimap_info, supports_dav
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
 
@@ -77,10 +82,30 @@ def _decode_cursor(cursor: str | None) -> int:
         raise HTTPException(status_code=400, detail="Invalid cursor") from exc
 
 
-async def _to_response(obj: DavObject) -> ContactResponse:
-    parsed = vcard.parse_contact(obj.data)
-    collection_repo = CollectionRepository(get_db_connection())
-    collection = await collection_repo.get_by_id(obj.collection_id)
+def _photo_out(contact_id: uuid.UUID, photo: vcard.ContactPhoto | None) -> ContactPhotoOut | None:
+    """An embedded photo is always this application's own streaming
+    endpoint, never an inline `data:` URI -- a browser only fetches it
+    for a contact actually rendered on screen, and caches it after
+    that. A third-party `kind="url"` photo is passed through unchanged;
+    `parse_contact()` already only reports one once its own allowlist
+    check (photo-index) or nothing at all (everywhere else) permits it."""
+    if photo is None:
+        return None
+    url = f"/api/contacts/{contact_id}/photo" if photo.kind == "embedded" else photo.url
+    return ContactPhotoOut(kind=photo.kind, url=url)
+
+
+async def _to_response(
+    obj: DavObject, *, collection: DavCollection | None = None,
+) -> ContactResponse:
+    """Structured detail for one contact. Never decodes an embedded
+    photo's bytes -- see `_photo_out()` -- so a caller already holding
+    the contact's address book (a page of `list_contacts`) can pass it
+    in and skip re-fetching the same handful of collections per row."""
+    parsed = vcard.parse_contact(obj.data, decode_photo=False)
+    if collection is None:
+        collection_repo = CollectionRepository(get_db_connection())
+        collection = await collection_repo.get_by_id(obj.collection_id)
     return ContactResponse(
         id=obj.id,
         addressbook_id=obj.collection_id,
@@ -96,10 +121,7 @@ async def _to_response(obj: DavObject) -> ContactResponse:
         urls=parsed.urls,
         notes=parsed.notes,
         categories=parsed.categories,
-        photo=(
-            ContactPhotoOut(kind=parsed.photo.kind, url=parsed.photo.url)
-            if parsed.photo else None
-        ),
+        photo=_photo_out(obj.id, parsed.photo),
     )
 
 
@@ -117,7 +139,18 @@ async def list_contacts(
     repo = DavObjectRepository(get_db_connection())
     addressbook_ids = [addressbook_id] if addressbook_id is not None else None
     rows, has_more = await repo.search_contacts(addressbook_ids, q, limit=limit, offset=offset)
-    contacts = [await _to_response(row) for row in rows]
+    # A Nextcloud address-book group is stored as an ordinary vCard --
+    # PostIMAP has no concept of one -- so it must never reach the list
+    # looking like a person with no address.
+    rows = [row for row in rows if not vcard.is_group(row.data)]
+    # One query for every address book a row on this page belongs to,
+    # instead of one per row -- almost every contact on a page shares
+    # the same handful of address books.
+    collection_repo = CollectionRepository(get_db_connection())
+    collections = await collection_repo.get_by_ids(list({row.collection_id for row in rows}))
+    contacts = [
+        await _to_response(row, collection=collections.get(row.collection_id)) for row in rows
+    ]
     next_cursor = _encode_cursor(offset + limit) if has_more else None
     return ContactListResponse(contacts=contacts, has_more=has_more, next_cursor=next_cursor)
 
@@ -131,7 +164,7 @@ async def search_contacts(q: str = Query(min_length=1)) -> list[ContactSearchHit
     hits = await repo.search_email_hits(q, limit=20)
     results: list[ContactSearchHitOut] = []
     for obj in hits:
-        parsed = vcard.parse_contact(obj.data)
+        parsed = vcard.parse_contact(obj.data, decode_photo=False)
         for email in parsed.emails:
             results.append(
                 ContactSearchHitOut(
@@ -152,6 +185,71 @@ async def resolve_contact_by_email(email: str = Query(min_length=1)) -> ContactR
     if obj is None:
         return None
     return await _to_response(obj)
+
+
+# A thread that outlives its own timeout keeps occupying whatever pool it
+# was submitted to until it eventually finishes on its own -- see
+# api/calendar_events.py's identical `_EXPANSION_EXECUTOR`, the pattern
+# this copies. A dedicated, bounded pool contains that to the photo scan
+# alone, rather than letting one pathological or oversized address book
+# eventually starve every unrelated asyncio.to_thread() call sharing the
+# loop's own default executor.
+_PHOTO_SCAN_TIMEOUT_SECONDS = 10.0
+_PHOTO_SCAN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="contacts-photo-scan",
+)
+
+# A url-kind photo's own candidate emails, deferred out of the thread pool
+# since resolving them needs an awaited, per-account allowlist check that
+# has to run back on the event loop.
+_UrlPhotoCandidate = tuple[uuid.UUID, str, list[str]]
+
+
+def _scan_photos_sync(
+    rows: list[tuple[uuid.UUID, str]],
+) -> tuple[dict[str, ContactPhotoIndexEntry], list[_UrlPhotoCandidate]]:
+    embedded: dict[str, ContactPhotoIndexEntry] = {}
+    url_candidates: list[_UrlPhotoCandidate] = []
+    for contact_id, data in rows:
+        try:
+            parsed = vcard.parse_contact(data, decode_photo=False)
+        except Exception:
+            # A single malformed vCard must never take the whole index
+            # down with it -- catch broadly, the same reasoning
+            # calendar_events.py's own _expand_all_sync applies to a
+            # parse failure there.
+            logger.warning("Skipping contact %s in photo index", contact_id, exc_info=True)
+            continue
+        if parsed.photo is None or not parsed.emails or vcard.is_group(data):
+            continue
+        if parsed.photo.kind == "embedded":
+            entry = ContactPhotoIndexEntry(
+                contact_id=contact_id, photo_url=f"/api/contacts/{contact_id}/photo",
+            )
+            for contact_email in parsed.emails:
+                embedded[contact_email.email.strip().lower()] = entry
+        else:
+            url_candidates.append(
+                (contact_id, parsed.photo.url, [e.email for e in parsed.emails])
+            )
+    return embedded, url_candidates
+
+
+async def _scan_photos(
+    rows: list[tuple[uuid.UUID, str]],
+) -> tuple[dict[str, ContactPhotoIndexEntry], list[_UrlPhotoCandidate]]:
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_PHOTO_SCAN_EXECUTOR, _scan_photos_sync, rows),
+            timeout=_PHOTO_SCAN_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Photo index scan exceeded %.0fs for %d contacts; returning none of them",
+            _PHOTO_SCAN_TIMEOUT_SECONDS, len(rows),
+        )
+        return {}, []
 
 
 @router.get("/photo-index", response_model=ContactPhotoIndexResponse)
@@ -175,54 +273,46 @@ async def get_photo_index(
     address is on its allowlist -- the identical rule and the identical
     check a message's own remote images are gated by; omitted otherwise,
     the same as a contact with no photo at all.
+
+    The address book is read whole -- there is no cheaper affordance
+    upstream to page it with -- but scanning it for photos runs off the
+    event loop with a bounded timeout (`_scan_photos`), so a large one
+    slows this request rather than every request the server is
+    currently handling.
     """
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
-    by_email: dict[str, ContactPhotoIndexEntry] = {}
-    for contact_id, data in await repo.list_ids_and_data():
-        parsed = vcard.parse_contact(data)
-        if parsed.photo is None or not parsed.emails:
-            continue
-        if parsed.photo.kind == "embedded":
-            entry = ContactPhotoIndexEntry(
-                contact_id=contact_id, photo_url=f"/api/contacts/{contact_id}/photo",
-            )
-            for contact_email in parsed.emails:
-                by_email[contact_email.email.strip().lower()] = entry
-        elif account_id is not None:
-            entry = ContactPhotoIndexEntry(contact_id=contact_id, photo_url=parsed.photo.url)
-            for contact_email in parsed.emails:
-                if await is_sender_image_allowed(account_id, contact_email.email):
-                    by_email[contact_email.email.strip().lower()] = entry
+    rows = await repo.list_ids_and_data()
+    by_email, url_candidates = await _scan_photos(rows)
+    if account_id is not None:
+        for contact_id, url, emails in url_candidates:
+            entry = ContactPhotoIndexEntry(contact_id=contact_id, photo_url=url)
+            for email in emails:
+                if await is_sender_image_allowed(account_id, email):
+                    by_email[email.strip().lower()] = entry
     return ContactPhotoIndexResponse(by_email=by_email)
 
 
 @router.get("/{contact_id}/photo")
 async def get_contact_photo(contact_id: uuid.UUID) -> Response:
     """Stream an embedded contact photo's decoded bytes -- what the
-    photo index's `photo_url` points to for a `kind="embedded"` entry.
-    A `kind="url"` photo is never served through here: the index already
-    resolves it straight to the sender's own address, once allowed."""
+    photo index's `photo_url` points to for a `kind="embedded"` entry,
+    and what every other contact response's own `photo.url` now points
+    to as well. The one place a photo is actually decoded, for one
+    contact at a time, on request -- a `kind="url"` photo has no bytes
+    to stream here (a stored value that will not decode looks the same
+    to a caller: a card with no usable photo, not a fault in this
+    request, since a server can truncate a long PHOTO value on write
+    and the card then keeps an unusable one indefinitely)."""
     await _require_support()
     repo = DavObjectRepository(get_db_connection())
     obj = await repo.get_by_id(contact_id)
     if obj is None or obj.deleted_at is not None or obj.kind != "addressbook":
         raise HTTPException(status_code=404, detail="Contact not found")
-    photo = vcard.parse_contact(obj.data).photo
-    if photo is None or photo.kind != "embedded":
+    decoded = vcard.extract_photo_bytes(obj.data)
+    if decoded is None:
         raise HTTPException(status_code=404, detail="Contact has no embedded photo")
-    try:
-        mime, raw = vcard.decode_photo_data_url(photo.url)
-    except ValueError as exc:
-        # A stored photo that will not decode is a property of the card, not
-        # a fault in this request -- a server can truncate a long PHOTO value
-        # on write, and the card then keeps an unusable one indefinitely. The
-        # index still advertises it, so this is requested again on every row
-        # that renders the sender; a 500 with a traceback per row is the wrong
-        # answer to a card that simply has no usable photo.
-        raise HTTPException(
-            status_code=404, detail="Contact's photo cannot be decoded"
-        ) from exc
+    mime, raw = decoded
     return Response(
         content=raw,
         media_type=mime,

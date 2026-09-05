@@ -1330,9 +1330,11 @@ class ContactAddressIO(BaseModel):
 
 
 class ContactPhotoOut(BaseModel):
-    """`kind="embedded"` -- `url` is a self-contained `data:` URI, already
-    in the mirror, safe to render with no network request. `kind="url"`
-    -- `url` is a third party's address; a caller must run it through the
+    """`kind="embedded"` -- `url` is this application's own
+    `GET /contacts/:id/photo`, fetched only for a contact actually
+    rendered on screen and cacheable by the browser after that (the
+    same shape `ContactPhotoIndexEntry` already uses). `kind="url"` --
+    `url` is a third party's address; a caller must run it through the
     same remote-content allowlist any other remote image does before ever
     putting it in an `<img src>`, never fetch it unconditionally."""
 
