@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### mv6-list
+### Mail list
 
 - A touch drag no longer fights scrolling: a vertical swipe scrolls the list exactly like any
   other page, with no drag ghost and nothing picked up, while desktop drag-and-drop is unchanged.
