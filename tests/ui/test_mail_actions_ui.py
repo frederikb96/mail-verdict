@@ -1071,6 +1071,96 @@ class TestMailActionsUi:
             "on the screen -- the list jumped when mail arrived above the viewport"
         )
 
+    def test_switching_folders_opens_at_the_top_rather_than_mid_list(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        junk_folder: dict[str, Any],
+    ) -> None:
+        """The list holding its scroll position when mail arrives (the
+        test above) and a folder switch resetting it are two different
+        requirements over the same virtualizer: it must keep the reader's
+        place in the same list, and abandon it entirely for a different
+        one. Both batches stay under the endpoint's own default page
+        size, so a plain, unpaged fetch sees every message either lands
+        in without pagination masking a batch as short of complete."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        batch = f"scroll reset batch {uuid.uuid4()}"
+        subjects = [f"{batch} {i:02d}" for i in range(45)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _batch_synced() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        seeded = wait_for(
+            _batch_synced, timeout_s=30.0, description="Scroll-reset batch synced into INBOX",
+        )
+
+        # Half of them into Junk, so it has its own depth to (not) land
+        # partway down -- through the API directly, since the point under
+        # test is what opening Junk does, not how the messages got there.
+        targets = [m["id"] for m in seeded[:22]]
+        resp = api_client.post(
+            f"/api/accounts/{ui_account['id']}/messages/bulk-action",
+            json={"action": "move", "target_folder_id": junk_folder["id"], "ids": targets},
+        )
+        assert resp.status_code == 200, resp.text
+
+        def _moved_into_junk() -> bool | None:
+            in_junk = _list_folder(api_client, ui_account["id"], junk_folder["id"])
+            return (len(in_junk) >= len(targets)) or None
+
+        wait_for(_moved_into_junk, timeout_s=30.0, description="Moved batch synced into Junk")
+
+        def _scroll_top() -> int:
+            return page.evaluate("""
+                () => {
+                    const row = document.querySelector('[data-testid="mail-row"]');
+                    if (!row) return -1;
+                    let el = row.parentElement;
+                    while (el) {
+                        if (el.scrollHeight > el.clientHeight + 5) return el.scrollTop;
+                        el = el.parentElement;
+                    }
+                    return -1;
+                }
+            """)
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
+
+        for _ in range(30):
+            page.keyboard.press("j")
+        page.wait_for_timeout(300)
+        assert _scroll_top() > 0, "expected scrolling INBOX to have moved it off the top"
+
+        folder(page, junk_folder["id"]).get_by_role("button").click()
+        expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
+        page.wait_for_timeout(300)
+
+        assert _scroll_top() == 0, (
+            "Junk opened scrolled partway down instead of at the top -- carrying INBOX's "
+            "own scroll offset over into a shorter list rather than resetting for what is "
+            "a genuinely different one"
+        )
+
     def test_row_controls_have_distinct_accessible_names(
         self,
         page: Page,

@@ -259,6 +259,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   group across the header line's own icons and timestamp, covering one or the other depending on
   which way the row happened to round. Both now live in the header line itself, in space reserved
   for them rather than floated over it
+- Switching folders (or accounts, or the unified view's own folder) opens the mail list at the
+  top rather than partway down it. The virtualized list kept its previous scroll offset across
+  the switch and only clamped it to the new list's shorter scroll range, landing wherever the
+  arithmetic of the two lists' heights happened to put it rather than resetting for what is a
+  genuinely different list
 
 - A sender's avatar -- in an open thread, in the mail list, in the unified view and in search
   results -- now shows their address-book contact's photo, when one matches. An embedded photo
