@@ -20,6 +20,14 @@ ALLOWED_TAGS = {
     "img", "ins", "li", "ol", "p", "pre", "q", "s", "span", "strong",
     "style", "sub", "sup", "table", "tbody", "td", "tfoot", "th", "thead",
     "tr", "u", "ul", "center", "font",
+    # Plain structural/semantic tags with no attribute or behaviour this
+    # module treats specially -- already in the client's own DOMPurify
+    # allowlist (email-renderer.tsx), and unwrapped here only because this
+    # list had never been brought up to match it. None of them can do
+    # anything past what an ordinary inline wrapper already can.
+    "figure", "figcaption", "details", "summary", "small", "mark",
+    "section", "article", "header", "footer", "nav", "cite", "caption",
+    "col", "colgroup", "kbd", "wbr",
 }
 
 # A tag outside ALLOWED_TAGS has its own tag stripped, but by default only
@@ -64,7 +72,12 @@ ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     # -- kept for the ESPs that write `<style media="(prefers-color-scheme:
     # dark)">` rather than wrapping the whole block in an @media rule.
     "style": {"media"},
-    "*": {"class", "style", "dir", "lang"},
+    # An id cannot collide with anything of this application's own inside
+    # an isolated shadow root, so a long newsletter's own table of
+    # contents (an in-page #fragment link to one of its own headings) can
+    # actually work -- see email-renderer.tsx's click handler for the
+    # other half of this.
+    "*": {"class", "style", "dir", "lang", "id"},
 }
 
 # data-x-src, data-x-bg, data-x-style and data-x-stylesheet are this
@@ -111,10 +124,17 @@ _ESCAPING_PROPERTIES = frozenset({
     "top", "right", "bottom", "left",
     "inset", "inset-block", "inset-block-start", "inset-block-end",
     "inset-inline", "inset-inline-start", "inset-inline-end",
-    "transform", "transform-origin", "transform-style", "transform-box",
-    "translate", "rotate", "scale",
-    "perspective", "perspective-origin",
 })
+
+# transform/translate/rotate/scale/perspective are deliberately not in
+# _ESCAPING_PROPERTIES above: with :host no longer sender-writable (see
+# _selector_escapes_containment), `contain: layout paint` is a real
+# containing block a transform cannot resolve outside of, exactly like an
+# ordinary margin cannot -- dropping them bought no protection past what
+# containment already provides, at the cost of rendering fidelity for
+# ordinary modern mail. position stays fully dropped except for one
+# value -- see _is_allowed_sticky_position -- since fixed/absolute
+# genuinely change what box the content resolves against.
 
 _VENDOR_PREFIX_RE = re.compile(r"^-[a-z]+-")
 
@@ -176,11 +196,12 @@ def _filter_declarations(nodes: list[Node]) -> list[Declaration]:
     comments and escapes are resolved before any name is compared, which
     closes the class rather than the instance.
 
-    Message layout does not need any of the escaping declarations, so they
-    are dropped rather than inspected -- a value allowlist is a longer list
-    to keep correct and buys nothing here. Anything that fails to parse as
-    an ordinary declaration carries no layout value an email needs either,
-    and is dropped along with it.
+    Message layout does not need most of what an escaping property's value
+    could be, so the property is dropped by name rather than inspected --
+    position is the one exception, since sticky needs the name kept but
+    is not itself escaping (see _is_allowed_position_value). Anything that
+    fails to parse as an ordinary declaration carries no layout value an
+    email needs either, and is dropped along with it.
 
     Shared by an inline style attribute and a message's own stylesheet --
     _parsed_declarations parses text into this shape, and a qualified rule
@@ -192,12 +213,34 @@ def _filter_declarations(nodes: list[Node]) -> list[Declaration]:
     for node in nodes:
         if node.type != "declaration":
             continue
-        if _canonical_property_name(node.lower_name) in _ESCAPING_PROPERTIES:
+        name = _canonical_property_name(node.lower_name)
+        if name in _ESCAPING_PROPERTIES and not _is_allowed_position_value(name, node.value):
             continue
         if _contains_parse_error(node.value):
             continue
         kept.append(node)
     return kept
+
+
+# sticky is the one position value _ESCAPING_PROPERTIES's blanket "position"
+# entry would otherwise drop along with fixed/absolute -- it is clipped by
+# the same overflow/containment as ordinary flow content and cannot escape
+# the box a fixed or absolute value can, so it is allowed by value rather
+# than by carving position out of the escaping-properties list entirely.
+_ALLOWED_POSITION_VALUES = frozenset({"sticky", "-webkit-sticky"})
+
+
+def _is_allowed_position_value(name: str, value: list[Node]) -> bool:
+    """Whether an otherwise-escaping declaration's value is the one
+    exception _ESCAPING_PROPERTIES carries for its own name."""
+    if name != "position":
+        return False
+    tokens = [t for t in value if t.type not in ("whitespace", "comment")]
+    return (
+        len(tokens) == 1
+        and tokens[0].type == "ident"
+        and tokens[0].lower_value in _ALLOWED_POSITION_VALUES
+    )
 
 
 def _parsed_declarations(style: str) -> list[Declaration]:

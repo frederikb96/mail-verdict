@@ -577,6 +577,17 @@ export function EmailRenderer({
           window.open(href, "_blank", "noopener,noreferrer");
         } else if (href && href.startsWith("mailto:")) {
           window.location.href = href;
+        } else if (href && href.startsWith("#") && href.length > 1) {
+          // An in-page id cannot collide with anything of this
+          // application's own inside an isolated shadow root, so a long
+          // newsletter's own table of contents can jump to its own
+          // heading -- scoped to this root rather than
+          // document.getElementById, which would never find it and
+          // could only ever match something outside the message.
+          root.getElementById(href.slice(1))?.scrollIntoView({
+            behavior: "smooth",
+            block: "start",
+          });
         }
       }
     };
