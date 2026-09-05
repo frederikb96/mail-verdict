@@ -1,10 +1,11 @@
 """
-apply_effects() announcing what it just wrote -- a RecordVerdict that
+apply_effects() announcing what it just wrote. A RecordVerdict that
 actually recorded (not a duplicate the durability index absorbed) pushes
 a verdict.issued event, the same one a user's own feedback pushes at
-api/verdicts.py. Nothing else about apply_effects needs a real EventRing
-in its tests today; this is the one effect whose write another viewer
-needs to hear about.
+api/verdicts.py. A Tag effect that actually changes the tag set pushes
+mail.updated, since mail_tags -- unlike the columns SetFlags/Keywords
+write -- is this application's own table, with no PostIMAP trigger to
+announce a write to it on its own.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import pytest
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.pipeline.context import FolderResolver
-from mail_verdict.pipeline.contracts import RecordVerdict
+from mail_verdict.pipeline.contracts import RecordVerdict, Tag
 from mail_verdict.pipeline.effects import apply_effects
 from mail_verdict.pipeline.message_view import FolderView, MessageView
 
@@ -108,6 +109,58 @@ async def test_a_duplicate_verdict_the_durability_index_absorbs_announces_nothin
         event_ring=event_ring, stage_id="classify",
     )
     assert applied[0].applied is False
+
+    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    assert new_events == []
+
+
+@pytest.mark.asyncio
+async def test_a_tag_that_actually_changes_announces_itself(
+    migrated_db: DatabaseConnection,
+) -> None:
+    message_id = uuid.uuid4()
+    account_id = uuid.uuid4()
+    view = _view(message_id, account_id)
+    event_ring = EventRing()
+    await event_ring.add(account_id, "test.seed", {})
+    seq_before = event_ring.get_latest_seq()
+
+    _, applied = await apply_effects(
+        migrated_db, view, (Tag(add=("newsletter",)),),
+        apply=True, folders=FolderResolver(migrated_db, account_id),
+        event_ring=event_ring, stage_id="classify",
+    )
+    assert applied[0].applied is True
+
+    new_events = await event_ring.replay_from(seq_before, str(account_id))
+    matching = [e for e in new_events if e["event_type"] == "mail.updated"]
+    assert len(matching) == 1, f"expected exactly one mail.updated event, got {new_events!r}"
+    assert matching[0]["data"] == {
+        "id": str(message_id), "account_id": str(account_id), "changed": ["tags"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_tag_effect_that_changes_nothing_announces_nothing(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A Tag effect with no add/remove at all reaches _apply_tags as a
+    no-op write (unlike Keywords, it carries no early-exit guard) --
+    proving new_tags stays equal to current.tags is what keeps that from
+    still pushing an event."""
+    message_id = uuid.uuid4()
+    account_id = uuid.uuid4()
+    view = _view(message_id, account_id)
+    event_ring = EventRing()
+    await event_ring.add(account_id, "test.seed", {})
+    seq_before = event_ring.get_latest_seq()
+
+    _, applied = await apply_effects(
+        migrated_db, view, (Tag(),),
+        apply=True, folders=FolderResolver(migrated_db, account_id),
+        event_ring=event_ring, stage_id="classify",
+    )
+    assert applied[0].applied is True
 
     new_events = await event_ring.replay_from(seq_before, str(account_id))
     assert new_events == []

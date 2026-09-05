@@ -170,7 +170,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   these changed only for the browser that made the change, and everywhere else waited on a
   reload or an incidental cache expiry. A send still inside its undo window, and its
   cancellation, are announced the same way, so a second viewer's outbox list agrees with the
-  first's throughout the window rather than only once it ends.
+  first's throughout the window rather than only once it ends. A rule that tags a message reaches
+  a second open browser too, the same way a verdict already did -- the tag itself lives in a
+  table of this application's own, which nothing had ever announced a change to.
 
 ## [4.0.0] - 2026-09-05
 

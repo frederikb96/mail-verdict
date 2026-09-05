@@ -211,8 +211,23 @@ async def apply_effects(
                 continue
             await _apply_tags(db, current.message_id, effect)
             new_tags = tuple(t for t in (*current.tags, *effect.add) if t not in effect.remove)
+            tags_changed = new_tags != current.tags
             current = current.with_tags(new_tags)
             applied.append(AppliedEffect(effect, True, f"tags now {new_tags}"))
+            # mail_tags is this application's own table, with no PostIMAP
+            # trigger to announce a write to it -- unlike SetFlags/Keywords
+            # just above, which write PostIMAP-owned columns and get
+            # mail.updated for free. Reused rather than a tag-specific
+            # event: the client's own handler for it already re-fetches
+            # the message on any changed field.
+            if tags_changed and event_ring is not None:
+                await event_ring.add(
+                    current.account_id, "mail.updated",
+                    {
+                        "id": str(current.message_id), "account_id": str(current.account_id),
+                        "changed": ["tags"],
+                    },
+                )
 
         elif isinstance(effect, RecordVerdict):
             if not apply:
