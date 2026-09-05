@@ -128,7 +128,12 @@ class TestDefaultCalendarSettingUi:
         sheet = page.locator('[data-slot="sheet-content"]')
         expect(sheet).to_be_visible(timeout=15_000)
         calendar_select = sheet.locator('[data-slot="select-trigger"]').first
-        expect(calendar_select).to_have_text(settings_calendar["display_name"], timeout=10_000)
+        # Not to_have_text: a Select trigger's textContent carries the chevron
+        # glyph from its aria-hidden svg as well as the label, so an equality
+        # assertion against the label alone can never pass here.
+        expect(
+            calendar_select.get_by_text(settings_calendar["display_name"], exact=True)
+        ).to_be_visible(timeout=10_000)
 
 
 @pytest.fixture(scope="module")
