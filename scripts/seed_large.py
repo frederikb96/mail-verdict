@@ -41,6 +41,7 @@ import imaplib
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -55,6 +56,11 @@ from tests.setup.dav_helpers import (  # noqa: E402
     discover,
     put_object,
 )
+
+# One connection per worker, since httpx.Client is not shared across threads
+# here -- Radicale serialises its own storage writes, so this is about hiding
+# per-request latency rather than about parallelising the server.
+PUT_WORKERS = 8
 
 DEFAULT_DAV_USER = "alice"
 DEFAULT_MAILBOX = "alice@test.local"
@@ -128,6 +134,20 @@ BODY_PARAGRAPHS = [
 def _rng(seed: int) -> random.Random:
     """A seeded generator, so two runs of this script produce the same corpus."""
     return random.Random(seed)
+
+
+def _put_many(
+    base_url: str, username: str, items: list[tuple[str, str, str]],
+) -> None:
+    """PUT a batch of (url, body, content_type) over several connections."""
+
+    def one(item: tuple[str, str, str]) -> None:
+        url, body, content_type = item
+        with httpx.Client(auth=(username, "unused"), timeout=60.0) as client:
+            put_object(client, url, body, content_type)
+
+    with ThreadPoolExecutor(max_workers=PUT_WORKERS) as pool:
+        list(pool.map(one, items))
 
 
 # --------------------------------------------------------------------------
@@ -254,17 +274,18 @@ def seed_calendars(
     has them. Returns the object count per kind."""
     rng = _rng(seed)
     now = datetime.now()
-    events = todos = 0
-    with httpx.Client(auth=(username, "unused"), timeout=30.0) as client:
-        principal = discover(client, f"http://{host}:{port}/")
+    base_url = f"http://{host}:{port}/"
+    events: list[tuple[str, str, str]] = []
+    todos: list[tuple[str, str, str]] = []
+    with httpx.Client(auth=(username, "unused"), timeout=60.0) as client:
+        principal = discover(client, base_url)
         for calendar_index, name in enumerate(EVENT_CALENDARS):
             # Calendars and address books share one collection root on a DAV
             # server, so every slug here is prefixed -- an address book whose
             # slug collides with an existing calendar's is reported as "already
             # there" and its contacts are then written into the calendar.
             url = create_calendar(client, principal, f"cal-{name.lower()}", name, ["VEVENT"])
-            wanted = max(1, int(EVENTS_PER_CALENDAR * scale))
-            for i in range(wanted):
+            for i in range(max(1, int(EVENTS_PER_CALENDAR * scale))):
                 uid = f"seed-ev-{calendar_index}-{i}"
                 # A tenth of them are series that started years ago, which is
                 # what makes expansion cost anything at all.
@@ -277,34 +298,26 @@ def seed_calendars(
                          "FREQ=DAILY;INTERVAL=3"]
                     )
                 else:
-                    start = now + timedelta(
-                        days=rng.randint(-540, 540), hours=rng.randint(-6, 8),
-                    )
+                    start = now + timedelta(days=rng.randint(-540, 540), hours=rng.randint(-6, 8))
                     start = start.replace(minute=rng.choice((0, 15, 30)), second=0, microsecond=0)
                     rule = None
-                put_object(
-                    client, f"{url}{uid}.ics",
+                events.append((
+                    f"{url}{uid}.ics",
                     _vevent(uid, f"{name} {i}", start, rng.choice((30, 60, 90, 120)), rule),
                     "text/calendar; charset=utf-8",
-                )
-                events += 1
+                ))
         for list_index, name in enumerate(TASK_LISTS):
-            url = create_calendar(
-                client, principal, f"tasks-{list_index}", name, ["VTODO"],
-            )
-            wanted = max(1, int(TODOS_PER_LIST * scale))
-            for i in range(wanted):
+            url = create_calendar(client, principal, f"tasks-{list_index}", name, ["VTODO"])
+            for i in range(max(1, int(TODOS_PER_LIST * scale))):
                 uid = f"seed-td-{list_index}-{i}"
-                put_object(
-                    client, f"{url}{uid}.ics",
-                    _vtodo(
-                        uid, f"{name} item {i}",
-                        now + timedelta(days=rng.randint(-200, 200)), i % 3 == 0,
-                    ),
+                todos.append((
+                    f"{url}{uid}.ics",
+                    _vtodo(uid, f"{name} item {i}",
+                           now + timedelta(days=rng.randint(-200, 200)), i % 3 == 0),
                     "text/calendar; charset=utf-8",
-                )
-                todos += 1
-    return {"events": events, "todos": todos, "calendars": len(EVENT_CALENDARS),
+                ))
+    _put_many(base_url, username, events + todos)
+    return {"events": len(events), "todos": len(todos), "calendars": len(EVENT_CALENDARS),
             "task_lists": len(TASK_LISTS)}
 
 
@@ -350,33 +363,34 @@ def seed_contacts(
     grouped both ways a real address book groups them."""
     rng = _rng(seed)
     photo = base64.b64encode(bytes(rng.getrandbits(8) for _ in range(PHOTO_BYTES))).decode()
-    written = 0
-    with httpx.Client(auth=(username, "unused"), timeout=30.0) as client:
-        principal = discover(client, f"http://{host}:{port}/")
+    base_url = f"http://{host}:{port}/"
+    cards: list[tuple[str, str, str]] = []
+    with httpx.Client(auth=(username, "unused"), timeout=60.0) as client:
+        principal = discover(client, base_url)
         books = [
             (name, create_addressbook(client, principal, f"book-{name.lower()}", name))
             for name in ADDRESS_BOOKS
         ]
-        uids_by_book: dict[str, list[str]] = {name: [] for name, _ in books}
-        for index in range(count):
-            name, url = books[index % len(books)]
-            uid = f"seed-contact-{index}"
-            put_object(
-                client, f"{url}{uid}.vcf",
-                _vcard(uid, index, rng, photo if rng.random() < PHOTO_FRACTION else None),
-                "text/vcard; charset=utf-8",
-            )
-            uids_by_book[name].append(uid)
-            written += 1
-        for group_index, group in enumerate(CONTACT_GROUPS):
-            name, url = books[group_index % len(books)]
-            uid = f"seed-group-{group_index}"
-            put_object(
-                client, f"{url}{uid}.vcf",
-                _group_card(uid, group, uids_by_book[name][: 10 + group_index]),
-                "text/vcard; charset=utf-8",
-            )
-    return {"contacts": written, "address_books": len(books), "groups": len(CONTACT_GROUPS)}
+    uids_by_book: dict[str, list[str]] = {name: [] for name, _ in books}
+    for index in range(count):
+        name, url = books[index % len(books)]
+        uid = f"seed-contact-{index}"
+        cards.append((
+            f"{url}{uid}.vcf",
+            _vcard(uid, index, rng, photo if rng.random() < PHOTO_FRACTION else None),
+            "text/vcard; charset=utf-8",
+        ))
+        uids_by_book[name].append(uid)
+    for group_index, group in enumerate(CONTACT_GROUPS):
+        name, url = books[group_index % len(books)]
+        uid = f"seed-group-{group_index}"
+        cards.append((
+            f"{url}{uid}.vcf",
+            _group_card(uid, group, uids_by_book[name][: 10 + group_index]),
+            "text/vcard; charset=utf-8",
+        ))
+    _put_many(base_url, username, cards)
+    return {"contacts": count, "address_books": len(books), "groups": len(CONTACT_GROUPS)}
 
 
 def seed_all(
