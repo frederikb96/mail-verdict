@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Finds text inside the open message: ctrl+F, or a control beside the message's other icons,
   opens a small search field over the message, highlights every match in the rendered content,
   and steps between them with Enter/Shift+Enter or the up/down arrows.
+- Marking a message unread while it is open now stays unread instead of being immediately
+  re-marked read, and reopening a message that was left unread this way marks it read again on
+  that fresh look, rather than being remembered as already-read for the rest of the session.
 
 ## [4.0.0] - 2026-09-05
 
