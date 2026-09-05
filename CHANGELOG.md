@@ -165,6 +165,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings category the interface expects but the server didn't return now explains that the
   interface and the server may disagree on which categories exist, rather than saying nothing
   more than "No settings available for this category"
+- A multi-day all-day event no longer gains an extra day in a browser east of UTC, nor loses one
+  west of it. An all-day date is zone-less and is now placed on the day it names rather than
+  through the instant the server stores it as, in the month view, the day/week view and the event
+  popover
+- A calendar with no colour of its own (a freshly created CalDAV collection commonly has none)
+  now falls back to a deterministic palette colour, keyed by the calendar's own id so it stays the
+  same across a reload, instead of rendering transparent everywhere a colour is read
+- A default calendar is selectable in Settings and used as a new event's initial calendar,
+  instead of always whichever calendar happens to sort first
+- The event editor now asks before discarding typed content on Escape, an outside click, the
+  close button or Cancel, the same prompt the composer already has
+- The calendar settings' event-duration field shows a human label instead of its raw JSONB key
+- The DAV account card's sync timestamp no longer reads "Synced now ago" for a recent sync
 
 ## [3.1.1] - 2026-09-03
 
