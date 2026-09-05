@@ -214,11 +214,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A settings field's label reads as a sentence ("Default event duration minutes") rather than
   its raw key name
 
-- A sender's avatar -- in an open thread, in the mail list and in the unified view -- now shows
-  their address-book contact's photo, when one matches. An embedded photo renders with no request
-  of its own; a remote photo URL only renders once the sender is on the same allowlist that
-  already gates the message's own remote images. The mail list reads every row's photo from one
-  bulk lookup per account rather than a request per row or per sender scrolled into view
+- A sender's avatar -- in an open thread, in the mail list, in the unified view and in search
+  results -- now shows their address-book contact's photo, when one matches. An embedded photo
+  renders with no request of its own; a remote photo URL only renders once the sender is on the
+  same allowlist that already gates the message's own remote images. Every list reads its rows'
+  photos from one bulk lookup per account rather than a request per row or per sender scrolled
+  into view
 - A contact photo far larger than any reasonable upload is rejected server-side rather than
   reaching the vCard and the CardDAV server it syncs to unbounded
 - Editing a contact's photo or categories now removes every existing line of that kind rather
