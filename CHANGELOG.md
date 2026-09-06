@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail transport
+
+- Runs against PostIMAP 1.9.1, which fixes a sync that could end the whole transport service
+  rather than failing one collection. A large address book -- a few hundred contacts carrying
+  embedded photos -- against a server that closes the connection after each response was enough
+  to reach it, and it wrote no error anywhere: the process simply died, which from the outside
+  looks like an account that never finishes its first sync.
+
 ### Hands-on pass
 
 - A checklist copied from a web page now pastes into the message editor as a checklist. Every
