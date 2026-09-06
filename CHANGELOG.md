@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-09-06
+
 ### Fixed
 
 - A to-do-only calendar (a task list) now stays out of the sidebar and the month view even when
