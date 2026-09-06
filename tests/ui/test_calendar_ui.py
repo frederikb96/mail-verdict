@@ -1206,8 +1206,13 @@ class TestCalendarUi:
 
             checkbox = page.get_by_role("checkbox", name="Work", exact=True)
             checkbox.click()
-            with pytest.raises(AssertionError):
-                expect(chip).to_be_visible(timeout=20_000)
+            # not_to_be_visible, never pytest.raises around to_be_visible:
+            # the chip is on screen when this runs, so to_be_visible
+            # returns at once and the raises block sees nothing raised --
+            # a pass that means "it had already gone" and a failure that
+            # means "it had not gone yet", both racing the refetch rather
+            # than waiting for it.
+            expect(chip).not_to_be_visible(timeout=20_000)
 
             checkbox.click()
             expect(chip).to_be_visible(timeout=10_000)
@@ -1245,8 +1250,7 @@ class TestCalendarUi:
         page.keyboard.press("Escape")
         expect(dialog).to_be_hidden(timeout=10_000)
 
-        with pytest.raises(AssertionError):
-            expect(checkbox).to_be_visible(timeout=8_000)
+        expect(checkbox).not_to_be_visible(timeout=8_000)
 
         # The same calendars query backs the event editor's own Calendar
         # picker -- the sidebar checkbox already having loaded (above) is

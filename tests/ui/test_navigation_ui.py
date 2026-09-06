@@ -110,8 +110,7 @@ class TestNavigationShellUi:
 
         toggle = page.get_by_role("button", name="Toggle Sidebar", exact=True)
         toggle.click()
-        with pytest.raises(AssertionError):
-            expect(mini_month_title).to_be_visible(timeout=8_000)
+        expect(mini_month_title).not_to_be_visible(timeout=8_000)
 
         toggle.click()
         expect(mini_month_title).to_be_visible(timeout=8_000)

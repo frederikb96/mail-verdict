@@ -229,11 +229,10 @@ class TestSemanticMode:
 
         page.get_by_role("switch", name="Semantic search").click()
 
-        # to_have_count(0) alone would pass before React ever re-renders --
-        # poll for the positive case timing out is what actually proves
-        # the toggles are gone rather than merely not-yet-checked.
-        with pytest.raises(AssertionError):
-            expect(subject_toggle).to_be_visible(timeout=5_000)
+        # to_have_count(0) alone would pass before React ever re-renders.
+        # not_to_be_visible polls until the toggle actually goes, which is
+        # what proves it is gone rather than merely not-yet-checked.
+        expect(subject_toggle).not_to_be_visible(timeout=5_000)
 
         page.get_by_role("switch", name="Semantic search").click()
         expect(subject_toggle).to_be_visible(timeout=5_000)
