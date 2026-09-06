@@ -353,7 +353,7 @@ class TestContactsUi:
 
         organization_input = _labeled_field(page, "Organization")
         expect(organization_input).to_be_visible(timeout=15_000)
-        organization_input.fill("Vex GmbH")
+        organization_input.fill("Nordwind GmbH")
         _labeled_field(page, "Title").fill("Tester")
 
         page.get_by_role("button", name="Add email", exact=True).click()
@@ -370,14 +370,14 @@ class TestContactsUi:
             f"xpath=//h2[normalize-space(text())='{name}']"
             "/ancestor::div[contains(@class,'overflow-y-auto')][1]"
         )
-        expect(detail.get_by_text("Tester at Vex GmbH", exact=True)).to_be_visible(timeout=10_000)
+        expect(detail.get_by_text("Tester at Nordwind GmbH", exact=True)).to_be_visible(timeout=10_000)
         expect(detail.get_by_text(primary_email, exact=True)).to_be_visible()
         expect(detail.get_by_text(secondary_email, exact=True)).to_be_visible()
 
         def _updated() -> dict[str, Any] | None:
             detail = api_client.get(f"/api/contacts/{contact['id']}").json()
             emails = {e["email"] for e in detail["emails"]}
-            if detail["organization"] == "Vex GmbH" and secondary_email in emails:
+            if detail["organization"] == "Nordwind GmbH" and secondary_email in emails:
                 return detail
             return None
 

@@ -51,5 +51,5 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Not reversible -- there is no way to tell a row this heals apart
     from one that was already genuinely 'pending' for an unrelated
-    reason (row 114's own crash-safety window), so downgrading does
+    reason (the intake writer's own crash-safety window), so downgrading does
     nothing rather than guessing wrong in either direction."""

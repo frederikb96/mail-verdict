@@ -7,67 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Mail transport
+## [5.0.0] - 2026-09-06
 
-- Runs against PostIMAP 1.9.1, which fixes a sync that could end the whole transport service
-  rather than failing one collection. A large address book -- a few hundred contacts carrying
-  embedded photos -- against a server that closes the connection after each response was enough
-  to reach it, and it wrote no error anywhere: the process simply died, which from the outside
-  looks like an account that never finishes its first sync.
-### Contacts and search polish
+### Reading a message
 
-- Contacts can now be browsed and filtered by group, the same way an address book's own groups
-  work in Nextcloud and elsewhere: a card's own categories, and a group card's own members, both
-  show up as filter chips beside the address-book filter
-- Returning to a search from an opened result restores the exact scroll offset rather than one
-  that had drifted from it
+- A message that declares its own dark-mode support now opens on a dark canvas, and one that
+  carries only inline styling is judged by the colours that survive: dark only when its own
+  root-level styling sets background and text colour together, so it reads safely on either
+  canvas, light in every other case. The per-message toggle still overrides either default.
+- A message's own `<style>` block is sanitised and kept rather than discarded: dangerous
+  declarations (positioning, stacking, transforms) are dropped with the same filter an inline
+  style attribute already gets, `@import` is refused outright, and a remote reference anywhere in
+  the stylesheet -- a background, a web font, a list marker -- is neutralised unless the sender is
+  already allowlisted for remote images, exactly like a remote `<img>`. Media queries, including
+  dark-mode ones, and `@font-face`/`@keyframes` survive; an oversized or malformed stylesheet is
+  dropped rather than parsed.
+- A sender's own `@media (prefers-color-scheme: dark)` rule now actually applies in a genuinely
+  dark browser rather than being silently dropped. A `<style>` tag that is the very first thing in
+  a message -- an ordinary shape for a template that opens with its dark-mode rules before any
+  visible markup -- was being parsed into the document's `<head>` rather than its `<body>`, and
+  only the body was ever kept.
+- A reply's own quoted original collapses behind a "Show quoted text" control by default, the
+  same treatment the composer already gives an outgoing quote -- detected from a `type="cite"`
+  blockquote or an ordinary mail client's own quote class, so an unrelated blockquote a sender
+  wrote on purpose is left alone.
+- Find text inside the open message: ctrl+F, or a control beside the message's other icons, opens
+  a small search field over the message, highlights every match in the rendered content, and steps
+  between them with Enter/Shift+Enter or the arrow keys. The browser's own find cannot reach inside
+  the message, so this is the only way to search one.
 
-### Hands-on pass
+### The message list
 
-- A checklist copied from a web page now pastes into the message editor as a checklist. Every
-  renderer outside this application writes a checklist as a list item with a checkbox in front of
-  the text, which the editor previously dropped, leaving a plain bullet list
-- Scrolling the calendar's month view no longer leaves the rest of the application unresponsive.
-  Each month scrolled past fetches its own chunk, and those requests used to run to completion
-  even after their rows had scrolled away — on a calendar with a few thousand objects that is
-  enough of them to occupy every connection the browser has, so the next thing clicked simply
-  never reached the server. A chunk whose row is gone is now cancelled
-- Searching a large address book opens at the top of the results rather than somewhere in the
-  middle of them, and clearing the search returns to the top of the list
-- A contact whose name starts with an accented letter is now filed under that letter. Ä, Ö, Å and
-  Ü were bucketed under "#", which put a second and third "#" heading in the middle of the
-  alphabet while the names themselves sorted with the A's, O's and U's
-- Marking the message you are reading as unread from its own row in the list now works. The
-  reading pane's own button was protected against the read-on-open behaviour undoing it; the row's
-  identical control was not, so it looked dead
-- Selecting messages on a phone is no longer a dead end: a long press picks messages out as
-  before, and the bulk actions now appear as a bar under the list. There is no reading pane to
-  put them in on a phone, and no hover controls on a row either, so a selection made there had
-  nothing that could act on it
-
-### Search
-
-- Text search now ranks by where a match lands (subject, then subject-or-sender, then also
-  recipient, then body) rather than by date alone, and its recall stage is a prefix match over the
-  same index PostIMAP already maintains instead of a trigram scan over every message body -- a
-  search that used to take twenty seconds now answers in single-digit milliseconds. A trigram,
-  typo-tolerant fallback still exists, but only fires when that primary stage finds nothing on the
-  very first page, and only ever looks at subject and sender, never body. The response now carries
-  an exact total alongside the page, and semantic search takes a Loose/Balanced/Strict control
-  (persisted like the other search preferences) instead of an absolute similarity cutoff that moved
-  with query length and language; its retrieval also scans exactly rather than through an
-  approximate index, which was occasionally returning an unrelated cluster of near-duplicate mail
-  at a fraction of the right similarity
-- A new query now visibly clears the previous one's results and shows a spinner every time, not
-  only for the very first search of a session; the "load more" indicator now sits inside the
-  scrollable list rather than being clipped below it. Returning from an opened result lands back on
-  the same row in the search results rather than at the top
-- The folder scope picker can now be cleared to nothing -- a real, distinct state that disables
-  search with a prompt to choose at least one folder, rather than the empty state it collapsed to
-  previously being sent to the server as "no restriction" and unscoping the search
-- A message stored in two folders under the same header no longer permanently loses its place in
-  semantic search results, and the coverage figure now reports what search can actually reach
-  rather than what merely has an embedding row
+- A touch drag no longer fights scrolling: a vertical swipe scrolls the list exactly like any
+  other page, with no drag ghost and nothing picked up, while desktop drag-and-drop is unchanged.
+  A genuine long press on a touch device instead selects that message and enters multi-select.
+- Selecting messages on a phone is no longer a dead end. There is no reading pane to put bulk
+  actions in on a phone and no hover controls on a row either, so a selection made there had
+  nothing that could act on it; the bulk actions now appear as a bar under the list.
+- Select-all is now offered in a threaded folder, not only the flat view -- it selects every
+  message in every matching conversation server-side, without loading them, and a single
+  always-visible checkbox above the list both starts and clears a whole-folder selection.
+- A quick filter (subject, sender, recipient) scoped to the open folder sits beside "Group by
+  conversation". It is the same search mechanism the search page uses, so a filtered row carries
+  every ordinary action -- star, archive, spam, trash, mark read/unread -- rather than being a
+  read-only preview. Clearing it restores the folder exactly as it was.
+- A new spam review screen lists every message the classifier currently calls spam with no ruling
+  yet, across every account and folder including Junk. A thumb up confirms it; a thumb down
+  corrects it and, for a message the pipeline already moved to Junk, moves it back to the inbox.
+  Accept-all and reject-all apply the same to everything currently listed.
+- Opening a search result lands the list on that message in its own upper third, wherever it sits
+  in the folder. Previously it selected the message but only ever loaded the newest page, so a hit
+  from months back was never reached. A window opened this way grows in either direction as you
+  scroll, and a live arrival while it is open surfaces as a "N new -- jump to latest" banner rather
+  than silently reshaping the window under you.
+- Marking a message unread now sticks, from the reading pane's header and from the row in the list
+  alike. Opening a message marked read while it was on screen, so the header and the row disagreed
+  for a full round trip; the row's own control was additionally undone by the read-on-open
+  behaviour the header's button was already protected from. Reopening a message left unread marks
+  it read again on that fresh look, rather than being remembered as already-read for the session.
 
 ### Compose
 
@@ -75,7 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   immediately, and the message only actually reaches the mail server once that window passes
   uncancelled -- closing the browser during it does not stop the send, since the composed message
   is held durably on the server the whole time, not in the browser. The window defaults to five
-  seconds and is configurable (Settings -> Outbox), zero meaning send immediately as before.
+  seconds and is configurable (Settings -> Outbox), zero meaning send immediately as before. It
+  applies to sends made through the interface; an agent's send through the MCP tool and the
+  calendar's own invitation and RSVP messages go at once, since nobody is watching a grace period
+  on their behalf.
 - The compose panel can be resized by dragging its top edge, and expanded to fill the window with
   a button next to it -- both the new-message dialog and the inline reply box, which previously
   showed only a few lines with a long quote scrolled out of view below.
@@ -84,230 +84,181 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   a bare download or a giant embedded data URL several mail clients refuse to render. Deleting a
   pasted image removes the attachment along with it, so a sent message never carries an image
   nothing in the body still points at.
-- Tables and checklists: a table pasted from a web page or a notes app survives as a real table,
-  and the toolbar gained a checklist button whose items tick while composing and survive being
-  sent.
+- Tables and checklists survive a paste from a web page or a notes app, as a real table and a real
+  checklist rather than flattened text -- and a checklist now arrives at the recipient as one. A
+  checkbox is a form control, which no mail client renders and which the outbound filter drops, so
+  a ticked item and an unticked one used to arrive byte for byte identical; each item now carries
+  a ballot box, ticked or empty, matching the markers the plain-text alternative already wrote.
+  The toolbar gained a checklist button.
 - Ctrl/Cmd+X with nothing selected cuts the whole current line, matching the convention most
-  editors already use for it. Hovering a link now shows its target, and Ctrl/Cmd-clicking one
-  opens it in a new tab instead of only ever placing the cursor.
+  editors already use. Hovering a link shows its target, and Ctrl/Cmd-clicking one opens it in a
+  new tab instead of only ever placing the cursor.
+- A send with no recipient at all is refused when it is offered, with a message saying why,
+  instead of being accepted and then failing on its own a few seconds later. A draft may still
+  have none.
 
-### Message rendering and theming
+### Search
 
-- A message's own `<style>` block is sanitised and kept rather than discarded: dangerous
-  declarations (positioning, stacking, transforms) are dropped with the same filter an inline
-  style attribute already gets, `@import` is refused outright, and a remote reference anywhere in
-  the stylesheet -- a background, a web font, a list marker -- is neutralised unless the sender is
-  already allowlisted for remote images, exactly like a remote `<img>`. Media queries, including
-  dark-mode ones, and `@font-face`/`@keyframes` survive; an oversized or malformed stylesheet is
-  dropped rather than parsed.
-- A message that declares its own dark-mode support now opens on a dark canvas, and one that
-  carries only inline styling is judged by the colours that survive: dark only when its own
-  root-level styling sets background and text colour together, so it reads safely on either
-  canvas, light in every other case. The per-message toggle still overrides either default.
-- A sender's own `@media (prefers-color-scheme: dark)` rule inside its `<style>` block now
-  actually applies in a genuinely dark browser, rather than being silently dropped: the
-  client-side defense-in-depth sanitiser parses the message with the browser's own HTML parser,
-  and a `<style>` tag that is the very first thing in the message -- an ordinary shape for a
-  template that opens with its dark-mode rules before any visible markup -- was being placed in
-  the parsed document's `<head>` rather than its `<body>`, which this pass only ever returns the
-  body of.
-- A reply's own quoted original collapses behind a "Show quoted text" control by default, the
-  same treatment the composer already gives an outgoing quote -- detected from a `type="cite"`
-  blockquote or an ordinary mail client's own quote class, so an unrelated blockquote a sender
-  wrote on purpose is left alone.
-- Finds text inside the open message: ctrl+F, or a control beside the message's other icons,
-  opens a small search field over the message, highlights every match in the rendered content,
-  and steps between them with Enter/Shift+Enter or the up/down arrows.
-- Marking a message unread while it is open now stays unread instead of being immediately
-  re-marked read, and reopening a message that was left unread this way marks it read again on
-  that fresh look, rather than being remembered as already-read for the rest of the session.
-
-### Mail list
-
-- A touch drag no longer fights scrolling: a vertical swipe scrolls the list exactly like any
-  other page, with no drag ghost and nothing picked up, while desktop drag-and-drop is unchanged.
-  A genuine long press on a touch device instead selects that message and enters multi-select.
-- Select-all is now offered in a threaded folder, not only the flat view -- it selects every
-  message in every matching conversation server-side, without loading them, and a single
-  always-visible checkbox above the list both starts and clears a whole-folder selection.
-- A new spam review screen lists every message the classifier currently calls spam with no
-  ruling yet, across every account and folder including Junk. A thumb up confirms it; a thumb
-  down corrects it and, for a message the pipeline already moved to Junk, moves it back to the
-  inbox. Accept-all and reject-all apply the same to everything currently listed.
+- Text search now ranks by where a match lands (subject, then subject-or-sender, then also
+  recipient, then body) rather than by date alone, and its recall stage is a prefix match over the
+  same index PostIMAP already maintains instead of a trigram scan over every message body -- a
+  search that used to take twenty seconds now answers in single-digit milliseconds. A trigram,
+  typo-tolerant fallback still exists, but only fires when that primary stage finds nothing on the
+  very first page, and only ever looks at subject and sender, never body.
+- Semantic search takes a Loose/Balanced/Strict control, persisted like the other search
+  preferences, instead of an absolute similarity cutoff that moved with query length and language.
+  Its retrieval also scans exactly rather than through an approximate index, which was
+  occasionally returning an unrelated cluster of near-duplicate mail at a fraction of the right
+  similarity.
+- A new query visibly clears the previous one's results and shows a spinner every time, not only
+  for the very first search of a session; the "load more" indicator sits inside the scrollable list
+  rather than being clipped below it. Returning from an opened result lands back on the same row,
+  at the offset it was left at.
+- The folder scope picker can be cleared to nothing -- a real, distinct state that disables search
+  with a prompt to choose at least one folder, rather than collapsing to an empty state that was
+  sent to the server as "no restriction" and quietly unscoped the search.
+- A message stored in two folders under the same header no longer permanently loses its place in
+  semantic search results, and the coverage figure reports what search can actually reach rather
+  than what merely has an embedding row.
 
 ### Calendar
 
-- A dialog now renders at the width it actually asks for. The shared dialog component's own
-  default width was silently winning over every caller's override regardless of source order --
-  Tailwind emits responsive rules after plain ones, so a caller's plain `max-w-lg` never stood a
-  chance against the component's own `sm:max-w-sm`. A `size` prop replaces the raw override at
-  every call site, keeping the override in the same modifier group as the default so the last one
-  applied is the one that wins.
-- A to-do-only calendar collection (a Nextcloud task list, most commonly) is hidden from the
-  sidebar by default and never expanded for a month view, even when named explicitly -- there is
-  nothing a VEVENT-shaped expansion could ever find in one, so its objects are no longer fetched
-  or parsed at all. It can still be shown deliberately from the manage-calendars dialog.
-- A month view that exceeds its shared expansion budget now says so, both in the response and as
-  a warning next to the month title, rather than looking exactly like an empty month.
-- The manage-calendars dialog is redesigned around the width fix above: a calendar can be renamed
-  in place, and the row no longer duplicates the identity/invitation editing the Settings page
-  already validates -- it links there instead. The dialog now works at a phone width as well as a
-  desktop one.
+- A dialog now renders at the width it asks for. The shared dialog component's own default was
+  silently winning over every caller's override regardless of source order, because Tailwind emits
+  responsive rules after plain ones; a `size` prop replaces the raw override at every call site.
+- The manage-calendars dialog is redesigned around that fix: a calendar can be renamed in place,
+  the row no longer duplicates the identity and invitation editing the Settings page already
+  validates (it links there instead), and the dialog works at a phone width as well as a desktop
+  one.
+- A to-do-only calendar collection -- a Nextcloud task list, most commonly -- is hidden from the
+  sidebar by default and never expanded for a month view, since there is nothing an event-shaped
+  expansion could ever find in one. On an account whose collections are mostly task lists this is
+  the difference between a month that answers in about two seconds and one that exhausts its
+  expansion budget and returns no events at all. It can still be shown deliberately from the
+  manage-calendars dialog.
+- A month view that does exceed its expansion budget now says so, both in the response and as a
+  warning next to the month title, rather than looking exactly like an empty month.
+- Scrolling the month view no longer leaves the rest of the application unresponsive. Each month
+  scrolled past fetches its own chunk, and those requests ran to completion even after their rows
+  had scrolled away -- on a calendar with a few thousand objects, enough of them to occupy every
+  connection the browser has, so the next thing clicked simply never reached the server. A chunk
+  whose row is gone is now cancelled.
 
 ### Contacts
 
 - Fixed the contacts screen never loading, and everything else in the application stalling while
-  it tried: the sender-photo index parsed and decoded every contact's embedded photo on the
-  request thread, with nothing yielding the event loop, so a real address book blocked every other
-  request in the process for as long as the scan ran. The scan now runs on a bounded worker pool
-  with a timeout, the same pattern the calendar's month view already uses, and no longer decodes a
-  photo's bytes at all -- a contact's `photo.url` now always points at this application's own
-  `GET /contacts/{id}/photo`, fetched only for a contact actually rendered on screen and cacheable
-  by the browser afterward, instead of an inline `data:` URI computed for every row whether or not
-  anything displays it. Listing a page of contacts also no longer opens one database session per
-  row to re-fetch the same handful of address books nearly every row already fetched
-- A Nextcloud address-book group vCard no longer appears in the contacts list or search results
-  looking like a person with no address
+  it tried. The sender-photo index parsed and decoded every contact's embedded photo on the request
+  thread with nothing yielding the event loop, so a real address book blocked every other request
+  in the process for as long as the scan ran. The scan now runs on a bounded worker pool with a
+  timeout, and no longer decodes a photo's bytes at all -- a contact's `photo.url` points at this
+  application's own endpoint, fetched only for a contact actually on screen and cacheable
+  afterwards, instead of an inline `data:` URI computed for every row whether or not anything
+  displayed it.
+- Sender avatars now appear against a large address book at all. The lookup read every card
+  through a full vCard parser, which spends its time on exactly the embedded photo the scan does
+  not want, so on a book of a few hundred photo-carrying contacts it ran out of its own budget and
+  returned an empty result -- silently, every five minutes forever, leaving every avatar as
+  initials. It now asks each card only the two questions it has and takes addresses from a column
+  that is already parsed, which makes reading a card between seven and thirty times cheaper
+  everywhere contacts are read. A scan that does still run out of budget returns the part of the
+  book it reached and says so, rather than returning nothing.
+- Scrolling and paging a large address book no longer stalls unrelated requests: a page of contacts
+  is read off the event loop, as the avatar lookup already was. On a page of two hundred
+  photo-carrying contacts, an unrelated request that touches nothing went from waiting up to fifty
+  seconds to a third of a second.
+- Contacts can be browsed and filtered by group, the way an address book's own groups work in
+  Nextcloud and elsewhere: a card's own categories and a group card's own members both appear as
+  filter chips beside the address-book filter.
+- A page of contacts is the length it asked for. Group cards were dropped after the database had
+  already applied the page limit, so any page containing one came back short and the client's idea
+  of where the next page started disagreed with the server's.
+- A group vCard no longer appears in the contacts list or in search results looking like a person
+  with no address.
+- A contact whose name starts with an accented letter is filed under that letter. Ä, Ö, Å and Ü
+  were bucketed under "#", which put a second and third "#" heading in the middle of the alphabet
+  while the names themselves sorted with the A's, O's and U's.
+- Searching a large address book opens at the top of the results rather than somewhere in the
+  middle of them, and clearing the search returns to the top of the list.
 
 ### Live updates
 
-- A send now stays resolvable under the same id from the moment it is accepted, whether or not it
-  spends a few seconds staged for the undo window first: `GET /outbox` lists a still-staged send
-  alongside real outbox rows (`status: "pending"`), and the row that eventually reaches PostIMAP's
-  outbox table carries that same id rather than a new one.
-- Marking a message unread from the reading pane's own header no longer looks like it flipped
-  straight back to read: the header button and the list row beside it now update from the same
-  optimistic change instead of the header waiting on a slower cache that only settled a full round
-  trip later. The same fix reaches the unified view, whose own list previously kept showing a
-  message's old flag/read state after any action taken from a per-account view.
+- Every write to a table this application owns now reaches a second open browser live: account
+  preferences (emoji, spam toggle, folder order), a folder's own preferences, application settings,
+  sending identities, the rules document, acknowledging a notification, a calendar's colour,
+  visibility or linked identity, the identity-to-calendar mapping, and a rule's own tag on a
+  message. Each of these previously changed only for the browser that made the change, with
+  everywhere else waiting on a reload or an incidental cache expiry. The mapping was the worst of
+  them: a second tab kept the revision its own next save is checked against, so that save was
+  refused as stale rather than merged.
 - A spam verdict -- the model's own classification, or a correction submitted through the thumbs
-  up/down -- now announces itself live: the reading pane's verdict badge in a second open browser
-  updates without a reload. Previously the event this depends on was never actually emitted for
-  either source, only ever wired to be received.
-- Changing a calendar's colour, visibility or linked identity now reaches a second open browser
-  live, the same as renaming it already did -- that local preference lives in a table of this
-  application's own, which nothing had ever announced a change to.
-- The message list endpoint gained a new `around` parameter: a page centred on a given message,
-  half newer and half older, with a cursor in both directions -- the server capability the
-  "open a search result and land on it" flow needs, since a hit far down a large folder is
-  simply not in the window an ordinary newest-first page fetches.
-- Opening a search result now lands the mail list on that message in its own upper third,
-  wherever it sits in the folder -- previously it selected the message but only ever loaded the
-  newest page, so a hit from months back was simply never reached. A window opened this way that
-  isn't at the newest edge grows in either direction as you scroll, and a live arrival while it's
-  open surfaces as a "N new -- jump to latest" banner rather than silently reshaping the window.
-- The mail list gained a quick filter (subject, sender, recipient) scoped to the open folder,
-  right beside "Group by conversation" -- the same search mechanism the search page uses, so a
-  filtered row carries every ordinary action (star, archive, spam, trash, mark read/unread), not
-  a read-only preview. Clearing it restores the folder exactly as it was.
-- A sweep of every write path against a table this application owns (rather than one PostIMAP
-  mirrors and already announces on its own): account preferences (emoji, spam toggle, folder
-  order), a folder's own preferences (visibility, display name, unified name, special-use
-  override), application settings, sending identities, the pipeline/rules document, and
-  acknowledging a notification all now reach a second open browser live -- previously each of
-  these changed only for the browser that made the change, and everywhere else waited on a
-  reload or an incidental cache expiry. A send still inside its undo window, and its
-  cancellation, are announced the same way, so a second viewer's outbox list agrees with the
-  first's throughout the window rather than only once it ends. A rule that tags a message reaches
-  a second open browser too, the same way a verdict already did -- the tag itself lives in a
-  table of this application's own, which nothing had ever announced a change to.
+  up and down -- announces itself live. The event this depends on was fully wired to be received
+  and never once emitted.
+- Which writes have to announce themselves is now derived from the code rather than tracked by
+  hand, so a write added later that tells nobody fails a test instead of being discovered in use.
+  Where a write deliberately stays quiet, what a second browser sees instead is recorded beside it.
+- A send stays resolvable under the same id from the moment it is accepted, whether or not it
+  spends a few seconds staged for the undo window first: `GET /outbox` lists a still-staged send
+  alongside real outbox rows, and the row that eventually reaches PostIMAP's outbox table carries
+  that same id rather than a new one. A send inside its undo window and its cancellation are
+  announced live too, so a second viewer's outbox agrees with the first's throughout.
+- The message list endpoint gained an `around` parameter: a page centred on a given message, half
+  newer and half older, with a cursor in both directions -- the server capability behind opening a
+  search result and landing on it.
 
-### Security
+### Security and privacy
 
 - A sender could write this application's own internal style-preservation attribute directly,
   rather than have the sanitizer produce it -- and once that sender was allowlisted for images, the
   restore path spliced the stored value back in as raw markup with every CSS filter bypassed. The
   sanitizer now strips those attribute names from a sender's own input, and restoring a preserved
   stylesheet re-runs the same declaration filter rather than trusting the stored value. The
-  message-quote endpoint had a second, unauthenticated route to the same defect: it restored a
-  preserved stylesheet before the sanitizer ever ran rather than after.
+  message-quote endpoint had a second route to the same defect, for any sender at all: it restored
+  a preserved stylesheet before the sanitizer ever ran rather than after.
 - A message's own stylesheet could target `:host`, `:host-context()` or `:root` and switch off the
-  containment (`contain: layout paint` on the shadow host) that keeps its other styling inside the
-  reading pane -- no allowlisting needed. Those selectors are now dropped along with the escaping
-  declarations the sanitizer already refuses.
+  containment that keeps its other styling inside the reading pane -- no allowlisting needed. Those
+  selectors are now dropped along with the escaping declarations the sanitizer already refuses.
 - An emailed invitation auto-imports when one of the account's own identities is among its
   attendees -- a line an attacker writes themselves -- and its recurrence rule was stored
-  unvalidated. A dense enough one (`FREQ=SECONDLY`, or `BYSECOND`/`BYMINUTE` widening a coarser
-  frequency) never finishes expanding and strands the calendar's expansion pool permanently after a
-  few page loads. The rule is now refused before it is ever stored, on both the automatic import
-  and the manual "add to calendar" confirmation, and again on read for anything already stored --
-  quarantined for a person to review rather than silently dropped, and bounding a rule with its own
-  small `COUNT` is still accepted, since that already caps the cost regardless of frequency.
+  unvalidated. A dense enough one never finishes expanding and strands the calendar's expansion
+  pool permanently after a few page loads. The rule is now refused before it is ever stored, on
+  both the automatic import and the manual confirmation, and again on read for anything already
+  stored -- quarantined for a person to review rather than silently dropped. A rule bounded by its
+  own small `COUNT` is still accepted, since that caps the cost regardless of frequency.
 - Nothing checked where a state-changing request came from. Most endpoints were accidentally safe
-  from a browser-mediated cross-site write (the framework itself refuses a JSON body sent as a
-  form-encodable content type), but the send endpoint parses its multipart body by hand, and
-  multipart crosses origins with no preflight. A write whose `Sec-Fetch-Site` is `cross-site`, or
-  whose `Origin` does not match this application's own host, is now refused outright.
-- A contact's embedded photo could declare an arbitrary Content-Type for the raw bytes streamed
-  back by its own endpoint, with no `Content-Disposition` -- a hostile record in a shared or
-  imported address book could have this application serve markup from its own origin. The declared
-  type is now trusted only when it is one of the four image types this application ever produces
-  itself, falling back to sniffing the actual bytes otherwise.
+  from a browser-mediated cross-site write, but the send endpoint parses its multipart body by
+  hand, and multipart crosses origins with no preflight. A write whose `Sec-Fetch-Site` is
+  `cross-site`, or whose `Origin` does not match this application's own host, is now refused.
+- A contact's embedded photo could declare an arbitrary content type for the raw bytes streamed
+  back by its own endpoint -- a hostile record in a shared or imported address book could have this
+  application serve markup from its own origin. The declared type is trusted only when it is one of
+  the image types this application produces itself, and the actual bytes are sniffed otherwise.
 - The "images blocked" banner did not count a legacy `background=` attribute among what it had
   blocked, so a message whose only remote reference was a table background reported nothing
-  suppressed -- and that attribute was never restored for an allowlisted sender at all, contrary to
-  what the sanitizer's own comment already said it existed for. Both now match every other remote
-  reference.
+  suppressed -- and that attribute was never restored for an allowlisted sender at all. Both now
+  match every other remote reference.
 - The thread endpoint the reading pane actually uses restored an allowlisted sender's remote
   content unconditionally, with no way to ask for the pre-image state the message-detail endpoint
-  already supports; it now accepts the same `load_images` parameter, defaulting to the behaviour
-  it already had.
-- A message's stylesheet may now use `transform`/`translate`/`rotate`/`scale`/`perspective` and
-  `position: sticky` -- with a sender no longer able to argue with its own containment, none of
-  these can leave the box a message is rendered into any more than a margin can, so dropping them
-  bought no protection past what containment already provides. `position: fixed`/`absolute` and
-  every other stacking/offset property genuinely change what box the content resolves against and
-  stay refused. An `id` can no longer collide with anything of this application's own inside an
-  isolated shadow root, so a long newsletter's own in-page links to its own headings now work, and
-  the structural tags the reading pane already accepts (figure, details, summary, section, nav and
-  the rest) are no longer unwrapped server-side before ever reaching it -- the two allowlists now
-  match exactly, and a test keeps them matching, since whichever of them is stricter silently
-  decides what a message may contain. An allowlisted sender's table background is restored the same
-  way their images are (see the fix above).
-### Fixed
+  already supports; it now accepts the same `load_images` parameter, defaulting to the behaviour it
+  already had.
+- Several restrictions that cost rendering fidelity and bought nothing are lifted. A message's
+  stylesheet may use `transform`/`translate`/`rotate`/`scale`/`perspective` and `position: sticky`
+  -- with a sender no longer able to argue with its own containment, none of these can leave the
+  box a message is rendered into any more than a margin can. `position: fixed`/`absolute` and every
+  other stacking and offset property genuinely change what box content resolves against, and stay
+  refused. An `id` cannot collide with anything of this application's own inside an isolated shadow
+  root, so a long newsletter's in-page links to its own headings now work. And the structural tags
+  the reading pane already accepts (figure, details, summary, section, nav and the rest) are no
+  longer unwrapped server-side before reaching it -- the two allowlists now match exactly, and a
+  test keeps them matching, since whichever is stricter silently decides what a message may
+  contain.
 
-- Sender avatars now appear against a large address book. The lookup that finds them read every
-  contact card through a full vCard parser, which spends its time on the embedded photo the scan
-  does not even want -- so on a book of fifteen hundred photo-carrying contacts it ran out of its
-  own time budget and returned an empty result, silently, every five minutes forever, leaving
-  every avatar in the mail list, the unified list and the search results as initials. It now asks
-  each card only the two questions it has, and takes the addresses from a column that is already
-  parsed. Reading a card is between seven and thirty times cheaper as a result, wherever contacts
-  are read.
-- A scan that does still run out of budget now returns the part of the address book it reached and
-  says so, instead of returning nothing at all -- which was indistinguishable from an address book
-  with no photos in it.
-- Scrolling a large address book no longer stalls every other request the server is handling:
-  a page of contacts is read off the event loop, as the avatar lookup already was. On a page of
-  two hundred contacts carrying photos, an unrelated request that touches nothing went from
-  waiting up to fifty seconds to a third of a second.
-- A page of contacts is now the length it asked for. Address-book group cards were dropped after
-  the database had already applied the page limit, so any page containing one came back short and
-  the client's idea of where the next page started disagreed with the server's.
-- A checklist now arrives at the recipient as a checklist. The composer's checkbox is a form
-  control, which no mail client renders and which the outbound allowlist drops, so a ticked item
-  and an unticked one used to arrive byte for byte identical, as an ordinary bullet list. Each
-  item now carries a ballot box, ticked or empty, matching the markers the plain-text alternative
-  already wrote.
-- A send with no recipient at all is refused when it is offered, with a message saying why,
-  instead of being accepted and then failing on its own a few seconds later. A draft may still
-  have none.
-- The undo-send window applies to sends made through the interface. An agent's send through the
-  MCP tool, and the calendar's own invitation and RSVP messages, go at once — nobody is watching
-  a grace period on their behalf — and both the tool descriptions and the API reference now say
-  so rather than reading as though every send behaved alike.
-- Drag-and-drop no longer depends on a browser global that desktop browsers without touch support
-  do not define; where it is missing, every mouse drag threw and drag-and-drop was unavailable
-  entirely.
-- User-facing text that read `--` now uses a real dash, as the rest of the application does.
-- Replacing the identity-to-calendar mapping now reaches a second open browser. It was written
-  with no event at all, so another tab kept the mapping it last fetched -- and, worse, kept the
-  revision its own next save is checked against, so that save was refused as stale rather than
-  merged.
-- Which writes announce themselves to a second open browser is now derived from the code rather
-  than tracked by hand, so a write added later that tells nobody fails a test instead of being
-  discovered in use. Where a write deliberately stays quiet, what a second browser sees instead is
-  recorded beside it.
+### Mail transport
+
+- Runs against PostIMAP 1.9.1, which fixes a sync that could end the whole transport service rather
+  than failing one collection. A large address book -- a few hundred contacts carrying embedded
+  photos -- against a server that closes the connection after each response was enough to reach it,
+  and it wrote no error anywhere: the process simply died, which from the outside looks like an
+  account that never finishes its first sync.
 
 ## [4.0.0] - 2026-09-05
 
