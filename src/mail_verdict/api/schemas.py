@@ -303,8 +303,9 @@ class SearchResult(MessageSummary):
     trash, not just read/flagged display) plus how the query matched it.
 
     Shared by both search endpoints: GET /api/search (match_tier
-    meaningful, 0-4 -- see MessageRepository's _match_tier and the
-    trigram fallback tier) and GET /api/embeddings/search (similarity
+    meaningful -- see MessageRepository's _match_tier for what each value
+    means, and FALLBACK_MATCH_TIER for the trigram stage's own) and GET
+    /api/embeddings/search (similarity
     meaningful, match_tier always its default -- a semantic hit has no
     field-tier concept of its own).
     """

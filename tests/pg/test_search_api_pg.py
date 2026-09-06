@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.search import search_messages
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.database.repository import FALLBACK_MATCH_TIER
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 from tests.setup.large_mailbox import seed_large_mailbox_account
 
@@ -424,7 +425,7 @@ class TestFallbackTier:
         ids = {r.id for r in page.results}
         assert exact_hit in ids
         assert near_miss not in ids
-        assert all(r.match_tier != 4 for r in page.results)
+        assert all(r.match_tier != FALLBACK_MATCH_TIER for r in page.results)
 
     @pytest.mark.asyncio
     async def test_fallback_fires_on_a_typo_at_its_own_tier(
@@ -442,7 +443,7 @@ class TestFallbackTier:
             fields=["subject"], before=None, limit=50,
         )
         assert {r.id for r in page.results} == {hit}
-        assert page.results[0].match_tier == 4
+        assert page.results[0].match_tier == FALLBACK_MATCH_TIER
         assert page.total == 1
 
 
@@ -499,6 +500,46 @@ class TestADecoyDoesNotSurfaceBesideTheRealMatch:
         ]
         assert page.results[0].match_tier == 0
         assert page.total == 1
+
+
+class TestWholeWordOutranksPrefix:
+    """Recall matches a prefix, so searching a short word also finds every
+    longer word beginning with it. Ranking must separate the two, or the
+    word actually asked for sits below whatever recent mail merely starts
+    with it."""
+
+    @pytest.mark.asyncio
+    async def test_the_word_itself_outranks_a_longer_word_starting_with_it(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            in_subject = await _seed_message(
+                session, account_id, inbox_id, uid=1,
+                subject="Ihr zzqterm ist gebucht", from_addr="praxis@example.com",
+            )
+            in_body = await _seed_message(
+                session, account_id, inbox_id, uid=2,
+                subject="unrelated subject", from_addr="normal@example.com",
+                body_text="the zzqterm is confirmed",
+            )
+            # Newest, and a subject hit under prefix recall -- exactly the
+            # row that took the top of the page before.
+            longer_word = await _seed_message(
+                session, account_id, inbox_id, uid=3,
+                subject="Alert: activity via zzqterminal", from_addr="alerts@example.com",
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="zzqterm", account_id=account_id, folder_ids=None,
+            fields=["subject", "from", "to", "body"], before=None, limit=50,
+        )
+        # Still found -- the prefix recall is what makes a partial word
+        # work at all and is not what changes here.
+        assert {r.id for r in page.results} == {in_subject, in_body, longer_word}
+        assert [r.id for r in page.results] == [in_subject, in_body, longer_word]
+        assert page.results[-1].match_tier > page.results[0].match_tier
 
 
 class TestTsqueryInjection:

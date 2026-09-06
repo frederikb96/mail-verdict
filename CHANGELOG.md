@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   switched on and there was no way to tell that apart from someone having chosen it. Whether such
   a calendar is offered is now answered in one place, and a task list somebody deliberately
   switches on stays on.
+- Searching a short word now puts the messages containing that word above the ones that merely
+  contain a longer word beginning with it -- searching for a word that starts several others no
+  longer buries what you asked for under whatever arrived most recently. Partial words still find
+  their matches; they just rank below the whole ones.
 
 ## [5.0.0] - 2026-09-06
 

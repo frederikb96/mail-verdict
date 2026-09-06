@@ -22,7 +22,11 @@ from fastapi import APIRouter, HTTPException, Query
 from mail_verdict.api.deps import get_message_repo
 from mail_verdict.api.schemas import SearchField, SearchResponse, SearchResult
 from mail_verdict.database.models import Message
-from mail_verdict.database.repository import SEARCH_FIELDS, MessageRepository
+from mail_verdict.database.repository import (
+    FALLBACK_MATCH_TIER,
+    SEARCH_FIELDS,
+    MessageRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +124,10 @@ async def search_messages(
         fallback_rows = await msg_repo.search_messages_fallback(
             account_id, tokens, folder_ids=folder_ids, limit=limit,
         )
-        results = [_to_search_result(msg, snippet, 4) for msg, snippet in fallback_rows]
+        results = [
+            _to_search_result(msg, snippet, FALLBACK_MATCH_TIER)
+            for msg, snippet in fallback_rows
+        ]
         # The fallback is a single, unpaginated page -- its own count is
         # exactly what's shown, not the (zero) primary total above.
         return SearchResponse(
