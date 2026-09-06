@@ -335,6 +335,65 @@ class TestMailActionsUi:
 
         wait_for(_detail_is_seen, description=f"{target['id']} marked read again on reopen")
 
+    def test_mark_unread_from_the_row_sticks_while_the_message_is_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Opening a message marks it read, and that effect reacts to the
+        unread flip an explicit mark-unread causes -- so without a marker
+        the effect can see, the action is undone a moment later and the
+        control looks dead. The marker has to cover the row's control as
+        well as the reading pane's own, which is why this asserts through
+        the row rather than the header."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"Row unread test {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+        )
+        deliver_message(
+            message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"]):
+                if m["subject"] == subject:
+                    return m
+            return None
+
+        target = wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+
+        # Auto-read on open has to have landed before the mark-unread means
+        # anything -- otherwise this passes against a message that was never
+        # marked read in the first place.
+        def _seen() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["is_seen"] else None
+
+        wait_for(_seen, description=f"{subject!r} marked read on open")
+
+        row.hover()
+        row.get_by_title("Mark as unread", exact=True).click()
+
+        # Long enough for the auto-read effect to have re-fired if it were
+        # going to: it reacts to the unread flip this action causes, which
+        # arrives with the optimistic update, not with the response.
+        expect(row.get_by_title("Mark as read", exact=True)).to_be_visible(timeout=10_000)
+        time.sleep(3.0)
+        assert api_client.get(f"/api/messages/{target['id']}").json()["is_seen"] is False
+
     def test_undo_after_trash_restores_the_row(
         self,
         page: Page,
@@ -2088,6 +2147,33 @@ class TestPhoneLayoutUi:
         expect(page.get_by_role("button", name=re.compile("new contact", re.I))).to_be_visible(
             timeout=10_000
         )
+
+    def test_a_selection_on_a_phone_offers_the_bulk_actions(
+        self, page: Page, app_server: str, api_client: httpx.Client,
+        ui_account: dict[str, Any], inbox_folder: dict[str, Any],
+    ) -> None:
+        """The phone layout has no reading pane while the list is showing,
+        and the bulk panel lives inside it -- so a selection made there
+        used to have nothing at all that could act on it, and a phone has
+        no hover controls on a row either."""
+        # The account and folder are chosen at a desktop width first: on a
+        # phone the sidebar is a sheet, so neither control is on screen.
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
+
+        page.set_viewport_size({"width": 390, "height": 844})
+        # The first render is the desktop branch (useIsMobile() starts
+        # undefined), which puts the reading pane beside the list -- wait
+        # for its placeholder to be gone before judging what a phone sees.
+        expect(page.get_by_text("Select a message to read")).to_have_count(0, timeout=10_000)
+
+        page.get_by_role("checkbox", name="Select all messages in this folder").click()
+        expect(page.get_by_role("toolbar", name="Selection")).to_be_visible(timeout=10_000)
+        bulk = page.get_by_role("toolbar", name="Bulk actions")
+        expect(bulk).to_be_visible(timeout=10_000)
+        expect(bulk.get_by_role("button", name="Move to trash")).to_be_visible()
 
     def test_month_view_tapping_a_cell_opens_that_day(
         self, page: Page, app_server: str, phone_calendar_collection: dict[str, Any],

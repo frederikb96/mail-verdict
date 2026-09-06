@@ -36,18 +36,38 @@ export const PastedTaskList = TaskList.extend({
 });
 
 export const PastedTaskItem = TaskItem.extend({
+  // The `checked` attribute reads `data-checked` off the list item, which is
+  // this editor's own markup and is absent from everyone else's -- so without
+  // this the rule below matches the item and every box comes back unticked.
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      checked: {
+        default: false,
+        keepOnSplit: false,
+        parseHTML: (element: HTMLElement) => {
+          const own = element.getAttribute("data-checked");
+          if (own !== null) return own === "" || own === "true";
+          const box = element.querySelector("input[type='checkbox']");
+          return box instanceof HTMLInputElement && box.checked;
+        },
+        renderHTML: (attributes: Record<string, unknown>) => ({
+          "data-checked": attributes.checked,
+        }),
+      },
+    };
+  },
+
   parseHTML() {
     return [
       ...(this.parent?.() ?? []),
       {
         tag: "li",
         priority: PASTED_LIST_PRIORITY,
-        getAttrs: (node) => {
-          const element = node as HTMLElement;
-          const checkbox = element.querySelector("input[type='checkbox']");
-          if (checkbox === null) return false;
-          return { checked: (checkbox as HTMLInputElement).checked };
-        },
+        // Only whether this is a task item at all -- its ticked state comes
+        // from the `checked` attribute above, so the two never disagree.
+        getAttrs: (node) =>
+          hasCheckbox(node as HTMLElement, "input[type='checkbox']") ? {} : false,
       },
     ];
   },

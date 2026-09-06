@@ -116,6 +116,28 @@ def seeded_contact(api_client: httpx.Client, addressbook: dict[str, Any]) -> dic
     return resp.json()
 
 
+@pytest.fixture(scope="module")
+def accented_contacts(
+    api_client: httpx.Client, addressbook: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Three names whose first letter carries a diacritic, one per bucket
+    they belong in -- an address book of German or Scandinavian names is
+    full of them."""
+    made = []
+    for summary in ("Änne Zeller", "Örjan Ek", "Åsa Lind"):
+        resp = api_client.post(
+            "/api/contacts",
+            json={
+                "addressbook_id": addressbook["id"],
+                "summary": summary,
+                "emails": [{"email": unique_email("accented")}],
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        made.append(resp.json())
+    return made
+
+
 def _labeled_field(page: Page, label_text: str) -> Locator:
     """Several of contact-editor.tsx's repeatable fields (Phone, Address,
     Website) hold more than one input under one Label with no single
@@ -182,6 +204,25 @@ def contact_with_unparseable_birthday(
 
 
 class TestContactsUi:
+    def test_an_accented_first_letter_files_under_that_letter(
+        self, page: Page, app_server: str, accented_contacts: list[dict[str, Any]],
+    ) -> None:
+        """The list is sorted with localeCompare, which files "Änne" with
+        the A's -- so bucketing it under "#" put a second and a third "#"
+        heading in the middle of the alphabet, each holding names that had
+        sorted nowhere near them."""
+        page.goto(f"{app_server}/contacts")
+        expect(page.get_by_text("Änne Zeller")).to_be_visible(timeout=20_000)
+
+        headings = page.evaluate(
+            """() => [...document.querySelectorAll('div')]
+                .filter((d) => d.style.height === '24px')
+                .map((d) => d.innerText)"""
+        )
+        assert "#" not in headings, f"an accented name is still bucketed under #: {headings}"
+        for letter in ("A", "O"):
+            assert letter in headings, f"expected a {letter} heading, got {headings}"
+
     def test_creating_a_contact_from_the_editor_succeeds(
         self,
         page: Page,
