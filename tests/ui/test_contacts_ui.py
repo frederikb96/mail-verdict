@@ -370,7 +370,9 @@ class TestContactsUi:
             f"xpath=//h2[normalize-space(text())='{name}']"
             "/ancestor::div[contains(@class,'overflow-y-auto')][1]"
         )
-        expect(detail.get_by_text("Tester at Nordwind GmbH", exact=True)).to_be_visible(timeout=10_000)
+        expect(
+            detail.get_by_text("Tester at Nordwind GmbH", exact=True)
+        ).to_be_visible(timeout=10_000)
         expect(detail.get_by_text(primary_email, exact=True)).to_be_visible()
         expect(detail.get_by_text(secondary_email, exact=True)).to_be_visible()
 

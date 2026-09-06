@@ -83,11 +83,16 @@ def wait_for_account_active(
 ) -> dict[str, Any]:
     """Poll an account until PostIMAP reports it `active`.
 
-    Fails immediately (not after the full timeout) if PostIMAP reports
-    `error` instead -- that state will never self-resolve into `active`.
+    `error` is not terminal -- PostIMAP retries with backoff and recovers on
+    its own once the cause clears -- so a first attempt that loses its
+    connection under load is not a failure of anything this asserts. Only
+    `disabled` means PostIMAP has stopped trying. A genuinely wrong host or
+    password therefore costs the full timeout rather than failing at once,
+    and the message carries the last error PostIMAP reported.
     """
     deadline = time.monotonic() + timeout_s
     last_state = "unknown"
+    last_error: str | None = None
     while time.monotonic() < deadline:
         resp = client.get(f"/api/accounts/{account_id}")
         assert resp.status_code == 200, resp.text
@@ -95,12 +100,13 @@ def wait_for_account_active(
         last_state = account["state"]
         if last_state == "active":
             return account
-        if last_state == "error":
-            raise AssertionError(f"Account entered error state: {account['state_error']}")
+        if last_state == "disabled":
+            raise AssertionError(f"Account was disabled: {account['state_error']}")
+        last_error = account["state_error"]
         time.sleep(1)
     raise TimeoutError(
         f"Account {account_id} did not reach 'active' within {timeout_s}s "
-        f"(last state: {last_state!r})"
+        f"(last state: {last_state!r}, last error: {last_error!r})"
     )
 
 
@@ -123,9 +129,17 @@ def wait_for_dav_account_active(
     client: TestClient, dav_account_id: str, timeout_s: float = 30.0,
 ) -> dict[str, Any]:
     """Poll a DAV account until PostIMAP reports it `active` -- the CalDAV/CardDAV
-    counterpart of wait_for_account_active."""
+    counterpart of wait_for_account_active.
+
+    `error` is not terminal: PostIMAP retries an account that failed to connect,
+    with backoff, and recovers on its own once the cause clears. A first attempt
+    that loses a connection under load therefore lands in `error` and then goes
+    `active` a second later, so treating the first sighting as fatal fails a test
+    for something the system handles. Only `disabled` means PostIMAP has stopped
+    trying; anything else runs the clock out and reports the last error it saw."""
     deadline = time.monotonic() + timeout_s
     last_state = "unknown"
+    last_error: str | None = None
     while time.monotonic() < deadline:
         resp = client.get(f"/api/dav-accounts/{dav_account_id}")
         assert resp.status_code == 200, resp.text
@@ -133,12 +147,13 @@ def wait_for_dav_account_active(
         last_state = account["state"]
         if last_state == "active":
             return account
-        if last_state == "error":
-            raise AssertionError(f"DAV account entered error state: {account['state_error']}")
+        if last_state == "disabled":
+            raise AssertionError(f"DAV account was disabled: {account['state_error']}")
+        last_error = account["state_error"]
         time.sleep(1)
     raise TimeoutError(
         f"DAV account {dav_account_id} did not reach 'active' within {timeout_s}s "
-        f"(last state: {last_state!r})"
+        f"(last state: {last_state!r}, last error: {last_error!r})"
     )
 
 
