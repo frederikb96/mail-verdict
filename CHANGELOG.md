@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-09-06
+
 ### Added
 
 - Keyboard triage of a folder: with a message open, `e` archives it, `Delete` moves it to trash,
