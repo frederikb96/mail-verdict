@@ -41,7 +41,6 @@ import imaplib
 import random
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -56,11 +55,6 @@ from tests.setup.dav_helpers import (  # noqa: E402
     discover,
     put_object,
 )
-
-# One connection per worker, since httpx.Client is not shared across threads
-# here -- Radicale serialises its own storage writes, so this is about hiding
-# per-request latency rather than about parallelising the server.
-PUT_WORKERS = 8
 
 DEFAULT_DAV_USER = "alice"
 DEFAULT_MAILBOX = "alice@test.local"
@@ -139,15 +133,14 @@ def _rng(seed: int) -> random.Random:
 def _put_many(
     base_url: str, username: str, items: list[tuple[str, str, str]],
 ) -> None:
-    """PUT a batch of (url, body, content_type) over several connections."""
+    """PUT a batch of (url, body, content_type), one at a time.
 
-    def one(item: tuple[str, str, str]) -> None:
-        url, body, content_type = item
-        with httpx.Client(auth=(username, "unused"), timeout=60.0) as client:
+    Sequentially on purpose: the DAV server serialises its own storage writes,
+    so several connections buy no throughput, and pushing eight at once made it
+    drop connections mid-batch."""
+    with httpx.Client(auth=(username, "unused"), timeout=120.0) as client:
+        for url, body, content_type in items:
             put_object(client, url, body, content_type)
-
-    with ThreadPoolExecutor(max_workers=PUT_WORKERS) as pool:
-        list(pool.map(one, items))
 
 
 # --------------------------------------------------------------------------

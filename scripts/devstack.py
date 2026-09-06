@@ -300,9 +300,15 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         dav_seeding: threading.Thread | None = None
         if args.large:
             def _seed_dav() -> None:
+                # Never fatal: seeding is a convenience, and a stack that has
+                # already spent minutes filling a mailbox must not be torn down
+                # because one collection write failed.
                 print("Seeding the large calendar set and address book on Radicale ...")
-                print(seed_calendars(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
-                print(seed_contacts(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
+                try:
+                    print(seed_calendars(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
+                    print(seed_contacts(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
+                except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+                    print(f"warning: large DAV seeding stopped early: {exc!r}", file=sys.stderr)
 
             dav_seeding = threading.Thread(target=_seed_dav, daemon=True)
             dav_seeding.start()
@@ -312,7 +318,7 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
             written = seed_mail(dovecot_host, dovecot_imap_port, mailbox=args.to)
             print(f"Appended {sum(written.values())} messages: {written}")
 
-        api = httpx.Client(base_url=base_url, timeout=10.0)
+        api = httpx.Client(base_url=base_url, timeout=30.0)
         resp = api.post(
             "/api/accounts",
             json={
@@ -329,7 +335,12 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         print("Waiting for the account to sync ...")
 
         def _account_settled() -> bool:
-            account = api.get(f"/api/accounts/{account_id}").json()
+            # A read that times out means the application is busy, not that
+            # the account failed -- the poll simply has not learnt anything yet.
+            try:
+                account = api.get(f"/api/accounts/{account_id}").json()
+            except httpx.HTTPError:
+                return False
             if account["state"] == "error":
                 raise RuntimeError(f"Account entered error state: {account['state_error']}")
             return bool(account["state"] == "active")
@@ -361,7 +372,10 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         print("Waiting for the DAV account to sync ...")
 
         def _dav_account_settled() -> bool:
-            account = api.get(f"/api/dav-accounts/{dav_account_id}").json()
+            try:
+                account = api.get(f"/api/dav-accounts/{dav_account_id}").json()
+            except httpx.HTTPError:
+                return False
             if account["state"] == "error":
                 raise RuntimeError(f"DAV account entered error state: {account['state_error']}")
             return bool(account["state"] == "active")
