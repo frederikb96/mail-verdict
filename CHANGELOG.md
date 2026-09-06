@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   embedded photos -- against a server that closes the connection after each response was enough
   to reach it, and it wrote no error anywhere: the process simply died, which from the outside
   looks like an account that never finishes its first sync.
+### Contacts and search polish
+
+- Contacts can now be browsed and filtered by group, the same way an address book's own groups
+  work in Nextcloud and elsewhere: a card's own categories, and a group card's own members, both
+  show up as filter chips beside the address-book filter
+- Returning to a search from an opened result restores the exact scroll offset rather than one
+  that had drifted from it
 
 ### Hands-on pass
 

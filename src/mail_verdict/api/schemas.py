@@ -1475,6 +1475,30 @@ class ContactPhotoIndexResponse(BaseModel):
     partial: bool = False
 
 
+class ContactGroupOut(BaseModel):
+    """One entry in the groups filter -- either a `CATEGORIES` value
+    shared by however many cards, or a `KIND:group` card's own members.
+    `id` is what `list_contacts`'s own `group` query param takes back:
+    `category:<name>` or `group_card:<card id>`. `count` is contacts for
+    a category, members for a group card -- a group card's member list
+    can name a uid this mirror never resolves to a contact (an external
+    address, or one PostIMAP has not synced), so it is not a promise that
+    exactly `count` contacts come back when this group is selected."""
+
+    id: str
+    name: str
+    kind: Literal["category", "group_card"]
+    count: int
+
+
+class ContactGroupsResponse(BaseModel):
+    groups: list[ContactGroupOut]
+    # The scan stopped before reaching the end of the address book, so a
+    # category or group card absent here may still exist -- the same
+    # meaning ContactPhotoIndexResponse.partial already carries.
+    partial: bool = False
+
+
 class ContactSearchHitOut(BaseModel):
     contact_id: uuid.UUID
     name: str

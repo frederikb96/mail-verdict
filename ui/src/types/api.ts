@@ -1038,6 +1038,24 @@ export interface ContactPhotoIndexResponse {
   partial: boolean;
 }
 
+/** One entry in the groups filter -- a CATEGORIES value shared by however
+ * many cards, or a `KIND:group` card's own members. `id` is what
+ * `contacts.list`'s own `group` param takes back unchanged. */
+export interface ContactGroup {
+  id: string;
+  name: string;
+  kind: "category" | "group_card";
+  count: number;
+}
+
+export interface ContactGroupsResponse {
+  groups: ContactGroup[];
+  /** The scan stopped before reaching the end of the address book, so a
+   * group absent here may still exist -- the same meaning
+   * ContactPhotoIndexResponse.partial already carries. */
+  partial: boolean;
+}
+
 export interface ContactSearchHit {
   contact_id: string;
   name: string;

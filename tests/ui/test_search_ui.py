@@ -395,12 +395,26 @@ class TestScrollPositionRestore:
         assert anchor is not None, "scrolling did not persist an anchor"
         anchor_id = anchor["messageId"]
 
+        # The pixel offset actually reached before leaving -- compared
+        # below against the offset reached after returning, so a drift
+        # too small to move the row itself off the "near the top" check
+        # above still fails a test looking for it specifically.
+        original_offset = page.evaluate(
+            "document.getElementById('search-results-list').scrollTop"
+        )
+
         anchored_row = page.locator(f'[data-message-id="{anchor_id}"]')
         expect(anchored_row).to_be_visible()
         anchored_row.click()
         expect(page).to_have_url(f"{app_server}/")
 
-        page.go_back()
+        # A fresh navigation back to /search, not an in-app SPA transition
+        # -- a hard document load is exactly what discards the in-memory
+        # jotai store and the TanStack Query cache alike, which is the one
+        # condition under which the persisted localStorage values matter
+        # at all: an SPA back keeps both alive in memory regardless of how
+        # the atoms are configured, and never exercises this path.
+        page.goto(f"{app_server}/search")
         expect(page).to_have_url(f"{app_server}/search")
 
         # Visible again, and near the top of the viewport rather than
@@ -411,6 +425,13 @@ class TestScrollPositionRestore:
         assert box is not None and list_box is not None
         assert box["y"] - list_box["y"] < 100, (
             f"restored row sits {box['y'] - list_box['y']:.0f}px from the list's top"
+        )
+
+        restored_offset = page.evaluate(
+            "document.getElementById('search-results-list').scrollTop"
+        )
+        assert abs(restored_offset - original_offset) < 20, (
+            f"restored offset {restored_offset} drifted from the original {original_offset}"
         )
 
 

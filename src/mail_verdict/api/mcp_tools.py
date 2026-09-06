@@ -1212,7 +1212,8 @@ async def list_contacts(
     """
     try:
         result = await _list_contacts(
-            uuid.UUID(addressbook_id) if addressbook_id else None, q, min(limit, 200), None,
+            addressbook_id=uuid.UUID(addressbook_id) if addressbook_id else None,
+            q=q, limit=min(limit, 200), cursor=None,
         )
     except HTTPException as exc:
         return _endpoint_error(exc)

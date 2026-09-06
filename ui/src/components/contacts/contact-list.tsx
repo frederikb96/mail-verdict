@@ -16,7 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
-import { useAddressbooks, useContacts, useContactSelection, useDeleteContact } from "@/hooks/use-contacts";
+import {
+  useAddressbooks,
+  useContactGroups,
+  useContacts,
+  useContactSelection,
+  useDeleteContact,
+} from "@/hooks/use-contacts";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/api";
@@ -41,7 +47,17 @@ export function ContactList() {
   const { selectedId, selectContact } = useContactSelection();
   const [query, setQuery] = useState("");
   const [addressbookId, setAddressbookId] = useState<string | undefined>(undefined);
+  const [groupId, setGroupId] = useState<string | undefined>(undefined);
   const vlistRef = useRef<VListHandle>(null);
+
+  // A group belongs to the address book it was scanned from (a group card
+  // always, a category almost always in practice); switching books makes
+  // whatever was selected no longer meaningful, so it is cleared rather
+  // than silently carried over into a book that has never heard of it.
+  const handleAddressbookChange = useCallback((id: string | undefined) => {
+    setAddressbookId(id);
+    setGroupId(undefined);
+  }, []);
 
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set());
   const [anchorId, setAnchorId] = useState<string | null>(null);
@@ -50,9 +66,12 @@ export function ContactList() {
   const { push: pushToast } = useToast();
 
   const { data: addressbooks } = useAddressbooks();
+  const { data: groupsData } = useContactGroups(addressbookId);
+  const groups = groupsData?.groups ?? [];
   const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useContacts(
     addressbookId,
     query,
+    groupId,
   );
 
   const contacts = useMemo(() => data?.pages.flatMap((p) => p.contacts) ?? [], [data]);
@@ -172,7 +191,7 @@ export function ContactList() {
             <div className="flex flex-wrap gap-1">
               <button
                 type="button"
-                onClick={() => setAddressbookId(undefined)}
+                onClick={() => handleAddressbookChange(undefined)}
                 className={cn(
                   "rounded-full border px-2 py-0.5 text-xs",
                   !addressbookId && "border-primary bg-primary/10",
@@ -184,7 +203,7 @@ export function ContactList() {
                 <button
                   key={ab.id}
                   type="button"
-                  onClick={() => setAddressbookId(ab.id)}
+                  onClick={() => handleAddressbookChange(ab.id)}
                   className={cn(
                     "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs",
                     addressbookId === ab.id && "border-primary bg-primary/10",
@@ -192,6 +211,38 @@ export function ContactList() {
                 >
                   {ab.display_name}
                   {ab.read_only && <Badge variant="outline" className="h-3.5 px-1 text-[9px]">RO</Badge>}
+                </button>
+              ))}
+            </div>
+          )}
+          {groups.length > 0 && (
+            // A card's own CATEGORIES and a KIND:group card's own members
+            // are the two ways an address book groups people, and a real
+            // one uses both -- so both kinds render here, undistinguished,
+            // rather than one being offered as the only kind that exists.
+            <div className="flex flex-wrap gap-1" data-slot="contact-group-filter">
+              <button
+                type="button"
+                onClick={() => setGroupId(undefined)}
+                className={cn(
+                  "rounded-full border px-2 py-0.5 text-xs text-muted-foreground",
+                  !groupId && "border-primary bg-primary/10 text-foreground",
+                )}
+              >
+                All groups
+              </button>
+              {groups.map((g) => (
+                <button
+                  key={g.id}
+                  type="button"
+                  onClick={() => setGroupId(g.id)}
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-xs text-muted-foreground",
+                    groupId === g.id && "border-primary bg-primary/10 text-foreground",
+                  )}
+                >
+                  {g.name}
+                  <span className="ml-1 opacity-60">{g.count}</span>
                 </button>
               ))}
             </div>
@@ -209,13 +260,14 @@ export function ContactList() {
           <p className="text-sm">No contacts found</p>
         </div>
       ) : (
-        // Keyed on what the list is *of*: a changed query or address book is a
-        // different list, and without a new key the view keeps its old scroll
-        // offset, clamped into the middle of a much shorter result set -- so a
-        // search over a large book opens somewhere in the middle of its own
-        // results. The mail list keys its own VList the same way.
+        // Keyed on what the list is *of*: a changed query, address book or
+        // group is a different list, and without a new key the view keeps
+        // its old scroll offset, clamped into the middle of a much shorter
+        // result set -- so a search over a large book opens somewhere in
+        // the middle of its own results. The mail list keys its own VList
+        // the same way.
         <VList
-          key={`${addressbookId ?? "all"}:${query.trim()}`}
+          key={`${addressbookId ?? "all"}:${query.trim()}:${groupId ?? "all"}`}
           ref={vlistRef}
           className="flex-1"
           style={{ height: "100%" }}

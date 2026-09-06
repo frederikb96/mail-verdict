@@ -27,6 +27,8 @@ from mail_verdict.api.schemas import (
     ContactAddressIO,
     ContactCreateRequest,
     ContactEmailIO,
+    ContactGroupOut,
+    ContactGroupsResponse,
     ContactListResponse,
     ContactPhoneIO,
     ContactPhotoIndexEntry,
@@ -142,11 +144,20 @@ async def _to_response(
 async def list_contacts(
     addressbook_id: uuid.UUID | None = None,
     q: str | None = None,
+    group: str | None = None,
     limit: int = Query(default=_DEFAULT_PAGE_SIZE, ge=1, le=200),
     cursor: str | None = None,
 ) -> ContactListResponse:
     """List contacts, paged -- never an unpaged fetch, an address book can
     hold thousands of rows.
+
+    `group` is one of the `id`s `GET /contacts/groups` hands back.
+    `group_card:<id>` resolves to that card's own member uids and narrows
+    in SQL, the same way `addressbook_id` already does. `category:<name>`
+    cannot: CATEGORIES is not a column PostIMAP parses, so it is checked
+    per card during the same drop-and-refill pass that already removes
+    group cards from the page below -- a card failing either check is
+    dropped, and the loop reads on rather than handing back a short page.
 
     Group cards are dropped after the database has already applied the
     limit, so a page can come back short of what was asked for; it is
@@ -154,23 +165,46 @@ async def list_contacts(
     by returning fewer rows than requested. The cursor is therefore how
     far into the underlying order this page read, not a multiple of the
     page size -- a client counting rows and a server counting rows agree
-    however many groups the book holds."""
+    however many groups or non-matching cards the book holds."""
     await _require_support()
     scanned = _decode_cursor(cursor)
     repo = DavObjectRepository(get_db_connection())
     addressbook_ids = [addressbook_id] if addressbook_id is not None else None
+
+    uid_in: list[str] | None = None
+    category: str | None = None
+    if group is not None and group.startswith("group_card:"):
+        try:
+            card_id = uuid.UUID(group.removeprefix("group_card:"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid group") from exc
+        card = await repo.get_by_id(card_id)
+        if card is None or card.deleted_at is not None:
+            return ContactListResponse(contacts=[], has_more=False, next_cursor=None)
+        uid_in = vcard.detect_group_members(card.data)
+        if not uid_in:
+            return ContactListResponse(contacts=[], has_more=False, next_cursor=None)
+        # A group card's members are its own address book's contacts; keep
+        # that scope even when no addressbook_id was given, so a uid that
+        # happens to collide in another account's book is never pulled in.
+        if addressbook_ids is None:
+            addressbook_ids = [card.collection_id]
+    elif group is not None and group.startswith("category:"):
+        category = group.removeprefix("category:")
+
     parsed_rows: list[tuple[uuid.UUID, uuid.UUID, vcard.ParsedContact]] = []
     has_more = False
     while len(parsed_rows) < limit:
         rows, has_more = await repo.search_contacts(
-            addressbook_ids, q, limit=limit - len(parsed_rows), offset=scanned,
+            addressbook_ids, q, limit=limit - len(parsed_rows), offset=scanned, uid_in=uid_in,
         )
         if not rows:
             break
         scanned += len(rows)
-        parsed_rows.extend(
-            await _parse_page([(row.id, row.collection_id, row.data) for row in rows])
-        )
+        page = await _parse_page([(row.id, row.collection_id, row.data) for row in rows])
+        if category is not None:
+            page = [entry for entry in page if category in entry[2].categories]
+        parsed_rows.extend(page)
         if not has_more:
             break
     # One query for every address book a row on this page belongs to,
@@ -306,6 +340,87 @@ async def _scan_photos(
             _PHOTO_SCAN_TIMEOUT_SECONDS, len(rows),
         )
         return {}, [], True
+
+
+def _scan_groups_sync(
+    rows: list[tuple[uuid.UUID, uuid.UUID, str, str]], deadline: float,
+) -> tuple[dict[str, int], list[tuple[uuid.UUID, str, int]], bool]:
+    """Every CATEGORIES value and every group card found across `rows`,
+    with a category's contact count and a group card's own member count
+    -- the same "no general parse, proportional to the card's own text"
+    shape `_scan_photos_sync` above uses, for the same reason: neither
+    question is a column PostIMAP parses, and this reads a whole address
+    book at once.
+
+    Returns (category name -> contact count, [(card id, display name,
+    member count)] for each group card), plus whether the scan stopped
+    before finishing."""
+    categories: dict[str, int] = {}
+    group_cards: list[tuple[uuid.UUID, str, int]] = []
+    for index, (card_id, _collection_id, summary, data) in enumerate(rows):
+        if index % _DEADLINE_CHECK_EVERY == 0 and time.monotonic() >= deadline:
+            return categories, group_cards, True
+        try:
+            if vcard.is_group(data):
+                members = vcard.detect_group_members(data)
+                group_cards.append((card_id, summary or "Group", len(members)))
+                continue
+            for category in vcard.detect_categories(data):
+                categories[category] = categories.get(category, 0) + 1
+        except Exception:
+            # Same reasoning as the photo scan: one malformed card must
+            # never take the whole index down with it.
+            logger.warning("Skipping contact %s in groups index", card_id, exc_info=True)
+            continue
+    return categories, group_cards, False
+
+
+async def _scan_groups(
+    rows: list[tuple[uuid.UUID, uuid.UUID, str, str]],
+) -> tuple[dict[str, int], list[tuple[uuid.UUID, str, int]], bool]:
+    loop = asyncio.get_running_loop()
+    deadline = time.monotonic() + _PHOTO_SCAN_BUDGET_SECONDS
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(_CARD_EXECUTOR, _scan_groups_sync, rows, deadline),
+            timeout=_PHOTO_SCAN_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.warning(
+            "Groups scan exceeded %.0fs for %d contacts; returning none of them",
+            _PHOTO_SCAN_TIMEOUT_SECONDS, len(rows),
+        )
+        return {}, [], True
+
+
+@router.get("/groups", response_model=ContactGroupsResponse)
+async def get_contact_groups(
+    addressbook_id: uuid.UUID | None = Query(default=None),
+) -> ContactGroupsResponse:
+    """Every group an address book's own contacts are actually in, for
+    the groups filter beside the address-book filter -- an address book
+    groups people two ways and a real one uses both, so both are offered
+    rather than one being treated as the only kind that exists. `id` on
+    each entry is what `list_contacts`'s own `group` param takes back.
+
+    Scoped to `addressbook_id` when given; the whole mirror otherwise,
+    the same default `GET /contacts/photo-index` already uses. `partial`
+    carries the same meaning as that endpoint's: the scan ran out of
+    budget, so an address book with more groups than shown may still
+    have them."""
+    await _require_support()
+    repo = DavObjectRepository(get_db_connection())
+    addressbook_ids = [addressbook_id] if addressbook_id is not None else None
+    rows = await repo.list_group_scan_rows(addressbook_ids)
+    categories, group_cards, partial = await _scan_groups(rows)
+    groups = [
+        ContactGroupOut(id=f"category:{name}", name=name, kind="category", count=count)
+        for name, count in sorted(categories.items())
+    ] + [
+        ContactGroupOut(id=f"group_card:{card_id}", name=name, kind="group_card", count=count)
+        for card_id, name, count in sorted(group_cards, key=lambda g: g[1])
+    ]
+    return ContactGroupsResponse(groups=groups, partial=partial)
 
 
 def _parse_page_sync(
