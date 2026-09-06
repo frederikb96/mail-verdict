@@ -26,12 +26,15 @@ playwright install chromium
 ## Running the tests
 
 ```bash
-pytest                    # everything except the tests that call a real language model
-pytest -m unit            # fast, no containers
-pytest -m pg              # against a real PostgreSQL and PostIMAP
-pytest -m e2e             # full flows, including a real mail server
-pytest -m ui              # the same, driven through a real browser
+pytest tests/unit         # fast, no containers
+pytest tests/pg           # against a real PostgreSQL and PostIMAP
+pytest tests/e2e          # full flows, including a real mail server
+pytest tests/ui/test_mail_actions_ui.py   # the same, driven through a real browser
 ```
+
+One layer per invocation, and one module at a time within the browser layer -- see
+"Before pushing" for why a single invocation over several of them is a different and
+unsupported thing.
 
 Anything beyond the unit layer needs a container runtime. Docker works; so does rootless Podman,
 which needs its socket enabled once:
@@ -192,7 +195,8 @@ calendar does.
 ```bash
 ruff check .
 mypy src/
-pytest tests/unit && pytest tests/pg && pytest tests/e2e && pytest tests/ui
+pytest tests/unit && pytest tests/pg && pytest tests/e2e
+for f in tests/ui/test_*.py; do pytest "$f" || break; done
 cd ui && npx tsc --noEmit && npm run build
 ```
 
@@ -203,6 +207,10 @@ deliberately unreachable ones the error-handling tests create — keeps retrying
 mail service for the rest of it, and the accumulated reconnect traffic starves the
 calendar and contact syncs of later tests. The failures that produces look like defects in
 whichever tests happen to run last.
+
+The browser layer needs it one module at a time for the same reason: its own modules share a set
+of containers across the directory, and running all of them together fails the ones that run
+last.
 
 CI runs these as parallel jobs, so a local failure is a CI failure. Check exit codes rather than
 reading the last few lines of output — linters print their error count above the final lines, and
