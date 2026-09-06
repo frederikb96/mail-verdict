@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A to-do-only calendar (a task list) now stays out of the sidebar and the month view even when
+  it already carried saved preferences of its own -- hiding one in an earlier version left it
+  switched on and there was no way to tell that apart from someone having chosen it. Whether such
+  a calendar is offered is now answered in one place, and a task list somebody deliberately
+  switches on stays on.
+
 ## [5.0.0] - 2026-09-06
 
 ### Reading a message
