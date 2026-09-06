@@ -58,9 +58,19 @@ export interface SearchScrollAnchor {
   listIdentity: string;
   messageId: string;
 }
+// getOnInit: true -- this app is a static export with no server render to
+// mismatch against (next.config's output: "export"), so there is no reason
+// to default to `null` for a first render and only pick up the persisted
+// value later. That default matters here specifically: virtua's own
+// `cache` prop below is read once, at mount, and never re-applied on a
+// later prop change -- so a value that only becomes available a render
+// after mount is silently dropped, not merely delayed. `getOnInit` makes
+// it available on the very first render instead.
 export const searchScrollAnchorAtom = atomWithStorage<SearchScrollAnchor | null>(
   "mailverdict:search-scroll-anchor",
   null,
+  undefined,
+  { getOnInit: true },
 );
 
 /** virtua's own measured-row-height cache, keyed to the same listIdentity
@@ -72,7 +82,16 @@ export interface SearchScrollCache {
   listIdentity: string;
   cache: CacheSnapshot;
 }
+// getOnInit: true -- see searchScrollAnchorAtom above; this is the one
+// that plausibly matters most, since a cache that only arrives a render
+// after VList's own mount is dropped rather than merely delayed: with no
+// measured heights for the rows above the anchor, scrollToIndex falls
+// back to the flat itemSize estimate for every one of them, which is
+// exactly the shape of a restore landing short of the anchor's true,
+// previously-measured offset.
 export const searchScrollCacheAtom = atomWithStorage<SearchScrollCache | null>(
   "mailverdict:search-scroll-cache",
   null,
+  undefined,
+  { getOnInit: true },
 );
