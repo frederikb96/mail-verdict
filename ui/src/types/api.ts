@@ -797,6 +797,10 @@ export interface Calendar {
   identity_id: string | null;
   intake: CalendarIntake;
   supported_components: ("VEVENT" | "VTODO")[];
+  /** Whether this collection can hold an event at all -- false for a
+   * to-do-only one (a task list). The server decides it; nothing here
+   * reads supported_components to work it out again. */
+  holds_events: boolean;
   sync_error: string | null;
   initial_sync_done: boolean;
   total_count: number;

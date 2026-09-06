@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Loader2, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
@@ -242,6 +242,14 @@ function NewCalendarForm() {
 export function CalendarManageDialog() {
   const { data: calendars } = useCalendars();
   const [open, setOpen] = useState(false);
+  // A server that keeps its to-do lists alongside its calendars sends
+  // far more of them than of the thing being managed here, so they sit
+  // behind a disclosure rather than in front of the calendars. Reachable,
+  // because this is the only surface that can switch one on.
+  const [showTaskLists, setShowTaskLists] = useState(false);
+
+  const eventCalendars = calendars?.filter((c) => c.holds_events) ?? [];
+  const taskLists = calendars?.filter((c) => !c.holds_events) ?? [];
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -253,11 +261,30 @@ export function CalendarManageDialog() {
           <DialogTitle>Manage calendars</DialogTitle>
         </DialogHeader>
         <div className="flex max-h-96 flex-col gap-2 overflow-y-auto overflow-x-hidden">
-          {calendars?.map((c) => (
+          {eventCalendars.map((c) => (
             <CalendarRow key={c.id} calendar={c} />
           ))}
-          {calendars?.length === 0 && (
+          {calendars && eventCalendars.length === 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">No calendars yet</p>
+          )}
+          {taskLists.length > 0 && (
+            <>
+              <button
+                type="button"
+                className="flex items-center gap-1 py-1 text-left text-xs text-muted-foreground hover:text-foreground"
+                aria-expanded={showTaskLists}
+                onClick={() => setShowTaskLists((shown) => !shown)}
+              >
+                {showTaskLists ? (
+                  <ChevronDown className="h-3 w-3" aria-hidden />
+                ) : (
+                  <ChevronRight className="h-3 w-3" aria-hidden />
+                )}
+                {showTaskLists ? "Hide" : "Show"} to-do lists ({taskLists.length})
+              </button>
+              {showTaskLists &&
+                taskLists.map((c) => <CalendarRow key={c.id} calendar={c} />)}
+            </>
           )}
         </div>
         <p className="text-xs text-muted-foreground">

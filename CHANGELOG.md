@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   switched on and there was no way to tell that apart from someone having chosen it. Whether such
   a calendar is offered is now answered in one place, and a task list somebody deliberately
   switches on stays on.
+- The manage-calendars dialog lists the calendars that hold events first and keeps to-do lists
+  behind a "Show to-do lists" disclosure, so a server that keeps dozens of task lists beside a
+  handful of calendars no longer buries them.
 - Searching a short word now puts the messages containing that word above the ones that merely
   contain a longer word beginning with it -- searching for a word that starts several others no
   longer buries what you asked for under whatever arrived most recently. Partial words still find

@@ -100,6 +100,7 @@ def _to_response(
         identity_id=prefs.identity_id if prefs else None,
         intake=_intake_state(prefs),
         supported_components=list(collection.supported_components or []),
+        holds_events=collection.supports_vevent,
         sync_error=collection.sync_error,
         initial_sync_done=collection.initial_sync_done,
         total_count=collection.total_count,

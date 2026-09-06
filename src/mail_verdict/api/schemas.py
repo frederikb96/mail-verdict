@@ -1147,6 +1147,10 @@ class CalendarResponse(BaseModel):
     identity_id: uuid.UUID | None
     intake: CalendarIntakeState
     supported_components: list[str]
+    # Whether the collection can hold an event at all, decided once on
+    # the server rather than by each surface reading the component list
+    # and reaching its own conclusion about an empty one.
+    holds_events: bool
     sync_error: str | None
     initial_sync_done: bool
     total_count: int

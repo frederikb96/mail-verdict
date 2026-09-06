@@ -1114,6 +1114,52 @@ class TestCalendarUi:
         expect(dialog.get_by_text(dav_account["id"], exact=False)).to_have_count(0)
         expect(dialog.get_by_text("none", exact=True)).to_have_count(0)
 
+    def test_the_manage_dialog_keeps_to_do_lists_behind_a_disclosure(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        radicale_base_url: str,
+        ui_calendar_owner: str,
+        dav_account: dict[str, Any],
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """A server that keeps its task lists alongside its calendars can
+        send many more of the former, and every one of them used to sit in
+        this list ahead of the calendars a person came here to manage.
+        They stay reachable -- this dialog is where one is switched on."""
+        slug = f"errands-{uuid.uuid4().hex[:8]}"
+        list_name = f"Errands {uuid.uuid4().hex[:8]}"
+        with httpx.Client(auth=(ui_calendar_owner, "unused"), timeout=10.0) as dav_client:
+            principal = discover(dav_client, radicale_base_url)
+            create_calendar(dav_client, principal, slug, list_name, components=["VTODO"])
+        wait_for_dav_collection(api_client, dav_account["id"], list_name, timeout_s=60.0)
+        listed = api_client.get("/api/calendars")
+        assert listed.status_code == 200, listed.text
+        task_list = next(c for c in listed.json() if c["display_name"] == list_name)
+        assert task_list["holds_events"] is False, task_list
+
+        page.goto(f"{app_server}/calendar")
+        page.get_by_role("button", name="Manage calendars", exact=True).click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_be_visible(timeout=15_000)
+
+        # The disclosure appearing is what proves the calendars query has
+        # resolved -- it is rendered from the same list the rows are, so a
+        # check for the task list's absence below cannot run early.
+        disclosure = dialog.get_by_role("button", name=re.compile("to-do lists"))
+        expect(disclosure).to_be_visible(timeout=15_000)
+        expect(dialog.get_by_text(calendar_collection["display_name"], exact=True)).to_be_visible(
+            timeout=10_000
+        )
+        expect(dialog.get_by_text(list_name, exact=True)).not_to_be_visible(timeout=5_000)
+
+        disclosure.click()
+        expect(dialog.get_by_text(list_name, exact=True)).to_be_visible(timeout=10_000)
+        expect(
+            dialog.get_by_role("switch", name=f"Show {list_name} in the sidebar", exact=True)
+        ).to_be_visible(timeout=10_000)
+
     def test_a_calendar_with_no_server_colour_gets_a_distinguishable_stable_one(
         self,
         page: Page,

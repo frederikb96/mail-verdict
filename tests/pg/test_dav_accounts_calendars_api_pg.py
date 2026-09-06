@@ -332,6 +332,7 @@ class TestCalendars:
             listed = client.get("/calendars")
             task_list = next(c for c in listed.json() if c["id"] == str(collection_id))
             assert task_list["supported_components"] == ["VTODO"]
+            assert task_list["holds_events"] is False
             assert task_list["is_enabled"] is False
 
             shown = client.patch(f"/calendars/{collection_id}", json={"is_enabled": True})
