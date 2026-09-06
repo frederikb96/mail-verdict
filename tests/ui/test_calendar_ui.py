@@ -1092,21 +1092,22 @@ class TestCalendarUi:
         organizer_identity: dict[str, Any],
     ) -> None:
         """The regression this guards: every Select in this dialog rendered
-        its raw stored value -- a UUID for the identity and the server, the
-        internal enum member for the invitations intake -- instead of a
-        label a person can read."""
+        its raw stored value -- a UUID for the server, the internal enum
+        member for the invitations intake -- instead of a label a person
+        can read. Identity and invitation intake are no longer edited
+        here at all; the dialog points at the Settings page, which is the
+        surface that validates them."""
         page.goto(f"{app_server}/calendar")
         page.get_by_role("button", name="Manage calendars", exact=True).click()
 
         dialog = page.get_by_role("dialog")
         expect(dialog).to_be_visible(timeout=15_000)
-        expect(dialog.get_by_text(organizer_identity["email"], exact=True)).to_be_visible(
+        expect(dialog.get_by_text(calendar_collection["display_name"], exact=True)).to_be_visible(
             timeout=10_000
         )
-        expect(dialog.get_by_text("Do nothing with invitations", exact=True)).to_be_visible(
+        expect(dialog.get_by_role("link", name="Settings", exact=True)).to_be_visible(
             timeout=10_000
         )
-        expect(dialog.get_by_text(dav_account["name"], exact=True)).to_be_visible(timeout=10_000)
 
         expect(dialog.get_by_text(calendar_collection["id"], exact=False)).to_have_count(0)
         expect(dialog.get_by_text(organizer_identity["id"], exact=False)).to_have_count(0)

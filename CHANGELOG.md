@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Compose
 
+- Reopening a saved reply draft keeps its quoted original instead of losing it. The editor
+  recognised its quote wrapper only by a marker of its own, which does not survive the round trip
+  out to the mail server and back, so a reopened draft inlined the quote as ordinary content and
+  the collapsible original was gone.
 - A send can be taken back for a few seconds after pressing Send: an undo banner appears
   immediately, and the message only actually reaches the mail server once that window passes
   uncancelled -- closing the browser during it does not stop the send, since the composed message

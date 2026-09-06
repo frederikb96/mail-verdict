@@ -92,6 +92,18 @@ export function buildQuotedMessageHtml(attrs: QuotedMessageAttributes): string {
   return buildQuotedMessageElement(attrs).outerHTML;
 }
 
+/** Either shape a quote wrapper can come back as. `data-quoted-message`
+ * is this editor's own marker and is what a freshly built quote carries,
+ * but it does not survive a round trip: reopening a saved draft reads it
+ * back through the quote endpoint, whose inbound sanitiser keeps `class`
+ * and drops unknown data attributes. `div.gmail_quote` is the standard
+ * markup this editor already emits alongside the marker -- and the shape
+ * every other mail client writes -- so matching it too is what makes a
+ * reopened draft rebuild its quote instead of inlining it as ordinary
+ * content. Loosening the sanitiser to carry a private attribute would be
+ * the other way round, and a worse one. */
+const QUOTE_WRAPPER_SELECTOR = 'div[data-quoted-message="true"], div.gmail_quote';
+
 /** The inverse of buildQuotedMessageElement -- pulled out so parseHTML
  * below (reopening a draft inside the editor) and parseQuotedMessageAttrs
  * (reading one outside it, before the editor exists -- see
@@ -113,7 +125,7 @@ function readQuotedMessageAttrs(wrapper: HTMLElement): QuotedMessageAttributes {
  * draft with no quote in it). */
 export function parseQuotedMessageAttrs(html: string): QuotedMessageAttributes | null {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const wrapper = doc.querySelector('div[data-quoted-message="true"]');
+  const wrapper = doc.querySelector(QUOTE_WRAPPER_SELECTOR);
   return wrapper instanceof HTMLElement ? readQuotedMessageAttrs(wrapper) : null;
 }
 
@@ -141,7 +153,7 @@ export const QuotedMessage = Node.create({
   parseHTML() {
     return [
       {
-        tag: 'div[data-quoted-message="true"]',
+        tag: QUOTE_WRAPPER_SELECTOR,
         // renderHTML below builds the attribution and the quoted body as
         // plain markup, not as attributes on the wrapper -- so reopening
         // a saved HTML draft has to read them back out of that markup

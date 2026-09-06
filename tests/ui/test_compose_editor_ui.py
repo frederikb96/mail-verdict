@@ -435,7 +435,8 @@ class TestDraftReopenPreservesTheQuote:
         # HTML part still carried the quote (isEmpty() is false, an atom
         # node) while the reconstructed plain-text part came back empty.
         page.get_by_role("button", name="Send", exact=True).click()
-        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+        # A staged send reports itself through the undo banner, not a toast.
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
 
         mailpit_message = wait_for_mailpit_message(mailpit_http_url, subject)
         raw = httpx.get(
@@ -536,7 +537,11 @@ class TestDoubleSubmitGuard:
         dialog.get_by_test_id("mail-editor-body").fill("Sent from a double-click.")
 
         dialog.get_by_role("button", name="Send", exact=True).dblclick()
-        expect(page.get_by_text("Message queued for sending")).to_be_visible(timeout=10_000)
+        # A staged send reports itself through the undo banner rather than
+        # a toast -- the two would say the same thing twice, and the banner
+        # is where cancelling lives. Waiting on the banner is what says the
+        # send was accepted; the count below is what this test is about.
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
 
         def _outbox_rows() -> list[dict[str, Any]] | None:
             resp = api_client.get("/api/outbox", params={"account_id": editor_account["id"]})
