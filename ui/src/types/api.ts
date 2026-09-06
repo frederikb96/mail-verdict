@@ -111,9 +111,9 @@ export type SearchStrictness = "loose" | "balanced" | "strict";
 
 /** One search hit: MessageSummary's full shape (so a result carries the
  * same row actions a mail-list row does) plus how the query matched it.
- * Shared by both search endpoints -- match_tier is 0-4 and meaningful for
- * GET /api/search, always its default for GET /api/embeddings/search,
- * which reports similarity instead. */
+ * Shared by both search endpoints -- match_tier ranks a fulltext hit for
+ * GET /api/search (lower is a better match), and is always its default
+ * for GET /api/embeddings/search, which reports similarity instead. */
 export interface SearchResult extends MessageSummary {
   match_tier: number;
   similarity: number | null;
@@ -797,6 +797,10 @@ export interface Calendar {
   identity_id: string | null;
   intake: CalendarIntake;
   supported_components: ("VEVENT" | "VTODO")[];
+  /** Whether this collection can hold an event at all -- false for a
+   * to-do-only one (a task list). The server decides it; nothing here
+   * reads supported_components to work it out again. */
+  holds_events: boolean;
   sync_error: string | null;
   initial_sync_done: boolean;
   total_count: number;

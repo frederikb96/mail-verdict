@@ -352,7 +352,11 @@ Three tables are owned by MailVerdict, migrated alongside `identities`:
   calendar per identity as the one that receives its invitations (a partial unique index, the same
   shape as `identities.is_default`). `identity_id` carries a real foreign key onto `identities`
   (`ON DELETE SET NULL`) — both tables are MailVerdict-owned, so there is no grant boundary to
-  cross the way there is onto a PostIMAP table.
+  cross the way there is onto a PostIMAP table. `is_enabled` is deliberately nullable: NULL means
+  nobody has chosen, so the answer falls back to whether the collection can hold an event at all
+  and a to-do-only calendar stays out of the sidebar. Without that third state a row written for
+  any other reason answers a question nobody asked it, and every surface that reads it has to
+  re-derive the fallback for itself.
 - **`calendar_intake`** — the never-classify-twice gate's calendar counterpart, keyed on the same
   `(account_id, msg_key)` identity `verdicts` and `message_embeddings` use.
 - **`calendar_replies`** — insert-only: every RSVP attempt gets its own row rather than overwriting

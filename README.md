@@ -42,7 +42,8 @@ mirror, which is what keeps it simple.
   and nothing is classified twice.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
 - **Search** — text search scoped to whichever folders and fields (subject, from, to, body) you
-  pick, ranked by where a match lands and newest first within that, with a typo-tolerant fallback
+  pick, ranked by whether the word itself matched rather than merely started a longer one, then by
+  where the match lands and newest first within that, with a typo-tolerant fallback
   for a query the primary match misses entirely; plus semantic search over an embedding of every
   message, with a Loose/Balanced/Strict control, for finding mail by meaning rather than exact
   words. Both remember the folder scope you chose. Opening a result lands on that message in its

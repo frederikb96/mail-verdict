@@ -314,13 +314,14 @@ async def _resolve_lexemes(session: AsyncSession, query: str) -> list[str]:
     return [row[0] for row in result.all()]
 
 
-def _tsquery_text(tokens: list[str]) -> str | None:
-    """Prefix-AND tsquery syntax over already-tokenized lexemes (every
-    token required, `:*` for a prefix match). None -- not an empty string
-    -- for no lexemes at all (e.g. a query of pure punctuation), so
-    `to_tsquery('simple', NULL)`, and therefore `search_vector @@ NULL`,
-    is what "no results" resolves to: ordinary SQL NULL propagation
-    rather than a special case a caller has to remember to check for.
+def _tsquery_text(tokens: list[str], *, prefix: bool = True) -> str | None:
+    """AND tsquery syntax over already-tokenized lexemes (every token
+    required, `:*` unless prefix=False asks for the lexeme itself).
+    None -- not an empty string -- for no lexemes at all (e.g. a query of
+    pure punctuation), so `to_tsquery('simple', NULL)`, and therefore
+    `search_vector @@ NULL`, is what "no results" resolves to: ordinary
+    SQL NULL propagation rather than a special case a caller has to
+    remember to check for.
 
     A lexeme carrying a single quote (the 'simple' config does not split
     a contraction) is escaped the same way tsquery's own quoted-lexeme
@@ -329,7 +330,8 @@ def _tsquery_text(tokens: list[str]) -> str | None:
     """
     if not tokens:
         return None
-    return " & ".join(f"'{token.replace(chr(39), chr(39) * 2)}':*" for token in tokens)
+    suffix = ":*" if prefix else ""
+    return " & ".join(f"'{token.replace(chr(39), chr(39) * 2)}'{suffix}" for token in tokens)
 
 
 def _field_predicate(msg: Any, tokens: list[str], fields: frozenset[str]) -> Any:
@@ -354,13 +356,30 @@ def _field_predicate(msg: Any, tokens: list[str], fields: frozenset[str]) -> Any
     return and_(*conditions)
 
 
+# How many field tiers _match_tier ranks a whole-word match across, and
+# therefore what a prefix-only match is offset by. The trigram fallback
+# sits one past everything the primary stage can produce.
+_FIELD_TIERS = 4
+FALLBACK_MATCH_TIER = _FIELD_TIERS * 2
+
+
 def _match_tier(msg: Any, tokens: list[str]) -> Any:
-    """Which field tier every token matches in, computed over the real
-    columns rather than through ts_rank -- PostIMAP's search_vector
-    carries no setweight labels, so ts_rank provably cannot tell a
-    subject hit from a body hit (observed: it ranks a body-only
-    newsletter above a subject match). A tier is also explainable to a
-    person, which is the property the ranking actually needs.
+    """How well a candidate matched, ranked on two things: whether the
+    query words are words in this message at all, and then which field
+    they landed in. Computed over the real columns rather than through
+    ts_rank -- PostIMAP's search_vector carries no setweight labels, so
+    ts_rank provably cannot tell a subject hit from a body hit (observed:
+    it ranks a body-only newsletter above a subject match). A tier is
+    also explainable to a person, which is the property the ranking
+    actually needs.
+
+    Recall matches a prefix, which is what makes a partial word find
+    anything and what makes the search fast. Ranking must not inherit
+    that: searching a short word otherwise buries it under every longer
+    word beginning with it, newest first, because both land in the same
+    tier. So a message whose own lexemes include every query word comes
+    first, and one that merely starts a longer word with them follows --
+    within each half, by field:
 
     0: every token in subject
     1: every token in subject or from_addr
@@ -368,6 +387,15 @@ def _match_tier(msg: Any, tokens: list[str]) -> Any:
     3: otherwise -- at least one token is a body-only match (the
        candidate set is subject|from|body plus an explicit to_addrs
        branch, so failing all three of the above can only mean body)
+    4-7: the same four, for a candidate matched only as a prefix
+
+    Whole-word matching reads search_vector, the tsvector PostIMAP
+    already maintains over subject, from_addr and body_text, so it costs
+    a lexeme lookup rather than parsing any text per row. An address is
+    one lexeme in that vector -- `name@example.com` never yields `name`
+    -- so a hit inside from_addr or to_addrs counts as whole on its own
+    terms: an address is an identifier somebody is typing part of, and
+    demoting it would rank a person's own mail below a stranger's.
     """
 
     def _hits(*cols: Any) -> Any:
@@ -378,7 +406,14 @@ def _match_tier(msg: Any, tokens: list[str]) -> Any:
     subject_tier = _hits(msg.subject)
     from_tier = _hits(msg.subject, msg.from_addr)
     to_tier = _hits(msg.subject, msg.from_addr, cast(msg.to_addrs, Text))
-    return case((subject_tier, 0), (from_tier, 1), (to_tier, 2), else_=3)
+    field_tier = case((subject_tier, 0), (from_tier, 1), (to_tier, 2), else_=3)
+
+    exact_text = _tsquery_text(tokens, prefix=False)
+    whole_word = or_(
+        msg.search_vector.op("@@")(func.to_tsquery("simple", exact_text)),
+        _hits(msg.from_addr, cast(msg.to_addrs, Text)),
+    )
+    return field_tier + case((whole_word, 0), else_=_FIELD_TIERS)
 
 
 def _build_candidate_query(

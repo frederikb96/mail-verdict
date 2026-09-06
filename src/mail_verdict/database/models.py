@@ -936,7 +936,14 @@ class CalendarPrefs(Base):
     # only decides whether an *offered* calendar's events are drawn right
     # now. Disabling one calendar leaves every other calendar's own
     # is_visible untouched.
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #
+    # NULL means nobody has decided, which is not the same as off: a row
+    # written for an unrelated reason (a colour override, a per-view
+    # checkbox) must not silently answer this question. Carrying no
+    # default of any kind is what keeps it NULL, since a `default=` is
+    # sent on every insert. calendar/prefs.py resolves NULL, and is the
+    # only place that does.
+    is_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     color_override: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (Index("idx_calendar_prefs_identity", "identity_id"),)

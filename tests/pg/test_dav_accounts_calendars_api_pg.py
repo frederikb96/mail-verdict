@@ -332,11 +332,36 @@ class TestCalendars:
             listed = client.get("/calendars")
             task_list = next(c for c in listed.json() if c["id"] == str(collection_id))
             assert task_list["supported_components"] == ["VTODO"]
+            assert task_list["holds_events"] is False
             assert task_list["is_enabled"] is False
 
             shown = client.patch(f"/calendars/{collection_id}", json={"is_enabled": True})
         assert shown.status_code == 200, shown.text
         assert shown.json()["is_enabled"] is True
+
+    def test_a_task_list_stays_hidden_when_a_prefs_row_exists_for_another_reason(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A prefs row written for something else must not answer the
+        question nobody asked it: only an explicit is_enabled decides,
+        and a row that has never carried one falls back to whether the
+        collection can hold an event at all."""
+        collection_id = client.portal.call(self._seed_task_list, migrated_db)
+        with patch(_CALENDARS_TARGET, return_value=migrated_db):
+            unrelated = client.patch(f"/calendars/{collection_id}", json={"is_visible": False})
+            assert unrelated.status_code == 200, unrelated.text
+            assert unrelated.json()["is_enabled"] is False
+
+            listed = client.get("/calendars")
+            task_list = next(c for c in listed.json() if c["id"] == str(collection_id))
+            assert task_list["is_enabled"] is False
+
+            # An opt-in survives a later unrelated write to the same row.
+            client.patch(f"/calendars/{collection_id}", json={"is_enabled": True})
+            recoloured = client.patch(
+                f"/calendars/{collection_id}", json={"color_override": "#ff0000"},
+            )
+        assert recoloured.json()["is_enabled"] is True
 
 
 class TestAddressbooks:

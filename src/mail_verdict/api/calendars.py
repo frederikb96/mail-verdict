@@ -34,6 +34,7 @@ from mail_verdict.api.schemas import (
     CalendarResponse,
     CalendarUpdateRequest,
 )
+from mail_verdict.calendar.prefs import calendar_is_enabled
 from mail_verdict.calendar.repository import (
     CalendarLinksRevisionRepository,
     CalendarPrefsRepository,
@@ -94,17 +95,12 @@ def _to_response(
         color=collection.color or "",
         color_override=prefs.color_override if prefs else None,
         is_visible=prefs.is_visible if prefs else True,
-        # A to-do-only collection defaults to hidden from the sidebar --
-        # it costs a real backfill and sync slot like any other calendar,
-        # but has nothing a month view can ever show. Only the *default*
-        # is different: once a person opts in through the manage dialog,
-        # that prefs row is what is read from then on, same as any other
-        # calendar's is_enabled.
-        is_enabled=prefs.is_enabled if prefs else collection.supports_vevent,
+        is_enabled=calendar_is_enabled(collection, prefs),
         read_only=collection.read_only,
         identity_id=prefs.identity_id if prefs else None,
         intake=_intake_state(prefs),
         supported_components=list(collection.supported_components or []),
+        holds_events=collection.supports_vevent,
         sync_error=collection.sync_error,
         initial_sync_done=collection.initial_sync_done,
         total_count=collection.total_count,
