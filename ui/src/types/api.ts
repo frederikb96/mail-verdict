@@ -88,6 +88,24 @@ export type MessageActionType =
   | "keyword_add"
   | "keyword_remove";
 
+/**
+ * The actions a single message's own controls offer -- a row's, the
+ * reading pane's, a keyboard shortcut's. Narrower than MessageActionType,
+ * which also covers the bulk and folder-level operations no per-message
+ * control exposes.
+ */
+export type MailRowAction = Extract<
+  MessageActionType,
+  | "flag"
+  | "unflag"
+  | "archive"
+  | "spam"
+  | "not_spam"
+  | "trash"
+  | "mark_read"
+  | "mark_unread"
+>;
+
 export interface MessageActionRequest {
   action: MessageActionType;
   target_folder_id?: string;

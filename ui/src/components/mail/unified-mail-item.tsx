@@ -13,12 +13,7 @@ import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
-import type { MessageActionType, UnifiedMessageSummary } from "@/types/api";
-
-type RowAction = Extract<
-  MessageActionType,
-  "flag" | "unflag" | "archive" | "spam" | "trash" | "mark_read" | "mark_unread"
->;
+import type { MailRowAction, UnifiedMessageSummary } from "@/types/api";
 
 // Opacity/pointer-events only -- these float over the row's own background
 // rather than reserving layout space, so the sender/subject/snippet keep
@@ -34,7 +29,7 @@ interface UnifiedMailItemProps {
   selectionMode: boolean;
   onOpen: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
-  onAction?: (mailId: string, action: RowAction, mailAccountId?: string) => void;
+  onAction?: (mailId: string, action: MailRowAction, mailAccountId?: string) => void;
 }
 
 export function UnifiedMailItem({

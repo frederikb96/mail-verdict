@@ -39,19 +39,8 @@ import {
 import { selectionModeAtom } from "@/store/selection-atom";
 import type { SelectableRow } from "@/lib/selection";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
-import type { MessageActionType, MessageSummary, UnifiedMessageSummary } from "@/types/api";
-
-type RowAction = Extract<
-  MessageActionType,
-  | "flag"
-  | "unflag"
-  | "archive"
-  | "spam"
-  | "not_spam"
-  | "trash"
-  | "mark_read"
-  | "mark_unread"
->;
+import { mailNavDirectionAtom } from "@/store/mail-nav-atom";
+import type { MailRowAction, MessageSummary, UnifiedMessageSummary } from "@/types/api";
 
 /** How many ids at the front of `nextIds` are new, given `prevIds` -- zero
  * unless the whole of `prevIds` still appears afterward, in the same order.
@@ -99,6 +88,7 @@ export function MailList() {
   const selectedUnifiedFolder = useAtomValue(selectedUnifiedFolderAtom);
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const focusedIndex = useAtomValue(focusedMailIndexAtom);
+  const setNavDirection = useSetAtom(mailNavDirectionAtom);
   const selectionMode = useAtomValue(selectionModeAtom);
   const [threaded, setThreaded] = useAtom(threadedViewAtom);
   const { isSelected } = useSelection();
@@ -421,8 +411,6 @@ export function MailList() {
     [],
   );
 
-  useKeyboardShortcuts({ mails: allMails as MessageSummary[], scrollToIndex });
-
   const handleScroll = useCallback(
     (offset: number) => {
       if (!vlistRef.current) return;
@@ -451,7 +439,7 @@ export function MailList() {
   );
 
   const handleAction = useCallback(
-    (mailId: string, action: RowAction, mailAccountId?: string) => {
+    (mailId: string, action: MailRowAction, mailAccountId?: string) => {
       const account = mailAccountId || accountId;
       if (!account) return;
       mailAction.mutate({
@@ -465,12 +453,20 @@ export function MailList() {
 
   // A plain click on a row's text abandons any active selection entirely
   // and just opens that message -- checking a checkbox never does this.
+  // Every deliberate move between messages goes through here, keyboard
+  // navigation included, so it is also the one place that records which
+  // way the reader is travelling.
   const handleOpen = useCallback(
     (mailId: string) => {
       if (selectionMode) clearSelection();
+      const from = selectedMailId ? allMailIds.indexOf(selectedMailId) : -1;
+      const to = allMailIds.indexOf(mailId);
+      if (from >= 0 && to >= 0 && to !== from) {
+        setNavDirection(to > from ? "older" : "newer");
+      }
       setSelectedMailId(mailId);
     },
-    [selectionMode, clearSelection, setSelectedMailId],
+    [selectionMode, clearSelection, setSelectedMailId, selectedMailId, allMailIds, setNavDirection],
   );
 
   const handleCheckToggle = useCallback(
@@ -484,6 +480,13 @@ export function MailList() {
     },
     [allMailIds, rowsById, shiftRange, toggle],
   );
+
+  useKeyboardShortcuts({
+    mails: allMails as MessageSummary[],
+    scrollToIndex,
+    onOpen: handleOpen,
+    onAction: handleAction,
+  });
 
   // Not gated while filtering -- that loading state has to render inside
   // the header row further down, alongside the filter input, or every

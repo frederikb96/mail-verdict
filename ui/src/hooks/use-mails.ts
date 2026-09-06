@@ -18,6 +18,7 @@ import {
   explicitlyUnreadMailIdAtom,
   selectedMailIdAtom,
 } from "@/lib/atoms";
+import { type MailNavDirection, mailNavDirectionAtom } from "@/store/mail-nav-atom";
 import type {
   FolderOrderResponse,
   FolderResponse,
@@ -224,6 +225,40 @@ function findMailInCache(qc: QueryClient, mailId: string) {
   return null;
 }
 
+/**
+ * The message that should take the reader's place when `mailId` leaves the
+ * list: its neighbour in `direction`, or the one on the other side when
+ * there is nothing that way. Null when it was the only one loaded.
+ *
+ * Read out of the list caches rather than passed in, so every surface that
+ * can remove the open message -- a row's own control, the reading pane's
+ * toolbar, a keyboard shortcut -- lands on the same next message without
+ * each deciding for itself.
+ */
+function neighbourInCache(
+  qc: QueryClient,
+  mailId: string,
+  direction: MailNavDirection,
+): string | null {
+  const queries = [
+    ...qc.getQueriesData<InfiniteData<{ messages: { id: string }[] }>>({
+      queryKey: ["mails"],
+    }),
+    ...qc.getQueriesData<InfiniteData<{ messages: { id: string }[] }>>({
+      queryKey: ["unified", "mails"],
+    }),
+  ];
+  for (const [, data] of queries) {
+    if (!data?.pages) continue;
+    const ids = data.pages.flatMap((page) => page.messages.map((m) => m.id));
+    const at = ids.indexOf(mailId);
+    if (at < 0) continue;
+    const step = direction === "older" ? 1 : -1;
+    return ids[at + step] ?? ids[at - step] ?? null;
+  }
+  return null;
+}
+
 /** Remove a mail from all infinite query caches. */
 export function removeMailFromCache(qc: QueryClient, mailId: string) {
   qc.setQueriesData<InfiniteData<MessageListResponse>>(
@@ -410,14 +445,15 @@ export function updateFolderCounts(
 export function useMailAction() {
   const qc = useQueryClient();
   // Selected mail lives in the same store every action initiator (list row,
-  // reading pane, bulk toolbar) reads from, so clearing it here reaches all
+  // reading pane, bulk toolbar) reads from, so moving it on here reaches all
   // of them: once the open message leaves its folder, nothing keeps acting
   // on it under a reading pane that still shows its old content -- except
-  // a reply or forward in progress against its thread, which the clear
-  // would take down too. See activeReplyDirtyForThreadId below.
+  // a reply or forward in progress against its thread, which unmounting
+  // the pane would take down too. See activeReplyDirtyForThreadId below.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const activeReplyDirtyForThreadId = useAtomValue(activeReplyDirtyForThreadIdAtom);
   const setExplicitlyUnread = useSetAtom(explicitlyUnreadMailIdAtom);
+  const navDirection = useAtomValue(mailNavDirectionAtom);
   const { push: pushToast } = useToast();
 
   const mailAction = useMutation({
@@ -456,7 +492,9 @@ export function useMailAction() {
       const hasDirtyReply =
         mailInfo != null && mailInfo.threadId === activeReplyDirtyForThreadId;
       const wasSelected = removesFromList && mailId === selectedMailId && !hasDirtyReply;
-      if (wasSelected) setSelectedMailId(null);
+      // Computed before the optimistic removal below, so the neighbour is
+      // read off the list the reader was actually looking at.
+      if (wasSelected) setSelectedMailId(neighbourInCache(qc, mailId, navDirection));
 
       if (!mailInfo) return { wasSelected, mailId };
 

@@ -7,75 +7,109 @@
 "use client";
 
 import { useEffect, useCallback } from "react";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useAtom } from "jotai";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
-import { selectedMailIdAtom, selectedAccountIdAtom } from "@/lib/atoms";
-import { useMailAction } from "@/hooks/use-mails";
+import { selectedMailIdAtom } from "@/lib/atoms";
 import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
-import type { MessageSummary } from "@/types/api";
+import type { MailRowAction, MessageSummary } from "@/types/api";
 
 interface UseKeyboardShortcutsOptions {
   /** Current visible mail list. */
   mails: MessageSummary[];
   /** Callback to scroll the VList to a given index. */
   scrollToIndex?: (index: number) => void;
+  /** Opens a message, the same way clicking its row does. */
+  onOpen: (mailId: string) => void;
+  /** Runs an action on a message, the same way its row control does. */
+  onAction: (mailId: string, action: MailRowAction, accountId?: string) => void;
 }
 
 /**
  * Registers global keyboard shortcuts for mail navigation and actions.
  *
  * Shortcuts:
- * - j/k: navigate down/up in mail list
- * - Enter: open focused mail in reading pane
- * - Escape: close reading pane / clear focus
- * - x: toggle selection on focused mail
- * - e: archive focused mail
- * - #: delete focused mail
- * - !: mark focused mail as spam
- * - r: mark focused mail as read
- * - u: mark focused mail as unread
- * - s: toggle star on focused mail
+ * - ArrowDown/j: move to the next (older) message
+ * - ArrowUp/k: move to the previous (newer) message
+ * - Enter: open the focused message
+ * - Escape: close the reading pane / clear selection
+ * - x: toggle checkbox selection on the current message
+ * - e: archive
+ * - Delete/#: move to trash
+ * - !: mark as spam
+ * - r: toggle read/unread
+ * - u: mark as unread
+ * - s: toggle star
+ *
+ * Every one of them acts on the open message when there is one, and on the
+ * focused row otherwise -- so a shortcut and a click on the same message's
+ * own control do the same thing, auto-advance included.
  */
 export function useKeyboardShortcuts({
   mails,
   scrollToIndex,
+  onOpen,
+  onAction,
 }: UseKeyboardShortcutsOptions) {
   const [focusedIndex, setFocusedIndex] = useAtom(focusedMailIndexAtom);
-  const setSelectedMailId = useSetAtom(selectedMailIdAtom);
-  const accountId = useAtomValue(selectedAccountIdAtom);
-  const mailAction = useMailAction();
+  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const { toggle: toggleSelection } = useSelectionGestures();
   const clearSelection = useClearSelection();
 
-  const getFocusedMail = useCallback((): MessageSummary | null => {
-    if (focusedIndex < 0 || focusedIndex >= mails.length) return null;
-    return mails[focusedIndex];
-  }, [focusedIndex, mails]);
+  const openIndex = selectedMailId
+    ? mails.findIndex((m) => m.id === selectedMailId)
+    : -1;
+  const currentIndex = openIndex >= 0 ? openIndex : focusedIndex;
+
+  const getCurrentMail = useCallback((): MessageSummary | null => {
+    if (currentIndex < 0 || currentIndex >= mails.length) return null;
+    return mails[currentIndex];
+  }, [currentIndex, mails]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (isEditableElement(e.target)) return;
+      // A shortcut is a bare keypress: ctrl+r reloads the page and cmd+e
+      // belongs to the browser, so neither may be swallowed here.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // Moving between messages carries the reading pane with it whenever
+      // one is open, so arrow keys walk the list the way the reader
+      // already reads it.
+      function move(delta: number) {
+        if (mails.length === 0) return;
+        const from = currentIndex < 0 ? (delta > 0 ? -1 : mails.length) : currentIndex;
+        const next = Math.max(0, Math.min(from + delta, mails.length - 1));
+        setFocusedIndex(next);
+        scrollToIndex?.(next);
+        if (openIndex >= 0) onOpen(mails[next].id);
+      }
+
+      function act(action: MailRowAction) {
+        const mail = getCurrentMail();
+        if (mail) onAction(mail.id, action, mail.account_id);
+      }
 
       switch (e.key) {
+        case "ArrowDown":
         case "j": {
+          if (currentIndex < 0 && e.key === "ArrowDown") return; // let the page scroll
           e.preventDefault();
-          const next = Math.min(focusedIndex + 1, mails.length - 1);
-          setFocusedIndex(next);
-          scrollToIndex?.(next);
+          move(1);
           break;
         }
+        case "ArrowUp":
         case "k": {
+          if (currentIndex < 0 && e.key === "ArrowUp") return;
           e.preventDefault();
-          const prev = Math.max(focusedIndex - 1, 0);
-          setFocusedIndex(prev);
-          scrollToIndex?.(prev);
+          move(-1);
           break;
         }
         case "Enter": {
+          const mail = getCurrentMail();
+          if (!mail) return;
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail) setSelectedMailId(mail.id);
+          onOpen(mail.id);
           break;
         }
         case "Escape": {
@@ -85,83 +119,43 @@ export function useKeyboardShortcuts({
           break;
         }
         case "x": {
+          const mail = getCurrentMail();
+          if (!mail) return;
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail) {
-            toggleSelection(mail);
-          }
+          toggleSelection(mail);
           break;
         }
         case "e": {
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail && accountId) {
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId,
-              action: { action: "archive" },
-            });
-          }
+          act("archive");
           break;
         }
+        case "Delete":
         case "#": {
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail && accountId) {
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId,
-              action: { action: "trash" },
-            });
-          }
+          act("trash");
           break;
         }
         case "!": {
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail && accountId) {
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId,
-              action: { action: "spam" },
-            });
-          }
+          act("spam");
           break;
         }
         case "r": {
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail && accountId) {
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId,
-              action: { action: "mark_read" },
-            });
-          }
+          const mail = getCurrentMail();
+          if (mail) act(mail.is_seen ? "mark_unread" : "mark_read");
           break;
         }
         case "u": {
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail && accountId) {
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId,
-              action: { action: "mark_unread" },
-            });
-          }
+          act("mark_unread");
           break;
         }
         case "s": {
           e.preventDefault();
-          const mail = getFocusedMail();
-          if (mail && accountId) {
-            mailAction.mutate({
-              mailId: mail.id,
-              accountId,
-              action: { action: mail.is_flagged ? "unflag" : "flag" },
-            });
-          }
+          const mail = getCurrentMail();
+          if (mail) act(mail.is_flagged ? "unflag" : "flag");
           break;
         }
       }
@@ -170,13 +164,14 @@ export function useKeyboardShortcuts({
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [
-    focusedIndex,
+    currentIndex,
+    openIndex,
     mails,
-    accountId,
     setFocusedIndex,
     setSelectedMailId,
-    getFocusedMail,
-    mailAction,
+    getCurrentMail,
+    onOpen,
+    onAction,
     toggleSelection,
     clearSelection,
     scrollToIndex,

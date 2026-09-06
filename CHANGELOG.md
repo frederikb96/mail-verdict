@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Keyboard triage of a folder: with a message open, `e` archives it, `Delete` moves it to trash,
+  `r` toggles read and unread, `s` stars it, and the arrow keys walk the reading pane up and down
+  the list. Every one of them acts on the message on screen, so they follow a click on a row
+  rather than needing a separate keyboard focus first.
+
+### Changed
+
+- Removing the open message -- from a keyboard shortcut or from its own archive, trash or spam
+  control -- opens the next message instead of closing the reading pane, continuing the way the
+  reader was already moving through the list and turning back at either end.
+
 ## [5.1.0] - 2026-09-06
 
 ### Fixed

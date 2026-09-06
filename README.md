@@ -31,7 +31,10 @@ mirror, which is what keeps it simple.
   the browser. Any message can be downloaded as a raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
-  touch device), and bulk actions over a selection or a whole folder, threaded or not.
+  touch device), and bulk actions over a selection or a whole folder, threaded or not. A folder
+  can be worked through from the keyboard alone: the arrow keys move the reading pane between
+  messages, `e` archives, `Delete` trashes, `r` toggles read and unread, and whatever takes the
+  open message out of the list opens the next one in the direction you were already going.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens.

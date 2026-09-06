@@ -7,19 +7,7 @@ import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
-import type { MessageActionType, MessageSummary } from "@/types/api";
-
-type RowAction = Extract<
-  MessageActionType,
-  | "flag"
-  | "unflag"
-  | "archive"
-  | "spam"
-  | "not_spam"
-  | "trash"
-  | "mark_read"
-  | "mark_unread"
->;
+import type { MailRowAction, MessageSummary } from "@/types/api";
 
 // Opacity/pointer-events only -- these float over the row's own background
 // rather than reserving layout space, so the sender/subject/snippet keep
@@ -40,7 +28,7 @@ interface MailListItemProps {
   isThreaded?: boolean;
   onOpen: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
-  onAction?: (mailId: string, action: RowAction) => void;
+  onAction?: (mailId: string, action: MailRowAction) => void;
 }
 
 export function MailListItem({

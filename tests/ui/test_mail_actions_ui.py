@@ -425,6 +425,86 @@ class TestMailActionsUi:
         time.sleep(3.0)
         assert api_client.get(f"/api/messages/{target['id']}").json()["is_seen"] is False
 
+    def test_keyboard_triage_advances_the_way_the_reader_was_going(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        trash_folder: dict[str, Any],
+    ) -> None:
+        """Arrow keys walk the open message through the list, and an action
+        that removes it opens the next one on the same side rather than
+        closing the pane -- so a folder can be triaged without the pointer.
+
+        Trash is the vehicle rather than archive only because this account
+        has no Archive folder; both take the same path out of the list.
+        """
+        subjects = [f"Keyboard triage {i} {uuid.uuid4()}" for i in range(3)]
+        targets = [
+            _deliver_to_inbox(
+                api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+                inbox_folder["id"], subject,
+            )
+            for subject in subjects
+        ]
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+
+        # Newest-first, so the last delivered sits above the other two.
+        newest, middle, oldest = targets[2], targets[1], targets[0]
+        row = mail_row(page, newest["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+        expect(page.get_by_role("heading", name=newest["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        # Down the list is toward older mail, and it carries the reading
+        # pane with it.
+        page.keyboard.press("ArrowDown")
+        expect(page.get_by_role("heading", name=middle["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        # Having just moved toward older mail, removing this one lands on
+        # the next older -- not on the newer one above it, and not on
+        # nothing at all.
+        page.keyboard.press("Delete")
+        expect(page.get_by_role("heading", name=oldest["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        def _in_trash() -> bool | None:
+            detail = api_client.get(f"/api/messages/{middle['id']}").json()
+            return True if detail["folder_id"] == trash_folder["id"] else None
+
+        wait_for(_in_trash, description=f"{middle['subject']!r} moved to trash")
+
+        # r toggles rather than only ever marking read: the message the
+        # advance just opened was marked read by that open.
+        def _seen() -> bool | None:
+            return True if api_client.get(
+                f"/api/messages/{oldest['id']}",
+            ).json()["is_seen"] else None
+
+        wait_for(_seen, description=f"{oldest['subject']!r} marked read on open")
+
+        page.keyboard.press("r")
+        oldest_row = mail_row(page, oldest["id"])
+        expect(oldest_row.get_by_title("Mark as read", exact=True)).to_be_visible(timeout=10_000)
+        # Long enough for the reading pane's auto-read effect to have
+        # re-fired if the unread override were not holding.
+        time.sleep(3.0)
+        assert api_client.get(f"/api/messages/{oldest['id']}").json()["is_seen"] is False
+
+        page.keyboard.press("r")
+        wait_for(_seen, description=f"{oldest['subject']!r} marked read again")
+
     def test_undo_after_trash_restores_the_row(
         self,
         page: Page,
