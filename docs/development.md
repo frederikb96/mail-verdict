@@ -192,9 +192,17 @@ calendar does.
 ```bash
 ruff check .
 mypy src/
-pytest
+pytest tests/unit && pytest tests/pg && pytest tests/e2e && pytest tests/ui
 cd ui && npx tsc --noEmit && npm run build
 ```
+
+One layer per invocation, which is also how CI runs them. A single invocation over the
+whole tree is not the same thing and is not supported: the layers share one set of
+containers for the run, so every account a test leaves behind — including the
+deliberately unreachable ones the error-handling tests create — keeps retrying inside one
+mail service for the rest of it, and the accumulated reconnect traffic starves the
+calendar and contact syncs of later tests. The failures that produces look like defects in
+whichever tests happen to run last.
 
 CI runs these as parallel jobs, so a local failure is a CI failure. Check exit codes rather than
 reading the last few lines of output — linters print their error count above the final lines, and
