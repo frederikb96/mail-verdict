@@ -137,3 +137,12 @@ export const calendarScrollHourAtom = atomWithStorage<number | null>(
 // --- Contacts ---
 
 export const selectedContactIdAtom = atom<string | null>(null);
+
+/** The message someone explicitly marked unread, whichever surface they used
+ * -- a row's hover control, the reading pane's own button, a keyboard
+ * shortcut. The reading pane's auto-mark-read effect consults it so that its
+ * reaction to the unread flip does not immediately undo the action; it is
+ * cleared once a different message is open, so reopening the original later
+ * is a fresh look at it. One writer, one reader: a marker kept per surface
+ * covers only the surfaces that remembered to set it. */
+export const explicitlyUnreadMailIdAtom = atom<string | null>(null);

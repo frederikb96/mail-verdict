@@ -40,7 +40,7 @@ function instanceKey(e: Pick<EventInstance, "object_id" | "recurrence_id">): str
 export function useEventChunk(month: string) {
   return useQuery({
     queryKey: eventKeys.chunk(month),
-    queryFn: () => api.events.list({ month }),
+    queryFn: ({ signal }) => api.events.list({ month }, signal),
     staleTime: 5 * 60_000,
     placeholderData: keepPreviousData,
   });
@@ -63,7 +63,7 @@ export function useEventsForRange(from: Date, to: Date) {
   const results = useQueries({
     queries: months.map((month) => ({
       queryKey: eventKeys.chunk(month),
-      queryFn: () => api.events.list({ month }),
+      queryFn: ({ signal }) => api.events.list({ month }, signal),
       staleTime: 5 * 60_000,
       placeholderData: keepPreviousData,
     })),
@@ -97,7 +97,7 @@ export function useWeekEvents(weekIndex: number): EventInstance[] {
   const results = useQueries({
     queries: months.map((month) => ({
       queryKey: eventKeys.chunk(month),
-      queryFn: () => api.events.list({ month }),
+      queryFn: ({ signal }) => api.events.list({ month }, signal),
       staleTime: 5 * 60_000,
       placeholderData: keepPreviousData,
     })),

@@ -24,7 +24,16 @@ import type { Contact } from "@/types/api";
 type Row = { kind: "letter"; letter: string } | { kind: "contact"; contact: Contact };
 
 function letterFor(contact: Contact): string {
-  const c = contact.summary.trim().charAt(0).toUpperCase();
+  // Diacritics are stripped before bucketing because the list is sorted with
+  // localeCompare, which files "Anders" and "Änne" together: bucketing the
+  // accented one under "#" would drop a second "#" header into the middle of
+  // the A's, and another one at every accented name further down.
+  const c = contact.summary
+    .trim()
+    .charAt(0)
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toUpperCase();
   return /[A-Z]/.test(c) ? c : "#";
 }
 
@@ -200,7 +209,18 @@ export function ContactList() {
           <p className="text-sm">No contacts found</p>
         </div>
       ) : (
-        <VList ref={vlistRef} className="flex-1" style={{ height: "100%" }} onScroll={handleScroll}>
+        // Keyed on what the list is *of*: a changed query or address book is a
+        // different list, and without a new key the view keeps its old scroll
+        // offset, clamped into the middle of a much shorter result set -- so a
+        // search over a large book opens somewhere in the middle of its own
+        // results. The mail list keys its own VList the same way.
+        <VList
+          key={`${addressbookId ?? "all"}:${query.trim()}`}
+          ref={vlistRef}
+          className="flex-1"
+          style={{ height: "100%" }}
+          onScroll={handleScroll}
+        >
           {rows.map((row) =>
             row.kind === "letter" ? (
               <div

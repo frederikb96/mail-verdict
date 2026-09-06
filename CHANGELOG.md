@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Hands-on pass
+
+- A checklist copied from a web page now pastes into the message editor as a checklist. Every
+  renderer outside this application writes a checklist as a list item with a checkbox in front of
+  the text, which the editor previously dropped, leaving a plain bullet list
+- Scrolling the calendar's month view no longer leaves the rest of the application unresponsive.
+  Each month scrolled past fetches its own chunk, and those requests used to run to completion
+  even after their rows had scrolled away — on a calendar with a few thousand objects that is
+  enough of them to occupy every connection the browser has, so the next thing clicked simply
+  never reached the server. A chunk whose row is gone is now cancelled
+- Searching a large address book opens at the top of the results rather than somewhere in the
+  middle of them, and clearing the search returns to the top of the list
+- A contact whose name starts with an accented letter is now filed under that letter. Ä, Ö, Å and
+  Ü were bucketed under "#", which put a second and third "#" heading in the middle of the
+  alphabet while the names themselves sorted with the A's, O's and U's
+- Marking the message you are reading as unread from its own row in the list now works. The
+  reading pane's own button was protected against the read-on-open behaviour undoing it; the row's
+  identical control was not, so it looked dead
+- Selecting messages on a phone is no longer a dead end: a long press picks messages out as
+  before, and the bulk actions now appear as a bar under the list. There is no reading pane to
+  put them in on a phone, and no hover controls on a row either, so a selection made there had
+  nothing that could act on it
+
 ### Search
 
 - Text search now ranks by where a match lands (subject, then subject-or-sender, then also

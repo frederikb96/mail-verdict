@@ -37,7 +37,7 @@ import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
-import { selectedMailIdAtom } from "@/lib/atoms";
+import { explicitlyUnreadMailIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
@@ -49,18 +49,14 @@ export function ReadingPane() {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
   const [confirmExpunge, setConfirmExpunge] = useState(false);
-  // Holds the id of the message the user explicitly marked unread while it
-  // is the open one -- consulted (never set) by the auto-read effect below,
-  // set by the mark-unread button's own handler, and cleared the moment a
-  // different message becomes primary. Without this, mark_unread's own
-  // refetch flips primary.is_seen back to false while the same message is
-  // still open, and the auto-read effect -- keying only on "is this message
-  // unseen" -- would immediately re-mark it read, making the button look
-  // dead. The protection is scoped to "while open" on purpose: reopening
-  // the same message later is a fresh look at it and should mark it read
-  // again, which is why this is not just a longer-lived version of the
-  // scalar it replaces.
-  const explicitlyKeptUnreadRef = useRef<string | null>(null);
+  // The id of the message someone explicitly marked unread, written by
+  // useMailAction for every surface that can issue the action -- consulted,
+  // never set, here. Without it, mark_unread's own refetch flips
+  // primary.is_seen back to false while the same message is still open, and
+  // the auto-read effect below -- keying only on "is this message unseen" --
+  // re-marks it read, making the control look dead.
+  const explicitlyUnreadMailId = useAtomValue(explicitlyUnreadMailIdAtom);
+  const setExplicitlyUnreadMailId = useSetAtom(explicitlyUnreadMailIdAtom);
 
   const messages = thread?.messages ?? [];
   const primary =
@@ -99,7 +95,7 @@ export function ReadingPane() {
       primary &&
       !isDraft &&
       !primary.is_seen &&
-      primary.id !== explicitlyKeptUnreadRef.current
+      primary.id !== explicitlyUnreadMailId
     ) {
       mailAction.mutate({
         mailId: primary.id,
@@ -108,15 +104,15 @@ export function ReadingPane() {
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [primary?.id, primary?.is_seen, isDraft]);
+  }, [primary?.id, primary?.is_seen, isDraft, explicitlyUnreadMailId]);
 
   // The explicit-unread protection lasts only while its message is the one
   // open -- looking at a different message (or none) drops it, so reopening
   // the original later is treated as a fresh read rather than remembered
   // forever the way the single scalar this replaced was.
   useEffect(() => {
-    explicitlyKeptUnreadRef.current = null;
-  }, [primary?.id]);
+    setExplicitlyUnreadMailId((current) => (current === primary?.id ? current : null));
+  }, [primary?.id, setExplicitlyUnreadMailId]);
 
   // Finds text inside the specific message this pane has open -- the
   // shadow root EmailRenderer draws it in is invisible to the browser's
@@ -273,11 +269,6 @@ export function ReadingPane() {
             size="icon"
             className="h-8 w-8"
             onClick={() => {
-              // Set (or cleared, for an explicit mark_read) synchronously,
-              // before the mutation -- the auto-read effect above must see
-              // this the moment primary.is_seen flips from this same
-              // action's own refetch, not a render later.
-              explicitlyKeptUnreadRef.current = primary.is_seen ? primary.id : null;
               mailAction.mutate({
                 mailId: primary.id,
                 accountId: primary.account_id,

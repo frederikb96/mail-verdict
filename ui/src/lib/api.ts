@@ -704,9 +704,15 @@ export const api = {
   events: {
     /** One calendar-month chunk, e.g. "2026-09", across every visible calendar
      * unless `calendars` narrows it. Omitting `calendars` means "all visible". */
-    list(params: { month: string; calendars?: string[] }): Promise<EventListResponse> {
+    /** `signal` is the query's own -- a month chunk whose row has scrolled
+     * out of view keeps a browser connection until it completes otherwise,
+     * and six of those are all the connections there are. */
+    list(
+      params: { month: string; calendars?: string[] }, signal?: AbortSignal,
+    ): Promise<EventListResponse> {
       return request(
         `/calendar/events${qs({ month: params.month, calendars: params.calendars?.join(",") })}`,
+        { signal },
       );
     },
     get(objectId: string, recurrenceId?: string): Promise<EventInstance> {

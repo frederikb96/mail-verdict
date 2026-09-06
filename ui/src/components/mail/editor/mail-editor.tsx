@@ -5,13 +5,12 @@ import { type Editor, EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
 import { TableKit } from "@tiptap/extension-table";
-import { TaskList } from "@tiptap/extension-task-list";
-import { TaskItem } from "@tiptap/extension-task-item";
 
 import { QuotedMessage } from "@/components/mail/editor/quoted-message-node";
 import { EditorToolbar } from "@/components/mail/editor/toolbar";
 import { MailLink } from "@/components/mail/editor/mail-link";
 import { CutLine } from "@/components/mail/editor/cut-line";
+import { PastedTaskItem, PastedTaskList } from "@/components/mail/editor/task-list-paste";
 import {
   InlineImage,
   type InlineImageEntry,
@@ -125,8 +124,8 @@ export function MailEditor({
         // differently in the editor than in the sent message.
         table: { resizable: false },
       }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
+      PastedTaskList,
+      PastedTaskItem.configure({ nested: true }),
       InlineImage,
       CutLine,
     ],

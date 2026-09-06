@@ -2,10 +2,15 @@
 
 /**
  * Replaces the reading pane once more than one message is selected --
- * Outlook's own version of this panel, which is what Freddy pointed at.
- * A predicate ("select all") selection is server-resolved at action time
- * and never enumerated here, so a destructive action against one confirms
- * with the count rather than offering an undo it has no way to honour.
+ * Outlook's own version of this panel. A predicate ("select all")
+ * selection is server-resolved at action time and never enumerated here,
+ * so a destructive action against one confirms with the count rather than
+ * offering an undo it has no way to honour.
+ *
+ * `compact` is the phone layout, which has no reading pane to replace: the
+ * same actions render as a bar under the list, so a selection made by long
+ * press is something a person can then act on. The count is left out there
+ * because the selection banner above the list already carries it.
  */
 
 import { useState } from "react";
@@ -24,6 +29,7 @@ import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useBulkAction, useSelection } from "@/hooks/use-selection";
 import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 import { isUnifiedViewAtom, selectedAccountIdAtom } from "@/lib/atoms";
 import type { BulkActionType } from "@/types/api";
 
@@ -44,7 +50,7 @@ interface PendingAction {
   label: string;
 }
 
-export function BulkPanel() {
+export function BulkPanel({ compact = false }: { compact?: boolean }) {
   const { count, state } = useSelection();
   const accountId = useAtomValue(selectedAccountIdAtom);
   const isUnifiedView = useAtomValue(isUnifiedViewAtom);
@@ -88,14 +94,19 @@ export function BulkPanel() {
   };
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 p-8">
-      <Badge variant="secondary" className="text-sm">
-        {count} message{count === 1 ? "" : "s"} selected
-      </Badge>
+    <div className={cn("flex flex-col gap-4", compact ? "border-t p-2" : "h-full items-center justify-center p-8")}>
+      {!compact && (
+        <Badge variant="secondary" className="text-sm">
+          {count} message{count === 1 ? "" : "s"} selected
+        </Badge>
+      )}
       <div
         role="toolbar"
         aria-label="Bulk actions"
-        className="flex flex-wrap items-center justify-center gap-2"
+        className={cn(
+          "flex items-center gap-2",
+          compact ? "overflow-x-auto" : "flex-wrap justify-center",
+        )}
       >
         <Button variant="outline" size="sm" onClick={() => run("mark_read", undefined, "Mark as read")}>
           <MailOpen className="h-4 w-4" />

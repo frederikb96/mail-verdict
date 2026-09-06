@@ -55,6 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.seed_dev import DEFAULT_DAV_USER, seed_calendar  # noqa: E402
+from scripts.seed_large import seed_calendars, seed_contacts, seed_mail  # noqa: E402
 from tests.setup.containers import (  # noqa: E402
     DOVECOT_ALIAS,
     DOVECOT_IMAP_PORT,
@@ -101,15 +102,28 @@ class _ThreadedUvicornServer(uvicorn.Server):
         pass
 
 
-def _wait_until(condition: object, description: str, timeout_s: float) -> None:
-    """Poll a zero-arg callable until it returns truthy, or raise naming what didn't happen."""
+def _wait_until(
+    condition: object, description: str, timeout_s: float, *, fatal: bool = True,
+) -> None:
+    """Poll a zero-arg callable until it returns truthy, or raise naming what didn't happen.
+
+    `fatal=False` warns and returns instead. An account still backfilling is
+    not a failure to start -- tearing the stack down over it destroys
+    everything already seeded, which is minutes of work for a condition that
+    resolves itself while the stack is being used."""
     assert callable(condition)
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if condition():
             return
         time.sleep(0.5)
-    raise TimeoutError(f"{description} did not happen within {timeout_s}s")
+    if fatal:
+        raise TimeoutError(f"{description} did not happen within {timeout_s}s")
+    print(
+        f"warning: {description} has not happened within {timeout_s}s -- carrying on, "
+        "it is still syncing.",
+        file=sys.stderr,
+    )
 
 
 def _verify_torn_down(container_ids: dict[str, str]) -> list[str]:
@@ -150,6 +164,12 @@ def main() -> int:
     parser.add_argument(
         "--to", default=DEFAULT_RECIPIENT,
         help="mailbox to seed with the test corpus and add as the account",
+    )
+    parser.add_argument(
+        "--large", action="store_true",
+        help="also seed the corpus a real account has -- thousands of messages across "
+             "folders, thirty calendar collections and a few thousand contacts "
+             "(see scripts/seed_large.py). Takes a few minutes and syncs for longer.",
     )
     args = parser.parse_args()
 
@@ -272,7 +292,33 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
             delivered += 1
         print(f"Delivered {delivered} messages.")
 
-        api = httpx.Client(base_url=base_url, timeout=10.0)
+        radicale_host = radicale.get_container_host_ip()
+        radicale_port = int(radicale.get_exposed_port(RADICALE_PORT))
+
+        # Mail goes to Dovecot and the collections go to Radicale, so the two
+        # slowest parts of a --large run overlap instead of adding up.
+        dav_seeding: threading.Thread | None = None
+        if args.large:
+            def _seed_dav() -> None:
+                # Never fatal: seeding is a convenience, and a stack that has
+                # already spent minutes filling a mailbox must not be torn down
+                # because one collection write failed.
+                print("Seeding the large calendar set and address book on Radicale ...")
+                try:
+                    print(seed_calendars(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
+                    print(seed_contacts(radicale_host, radicale_port, username=DEFAULT_DAV_USER))
+                except Exception as exc:  # noqa: BLE001 -- reported, never fatal
+                    print(f"warning: large DAV seeding stopped early: {exc!r}", file=sys.stderr)
+
+            dav_seeding = threading.Thread(target=_seed_dav, daemon=True)
+            dav_seeding.start()
+
+            dovecot_imap_port = int(dovecot.get_exposed_port(DOVECOT_IMAP_PORT))
+            print("Seeding the large mail corpus over IMAP ...")
+            written = seed_mail(dovecot_host, dovecot_imap_port, mailbox=args.to)
+            print(f"Appended {sum(written.values())} messages: {written}")
+
+        api = httpx.Client(base_url=base_url, timeout=30.0)
         resp = api.post(
             "/api/accounts",
             json={
@@ -289,17 +335,27 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         print("Waiting for the account to sync ...")
 
         def _account_settled() -> bool:
-            account = api.get(f"/api/accounts/{account_id}").json()
+            # A read that times out means the application is busy, not that
+            # the account failed -- the poll simply has not learnt anything yet.
+            try:
+                account = api.get(f"/api/accounts/{account_id}").json()
+            except httpx.HTTPError:
+                return False
             if account["state"] == "error":
                 raise RuntimeError(f"Account entered error state: {account['state_error']}")
             return bool(account["state"] == "active")
 
-        _wait_until(_account_settled, "the account reaching 'active'", ACCOUNT_ACTIVE_TIMEOUT_S)
+        _wait_until(
+            _account_settled, "the account reaching 'active'", ACCOUNT_ACTIVE_TIMEOUT_S,
+            fatal=False,
+        )
 
-        radicale_host = radicale.get_container_host_ip()
-        radicale_port = int(radicale.get_exposed_port(RADICALE_PORT))
         print("Seeding a calendar and address book on Radicale ...")
         seed_calendar(radicale_host, radicale_port, DEFAULT_DAV_USER)
+
+        if dav_seeding is not None:
+            print("Waiting for the large calendar and contact seeding to finish ...")
+            dav_seeding.join()
 
         resp = api.post(
             "/api/dav-accounts",
@@ -316,13 +372,17 @@ def _run(container_ids: dict[str, str], args: argparse.Namespace, stop: threadin
         print("Waiting for the DAV account to sync ...")
 
         def _dav_account_settled() -> bool:
-            account = api.get(f"/api/dav-accounts/{dav_account_id}").json()
+            try:
+                account = api.get(f"/api/dav-accounts/{dav_account_id}").json()
+            except httpx.HTTPError:
+                return False
             if account["state"] == "error":
                 raise RuntimeError(f"DAV account entered error state: {account['state_error']}")
             return bool(account["state"] == "active")
 
         _wait_until(
             _dav_account_settled, "the DAV account reaching 'active'", ACCOUNT_ACTIVE_TIMEOUT_S,
+            fatal=False,
         )
 
         mailpit_port = int(mailpit.get_exposed_port(MAILPIT_HTTP_PORT))

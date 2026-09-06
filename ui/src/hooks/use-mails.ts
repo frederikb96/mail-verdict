@@ -9,11 +9,15 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import { useToast } from "@/hooks/use-toast";
-import { activeReplyDirtyForThreadIdAtom, selectedMailIdAtom } from "@/lib/atoms";
+import {
+  activeReplyDirtyForThreadIdAtom,
+  explicitlyUnreadMailIdAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
 import type {
   FolderOrderResponse,
   FolderResponse,
@@ -413,6 +417,7 @@ export function useMailAction() {
   // would take down too. See activeReplyDirtyForThreadId below.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const activeReplyDirtyForThreadId = useAtomValue(activeReplyDirtyForThreadIdAtom);
+  const setExplicitlyUnread = useSetAtom(explicitlyUnreadMailIdAtom);
   const { push: pushToast } = useToast();
 
   const mailAction = useMutation({
@@ -430,6 +435,12 @@ export function useMailAction() {
       await qc.cancelQueries({ queryKey: ["folders"] });
 
       const act = action.action;
+      // Recorded here rather than in each button's own handler, and before
+      // the optimistic cache write below, so the reading pane's auto-read
+      // effect sees it in the same render as the unread flip that effect
+      // reacts to.
+      if (act === "mark_unread") setExplicitlyUnread(mailId);
+      if (act === "mark_read") setExplicitlyUnread((cur) => (cur === mailId ? null : cur));
       const removesFromList = LEAVES_FOLDER_ACTIONS.includes(act);
       const mailInfo = findMailInCache(qc, mailId);
       // A reply or forward in progress against this message's thread must

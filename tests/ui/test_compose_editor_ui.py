@@ -195,13 +195,11 @@ class TestPasteAndScroll:
         # Never as literal, visible source -- the exact failure reported.
         expect(body).not_to_contain_text("<strong>")
 
-    def test_a_pasted_table_keeps_a_separator_between_cells(
+    def test_a_pasted_table_stays_a_table(
         self, page: Page, app_server: str, editor_account: dict[str, Any],
     ) -> None:
-        """The editor's schema has no table node, so a pasted one is
-        flattened -- correctly dropping the table but not the gap between
-        cells. Without that gap the two cells' text runs together
-        ("cell Acell B"), reading as corrupted rather than simplified."""
+        """A table pasted from a web page keeps its own structure -- cells
+        in a row, not one run of text with the cell boundaries lost."""
         page.goto(app_server)
         select_account(page, editor_account)
         page.get_by_role("button", name="Compose", exact=True).click()
@@ -214,9 +212,40 @@ class TestPasteAndScroll:
             "cell A\tcell B",
         )
 
-        expect(body).to_contain_text("cell A")
-        expect(body).to_contain_text("cell B")
-        expect(body).not_to_contain_text("Acell")
+        expect(body.locator("table")).to_have_count(1)
+        cells = body.locator("td")
+        expect(cells).to_have_count(2)
+        expect(cells.nth(0)).to_have_text("cell A")
+        expect(cells.nth(1)).to_have_text("cell B")
+
+    def test_a_pasted_checklist_keeps_its_checkboxes(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """Every renderer outside this application writes a checklist as a
+        list item with a checkbox in front of the text, which is what the
+        clipboard carries when one is copied from a web page. Without a
+        parse rule for that shape the ticks are dropped and the paste lands
+        as an ordinary bullet list -- indistinguishable from a checklist
+        that was never a checklist."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        _dispatch_paste(
+            body,
+            "<ul>"
+            '<li><input type="checkbox" disabled checked> Bump the version</li>'
+            '<li><input type="checkbox" disabled> Push the tag</li>'
+            "</ul>",
+            "Bump the version\nPush the tag",
+        )
+
+        items = body.locator('li[data-checked]')
+        expect(items).to_have_count(2)
+        assert items.nth(0).get_attribute("data-checked") == "true"
+        assert items.nth(1).get_attribute("data-checked") == "false"
 
     def test_long_content_scrolls_inside_the_composer_rather_than_growing_it(
         self, page: Page, app_server: str, editor_account: dict[str, Any],
