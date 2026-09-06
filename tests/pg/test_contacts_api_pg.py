@@ -687,6 +687,160 @@ class TestGroupVcardsAreNotListedAsContacts:
         assert sorted(seen) == sorted(f"Contact {i}" for i in range(10)), seen
 
 
+class TestContactGroups:
+    """Groups the address book actually holds -- CATEGORIES on cards and
+    KIND:group cards listing members -- are what the filter offers, and
+    what `list_contacts`'s own `group` param narrows against."""
+
+    async def _seed_contact(
+        self, db: DatabaseConnection, addressbook_id: uuid.UUID, summary: str,
+        email: str, categories: list[str] | None = None, uid: str | None = None,
+    ) -> uuid.UUID:
+        object_id = uuid.uuid4()
+        categories_line = f"CATEGORIES:{','.join(categories)}\r\n" if categories else ""
+        uid_line = f"UID:{uid}\r\n" if uid else ""
+        async with db.session() as session:
+            dav_account_id = await session.scalar(
+                text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                {"id": addressbook_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO dav_objects "
+                    "(id, account_id, collection_id, kind, data, summary, emails, uid) "
+                    "VALUES (:id, :account_id, :collection_id, 'addressbook', :data, "
+                    ":summary, ARRAY[:email], :uid)"
+                ),
+                {
+                    "id": object_id, "account_id": dav_account_id,
+                    "collection_id": addressbook_id,
+                    "data": (
+                        "BEGIN:VCARD\r\nVERSION:4.0\r\n"
+                        f"FN:{summary}\r\nEMAIL:{email}\r\n{categories_line}{uid_line}"
+                        "END:VCARD\r\n"
+                    ),
+                    "summary": summary, "email": email, "uid": uid,
+                },
+            )
+            await session.commit()
+        return object_id
+
+    async def _seed_group_card(
+        self, db: DatabaseConnection, addressbook_id: uuid.UUID, summary: str,
+        member_uids: list[str],
+    ) -> uuid.UUID:
+        object_id = uuid.uuid4()
+        member_lines = "".join(
+            f"X-ADDRESSBOOKSERVER-MEMBER:urn:uuid:{u}\r\n" for u in member_uids
+        )
+        async with db.session() as session:
+            dav_account_id = await session.scalar(
+                text("SELECT account_id FROM dav_collections WHERE id = :id"),
+                {"id": addressbook_id},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO dav_objects "
+                    "(id, account_id, collection_id, kind, data, summary, emails) "
+                    "VALUES (:id, :account_id, :collection_id, 'addressbook', :data, "
+                    ":summary, ARRAY[]::text[])"
+                ),
+                {
+                    "id": object_id, "account_id": dav_account_id,
+                    "collection_id": addressbook_id,
+                    "data": (
+                        "BEGIN:VCARD\r\nVERSION:3.0\r\nKIND:group\r\n"
+                        f"FN:{summary}\r\n{member_lines}END:VCARD\r\n"
+                    ),
+                    "summary": summary,
+                },
+            )
+            await session.commit()
+        return object_id
+
+    def test_a_category_is_offered_and_narrows_the_list(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            client.portal.call(
+                self._seed_contact, migrated_db, addressbook_id,
+                "Anna Family", "anna@example.com", ["Family"],
+            )
+            client.portal.call(
+                self._seed_contact, migrated_db, addressbook_id,
+                "Ben Family", "ben@example.com", ["Family", "Friends"],
+            )
+            client.portal.call(
+                self._seed_contact, migrated_db, addressbook_id,
+                "Cara Work", "cara@example.com", ["Work"],
+            )
+
+            groups = client.get(
+                "/contacts/groups", params={"addressbook_id": str(addressbook_id)},
+            )
+            assert groups.status_code == 200, groups.text
+            by_id = {g["id"]: g for g in groups.json()["groups"]}
+            assert by_id["category:Family"]["count"] == 2
+            assert by_id["category:Friends"]["count"] == 1
+            assert by_id["category:Work"]["count"] == 1
+
+            narrowed = client.get(
+                "/contacts",
+                params={"addressbook_id": str(addressbook_id), "group": "category:Family"},
+            )
+        assert narrowed.status_code == 200, narrowed.text
+        summaries = {c["summary"] for c in narrowed.json()["contacts"]}
+        assert summaries == {"Anna Family", "Ben Family"}
+
+    def test_a_group_card_is_offered_and_narrows_the_list(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        addressbook_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            uid_a = str(uuid.uuid4())
+            uid_b = str(uuid.uuid4())
+            client.portal.call(
+                self._seed_contact, migrated_db, addressbook_id,
+                "Dana Member", "dana@example.com", None, uid_a,
+            )
+            client.portal.call(
+                self._seed_contact, migrated_db, addressbook_id,
+                "Eli Member", "eli@example.com", None, uid_b,
+            )
+            client.portal.call(
+                self._seed_contact, migrated_db, addressbook_id,
+                "Fay Outsider", "fay@example.com",
+            )
+            group_card_id = client.portal.call(
+                self._seed_group_card, migrated_db, addressbook_id,
+                "Coworkers", [uid_a, uid_b],
+            )
+
+            groups = client.get(
+                "/contacts/groups", params={"addressbook_id": str(addressbook_id)},
+            )
+            assert groups.status_code == 200, groups.text
+            by_id = {g["id"]: g for g in groups.json()["groups"]}
+            assert by_id[f"group_card:{group_card_id}"] == {
+                "id": f"group_card:{group_card_id}", "name": "Coworkers",
+                "kind": "group_card", "count": 2,
+            }
+
+            narrowed = client.get(
+                "/contacts",
+                params={
+                    "addressbook_id": str(addressbook_id),
+                    "group": f"group_card:{group_card_id}",
+                },
+            )
+        assert narrowed.status_code == 200, narrowed.text
+        summaries = {c["summary"] for c in narrowed.json()["contacts"]}
+        assert summaries == {"Dana Member", "Eli Member"}
+        # The group card itself is never presented as one of its own members.
+        assert "Coworkers" not in summaries
+
+
 class TestThePhotoIndexCoversALargeAddressBook:
     """An index that ran out of budget and one built over an address book
     with no photos at all are the same response to a client, and the

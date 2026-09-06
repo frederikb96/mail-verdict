@@ -248,6 +248,48 @@ def detect_emails(data: str) -> list[str]:
     return found
 
 
+def detect_categories(data: str) -> list[str]:
+    """A card's own CATEGORIES, read straight off its text with no
+    general parse -- the same shape as `detect_photo` above. An address
+    book groups people two ways: this is the per-card way, a group card
+    (`is_group`, `detect_group_members`) is the other, and a real address
+    book uses both. A card can legally carry more than one CATEGORIES
+    line; every value from every one of them is returned, comma-split and
+    trimmed the way `parse_contact`'s own vobject-based read already
+    treats a single one."""
+    found: list[str] = []
+    for line in _unfold_lines(data):
+        parsed = _split_content_line(line)
+        if parsed is None:
+            continue
+        name, _params, value = parsed
+        if name != "CATEGORIES":
+            continue
+        found.extend(v.strip() for v in value.split(",") if v.strip())
+    return found
+
+
+def detect_group_members(data: str) -> list[str]:
+    """A group card's own members, as the UIDs of the contacts it lists --
+    RFC 6350's `MEMBER` and Nextcloud's pre-standard
+    `X-ADDRESSBOOKSERVER-MEMBER`, both written `urn:uuid:<uid>`. A member
+    referenced by any other scheme (`mailto:`, a bare external id) cannot
+    be resolved to a contact in this mirror and is skipped rather than
+    guessed at."""
+    members: list[str] = []
+    for line in _unfold_lines(data):
+        parsed = _split_content_line(line)
+        if parsed is None:
+            continue
+        name, _params, value = parsed
+        if name not in ("MEMBER", "X-ADDRESSBOOKSERVER-MEMBER"):
+            continue
+        value = value.strip()
+        if value.lower().startswith("urn:uuid:"):
+            members.append(value[len("urn:uuid:"):])
+    return members
+
+
 _DATA_URL_RE = re.compile(r"^data:([\w.+-]+/[\w.+-]+)?;base64,(.*)$", re.DOTALL)
 
 

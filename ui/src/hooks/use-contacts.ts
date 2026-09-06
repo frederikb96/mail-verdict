@@ -15,8 +15,8 @@ import { selectedContactIdAtom } from "@/lib/atoms";
 import type { ContactCreateRequest, ContactSearchHit, ContactUpdateRequest } from "@/types/api";
 
 export const contactKeys = {
-  list: (addressbookId?: string, q?: string) =>
-    ["contacts", addressbookId ?? "all", q ?? ""] as const,
+  list: (addressbookId?: string, q?: string, group?: string) =>
+    ["contacts", addressbookId ?? "all", q ?? "", group ?? ""] as const,
   detail: (id: string) => ["contact", id] as const,
 };
 
@@ -28,13 +28,14 @@ export function useAddressbooks() {
   });
 }
 
-export function useContacts(addressbookId?: string, q?: string) {
+export function useContacts(addressbookId?: string, q?: string, group?: string) {
   return useInfiniteQuery({
-    queryKey: contactKeys.list(addressbookId, q),
+    queryKey: contactKeys.list(addressbookId, q, group),
     queryFn: ({ pageParam }) =>
       api.contacts.list({
         addressbook_id: addressbookId,
         q: q || undefined,
+        group: group || undefined,
         cursor: pageParam ?? undefined,
         limit: 100,
       }),
@@ -42,6 +43,19 @@ export function useContacts(addressbookId?: string, q?: string) {
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : undefined),
     staleTime: 60_000,
     placeholderData: keepPreviousData,
+  });
+}
+
+/** Every group the currently selected address book's contacts are
+ * actually in -- what the groups filter chips render. Re-fetches when
+ * `addressbookId` changes since a group card and most categories belong
+ * to one address book. A long staleTime: this only needs to be current
+ * enough to populate a filter, not to reflect an edit made seconds ago. */
+export function useContactGroups(addressbookId?: string) {
+  return useQuery({
+    queryKey: ["contact-groups", addressbookId ?? "all"],
+    queryFn: () => api.contacts.groups(addressbookId),
+    staleTime: 60_000,
   });
 }
 

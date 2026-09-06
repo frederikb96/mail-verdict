@@ -276,16 +276,21 @@ class DavObjectRepository:
 
     async def search_contacts(
         self, addressbook_ids: list[uuid.UUID] | None, query: str | None, *,
-        limit: int, offset: int,
+        limit: int, offset: int, uid_in: list[str] | None = None,
     ) -> tuple[list[DavObject], bool]:
         """Contacts, ILIKE on summary/emails when a query is given.
-        Returns (page, has_more)."""
+        `uid_in` narrows to a group card's own members -- `uid` is a
+        column PostIMAP already parses, so a group-card filter resolves
+        in SQL rather than by reading every card in the book. Returns
+        (page, has_more)."""
         async with self._db.session() as session:
             stmt = select(DavObject).where(
                 DavObject.kind == "addressbook", DavObject.deleted_at.is_(None),
             )
             if addressbook_ids is not None:
                 stmt = stmt.where(DavObject.collection_id.in_(addressbook_ids))
+            if uid_in is not None:
+                stmt = stmt.where(DavObject.uid.in_(uid_in))
             if query:
                 pattern = f"%{query}%"
                 stmt = stmt.where(
@@ -368,6 +373,29 @@ class DavObjectRepository:
                 )
             )
             return [(row.id, row.data, row.emails) for row in result.all()]
+
+    async def list_group_scan_rows(
+        self, addressbook_ids: list[uuid.UUID] | None,
+    ) -> list[tuple[uuid.UUID, uuid.UUID, str, str]]:
+        """Every non-deleted contact's id, address book, already-parsed
+        summary and raw vCard body -- what the groups index scans to find
+        every CATEGORIES value and every group card, the same "read the
+        whole book, scan off the loop with a budget" shape
+        `list_photo_scan_rows` already uses for the same reason: neither
+        question is answered by a column PostIMAP parses, so both need
+        the card's own text, and an address book can hold thousands of
+        them. The summary is the group card's display name -- already
+        parsed from FN, so the scan need not re-read it out of `data`."""
+        async with self._db.session() as session:
+            stmt = select(
+                DavObject.id, DavObject.collection_id, DavObject.summary, DavObject.data,
+            ).where(DavObject.kind == "addressbook", DavObject.deleted_at.is_(None))
+            if addressbook_ids is not None:
+                stmt = stmt.where(DavObject.collection_id.in_(addressbook_ids))
+            result = await session.execute(stmt)
+            return [
+                (row.id, row.collection_id, row.summary or "", row.data) for row in result.all()
+            ]
 
     async def get_unresolved_errors(
         self, object_ids: list[uuid.UUID],

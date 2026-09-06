@@ -18,6 +18,7 @@ import type {
   CalendarUpdateRequest,
   Contact,
   ContactCreateRequest,
+  ContactGroupsResponse,
   ContactListResponse,
   ContactPhotoIndexResponse,
   ContactSearchHit,
@@ -763,6 +764,7 @@ export const api = {
     list(params?: {
       addressbook_id?: string;
       q?: string;
+      group?: string;
       limit?: number;
       cursor?: string;
     }): Promise<ContactListResponse> {
@@ -770,6 +772,13 @@ export const api = {
     },
     get(id: string): Promise<Contact> {
       return request(`/contacts/${id}`);
+    },
+    /** Every group the address book's own contacts are actually in --
+     * CATEGORIES on a card, and a `KIND:group` card's own members -- for
+     * the groups filter beside the address-book filter. Scoped to
+     * `addressbookId` when given, the whole mirror otherwise. */
+    groups(addressbookId?: string): Promise<ContactGroupsResponse> {
+      return request(`/contacts/groups${qs({ addressbook_id: addressbookId })}`);
     },
     /** One row per email address, so a person with several addresses is
      * several choices in the compose autocomplete. */

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Contacts and search polish
+
+- Contacts can now be browsed and filtered by group, the same way an address book's own groups
+  work in Nextcloud and elsewhere: a card's own categories, and a group card's own members, both
+  show up as filter chips beside the address-book filter
+
 ### Hands-on pass
 
 - A checklist copied from a web page now pastes into the message editor as a checklist. Every
