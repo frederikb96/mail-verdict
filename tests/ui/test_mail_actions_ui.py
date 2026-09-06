@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 import time
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -119,6 +120,36 @@ def trash_folder(api_client: httpx.Client, ui_account: dict[str, Any]) -> dict[s
 @pytest.fixture(scope="module")
 def drafts_folder(api_client: httpx.Client, ui_account: dict[str, Any]) -> dict[str, Any]:
     return wait_for_folder(api_client, str(ui_account["id"]), "Drafts")
+
+
+@pytest.fixture()
+def scratch_folder(
+    api_client: httpx.Client, ui_account: dict[str, Any],
+) -> Iterator[dict[str, Any]]:
+    """A folder created fresh for one test, deleted in teardown rather
+    than at the end of the test's own body -- ui_account is shared with
+    test_manage_folders_offers_no_delete_for_special_use_folders, which
+    assumes every folder on it is special-use. A test that fails between
+    creating this folder and reaching its own cleanup previously left it
+    behind, and the next test's assertion then failed legitimately over
+    a folder nothing about that test created -- a load failure wearing a
+    behavioural failure's clothes. Teardown runs whether or not the test
+    body raised, so that can no longer happen."""
+    resp = api_client.post(
+        f"/api/accounts/{ui_account['id']}/folders",
+        json={"name": f"Empty-me-{uuid.uuid4().hex[:8]}"},
+    )
+    assert resp.status_code == 201, resp.text
+    custom_folder = wait_for_folder(
+        api_client, str(ui_account["id"]), resp.json()["imap_name"],
+    )
+    yield custom_folder
+    # Best-effort: a test that already emptied and deleted this folder
+    # itself makes this 404 -- fine, since the point is that it is gone
+    # either way, not that this specific call is what removes it.
+    api_client.delete(
+        f"/api/folders/{custom_folder['id']}", params={"confirm_message_count": 0},
+    )
 
 
 def _list_folder(
@@ -947,20 +978,14 @@ class TestMailActionsUi:
         dovecot_endpoint: tuple[str, int, int],
         ui_account: dict[str, Any],
         inbox_folder: dict[str, Any],
+        scratch_folder: dict[str, Any],
     ) -> None:
         """Emptying a folder destroys every message in it on the server
         with no undo, so the menu confirms first, naming the count -- and
         offers no Rename, which IMAP cannot express as a single-row
         update. Uses a folder created just for this test rather than a
         shared one, since emptying is irreversible."""
-        resp = api_client.post(
-            f"/api/accounts/{ui_account['id']}/folders",
-            json={"name": f"Empty-me-{uuid.uuid4().hex[:8]}"},
-        )
-        assert resp.status_code == 201, resp.text
-        custom_folder = wait_for_folder(
-            api_client, str(ui_account["id"]), resp.json()["imap_name"],
-        )
+        custom_folder = scratch_folder
 
         host, _imap_port, lmtp_port = dovecot_endpoint
         subjects = [f"Empty test {i} {uuid.uuid4()}" for i in range(2)]
@@ -1038,13 +1063,9 @@ class TestMailActionsUi:
 
         wait_for(_both_gone, timeout_s=20.0, description="both messages permanently deleted")
 
-        # Clean up the folder itself -- it's now empty, and this account is
-        # shared with test_manage_folders_offers_no_delete_for_special_use_folders,
-        # which assumes every folder on it is special-use.
-        resp = api_client.delete(
-            f"/api/folders/{custom_folder['id']}", params={"confirm_message_count": 0},
-        )
-        assert resp.status_code == 204, resp.text
+        # The folder itself is deleted by the scratch_folder fixture's own
+        # teardown, not here -- see its docstring for why cleanup belongs
+        # there rather than at the end of this test's body.
 
     def test_an_account_that_never_connected_shows_its_error_in_the_mail_view(
         self, page: Page, app_server: str, api_client: httpx.Client,

@@ -156,6 +156,16 @@ def drag_row_to_folder(page: Page, row: Locator, target: Locator) -> None:
     page.mouse.up()
 
 
+# select_account's own click is this module's repeat offender under host
+# load: Playwright's 30s default action timeout, applied to the dropdown
+# item, has been the most common cause of an otherwise-unrelated test
+# failing partway through its own setup -- a load failure that then reads
+# as whatever behaviour the test happened to be checking. A longer,
+# explicit budget here is the fix, not a shorter one downstream: every
+# later step in a test depends on this one succeeding.
+_SELECT_ACCOUNT_TIMEOUT_MS = 60_000
+
+
 def select_account(page: Page, account: dict[str, Any]) -> None:
     """Explicitly choose an account through the sidebar's own switcher.
 
@@ -176,9 +186,11 @@ def select_account(page: Page, account: dict[str, Any]) -> None:
         page.locator('[data-slot="sidebar-trigger"]').click()
         expect(trigger).to_be_visible(timeout=10_000)
     trigger.click()
-    page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
+    item = page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
         account["name"], exact=True,
-    ).click()
+    )
+    expect(item).to_be_visible(timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
+    item.click(timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
     if opened_sheet:
         sheet = page.locator('[data-slot="sheet-portal"]')
         page.keyboard.press("Escape")
