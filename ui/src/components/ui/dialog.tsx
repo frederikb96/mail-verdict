@@ -48,10 +48,14 @@ function DialogOverlay({
 // only dedupes classes sharing the exact same modifier. A `size` prop
 // keeps the override in the same modifier group as the default, so the
 // last one applied (the caller's) is the one cn() actually keeps.
+// "full" overrides the base's centering and cap at every width, not just
+// sm and up -- a full-screen viewer wants edge-to-edge on a phone too, not
+// merely the ordinary near-full-width mobile layout every other size gets.
 const DIALOG_SIZES = {
   sm: "sm:max-w-sm",
   md: "sm:max-w-md",
   lg: "sm:max-w-lg",
+  full: "top-0 left-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 rounded-none",
 } as const
 
 function DialogContent({
