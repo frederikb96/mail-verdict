@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-09-08
+
+### Fixed
+
+- A `mailto:` link carrying a stray percent sign no longer takes the whole application down on
+  open; the composer opens with whatever of the link could be read.
+
 ## [5.3.0] - 2026-09-08
 
 ### Added

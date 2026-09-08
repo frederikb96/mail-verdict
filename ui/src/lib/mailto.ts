@@ -16,13 +16,25 @@ export interface MailtoIntent {
   bodyHtml?: string;
 }
 
+/** `decodeURIComponent` throws on a stray `%`, and this runs in an effect at
+ * the root of the tree: an unhandled throw there takes the whole application
+ * down over a malformed link. An undecodable value is passed through as it
+ * came instead. */
+function decode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 /** Addresses arrive comma-separated and percent-encoded, and a trailing or
  * doubled comma is common enough in real links to be worth surviving. */
 function addresses(value: string | null): string[] | undefined {
   if (!value) return undefined;
   const list = value
     .split(",")
-    .map((entry) => decodeURIComponent(entry.trim()))
+    .map((entry) => decode(entry.trim()))
     .filter(Boolean);
   return list.length > 0 ? list : undefined;
 }
