@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.3.2] - 2026-09-08
+
+### Fixed
+
+- The installed application takes the icon the manifest declares. Desktop browsers will not
+  render an SVG as an application icon, and one in the list makes them discard the rest and fall
+  back to the page favicon, so the manifest now declares raster icons only.
+- The browser tab shows the application's own icon rather than the framework's default.
+
 ## [5.3.1] - 2026-09-08
 
 ### Fixed
