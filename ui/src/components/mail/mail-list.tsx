@@ -35,6 +35,7 @@ import {
   threadedViewAtom,
   pendingAroundMailIdAtom,
   mailArrivedAtom,
+  requestSelectMailAtom,
 } from "@/lib/atoms";
 import { selectionModeAtom } from "@/store/selection-atom";
 import type { SelectableRow } from "@/lib/selection";
@@ -86,7 +87,8 @@ export function MailList() {
   const folderId = useAtomValue(selectedFolderIdAtom);
   const isUnifiedView = useAtomValue(isUnifiedViewAtom);
   const selectedUnifiedFolder = useAtomValue(selectedUnifiedFolderAtom);
-  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const selectedMailId = useAtomValue(selectedMailIdAtom);
+  const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const focusedIndex = useAtomValue(focusedMailIndexAtom);
   const setNavDirection = useSetAtom(mailNavDirectionAtom);
   const selectionMode = useAtomValue(selectionModeAtom);
@@ -464,9 +466,9 @@ export function MailList() {
       if (from >= 0 && to >= 0 && to !== from) {
         setNavDirection(to > from ? "older" : "newer");
       }
-      setSelectedMailId(mailId);
+      requestSelectMail(mailId);
     },
-    [selectionMode, clearSelection, setSelectedMailId, selectedMailId, allMailIds, setNavDirection],
+    [selectionMode, clearSelection, requestSelectMail, selectedMailId, allMailIds, setNavDirection],
   );
 
   const handleCheckToggle = useCallback(

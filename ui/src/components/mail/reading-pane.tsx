@@ -37,11 +37,11 @@ import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
-import { explicitlyUnreadMailIdAtom, selectedMailIdAtom } from "@/lib/atoms";
+import { explicitlyUnreadMailIdAtom, requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
 
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
-  const setSelectedMailId = useSetAtom(selectedMailIdAtom);
+  const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const { count: selectionCount } = useSelection();
   const { data: thread, isLoading } = useThread(mailId);
   const mailAction = useMailAction();
@@ -209,7 +209,7 @@ export function ReadingPane() {
   }
 
   if (isDraft) {
-    return <DraftEditor mail={primary} onDone={() => setSelectedMailId(null)} />;
+    return <DraftEditor mail={primary} onDone={() => requestSelectMail(null)} />;
   }
 
   return (

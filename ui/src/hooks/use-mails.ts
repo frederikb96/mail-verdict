@@ -450,6 +450,13 @@ export function useMailAction() {
   // on it under a reading pane that still shows its old content -- except
   // a reply or forward in progress against its thread, which unmounting
   // the pane would take down too. See activeReplyDirtyForThreadId below.
+  //
+  // This writes selectedMailIdAtom directly rather than through
+  // requestSelectMailAtom (lib/atoms.ts): that atom answers "is some
+  // composer dirty at all", which is the wrong question here -- an action
+  // taken elsewhere on a message must still go through even while a reply
+  // on some unrelated thread sits open, and only the neighbour-selection
+  // step below is conditional on the affected thread specifically.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
   const activeReplyDirtyForThreadId = useAtomValue(activeReplyDirtyForThreadIdAtom);
   const setExplicitlyUnread = useSetAtom(explicitlyUnreadMailIdAtom);

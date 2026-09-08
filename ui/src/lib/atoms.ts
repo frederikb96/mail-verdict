@@ -71,6 +71,33 @@ export const mailArrivedAtom = atom<{
  * against the newest. */
 export const activeReplyDirtyForThreadIdAtom = atom<string | null>(null);
 
+/** A pending selection that a dirty composer is currently holding up -- set
+ * by requestSelectMailAtom below instead of writing selectedMailIdAtom
+ * directly, and resolved by whichever composer is dirty (save, discard, or
+ * cancel) writing selectedMailIdAtom itself once it is done, or clearing
+ * this back to null. */
+export const blockedMailSelectionAtom = atom<string | null>(null);
+
+/** The only way to open a message, close the reading pane, or otherwise
+ * change which message is selected. Write-only: it consults whatever
+ * composer is dirty before letting the selection move, so the guard lives
+ * once here rather than being re-derived at every call site -- a dirty
+ * reply already discarded itself silently through more than one such site
+ * before this existed, and the next site added would not have known to
+ * ask either.
+ *
+ * A single-row action that removes the open message from its own folder
+ * (trash, archive, spam, move) is a different question -- whether that
+ * message's own thread has a reply in progress, which useMailAction
+ * already answers itself -- and does not go through this atom. */
+export const requestSelectMailAtom = atom(null, (get, set, next: string | null) => {
+  if (get(activeReplyDirtyForThreadIdAtom) !== null) {
+    set(blockedMailSelectionAtom, next);
+    return;
+  }
+  set(selectedMailIdAtom, next);
+});
+
 /** Whether the mail list groups messages into conversations. Defaults on. */
 export const threadedViewAtom = atomWithStorage<boolean>(
   "mailverdict:threaded",

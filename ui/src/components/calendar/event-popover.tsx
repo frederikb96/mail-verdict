@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, Loader2, MapPin, Pencil, Trash2, Users, X } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -30,8 +30,8 @@ import { useIdentities } from "@/hooks/use-identities";
 import {
   eventDeleteRequestAtom,
   eventPopoverAnchorAtom,
+  requestSelectMailAtom,
   selectedEventAtom,
-  selectedMailIdAtom,
 } from "@/lib/atoms";
 import { format } from "@/lib/dates";
 import { getInitials } from "@/lib/format";
@@ -40,7 +40,7 @@ import type { RecurrenceScope } from "@/types/api";
 export function EventPopover() {
   const router = useRouter();
   const [selected, setSelected] = useAtom(selectedEventAtom);
-  const [, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const anchor = useAtomValue(eventPopoverAnchorAtom);
   const [deleteRequest, setDeleteRequest] = useAtom(eventDeleteRequestAtom);
   const ref = useRef<HTMLDivElement>(null);
@@ -239,7 +239,7 @@ export function EventPopover() {
                   size="sm"
                   className="h-auto p-0 text-xs"
                   onClick={() => {
-                    setSelectedMailId(event.source_message_id);
+                    requestSelectMail(event.source_message_id);
                     setSelected(null);
                     router.push("/");
                   }}

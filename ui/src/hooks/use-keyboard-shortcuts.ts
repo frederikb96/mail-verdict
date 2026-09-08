@@ -7,9 +7,9 @@
 "use client";
 
 import { useEffect, useCallback } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
-import { selectedMailIdAtom } from "@/lib/atoms";
+import { selectedMailIdAtom, requestSelectMailAtom } from "@/lib/atoms";
 import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
 import type { MailRowAction, MessageSummary } from "@/types/api";
@@ -52,7 +52,8 @@ export function useKeyboardShortcuts({
   onAction,
 }: UseKeyboardShortcutsOptions) {
   const [focusedIndex, setFocusedIndex] = useAtom(focusedMailIndexAtom);
-  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const selectedMailId = useAtomValue(selectedMailIdAtom);
+  const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const { toggle: toggleSelection } = useSelectionGestures();
   const clearSelection = useClearSelection();
 
@@ -114,7 +115,7 @@ export function useKeyboardShortcuts({
         }
         case "Escape": {
           e.preventDefault();
-          setSelectedMailId(null);
+          requestSelectMail(null);
           clearSelection();
           break;
         }
@@ -168,7 +169,7 @@ export function useKeyboardShortcuts({
     openIndex,
     mails,
     setFocusedIndex,
-    setSelectedMailId,
+    requestSelectMail,
     getCurrentMail,
     onOpen,
     onAction,

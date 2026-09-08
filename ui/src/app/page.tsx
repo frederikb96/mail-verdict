@@ -10,14 +10,15 @@ import { MailList } from "@/components/mail/mail-list";
 import { ReadingPane } from "@/components/mail/reading-pane";
 import { useSelection } from "@/hooks/use-selection";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useAtom } from "jotai";
-import { selectedMailIdAtom } from "@/lib/atoms";
+import { useAtomValue, useSetAtom } from "jotai";
+import { requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function MailPage() {
   const isMobile = useIsMobile();
-  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const selectedMailId = useAtomValue(selectedMailIdAtom);
+  const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const { count: selectionCount } = useSelection();
 
   // Mobile: show either mail list or reading pane (not both)
@@ -29,7 +30,7 @@ export default function MailPage() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setSelectedMailId(null)}
+              onClick={() => requestSelectMail(null)}
               className="gap-1"
             >
               <ArrowLeft className="h-4 w-4" />

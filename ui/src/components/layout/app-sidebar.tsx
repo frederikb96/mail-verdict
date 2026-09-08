@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import {
   Inbox,
   Send,
@@ -58,9 +58,9 @@ import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import {
   isUnifiedViewAtom,
+  requestSelectMailAtom,
   selectedAccountIdAtom,
   selectedFolderIdAtom,
-  selectedMailIdAtom,
   selectedUnifiedFolderAtom,
 } from "@/lib/atoms";
 import type { FolderResponse, FolderOrderItem, UnifiedFolderResponse } from "@/types/api";
@@ -131,7 +131,7 @@ export function AppSidebar() {
   const [selectedFolderId, setSelectedFolderId] = useAtom(
     selectedFolderIdAtom,
   );
-  const [, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const [selectedUnifiedFolder, setSelectedUnifiedFolder] = useAtom(
     selectedUnifiedFolderAtom,
   );
@@ -216,7 +216,7 @@ export function AppSidebar() {
   /** Select a folder and navigate to the mail view if on a different page. */
   const handleFolderSelect = (folderId: string) => {
     setSelectedFolderId(folderId);
-    setSelectedMailId(null);
+    requestSelectMail(null);
     if (pathname !== "/") {
       router.push("/");
     }
@@ -226,7 +226,7 @@ export function AppSidebar() {
   const handleUnifiedFolderSelect = (folderName: string) => {
     setSelectedUnifiedFolder(folderName);
     setSelectedFolderId(null);
-    setSelectedMailId(null);
+    requestSelectMail(null);
     if (pathname !== "/") {
       router.push("/");
     }
@@ -264,7 +264,7 @@ export function AppSidebar() {
                   onClick={() => {
                     setSelectedAccountId("unified");
                     setSelectedFolderId(null);
-                    setSelectedMailId(null);
+                    requestSelectMail(null);
                     setSelectedUnifiedFolder(null);
                   }}
                 >
@@ -282,7 +282,7 @@ export function AppSidebar() {
                     onClick={() => {
                       setSelectedAccountId(account.id);
                       setSelectedFolderId(null);
-                      setSelectedMailId(null);
+                      requestSelectMail(null);
                       setSelectedUnifiedFolder(null);
                     }}
                   >
