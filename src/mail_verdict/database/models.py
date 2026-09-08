@@ -11,7 +11,8 @@ PostIMAP-owned tables: accounts, folders, messages, attachments, sync_state,
 MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
-  calendar_links_revision, pending_sends, pending_send_attachments
+  calendar_links_revision, pending_sends, pending_send_attachments, alerts,
+  push_subscriptions
   (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
@@ -43,6 +44,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
@@ -945,6 +947,17 @@ class CalendarPrefs(Base):
     # only place that does.
     is_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     color_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Two nullable columns for two different questions -- whether a
+    # reminder default exists at all, and how long before the start it
+    # falls -- resolved together by exactly one function,
+    # resolve_default_reminder() in calendar/prefs.py, and nowhere else.
+    # NULL means inherit the global setting, the same NULL-means-nobody-
+    # decided pattern is_enabled above already carries; unlike is_enabled,
+    # these never had a NOT NULL DEFAULT to begin with, so there is no
+    # earlier migration to undo. reminders_enabled cannot reuse an integer
+    # sentinel for "off" -- 0 is a legitimate at-start-time reminder.
+    default_reminder_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reminders_enabled: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     __table_args__ = (Index("idx_calendar_prefs_identity", "identity_id"),)
 
@@ -1316,3 +1329,88 @@ class PendingSendAttachment(Base):
     __table_args__ = (
         Index("idx_pending_send_attachments_pending_send_id", "pending_send_id"),
     )
+
+
+class Alert(Base):
+    """Something meant to interrupt Freddy on his device -- new mail or a
+    calendar reminder -- and, once delivered_at is stamped, the durable
+    record that it did. One row is both, before and after: this table is
+    the queue a dispatcher claims from and the "what did I miss" list a
+    bell icon reads back, with nothing else distinguishing the two states.
+
+    dedupe_key is the entire fires-exactly-once mechanism, across restarts
+    and however many dispatcher passes it takes: its unique index, not
+    application logic, is what makes a second insert for the same arrival
+    a no-op (`ON CONFLICT (dedupe_key) DO NOTHING`). For a mail alert it
+    embeds msg_key rather than message_id -- the same reason Verdict and
+    MessageEmbedding key on it instead: a UIDVALIDITY resync replaces
+    every message id in a folder, and the row that must never fire twice
+    has to survive that.
+
+    account_id/message_id and object_id/recurrence_id are the two source-
+    coordinate pairs a "mail" or a "reminder" row respectively carries;
+    neither is a foreign key, consistent with every other MailVerdict-
+    owned table. kind, title, body and url are filled in by whichever
+    code path creates the row -- this table makes no assumption about
+    when that happens relative to insert.
+    """
+
+    __tablename__ = "alerts"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    deliver_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    recurrence_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        # What the dispatcher's claim query (SELECT ... FOR UPDATE SKIP
+        # LOCKED, the same shape PendingSend's idx_pending_sends_due
+        # supports) scans: due, not-yet-delivered rows. A delivered row
+        # never needs to be found by deliver_at again.
+        Index("idx_alerts_due", "deliver_at", postgresql_where=delivered_at.is_(None)),
+    )
+
+
+class PushSubscription(Base):
+    """One browser's Web Push registration -- also where its own,
+    per-device preferences live, since a subscription row is the only
+    genuinely per-device thing a system with no login has to hang them
+    on. endpoint is personal; never logged.
+
+    alert_folder_ids NULL means every folder alerts -- the same NULL-
+    means-nobody-narrowed-it-down convention calendar_prefs uses, so a
+    freshly-registered device needs no row-per-folder bookkeeping to mean
+    "all of them". reminders_enabled carries a real default (true)
+    instead: receiving push at all is the ordinary case for a device that
+    just registered, not a third undecided state the way a per-calendar
+    preference is.
+    """
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    p256dh: Mapped[str] = mapped_column(Text, nullable=False)
+    auth: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alert_folder_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
+        ARRAY(Uuid), nullable=True,
+    )
+    reminders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
