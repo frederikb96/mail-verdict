@@ -18,6 +18,7 @@ import {
   ComboboxItem,
 } from "@/components/ui/combobox";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Truncate } from "@/components/ui/truncate";
 import { useContactSearch } from "@/hooks/use-contacts";
 import { useToast } from "@/hooks/use-toast";
 import { getInitials, isValidEmail, parseAddressList } from "@/lib/format";
@@ -79,12 +80,15 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
       filter={null}
     >
       <ComboboxChips>
-        {value.map((email) => (
-          <ComboboxChip key={email}>
-            {results.find((r) => r.email === email)?.name || email}
-            <ComboboxChipRemove onClick={() => onChange(value.filter((v) => v !== email))} />
-          </ComboboxChip>
-        ))}
+        {value.map((email) => {
+          const name = results.find((r) => r.email === email)?.name;
+          return (
+            <ComboboxChip key={email}>
+              <Truncate text={name || email} tail={name ? 0 : 12} />
+              <ComboboxChipRemove onClick={() => onChange(value.filter((v) => v !== email))} />
+            </ComboboxChip>
+          );
+        })}
         <ComboboxInput
           // The visible placeholder is only shown while there are no chips
           // yet (a chip beside it would read oddly) -- but the input's

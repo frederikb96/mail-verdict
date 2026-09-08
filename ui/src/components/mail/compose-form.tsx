@@ -6,6 +6,7 @@ import { Loader2, Paperclip, Send, Save, X, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Truncate } from "@/components/ui/truncate";
 import {
   Select,
   SelectContent,
@@ -347,9 +348,9 @@ export function ComposeForm({
       {attachments.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {attachments.map((file, i) => (
-            <Badge key={`${file.name}-${i}`} variant="outline" className="gap-1">
-              <Paperclip className="h-3 w-3" />
-              {file.name}
+            <Badge key={`${file.name}-${i}`} variant="outline" className="max-w-56 min-w-0 gap-1">
+              <Paperclip className="h-3 w-3 shrink-0" />
+              <Truncate text={file.name} tail={8} />
               <button
                 type="button"
                 onClick={() =>

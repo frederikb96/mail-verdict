@@ -26,7 +26,7 @@ function ComboboxChip({ className, children, ...props }: ComboboxPrimitive.Chip.
     <ComboboxPrimitive.Chip
       data-slot="combobox-chip"
       className={cn(
-        "flex items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground",
+        "flex max-w-64 min-w-0 items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground",
         className
       )}
       {...props}
