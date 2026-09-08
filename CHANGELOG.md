@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-09-08
+
+### Added
+
+- MailVerdict is installable as an application. A browser that supports it offers to install the
+  site, which then runs in its own window with its own icon rather than as a tab.
+- The installed application registers as a `mailto:` handler, so it can be the system mail client:
+  a `mailto:` link anywhere on the machine opens the composer with the recipients, subject, cc,
+  bcc and body the link carried.
+- `Ctrl+Shift+1`, `Ctrl+Shift+2` and `Ctrl+Shift+3` jump to mail, calendar and contacts. They are
+  keyed on the physical digit key, so they work the same on any keyboard layout.
+
 ## [5.2.0] - 2026-09-06
 
 ### Added

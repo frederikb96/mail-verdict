@@ -71,6 +71,10 @@ mirror, which is what keeps it simple.
   setting turns off.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail, and
   read, create, edit and delete calendar events and contacts.
+- **Installable** — a browser that supports it offers to install the site, which then runs in its
+  own window with its own icon. The installed application registers as a `mailto:` handler, so it
+  can be the machine's mail client: a `mailto:` link opens the composer filled in from the link.
+  `Ctrl+Shift+1`, `Ctrl+Shift+2` and `Ctrl+Shift+3` jump to mail, calendar and contacts.
 
 ## Running it
 

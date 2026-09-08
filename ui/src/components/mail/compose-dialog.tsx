@@ -119,7 +119,10 @@ export function ComposeDialog() {
             key={open ? "open" : "closed"}
             accountId={effectiveAccountId}
             defaultTo={composeIntent?.to}
+            defaultCc={composeIntent?.cc}
+            defaultBcc={composeIntent?.bcc}
             defaultSubject={composeIntent?.subject}
+            defaultBodyHtml={composeIntent?.bodyHtml}
             onDone={closeAndClearIntent}
             onDirtyChange={setIsDirty}
             onMaximizedChange={setMaximized}

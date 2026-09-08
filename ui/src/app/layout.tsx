@@ -12,6 +12,8 @@ import { ErrorBoundary } from "@/components/error/error-boundary";
 import { OutboxDeadBanner } from "@/components/mail/outbox-dead-banner";
 import { UndoSendBanner } from "@/components/mail/undo-send-banner";
 import { ToastContainer } from "@/components/common/toast-container";
+import { ProtocolHandler } from "@/components/layout/protocol-handler";
+import { SectionShortcuts } from "@/components/layout/section-shortcuts";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,6 +28,19 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "MailVerdict",
   description: "AI-powered email management",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "MailVerdict",
+    statusBarStyle: "black-translucent",
+  },
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+    ],
+    apple: "/apple-touch-icon.png",
+  },
 };
 
 export default function RootLayout({
@@ -49,6 +64,8 @@ export default function RootLayout({
           <ThemeProvider>
             <SidebarProvider>
               <SSEConnector />
+              <ProtocolHandler />
+              <SectionShortcuts />
               <MailDndProvider>
                 <ErrorBoundary section="sidebar">
                   <AppSidebar />

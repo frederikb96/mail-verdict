@@ -78,11 +78,15 @@ export const threadedViewAtom = atomWithStorage<boolean>(
 );
 
 /** A compose dialog can be asked to open from anywhere (a contact's email,
- * an event's "email the attendees") without owning its own trigger. */
+ * an event's "email the attendees", a `mailto:` link the browser routes here)
+ * without owning its own trigger. */
 export const composeIntentAtom = atom<{
   accountId?: string;
   to?: string[];
+  cc?: string[];
+  bcc?: string[];
   subject?: string;
+  bodyHtml?: string;
 } | null>(null);
 
 // --- Calendar ---
