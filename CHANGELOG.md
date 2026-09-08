@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.3.4] - 2026-09-08
+
+### Fixed
+
+- The manifest is requested with credentials. A browser fetches it anonymously by default, so a
+  deployment behind an authenticating proxy answered with a login redirect and the site installed
+  as though it declared no manifest at all — named after the page title, with a generated icon.
+
 ## [5.3.3] - 2026-09-08
 
 ### Fixed

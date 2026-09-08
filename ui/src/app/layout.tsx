@@ -28,7 +28,8 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "MailVerdict",
   description: "AI-powered email management",
-  manifest: "/manifest.webmanifest",
+  // The manifest link is rendered below rather than declared here: it needs
+  // `crossorigin="use-credentials"`, which this metadata cannot express.
   appleWebApp: {
     capable: true,
     title: "MailVerdict",
@@ -55,6 +56,16 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="flex h-full flex-col">
+        {/* Without the credentials hint the manifest is requested anonymously.
+            A deployment behind an auth proxy answers that with a login
+            redirect, and the browser then installs the site as if it declared
+            no manifest at all — named after the page title, with a generated
+            letter for an icon. */}
+        <link
+          rel="manifest"
+          href="/manifest.webmanifest"
+          crossOrigin="use-credentials"
+        />
         <script
           dangerouslySetInnerHTML={{
             __html: `(function(){try{var t=localStorage.getItem('theme');var d=t==='dark'||(t!=='light'&&matchMedia('(prefers-color-scheme:dark)').matches);document.documentElement.classList.toggle('dark',d)}catch(e){}})()`
