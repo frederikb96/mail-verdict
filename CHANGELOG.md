@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.3.3] - 2026-09-08
+
+### Fixed
+
+- The application icons are written at 8 bits per channel, the depth every other installed
+  application icon uses.
+
 ## [5.3.2] - 2026-09-08
 
 ### Fixed
