@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import re
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -283,8 +284,12 @@ class TestQueryPersistence:
 
         rows = page.locator('[data-testid="search-result-row"]')
         expect(rows.first).to_be_visible(timeout=15_000)
+        opened_id = rows.first.get_attribute("data-message-id")
         rows.first.click()
-        expect(page).to_have_url(f"{app_server}/")
+        # Every message has its own address now (?message=<id>, alongside
+        # the account/folder it resolved to), not a bare "/" -- see
+        # use-mail-url-sync.ts.
+        expect(page).to_have_url(re.compile(rf"[?&]message={opened_id}(&|$)"), timeout=15_000)
 
         page.go_back()
         expect(page).to_have_url(f"{app_server}/search")
@@ -405,7 +410,10 @@ class TestScrollPositionRestore:
         anchored_row = page.locator(f'[data-message-id="{anchor_id}"]')
         expect(anchored_row).to_be_visible()
         anchored_row.click()
-        expect(page).to_have_url(f"{app_server}/")
+        # Every message has its own address now (?message=<id>, alongside
+        # the account/folder it resolved to), not a bare "/" -- see
+        # use-mail-url-sync.ts.
+        expect(page).to_have_url(re.compile(rf"[?&]message={anchor_id}(&|$)"), timeout=15_000)
 
         # A fresh navigation back to /search, not an in-app SPA transition
         # -- a hard document load is exactly what discards the in-memory

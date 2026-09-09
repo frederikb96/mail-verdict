@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -134,7 +135,10 @@ class TestOpenSearchResultLandsDeepInTheFolder:
         expect(result_row).to_have_count(1, timeout=15_000)
         result_row.click()
 
-        expect(page).to_have_url(f"{app_server}/")
+        # Every message has its own address now (?message=<id>, alongside
+        # the account/folder it resolved to), not a bare "/" -- see
+        # use-mail-url-sync.ts.
+        expect(page).to_have_url(re.compile(rf"[?&]message={target_id}(&|$)"), timeout=15_000)
         target_row = page.locator(f'[data-testid="mail-row"][data-mail-id="{target_id}"]')
         expect(target_row).to_be_visible(timeout=15_000)
 
