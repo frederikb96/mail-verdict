@@ -1,28 +1,39 @@
 "use client";
 
 /**
- * Notification centre: writes PostIMAP gave up on permanently for the
- * current account, including a send that never left. Built on
- * sync_notifications -- see docs/architecture.md.
+ * One bell for both durable, in-app record kinds: new mail (the Mail tab)
+ * and a write PostIMAP gave up on permanently (the System tab). Neither
+ * list is account-scoped -- Mail already wasn't (see use-alerts.ts), and
+ * System is fanned out across every active account (see
+ * useAllAccountsNotifications) so a write failure on an account that
+ * isn't currently selected is never silently invisible.
+ *
+ * The badge and both tabs all read the same two counts computed below --
+ * nowhere else re-derives "how many are unread".
  */
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Bell, CheckCheck, Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  useAlerts,
+  useDismissAlert,
+  useDismissAllAlerts,
+  useUnseenAlertCount,
+} from "@/hooks/use-alerts";
 import {
-  useAcknowledgeAllNotifications,
+  useAcknowledgeAllNotificationsEverywhere,
   useAcknowledgeNotification,
-  useNotifications,
-  useUnacknowledgedCount,
+  useAllAccountsNotifications,
 } from "@/hooks/use-notifications";
+import { useAccounts } from "@/hooks/use-accounts";
 import { formatRelativeDate } from "@/lib/format";
-import type { NotificationResponse } from "@/types/api";
+import type { AlertResponse, NotificationResponse } from "@/types/api";
 
 const ACTION_LABELS: Record<string, string> = {
   flag_add: "Setting a flag",
@@ -33,12 +44,70 @@ const ACTION_LABELS: Record<string, string> = {
   draft: "Saving a draft",
 };
 
-function NotificationRow({
+function EmptyState({ text }: { text: string }) {
+  return <div className="px-3 py-4 text-center text-sm text-muted-foreground">{text}</div>;
+}
+
+function AlertRow({
+  alert,
+  accountName,
+  onOpen,
+  onDismiss,
+  isDismissing,
+}: {
+  alert: AlertResponse;
+  accountName: string | null;
+  onOpen: () => void;
+  onDismiss: () => void;
+  isDismissing: boolean;
+}) {
+  const unseen = alert.dismissed_at === null;
+  return (
+    <div
+      data-testid="alert-row"
+      data-alert-id={alert.id}
+      className={`flex flex-col gap-1 border-b px-3 py-2 last:border-b-0 ${
+        unseen ? "bg-accent/30" : ""
+      }`}
+    >
+      <button type="button" className="flex flex-col gap-0.5 text-left" onClick={onOpen}>
+        <div className="flex items-start justify-between gap-2">
+          <span className="truncate text-sm font-medium">{alert.title || "(no subject)"}</span>
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {formatRelativeDate(alert.delivered_at ?? alert.created_at)}
+          </span>
+        </div>
+        {alert.body && <span className="truncate text-xs text-muted-foreground">{alert.body}</span>}
+        {accountName && (
+          <span className="shrink-0 self-start truncate rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground">
+            {accountName}
+          </span>
+        )}
+      </button>
+      {unseen && (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 w-fit px-2 text-xs"
+          disabled={isDismissing}
+          onClick={onDismiss}
+        >
+          {isDismissing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+          Dismiss
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function SystemRow({
   notification,
+  accountName,
   onAcknowledge,
   isAcknowledging,
 }: {
   notification: NotificationResponse;
+  accountName: string | null;
   onAcknowledge: () => void;
   isAcknowledging: boolean;
 }) {
@@ -47,7 +116,11 @@ function NotificationRow({
   const stillApplied = notification.reverted_at === null;
 
   return (
-    <div className="flex flex-col gap-1 border-b px-3 py-2 last:border-b-0">
+    <div
+      data-testid="system-row"
+      data-notification-id={notification.id}
+      className="flex flex-col gap-1 border-b px-3 py-2 last:border-b-0"
+    >
       <div className="flex items-start justify-between gap-2">
         <span className="text-sm font-medium">
           {ACTION_LABELS[notification.action] ?? notification.action} failed
@@ -69,6 +142,11 @@ function NotificationRow({
           Our value is still shown as applied -- the server never got it.
         </span>
       )}
+      {accountName && (
+        <span className="shrink-0 self-start truncate rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground">
+          {accountName}
+        </span>
+      )}
       {notification.acknowledged_at === null && (
         <Button
           variant="ghost"
@@ -87,72 +165,128 @@ function NotificationRow({
   );
 }
 
-export function NotificationBell({ accountId }: { accountId: string }) {
-  const { data: count } = useUnacknowledgedCount(accountId);
-  const { data: notifications, isLoading } = useNotifications(accountId);
-  const acknowledge = useAcknowledgeNotification();
-  const acknowledgeAll = useAcknowledgeAllNotifications();
+export function NotificationBell() {
+  const router = useRouter();
+  const [tab, setTab] = useState<"mail" | "system">("mail");
 
-  const unacknowledged = count?.unacknowledged ?? 0;
+  const { data: alertCount } = useUnseenAlertCount();
+  const { data: alerts, isLoading: alertsLoading } = useAlerts();
+  const dismissAlert = useDismissAlert();
+  const dismissAllAlerts = useDismissAllAlerts();
+
+  const { notifications, isLoading: notificationsLoading } = useAllAccountsNotifications();
+  const acknowledge = useAcknowledgeNotification();
+  const acknowledgeAllEverywhere = useAcknowledgeAllNotificationsEverywhere();
+
+  const { data: accounts } = useAccounts();
+  const showAccount = (accounts?.length ?? 0) > 1;
+  const accountName = (accountId: string | null) =>
+    showAccount && accountId ? (accounts?.find((a) => a.id === accountId)?.name ?? null) : null;
+
+  const unseenAlerts = alertCount?.unseen ?? 0;
+  const unacknowledged = notifications.filter((n) => n.acknowledged_at === null);
+  // The one place both counts are combined -- the trigger badge and
+  // each tab's own bulk-dismiss control all read from here.
+  const totalUnseen = unseenAlerts + unacknowledged.length;
+
+  const openAlert = (alert: AlertResponse) => {
+    if (alert.dismissed_at === null) dismissAlert.mutate(alert.id);
+    if (alert.url) router.push(alert.url);
+  };
 
   return (
     <Popover>
       <PopoverTrigger
-        render={
-          <Button variant="ghost" size="icon" className="relative h-8 w-8" />
-        }
+        render={<Button variant="ghost" size="icon" className="relative h-8 w-8" />}
         title="Notifications"
       >
         <Bell className="h-4 w-4" />
-        {unacknowledged > 0 && (
+        {totalUnseen > 0 && (
           <Badge
             variant="destructive"
             className="absolute -right-1 -top-1 h-4 min-w-4 justify-center px-1 text-[10px]"
           >
-            {unacknowledged > 99 ? "99+" : unacknowledged}
+            {totalUnseen > 99 ? "99+" : totalUnseen}
           </Badge>
         )}
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 p-0">
-        <div className="flex items-center justify-between border-b px-3 py-2">
+        <div className="border-b px-3 py-2">
           <span className="text-sm font-medium">Notifications</span>
-          {unacknowledged > 0 && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 gap-1 px-2 text-xs"
-              disabled={acknowledgeAll.isPending}
-              onClick={() => acknowledgeAll.mutate(accountId)}
-            >
-              <CheckCheck className="h-3 w-3" />
-              Mark all read
-            </Button>
-          )}
         </div>
-        <div className="max-h-80 overflow-y-auto">
-          {isLoading && (
-            <div className="px-3 py-4 text-center text-sm text-muted-foreground">
-              Loading...
+        <Tabs value={tab} onValueChange={(v) => setTab(v as "mail" | "system")}>
+          <div className="flex items-center justify-between border-b px-3 py-1.5">
+            <TabsList>
+              <TabsTrigger value="mail">Mail</TabsTrigger>
+              <TabsTrigger value="system">System</TabsTrigger>
+            </TabsList>
+            {tab === "mail" && unseenAlerts > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 gap-1 px-2 text-xs"
+                disabled={dismissAllAlerts.isPending}
+                onClick={() => dismissAllAlerts.mutate()}
+              >
+                <CheckCheck className="h-3 w-3" />
+                Dismiss all
+              </Button>
+            )}
+            {tab === "system" && unacknowledged.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 gap-1 px-2 text-xs"
+                disabled={acknowledgeAllEverywhere.isPending}
+                onClick={() =>
+                  acknowledgeAllEverywhere.mutate(
+                    Array.from(new Set(unacknowledged.map((n) => n.account_id))),
+                  )
+                }
+              >
+                <CheckCheck className="h-3 w-3" />
+                Dismiss all
+              </Button>
+            )}
+          </div>
+          <TabsContent value="mail" className="m-0">
+            <div className="max-h-80 overflow-y-auto">
+              {alertsLoading && <EmptyState text="Loading..." />}
+              {!alertsLoading && (alerts ?? []).length === 0 && <EmptyState text="Nothing yet" />}
+              {(alerts ?? []).map((alert) => (
+                <AlertRow
+                  key={alert.id}
+                  alert={alert}
+                  accountName={accountName(alert.account_id)}
+                  onOpen={() => openAlert(alert)}
+                  onDismiss={() => dismissAlert.mutate(alert.id)}
+                  isDismissing={dismissAlert.isPending && dismissAlert.variables === alert.id}
+                />
+              ))}
             </div>
-          )}
-          {!isLoading && (notifications ?? []).length === 0 && (
-            <div className="px-3 py-4 text-center text-sm text-muted-foreground">
-              Nothing to report
+          </TabsContent>
+          <TabsContent value="system" className="m-0">
+            <div className="max-h-80 overflow-y-auto">
+              {notificationsLoading && <EmptyState text="Loading..." />}
+              {!notificationsLoading && notifications.length === 0 && (
+                <EmptyState text="Nothing to report" />
+              )}
+              {notifications.map((n) => (
+                <SystemRow
+                  key={n.id}
+                  notification={n}
+                  accountName={accountName(n.account_id)}
+                  isAcknowledging={
+                    acknowledge.isPending && acknowledge.variables?.notificationId === n.id
+                  }
+                  onAcknowledge={() =>
+                    acknowledge.mutate({ accountId: n.account_id, notificationId: n.id })
+                  }
+                />
+              ))}
             </div>
-          )}
-          {(notifications ?? []).map((n) => (
-            <NotificationRow
-              key={n.id}
-              notification={n}
-              isAcknowledging={
-                acknowledge.isPending && acknowledge.variables?.notificationId === n.id
-              }
-              onAcknowledge={() =>
-                acknowledge.mutate({ accountId, notificationId: n.id })
-              }
-            />
-          ))}
-        </div>
+          </TabsContent>
+        </Tabs>
       </PopoverContent>
     </Popover>
   );

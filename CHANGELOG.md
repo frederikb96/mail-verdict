@@ -14,13 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - An account can be given a Trash retention: mail sitting in Trash longer than that many days is
   permanently removed by a periodic sweep, batched and logged. Off by default, per account.
 
-### Alerts
+### Notifications
 
+- The header carries one bell instead of two: new mail and write failures that never reached the
+  mail server now share a single Notifications popover, switching between a Mail tab and a System
+  tab, with one badge summing both. The write-failure kind is now visible from the unified view,
+  where it previously never rendered at all. Opening a message clears its own new-mail entry
+  immediately, whether opened by clicking its row or by a clicked system notification.
 - A new-mail notification now waits for that message's pipeline run to finish filing it, and
   names the folder the message actually ends up in -- a message a rule moves out of the inbox no
   longer announces itself as though it had stayed there. Mail arriving directly into Sent, Drafts,
   Trash, Junk or Archive, which the pipeline never runs against, still notifies immediately. A
-  configurable wait (Settings) notifies anyway if filing stalls.
+  configurable wait notifies anyway if filing stalls.
 
 ## [5.5.1] - 2026-09-09
 
