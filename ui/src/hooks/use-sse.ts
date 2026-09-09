@@ -382,6 +382,7 @@ export function useSSE(accountId?: string) {
       source.addEventListener("account.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["accounts"] });
+        queryClient.invalidateQueries({ queryKey: ["account-order"] });
         queryClient.invalidateQueries({ queryKey: ["sync-status"] });
       });
 
