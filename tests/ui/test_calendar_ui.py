@@ -13,6 +13,7 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urljoin
 
 import httpx
 import pytest
@@ -26,7 +27,7 @@ from tests.e2e.helpers import (
     wait_for_event_synced,
     wait_for_mailpit_message,
 )
-from tests.setup.dav_helpers import create_calendar, discover
+from tests.setup.dav_helpers import create_calendar, discover, put_object
 from tests.ui.helpers import (
     center_in_grid_viewport,
     drag_by_pixels,
@@ -783,6 +784,91 @@ class TestCalendarUi:
         sheet = page.locator('[data-slot="sheet-content"]')
         expect(sheet).to_be_visible(timeout=15_000)
         expect(sheet.get_by_role("switch", name="Show as busy")).not_to_be_checked()
+
+    def test_an_absolute_reminder_from_another_client_shows_its_real_time_and_survives_a_save(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        radicale_base_url: str,
+        ui_calendar_owner: str,
+        dav_account: dict[str, Any],
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """A TRIGGER;VALUE=DATE-TIME alarm -- written by another CalDAV
+        client, since this application's own editor has no control that
+        creates one -- has to render as its own instant rather than "At
+        time of event" (offset_minutes read as 0), and must not be
+        silently rewritten into a relative one just because an unrelated
+        field on the same event was edited and saved."""
+        uid = str(uuid.uuid4())
+        summary = f"Absolute reminder test {uuid.uuid4()}"
+        # Today, not a fixed date -- the calendar view opens on the
+        # current week, and an event outside it never mounts a chip at
+        # all, no different from one that doesn't exist.
+        now = datetime.now(timezone.utc)
+        dtstart = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        dtend = dtstart + timedelta(hours=1)
+        alarm_at = dtstart - timedelta(hours=1)
+        fmt = "%Y%m%dT%H%M%SZ"
+        ics = (
+            "BEGIN:VCALENDAR\r\n"
+            "VERSION:2.0\r\n"
+            "PRODID:-//mail-verdict-test//EN\r\n"
+            "BEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\n"
+            f"DTSTAMP:{now.strftime(fmt)}\r\n"
+            f"DTSTART:{dtstart.strftime(fmt)}\r\n"
+            f"DTEND:{dtend.strftime(fmt)}\r\n"
+            f"SUMMARY:{summary}\r\n"
+            "BEGIN:VALARM\r\n"
+            "ACTION:DISPLAY\r\n"
+            "DESCRIPTION:Reminder\r\n"
+            f"TRIGGER;VALUE=DATE-TIME:{alarm_at.strftime(fmt)}\r\n"
+            "END:VALARM\r\n"
+            "END:VEVENT\r\n"
+            "END:VCALENDAR\r\n"
+        )
+        with httpx.Client(auth=(ui_calendar_owner, "unused"), timeout=10.0) as dav_client:
+            principal = discover(dav_client, radicale_base_url)
+            calendar_url = urljoin(principal.calendar_home, "work/")
+            put_object(dav_client, f"{calendar_url}{uid}.ics", ics, "text/calendar; charset=utf-8")
+
+        sync_resp = api_client.post(f"/api/dav-accounts/{dav_account['id']}/sync")
+        assert sync_resp.status_code == 200, sync_resp.text
+
+        def _synced() -> dict[str, Any] | None:
+            listed = api_client.get(
+                "/api/calendar/events",
+                params={"month": now.strftime("%Y-%m"), "calendars": calendar_collection["id"]},
+            ).json()["events"]
+            return next((e for e in listed if e["summary"] == summary), None)
+
+        event = wait_for(_synced, description="Absolute-reminder event synced")
+        assert event["reminders"][0]["offset_minutes"] is None
+        assert event["reminders"][0]["at"].startswith(alarm_at.strftime("%Y-%m-%dT%H:%M:%S"))
+
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        chip = event_chip(page, event["object_id"])
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+        page.get_by_role("button", name="Edit", exact=True).click()
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+
+        expect(sheet.get_by_text("At time of event")).to_have_count(0)
+        expect(sheet.get_by_text(re.compile(r"^At .*2026"))).to_be_visible(timeout=10_000)
+
+        title_input = sheet.get_by_label("Title")
+        title_input.fill(f"{summary} edited")
+        sheet.get_by_role("button", name="Save", exact=True).click()
+        expect(page.get_by_text("Event updated")).to_be_visible(timeout=10_000)
+
+        updated = wait_for_event_synced(api_client, event["object_id"])
+        assert updated["reminders"][0]["offset_minutes"] is None
+        assert updated["reminders"][0]["at"].startswith(alarm_at.strftime("%Y-%m-%dT%H:%M:%S"))
 
     def test_a_multi_day_all_day_event_does_not_gain_a_day_in_a_non_utc_browser(
         self,

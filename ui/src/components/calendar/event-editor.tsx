@@ -37,7 +37,7 @@ import { useDefaultCalendarId, useDefaultEventDurationMinutes } from "@/hooks/us
 import { useCreateEvent, useDeleteEvent, useUpdateEvent } from "@/hooks/use-events";
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
-import { parseAddressList } from "@/lib/format";
+import { formatFullDate, parseAddressList } from "@/lib/format";
 import { addDaysIso, toLocalDateValue, toLocalWallClock, wholeDayIso } from "@/lib/dates";
 import { lastCreatedCalendarIdAtom } from "@/lib/atoms";
 import type { EventInstance, EventReminder, EventTransparency, RecurrenceScope } from "@/types/api";
@@ -635,7 +635,37 @@ export function EventEditor({
             <div className="grid gap-1.5">
               <Label>Reminders</Label>
               {reminders.map((reminder, index) => {
-                const minutesBefore = -(reminder.offset_minutes ?? 0);
+                // An absolute trigger (VALUE=DATE-TIME, written by
+                // another client) has no "minutes before" reading at
+                // all -- treating a null offset_minutes as 0 would show
+                // "At time of event" regardless of when it actually
+                // fires, and the Select below has no way to represent
+                // it without collapsing it to a relative one the moment
+                // it is touched. Read-only, showing its real instant,
+                // is what carries it through a save unchanged.
+                if (reminder.offset_minutes === null) {
+                  return (
+                    <div key={index} className="flex items-center gap-1.5">
+                      <div className="flex-1 rounded-md border px-3 py-2 text-sm text-muted-foreground">
+                        At {formatFullDate(reminder.at)}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        aria-label="Remove reminder"
+                        disabled={readOnly}
+                        onClick={() => {
+                          remindersTouched.current = true;
+                          setReminders((rs) => rs.filter((_, i) => i !== index));
+                        }}
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  );
+                }
+                const minutesBefore = -reminder.offset_minutes;
                 const selectValue = reminderSelectValue(minutesBefore);
                 return (
                   <div key={index} className="flex items-center gap-1.5">
