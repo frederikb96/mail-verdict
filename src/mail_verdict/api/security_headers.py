@@ -106,6 +106,13 @@ def build_content_security_policy(script_hashes: frozenset[str]) -> str:
         [
             "default-src 'self'",
             f"script-src {script_src}",
+            # A browser classifies fetching a service worker's own script
+            # (/sw.js) under worker-src, not script-src -- without this,
+            # registration would fall back through child-src to
+            # script-src anyway ('self' covers it either way), but naming
+            # it explicitly is what the design this follows asked to
+            # check first, rather than assuming the fallback chain.
+            "worker-src 'self'",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data: http: https: blob:",
             "object-src 'none'",

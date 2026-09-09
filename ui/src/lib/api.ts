@@ -10,6 +10,8 @@ import type {
   AlertResponse,
   AlertUnseenCountResponse,
   AccountUpdateRequest,
+  PushSubscriptionResponse,
+  VapidPublicKeyResponse,
   AddressbookSummary,
   BulkActionRequest,
   BulkActionResponse,
@@ -543,6 +545,38 @@ export const api = {
     },
     dismissAll(): Promise<void> {
       return request("/alerts/dismiss-all", { method: "POST" });
+    },
+    vapidPublicKey(): Promise<VapidPublicKeyResponse> {
+      return request("/alerts/vapid-public-key");
+    },
+    listSubscriptions(): Promise<PushSubscriptionResponse[]> {
+      return request("/alerts/subscriptions");
+    },
+    registerSubscription(data: {
+      endpoint: string;
+      keys: { p256dh: string; auth: string };
+      label?: string | null;
+    }): Promise<PushSubscriptionResponse> {
+      return request("/alerts/subscriptions", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    updateSubscription(
+      subscriptionId: string,
+      data: {
+        alert_folder_ids?: string[] | null;
+        reminders_enabled?: boolean;
+        label?: string | null;
+      },
+    ): Promise<PushSubscriptionResponse> {
+      return request(`/alerts/subscriptions/${subscriptionId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+    deleteSubscription(subscriptionId: string): Promise<void> {
+      return request(`/alerts/subscriptions/${subscriptionId}`, { method: "DELETE" });
     },
   },
 

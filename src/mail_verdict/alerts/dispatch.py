@@ -8,19 +8,22 @@ into an alert any more than it is ever classified.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from mail_verdict.database.models import Message
+from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.msg_key import compute_msg_key
 from mail_verdict.database.repository import AlertRepository
+from mail_verdict.push.send import dispatch_push_for_alert
 
 if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.database.connection import DatabaseConnection
+    from mail_verdict.push.vapid import VapidKeyRepository
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +32,18 @@ logger = logging.getLogger(__name__)
 # popup itself would truncate to.
 _BODY_MAX_LEN = 120
 
+# asyncio holds only a weak reference to a task nothing else is holding
+# a reference to, so a fire-and-forget push dispatch can be garbage
+# collected mid-flight the moment this function returns. Kept here for
+# exactly as long as the task runs, and discarded via its own done
+# callback once it finishes.
+_background_push_tasks: set[asyncio.Task[None]] = set()
+
 
 async def create_mail_alert_for_arrival(
     db: DatabaseConnection,
     event_ring: EventRing | None,
+    vapid_repo: VapidKeyRepository | None = None,
     *,
     account_id: uuid.UUID,
     message_id: uuid.UUID,
@@ -43,15 +54,25 @@ async def create_mail_alert_for_arrival(
     a new alert (not a duplicate the unique dedupe_key absorbed), push
     alert.new so an open page can raise a notification and refresh its
     unseen count immediately -- the SSE round trip is what makes the
-    in-app path need no polling.
+    in-app path need no polling -- and, if a VapidKeyRepository was
+    passed, hand the alert to a background task that pushes it to every
+    subscription that wants it (push/send.py).
 
-    folder_id rides along on the live event only -- alerts carries no
-    folder_id column of its own (only account_id/message_id, the same
-    source-coordinate shape every alert kind uses), since "which folders
-    alert" is a per-browser preference read client-side from this one
-    live field, not a server-side filter the durable row needs to carry.
-    The caller already has it (the postimap event that triggered this),
-    so it is threaded through rather than re-queried.
+    folder_id rides along on the live event and the push dispatch only --
+    alerts carries no folder_id column of its own (only account_id/
+    message_id, the same source-coordinate shape every alert kind uses).
+    "Which folders alert" is a client-side preference for a browser with
+    no push subscription (see the SSE handler and alert-prefs.ts) and a
+    server-side one (push_subscriptions.alert_folder_ids) for a
+    subscribed device -- both read this one threaded-through value rather
+    than re-querying the message's folder. The caller already has it (the
+    postimap event that triggered this).
+
+    The push dispatch runs as a fire-and-forget background task rather
+    than being awaited here: it makes outbound HTTPS requests to however
+    many push services the reader has devices registered with, and this
+    function runs inline in the postimap event listener -- awaiting it
+    would delay every event still queued behind this one.
 
     A message already gone by the time this runs (expunged between the
     insert and this call) is skipped rather than raising -- an alert for
@@ -81,7 +102,19 @@ async def create_mail_alert_for_arrival(
         account_id=account_id, message_id=message_id, msg_key=msg_key,
         title=row.subject or "(no subject)", body=body,
     )
-    if alert is None or event_ring is None:
+    if alert is None:
+        return
+
+    if vapid_repo is not None:
+        # Fire-and-forget: _dispatch_push_safe below never lets an
+        # exception escape, so there is nothing for a caller to await.
+        push_task = asyncio.create_task(
+            _dispatch_push_safe(db, vapid_repo, alert, folder_id=folder_id)
+        )
+        _background_push_tasks.add(push_task)
+        push_task.add_done_callback(_background_push_tasks.discard)
+
+    if event_ring is None:
         return
 
     await event_ring.add(
@@ -92,3 +125,20 @@ async def create_mail_alert_for_arrival(
             "folder_id": str(folder_id) if folder_id else None,
         },
     )
+
+
+async def _dispatch_push_safe(
+    db: DatabaseConnection,
+    vapid_repo: VapidKeyRepository,
+    alert: Alert,
+    *,
+    folder_id: uuid.UUID | None,
+) -> None:
+    """dispatch_push_for_alert already catches everything it expects to go
+    wrong; this is the backstop for a background task, where an
+    uncaught exception would otherwise only ever surface as an "exception
+    was never retrieved" log line with no context."""
+    try:
+        await dispatch_push_for_alert(db, vapid_repo, alert, folder_id=folder_id)
+    except Exception:
+        logger.exception("Push dispatch failed for alert %s", alert.id)

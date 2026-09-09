@@ -289,6 +289,32 @@ may still be sitting in the column looking applied, when the server never actual
 Available from PostIMAP `service_version` 1.3.0 onward, gated in `postimap/contract.py` the same
 way folder CRUD is.
 
+## Alerts and push notifications
+
+An alert is something meant to interrupt the reader on their device — new mail today, a calendar
+reminder — distinct from a notification (above), which is PostIMAP's own record of a write that
+failed. One `alerts` table is both the durable "what did I miss" list a bell icon reads and, for a
+kind whose delivery needs scheduling, the queue a dispatcher would claim from; a mail alert has no
+such phase and is delivered (`delivered_at` stamped) at insert. `dedupe_key`'s unique index —
+embedding `msg_key` rather than `messages.id`, since a UIDVALIDITY resync replaces every id in a
+folder — is the entire fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING` discipline
+`Verdict` and `CalendarIntake` already use. `alerts.new` on the SSE ring is what lets an open page
+raise a browser notification and refresh its own list without polling.
+
+Reaching a device with no page open at all is Web Push, layered on top rather than replacing that:
+`push_subscriptions` (one row per browser, carrying that browser's own per-device preferences —
+`alert_folder_ids`, `reminders_enabled` — since a subscription row is the only genuinely
+per-device thing a system with no login has) and `vapid_keypair`, this server's signing identity.
+The keypair is generated the first time it is asked for rather than provisioned — nothing seeds
+it, and no chart value or environment variable carries it — with the private key encrypted the
+same way a provider API key is (`core/encryption.py`, gated on `ENCRYPTION_KEY` exactly like a
+provider key); the public key is never stored, since it is cheap to re-derive from the private key
+and doing so keeps the private key the pair's one source of truth. Sending is a fire-and-forget
+background task off the postimap event listener (`push/send.py`, `pywebpush`): a 404 or 410 from
+the push service is its own protocol-level unsubscribe signal and deletes the row, anything else
+is stamped `failed_at` and left for the next alert to try again — an outbound push is never
+awaited inline in the listener, which would delay every event still queued behind it.
+
 ## Folders
 
 Creating a folder is an insert; IMAP has no parent concept, so the full path is built by joining

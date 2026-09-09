@@ -27,6 +27,7 @@ dependencies = [
     "icalendar>=6.0.0",
     "recurring-ical-events>=3.0.0",
     "vobject>=0.9.6.1",
+    "pywebpush>=2.0.0",
 ]
 
 [project.urls]
@@ -86,6 +87,6 @@ plugins = ["sqlalchemy.ext.mypy.plugin"]
 [[tool.mypy.overrides]]
 module = [
     "fastmcp.*", "jinja2.*", "asyncpg", "nh3.*", "tinycss2.*",
-    "recurring_ical_events.*", "vobject.*",
+    "recurring_ical_events.*", "vobject.*", "pywebpush.*", "py_vapid.*",
 ]
 ignore_missing_imports = true

@@ -589,6 +589,66 @@ class AlertUnseenCountResponse(BaseModel):
     unseen: int
 
 
+class VapidPublicKeyResponse(BaseModel):
+    """The applicationServerKey a browser passes to
+    `PushManager.subscribe()`. `available` is false when no
+    ENCRYPTION_KEY is configured -- the same condition that keeps a
+    provider API key from being stored -- so the client can say why push
+    is off rather than the subscribe attempt merely failing."""
+
+    available: bool
+    public_key: str | None
+
+
+class PushSubscriptionKeys(BaseModel):
+    """The two keys `PushManager.subscribe()`'s own JSON representation
+    carries under `keys` -- see push_subscriptions' own docstring."""
+
+    p256dh: str
+    auth: str
+
+
+class PushSubscriptionCreate(BaseModel):
+    """What a browser's `PushSubscription.toJSON()` provides, plus a
+    label this application adds -- never the alert/reminder preferences,
+    which start at their column defaults (every folder, reminders on) and
+    are changed afterward through PATCH."""
+
+    endpoint: str
+    keys: PushSubscriptionKeys
+    label: str | None = None
+
+
+class PushSubscriptionUpdate(BaseModel):
+    """A device's own preferences. Every field defaults to leaving its
+    column untouched -- the endpoint reads `model_fields_set` to tell a
+    field the request body omitted from one explicitly sent as null
+    (meaningful for alert_folder_ids: null means "every folder", not
+    "leave alone"), and passes that through to
+    PushSubscriptionRepository.update_prefs's own sentinel default."""
+
+    alert_folder_ids: list[uuid.UUID] | None = None
+    reminders_enabled: bool | None = None
+    label: str | None = None
+
+
+class PushSubscriptionResponse(BaseModel):
+    """One registered device. The endpoint and keys are never returned --
+    write-only through POST, the same discipline a provider API key
+    follows (settings/credentials.py) -- since nothing here needs to read
+    them back, and an endpoint is personal (see the design's own note)."""
+
+    id: uuid.UUID
+    label: str | None
+    alert_folder_ids: list[uuid.UUID] | None
+    reminders_enabled: bool
+    created_at: datetime
+    last_seen_at: datetime | None
+    failed_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
 # --- Pipeline run schemas ---
 
 

@@ -28,6 +28,7 @@ from mail_verdict.database.models import (
     FolderPrefs,
     MailTag,
     Message,
+    PushSubscription,
     SyncNotification,
     TagSource,
     Verdict,
@@ -1716,3 +1717,171 @@ class AlertRepository:
             )
             result = await session.execute(stmt)
             return int(result.rowcount)  # type: ignore[attr-defined]
+
+
+class PushSubscriptionRepository:
+    """Repository for push_subscriptions -- one browser's Web Push
+    registration, and the per-device preferences that ride along on the
+    same row (see the model's own docstring for why)."""
+
+    def __init__(self, db: DatabaseConnection) -> None:
+        self._db = db
+
+    async def upsert(
+        self,
+        *,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        label: str | None,
+    ) -> PushSubscription:
+        """
+        Register a subscription, or refresh one already registered at
+        this endpoint -- a browser re-subscribing after clearing its own
+        storage, or PushManager rotating the endpoint under an
+        unchanged registration, both look like this rather than a
+        second device appearing.
+
+        Returns:
+            The subscription row, existing or newly inserted
+        """
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(PushSubscription)
+                .values(
+                    endpoint=endpoint, p256dh=p256dh, auth=auth, label=label,
+                    last_seen_at=func.now(),
+                )
+                .on_conflict_do_update(
+                    index_elements=["endpoint"],
+                    set_={
+                        "p256dh": p256dh,
+                        "auth": auth,
+                        "failed_at": None,
+                        "last_seen_at": func.now(),
+                    },
+                )
+                .returning(PushSubscription)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one()
+
+    async def list_all(self) -> list[PushSubscription]:
+        """Every registered device, newest first -- the Settings page's
+        own device list."""
+        async with self._db.session() as session:
+            stmt = select(PushSubscription).order_by(desc(PushSubscription.created_at))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def get(self, subscription_id: uuid.UUID) -> PushSubscription | None:
+        async with self._db.session() as session:
+            stmt = select(PushSubscription).where(PushSubscription.id == subscription_id)
+            return (await session.execute(stmt)).scalar_one_or_none()
+
+    async def update_prefs(
+        self,
+        subscription_id: uuid.UUID,
+        *,
+        alert_folder_ids: list[uuid.UUID] | None | Literal["unset"] = "unset",
+        reminders_enabled: bool | None = None,
+        label: str | None | Literal["unset"] = "unset",
+    ) -> PushSubscription | None:
+        """
+        Update one device's own preferences. Every argument defaults to
+        leaving its column untouched (`"unset"`/`None` sentinels) rather
+        than requiring the caller to re-send the whole row -- a PATCH
+        naming only `reminders_enabled` must not silently null out
+        `alert_folder_ids`.
+
+        Returns:
+            The updated row, or None if subscription_id does not exist
+        """
+        values: dict[str, Any] = {}
+        if alert_folder_ids != "unset":
+            values["alert_folder_ids"] = alert_folder_ids
+        if reminders_enabled is not None:
+            values["reminders_enabled"] = reminders_enabled
+        if label != "unset":
+            values["label"] = label
+        if not values:
+            return await self.get(subscription_id)
+        async with self._db.session() as session:
+            stmt = (
+                update(PushSubscription)
+                .where(PushSubscription.id == subscription_id)
+                .values(**values)
+                .returning(PushSubscription)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def delete(self, subscription_id: uuid.UUID) -> bool:
+        """
+        Unregister a device -- the browser's own unsubscribe, or a stale
+        endpoint a push send discovered is gone (see push/send.py).
+
+        Returns:
+            True if a row was deleted
+        """
+        async with self._db.session() as session:
+            stmt = delete(PushSubscription).where(PushSubscription.id == subscription_id)
+            result = await session.execute(stmt)
+            return bool(result.rowcount)  # type: ignore[attr-defined]
+
+    async def mark_seen(self, subscription_id: uuid.UUID) -> None:
+        """A push to this subscription succeeded -- clear any prior
+        failure and refresh last_seen_at."""
+        async with self._db.session() as session:
+            await session.execute(
+                update(PushSubscription)
+                .where(PushSubscription.id == subscription_id)
+                .values(last_seen_at=func.now(), failed_at=None)
+            )
+
+    async def mark_failed(self, subscription_id: uuid.UUID) -> None:
+        """A push to this subscription failed for a reason other than the
+        protocol's own unsubscribe signal (404/410, handled by deleting
+        the row instead) -- stamped rather than retried, since an alert is
+        time-sensitive and the next arrival will simply try again."""
+        async with self._db.session() as session:
+            await session.execute(
+                update(PushSubscription)
+                .where(PushSubscription.id == subscription_id)
+                .values(failed_at=func.now())
+            )
+
+    async def list_for_alert(
+        self, *, kind: str, folder_id: uuid.UUID | None,
+    ) -> list[PushSubscription]:
+        """
+        Subscriptions eligible to receive a given alert -- the server-side
+        filter that makes "which folders alert" and "do reminders alert
+        at all" real per-device preferences rather than a client-side
+        approximation (see the model's own docstring).
+
+        Args:
+            kind: "mail" or "reminder"
+            folder_id: The mail alert's folder, for the alert_folder_ids
+                filter. Ignored for "reminder", which has no folder to
+                filter on. A "mail" alert with no folder_id (the
+                originating message already gone) only reaches a
+                subscription that alerts for every folder -- a scoped
+                subscription cannot confirm a folder it was never told.
+        """
+        async with self._db.session() as session:
+            stmt = select(PushSubscription)
+            if kind == "mail":
+                if folder_id is not None:
+                    stmt = stmt.where(
+                        or_(
+                            PushSubscription.alert_folder_ids.is_(None),
+                            PushSubscription.alert_folder_ids.any(folder_id),  # type: ignore[arg-type]
+                        )
+                    )
+                else:
+                    stmt = stmt.where(PushSubscription.alert_folder_ids.is_(None))
+            elif kind == "reminder":
+                stmt = stmt.where(PushSubscription.reminders_enabled.is_(True))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())

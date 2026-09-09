@@ -8,7 +8,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { mailArrivedAtom } from "@/lib/atoms";
@@ -20,8 +20,9 @@ import {
   removeMailFromAllListCaches,
 } from "@/hooks/use-mails";
 import { alertKeys } from "@/hooks/use-alerts";
+import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import { useToast } from "@/hooks/use-toast";
-import { alertEnabledFolderIdsAtom, folderAlertsEnabled } from "@/lib/alert-prefs";
+import { folderAlertsEnabled } from "@/lib/alert-prefs";
 import type { OutboxStatus, SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
@@ -65,7 +66,7 @@ export function useSSE(accountId?: string) {
   const setMailArrived = useSetAtom(mailArrivedAtom);
   const queryClient = useQueryClient();
   const { push: pushToast } = useToast();
-  const enabledFolderIds = useAtomValue(alertEnabledFolderIdsAtom);
+  const enabledFolderIds = useEffectiveAlertFolderIds();
   // Read fresh inside the SSE handler (a closure captured once at connect
   // time) without forcing a reconnect every time the preference changes --
   // effects below depend on it explicitly for that reason.

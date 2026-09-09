@@ -6,8 +6,10 @@ count, and dismissal, against a real Postgres schema.
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import text
@@ -15,7 +17,8 @@ from sqlalchemy import text
 from mail_verdict.alerts.dispatch import create_mail_alert_for_arrival
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.repository import AlertRepository
+from mail_verdict.database.repository import AlertRepository, PushSubscriptionRepository
+from mail_verdict.push.vapid import VapidKeyRepository
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 
 _imap_uid_counter = itertools.count(1)
@@ -179,6 +182,48 @@ class TestCreateMailAlertForArrival:
         repo = AlertRepository(migrated_db)
         matching = [a for a in await repo.list_recent() if a.message_id == dead_message_id]
         assert matching == []
+
+    @pytest.mark.asyncio
+    async def test_a_vapid_repo_triggers_a_background_push_dispatch(
+        self, migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Not push/send.py's own coverage (test_push_pg.py has that) --
+        this proves the wiring: passing a VapidKeyRepository causes a push
+        attempt to run, as the fire-and-forget background task this
+        function does not itself await."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id, subject="Push me")
+            await session.commit()
+
+        push_repo = PushSubscriptionRepository(migrated_db)
+        sub = await push_repo.upsert(
+            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label=None,
+        )
+
+        called_endpoints: list[str] = []
+
+        async def fake_webpush(**kwargs: object) -> None:
+            called_endpoints.append(kwargs["subscription_info"]["endpoint"])  # type: ignore[index]
+
+        monkeypatch.setattr(
+            "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
+        )
+
+        vapid_repo = VapidKeyRepository(migrated_db, "00" * 32)
+        started = {t for t in asyncio.all_tasks()}
+        await create_mail_alert_for_arrival(
+            migrated_db, None, vapid_repo,
+            account_id=account_id, message_id=message_id, folder_id=inbox_id,
+        )
+        # The push dispatch is a fire-and-forget task this function does
+        # not await -- give it a chance to actually run before asserting
+        # anything about it.
+        spawned = [t for t in asyncio.all_tasks() - started]
+        if spawned:
+            await asyncio.gather(*spawned)
+
+        assert sub.endpoint in called_endpoints
 
 
 class TestListAndDismiss:

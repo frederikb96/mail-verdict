@@ -1,12 +1,13 @@
 /**
- * Per-browser alert preferences -- which folders raise a system
- * notification. This is deliberately in browser storage, not a
- * server-side setting: there is no push subscription yet (see the alert
- * design), so there is no per-device row on the server to hang this on.
- * Once push exists, a device WITH a subscription moves this preference
- * onto that row instead (push_subscriptions.alert_folder_ids) -- this is
- * what the push path degrades to when it is declined or unavailable, not
- * a separate, permanent mechanism.
+ * Per-browser alert preferences for a device with no push subscription --
+ * which folders raise a system notification while a page is open. This
+ * is deliberately in browser storage, not a server-side setting: there
+ * is no per-device row on the server to hang it on until a subscription
+ * exists. A device WITH one moves this preference onto that row instead
+ * (push_subscriptions.alert_folder_ids, read through
+ * use-push.ts's useEffectiveAlertFolderIds) -- this is what the push
+ * path degrades to when it is declined or unavailable, not a separate,
+ * permanent mechanism.
  *
  * null means "every folder" -- the same NULL-means-nobody-narrowed-it-
  * down convention push_subscriptions.alert_folder_ids itself documents,

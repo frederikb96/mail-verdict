@@ -82,6 +82,14 @@ class TestBuildContentSecurityPolicy:
         script_src = next(part for part in csp.split("; ") if part.startswith("script-src"))
         assert "unsafe-inline" not in script_src
 
+    def test_worker_src_allows_registering_the_service_worker(self) -> None:
+        """/sw.js is fetched under worker-src, not script-src -- without
+        this the fallback chain (worker-src -> child-src -> script-src)
+        happens to cover it today, but only by accident of what
+        script-src allows."""
+        csp = build_content_security_policy(frozenset())
+        assert "worker-src 'self'" in csp
+
     def test_img_src_allows_blob_for_the_compose_editors_pasted_images(self) -> None:
         """A pasted image renders from a blob: object URL while composing --
         without this the browser blocks it as a CSP violation and the
