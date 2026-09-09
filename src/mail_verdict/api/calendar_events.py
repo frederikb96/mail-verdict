@@ -100,18 +100,44 @@ async def _require_support(session: AsyncSession | None = None) -> None:
         )
 
 
-def _parse_month(month: str) -> tuple[datetime, datetime]:
+def _parse_month(month: str, tz: str | None = None) -> tuple[datetime, datetime]:
+    """
+    [window_start, window_end) as UTC instants for the calendar month
+    named by month -- local-month boundaries when tz is given, UTC-month
+    boundaries otherwise (the original, unchanged behaviour).
+
+    Without tz, an event stored close to midnight UTC on the edge of a
+    month can sit in the wrong UTC month relative to the local month a
+    browser groups its own week rows by: a 00:30 Europe/Berlin event on
+    the 1st is 22:30 UTC the previous day, and a browser that only
+    fetches the local month containing a given week never asks for the
+    UTC month that actually holds it. tz makes the two agree by building
+    the window against the same wall-clock reading the browser itself
+    groups by, then converting to the UTC instants every query beneath
+    this one already expects.
+
+    Raises:
+        HTTPException: 400 on a malformed month or an unrecognised tz
+    """
     try:
-        start = datetime.strptime(month, "%Y-%m").replace(tzinfo=timezone.utc)
+        naive_start = datetime.strptime(month, "%Y-%m")
     except ValueError as exc:
         raise HTTPException(
             status_code=400, detail=f"month must be YYYY-MM, got {month!r}",
         ) from exc
-    end = (
-        start.replace(year=start.year + 1, month=1)
-        if start.month == 12
-        else start.replace(month=start.month + 1)
+    naive_end = (
+        naive_start.replace(year=naive_start.year + 1, month=1)
+        if naive_start.month == 12
+        else naive_start.replace(month=naive_start.month + 1)
     )
+    if tz is None:
+        return naive_start.replace(tzinfo=timezone.utc), naive_end.replace(tzinfo=timezone.utc)
+    try:
+        zone = ical.resolve_zone(tz)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    start = naive_start.replace(tzinfo=zone).astimezone(timezone.utc)
+    end = naive_end.replace(tzinfo=zone).astimezone(timezone.utc)
     return start, end
 
 
@@ -328,15 +354,24 @@ async def _expand_all(
 
 
 @router.get("", response_model=EventListResponse)
-async def list_events(month: str, calendars: str | None = None) -> EventListResponse:
+async def list_events(
+    month: str, calendars: str | None = None, tz: str | None = None,
+) -> EventListResponse:
     """Every instance (recurring series expanded) in one calendar-month
     window, across every enabled calendar unless `calendars` narrows it.
     A disabled calendar's instances are never returned; a hidden one's
     are -- is_visible is a client-side view concept, filtered by the
     client from each instance's own calendar_id, so toggling it never
     changes what this endpoint returns or invalidates this response's
-    cache."""
-    window_start, window_end = _parse_month(month)
+    cache.
+
+    tz (an IANA zone name, e.g. "Europe/Berlin") builds the window
+    against local-month boundaries rather than UTC ones -- see
+    _parse_month's own docstring for why that matters. tz must stay the
+    LAST parameter here: mcp_tools.py's list_events calls this positionally
+    and a parameter inserted earlier silently reassigns calendar_ids onto
+    it instead."""
+    window_start, window_end = _parse_month(month, tz)
 
     db = get_db_connection()
     collection_repo = CollectionRepository(db)

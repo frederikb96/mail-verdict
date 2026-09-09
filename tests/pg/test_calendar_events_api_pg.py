@@ -288,6 +288,67 @@ class TestCreateAndList:
         assert "dtstart" in created.json()["detail"] or "dtend" in created.json()["detail"]
 
 
+class TestListWithTimezone:
+    """The list endpoint's own optional tz windows the month against local
+    rather than UTC boundaries -- see _parse_month's docstring for why an
+    event stored close to midnight UTC on a month's edge needs this."""
+
+    def test_an_event_near_midnight_moves_month_with_tz_and_stays_put_without_it(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Near midnight",
+                    # 22:30 UTC on the last day of August is 00:30 CEST
+                    # (UTC+2) on the 1st of September -- the exact edge
+                    # case a Europe/Berlin browser grouping by local month
+                    # needs the September window to reach.
+                    "dtstart": "2026-08-31T22:30:00+00:00",
+                    "dtend": "2026-08-31T23:00:00+00:00",
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            without_tz_september = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+            without_tz_august = client.get(
+                "/calendar/events", params={"month": "2026-08", "calendars": str(calendar_id)},
+            )
+            with_tz_september = client.get(
+                "/calendar/events",
+                params={
+                    "month": "2026-09", "calendars": str(calendar_id), "tz": "Europe/Berlin",
+                },
+            )
+        assert without_tz_september.status_code == 200, without_tz_september.text
+        assert without_tz_august.status_code == 200, without_tz_august.text
+        assert with_tz_september.status_code == 200, with_tz_september.text
+
+        def _summaries(resp: httpx.Response) -> list[str]:
+            return [e["summary"] for e in resp.json()["events"]]
+
+        assert "Near midnight" not in _summaries(without_tz_september)
+        assert "Near midnight" in _summaries(without_tz_august)
+        assert "Near midnight" in _summaries(with_tz_september)
+
+    def test_an_unknown_tz_is_a_400(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            listed = client.get(
+                "/calendar/events",
+                params={
+                    "month": "2026-09", "calendars": str(calendar_id), "tz": "Not/AZone",
+                },
+            )
+        assert listed.status_code == 400, listed.text
+
+
 class TestVisibilityFiltering:
     """is_visible (the sidebar's per-view checkbox) and is_enabled (the
     manage dialog's own "offered at all" level) are independent, and only

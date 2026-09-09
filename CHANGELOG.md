@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   change actually touches instead of every month it has open.
 - Listing a month's events no longer runs two extra database queries per invited instance to
   resolve its own RSVP status -- the whole month resolves it in two queries total.
+- The event list's month window can now be given a timezone (`tz`, an IANA zone name) so it lines
+  up with a browser's local-month grouping rather than UTC -- an event stored close to midnight on
+  the edge of a month could otherwise vanish from the month view entirely.
 
 ## [5.4.0] - 2026-09-09
 

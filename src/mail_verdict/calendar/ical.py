@@ -20,6 +20,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, Literal, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import recurring_ical_events
 from icalendar import Alarm, Calendar, Component, Event, Timezone, vCalAddress, vDDDTypes, vText
@@ -749,6 +750,22 @@ def set_schedule_agent_client_on_attendees(data: str) -> str:
     return _serialize(cal)
 
 
+def resolve_zone(tz: str) -> ZoneInfo:
+    """
+    The named IANA zone, or a ValueError every caller surfaces as its own
+    400 -- _bind_to_zone below and calendar_events.py's month-window
+    parsing both need the identical answer to "is this a real zone name",
+    not two copies of the same lookup.
+
+    Raises:
+        ValueError: tz is not a recognised IANA zone name
+    """
+    try:
+        return ZoneInfo(tz)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(f"Unknown timezone: {tz!r}") from exc
+
+
 def _bind_to_zone(dtstart: datetime, dtend: datetime, tz: str) -> tuple[datetime, datetime]:
     """
     Reattach dtstart/dtend to the named IANA zone, keeping their wall-clock
@@ -768,12 +785,7 @@ def _bind_to_zone(dtstart: datetime, dtend: datetime, tz: str) -> tuple[datetime
     Raises:
         ValueError: tz is not a recognised IANA zone name
     """
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-    try:
-        zone = ZoneInfo(tz)
-    except ZoneInfoNotFoundError as exc:
-        raise ValueError(f"Unknown timezone: {tz!r}") from exc
+    zone = resolve_zone(tz)
     return dtstart.replace(tzinfo=zone), dtend.replace(tzinfo=zone)
 
 
