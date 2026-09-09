@@ -380,8 +380,10 @@ class AccountResponse(BaseModel):
     emoji: str | None = None
     spam_enabled: bool = False
     folder_order: list[str] | None = None
-    # NULL/omitted is off -- see AccountPrefs.trash_retention_days.
+    # NULL/omitted is off -- see AccountPrefs.trash_retention_days /
+    # .junk_retention_days, independently configurable.
     trash_retention_days: int | None = None
+    junk_retention_days: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -403,6 +405,7 @@ class AccountCreateRequest(BaseModel):
     emoji: str | None = None
     spam_enabled: bool = False
     trash_retention_days: int | None = None
+    junk_retention_days: int | None = None
 
 
 class AccountUpdateRequest(BaseModel):
@@ -425,6 +428,7 @@ class AccountUpdateRequest(BaseModel):
     emoji: str | None = None
     spam_enabled: bool | None = None
     trash_retention_days: int | None = None
+    junk_retention_days: int | None = None
 
 
 # --- Folder schemas ---
