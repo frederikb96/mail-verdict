@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.5.0] - 2026-09-09
+
 ### Calendar
 
 - The month view scrolls smoothly on a mailbox with thousands of events: scrolling no longer
