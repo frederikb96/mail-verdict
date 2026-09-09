@@ -74,7 +74,7 @@ _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
 _mail_alert_finalizer: Any | None = None
-_trash_retention_sweeper: Any | None = None
+_retention_sweeper: Any | None = None
 _contract_ok: bool = False
 _liveness_server: ThreadingHTTPServer | None = None
 _liveness_thread: Thread | None = None
@@ -139,7 +139,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
-    global _mail_alert_finalizer, _trash_retention_sweeper
+    global _mail_alert_finalizer, _retention_sweeper
 
     config = get_config()
 
@@ -298,10 +298,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await _mail_alert_finalizer.start()
 
-    from mail_verdict.retention.sweep import build_trash_retention_timer
+    from mail_verdict.retention.sweep import build_retention_timer
 
-    _trash_retention_sweeper = build_trash_retention_timer(db)
-    await _trash_retention_sweeper.start()
+    _retention_sweeper = build_retention_timer(db)
+    await _retention_sweeper.start()
 
     async def _on_postimap_event(event: Any) -> None:
         """Dispatch a parsed postimap_events payload to EventRing, the
@@ -427,8 +427,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _pending_send_timer.stop()
     if _mail_alert_finalizer:
         await _mail_alert_finalizer.stop()
-    if _trash_retention_sweeper:
-        await _trash_retention_sweeper.stop()
+    if _retention_sweeper:
+        await _retention_sweeper.stop()
     if _embedding_components:
         await _embedding_components.stop()
     if _queue_manager:
@@ -443,7 +443,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_reconciler = None
     _pending_send_timer = None
     _mail_alert_finalizer = None
-    _trash_retention_sweeper = None
+    _retention_sweeper = None
     _contract_ok = False
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
