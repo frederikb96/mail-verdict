@@ -15,42 +15,11 @@ from playwright.sync_api import Page, Response, expect
 
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
+    create_account,
     mail_row,
-    unique_email,
     wait_for,
-    wait_for_account_active,
     wait_for_folder,
 )
-
-from tests.setup.containers import (  # isort: skip
-    DOVECOT_ALIAS,
-    DOVECOT_IMAP_PORT,
-    DOVECOT_PASSWORD,
-    MAILPIT_ALIAS,
-    MAILPIT_SMTP_PORT,
-)
-
-
-def _create_account(api_client: httpx.Client, email: str) -> dict[str, Any]:
-    resp = api_client.post(
-        "/api/accounts",
-        json={
-            "name": email,
-            "imap_host": DOVECOT_ALIAS,
-            "imap_port": DOVECOT_IMAP_PORT,
-            "imap_user": email,
-            "imap_password": DOVECOT_PASSWORD,
-            "smtp_host": MAILPIT_ALIAS,
-            "smtp_port": MAILPIT_SMTP_PORT,
-            "smtp_user": email,
-            "smtp_password": "unused",
-        },
-    )
-    assert resp.status_code == 201, resp.text
-    account = resp.json()
-    wait_for_account_active(api_client, account["id"])
-    account["email"] = email
-    return account
 
 
 def _set_unified_name(api_client: httpx.Client, folder_id: str, unified_name: str) -> None:
@@ -133,8 +102,8 @@ class TestUnifiedSelectionMoveUi:
         api_client: httpx.Client,
         dovecot_endpoint: tuple[str, int, int],
     ) -> None:
-        account_a = _create_account(api_client, unique_email("unified-a"))
-        account_b = _create_account(api_client, unique_email("unified-b"))
+        account_a = create_account(api_client, "unified-a")
+        account_b = create_account(api_client, "unified-b")
         inbox_a = wait_for_folder(api_client, account_a["id"], "INBOX")
         inbox_b = wait_for_folder(api_client, account_b["id"], "INBOX")
 
@@ -238,8 +207,8 @@ class TestSelectionSurvivesItsRowLeavingTheCache:
         api_client: httpx.Client,
         dovecot_endpoint: tuple[str, int, int],
     ) -> None:
-        account_a = _create_account(api_client, unique_email("unified-evict-a"))
-        account_b = _create_account(api_client, unique_email("unified-evict-b"))
+        account_a = create_account(api_client, "unified-evict-a")
+        account_b = create_account(api_client, "unified-evict-b")
         inbox_a = wait_for_folder(api_client, account_a["id"], "INBOX")
         inbox_b = wait_for_folder(api_client, account_b["id"], "INBOX")
         elsewhere_a = _create_folder(
@@ -330,7 +299,7 @@ class TestUnifiedViewAutoSelectsAFolder:
         api_client: httpx.Client,
         dovecot_endpoint: tuple[str, int, int],
     ) -> None:
-        account = _create_account(api_client, unique_email("unified-autoselect"))
+        account = create_account(api_client, "unified-autoselect")
         inbox = wait_for_folder(api_client, account["id"], "INBOX")
         unified_name = f"Unified Inbox {uuid.uuid4().hex[:8]}"
         _set_unified_name(api_client, inbox["id"], unified_name)

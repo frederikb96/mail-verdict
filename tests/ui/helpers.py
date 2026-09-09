@@ -23,6 +23,14 @@ from tests.e2e.helpers import (  # noqa: F401 -- re-exported for tests/ui/ calle
     wait_for_mailpit_message,
 )
 
+from tests.setup.containers import (  # isort: skip
+    DOVECOT_ALIAS,
+    DOVECOT_IMAP_PORT,
+    DOVECOT_PASSWORD,
+    MAILPIT_ALIAS,
+    MAILPIT_SMTP_PORT,
+)
+
 # Raw-pointer sequence, not locator.drag_to(): dnd-kit only activates its
 # PointerSensor on a real mousedown/mousemove/mouseup sequence with an
 # activation-distance move first, and Playwright's own drag_to() additionally
@@ -203,6 +211,35 @@ def wait_for_account_active(
         f"Account {account_id} did not reach 'active' within {timeout_s}s "
         f"(last state: {last_state!r})"
     )
+
+
+def create_account(client: httpx.Client, name_prefix: str) -> dict[str, Any]:
+    """An active account wired to Mailpit, under a unique name -- the same
+    shape several test modules each rebuilt by hand (mail actions, unified
+    selection). Waits for `active` before returning, so a caller never
+    races PostIMAP's own first connection. The account's own email is
+    folded into the returned dict as `email`, matching what those callers
+    already relied on."""
+    email = unique_email(name_prefix)
+    resp = client.post(
+        "/api/accounts",
+        json={
+            "name": email,
+            "imap_host": DOVECOT_ALIAS,
+            "imap_port": DOVECOT_IMAP_PORT,
+            "imap_user": email,
+            "imap_password": DOVECOT_PASSWORD,
+            "smtp_host": MAILPIT_ALIAS,
+            "smtp_port": MAILPIT_SMTP_PORT,
+            "smtp_user": email,
+            "smtp_password": "unused",  # Mailpit accepts any SMTP AUTH credentials
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    account = resp.json()
+    wait_for_account_active(client, account["id"])
+    account["email"] = email
+    return account
 
 
 def wait_for_folder(
