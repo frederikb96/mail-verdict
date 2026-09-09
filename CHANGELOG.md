@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- Trash retention now means time spent sitting in Trash, not a message's own date -- mail already
+  years old when it is trashed still gets the full window before removal, the same as every mail
+  client's own "empty Trash after N days" already means.
+- Ruling a message spam -- the thumbs-down button, the review screen, or a bulk action over
+  several -- now marks it read too, the same as moving one there by hand already does. Nothing
+  lands in the spam folder unread any more, whichever way it got there.
+
 ### Rules
 
 - A sender condition (matching an exact address or a domain) now matches real mail: it compared
