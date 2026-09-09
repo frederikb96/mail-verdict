@@ -7,6 +7,7 @@
  * month view is not re-fetched for the day view landing on the same week.
  */
 
+import { useMemo } from "react";
 import {
   type QueryClient,
   keepPreviousData,
@@ -17,7 +18,7 @@ import {
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useCalendars } from "@/hooks/use-calendars";
-import { monthChunkKey, monthChunksForWeek, weekDays } from "@/lib/dates";
+import { monthChunksForWeek, monthsBetween, weekDays } from "@/lib/dates";
 import type {
   Calendar,
   EventCreateRequest,
@@ -53,13 +54,28 @@ function instanceKey(e: Pick<EventInstance, "object_id" | "recurrence_id">): str
   return `${e.object_id}:${e.recurrence_id ?? "master"}`;
 }
 
-export function useEventChunk(month: string) {
-  return useQuery({
+/** SSE explicitly invalidates the exact chunks a change touches (see
+ * use-sse.ts's calendar.object handling), so a chunk needs no eager
+ * refetch-on-mount to stay correct -- only `refetchOnMount: "always"`
+ * (the app-wide default set in providers.tsx) does, and that default is
+ * what turned a flick back over months already in memory into dozens of
+ * redundant requests: every remounted observer refetched regardless of
+ * freshness. `refetchOnMount: true` here means "refetch only if stale",
+ * and the stale time is long enough that it almost never is. */
+const EVENT_CHUNK_STALE_TIME = 30 * 60_000;
+
+function chunkQueryOptions(month: string) {
+  return {
     queryKey: eventKeys.chunk(month),
-    queryFn: ({ signal }) => api.events.list({ month }, signal),
-    staleTime: 5 * 60_000,
+    queryFn: ({ signal }: { signal: AbortSignal }) => api.events.list({ month }, signal),
+    staleTime: EVENT_CHUNK_STALE_TIME,
+    refetchOnMount: true as const,
     placeholderData: keepPreviousData,
-  });
+  };
+}
+
+export function useEventChunk(month: string) {
+  return useQuery(chunkQueryOptions(month));
 }
 
 /** The full instance for the popover/editor -- fetched directly rather than
@@ -77,74 +93,99 @@ export function useEventDetail(objectId: string | null, recurrenceId: string | n
 export function useEventsForRange(from: Date, to: Date) {
   const months = monthsBetween(from, to);
   const { data: calendars } = useCalendars();
-  const results = useQueries({
-    queries: months.map((month) => ({
-      queryKey: eventKeys.chunk(month),
-      queryFn: ({ signal }) => api.events.list({ month }, signal),
-      staleTime: 5 * 60_000,
-      placeholderData: keepPreviousData,
-    })),
-  });
+  const results = useQueries({ queries: months.map((month) => chunkQueryOptions(month)) });
+  const dataRefs = results.map((r) => r.data);
 
   const isLoading = results.some((r) => r.isLoading);
-  const byKey = new Map<string, EventInstance>();
-  for (const r of results) {
-    for (const e of r.data?.events ?? []) {
-      byKey.set(instanceKey(e), e);
-    }
-  }
   const fromMs = from.getTime();
   const toMs = to.getTime();
-  const events = filterVisible(Array.from(byKey.values()), calendars).filter((e) => {
-    const start = new Date(e.dtstart).getTime();
-    const end = new Date(e.dtend).getTime();
-    return end >= fromMs && start <= toMs;
-  });
 
-  return { events, isLoading };
+  // Referentially stable while every chunk's own `data` reference is
+  // unchanged -- react-query already keeps that reference stable across
+  // renders where the underlying data didn't actually change, so this
+  // only recomputes on a real fetch, never on an unrelated re-render.
+  const events = useMemo(() => {
+    const byKey = new Map<string, EventInstance>();
+    for (const r of results) {
+      for (const e of r.data?.events ?? []) {
+        byKey.set(instanceKey(e), e);
+      }
+    }
+    return Array.from(byKey.values()).filter((e) => {
+      const start = new Date(e.dtstart).getTime();
+      const end = new Date(e.dtend).getTime();
+      return end >= fromMs && start <= toMs;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, dataRefs);
+  const visible = useMemo(() => filterVisible(events, calendars), [events, calendars]);
+
+  return { events: visible, isLoading };
 }
 
 /** Events touching a given week, read from whichever month chunks the week's
- * days fall into (a week can touch two, at a month boundary). An unloaded
- * chunk simply contributes nothing -- the row renders empty rather than a
- * skeleton, which is what keeps a fixed-height row's loading state
- * invisible to layout. */
-export function useWeekEvents(weekIndex: number): EventInstance[] {
+ * days fall into (a week can touch two, at a month boundary).
+ *
+ * `enabledMonths`, when given, gates which of those chunks are actually
+ * fetched -- the month scroller uses this to keep a fast flick from firing
+ * one request per row passed: a row mounts (and this hook runs) well
+ * before its month is committed to the fetch window, so it must not
+ * request in the meantime. Omitted (the day/week/agenda views, which have
+ * no such flick problem), every relevant month is simply always enabled.
+ *
+ * `loaded` is false while any relevant chunk has never had data (gated OR
+ * genuinely still loading) -- month-week-row.tsx renders a skeleton in
+ * that case, but keeps rendering nothing once it has ever loaded, thanks
+ * to `placeholderData: keepPreviousData` keeping the previous chunk's data
+ * in place across a refetch. */
+export function useWeekEvents(
+  weekIndex: number,
+  enabledMonths?: ReadonlySet<string>,
+): { events: EventInstance[]; loaded: boolean } {
   const months = monthChunksForWeek(weekIndex);
   const { data: calendars } = useCalendars();
   const results = useQueries({
     queries: months.map((month) => ({
-      queryKey: eventKeys.chunk(month),
-      queryFn: ({ signal }) => api.events.list({ month }, signal),
-      staleTime: 5 * 60_000,
-      placeholderData: keepPreviousData,
+      ...chunkQueryOptions(month),
+      enabled: enabledMonths ? enabledMonths.has(month) : true,
     })),
   });
+  const dataRefs = results.map((r) => r.data);
 
   const days = weekDays(weekIndex);
   const weekStart = days[0].getTime();
   const weekEnd = days[6].getTime() + 24 * 60 * 60 * 1000;
 
-  const byKey = new Map<string, EventInstance>();
-  for (const r of results) {
-    for (const e of r.data?.events ?? []) {
-      const start = new Date(e.dtstart).getTime();
-      const end = new Date(e.dtend).getTime();
-      if (end >= weekStart && start < weekEnd) byKey.set(instanceKey(e), e);
+  const events = useMemo(() => {
+    const byKey = new Map<string, EventInstance>();
+    for (const r of results) {
+      for (const e of r.data?.events ?? []) {
+        const start = new Date(e.dtstart).getTime();
+        const end = new Date(e.dtend).getTime();
+        if (end >= weekStart && start < weekEnd) byKey.set(instanceKey(e), e);
+      }
     }
-  }
-  return filterVisible(Array.from(byKey.values()), calendars);
+    return Array.from(byKey.values());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, dataRefs);
+  const visible = useMemo(() => filterVisible(events, calendars), [events, calendars]);
+
+  return { events: visible, loaded: results.every((r) => r.data !== undefined) };
 }
 
-function monthsBetween(from: Date, to: Date): string[] {
-  const months: string[] = [];
-  const cursor = new Date(from.getFullYear(), from.getMonth(), 1);
-  const end = new Date(to.getFullYear(), to.getMonth(), 1);
-  while (cursor <= end) {
-    months.push(monthChunkKey(cursor));
-    cursor.setMonth(cursor.getMonth() + 1);
-  }
-  return months;
+/**
+ * Keeps a durable query observer alive for every month in the given fetch
+ * window, for as long as the caller (the month scroller) is mounted --
+ * regardless of whether any individual week row referencing that month is
+ * currently rendered. Without this, a month committed to the fetch window
+ * is fetched only by the transient row that happens to trigger it, and if
+ * that row scrolls back out of the render window before the request
+ * resolves, react-query aborts the fetch (nothing else observes it
+ * anymore) -- a month the reader deliberately paused on would then load
+ * only on a second attempt. The return value is unused; this hook exists
+ * purely for the fetch it anchors. */
+export function useKeepEventChunksWarm(months: readonly string[]): void {
+  useQueries({ queries: months.map((month) => chunkQueryOptions(month)) });
 }
 
 /** Applies `updater` to a matching instance across every loaded chunk. */
