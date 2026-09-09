@@ -1669,6 +1669,7 @@ class AlertRepository:
 
     async def list_recent(
         self, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
+        unseen_only: bool = False,
     ) -> list[Alert]:
         """
         The durable alert list, newest first -- delivered_at rather than
@@ -1686,12 +1687,19 @@ class AlertRepository:
                 folder_id is in it. A row with no folder_id (a reminder,
                 or one that predates the column) always passes, since a
                 folder preference has nothing to say about it.
+            unseen_only: Only rows with dismissed_at IS NULL -- what the
+                bell badge (unseen_count) itself counts, so a caller that
+                needs its list and its count to agree can ask for exactly
+                that rather than a plain recent page that may not even
+                contain every unseen row.
 
         Returns:
             Alerts ordered (delivered_at DESC, id DESC), delivered only
         """
         async with self._db.session() as session:
             stmt = select(Alert).where(Alert.delivered_at.is_not(None))
+            if unseen_only:
+                stmt = stmt.where(Alert.dismissed_at.is_(None))
             if folder_ids is not None:
                 stmt = stmt.where(
                     or_(Alert.folder_id.is_(None), Alert.folder_id.in_(folder_ids)),

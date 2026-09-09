@@ -17,11 +17,12 @@ export const alertKeys = {
   count: ["alerts", "count"] as const,
 };
 
-export function useAlerts(limit = 50) {
+export function useAlerts(limit = 50, opts?: { unseenOnly?: boolean }) {
   const folderIds = useEffectiveAlertFolderIds();
+  const unseenOnly = opts?.unseenOnly ?? false;
   return useQuery<AlertResponse[]>({
-    queryKey: [...alertKeys.list, limit, folderIds],
-    queryFn: () => api.alerts.list(limit, folderIds),
+    queryKey: [...alertKeys.list, limit, folderIds, unseenOnly],
+    queryFn: () => api.alerts.list(limit, folderIds, unseenOnly),
     staleTime: 10_000,
   });
 }

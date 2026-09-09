@@ -59,6 +59,7 @@ async def list_alerts(
             "nothing'."
         ),
     ),
+    unseen_only: bool = Query(default=False),
 ) -> list[AlertResponse]:
     """The durable alert list, newest first -- not account-scoped, the
     same as the SSE stream itself: an installed application watches every
@@ -69,6 +70,7 @@ async def list_alerts(
     repo = get_alert_repo()
     rows = await repo.list_recent(
         limit=limit, folder_ids=folder_ids if folder_scoped else None,
+        unseen_only=unseen_only,
     )
     return [AlertResponse.model_validate(row) for row in rows]
 
