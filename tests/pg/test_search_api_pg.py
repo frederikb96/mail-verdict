@@ -362,6 +362,79 @@ class TestScale:
         assert elapsed < 5.0, f"body search over {count} messages took {elapsed:.2f}s"
 
 
+class TestDateRangeAtScale:
+    """The one thing the search survey flagged as measured rather than
+    reasoned: a broad token, a narrow date range, and no folder scope --
+    the combination most likely to need a supporting index, since the
+    only index touching received_at is composite with folder_id."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.timeout(120)
+    async def test_broad_token_narrow_date_range_no_folder_scope(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        count = 3000
+        async with migrated_db.session() as session:
+            account_id, folder_id = await seed_large_mailbox_account(session)
+            await session.commit()
+
+        table = Table(
+            "messages", MetaData(),
+            Column("id", Uuid), Column("account_id", Uuid), Column("folder_id", Uuid),
+            Column("imap_uid", BigInteger), Column("thread_id", Uuid), Column("message_id", Text),
+            Column("subject", Text), Column("from_addr", Text), Column("body_text", Text),
+            Column("received_at", DateTime(timezone=True)),
+        )
+        # A token common enough that recall alone doesn't narrow much --
+        # every row carries it -- so the date range is doing the real work
+        # of shrinking the candidate set, the shape the survey flagged.
+        rows = [
+            {
+                "id": uuid.uuid4(), "account_id": account_id, "folder_id": folder_id,
+                "imap_uid": 100 + i, "thread_id": uuid.uuid4(),
+                "message_id": f"<{uuid.uuid4()}@large-mailbox.example.com>",
+                "subject": f"Newsletter update {i}", "from_addr": f"sender{i % 50}@example.com",
+                "body_text": "update", "received_at": _BASE_TIME + timedelta(minutes=i + 1),
+            }
+            for i in range(count)
+        ]
+        async with migrated_db.session() as session:
+            await session.execute(insert(table), rows)
+            await session.commit()
+
+        # A window covering roughly a tenth of the corpus, in its middle.
+        window_start = _BASE_TIME + timedelta(minutes=count // 2 - 150)
+        window_end = _BASE_TIME + timedelta(minutes=count // 2 + 150)
+
+        async with migrated_db.session() as session:
+            plan_rows = (
+                await session.execute(
+                    text(
+                        "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) "
+                        "SELECT id FROM messages WHERE expunged_at IS NULL "
+                        "AND received_at >= :start AND received_at <= :end "
+                        "AND search_vector @@ to_tsquery('simple', 'update:*')"
+                    ),
+                    {"start": window_start, "end": window_end},
+                )
+            ).all()
+        plan_text = "\n".join(r[0] for r in plan_rows)
+        print(f"\n{plan_text}")
+
+        started = time.monotonic()
+        page = await search_messages(
+            q="update", account_id=None, folder_ids=None,
+            fields=["subject", "body"], before=None, limit=50,
+            received_after=window_start, received_before=window_end,
+        )
+        elapsed = time.monotonic() - started
+
+        assert len(page.results) > 0
+        assert page.total == 301  # count // 2 - 150 .. count // 2 + 150 inclusive
+        print(f"\ndate-range search, no folder scope, {count} messages: {elapsed*1000:.1f}ms")
+        assert elapsed < 5.0, f"date-range search over {count} messages took {elapsed:.2f}s"
+
+
 class TestTierRanking:
     """Ranked by field tier, not date and not ts_rank -- search_vector
     carries no per-field weights, so ts_rank cannot express this."""
