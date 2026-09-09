@@ -11,6 +11,7 @@ import {
   Ban,
   ThumbsUp,
   ThumbsDown,
+  Undo2,
   MailOpen,
   Mail as MailIcon,
   FileDown,
@@ -350,7 +351,7 @@ export function ReadingPane() {
               title="Remove from Junk"
               aria-label="Remove from Junk"
             >
-              <ThumbsUp className="h-4 w-4" />
+              <Undo2 className="h-4 w-4" />
             </Button>
           ) : (
             <Button

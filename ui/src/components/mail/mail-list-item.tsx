@@ -1,6 +1,6 @@
 "use client";
 
-import { Star, Archive, Ban, ThumbsUp, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
+import { Star, Archive, Ban, Undo2, Trash2, MailOpen, Mail as MailIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { extractEmail, extractSenderName, formatRelativeDate } from "@/lib/format";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
@@ -243,7 +243,7 @@ export function MailListItem({
             title={`Remove from Junk${threadSuffix}`}
             aria-label={`Remove from Junk${threadSuffix}`}
           >
-            <ThumbsUp className="h-4 w-4 text-muted-foreground" />
+            <Undo2 className="h-4 w-4 text-muted-foreground" />
           </button>
         ) : (
           <button
