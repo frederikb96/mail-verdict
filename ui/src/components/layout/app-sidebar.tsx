@@ -506,7 +506,11 @@ export function AppSidebar() {
               )}
               {isUnified && (!unifiedFolders || unifiedFolders.length === 0) && (
                 <div className="px-4 py-3 text-sm text-muted-foreground">
-                  No unified folders configured
+                  No unified folders configured yet.{" "}
+                  <Link href="/accounts" className="underline">
+                    Give matching folders the same unified name
+                  </Link>{" "}
+                  on each account to group them here.
                 </div>
               )}
             </SidebarMenu>
