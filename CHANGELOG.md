@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Calendar
+
+- A month's event listing no longer scans every recurring series in a calendar regardless of the
+  window -- a series whose own start date is after the window ends can never contribute to it and
+  is excluded from the query.
+
 ## [5.4.0] - 2026-09-09
 
 ### Mail

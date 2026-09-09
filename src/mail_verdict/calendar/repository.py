@@ -233,16 +233,20 @@ class DavObjectRepository:
         material calendar/ical.py's expand_instances() then windows.
 
         Filtered in SQL to what a window could actually contain when one
-        is given: a recurring master (any occurrence could fall inside
-        the window, so it always qualifies) or a non-recurring object
-        whose own [dtstart, dtend) overlaps it. dtstart/dtend/is_recurring
-        are PostIMAP's own read-only parse of `data`
-        (idx_dav_objects_collection_dtstart indexes exactly this), so this
-        never touches recurrence rules itself. Without a window, every
-        live object is returned -- a NULL dtstart/is_recurring (an insert
-        or move still pending its outbound sync) is also kept in that
-        case, since parsed columns lag the write by milliseconds and a
-        just-created event should still render.
+        is given: a recurring master whose own dtstart is before the
+        window ends (any occurrence from there on could fall inside the
+        window, so it qualifies regardless of how far its dtstart sits
+        before window_start -- a series cannot produce an occurrence
+        before its own dtstart, so one starting after the window is
+        excluded the same as a non-recurring object would be) or a
+        non-recurring object whose own [dtstart, dtend) overlaps it.
+        dtstart/dtend/is_recurring are PostIMAP's own read-only parse of
+        `data` (idx_dav_objects_collection_dtstart indexes exactly this),
+        so this never touches recurrence rules itself. Without a window,
+        every live object is returned -- a NULL dtstart/is_recurring (an
+        insert or move still pending its outbound sync) is also kept in
+        that case, since parsed columns lag the write by milliseconds and
+        a just-created event should still render.
 
         dtend is COALESCEd to dtstart because PostIMAP only ever writes it
         from an explicit DTEND property (codec.ts reads
@@ -267,7 +271,7 @@ class DavObjectRepository:
                 effective_dtend = func.coalesce(DavObject.dtend, DavObject.dtstart)
                 stmt = stmt.where(
                     or_(
-                        DavObject.is_recurring.is_(True),
+                        and_(DavObject.is_recurring.is_(True), DavObject.dtstart < window_end),
                         DavObject.dtstart.is_(None),
                         and_(
                             DavObject.dtstart < window_end, effective_dtend >= window_start,
