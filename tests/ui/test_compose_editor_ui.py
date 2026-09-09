@@ -8,6 +8,7 @@ when there is unsaved work, the gap that most annoyed the owner.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -270,6 +271,41 @@ class TestPasteAndScroll:
         assert dialog_box is not None and viewport is not None
         assert dialog_box["height"] <= viewport["height"]
 
+    def test_a_plain_text_paste_over_a_selected_word_stays_in_the_paragraph(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """A grammar-checker extension applies its correction by selecting
+        the flagged word in the DOM and dispatching a synthetic paste event
+        carrying only the replacement as plain text -- the same shape an
+        ordinary paste over a selection takes. Replacing the selected range
+        with a paragraph-shaped node instead of inline content splits the
+        paragraph in two and strands the replacement between the halves."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        page.keyboard.type("This is a msitake in the sentence.")
+
+        body.evaluate(
+            """(el) => {
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                const node = walker.nextNode();
+                const offset = node.textContent.indexOf('msitake');
+                const range = document.createRange();
+                range.setStart(node, offset);
+                range.setEnd(node, offset + 'msitake'.length);
+                const selection = node.ownerDocument.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }""",
+        )
+        _dispatch_paste(body, "", "mistake")
+
+        expect(body.locator("p")).to_have_count(1)
+        expect(body).to_have_text("This is a mistake in the sentence.")
+
 
 class TestRecipientFieldAccessibleName:
     def test_the_to_field_keeps_its_accessible_name_once_a_chip_exists(
@@ -317,6 +353,81 @@ class TestReplyQuoting:
             "(el) => el.shadowRoot.querySelector('h1')?.textContent ?? ''",
         )
         assert quoted_heading == "Original heading"
+
+    def test_editing_a_replys_subject_keeps_threading_intact(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        mailpit_http_url: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        """The subject a reply starts with is derived, not fixed -- typing
+        over it does not touch the threading headers, which come from the
+        original message's id rather than from its subject line."""
+        custom_subject = f"Something else entirely {uuid.uuid4()}"
+
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        subject_field = page.get_by_role("textbox", name="Subject", exact=True)
+        expect(subject_field).to_be_visible(timeout=10_000)
+        subject_field.fill(custom_subject)
+
+        page.get_by_role("button", name="Send", exact=True).click()
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
+
+        wait_for_mailpit_message(mailpit_http_url, custom_subject)
+
+        _trigger_sync(api_client, editor_account["id"])
+        sent_folder = wait_for_folder(api_client, str(editor_account["id"]), "Sent")
+        sent = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, editor_account["id"], sent_folder["id"])
+                 if m["subject"] == custom_subject),
+                None,
+            ),
+            timeout_s=60.0, description=f"Reply {custom_subject!r} synced into Sent",
+        )
+        assert sent["thread_id"] == original_message["thread_id"]
+
+
+class TestComposeRecoveryBuffer:
+    def test_typing_into_a_reply_then_reloading_offers_it_back(
+        self,
+        page: Page,
+        app_server: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        """There is no server-side draft autosave -- see compose-form.tsx
+        for why -- so a crash, reload or closed tab relies entirely on a
+        local recovery buffer instead. Typing, then reloading, must offer
+        the text back rather than silently losing it."""
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("Recovered after a reload.")
+        expect(body).to_contain_text("Recovered after a reload.")
+
+        # The recovery buffer samples on an interval rather than on every
+        # keystroke -- give it time to actually persist before reloading.
+        page.wait_for_timeout(1500)
+
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        expect(
+            page.get_by_text("Recovered unsaved text from an earlier session.")
+        ).to_be_visible(timeout=10_000)
+        page.get_by_role("button", name="Restore", exact=True).click()
+
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "Recovered after a reload.",
+        )
 
 
 class TestReplyQuoteDoesNotLeakImages:
@@ -447,6 +558,148 @@ class TestDraftReopenPreservesTheQuote:
             "expected the plain-text quote to survive the reopened draft; "
             f"raw source:\n{raw.text}"
         )
+
+
+@pytest.fixture(scope="module")
+def identity_account(
+    api_client: httpx.Client, dovecot_endpoint: tuple[str, int, int],
+) -> dict[str, Any]:
+    """A second account, separate from editor_account, so giving it more
+    than one identity cannot change what any other test in this module
+    sees rendered."""
+    host, _imap_port, lmtp_port = dovecot_endpoint
+    email = unique_email("identity")
+    resp = api_client.post(
+        "/api/accounts",
+        json={
+            "name": email,
+            "imap_host": DOVECOT_ALIAS,
+            "imap_port": DOVECOT_IMAP_PORT,
+            "imap_user": email,
+            "imap_password": DOVECOT_PASSWORD,
+            "smtp_host": MAILPIT_ALIAS,
+            "smtp_port": MAILPIT_SMTP_PORT,
+            "smtp_user": email,
+            "smtp_password": "unused",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    account = resp.json()
+    wait_for_account_active(api_client, account["id"])
+    account["email"] = email
+    return account
+
+
+@pytest.fixture(scope="module")
+def default_identity(
+    api_client: httpx.Client, identity_account: dict[str, Any],
+) -> dict[str, Any]:
+    """An account's first identity is always made the default, whatever
+    the request itself asks for."""
+    resp = api_client.post(
+        "/api/identities",
+        json={"account_id": identity_account["id"], "address": identity_account["email"]},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+@pytest.fixture(scope="module")
+def alias_identity(
+    api_client: httpx.Client, identity_account: dict[str, Any], default_identity: dict[str, Any],
+) -> dict[str, Any]:
+    resp = api_client.post(
+        "/api/identities",
+        json={"account_id": identity_account["id"], "address": unique_email("identity-alias")},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+class TestIdentitySelection:
+    """Which identity a reply or a fresh compose starts from -- already
+    correct; these lock the fallback chain with a test that would fail if
+    it ever regressed."""
+
+    def test_a_reply_sends_from_the_address_the_original_arrived_at(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        mailpit_http_url: str,
+        identity_account: dict[str, Any],
+        default_identity: dict[str, Any],
+        alias_identity: dict[str, Any],
+    ) -> None:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"Identity fallback test {uuid.uuid4()}"
+        # The To: header names the alias -- the address matchIdentity
+        # resolves against -- while the LMTP envelope recipient is the
+        # account's own mailbox, since aliasing is an application-level
+        # notion here rather than something the mail server routes.
+        message = build_eml(
+            sender="sender@example.com", recipient=alias_identity["address"], subject=subject,
+            message_id=f"<identity-{uuid.uuid4()}@example.com>",
+            body="Addressed to the alias.",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=identity_account["email"],
+        )
+
+        inbox = wait_for_folder(api_client, str(identity_account["id"]), "INBOX")
+        original = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, identity_account["id"], inbox["id"])
+                 if m["subject"] == subject),
+                None,
+            ),
+            description=f"{subject!r} synced into INBOX",
+        )
+
+        page.goto(app_server)
+        select_account(page, identity_account)
+        mail_row(page, original["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        from_trigger = page.locator('[data-slot="select-trigger"]')
+        expect(from_trigger.get_by_text(alias_identity["address"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        page.get_by_role("button", name="Send", exact=True).click()
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
+
+        reply_subject = f"Re: {subject}"
+        mailpit_message = wait_for_mailpit_message(mailpit_http_url, reply_subject)
+        raw = httpx.get(
+            f"{mailpit_http_url}/api/v1/message/{mailpit_message['ID']}/raw", timeout=10.0,
+        )
+        assert raw.status_code == 200, raw.text
+        from_header = re.search(r"^From:.*$", raw.text, re.MULTILINE)
+        assert from_header and alias_identity["address"] in from_header.group(), (
+            f"expected the reply's From header to carry {alias_identity['address']!r}; "
+            f"raw source:\n{raw.text}"
+        )
+
+    def test_a_fresh_compose_uses_the_accounts_starred_default_identity(
+        self,
+        page: Page,
+        app_server: str,
+        identity_account: dict[str, Any],
+        default_identity: dict[str, Any],
+        alias_identity: dict[str, Any],
+    ) -> None:
+        page.goto(app_server)
+        select_account(page, identity_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+
+        from_trigger = dialog.locator('[data-slot="select-trigger"]')
+        expect(
+            from_trigger.get_by_text(default_identity["address"], exact=True)
+        ).to_be_visible(timeout=10_000)
 
 
 class TestCloseAndDiscard:
@@ -717,3 +970,216 @@ class TestTrashingAnOlderThreadMessageKeepsAnInProgressReply:
 
         # Left as found, for whatever else in this module runs after it.
         page.get_by_role("switch", name="Group by conversation").click()
+
+
+class TestBulkActionKeepsAnInProgressReply:
+    def test_a_bulk_action_covering_the_open_message_returns_to_it_afterward(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Checking a second row replaces the reading pane with the bulk
+        panel regardless -- that part is not in question. What the bulk
+        path got wrong is what happens once the panel goes away again: the
+        single-message action path already keeps the selection on a
+        message whose reply is dirty rather than clearing it, and the bulk
+        path carried a comment claiming the same reasoning while never
+        actually checking anything -- so the reading pane came back empty
+        instead of reopening the very message the reply belongs to."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        stem = uuid.uuid4()
+        target_subject = f"UI bulk-keeps-reply target {stem}"
+        other_subject = f"UI bulk-keeps-reply other {stem}"
+        for subject in (target_subject, other_subject):
+            message = build_eml(
+                sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+                body="Body for the bulk-keeps-reply test.",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=editor_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, editor_account["id"], inbox_folder["id"])
+                if m["subject"] in (target_subject, other_subject)
+            ]
+            return found if len(found) == 2 else None
+
+        targets = wait_for(
+            _find_all, description="both bulk-keeps-reply messages synced into INBOX",
+        )
+        target = next(m for m in targets if m["subject"] == target_subject)
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        expect(page.get_by_role("heading", name=target_subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply worth keeping.")
+        expect(body).to_contain_text("A reply worth keeping.")
+
+        rows = [mail_row(page, m["id"]) for m in targets]
+        for row in rows:
+            expect(row).to_be_visible(timeout=15_000)
+        rows[0].hover()
+        for row in rows:
+            row.get_by_role("checkbox").click()
+
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to trash", exact=True,
+        ).click()
+        for row in rows:
+            expect(row).not_to_be_visible(timeout=10_000)
+
+        # The bulk panel replacing the reading pane while both rows were
+        # checked is expected; the selection clearing once the action
+        # settles brings the reading pane back, and it must point at the
+        # same message rather than showing nothing.
+        expect(page.get_by_role("heading", name=target_subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+
+
+class TestNavigatingAwayFromADirtyReplyPrompts:
+    """Clicking a different message while a reply holds unsaved text used
+    to close the reply and take the text with it silently, in the split
+    view -- the same three-way choice the Close button already offers,
+    now covering any selection change rather than only an explicit close."""
+
+    @staticmethod
+    def _deliver_and_open_first(
+        page: Page, app_server: str, api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int], editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any], stem: object,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        first_subject = f"UI nav-prompt first {stem}"
+        second_subject = f"UI nav-prompt second {stem}"
+        for subject in (first_subject, second_subject):
+            message = build_eml(
+                sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+                body="Body for the navigation-prompt test.",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=editor_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, editor_account["id"], inbox_folder["id"])
+                if m["subject"] in (first_subject, second_subject)
+            ]
+            return found if len(found) == 2 else None
+
+        found = wait_for(_find_all, description="both nav-prompt messages synced into INBOX")
+        first = next(m for m in found if m["subject"] == first_subject)
+        second = next(m for m in found if m["subject"] == second_subject)
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, first["id"]).click()
+        expect(page.get_by_role("heading", name=first_subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply not ready to lose.")
+        expect(body).to_contain_text("A reply not ready to lose.")
+
+        return first, second
+
+    def test_cancelling_the_prompt_keeps_the_reply_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        first, second = self._deliver_and_open_first(
+            page, app_server, api_client, dovecot_endpoint, editor_account, inbox_folder,
+            uuid.uuid4(),
+        )
+
+        mail_row(page, second["id"]).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Cancel", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        # Still on the first message with the reply intact -- the click on
+        # the second row did not silently navigate away underneath the
+        # dialog.
+        expect(page.get_by_role("heading", name=first["subject"], exact=True)).to_be_visible()
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply not ready to lose.",
+        )
+
+    def test_discarding_the_prompt_opens_the_other_message(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        _first, second = self._deliver_and_open_first(
+            page, app_server, api_client, dovecot_endpoint, editor_account, inbox_folder,
+            uuid.uuid4(),
+        )
+
+        mail_row(page, second["id"]).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Discard", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        expect(page.get_by_role("heading", name=second["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+        # Collapsed reply/reply-all/forward row -- the discarded reply is
+        # gone, not stranded behind the newly opened message.
+        expect(page.get_by_role("button", name="Reply", exact=True)).to_be_visible()
+
+    def test_saving_a_draft_from_the_prompt_opens_the_other_message(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        _first, second = self._deliver_and_open_first(
+            page, app_server, api_client, dovecot_endpoint, editor_account, inbox_folder,
+            uuid.uuid4(),
+        )
+
+        mail_row(page, second["id"]).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Save draft", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("heading", name=second["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )

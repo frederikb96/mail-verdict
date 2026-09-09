@@ -1,33 +1,40 @@
 """
 Spam feedback handler.
 
-Two entry points, both writing a user_feedback verdict row:
+`apply_human_ruling` is the one place a person's ruling on a message is
+recorded and applied: it writes the correction unconditionally and moves
+the message to match, whatever route the ruling arrived by -- a reading-
+pane thumb, a row's own Spam/Not-spam button, the review screen, or an
+MCP tool call. The caller resolves which folder the ruling moves the
+message to (see its own docstring); this only ever moves to the folder
+it is given.
 
-- `handle_moved_to_spam` / `handle_moved_from_spam` -- unconditional,
-  called from an explicit user action (POST /api/mails/{id}/feedback, an
-  MCP tool call): the user directly said "this is/isn't spam", so it is
-  recorded whatever the current verdict already says.
-- `handle_folder_move_to_junk` / `handle_folder_move_out_of_junk` --
-  called only from the folder-move listener (spam/processor.py), gated on
-  whether the move contradicts an *existing* verdict. The discriminator is
-  deliberately not "who wrote the row": both the pipeline's own move-spam
-  stage and a user dragging a message are the same application, and
-  `origin` cannot tell them apart (it distinguishes PostIMAP from
-  consumers, not the classifier from the user). Contradiction with the
-  stored verdict is stateless and restart-safe, and it is something the
-  classifier can never do to what it just wrote in the same run: by the
-  time a move-spam effect's own move commits, its RecordVerdict effect
-  already has, so the verdict this check reads back already agrees.
-  A move with no verdict to contradict never records feedback, even
-  though that also gives up capturing a genuine human drag of never-
-  classified mail: any other match stage with a move-to-junk effect --
-  "block this sender" is the obvious one -- can produce that same
-  no-verdict move with nothing human about it, and there is no signal
-  here that tells the two apart, so treating the absent case as
-  "must be human" is a guess this module has no way to stand behind.
-  Moving spam to trash is excluded on purpose: deleting a message already
-  agreed to be spam is the ordinary outcome of a junk folder, not a
-  correction.
+`handle_folder_move_to_junk` / `handle_folder_move_out_of_junk` are a
+different thing in kind: not a caller stating a ruling, but this
+module's own detector of a move that already happened, from anywhere --
+including a third-party mail client this application never sees a
+request from. Gated on whether the move contradicts an *existing*
+verdict, since that is stateless and restart-safe. The discriminator is
+deliberately not "who wrote the row": both the pipeline's own move-spam
+stage and a user dragging a message are the same application, and
+`origin` cannot tell them apart (it distinguishes PostIMAP from
+consumers, not the classifier from the user). Contradiction with the
+stored verdict is something the classifier can never do to what it just
+wrote in the same run: by the time a move-spam effect's own move
+commits, its RecordVerdict effect already has, so the verdict this check
+reads back already agrees -- and the same holds for a move this module's
+own apply_human_ruling just made, which is what keeps the two from
+double-writing when the listener later sees that same move go by.
+A move with no verdict to contradict never records feedback, even
+though that also gives up capturing a genuine human drag of never-
+classified mail: any other match stage with a move-to-junk effect --
+"block this sender" is the obvious one -- can produce that same
+no-verdict move with nothing human about it, and there is no signal
+here that tells the two apart, so treating the absent case as
+"must be human" is a guess this module has no way to stand behind.
+Moving spam to trash is excluded on purpose: deleting a message already
+agreed to be spam is the ordinary outcome of a junk folder, not a
+correction.
 """
 
 from __future__ import annotations
@@ -37,47 +44,84 @@ import uuid
 from typing import TYPE_CHECKING
 
 from mail_verdict.database.models import VerdictSource
+from mail_verdict.database.repository import FolderRepository
+from mail_verdict.postimap.actions import move_message
 
 if TYPE_CHECKING:
+    from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.database.repository import VerdictRepository
 
 logger = logging.getLogger(__name__)
 
 
 class SpamFeedbackHandler:
-    """Records user_feedback verdict rows from explicit actions and from
-    folder moves that contradict the current verdict."""
+    """Records user_feedback verdict rows -- from an explicit ruling
+    (recorded and moved together), and from folder moves that contradict
+    the current verdict (recorded only, the move having already happened)."""
 
-    def __init__(self, verdict_repo: VerdictRepository) -> None:
+    def __init__(self, db: DatabaseConnection, verdict_repo: VerdictRepository) -> None:
         """
         Args:
+            db: Session factory for apply_human_ruling's own move
             verdict_repo: Verdict persistence and the current-verdict read
         """
+        self._db = db
         self._verdict_repo = verdict_repo
 
-    async def handle_moved_to_spam(self, mail_id: uuid.UUID, account_id: uuid.UUID) -> bool:
-        """An explicit "this is spam" from the user. Unconditional.
+    async def apply_human_ruling(
+        self, mail_id: uuid.UUID, account_id: uuid.UUID, *, is_spam: bool,
+    ) -> bool:
+        """
+        Record an explicit ruling and move the message to match.
+
+        Unconditional, like the folder-move listener's contradiction-gated
+        pair is not: an explicit ruling is recorded whatever the current
+        verdict already says. The move that follows is what the listener
+        below will see go by; since the verdict it reads back afterward
+        already agrees, its own contradiction gate does not write a second
+        row for the same ruling.
+
+        Whether -- and where -- the message moves depends on what the
+        ruling changes, not only on the ruling itself: a spam ruling
+        always moves to Junk, confirming one that already said spam
+        exactly as much as reversing one that said clean. A not-spam
+        ruling only moves the message when it reverses an existing spam
+        verdict (back to the inbox -- this application has no record of
+        where a message came from, so a rescue always lands there);
+        confirming a verdict that already said not-spam moves nothing,
+        since there is nowhere to rescue it from.
 
         Args:
             mail_id: Mail UUID
             account_id: Account UUID
+            is_spam: The ruling
 
         Returns:
-            True if feedback was recorded
+            True if the verdict was recorded successfully. A message
+            already in the target folder is left untouched by the move
+            itself -- move_message's own idempotence, not reflected here.
         """
-        return await self._record_feedback(mail_id, account_id, is_spam=True)
+        prior = await self._verdict_repo.get_current_verdict(mail_id)
+        ok = await self._record_feedback(mail_id, account_id, is_spam=is_spam)
 
-    async def handle_moved_from_spam(self, mail_id: uuid.UUID, account_id: uuid.UUID) -> bool:
-        """An explicit "this is not spam" from the user. Unconditional.
+        if is_spam:
+            role = "junk"
+        elif prior is not None and prior.is_spam:
+            role = "inbox"
+        else:
+            role = None
 
-        Args:
-            mail_id: Mail UUID
-            account_id: Account UUID
-
-        Returns:
-            True if feedback was recorded
-        """
-        return await self._record_feedback(mail_id, account_id, is_spam=False)
+        if role is not None:
+            folder_id = await FolderRepository(self._db).resolve_special_folder(account_id, role)
+            if folder_id is None:
+                logger.warning(
+                    "No %s folder found for account %s; ruling recorded but not moved",
+                    role, str(account_id)[:8],
+                )
+            else:
+                async with self._db.session() as session:
+                    await move_message(session, mail_id, folder_id)
+        return ok
 
     async def handle_folder_move_to_junk(self, mail_id: uuid.UUID, account_id: uuid.UUID) -> bool:
         """

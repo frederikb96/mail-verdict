@@ -59,7 +59,7 @@ from mail_verdict.core.sanitizer import (
     rewrite_remote_images,
     sanitize_email_html,
 )
-from mail_verdict.database.connection import DatabaseConnection, get_db_connection
+from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Attachment, Folder, Message
 from mail_verdict.postimap.actions import (
     expunge,
@@ -987,36 +987,27 @@ async def message_action(
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     if action in ("spam", "not_spam"):
-        return await _handle_spam_action(db, message_id, account_id, is_spam=action == "spam")
+        return await _handle_spam_action(message_id, account_id, is_spam=action == "spam")
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
 
 async def _handle_spam_action(
-    db: DatabaseConnection, message_id: uuid.UUID, account_id: uuid.UUID, *, is_spam: bool,
+    message_id: uuid.UUID, account_id: uuid.UUID, *, is_spam: bool,
 ) -> MessageActionResponse:
     """
-    Move a message to/from junk and record the user's correction.
-
-    The 'spam' direction is also caught by the automatic postimap_events
-    listener (a move into a junk-special-use folder always records
-    feedback), so only the 'not_spam' direction needs an explicit record
-    here to avoid a duplicate verdict row for the same click.
+    Record the user's ruling and move the message to match, in one call
+    through SpamFeedbackHandler.apply_human_ruling -- see its own
+    docstring for exactly what moves and when, and for why this no
+    longer relies on the folder-move listener to catch the 'spam'
+    direction.
     """
-    role = "junk" if is_spam else "inbox"
-    target_folder_id = await _resolve_special_folder(account_id, role)
-    if target_folder_id is None:
-        raise HTTPException(status_code=400, detail=f"No {role} folder found for this account")
+    from mail_verdict.server import get_spam_processor
 
-    async with db.session() as session:
-        await move_message(session, message_id, target_folder_id)
-
-    if not is_spam:
-        from mail_verdict.server import get_spam_processor
-
-        processor = get_spam_processor()
-        if processor is not None:
-            await processor.feedback.handle_moved_from_spam(message_id, account_id)
+    processor = get_spam_processor()
+    if processor is None:
+        raise HTTPException(status_code=503, detail="Spam feedback handler not available")
+    await processor.feedback.apply_human_ruling(message_id, account_id, is_spam=is_spam)
 
     action = "spam" if is_spam else "not_spam"
     return MessageActionResponse(
@@ -1174,21 +1165,30 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
                     status_code=400, detail="target_folder_id does not belong to this account",
                 )
             affected = await move_message_bulk(session, message_ids, request.target_folder_id)
-    elif action in ("archive", "spam", "not_spam"):
-        role = {"archive": "archive", "spam": "junk", "not_spam": "inbox"}[action]
-        folder_id = await _resolve_special_folder(account_id, role)
+    elif action == "archive":
+        folder_id = await _resolve_special_folder(account_id, "archive")
         if folder_id is None:
-            errors.append(f"No {role} folder found for this account")
+            errors.append("No archive folder found for this account")
         else:
             async with db.session() as session:
                 affected = await move_message_bulk(session, message_ids, folder_id)
-            if action == "not_spam":
-                from mail_verdict.server import get_spam_processor
+    elif action in ("spam", "not_spam"):
+        from mail_verdict.server import get_spam_processor
 
-                processor = get_spam_processor()
-                if processor is not None:
-                    for mid in message_ids:
-                        await processor.feedback.handle_moved_from_spam(mid, account_id)
+        processor = get_spam_processor()
+        if processor is None:
+            errors.append("Spam feedback handler not available")
+        else:
+            # One call per message rather than a bulk move: each
+            # message's ruling is recorded and applied together through
+            # the same function every other surface calls (see
+            # SpamFeedbackHandler.apply_human_ruling), not a bulk move
+            # with the feedback bolted on separately.
+            for mid in message_ids:
+                await processor.feedback.apply_human_ruling(
+                    mid, account_id, is_spam=(action == "spam"),
+                )
+            affected = len(message_ids)
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 

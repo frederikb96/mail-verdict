@@ -1,7 +1,6 @@
 """
 NeighborService: nearest-neighbour lookup restricted to human-originated
-labels, for the classify stage's optional neighbour hints (settings.
-semantic.neighbor_hints_enabled).
+labels, for the classify stage's own neighbour hints.
 
 Mail is enormously repetitive -- the same sender, the same template, month
 after month -- so the nearest neighbours of a new message are dominated by

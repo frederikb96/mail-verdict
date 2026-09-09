@@ -248,10 +248,10 @@ exactly two kinds of *human*-originated evidence — an explicit user correction
 `source = 'ai'` or `'rule'` row. Folder placement is asymmetric evidence rather than a second kind
 of verdict: Junk membership is a strong spam signal, but sitting in the inbox is weak evidence of
 not-spam (the message may simply not have been dealt with yet), and the prompt states both
-directions explicitly rather than collapsing them into one label. Off by default
-(`settings.semantic.neighbor_hints_enabled`), so its effect on accuracy can be measured before it
-is ever the default; there is no near-duplicate short-circuit, since even a very close match stays
-a hint for the model to weigh, never a reason to skip classifying.
+directions explicitly rather than collapsing them into one label. Always on, with no setting able
+to turn it off — a person's own rulings are always what the model reads before judging the next
+message; there is no near-duplicate short-circuit either, since even a very close match stays a
+hint for the model to weigh, never a reason to skip classifying.
 
 ## Sending mail
 

@@ -193,7 +193,22 @@ export function MailEditor({
         }
         const text = clipboard.getData("text/plain");
         if (!text) return false;
-        editorRef.current?.chain().focus().insertContent(text, { contentType: "markdown" }).run();
+        const editor = editorRef.current;
+        if (!editor?.markdown) return false;
+        const parsed = editor.markdown.parse(text);
+        const blocks = parsed.content ?? [];
+        const single =
+          blocks.length === 1 && blocks[0].type === "paragraph" ? blocks[0].content : null;
+        if (single?.length) {
+          // A single paragraph is prose, not a block someone means to place, so
+          // its inline content goes into the paragraph the caret is already in.
+          // Inserting the block instead replaces the selected range with a closed
+          // block slice, which splits that paragraph in two and leaves the pasted
+          // text stranded between the halves.
+          editor.chain().focus().insertContent(single).run();
+        } else {
+          editor.chain().focus().insertContent(parsed).run();
+        }
         return true;
       },
     },

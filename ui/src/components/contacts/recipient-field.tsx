@@ -46,24 +46,24 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
 
   const items = results.map((r) => r.email);
 
-  const addAddresses = (raw: string) => {
+  /** Returns whatever it could not turn into a chip, so the caller can
+   * leave it in the field instead of discarding it. Neither silently
+   * accepted nor silently dropped: named in a toast either way. */
+  const addAddresses = (raw: string): string => {
     const parsed = parseAddressList(raw);
-    if (parsed.length === 0) return;
+    if (parsed.length === 0) return "";
     const valid = parsed.filter(isValidEmail);
     const invalid = parsed.filter((a) => !isValidEmail(a));
     if (valid.length > 0) {
       onChange(Array.from(new Set([...value, ...valid])));
     }
     if (invalid.length > 0) {
-      // Neither silently accepted nor silently dropped: named in a toast
-      // rather than turned into a chip. The commit paths clear the typed
-      // text either way, so a rejected address leaves the field empty
-      // instead of sitting there looking accepted.
       pushToast(
         `Not a valid email address: ${invalid.join(", ")}`,
         "warning",
       );
     }
+    return invalid.join(", ");
   };
 
   return (
@@ -71,9 +71,24 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
       multiple
       items={items}
       value={value}
-      onValueChange={(next) => onChange(next as string[])}
+      onValueChange={(next) => {
+        const emails = next as string[];
+        // Picking a suggestion consumes whatever was typed to find it.
+        // Both the click and the Enter path arrive here, so this is the
+        // only place that needs to know it.
+        if (emails.length > value.length) setQuery("");
+        onChange(emails);
+      }}
       inputValue={query}
-      onInputValueChange={setQuery}
+      onInputValueChange={(next, details) => {
+        // The combobox clears its own input whenever its list unmounts --
+        // a convenience for a list it opens and closes itself. This list
+        // is closed by us the instant the contact search matches nothing,
+        // which is mid-address, so that clear would erase a half-typed
+        // recipient.
+        if (details.reason === "input-clear") return;
+        setQuery(next);
+      }}
       onItemHighlighted={(v) => setHighlighted(v as string | undefined)}
       open={listRequested && items.length > 0}
       onOpenChange={setListRequested}
@@ -100,27 +115,17 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
           onKeyDown={(e) => {
             // A highlighted suggestion owns Enter/Tab/comma -- let the
             // combobox's own selection commit it rather than racing it
-            // with the raw text underneath. Clearing the query ourselves
-            // is still ours to do: the combobox only clears it on a mouse
-            // click, not on this keyboard path.
-            if (highlighted) {
-              if (e.key === "Enter" || e.key === "," || e.key === "Tab") setQuery("");
-              return;
-            }
+            // with the raw text underneath; onValueChange above clears
+            // the query once that commit lands.
+            if (highlighted) return;
             if (e.key === "Enter" || e.key === "," || e.key === "Tab") {
               if (query.trim()) {
                 e.preventDefault();
-                addAddresses(query);
-                setQuery("");
+                setQuery(addAddresses(query));
               }
             }
           }}
-          onBlur={() => {
-            if (query.trim()) {
-              addAddresses(query);
-              setQuery("");
-            }
-          }}
+          onBlur={() => setQuery(addAddresses(query))}
           onPaste={(e) => {
             const text = e.clipboardData.getData("text");
             if (text.includes(",") || text.includes(";")) {

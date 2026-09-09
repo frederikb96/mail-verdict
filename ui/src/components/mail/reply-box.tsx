@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Forward, Loader2, Reply, ReplyAll } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -10,11 +10,16 @@ import {
   ComposeForm,
   type ComposeFormControls,
 } from "@/components/mail/compose-form";
+import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { buildForward, buildReply } from "@/lib/reply";
 import { matchIdentity } from "@/lib/identities";
 import { useIdentities } from "@/hooks/use-identities";
 import { api } from "@/lib/api";
-import { activeReplyDirtyForThreadIdAtom } from "@/lib/atoms";
+import {
+  activeReplyDirtyForThreadIdAtom,
+  blockedMailSelectionAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
 import { cn } from "@/lib/utils";
 import type { MessageDetail } from "@/types/api";
 
@@ -50,19 +55,34 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [maximized, setMaximized] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
   const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
+  // Set by requestSelectMailAtom (lib/atoms.ts) when this box's own dirty
+  // flag blocked a navigation elsewhere -- the dialog below resolves it,
+  // and `undefined` (not `null`) is "nothing pending", since the blocked
+  // navigation can itself target `null` (closing the reading pane).
+  const blockedMailSelection = useAtomValue(blockedMailSelectionAtom);
+  const setBlockedMailSelection = useSetAtom(blockedMailSelectionAtom);
+  const setSelectedMailId = useSetAtom(selectedMailIdAtom);
 
-  // Read by useMailAction: while this is dirty, a "leaves folder" action
-  // taken on any message in this same thread from somewhere else (a
-  // row's own hover control, a keyboard shortcut) must not clear the
-  // open selection -- that would unmount this box along with it,
-  // discarding whatever was typed with no prompt at all. Keyed by thread
-  // rather than by source.id: the reading pane's own "open" message can
-  // be an older one the reader expanded within this thread, and trashing
-  // that one must not discard a reply against the newest either. Cleared
-  // on unmount too, so a stale id never outlives the box that set it.
+  // Read by useMailAction and useBulkAction: while this is dirty, a
+  // "leaves folder" action taken on any message in this same thread from
+  // somewhere else (a row's own hover control, a keyboard shortcut, a
+  // bulk selection covering it) must not clear the open selection --
+  // that would leave the reading pane pointed at nothing once whatever
+  // unmounted this box goes away again. Keyed by thread rather than by
+  // source.id: the reading pane's own "open" message can be an older one
+  // the reader expanded within this thread, and trashing that one must
+  // not discard a reply against the newest either.
+  //
+  // Deliberately no cleanup clearing this on unmount: checking a second
+  // row replaces the reading pane with the bulk panel, unmounting this
+  // box well before any bulk action runs, and a cleanup here would clear
+  // the flag before useBulkAction ever got to read it. isDirty flipping
+  // back to false -- reset()'s own doing, on save/discard/send -- is what
+  // actually resolves this, via the effect re-running with isDirty=false;
+  // a freshly mounted box's own first run (isDirty starting false) is
+  // what clears a stale value once the reading pane comes back.
   useEffect(() => {
     setActiveReplyDirtyForThreadId(isDirty ? source.thread_id : null);
-    return () => setActiveReplyDirtyForThreadId(null);
   }, [isDirty, source.thread_id, setActiveReplyDirtyForThreadId]);
 
   const { data: identities } = useIdentities(source.account_id);
@@ -95,6 +115,16 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     setQuoteHtml(null);
     setIsDirty(false);
     setMaximized(false);
+    // A submit already clears its own recovery buffer -- this is what
+    // makes an explicit discard clear the one case it does not cover.
+    controlsRef.current?.clearRecovery();
+    // A discard or a successful save/send resolves whatever navigation
+    // this box's own dirty flag was holding up -- advancing to it here,
+    // not leaving the application stuck on a selection nothing moves.
+    if (blockedMailSelection !== undefined) {
+      setSelectedMailId(blockedMailSelection);
+      setBlockedMailSelection(undefined);
+    }
   };
 
   if (!mode) {
@@ -165,6 +195,14 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
         onControlsReady={(controls) => {
           controlsRef.current = controls;
         }}
+      />
+      <DiscardChangesDialog
+        open={isDirty && blockedMailSelection !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setBlockedMailSelection(undefined);
+        }}
+        onDiscard={reset}
+        onSaveDraft={() => controlsRef.current?.saveDraft()}
       />
     </div>
   );
