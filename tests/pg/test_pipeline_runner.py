@@ -135,11 +135,26 @@ async def _enqueue_and_run(
         )
         run_id = result.scalar_one()
 
-    claimed = await runner._work_queue.claim_batch(worker_id="test", batch_size=1, lease_seconds=30)
-    assert len(claimed) == 1
-    assert claimed[0]["id"] == run_id
-    await runner._handle_item(claimed[0])
-    return dict(claimed[0])
+    # Claim until this row comes back, rather than assuming it is the only
+    # claimable one. The whole pg layer shares a database for the invocation,
+    # so any module that leaves a run in a non-terminal status leaves it
+    # claimable here -- and claiming a single row blind then hands back the
+    # leaker's, which fails as a run id mismatch naming this file rather than
+    # the one that leaked. Anything else still claimable at this point belongs
+    # to a test that has already finished.
+    ours: dict[str, object] | None = None
+    for _ in range(50):
+        claimed = await runner._work_queue.claim_batch(
+            worker_id="test", batch_size=1, lease_seconds=30,
+        )
+        if not claimed:
+            break
+        if claimed[0]["id"] == run_id:
+            ours = claimed[0]
+            break
+    assert ours is not None, f"pipeline run {run_id} was never claimable"
+    await runner._handle_item(ours)
+    return dict(ours)
 
 
 @pytest.mark.asyncio

@@ -87,6 +87,24 @@ async def _seed_plain_folder(session, account_id: uuid.UUID, imap_name: str) -> 
     return folder_id
 
 
+@pytest.fixture(autouse=True)
+async def _drop_seeded_pipeline_runs(migrated_db: DatabaseConnection):
+    """Remove this module's seeded pipeline_runs rows after every test.
+
+    The whole pg layer shares one database for the invocation, and the rows
+    seeded below are deliberately left in a non-terminal status -- which is
+    exactly what the work queue considers claimable. A later module that
+    inserts a run and claims one row back assumes the queue holds nothing
+    else, so leftovers here surface there as a run id mismatch: each test
+    claims the previous leaker's row, and the failure names the wrong file
+    entirely.
+    """
+    yield
+    async with migrated_db.session() as session:
+        await session.execute(text("DELETE FROM pipeline_runs WHERE dedup_key = 'live'"))
+        await session.commit()
+
+
 async def _seed_pipeline_run(
     session, *, account_id: uuid.UUID, message_id: uuid.UUID, status: str,
 ) -> None:
