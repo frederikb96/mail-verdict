@@ -187,6 +187,63 @@ class TestDateRangeFilter:
         search_input.fill(_MARKER)
         expect(rows).to_have_count(2, timeout=15_000)
 
+    def test_dragging_the_slider_fires_one_search_not_one_per_tick(
+        self, page: Page, app_server: str, sort_and_date_fixture: tuple[str, str],
+    ) -> None:
+        """A real pointer drag crosses dozens of the slider's own steps --
+        each used to write searchDateRangeAtom directly and queue its own
+        full-text search, none of them cancellable. Only the drag's own
+        end (onValueCommitted) may reach the server."""
+        _older_id, newer_id = sort_and_date_fixture
+        page.goto(f"{app_server}/search")
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+
+        rows = page.locator('[data-testid="search-result-row"]')
+        expect(rows).to_have_count(2, timeout=15_000)
+
+        page.get_by_role("button", name="All time", exact=True).click()
+        slider_thumbs = page.get_by_role("slider")
+        expect(slider_thumbs).to_have_count(2, timeout=10_000)
+
+        search_requests: list[str] = []
+
+        def _track(request: object) -> None:
+            url = request.url  # type: ignore[attr-defined]
+            if "/api/search?" in url or "/api/embeddings/search?" in url:
+                search_requests.append(url)
+
+        page.on("request", _track)
+
+        box = slider_thumbs.first.bounding_box()
+        assert box is not None
+        start_x = box["x"] + box["width"] / 2
+        start_y = box["y"] + box["height"] / 2
+
+        page.mouse.move(start_x, start_y)
+        page.mouse.down()
+        # Many intermediate positions -- the same shape a real drag
+        # gesture produces, and exactly what used to fire a search at
+        # every one of them.
+        for i in range(1, 41):
+            page.mouse.move(start_x + i * 3, start_y, steps=1)
+        page.mouse.up()
+
+        expect(rows).to_have_count(1, timeout=10_000)
+        expect(rows.first).to_have_attribute("data-message-id", newer_id)
+        assert len(search_requests) <= 1, (
+            f"drag fired {len(search_requests)} searches, expected at most one "
+            f"(on release): {search_requests!r}"
+        )
+
+        page.evaluate("localStorage.removeItem('mailverdict:search-date-range')")
+        page.reload()
+        search_input = page.get_by_placeholder("Search messages…")
+        expect(search_input).to_be_visible(timeout=15_000)
+        search_input.fill(_MARKER)
+        expect(rows).to_have_count(2, timeout=15_000)
+
 
 class TestRecipientDisplay:
     def test_a_result_shows_its_recipient(

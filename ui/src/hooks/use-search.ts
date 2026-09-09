@@ -96,7 +96,7 @@ export function useSearchResults(params: {
     queryKey: searchKeys.results(
       semantic, trimmed, accountId, folderIds, fields, strictness, sort, dateRange,
     ),
-    queryFn: async ({ pageParam }): Promise<SearchResultPage> => {
+    queryFn: async ({ pageParam, signal }): Promise<SearchResultPage> => {
       if (semantic) {
         const r = await api.search.semantic({
           q: trimmed,
@@ -106,7 +106,7 @@ export function useSearchResults(params: {
           sort,
           received_after: dateRange?.after,
           received_before: dateRange?.before,
-        });
+        }, signal);
         return { items: r.results, has_more: false, next_cursor: null, total: r.results.length };
       }
       const r = await api.search.query({
@@ -119,7 +119,7 @@ export function useSearchResults(params: {
         sort,
         received_after: dateRange?.after,
         received_before: dateRange?.before,
-      });
+      }, signal);
       return {
         items: r.results,
         has_more: r.has_more,

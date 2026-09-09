@@ -53,6 +53,14 @@ function buildTicks(oldestMs: number, newestMs: number): { pos: number; label: s
 export function DateRangePicker({ value, onChange, accountId, folderIds }: DateRangePickerProps) {
   const { data: bounds, isLoading } = useSearchDateBounds(accountId, folderIds);
   const [open, setOpen] = useState(false);
+  // The thumbs' own live position while dragging -- separate from value,
+  // which is what actually drives the search. Null between drags, so the
+  // slider reads straight off value the rest of the time; onValueChange
+  // on a step-1 slider over a 0..1000 domain fires on every pixel of
+  // movement, and committing a full search per tick queued dozens of
+  // uncancellable requests for one drag. onValueCommitted -- drag end,
+  // not drag itself -- is the only thing that reaches onChange.
+  const [dragPositions, setDragPositions] = useState<[number, number] | null>(null);
 
   const oldestMs = bounds?.oldest ? new Date(bounds.oldest).getTime() : null;
   const newestMs = bounds?.newest ? new Date(bounds.newest).getTime() : null;
@@ -73,12 +81,19 @@ export function DateRangePicker({ value, onChange, accountId, folderIds }: DateR
     return new Date(ms).toISOString();
   };
 
-  const positions: [number, number] = hasScope
+  const committedPositions: [number, number] = hasScope
     ? [value?.after ? dateToPos(value.after) : 0, value?.before ? dateToPos(value.before) : SLIDER_MAX]
     : [0, SLIDER_MAX];
+  const positions = dragPositions ?? committedPositions;
 
   const handleValueChange = (next: number[]) => {
     if (!hasScope) return;
+    setDragPositions([next[0], next[1]]);
+  };
+
+  const handleValueCommitted = (next: number[]) => {
+    if (!hasScope) return;
+    setDragPositions(null);
     const [lo, hi] = next;
     const atFullRange = lo <= 0 && hi >= SLIDER_MAX;
     onChange(
@@ -132,6 +147,7 @@ export function DateRangePicker({ value, onChange, accountId, folderIds }: DateR
               thumbCount={2}
               value={positions}
               onValueChange={handleValueChange}
+              onValueCommitted={handleValueCommitted}
             />
             <div className="relative h-4 text-[10px] text-muted-foreground">
               {ticks.map((tick, i) => (

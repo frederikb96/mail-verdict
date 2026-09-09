@@ -396,31 +396,40 @@ export const api = {
   },
 
   search: {
-    query(params: {
-      q: string;
-      account_id?: string;
-      folder_ids?: string[];
-      fields?: SearchField[];
-      before?: string;
-      limit?: number;
-      sort?: SearchSort;
-      received_after?: string;
-      received_before?: string;
-    }): Promise<SearchResponse> {
-      return request(`/search${qs(params)}`);
+    // signal is the query's own -- without it, changing the query text,
+    // scope or date range while a prior search is still in flight cannot
+    // cancel that request, only ignore its result once it lands.
+    query(
+      params: {
+        q: string;
+        account_id?: string;
+        folder_ids?: string[];
+        fields?: SearchField[];
+        before?: string;
+        limit?: number;
+        sort?: SearchSort;
+        received_after?: string;
+        received_before?: string;
+      },
+      signal?: AbortSignal,
+    ): Promise<SearchResponse> {
+      return request(`/search${qs(params)}`, { signal });
     },
     /** Single-page: the strictness cutoff bounds the result set naturally,
      * so there is no limit/before to page with here. */
-    semantic(params: {
-      q: string;
-      account_id?: string;
-      folder_ids?: string[];
-      strictness?: SearchStrictness;
-      sort?: SearchSort;
-      received_after?: string;
-      received_before?: string;
-    }): Promise<SemanticSearchResponse> {
-      return request(`/embeddings/search${qs(params)}`);
+    semantic(
+      params: {
+        q: string;
+        account_id?: string;
+        folder_ids?: string[];
+        strictness?: SearchStrictness;
+        sort?: SearchSort;
+        received_after?: string;
+        received_before?: string;
+      },
+      signal?: AbortSignal,
+    ): Promise<SemanticSearchResponse> {
+      return request(`/embeddings/search${qs(params)}`, { signal });
     },
     /** The date-range control's own axis, independent of any query text. */
     dateBounds(params: {
