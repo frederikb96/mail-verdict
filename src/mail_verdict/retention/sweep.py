@@ -164,6 +164,16 @@ async def _sweep_role_once(db: DatabaseConnection, *, role: str, retention_colum
         )
         dropped_count = len(dropped.all())
 
+        # Joined to messages/folders/folder_prefs and re-checked against the
+        # same role predicate the stamp and cleanup steps above use, rather
+        # than trusting retention_entries alone -- a row surviving here on
+        # its own would make the cleanup step's batch limit load-bearing:
+        # whenever more entries go stale in one tick than that limit
+        # covers, the leftovers would carry straight through to expunge
+        # even though they no longer belong to this role's folder (rescued
+        # out of Trash/Junk, or already expunged some other way). This
+        # query establishes "still in the role's folder" for itself, so
+        # cleanup is bookkeeping only, never a precondition for safety.
         overdue = (
             await session.execute(
                 text(
@@ -171,8 +181,12 @@ async def _sweep_role_once(db: DatabaseConnection, *, role: str, retention_colum
                     SELECT re.message_id, re.account_id
                     FROM retention_entries re
                     JOIN account_prefs ap ON ap.account_id = re.account_id
+                    JOIN messages m ON m.id = re.message_id AND m.expunged_at IS NULL
+                    JOIN folders f ON f.id = m.folder_id
+                    LEFT JOIN folder_prefs fp ON fp.folder_id = f.id
                     WHERE re.role = :role
                       AND ap.{retention_column} IS NOT NULL
+                      AND coalesce(fp.special_use_override, f.special_use, '') = :role
                       AND re.entered_at
                           < now() - make_interval(days => ap.{retention_column})
                     ORDER BY re.entered_at
