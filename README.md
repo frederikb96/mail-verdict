@@ -38,8 +38,8 @@ mirror, which is what keeps it simple.
   messages, `e` archives, `Delete` trashes, `r` toggles read and unread, and whatever takes the
   open message out of the list opens the next one in the direction you were already going.
   Archiving a message, or filing it as spam, marks it read as it moves — a setting turns this off.
-  An account can also be given a Trash retention, in days, so mail sitting there long enough is
-  permanently removed on its own.
+  An account can also be given a Trash retention and a Junk retention, each in days and set
+  independently, so mail sitting in either long enough is permanently removed on its own.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens.
