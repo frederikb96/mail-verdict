@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from py_vapid import Vapid02 as Vapid
 from py_vapid.utils import b64urlencode
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from mail_verdict.core.encryption import EncryptionError, decrypt, encrypt
@@ -32,8 +32,10 @@ logger = logging.getLogger(__name__)
 
 class VapidUnavailableError(Exception):
     """Raised when the keypair cannot be generated or read -- no
-    ENCRYPTION_KEY configured, or a stored key that key can no longer
-    decrypt."""
+    ENCRYPTION_KEY configured, or (the one path that should never
+    actually happen) a just-written row failing to decrypt back. A
+    stored key ENCRYPTION_KEY can no longer decrypt is not this: it is
+    handled by regenerating, not by raising."""
 
 
 class VapidKeyRepository:
@@ -56,11 +58,20 @@ class VapidKeyRepository:
     async def get_or_create(self) -> Vapid:
         """
         Return the server's VAPID keypair, generating and storing one the
-        first time this is called.
+        first time this is called -- and regenerating it if the stored
+        one can no longer be decrypted, the shape an ENCRYPTION_KEY
+        rotation takes. There is no way to recover the old private key
+        from the wrong ENCRYPTION_KEY, so there is nothing a documented
+        manual reset would do that regenerating here does not: every
+        subscription signed under the old key is already unusable (its
+        applicationServerKey no longer matches what this server would
+        sign with), and every device will need to re-enable push either
+        way. Regenerating automatically is what turns "push is silently
+        broken until someone finds and runs a manual reset" into "push
+        recovers itself, loudly, the next time anyone asks for the key".
 
         Raises:
-            VapidUnavailableError: If no ENCRYPTION_KEY is configured, or
-                the stored key cannot be decrypted with the one that is
+            VapidUnavailableError: If no ENCRYPTION_KEY is configured
         """
         if self._cached is not None:
             return self._cached
@@ -70,6 +81,21 @@ class VapidKeyRepository:
             )
 
         row = await self._read_row()
+        pem: str | None = None
+        if row is not None:
+            try:
+                pem = decrypt(row.encrypted_private_key, self._encryption_key)
+            except EncryptionError:
+                logger.error(
+                    "Stored VAPID key could not be decrypted with the current "
+                    "ENCRYPTION_KEY (a rotation?) -- regenerating. Every "
+                    "existing push subscription is now invalid and every "
+                    "device will need to re-enable push notifications."
+                )
+                async with self._db.session() as session:
+                    await session.execute(delete(VapidKeypair).where(VapidKeypair.id == 1))
+                row = None
+
         if row is None:
             vapid = Vapid()
             vapid.generate_keys()
@@ -88,13 +114,17 @@ class VapidKeyRepository:
             row = await self._read_row()
             assert row is not None  # the insert above guarantees a row exists now
             logger.info("VAPID keypair generated")
+            try:
+                pem = decrypt(row.encrypted_private_key, self._encryption_key)
+            except EncryptionError as exc:
+                # Decrypting the row this same call just wrote, with the
+                # same key it just encrypted with, failing is not a stale
+                # key -- something is wrong with encryption itself.
+                raise VapidUnavailableError(
+                    "Just-generated VAPID key could not be decrypted back"
+                ) from exc
 
-        try:
-            pem = decrypt(row.encrypted_private_key, self._encryption_key)
-        except EncryptionError as exc:
-            raise VapidUnavailableError(
-                "Stored VAPID key could not be decrypted -- wrong ENCRYPTION_KEY?"
-            ) from exc
+        assert pem is not None
         vapid = Vapid.from_pem(pem.encode("ascii"))
         self._cached = vapid
         return vapid

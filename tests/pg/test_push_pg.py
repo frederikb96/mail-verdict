@@ -58,13 +58,26 @@ class TestVapidKeyRepository:
         assert len(base64.urlsafe_b64decode(padded)) == 65
 
     @pytest.mark.asyncio
-    async def test_wrong_key_on_read_raises(self, migrated_db: DatabaseConnection) -> None:
+    async def test_a_rotated_key_regenerates_rather_than_staying_broken(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The stored keypair was encrypted under a since-rotated
+        ENCRYPTION_KEY -- there is no way back to the old private key
+        from here, and every subscription it signed is unusable either
+        way, so recovery is regenerating under the current key rather
+        than raising forever."""
         writer = VapidKeyRepository(migrated_db, _ENCRYPTION_KEY)
-        await writer.get_or_create()
+        original = await writer.public_key_b64()
 
         reader = VapidKeyRepository(migrated_db, _OTHER_ENCRYPTION_KEY)
-        with pytest.raises(VapidUnavailableError):
-            await reader.get_or_create()
+        regenerated = await reader.public_key_b64()
+        assert regenerated != original
+
+        # Self-healed: a fresh repository under the (now current) key
+        # reads back the regenerated keypair, not the stale one, and does
+        # not regenerate a second time.
+        confirming = VapidKeyRepository(migrated_db, _OTHER_ENCRYPTION_KEY)
+        assert await confirming.public_key_b64() == regenerated
 
 
 class TestPushSubscriptionRepository:
