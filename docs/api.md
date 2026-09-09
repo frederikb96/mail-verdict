@@ -145,7 +145,8 @@ curl -X POST localhost:8080/api/pipeline/stages -H 'content-type: application/js
 ```
 
 `position` (omitted here, defaults to append) controls where in the stage order this lands —
-stages run in order, and an earlier `halt: true` stage stops the rest. `GET
+stages run in order, and an earlier `halt: true` stage stops the rest -- but only for a message it
+actually matched, not for every message the stage ran against. `GET
 /api/pipeline/stage-types` returns every registered stage type's JSON Schema, generated from the
 same Pydantic model the write path validates against, so it can never drift from what an actual
 write accepts — fetch it before hand-writing a `config` blob. Try a stage against a real message
