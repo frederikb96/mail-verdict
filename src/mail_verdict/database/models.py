@@ -755,6 +755,44 @@ class AccountPrefs(Base):
     trash_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class TrashEntry(Base):
+    """When a message was first observed sitting in Trash -- the clock
+    the retention sweep (retention/sweep.py) ages against. Retention means
+    time IN Trash, not the message's own age, and no "moved to Trash at"
+    timestamp exists anywhere in the mirror to read that from, so the
+    sweep creates this one itself, for any account with retention
+    configured: the first tick that sees a message in that account's
+    Trash without a row here stamps one at that moment.
+
+    No foreign key onto messages, consistent with every other
+    MailVerdict-owned table -- and message_id is not a durable identifier
+    across a UIDVALIDITY resync besides. A resync while a message sits in
+    Trash orphans this row, and the next tick re-stamps it as newly
+    arrived: the clock restarts rather than carrying over, which delays
+    deletion rather than causing an early one -- the direction retention
+    is designed to fail toward.
+
+    Deleted by the same sweep the moment the message it names is no
+    longer observed sitting in Trash -- moved elsewhere, or expunged --
+    so a message that leaves Trash and later returns gets a fresh clock,
+    never resuming the old one.
+    """
+
+    __tablename__ = "trash_entries"
+
+    message_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    entered_trash_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        # The sweep's own claim query drives from account_prefs (a
+        # handful of rows with retention set) into this table.
+        Index("idx_trash_entries_account_id", "account_id"),
+    )
+
+
 class FolderPrefs(Base):
     """Per-folder MailVerdict UI preferences (not in PostIMAP)."""
 
