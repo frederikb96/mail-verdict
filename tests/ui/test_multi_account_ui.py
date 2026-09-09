@@ -135,6 +135,31 @@ class TestUnifiedViewIdentifiesEachAccount:
     """A merged folder's row used to say only how MANY accounts fed it (a
     hover-only tooltip); this is the visible, no-hover-needed form."""
 
+    def test_the_empty_state_explains_unified_view_is_configurable(
+        self, page: Page, app_server: str, api_client: httpx.Client,
+    ) -> None:
+        """Runs before any other test in this module sets a unified name,
+        so this is the genuinely empty case: no accounts have opted any
+        folder into a cross-account group yet, and the sidebar's own
+        empty state is what a person's only source of "why is this
+        blank" is."""
+        create_account(api_client, "unified-empty")
+
+        page.goto(app_server)
+        trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
+        trigger.click()
+        page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
+            "Unified View", exact=True,
+        ).click()
+
+        expect(page.get_by_text("No unified folders configured yet.", exact=False)).to_be_visible(
+            timeout=15_000,
+        )
+        link = page.get_by_role("link", name="Give matching folders the same unified name")
+        expect(link).to_be_visible()
+        link.click()
+        expect(page).to_have_url(re.compile(r"/accounts$"))
+
     def test_unified_folder_row_shows_both_accounts_and_both_messages(
         self,
         page: Page,
@@ -235,6 +260,11 @@ class TestSearchAcrossAccounts:
         expect(rows.filter(has_text=account_a["name"])).to_have_count(1)
         expect(rows.filter(has_text=account_b["name"])).to_have_count(1)
 
+        # The closed trigger names the scope, never the account's raw id
+        # -- see the compose dialog's own account select for why this
+        # needs an explicit label resolver rather than the bare default.
+        expect(scope.get_by_text("All accounts", exact=True)).to_be_visible()
+
         # Narrowing the scope control itself to one account is what
         # actually proves it's interactive, not just a default that
         # happens to already cover this.
@@ -242,6 +272,8 @@ class TestSearchAcrossAccounts:
         page.get_by_role("option", name=account_a["name"], exact=True).click()
         expect(rows).to_have_count(1, timeout=15_000)
         expect(rows.filter(has_text=account_a["name"])).to_have_count(1)
+        expect(scope.get_by_text(account_a["name"], exact=True)).to_be_visible()
+        expect(scope.get_by_text(account_a["id"])).to_have_count(0)
 
         scope.click()
         page.get_by_role("option", name="All accounts", exact=True).click()

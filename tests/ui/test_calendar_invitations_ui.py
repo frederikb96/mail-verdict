@@ -219,9 +219,18 @@ class TestCalendarInvitationsUi:
         mail_row(page, message["id"]).click()
 
         expect(page.get_by_text("Not in a calendar yet", exact=True)).to_be_visible(timeout=15_000)
-        combobox = page.get_by_role("combobox").filter(has_text="Add to calendar")
-        combobox.click()
+        # A locator filtered on "Add to calendar" stops matching the
+        # instant the trigger's own text changes to name a calendar --
+        # the trigger itself (by its structural slot, not its transient
+        # text) is what the post-selection assertion below needs.
+        trigger = page.locator('[data-slot="select-trigger"]')
+        trigger.filter(has_text="Add to calendar").click()
         page.get_by_role("option", name=calendar_collection["display_name"], exact=True).click()
+        # The closed trigger must name the chosen calendar, never its raw
+        # id -- the same bug the compose dialog's account select already
+        # works around, in a different control.
+        expect(trigger.get_by_text(calendar_collection["display_name"], exact=True)).to_be_visible()
+        expect(trigger.get_by_text(calendar_collection["id"])).to_have_count(0)
         page.get_by_role("button", name="Add", exact=True).click()
 
         expect(

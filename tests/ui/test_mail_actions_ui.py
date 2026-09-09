@@ -921,6 +921,13 @@ class TestMailActionsUi:
         expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
 
         _trigger_sync(api_client, ui_account["id"])
+        # A draft append also reaches outbox status "sent" once PostIMAP
+        # confirms the copy landed in Drafts -- that must never raise the
+        # ordinary send toast, or saving an unfinished message tells you
+        # it was sent.
+        with pytest.raises(AssertionError):
+            expect(page.get_by_text("Message sent", exact=True)).to_be_visible(timeout=15_000)
+
         draft = wait_for(
             lambda: next(
                 (m for m in _list_folder(api_client, ui_account["id"], drafts_folder["id"])
@@ -1270,6 +1277,35 @@ class TestMailActionsUi:
         # the whole dialog offers no Delete button, not just the three
         # checked by name above.
         expect(dialog.get_by_role("button", name="Delete folder")).to_have_count(0)
+
+    def test_manage_folders_parent_select_names_the_folder_not_its_id(
+        self,
+        page: Page,
+        app_server: str,
+        ui_account: dict[str, Any],
+    ) -> None:
+        """The closed parent-folder trigger must name the chosen folder,
+        never its raw id -- the same bug the compose dialog's account
+        select already works around, in a different control."""
+        page.goto(app_server)
+        select_account(page, ui_account)
+        page.get_by_role("button", name="Manage folders", exact=True).click()
+
+        dialog = page.get_by_role("dialog", name="Manage folders")
+        expect(dialog).to_be_visible(timeout=15_000)
+
+        parent_name = f"parent-{uuid.uuid4().hex[:8]}"
+        dialog.get_by_placeholder("New folder name").fill(parent_name)
+        dialog.get_by_role("button", name="Create", exact=True).click()
+        expect(dialog.get_by_text(parent_name, exact=True)).to_be_visible(timeout=10_000)
+
+        trigger = dialog.locator('[data-slot="select-trigger"]')
+        expect(trigger.get_by_text("Top level", exact=True)).to_be_visible()
+
+        trigger.click()
+        page.get_by_role("option", name=parent_name, exact=True).click()
+        expect(trigger.get_by_text(parent_name, exact=True)).to_be_visible()
+        expect(trigger.get_by_text("Top level")).to_have_count(0)
 
     def test_arriving_mail_holds_the_list_scroll_position(
         self,
@@ -2329,4 +2365,28 @@ class TestPhoneLayoutUi:
         expected_title = f"{target.strftime('%A, %B')} {target.day}, {target.year}"
         expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
             expected_title, timeout=10_000,
+        )
+
+    def test_week_view_on_a_phone_shows_as_day_in_the_toolbar_too(
+        self, page: Page, app_server: str, phone_calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the phone layout replaces Week
+        with a single-day grid (calendar-page.tsx's own effectiveView),
+        but the toolbar kept reading the raw stored preference -- so a
+        phone whose stored view is still "week" (the app-wide default)
+        showed a week-range title over a one-day grid, with none of the
+        Day/Month/Agenda tabs rendered as selected."""
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{app_server}/calendar")
+
+        day_tab = page.get_by_role("tab", name="Day", exact=True)
+        expect(day_tab).to_be_visible(timeout=15_000)
+        expect(day_tab).to_have_attribute("aria-selected", "true")
+
+        today = datetime.now(timezone.utc).date()
+        # Matches the day view's own title format, never the week range
+        # ("MMM d – MMM d, yyyy (Week N)") the stored "week" preference
+        # would otherwise still be producing here.
+        expect(page.get_by_test_id("calendar-toolbar-title")).to_have_text(
+            f"{today.strftime('%A, %B')} {today.day}, {today.year}", timeout=10_000,
         )

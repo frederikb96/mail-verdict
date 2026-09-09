@@ -104,7 +104,18 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
             <div className="flex items-center gap-2">
               <Select value={parentId} onValueChange={(v) => setParentId(v ?? TOP_LEVEL)}>
                 <SelectTrigger className="h-8 flex-1">
-                  <SelectValue placeholder="Top level" />
+                  {/* The underlying control only resolves a label itself when
+                      given an item list, which nothing here passes -- without
+                      this it renders the folder's raw id. */}
+                  <SelectValue placeholder="Top level">
+                    {(v: string) =>
+                      v === TOP_LEVEL
+                        ? "Top level"
+                        : (liveFolders.find((f) => f.id === v)?.display_name ??
+                          liveFolders.find((f) => f.id === v)?.imap_name ??
+                          "Top level")
+                    }
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={TOP_LEVEL}>Top level</SelectItem>

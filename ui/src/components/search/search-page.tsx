@@ -362,7 +362,16 @@ export function SearchPage() {
             }
           >
             <SelectTrigger className="w-auto gap-1.5" size="sm">
-              <SelectValue placeholder="All accounts" />
+              {/* The underlying control only resolves a label itself when
+                  given an item list, which nothing here passes -- without
+                  this it renders the account's raw id. */}
+              <SelectValue placeholder="All accounts">
+                {(v: string) =>
+                  v === ALL_ACCOUNTS_VALUE
+                    ? "All accounts"
+                    : (accounts?.find((a) => a.id === v)?.name ?? "All accounts")
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ALL_ACCOUNTS_VALUE}>All accounts</SelectItem>

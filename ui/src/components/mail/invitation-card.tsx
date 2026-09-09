@@ -131,7 +131,15 @@ export function InvitationCard({ messageId }: InvitationCardProps) {
           <div className="flex items-center gap-2">
             <Select value={chosenCalendarId} onValueChange={(v) => v && setChosenCalendarId(v)}>
               <SelectTrigger size="sm" className="w-48">
-                <SelectValue placeholder="Add to calendar…" />
+                {/* The underlying control only resolves a label itself when
+                    given an item list, which nothing here passes -- without
+                    this it renders the calendar's raw id. */}
+                <SelectValue placeholder="Add to calendar…">
+                  {(v: string) =>
+                    writableCalendars.find((c) => c.id === v)?.display_name ??
+                    "Add to calendar…"
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {writableCalendars.map((c) => (
@@ -176,7 +184,15 @@ export function InvitationCard({ messageId }: InvitationCardProps) {
           <div className="flex items-center gap-2">
             <Select value={chosenCalendarId} onValueChange={(v) => v && setChosenCalendarId(v)}>
               <SelectTrigger size="sm" className="w-48">
-                <SelectValue placeholder="Add to calendar…" />
+                {/* The underlying control only resolves a label itself when
+                    given an item list, which nothing here passes -- without
+                    this it renders the calendar's raw id. */}
+                <SelectValue placeholder="Add to calendar…">
+                  {(v: string) =>
+                    writableCalendars.find((c) => c.id === v)?.display_name ??
+                    "Add to calendar…"
+                  }
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {writableCalendars.map((c) => (
