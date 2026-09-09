@@ -842,6 +842,21 @@ class UnifiedFolderOrderUpdate(BaseModel):
     order: list[str]
 
 
+# --- Account order schemas ---
+
+
+class AccountOrderResponse(BaseModel):
+    """Account display order."""
+
+    order: list[uuid.UUID]
+
+
+class AccountOrderUpdate(BaseModel):
+    """Request to save account display order."""
+
+    order: list[uuid.UUID]
+
+
 # --- Identity schemas ---
 
 
