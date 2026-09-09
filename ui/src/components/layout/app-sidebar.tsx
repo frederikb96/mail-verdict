@@ -302,10 +302,12 @@ export function AppSidebar() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-            <AlertBell />
-            {!isUnified && selectedAccountId && (
-              <NotificationBell accountId={selectedAccountId} />
-            )}
+            <div className="flex items-center gap-1 group-data-[collapsible=icon]:hidden">
+              <AlertBell />
+              {!isUnified && selectedAccountId && (
+                <NotificationBell accountId={selectedAccountId} />
+              )}
+            </div>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
