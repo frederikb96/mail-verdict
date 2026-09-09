@@ -52,6 +52,7 @@ import { CalendarSidebar } from "@/components/calendar/calendar-sidebar";
 import { ClientOnly } from "@/components/client-only";
 import { ComposeDialog } from "@/components/mail/compose-dialog";
 import { NotificationBell } from "@/components/layout/notification-bell";
+import { AlertBell } from "@/components/layout/alert-bell";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
@@ -301,6 +302,7 @@ export function AppSidebar() {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            <AlertBell />
             {!isUnified && selectedAccountId && (
               <NotificationBell accountId={selectedAccountId} />
             )}

@@ -8,7 +8,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { mailArrivedAtom } from "@/lib/atoms";
@@ -19,7 +19,9 @@ import {
   refreshMailFromServer,
   removeMailFromAllListCaches,
 } from "@/hooks/use-mails";
+import { alertKeys } from "@/hooks/use-alerts";
 import { useToast } from "@/hooks/use-toast";
+import { alertEnabledFolderIdsAtom, folderAlertsEnabled } from "@/lib/alert-prefs";
 import type { OutboxStatus, SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
@@ -63,6 +65,12 @@ export function useSSE(accountId?: string) {
   const setMailArrived = useSetAtom(mailArrivedAtom);
   const queryClient = useQueryClient();
   const { push: pushToast } = useToast();
+  const enabledFolderIds = useAtomValue(alertEnabledFolderIdsAtom);
+  // Read fresh inside the SSE handler (a closure captured once at connect
+  // time) without forcing a reconnect every time the preference changes --
+  // effects below depend on it explicitly for that reason.
+  const enabledFolderIdsRef = useRef(enabledFolderIds);
+  enabledFolderIdsRef.current = enabledFolderIds;
   const lastEventIdRef = useRef<string | null>(null);
   const reconnectDelayRef = useRef(RECONNECT_DELAY_MS);
   const sourceRef = useRef<EventSource | null>(null);
@@ -252,6 +260,49 @@ export function useSSE(accountId?: string) {
         } catch {
           // Ignore
         }
+      });
+
+      // A new alert (currently: new mail) -- refresh the bell's own list
+      // and count, and raise a system notification directly when this
+      // browser has been granted permission and this folder is one of
+      // the ones allowed to alert (see alert-prefs.ts). Not gated on the
+      // tab being focused: an unfocused tab is exactly the case a
+      // notification exists for, and a focused one simply gets both the
+      // popup and the already-visible bell update.
+      source.addEventListener("alert.new", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: alertKeys.list });
+        queryClient.invalidateQueries({ queryKey: alertKeys.count });
+        try {
+          const data: SSEEvent = JSON.parse(e.data);
+          const allowed = folderAlertsEnabled(enabledFolderIdsRef.current, data.folder_id);
+          if (
+            allowed &&
+            typeof window !== "undefined" &&
+            "Notification" in window &&
+            Notification.permission === "granted"
+          ) {
+            const n = new Notification(data.title || "New mail", {
+              body: data.body ?? undefined,
+              tag: data.id,
+            });
+            n.onclick = () => {
+              window.focus();
+              if (data.url) window.location.href = data.url;
+              n.close();
+            };
+          }
+        } catch {
+          // Ignore -- the invalidate above already refreshed the bell.
+        }
+      });
+
+      // Withdraws an alert everywhere it is still showing -- dismissed on
+      // one browser or device, cleared on every other open one too.
+      source.addEventListener("alert.dismissed", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        queryClient.invalidateQueries({ queryKey: alertKeys.list });
+        queryClient.invalidateQueries({ queryKey: alertKeys.count });
       });
 
       // A write PostIMAP gave up on permanently -- refresh the notification
