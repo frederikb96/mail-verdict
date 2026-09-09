@@ -27,10 +27,11 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
-from typing import Any
+from typing import Any, NamedTuple
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -366,14 +367,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await event_ring.add(account_uuid, sse_type, payload)
 
         elif event.type == "dav_object":
-            kind = (
-                await _dav_collection_kind(db, event.collection_id)
-                if event.collection_id else None
-            )
-            sse_type = "contact.object" if kind == "addressbook" else "calendar.object"
-            payload = {"id": event.id, "dav_account_id": event.account_id}
-            collection_key = "addressbook_id" if kind == "addressbook" else "calendar_id"
+            context = await _dav_object_event_context(db, event)
+            sse_type = "contact.object" if context.kind == "addressbook" else "calendar.object"
+            payload = {"id": event.id, "dav_account_id": event.account_id, "op": event.op}
+            collection_key = "addressbook_id" if context.kind == "addressbook" else "calendar_id"
             payload[collection_key] = event.collection_id
+            if sse_type == "calendar.object":
+                payload["dtstart"] = context.dtstart.isoformat() if context.dtstart else None
+                payload["dtend"] = context.dtend.isoformat() if context.dtend else None
+                payload["is_recurring"] = context.is_recurring
             await event_ring.add(account_uuid, sse_type, payload)
 
         elif event.type == "dav_notification":
@@ -542,6 +544,65 @@ async def _dav_collection_kind(db: Any, collection_id: str) -> str | None:
             select(DavCollection.kind).where(DavCollection.id == collection_uuid)
         )
     return kind
+
+
+class _DavObjectEventContext(NamedTuple):
+    """What a dav_object event needs from the database to build its SSE payload."""
+
+    kind: str | None
+    dtstart: datetime | None
+    dtend: datetime | None
+    is_recurring: bool | None
+
+
+async def _dav_object_event_context(db: Any, event: Any) -> _DavObjectEventContext:
+    """
+    The collection kind (calendar vs. address book) plus, for a calendar
+    object, its dtstart/dtend/is_recurring -- one round trip, joining the
+    object onto its collection, rather than a second query for the object
+    on top of _dav_collection_kind's.
+
+    Every field is None when the collection id doesn't parse, the
+    collection row is already gone (a delete event can outlive the
+    collection it named, as in _dav_collection_kind), or the object row
+    itself is gone (deleted and since purged) -- calendar.object then
+    carries null for dtstart/dtend/is_recurring, and a listener falls back
+    to treating the change as covering every month.
+    """
+    from sqlalchemy import select
+
+    from mail_verdict.database.models import DavCollection, DavObject
+
+    empty = _DavObjectEventContext(None, None, None, None)
+    if not event.collection_id:
+        return empty
+
+    try:
+        collection_uuid = uuid.UUID(event.collection_id)
+        object_uuid = uuid.UUID(event.id)
+    except ValueError:
+        return empty
+
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                select(
+                    DavCollection.kind, DavObject.dtstart, DavObject.dtend,
+                    DavObject.is_recurring,
+                )
+                .select_from(DavCollection)
+                .outerjoin(
+                    DavObject,
+                    (DavObject.id == object_uuid)
+                    & (DavObject.collection_id == DavCollection.id),
+                )
+                .where(DavCollection.id == collection_uuid)
+            )
+        ).one_or_none()
+
+    if row is None:
+        return empty
+    return _DavObjectEventContext(row.kind, row.dtstart, row.dtend, row.is_recurring)
 
 
 def _resolve_ui_build_dir() -> Path:

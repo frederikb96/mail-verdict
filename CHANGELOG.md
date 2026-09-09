@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A month's event listing no longer scans every recurring series in a calendar regardless of the
   window -- a series whose own start date is after the window ends can never contribute to it and
   is excluded from the query.
+- The `calendar.object` live-update event now names what changed (insert, update or delete) and
+  the object's own start/end and whether it recurs, so a client can invalidate only the months a
+  change actually touches instead of every month it has open.
 
 ## [5.4.0] - 2026-09-09
 

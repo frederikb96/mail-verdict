@@ -88,6 +88,14 @@ Two deliberate details:
 - **A listener reconnect emits a resync event.** Notifications sent while the connection was down
   are gone for good, so clients are told once to invalidate everything rather than silently
   holding stale data.
+- **`calendar.object` carries enough for a client to invalidate only what a change actually
+  touches.** Beyond `id`/`dav_account_id`/`calendar_id`, it names `op` (`insert`/`update`/`delete`)
+  and the object's own `dtstart`/`dtend` (ISO-8601 UTC, or `null`) and `is_recurring` (or `null`),
+  read from PostIMAP's parsed `dav_objects` columns in the same query as the collection-kind
+  lookup every `dav_object` event already needs. `contact.object` is unchanged. Any field coming
+  back `null` — the row could not be read, or its parsed columns are still catching up to a
+  just-written change — means a client cannot narrow the change and falls back to invalidating
+  every month it has mounted, the way every `calendar.object` event used to be handled.
 - **A write to a table this application owns rather than PostIMAP announces nothing on its own.**
   Verdicts, a rule's own tag, account/folder preferences, settings, identities, the pipeline
   document and a still-staged send all live here rather than under PostIMAP's own triggers, so
