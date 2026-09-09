@@ -24,6 +24,19 @@
  * or a message closing back to none) replaces, the same way the folder
  * sidebar's own clicks always have -- otherwise browsing folders would
  * flood history with an entry per folder switch.
+ *
+ * Two things the write effect below does to keep an account or folder
+ * switch to exactly one navigation, deferred past the click that made
+ * it: skipping the transient shape where a just-picked account (or the
+ * unified view) has no folder resolved yet -- app-sidebar.tsx's own
+ * auto-select effects fill that in moments later, and writing for it
+ * anyway means two navigations for one click instead of one -- and
+ * firing the push/replace call itself only once the browser has painted
+ * and drained the resulting task, not in the same commit as the atom
+ * change. Both exist because account and folder selection are set from
+ * a dropdown or a sheet closing itself as part of the same click, and a
+ * navigation landing in the middle of that close can detach the element
+ * the click landed on before the browser is done with it.
  */
 
 import { useEffect, useRef } from "react";
@@ -145,6 +158,17 @@ export function useMailUrlSync(): void {
     // `?message=` this render is in the middle of resolving.
     if (applyingUrlRef.current) return;
 
+    // An account (or the unified view) with no folder resolved yet is
+    // always transient -- app-sidebar.tsx's own auto-select effects pick
+    // one moments later, once that account's folders have loaded. Without
+    // this, a switch writes the URL twice: once with no folder the
+    // instant the account changes, and again once the folder resolves --
+    // two navigations for one click is twice the chance of the dropdown's
+    // own close landing inside one of them.
+    if ((!isUnified && accountId && !folderId) || (isUnified && !unifiedFolder)) {
+      return;
+    }
+
     const target = buildMailUrl({
       accountId, isUnified, unifiedFolder, folderId, messageId,
     });
@@ -161,11 +185,34 @@ export function useMailUrlSync(): void {
 
     const opensNewMessage = messageId !== null && messageId !== previousMessageId;
     lastReadParamsRef.current = target.includes("?") ? target.slice(target.indexOf("?") + 1) : "";
-    if (opensNewMessage) {
-      router.push(target, { scroll: false });
-    } else {
-      router.replace(target, { scroll: false });
-    }
+
+    // Deferred past the current paint and task: this effect fires the
+    // moment the selection atoms change, which for the account switcher
+    // and a folder click is the very same commit that closes the
+    // control's own dropdown or sheet. Firing the navigation in that
+    // same frame races it against that close -- Next's own
+    // navigation-in-progress tracking can catch the click still being
+    // delivered and detach the element it landed on before the browser
+    // finishes with it. requestAnimationFrame alone waits for the next
+    // paint; chaining a setTimeout onto it also waits for that paint's
+    // own task to drain, which is what actually matters under load --
+    // a starved renderer delays the close and the frame together, so a
+    // bare frame does not reliably run after it. Neither is observable
+    // as a delay in the URL itself.
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
+      timeout = setTimeout(() => {
+        if (opensNewMessage) {
+          router.push(target, { scroll: false });
+        } else {
+          router.replace(target, { scroll: false });
+        }
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      if (timeout !== undefined) clearTimeout(timeout);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, isUnified, unifiedFolder, folderId, messageId]);
 }

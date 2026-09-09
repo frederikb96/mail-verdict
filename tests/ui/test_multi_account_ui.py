@@ -106,6 +106,30 @@ class TestAccountPicker:
         expect(mail_row(page, msg_b["id"])).to_be_visible(timeout=15_000)
         expect(mail_row(page, msg_a["id"])).to_have_count(0)
 
+    def test_switching_repeatedly_and_rapidly_always_lands_on_the_right_account(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+    ) -> None:
+        """Every switch writes the selection into the URL the moment it's
+        made -- immediately, on the same click that closes the switcher's
+        own dropdown. Back-to-back switches, with nothing waited on in
+        between, are the shape that raced the dropdown's own close against
+        that URL write and occasionally lost the click entirely."""
+        account_a = create_account(api_client, "rapid-a")
+        account_b = create_account(api_client, "rapid-b")
+
+        page.goto(app_server)
+        for i in range(6):
+            target = account_a if i % 2 == 0 else account_b
+            select_account(page, target)
+            trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
+            expect(trigger.get_by_text(target["name"], exact=True)).to_be_visible(
+                timeout=15_000,
+            )
+            expect(page).to_have_url(re.compile(rf"account={target['id']}"), timeout=15_000)
+
 
 class TestUnifiedViewIdentifiesEachAccount:
     """A merged folder's row used to say only how MANY accounts fed it (a
