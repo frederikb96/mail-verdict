@@ -4,6 +4,7 @@ import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { extractSenderName, formatRelativeDate } from "@/lib/format";
+import { useAccounts } from "@/hooks/use-accounts";
 import type { SpamReviewItem } from "@/types/api";
 
 interface SpamReviewRowProps {
@@ -20,6 +21,16 @@ interface SpamReviewRowProps {
 export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) {
   const senderName = extractSenderName(item.from_addr);
 
+  // This view spans every account with no folder in common (Junk in one,
+  // the inbox in another) -- the account label is only worth showing at
+  // all once more than one exists to tell apart, the same threshold
+  // search-result-row.tsx uses for the same reason.
+  const { data: accounts } = useAccounts();
+  const accountName =
+    (accounts?.length ?? 0) > 1
+      ? (accounts?.find((a) => a.id === item.account_id)?.name ?? null)
+      : null;
+
   return (
     <div className="flex items-start gap-3 border-b px-4 py-3">
       <div className="min-w-0 flex-1">
@@ -29,6 +40,11 @@ export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) 
             <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
               Junk
             </Badge>
+          )}
+          {accountName && (
+            <span className="shrink-0 truncate rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground">
+              {accountName}
+            </span>
           )}
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {formatRelativeDate(item.received_at)}

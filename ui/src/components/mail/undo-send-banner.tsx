@@ -6,6 +6,7 @@ import { Mail, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useCancelPendingSend, usePendingSends } from "@/hooks/use-outbox";
+import { useAccounts } from "@/hooks/use-accounts";
 import { useToast } from "@/hooks/use-toast";
 import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 import type { PendingSendResponse } from "@/types/api";
@@ -14,7 +15,7 @@ function secondsRemaining(sendAfter: string): number {
   return Math.max(0, Math.ceil((new Date(sendAfter).getTime() - Date.now()) / 1000));
 }
 
-function PendingSendRow({ row }: { row: PendingSendResponse }) {
+function PendingSendRow({ row, accountName }: { row: PendingSendResponse; accountName: string | null }) {
   const [remaining, setRemaining] = useState(() => secondsRemaining(row.send_after));
   const cancel = useCancelPendingSend();
   const { push: pushToast } = useToast();
@@ -28,6 +29,11 @@ function PendingSendRow({ row }: { row: PendingSendResponse }) {
     <div className="flex items-center gap-2 border-b bg-muted px-3 py-1.5 text-sm">
       <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
       <span>Sending in {remaining}s...</span>
+      {accountName && (
+        <span className="shrink-0 truncate rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground">
+          {accountName}
+        </span>
+      )}
       <Button
         variant="ghost"
         size="sm"
@@ -59,13 +65,24 @@ export function UndoSendBanner() {
   const { data: pending } = usePendingSends({
     account_id: isUnified || !accountId ? undefined : accountId,
   });
+  // A row here can belong to any account whenever this banner isn't
+  // scoped to one (unified view, or no account selected yet) -- worth
+  // saying only once more than one account exists to tell apart.
+  const { data: accounts } = useAccounts();
+  const showAccount = (isUnified || !accountId) && (accounts?.length ?? 0) > 1;
 
   if (!pending || pending.length === 0) return null;
 
   return (
     <>
       {pending.map((row) => (
-        <PendingSendRow key={row.id} row={row} />
+        <PendingSendRow
+          key={row.id}
+          row={row}
+          accountName={
+            showAccount ? (accounts?.find((a) => a.id === row.account_id)?.name ?? null) : null
+          }
+        />
       ))}
     </>
   );

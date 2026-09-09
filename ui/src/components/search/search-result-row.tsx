@@ -18,6 +18,7 @@ import {
   extractSenderName,
 } from "@/lib/format";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
+import { Truncate } from "@/components/ui/truncate";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
 import { useAccounts } from "@/hooks/use-accounts";
 import type { SearchResultItem } from "@/hooks/use-search";
@@ -73,14 +74,13 @@ export function SearchResultRow({ result, onOpen }: SearchResultRowProps) {
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-center gap-2">
           {!result.is_seen && <div className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />}
-          <span
+          <Truncate
+            text={senderName}
             className={cn(
-              "truncate text-sm text-foreground",
+              "text-sm text-foreground",
               !result.is_seen ? "font-semibold" : "font-medium",
             )}
-          >
-            {senderName}
-          </span>
+          />
           {result.is_flagged && (
             <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-400" />
           )}
@@ -93,14 +93,13 @@ export function SearchResultRow({ result, onOpen }: SearchResultRowProps) {
             {formatRelativeDate(result.received_at)}
           </span>
         </div>
-        <span
+        <Truncate
+          text={result.subject || "(no subject)"}
           className={cn(
-            "truncate text-sm",
+            "text-sm",
             !result.is_seen ? "font-semibold text-foreground" : "text-foreground/90",
           )}
-        >
-          {result.subject || "(no subject)"}
-        </span>
+        />
         {recipients && (
           <span className="truncate text-xs text-muted-foreground">To: {recipients}</span>
         )}

@@ -26,6 +26,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
+import { Truncate } from "@/components/ui/truncate";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,7 +65,12 @@ import {
   selectedFolderIdAtom,
   selectedUnifiedFolderAtom,
 } from "@/lib/atoms";
-import type { FolderResponse, FolderOrderItem, UnifiedFolderResponse } from "@/types/api";
+import type {
+  AccountResponse,
+  FolderResponse,
+  FolderOrderItem,
+  UnifiedFolderResponse,
+} from "@/types/api";
 
 const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
   inbox: Inbox,
@@ -110,6 +116,28 @@ function getFolderIcon(folder: FolderResponse | FolderOrderItem) {
 function getFolderDisplayName(folder: FolderResponse): string {
   if (folder.display_name) return folder.display_name;
   return folder.imap_name;
+}
+
+/** Which accounts feed a merged unified folder, deduplicated -- a folder
+ * called "Inbox" the same way on three accounts merges into one row, and
+ * this is the only place that row still says which accounts those were.
+ * The tooltip already carried a bare count; this is what makes it visible
+ * without hovering, in the same emoji-badge language the unified mail
+ * list uses for the same purpose (unified-mail-item.tsx). */
+function getContributingAccounts(
+  uf: UnifiedFolderResponse,
+  accounts: AccountResponse[] | undefined,
+): AccountResponse[] {
+  if (!accounts) return [];
+  const seen = new Set<string>();
+  const result: AccountResponse[] = [];
+  for (const f of uf.folders) {
+    if (seen.has(f.account_id)) continue;
+    seen.add(f.account_id);
+    const account = accounts.find((a) => a.id === f.account_id);
+    if (account) result.push(account);
+  }
+  return result;
 }
 
 /**
@@ -252,11 +280,9 @@ export function AppSidebar() {
                   ) : (
                     <Mail className="h-4 w-4" />
                   )}
-                  <span className="truncate">
-                    {isUnified
-                      ? "Unified View"
-                      : currentAccount?.name ?? "Select Account"}
-                  </span>
+                  <Truncate
+                    text={isUnified ? "Unified View" : currentAccount?.name ?? "Select Account"}
+                  />
                 </div>
                 <ChevronDown className="h-4 w-4 opacity-50" />
               </DropdownMenuTrigger>
@@ -292,7 +318,7 @@ export function AppSidebar() {
                     ) : (
                       <UserCircle className="mr-2 h-4 w-4" />
                     )}
-                    <span className="truncate">{account.name}</span>
+                    <Truncate text={account.name} />
                     {account.id === selectedAccountId && !isUnified && (
                       <span className="ml-auto text-xs text-muted-foreground">
                         current
@@ -355,6 +381,7 @@ export function AppSidebar() {
                       account_id: f.account_id,
                       folder_id: f.folder_id,
                     }));
+                    const contributing = getContributingAccounts(uf, accounts);
                     return (
                       <DroppableFolder
                         key={uf.unified_name}
@@ -369,9 +396,23 @@ export function AppSidebar() {
                             tooltip={`${uf.unified_name} (${uf.folders.length} accounts)`}
                           >
                             <Layers className="h-4 w-4" />
-                            <span className="flex-1 truncate">
-                              {uf.unified_name}
-                            </span>
+                            <Truncate text={uf.unified_name} className="flex-1" />
+                            {/* Which accounts merged into this row -- the
+                                tooltip above only ever gave a count, not
+                                visible without hovering. */}
+                            {contributing.length > 1 && (
+                              <span className="flex shrink-0 items-center -space-x-1 group-data-[collapsible=icon]:hidden">
+                                {contributing.map((a) => (
+                                  <span
+                                    key={a.id}
+                                    title={a.name}
+                                    className="text-[11px] leading-none"
+                                  >
+                                    {a.emoji ?? "✉️"}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
                             {uf.unread_count > 0 && (
                               <Badge
                                 variant="secondary"
@@ -403,9 +444,10 @@ export function AppSidebar() {
                               tooltip={folder.display_name || folder.imap_name}
                             >
                               <Icon className="h-4 w-4" />
-                              <span className="flex-1 truncate">
-                                {folder.display_name || folder.imap_name}
-                              </span>
+                              <Truncate
+                                text={folder.display_name || folder.imap_name}
+                                className="flex-1"
+                              />
                             </SidebarMenuButton>
                             {selectedAccountId && (
                               <FolderRowMenu
@@ -436,9 +478,7 @@ export function AppSidebar() {
                               tooltip={getFolderDisplayName(folder)}
                             >
                               <Icon className="h-4 w-4" />
-                              <span className="flex-1 truncate">
-                                {getFolderDisplayName(folder)}
-                              </span>
+                              <Truncate text={getFolderDisplayName(folder)} className="flex-1" />
                             </SidebarMenuButton>
                             {selectedAccountId && (
                               <FolderRowMenu

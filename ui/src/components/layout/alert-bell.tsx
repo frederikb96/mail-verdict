@@ -20,16 +20,19 @@ import {
   useDismissAllAlerts,
   useUnseenAlertCount,
 } from "@/hooks/use-alerts";
+import { useAccounts } from "@/hooks/use-accounts";
 import { formatRelativeDate } from "@/lib/format";
 import type { AlertResponse } from "@/types/api";
 
 function AlertRow({
   alert,
+  accountName,
   onOpen,
   onDismiss,
   isDismissing,
 }: {
   alert: AlertResponse;
+  accountName: string | null;
   onOpen: () => void;
   onDismiss: () => void;
   isDismissing: boolean;
@@ -51,6 +54,11 @@ function AlertRow({
           </span>
         </div>
         {alert.body && <span className="truncate text-xs text-muted-foreground">{alert.body}</span>}
+        {accountName && (
+          <span className="shrink-0 self-start truncate rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground">
+            {accountName}
+          </span>
+        )}
       </button>
       {unseen && (
         <Button
@@ -74,6 +82,12 @@ export function AlertBell() {
   const { data: alerts, isLoading } = useAlerts();
   const dismiss = useDismissAlert();
   const dismissAll = useDismissAllAlerts();
+
+  // Not account-scoped by design (see the module comment) -- the label
+  // is only worth showing once more than one account exists to tell
+  // apart, the same threshold every other cross-account row here uses.
+  const { data: accounts } = useAccounts();
+  const showAccount = (accounts?.length ?? 0) > 1;
 
   const unseen = count?.unseen ?? 0;
 
@@ -124,6 +138,11 @@ export function AlertBell() {
             <AlertRow
               key={alert.id}
               alert={alert}
+              accountName={
+                showAccount && alert.account_id
+                  ? (accounts?.find((a) => a.id === alert.account_id)?.name ?? null)
+                  : null
+              }
               onOpen={() => openAlert(alert)}
               onDismiss={() => dismiss.mutate(alert.id)}
               isDismissing={dismiss.isPending && dismiss.variables === alert.id}
