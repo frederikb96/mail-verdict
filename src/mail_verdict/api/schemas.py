@@ -404,8 +404,15 @@ class AccountCreateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool = False
-    trash_retention_days: int | None = None
-    junk_retention_days: int | None = None
+    # Zero means every retention_entries row already stamped is overdue,
+    # and a negative period puts the threshold in the future -- either
+    # clears the whole folder on the very next sweep tick. ge=1 rejects
+    # both here; a check constraint (see the retention_min_days
+    # migration) holds the same floor in the database, since this is the
+    # one thing standing between a typo'd setting and Trash or Junk being
+    # destroyed on a schedule.
+    trash_retention_days: int | None = Field(default=None, ge=1)
+    junk_retention_days: int | None = Field(default=None, ge=1)
 
 
 class AccountUpdateRequest(BaseModel):
@@ -427,8 +434,9 @@ class AccountUpdateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool | None = None
-    trash_retention_days: int | None = None
-    junk_retention_days: int | None = None
+    # See AccountCreateRequest.trash_retention_days for why ge=1.
+    trash_retention_days: int | None = Field(default=None, ge=1)
+    junk_retention_days: int | None = Field(default=None, ge=1)
 
 
 # --- Folder schemas ---
