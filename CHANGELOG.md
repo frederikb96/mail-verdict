@@ -7,26 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Mail
-
-- Trash retention now means time spent sitting in Trash, not a message's own date -- mail already
-  years old when it is trashed still gets the full window before removal, the same as every mail
-  client's own "empty Trash after N days" already means.
-- Ruling a message spam -- the thumbs-down button, the review screen, or a bulk action over
-  several -- now marks it read too, the same as moving one there by hand already does. Nothing
-  lands in the spam folder unread any more, whichever way it got there.
-
-### Rules
-
-- A sender condition (matching an exact address or a domain) now matches real mail: it compared
-  the raw From header, display name included, against a bare address, so it could never match
-  anything. A header condition's field name is now matched case-insensitively too -- naming a
-  header the conventional way ("From") previously matched nothing, since the underlying header
-  dictionary always holds lower-case names.
-- A stage's "halt after this" setting now actually stops the pipeline there. It was stored,
-  validated and shown in the editor, but nothing ever read it back, so a message matching two
-  rules had both applied, with the later one's effects winning.
-
 ## [5.6.0] - 2026-09-09
 
 ### Rules
@@ -44,8 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Archiving a message, or moving it into the spam folder, marks it read as it moves -- the toolbar
   action and a drag-and-drop move alike. A setting turns this off.
-- An account can be given a Trash retention: mail sitting in Trash longer than that many days is
-  permanently removed by a periodic sweep, batched and logged. Off by default, per account.
+- An account can be given a Trash retention: mail that has sat in Trash longer than that many
+  days is permanently removed by a periodic sweep, batched and logged. The clock runs from when
+  a message entered Trash, not from its own date, so mail already years old when it is trashed
+  still gets the full window -- and a message that leaves Trash and comes back starts again. Off
+  by default, per account.
+- Ruling a message spam -- the thumbs-down button, the review screen, or a bulk action over
+  several -- marks it read too, the same as moving one there by hand. Nothing lands in the spam
+  folder unread, whichever way it got there. Rescuing one back out never marks it read.
 - The account switcher's order is no longer fixed: drag accounts into the order you want in
   Settings, and every place that lists accounts follows it.
 
