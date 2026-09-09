@@ -459,6 +459,39 @@ class TestContactsUi:
         ).to_be_visible(timeout=10_000)
         expect(page.get_by_text("not-an-address", exact=True)).to_have_count(0)
 
+    def test_typing_past_a_matched_contact_prefix_keeps_the_typed_address(
+        self,
+        page: Page,
+        app_server: str,
+        ui_account: dict[str, Any],
+        seeded_contact: dict[str, Any],
+    ) -> None:
+        """Typing a full address one character at a time used to lose
+        whatever had been typed the moment the contact search stopped
+        matching -- exactly when a real address diverges from a seeded
+        contact's prefix. The suggestion list closing is a different event
+        from clearing the field, and the two must stay independent."""
+        page.goto(app_server)
+        page.get_by_role("button", name="Compose").click()
+
+        to_field = page.get_by_role("combobox", name="To")
+        expect(to_field).to_be_visible(timeout=15_000)
+        to_field.click()
+        page.keyboard.type("anna")
+
+        suggestion = page.get_by_role("option", name="anna.testerson@example.com")
+        expect(suggestion).to_be_visible(timeout=10_000)
+
+        # Continuing past the matched prefix makes the contact search
+        # return nothing, closing the list the field itself controls --
+        # exactly the moment a typed address stops matching mid-keystroke.
+        page.keyboard.type("-nomatch@example.test")
+
+        expect(page.get_by_role("option")).to_have_count(0)
+        expect(page.locator('[data-slot="combobox-input"]')).to_have_value(
+            "anna-nomatch@example.test"
+        )
+
 
 class TestBirthdayCrash:
     """The regression this guards: opening a contact whose birthday is a
