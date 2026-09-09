@@ -19,6 +19,7 @@ from mail_verdict.database.models import Alert
 from mail_verdict.database.repository import PushSubscriptionRepository
 from mail_verdict.push.send import dispatch_push_for_alert
 from mail_verdict.push.vapid import VapidKeyRepository, VapidUnavailableError
+from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 
 _ENCRYPTION_KEY = "00" * 32
 _OTHER_ENCRYPTION_KEY = "11" * 32
@@ -202,6 +203,38 @@ class TestPushSubscriptionRepository:
         matched_ids = {s.id for s in matched}
         assert every_folder.id in matched_ids
         assert scoped.id not in matched_ids
+
+    @pytest.mark.asyncio
+    async def test_list_for_alert_mail_null_scope_only_matches_an_arrival_folder(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A null-scope subscription (never opened the alert settings)
+        must not be pushed mail landing in a folder that isn't one mail
+        arrives in -- the inbox here, as opposed to the junk folder
+        seeded beside it -- or enabling push announces a reader's own
+        outgoing and junk mail back at them. An explicitly-scoped
+        subscription is unaffected: it already said which folders it
+        wants."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+            await session.commit()
+
+        repo = PushSubscriptionRepository(migrated_db)
+        null_scope = await repo.upsert(
+            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="null",
+        )
+        scoped_to_junk = await repo.upsert(
+            endpoint=f"https://push.example/{uuid.uuid4()}", p256dh="p", auth="a", label="junk",
+        )
+        await repo.update_prefs(scoped_to_junk.id, alert_folder_ids=[junk_id])
+
+        for_inbox = {s.id for s in await repo.list_for_alert(kind="mail", folder_id=inbox_id)}
+        for_junk = {s.id for s in await repo.list_for_alert(kind="mail", folder_id=junk_id)}
+
+        assert null_scope.id in for_inbox
+        assert null_scope.id not in for_junk
+        assert scoped_to_junk.id in for_junk
+        assert scoped_to_junk.id not in for_inbox
 
     @pytest.mark.asyncio
     async def test_list_for_alert_reminder_is_gated_on_reminders_enabled(

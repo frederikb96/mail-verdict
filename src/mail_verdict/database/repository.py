@@ -1885,19 +1885,39 @@ class PushSubscriptionRepository:
             kind: "mail" or "reminder"
             folder_id: The mail alert's folder, for the alert_folder_ids
                 filter. Ignored for "reminder", which has no folder to
-                filter on. A "mail" alert with no folder_id (the
+                filter on. A subscription with no explicit alert_folder_ids
+                only matches an arrival folder (special_use effectively
+                unset or "inbox") -- the same default the client resolves
+                to for a browser with no subscription yet (see
+                isArrivalFolder in alert-prefs.ts) -- so a freshly
+                registered device isn't pushed its own Sent, Drafts,
+                Trash and Junk. A "mail" alert with no folder_id (the
                 originating message already gone) only reaches a
                 subscription that alerts for every folder -- a scoped
-                subscription cannot confirm a folder it was never told.
+                subscription cannot confirm a folder it was never told,
+                and neither can a null-scoped one confirm an unknown
+                folder is an arrival folder.
         """
         async with self._db.session() as session:
             stmt = select(PushSubscription)
             if kind == "mail":
                 if folder_id is not None:
+                    effective_special_use = (
+                        select(func.coalesce(FolderPrefs.special_use_override, Folder.special_use))
+                        .select_from(Folder)
+                        .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+                        .where(Folder.id == folder_id)
+                        .scalar_subquery()
+                    )
+                    is_arrival_folder = or_(
+                        effective_special_use.is_(None), effective_special_use == "inbox",
+                    )
                     stmt = stmt.where(
                         or_(
-                            PushSubscription.alert_folder_ids.is_(None),
                             PushSubscription.alert_folder_ids.any(folder_id),  # type: ignore[arg-type]
+                            and_(
+                                PushSubscription.alert_folder_ids.is_(None), is_arrival_folder,
+                            ),
                         )
                     )
                 else:

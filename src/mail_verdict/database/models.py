@@ -1397,10 +1397,12 @@ class PushSubscription(Base):
     genuinely per-device thing a system with no login has to hang them
     on. endpoint is personal; never logged.
 
-    alert_folder_ids NULL means every folder alerts -- the same NULL-
-    means-nobody-narrowed-it-down convention calendar_prefs uses, so a
-    freshly-registered device needs no row-per-folder bookkeeping to mean
-    "all of them". reminders_enabled carries a real default (true)
+    alert_folder_ids NULL means "nobody has narrowed this down yet" --
+    the same convention calendar_prefs uses -- resolved at delivery time
+    to the folders mail actually arrives in (see
+    PushSubscriptionRepository.list_for_alert), not to every folder, so a
+    freshly-registered device isn't pushed its own Sent, Drafts, Trash
+    and Junk. reminders_enabled carries a real default (true)
     instead: receiving push at all is the ordinary case for a device that
     just registered, not a third undecided state the way a per-calendar
     preference is.
