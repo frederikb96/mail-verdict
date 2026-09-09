@@ -388,13 +388,19 @@ class TestDateRangeAtScale:
         # A token common enough that recall alone doesn't narrow much --
         # every row carries it -- so the date range is doing the real work
         # of shrinking the candidate set, the shape the survey flagged.
+        # Deliberately rare rather than an ordinary word: this test's own
+        # search is account_id=None (the whole point is no folder/account
+        # scope), so it reads every row in the shared pg-layer database --
+        # an ordinary word risked matching another test's own fixture data
+        # and inflating the count in a whole-layer run.
+        marker = "zzqdaterangescale"
         rows = [
             {
                 "id": uuid.uuid4(), "account_id": account_id, "folder_id": folder_id,
                 "imap_uid": 100 + i, "thread_id": uuid.uuid4(),
                 "message_id": f"<{uuid.uuid4()}@large-mailbox.example.com>",
-                "subject": f"Newsletter update {i}", "from_addr": f"sender{i % 50}@example.com",
-                "body_text": "update", "received_at": _BASE_TIME + timedelta(minutes=i + 1),
+                "subject": f"Newsletter {marker} {i}", "from_addr": f"sender{i % 50}@example.com",
+                "body_text": marker, "received_at": _BASE_TIME + timedelta(minutes=i + 1),
             }
             for i in range(count)
         ]
@@ -413,9 +419,9 @@ class TestDateRangeAtScale:
                         "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) "
                         "SELECT id FROM messages WHERE expunged_at IS NULL "
                         "AND received_at >= :start AND received_at <= :end "
-                        "AND search_vector @@ to_tsquery('simple', 'update:*')"
+                        "AND search_vector @@ to_tsquery('simple', :marker)"
                     ),
-                    {"start": window_start, "end": window_end},
+                    {"start": window_start, "end": window_end, "marker": f"{marker}:*"},
                 )
             ).all()
         plan_text = "\n".join(r[0] for r in plan_rows)
@@ -423,7 +429,7 @@ class TestDateRangeAtScale:
 
         started = time.monotonic()
         page = await search_messages(
-            q="update", account_id=None, folder_ids=None,
+            q=marker, account_id=None, folder_ids=None,
             fields=["subject", "body"], before=None, limit=50,
             received_after=window_start, received_before=window_end,
         )
