@@ -22,6 +22,7 @@ from mail_verdict.calendar import ical
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
 from mail_verdict.postimap.actions import create_object
+from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
@@ -86,12 +87,18 @@ _EXOTIC_RECURRING_ICS = (
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(events_router)
     app.include_router(calendars_router)
     with TestClient(app) as c:
+        # api/calendars.py resolves a calendar's default reminder against
+        # the global settings.calendar category -- the same global
+        # settings service singleton embeddings.py/pipeline.py already
+        # depend on, so it needs initializing here too.
+        c.portal.call(init_settings_service, migrated_db)
         yield c
+        c.portal.call(reset_settings_service)
 
 
 async def _seed_calendar(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:

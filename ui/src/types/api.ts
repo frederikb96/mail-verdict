@@ -822,6 +822,13 @@ export interface Calendar {
   sync_error: string | null;
   initial_sync_done: boolean;
   total_count: number;
+  /** The raw per-calendar override -- null means inherit the global
+   * setting, the same way is_enabled's own null means nobody decided. */
+  default_reminder_minutes: number | null;
+  reminders_enabled: boolean | null;
+  /** What a freshly created event on this calendar should actually
+   * pre-fill with, already resolved -- null means no default reminder. */
+  resolved_default_reminder_minutes: number | null;
 }
 
 export interface CalendarCreateRequest {
@@ -837,11 +844,23 @@ export interface CalendarUpdateRequest {
   is_enabled?: boolean;
   identity_id?: string | null;
   intake?: CalendarIntake;
+  default_reminder_minutes?: number | null;
+  reminders_enabled?: boolean | null;
 }
 
 export type Partstat = "needs-action" | "accepted" | "declined" | "tentative";
 export type AttendeeRole = "chair" | "req-participant" | "opt-participant" | "non-participant";
 export type EventStatus = "confirmed" | "tentative" | "cancelled";
+export type EventTransparency = "opaque" | "transparent";
+
+/** One DISPLAY alarm -- exactly one of the two is set. offset_minutes
+ * keeps iCalendar's own sign convention (negative = before the start,
+ * positive = after), matching the server's own Reminder shape exactly:
+ * a reminder read back is what a client would send to recreate it. */
+export interface EventReminder {
+  offset_minutes: number | null;
+  at: string | null;
+}
 /** "unknown" is the ITIP-reply-summary's own fallback once the outbox row
  * it points at has aged out of retention -- not a status a real outbox row
  * ever carries, so it lives here rather than on OutboxStatus itself. */
@@ -894,6 +913,8 @@ export interface EventInstance {
   own_reply: OwnReply | null;
   source_message_id: string | null;
   read_only: boolean;
+  reminders: EventReminder[];
+  transparency: EventTransparency;
 }
 
 export type RecurrenceScope = "this" | "following" | "all";
@@ -909,6 +930,8 @@ export interface EventCreateRequest {
   description?: string;
   rrule?: string;
   attendees?: { email: string; cn?: string }[];
+  reminders?: EventReminder[];
+  transparency?: EventTransparency;
 }
 
 export interface EventUpdateRequest {
@@ -923,6 +946,10 @@ export interface EventUpdateRequest {
   /** Required when the object is a recurring instance. */
   scope?: RecurrenceScope;
   recurrence_id?: string;
+  /** A whole-list replace, never a per-alarm patch -- omitted means
+   * unchanged, an empty list means "remove every reminder". */
+  reminders?: EventReminder[];
+  transparency?: EventTransparency;
 }
 
 export interface EventDeleteRequest {

@@ -19,10 +19,10 @@ import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone, tzinfo
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import recurring_ical_events
-from icalendar import Calendar, Component, Event, Timezone, vCalAddress, vDDDTypes, vText
+from icalendar import Alarm, Calendar, Component, Event, Timezone, vCalAddress, vDDDTypes, vText
 
 # A window this wide could contain more occurrences than a caller ever
 # means to render, and expand_instances() refuses rather than letting
@@ -251,6 +251,18 @@ class Attendee:
 
 
 @dataclass
+class Reminder:
+    """One VALARM:DISPLAY trigger -- exactly one of the two is set.
+    offset_minutes keeps iCalendar's own sign convention (negative =
+    before the start, positive = after) rather than inventing "minutes
+    before"; a positive offset is a legitimate after-the-start reminder.
+    at is an absolute trigger, RFC 5545's TRIGGER;VALUE=DATE-TIME."""
+
+    offset_minutes: int | None = None
+    at: datetime | None = None
+
+
+@dataclass
 class ParsedEvent:
     """One VEVENT component -- the master, an exception, or an expanded
     instance. dtstart/dtend/all_day/tz describe this component's own
@@ -272,6 +284,11 @@ class ParsedEvent:
     rrule: str | None = None
     is_recurring: bool = False
     is_exception: bool = False
+    reminders: list[Reminder] = field(default_factory=list)
+    # TRANSP absent means OPAQUE per RFC 5545 -- defaulted here rather
+    # than reported as null, the same way a component with no STATUS
+    # reports "confirmed" above.
+    transparency: Literal["opaque", "transparent"] = "opaque"
 
 
 @dataclass
@@ -344,6 +361,64 @@ def _recurrence_id_value(component: Component) -> str | None:
         zone = getattr(dtstart.dt, "tzinfo", None) if dtstart is not None else None
         value = value.replace(tzinfo=zone or timezone.utc)
     return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _parse_reminders(component: Component) -> list[Reminder]:
+    """Every DISPLAY VALARM's own trigger, in the order stored. An
+    EMAIL/AUDIO/PROCEDURE alarm -- something else's client may have
+    written one -- is not one of this application's reminders and is
+    never read here; _replace_display_alarms() below, its write-side
+    twin, is what actually leaves it untouched."""
+    reminders: list[Reminder] = []
+    for alarm in component.subcomponents:
+        if alarm.name != "VALARM" or str(alarm.get("ACTION", "")).upper() != "DISPLAY":
+            continue
+        trigger = alarm.get("TRIGGER")
+        if trigger is None:
+            continue
+        value = trigger.dt
+        if isinstance(value, timedelta):
+            reminders.append(Reminder(offset_minutes=int(value.total_seconds() // 60)))
+        elif isinstance(value, datetime):
+            at = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            reminders.append(Reminder(at=at))
+    return reminders
+
+
+def _parse_transparency(component: Component) -> Literal["opaque", "transparent"]:
+    raw = str(component.get("TRANSP", "OPAQUE")).upper()
+    return "transparent" if raw == "TRANSPARENT" else "opaque"
+
+
+def _build_display_alarm(reminder: Reminder) -> Alarm:
+    if reminder.offset_minutes is None and reminder.at is None:
+        raise ValueError("Reminder needs offset_minutes or at")
+    alarm = Alarm()
+    alarm.add("ACTION", "DISPLAY")
+    alarm.add("DESCRIPTION", "Reminder")
+    if reminder.offset_minutes is not None:
+        alarm.add("TRIGGER", timedelta(minutes=reminder.offset_minutes))
+    else:
+        assert reminder.at is not None
+        alarm.add("TRIGGER", reminder.at, parameters={"VALUE": "DATE-TIME"})
+    return alarm
+
+
+def _replace_display_alarms(component: Component, reminders: list[Reminder]) -> None:
+    """Whole-list replace of this component's own DISPLAY reminders --
+    never a per-alarm patch, so there is exactly one way to end up with
+    the set requested. An alarm whose ACTION is not DISPLAY is left
+    exactly where it is: dropping it would be silent data loss for a
+    client this application does not know about."""
+    kept = [
+        c for c in component.subcomponents
+        if not (c.name == "VALARM" and str(c.get("ACTION", "")).upper() == "DISPLAY")
+    ]
+    component.subcomponents = kept + [_build_display_alarm(r) for r in reminders]
+
+
+def _set_transparency(component: Component, transparency: str) -> None:
+    _set(component, "TRANSP", "TRANSPARENT" if transparency == "transparent" else "OPAQUE")
 
 
 def _parse_component(
@@ -419,6 +494,8 @@ def _parse_component(
         rrule=rrule,
         is_recurring=is_recurring,
         is_exception=is_exception,
+        reminders=_parse_reminders(component),
+        transparency=_parse_transparency(component),
     )
 
 
@@ -680,6 +757,8 @@ def build_new_event(
     organizer_email: str | None = None,
     organizer_cn: str | None = None,
     attendees: list[tuple[str, str | None]] | None = None,
+    reminders: list[Reminder] | None = None,
+    transparency: str | None = None,
 ) -> str:
     """
     Build a fresh VCALENDAR body for an event this application originates.
@@ -702,6 +781,9 @@ def build_new_event(
         organizer_cn: Display name for the organizer
         attendees: (email, cn) pairs; SCHEDULE-AGENT=CLIENT is set on each
             so the server never sends its own invitations
+        reminders: DISPLAY alarms to write; None or empty means none
+        transparency: "opaque" or "transparent"; None leaves TRANSP unset,
+            which RFC 5545 already defines as OPAQUE
 
     Returns:
         A new VCALENDAR body with a freshly generated UID
@@ -750,6 +832,10 @@ def build_new_event(
     if rrule:
         validate_rrule_frequency(rrule)
         event.add("RRULE", _parse_rrule_value(rrule))
+    if transparency is not None:
+        _set_transparency(event, transparency)
+    for reminder in reminders or []:
+        event.add_component(_build_display_alarm(reminder))
 
     if attendees:
         if not organizer_email:
@@ -823,10 +909,13 @@ def _apply_field_overrides(
     description: str | None,
     rrule: str | None,
     bump_sequence: bool,
+    reminders: list[Reminder] | None = None,
+    transparency: str | None = None,
 ) -> None:
     """Mutate one VEVENT component in place -- fields left as None are
     unchanged. Shared by replace_master_fields() (scope="all") and
-    edit_occurrence() (scope="this")."""
+    edit_occurrence() (scope="this"). reminders is a whole-list replace,
+    never a per-alarm patch -- see _replace_display_alarms()."""
     if summary is not None:
         _set(component, "SUMMARY", summary)
     if dtstart is not None:
@@ -869,6 +958,10 @@ def _apply_field_overrides(
         if rrule:
             validate_rrule_frequency(rrule)
             component.add("RRULE", _parse_rrule_value(rrule))
+    if reminders is not None:
+        _replace_display_alarms(component, reminders)
+    if transparency is not None:
+        _set_transparency(component, transparency)
     if bump_sequence:
         _set(component, "SEQUENCE", int(component.get("SEQUENCE", 0)) + 1)
 
@@ -884,11 +977,15 @@ def replace_master_fields(
     description: str | None = None,
     rrule: str | None = None,
     bump_sequence: bool = True,
+    reminders: list[Reminder] | None = None,
+    transparency: str | None = None,
 ) -> str:
     """
     Edit the master VEVENT in place -- scope="all" on a recurring series,
     or the only edit path for a non-recurring event. Fields left as None
-    are unchanged.
+    are unchanged. reminders is a whole-list replace of this component's
+    own DISPLAY alarms; an EMAIL/AUDIO/PROCEDURE alarm is preserved
+    regardless.
 
     SEQUENCE is the ORGANIZER's own version counter (RFC 5545) --
     bump_sequence defaults to True for a caller that already knows this
@@ -907,6 +1004,7 @@ def replace_master_fields(
     _apply_field_overrides(
         master, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
         location=location, description=description, rrule=rrule, bump_sequence=bump_sequence,
+        reminders=reminders, transparency=transparency,
     )
     return _serialize(cal)
 
@@ -970,19 +1068,25 @@ def edit_occurrence(
     location: str | None = None,
     description: str | None = None,
     bump_sequence: bool = True,
+    reminders: list[Reminder] | None = None,
+    transparency: str | None = None,
 ) -> str:
     """
     scope="this": edit one occurrence of a series without touching the
     others. Updates the existing exception at recurrence_id if there is
     one, otherwise clones the master as a new exception carrying the
-    overrides. See replace_master_fields() for what bump_sequence gates
-    and why it must be False for anything held only as an attendee.
+    overrides -- reminders and transparency included, via the same
+    deepcopy _get_or_clone_exception() already does, so a per-occurrence
+    override starts from the master's own reminders rather than none at
+    all. See replace_master_fields() for what bump_sequence gates and why
+    it must be False for anything held only as an attendee.
     """
     cal = _parse_calendar(data)
     target = _get_or_clone_exception(cal, recurrence_id)
     _apply_field_overrides(
         target, summary=summary, dtstart=dtstart, dtend=dtend, all_day=all_day,
         location=location, description=description, rrule=None, bump_sequence=bump_sequence,
+        reminders=reminders, transparency=transparency,
     )
     return _serialize(cal)
 

@@ -24,10 +24,11 @@ from mail_verdict.api.identities import router as identities_router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
 from mail_verdict.postimap.actions import force_reconnect_dav_account
+from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(dav_accounts_router)
     app.include_router(calendars_router)
@@ -35,7 +36,13 @@ def client() -> Iterator[TestClient]:
     app.include_router(addressbooks_router)
     app.include_router(identities_router)
     with TestClient(app) as c:
+        # api/calendars.py resolves a calendar's default reminder against
+        # the global settings.calendar category -- the global settings
+        # service singleton, same as embeddings.py and pipeline.py already
+        # depend on, so it needs initializing here too.
+        c.portal.call(init_settings_service, migrated_db)
         yield c
+        c.portal.call(reset_settings_service)
 
 
 _DAV_ACCOUNTS_TARGET = "mail_verdict.api.dav_accounts.get_db_connection"

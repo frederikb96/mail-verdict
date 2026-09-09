@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mcp_tools import mcp
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 _TARGETS = (
     "mail_verdict.api.calendar_events.get_db_connection",
@@ -75,6 +76,11 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     api/calendars.py and api/contacts.py -- each resolves its own database
     connection at call time, so all three need patching, not just
     api/mcp_tools.py's own."""
+    # list_calendars/create_event/update_event go through api/calendars.py's
+    # _to_response(), which resolves a calendar's default reminder against
+    # the global settings.calendar category -- the same settings service
+    # singleton embeddings.py/pipeline.py already depend on.
+    await init_settings_service(migrated_db)
     patchers = [patch(target, return_value=migrated_db) for target in _TARGETS]
     for p in patchers:
         p.start()
@@ -84,6 +90,7 @@ async def mcp_client(migrated_db: DatabaseConnection) -> AsyncIterator[Client]:
     finally:
         for p in patchers:
             p.stop()
+        reset_settings_service()
 
 
 class TestCalendarTools:

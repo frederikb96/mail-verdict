@@ -11,15 +11,13 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 import {
-  addDays,
   addMonths,
-  endOfWeek,
+  daysOfMonthGrid,
   format,
   isSameDay,
   isSameMonth,
   isToday,
   startOfMonth,
-  startOfWeek,
 } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 
@@ -34,12 +32,7 @@ export function MiniMonth({ anchor }: { anchor: Date }) {
     setDisplayMonth(startOfMonth(anchor));
   }, [anchor]);
 
-  const gridStart = startOfWeek(startOfMonth(displayMonth), { weekStartsOn: 1 });
-  const gridEnd = endOfWeek(new Date(displayMonth.getFullYear(), displayMonth.getMonth() + 1, 0), {
-    weekStartsOn: 1,
-  });
-  const days: Date[] = [];
-  for (let d = gridStart; d <= gridEnd; d = addDays(d, 1)) days.push(d);
+  const days = daysOfMonthGrid(displayMonth);
 
   return (
     <div className="px-2 py-1">

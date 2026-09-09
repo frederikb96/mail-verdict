@@ -22,6 +22,7 @@ import {
 import { useFolderBulkAction } from "@/hooks/use-selection";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 interface FolderRowMenuProps {
   accountId: string;
@@ -42,6 +43,15 @@ export function FolderRowMenu({
   const [confirmEmpty, setConfirmEmpty] = useState<{ snapshotAt: string; count: number } | null>(
     null,
   );
+  // The trigger is otherwise only shown while the row itself is hovered
+  // (group-hover/menu-item below) -- but the open menu positions itself
+  // against this very button, so the moment the pointer leaves the row
+  // to reach the menu, the row stops being hovered, the trigger goes
+  // `display: none`, and the open menu's positioner reads a collapsed
+  // (0,0) rect from it and snaps to the corner. Keeping the trigger's box
+  // present for as long as the menu is open is what actually fixes that,
+  // rather than trying to keep the row "hovered" some other way.
+  const [menuOpen, setMenuOpen] = useState(false);
   const folderAction = useFolderBulkAction();
   const { push: pushToast } = useToast();
 
@@ -72,13 +82,13 @@ export function FolderRowMenu({
           {badgeCount}
         </Badge>
       )}
-      <DropdownMenu>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger
           render={
             <Button
               variant="ghost"
               size="icon-xs"
-              className="hidden group-hover/menu-item:flex"
+              className={cn("hidden group-hover/menu-item:flex", menuOpen && "flex")}
             />
           }
           title={`${folderName} options`}

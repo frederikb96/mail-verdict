@@ -54,6 +54,7 @@ from mail_verdict.api.schemas import (
     EventInstanceOut,
     EventListResponse,
     EventOrganizerOut,
+    EventReminder,
     EventUpdateRequest,
     OwnReplyOut,
     RespondRequest,
@@ -148,6 +149,19 @@ async def resolve_own_reply(
     )
 
 
+def _reminders_out(reminders: list[ical.Reminder]) -> list[EventReminder]:
+    return [EventReminder(offset_minutes=r.offset_minutes, at=r.at) for r in reminders]
+
+
+def _reminders_in(reminders: list[EventReminder] | None) -> list[ical.Reminder] | None:
+    """None means "leave the stored reminders unchanged" (the same rule
+    every other optional field on an update follows); the wire schema and
+    the domain dataclass otherwise carry identical fields."""
+    if reminders is None:
+        return None
+    return [ical.Reminder(offset_minutes=r.offset_minutes, at=r.at) for r in reminders]
+
+
 async def _to_instance(
     parsed: ical.ParsedEvent, obj: DavObject, *,
     own_identity_email: str | None, read_only: bool, sync_error: str | None,
@@ -192,6 +206,8 @@ async def _to_instance(
         own_reply=own_reply,
         source_message_id=None,
         read_only=read_only,
+        reminders=_reminders_out(parsed.reminders),
+        transparency=parsed.transparency,  # type: ignore[arg-type]
     )
 
 
@@ -456,6 +472,7 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
             rrule=request.rrule, tz=request.tz, organizer_email=organizer_email,
             organizer_cn=organizer_identity.display_name if organizer_identity else None,
             attendees=[(a.email, a.cn) for a in request.attendees] if request.attendees else None,
+            reminders=_reminders_in(request.reminders), transparency=request.transparency,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -579,6 +596,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
                 summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
                 all_day=request.all_day, location=request.location,
                 description=request.description, bump_sequence=bump_sequence,
+                reminders=_reminders_in(request.reminders), transparency=request.transparency,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -590,6 +608,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
                 all_day=request.all_day, location=request.location,
                 description=request.description, rrule=request.rrule,
                 bump_sequence=bump_sequence,
+                reminders=_reminders_in(request.reminders), transparency=request.transparency,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
