@@ -45,7 +45,8 @@ from typing import TYPE_CHECKING
 
 from mail_verdict.database.models import VerdictSource
 from mail_verdict.database.repository import FolderRepository
-from mail_verdict.postimap.actions import move_message
+from mail_verdict.postimap.actions import move_message, set_flags
+from mail_verdict.settings.service import get_settings_service
 
 if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
@@ -67,6 +68,28 @@ class FolderResolutionError(Exception):
         self.role = role
         self.account_id = account_id
         super().__init__(f"No {role} folder found for this account")
+
+
+# The one role apply_human_ruling ever files a message INTO -- "inbox" is
+# always a rescue, never a filing, and must never mark read on the way out.
+# Kept in sync with api/mails.py's own predicate of the same name, which
+# covers the toolbar/drag-and-drop side of the same setting; not shared
+# code, on purpose -- the two call sites answer a different question
+# ("what role is the target folder" vs. "what role does this ruling
+# imply"), the same reasoning pipeline/runner.py's own duplicated
+# _SKIP_FOLDER_SPECIAL_USE documents for itself.
+_MARK_READ_ON_FILE_ROLE = "junk"
+
+
+def _should_mark_read_on_file(role: str) -> bool:
+    """settings.mail.mark_read_on_file_to_archive_or_junk, applied to a
+    spam ruling's own move -- the thumbs-down button and the review
+    screen both go through apply_human_ruling, so this is the one place
+    that covers them both."""
+    if role != _MARK_READ_ON_FILE_ROLE:
+        return False
+    settings = get_settings_service().get("mail")
+    return bool(settings.get("mark_read_on_file_to_archive_or_junk", True))
 
 
 class SpamFeedbackHandler:
@@ -165,6 +188,8 @@ class SpamFeedbackHandler:
                 raise FolderResolutionError(role, account_id)
             async with self._db.session() as session:
                 await move_message(session, mail_id, folder_id)
+                if _should_mark_read_on_file(role):
+                    await set_flags(session, mail_id, is_seen=True)
         return ok
 
     async def handle_folder_move_to_junk(self, mail_id: uuid.UUID, account_id: uuid.UUID) -> bool:
