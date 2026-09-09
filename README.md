@@ -38,6 +38,12 @@ mirror, which is what keeps it simple.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens.
+- **Alerts** — new mail raises a bell with a durable, dismissable list, and — once notifications
+  are turned on for a device — a system notification that reaches it even with no MailVerdict page
+  open, using the browser's own Web Push. Which folders alert, and whether calendar reminders do,
+  are per-device settings; every registered device can be reviewed and removed from Settings.
+  Requires a home-screen install on iOS/iPadOS, and stops the moment the browser itself is quit on
+  a desktop — the durable list is what a closed tab or a declined permission falls back to.
 - **Spam verdicts** — each new message is classified by a language model, with the reasoning
   visible and a correction loop when it gets one wrong. A dedicated review screen lists every
   message currently called spam with no ruling yet, across every account and folder including
@@ -126,7 +132,7 @@ itself or are the fallback path for a deployment that would rather not put a key
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
 | `MAIL_VERDICT_DATABASE_URL` | PostgreSQL connection, shared with PostIMAP |
 | `POSTGRES_PASSWORD` | Database password, used by compose |
-| `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, and PostIMAP's own credential-at-rest encryption — one key shared by both. Optional; without it, provider keys can only come from the two env vars above |
+| `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, PostIMAP's own credential-at-rest encryption, and this server's Web Push signing key (generated on first use, never provisioned) — one key shared by all three. Optional; without it, provider keys can only come from the two env vars above, and push notifications are unavailable |
 
 ## Access
 
