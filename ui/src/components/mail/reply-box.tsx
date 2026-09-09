@@ -81,9 +81,22 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   // actually resolves this, via the effect re-running with isDirty=false;
   // a freshly mounted box's own first run (isDirty starting false) is
   // what clears a stale value once the reading pane comes back.
+  //
+  // The same "isDirty going false" moment also clears blockedMailSelection.
+  // A box that unmounts while dirty (navigating to Calendar, Contacts,
+  // Settings) leaves activeReplyDirtyForThreadId stale with no box mounted
+  // to resolve a block against it -- so a later requestSelectMail call from
+  // elsewhere (a folder switch, the account picker) sets
+  // blockedMailSelection with nothing to clear it back to undefined. reset()
+  // already clears it explicitly on an actual discard/save/send; this covers
+  // the box that never got the chance to, the next time any box mounts (or
+  // finishes) not dirty.
   useEffect(() => {
     setActiveReplyDirtyForThreadId(isDirty ? source.thread_id : null);
-  }, [isDirty, source.thread_id, setActiveReplyDirtyForThreadId]);
+    if (!isDirty) {
+      setBlockedMailSelection(undefined);
+    }
+  }, [isDirty, source.thread_id, setActiveReplyDirtyForThreadId, setBlockedMailSelection]);
 
   const { data: identities } = useIdentities(source.account_id);
   // A reply and a forward alike go out as whichever of the account's

@@ -1183,3 +1183,87 @@ class TestNavigatingAwayFromADirtyReplyPrompts:
         expect(page.get_by_role("heading", name=second["subject"], exact=True)).to_be_visible(
             timeout=10_000,
         )
+
+
+class TestLeavingADirtyReplyUnresolvedDoesNotHauntTheNextOne:
+    """Navigating fully away from Mail (Calendar, Contacts, ...) while a
+    reply holds unsaved text unmounts it with no prompt -- that gap is
+    accepted. What isn't: the account switcher, reachable from every page,
+    also asks to hold up a mail selection whenever a reply is dirty, and it
+    still thought this one was, long after it was gone. Left unresolved,
+    the next reply anywhere in the app used to open the save-or-discard
+    prompt the instant it became dirty, with nothing on screen to explain
+    why, and Discard on that prompt closed the reading pane and took the
+    new reply's own text with it."""
+
+    def test_a_stale_pending_selection_does_not_surface_on_the_next_reply(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subject = f"UI stale-block {uuid.uuid4()}"
+        message = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+            message_id=f"<{uuid.uuid4()}@example.com>",
+            body="Body for the stale-block test.",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find() -> dict[str, Any] | None:
+            found = [
+                m for m in _list_folder(api_client, editor_account["id"], inbox_folder["id"])
+                if m["subject"] == subject
+            ]
+            return found[0] if found else None
+
+        target = wait_for(_find, description="the stale-block message synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        expect(page.get_by_role("heading", name=subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        page.get_by_role("button", name="Reply", exact=True).click()
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A first reply, abandoned by leaving the page.")
+        expect(body).to_contain_text("A first reply, abandoned by leaving the page.")
+
+        # Leave Mail entirely -- unmounts the reply with no prompt, by
+        # design. The dirty marker it leaves behind is not cleared by this
+        # navigation.
+        page.get_by_role("link", name="Calendar", exact=True).click()
+        page.wait_for_timeout(800)
+
+        # The account switcher is reachable from every page and asks to
+        # hold up a mail selection -- exactly the call site that used to
+        # get stuck blocked on the now-gone reply's stale dirty marker.
+        select_account(page, editor_account)
+
+        page.get_by_role("link", name="Mail", exact=True).click()
+        expect(page.get_by_role("heading", name=subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+
+        # A fresh reply on this fresh view of the message must not surface
+        # an unprompted "Save this message?" the moment it becomes dirty.
+        page.get_by_role("button", name="Reply", exact=True).click()
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A second reply that must not be interrupted.")
+        expect(body).to_contain_text("A second reply that must not be interrupted.")
+
+        with pytest.raises(AssertionError):
+            expect(page.get_by_role("dialog", name="Save this message?")).to_be_visible(
+                timeout=3_000,
+            )
+        expect(body).to_contain_text("A second reply that must not be interrupted.")
