@@ -125,6 +125,32 @@ def wait_for_folder(
     return wait_for(_check, timeout_s=timeout_s, description=f"Folder {imap_name!r} discovered")
 
 
+def wait_for_folder_synced(
+    client: TestClient, account_id: str, imap_name: str, timeout_s: float = 90.0,
+) -> dict[str, Any]:
+    """Poll until a folder has finished its first sync (initial_sync_done).
+
+    Deleting a folder is refused while this is false -- see
+    folder_management.py's own backfill guard -- so anything that deletes
+    a freshly created folder in a test needs this rather than
+    wait_for_folder(), which only waits for the folder to be discovered.
+    PostIMAP backfills one folder per account at a time, so this can sit
+    a while behind whatever else the account is already syncing --
+    generous by default rather than tuned to the fastest observed case.
+    """
+    def _check() -> dict[str, Any] | None:
+        resp = client.get(f"/api/accounts/{account_id}/folders")
+        assert resp.status_code == 200, resp.text
+        for folder in resp.json():
+            if folder["imap_name"] == imap_name and folder["initial_sync_done"]:
+                return folder
+        return None
+
+    return wait_for(
+        _check, timeout_s=timeout_s, description=f"Folder {imap_name!r} finished its first sync",
+    )
+
+
 def wait_for_dav_account_active(
     client: TestClient, dav_account_id: str, timeout_s: float = 30.0,
 ) -> dict[str, Any]:

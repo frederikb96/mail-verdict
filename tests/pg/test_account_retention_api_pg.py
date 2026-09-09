@@ -17,6 +17,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.accounts import router as accounts_router
@@ -161,3 +162,91 @@ class TestJunkRetentionDaysRoundTrip:
         assert resp.status_code == 200, resp.text
         assert resp.json()["trash_retention_days"] == 30
         assert resp.json()["junk_retention_days"] == 7
+
+
+class TestRetentionDaysRejectsBelowOne:
+    """Zero means every retention_entries row already stamped reads as
+    overdue and a negative period puts the threshold in the future --
+    either one clears Trash or Junk on the very next sweep tick. Neither
+    reaches the sweep at all: the API schema rejects both before a
+    request is even processed."""
+
+    @pytest.mark.parametrize("field", ["trash_retention_days", "junk_retention_days"])
+    @pytest.mark.parametrize("value", [0, -1, -30])
+    def test_patch_rejects_zero_and_negative(
+        self, client: TestClient, migrated_db: DatabaseConnection, field: str, value: int,
+    ) -> None:
+        account_id = client.portal.call(_seed, migrated_db)
+        with (
+            patch(_ACCOUNTS_DB_TARGET, return_value=migrated_db),
+            patch(_ACCOUNTS_EVENT_RING_TARGET, return_value=None),
+        ):
+            resp = client.patch(f"/accounts/{account_id}", json={field: value})
+            assert resp.status_code == 422, resp.text
+
+            # Rejected before ever reaching the write -- the field stays
+            # unset rather than landing at the invalid value.
+            get_resp = client.get(f"/accounts/{account_id}")
+        assert get_resp.json()[field] is None
+
+    @pytest.mark.parametrize("field", ["trash_retention_days", "junk_retention_days"])
+    def test_create_account_rejects_zero_up_front(
+        self, client: TestClient, migrated_db: DatabaseConnection, field: str,
+    ) -> None:
+        with (
+            patch(_ACCOUNTS_DB_TARGET, return_value=migrated_db),
+            patch(_ACCOUNTS_EVENT_RING_TARGET, return_value=None),
+        ):
+            resp = client.post(
+                "/accounts",
+                json={
+                    "name": f"rejects-{field}", "imap_host": "imap.example.com",
+                    "imap_user": "user@example.com", field: 0,
+                },
+            )
+        assert resp.status_code == 422, resp.text
+
+    def test_one_day_is_the_smallest_accepted_value(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed, migrated_db)
+        with (
+            patch(_ACCOUNTS_DB_TARGET, return_value=migrated_db),
+            patch(_ACCOUNTS_EVENT_RING_TARGET, return_value=None),
+        ):
+            resp = client.patch(f"/accounts/{account_id}", json={"trash_retention_days": 1})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["trash_retention_days"] == 1
+
+
+class TestDatabaseFloorHoldsEvenBypassingTheApi:
+    """The API schema's Field(ge=1) is not the only thing enforcing this
+    -- a check constraint holds the same floor in the database, for a
+    write the Pydantic schema never sees (a hand-written SQL statement
+    against production, say, or a future MCP tool built directly on the
+    repository layer)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("column", ["trash_retention_days", "junk_retention_days"])
+    @pytest.mark.parametrize("value", [0, -1])
+    async def test_a_raw_update_below_one_is_rejected(
+        self, migrated_db: DatabaseConnection, column: str, value: int,
+    ) -> None:
+        account_id = await _seed(migrated_db)
+        async with migrated_db.session() as session:
+            await session.execute(
+                text(
+                    "INSERT INTO account_prefs (account_id) VALUES (:id) "
+                    "ON CONFLICT (account_id) DO NOTHING"
+                ),
+                {"id": account_id},
+            )
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            with pytest.raises(IntegrityError, match="ck_account_prefs_.*_retention_days_min"):
+                await session.execute(
+                    text(f"UPDATE account_prefs SET {column} = :value WHERE account_id = :id"),
+                    {"value": value, "id": account_id},
+                )
+                await session.commit()

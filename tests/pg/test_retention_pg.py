@@ -18,6 +18,7 @@ from __future__ import annotations
 import itertools
 import uuid
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select, text
@@ -242,6 +243,74 @@ class TestTrashRetentionSweep:
         entry = await _entry(migrated_db, message_id)
         assert entry is not None
         assert await _is_expunged(migrated_db, message_id) is False
+
+
+class TestOverdueQueryDoesNotTrustCleanupBatchLimit:
+    """The overdue-expunge query re-derives "still in the role's own
+    folder" for itself, rather than relying on the cleanup step above it
+    having already dropped a rescued message's stale retention_entries
+    row. Proven here by making cleanup a no-op (batch size 0) in the same
+    tick a rescued-but-stale entry would otherwise be swept up by --
+    against the code before this fix, that shape expunges a message
+    sitting safely in Inbox."""
+
+    @pytest.mark.asyncio
+    async def test_a_rescued_message_survives_even_when_cleanup_cannot_run(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            trash_id = await _seed_role_folder(
+                session, account_id, role="trash", imap_name="Trash",
+            )
+            message_id = await _seed_message(session, account_id, trash_id, received_at=None)
+            await session.commit()
+
+        await AccountPrefsRepository(migrated_db).update(account_id, trash_retention_days=30)
+        await _sweep_retention_once(migrated_db)
+        await _backdate_entry(migrated_db, message_id, days=40)
+
+        # Rescued to the inbox -- retention_entries still names "trash"
+        # and is now stale, exactly the row the cleanup step exists to
+        # drop before the overdue query ever runs.
+        async with migrated_db.session() as session:
+            await move_message(session, message_id, inbox_id)
+            await session.commit()
+
+        # Cleanup can do nothing this tick (batch size 0), so the stale
+        # row is still there when the overdue query runs -- the only
+        # thing standing between this message and expunge is now that
+        # query establishing for itself that the message is no longer in
+        # Trash.
+        with patch("mail_verdict.retention.sweep._BOOKKEEPING_BATCH_SIZE", 0):
+            await _sweep_retention_once(migrated_db)
+
+        assert await _is_expunged(migrated_db, message_id) is False
+
+    @pytest.mark.asyncio
+    async def test_an_untouched_overdue_message_is_still_removed_with_cleanup_disabled(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Control case: with cleanup entirely disabled, a message that
+        genuinely is still sitting in Trash and genuinely is overdue must
+        still be removed -- the fix narrows the overdue query, it does
+        not stop it from ever firing."""
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _junk_id = await _seed_account_two_folders(session)
+            trash_id = await _seed_role_folder(
+                session, account_id, role="trash", imap_name="Trash",
+            )
+            message_id = await _seed_message(session, account_id, trash_id, received_at=None)
+            await session.commit()
+
+        await AccountPrefsRepository(migrated_db).update(account_id, trash_retention_days=30)
+        await _sweep_retention_once(migrated_db)
+        await _backdate_entry(migrated_db, message_id, days=40)
+
+        with patch("mail_verdict.retention.sweep._BOOKKEEPING_BATCH_SIZE", 0):
+            await _sweep_retention_once(migrated_db)
+
+        assert await _is_expunged(migrated_db, message_id) is True
 
 
 class TestJunkRetentionSweep:

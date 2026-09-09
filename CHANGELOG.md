@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- Deleting a folder is now also refused while it has not finished its first sync. A freshly
+  added account's folder can report a mirror count of zero for a long while before the server has
+  actually been fully checked -- confirming that count would have destroyed whatever mail the
+  server was still holding. Wait for the folder to finish syncing and try again.
+- The pending-writes guard on folder deletion now names the affected message ids in its error,
+  rather than only a count.
+- A Trash or Junk retention period must now be at least one day. Zero or a negative value
+  previously reached the sweep unchecked and could clear the folder on the very next pass.
+- The retention sweep no longer risks permanently removing a message on the same pass it was
+  rescued out of Trash or Junk, under load.
+
 ## [5.6.0] - 2026-09-09
 
 ### Rules
