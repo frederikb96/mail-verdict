@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- The header carries one bell instead of two: new mail and write failures that never reached the
+  mail server now share a single Notifications popover, switching between a Mail tab and a System
+  tab, with one badge summing both. The write-failure kind is now visible from the unified view,
+  where it previously never rendered at all. Opening a message clears its own new-mail entry
+  immediately, whether opened by clicking its row or by a clicked system notification.
+
 ## [5.5.1] - 2026-09-09
 
 ### Calendar
