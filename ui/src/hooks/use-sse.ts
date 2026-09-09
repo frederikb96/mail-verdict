@@ -348,14 +348,18 @@ export function useSSE(accountId?: string) {
             queryClient.invalidateQueries({ queryKey: ["calendar-events"] });
             queryClient.invalidateQueries({ queryKey: ["calendar-event"] });
             queryClient.invalidateQueries({ queryKey: ["invitation"] });
-          } else if (data.status) {
+          } else if (data.status && data.kind !== "draft") {
+            // A draft append also reaches status "sent" -- that's PostIMAP
+            // confirming the draft copy landed in the Drafts folder, not a
+            // send, so it gets none of these toasts. compose-form already
+            // told the user "Draft saved" when the row was created.
             const toast = OUTBOX_TOAST[data.status as OutboxStatus];
             if (toast) {
               pushToast(toast.message, toast.variant, data.status === "dead" ? 0 : 5000);
             }
           }
           if (data.status === "sent" && data.itip !== "reply") {
-            // The sent copy lands in the account's Sent folder on its next sync.
+            // The sent (or drafts) copy lands in the account's folder on its next sync.
             queryClient.invalidateQueries({ queryKey: ["mails"] });
             invalidateAllFolderCaches(queryClient);
           }
