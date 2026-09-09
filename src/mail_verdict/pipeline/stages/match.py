@@ -59,7 +59,7 @@ class MatchStage:
 
 def _to_mail_context(msg: MessageView, ctx: RunContext) -> MailContext:
     # msg.from_addr is the raw From header -- display name and all, e.g.
-    # '"Anthropic, PBC" <invoice+statements@mail.anthropic.com>'. sender_match
+    # '"Acme Billing" <invoice+statements@mail.acme-billing.example>'. sender_match
     # and sender_domain compare against a bare address, so a display name
     # would make an exact match impossible and a domain suffix check fail
     # even when the address is exactly right. A bare-address From (no
