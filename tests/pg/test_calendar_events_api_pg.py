@@ -288,6 +288,67 @@ class TestCreateAndList:
         assert "dtstart" in created.json()["detail"] or "dtend" in created.json()["detail"]
 
 
+class TestListWithTimezone:
+    """The list endpoint's own optional tz windows the month against local
+    rather than UTC boundaries -- see _parse_month's docstring for why an
+    event stored close to midnight UTC on a month's edge needs this."""
+
+    def test_an_event_near_midnight_moves_month_with_tz_and_stays_put_without_it(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Near midnight",
+                    # 22:30 UTC on the last day of August is 00:30 CEST
+                    # (UTC+2) on the 1st of September -- the exact edge
+                    # case a Europe/Berlin browser grouping by local month
+                    # needs the September window to reach.
+                    "dtstart": "2026-08-31T22:30:00+00:00",
+                    "dtend": "2026-08-31T23:00:00+00:00",
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            without_tz_september = client.get(
+                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
+            )
+            without_tz_august = client.get(
+                "/calendar/events", params={"month": "2026-08", "calendars": str(calendar_id)},
+            )
+            with_tz_september = client.get(
+                "/calendar/events",
+                params={
+                    "month": "2026-09", "calendars": str(calendar_id), "tz": "Europe/Berlin",
+                },
+            )
+        assert without_tz_september.status_code == 200, without_tz_september.text
+        assert without_tz_august.status_code == 200, without_tz_august.text
+        assert with_tz_september.status_code == 200, with_tz_september.text
+
+        def _summaries(resp: httpx.Response) -> list[str]:
+            return [e["summary"] for e in resp.json()["events"]]
+
+        assert "Near midnight" not in _summaries(without_tz_september)
+        assert "Near midnight" in _summaries(without_tz_august)
+        assert "Near midnight" in _summaries(with_tz_september)
+
+    def test_an_unknown_tz_is_a_400(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            listed = client.get(
+                "/calendar/events",
+                params={
+                    "month": "2026-09", "calendars": str(calendar_id), "tz": "Not/AZone",
+                },
+            )
+        assert listed.status_code == 400, listed.text
+
+
 class TestVisibilityFiltering:
     """is_visible (the sidebar's per-view checkbox) and is_enabled (the
     manage dialog's own "offered at all" level) are independent, and only
@@ -571,7 +632,13 @@ class TestCreateWithTimezone:
         tools all reach an occurrence by exactly this id.
 
         A UTC-stamped event cannot show it: its identifier is the same
-        string either way."""
+        string either way.
+
+        A recurring series, not a plain event: a non-recurring object's
+        single occurrence carries no recurrence_id at all (see
+        ical.py's expand_from_query -- there is no series for a
+        synthetic one to be naming an occurrence *of*), so only a
+        genuine series exercises id resolution here."""
         calendar_id = client.portal.call(_seed, migrated_db)
         with patch(_TARGET, return_value=migrated_db):
             created = client.post(
@@ -581,6 +648,7 @@ class TestCreateWithTimezone:
                     "dtstart": "2026-09-10T10:00:00",
                     "dtend": "2026-09-10T11:00:00",
                     "tz": "Europe/Berlin",
+                    "rrule": "FREQ=WEEKLY;COUNT=3",
                 },
             )
             assert created.status_code == 201, created.text
@@ -1505,6 +1573,142 @@ class TestRespond:
         assert own_reply["outbox_status"] == "unknown"
         assert own_reply["outbox_status"] != "pending"
         assert own_reply["partstat"] == "accepted"
+
+
+class TestListOwnRepliesForSeveralInstances:
+    """list_events resolves own_reply for a whole month in two batched
+    queries rather than resolve_own_reply's two-query round trip per
+    invited instance -- the values still have to land on the right
+    instance rather than on whichever one happened to run last."""
+
+    async def _seed_invited_object(
+        self, session: AsyncSession, *,
+        dav_account_id: uuid.UUID, collection_id: uuid.UUID,
+        uid: str, dtstart: str, attendee_email: str, rrule: str | None = None,
+    ) -> uuid.UUID:
+        object_id = uuid.uuid4()
+        rrule_line = f"RRULE:{rrule}\r\n" if rrule else ""
+        data = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\nDTSTAMP:20260901T120000Z\r\n"
+            f"DTSTART:{dtstart}\r\nDTEND:{dtstart}\r\n"
+            f"SUMMARY:{uid}\r\nSEQUENCE:0\r\n{rrule_line}"
+            "ORGANIZER;CN=Anna:mailto:anna@example.com\r\n"
+            f"ATTENDEE;CN=Invitee;PARTSTAT=NEEDS-ACTION;ROLE=REQ-PARTICIPANT:"
+            f"mailto:{attendee_email}\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        await session.execute(
+            text(
+                "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                "VALUES (:id, :account_id, :collection_id, 'calendar', :data)"
+            ),
+            {
+                "id": object_id, "account_id": dav_account_id,
+                "collection_id": collection_id, "data": data,
+            },
+        )
+        return object_id
+
+    async def _seed_scenario(
+        self, db: DatabaseConnection,
+    ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+        async with db.session() as session:
+            dav_account_id, collection_id = await _seed_calendar(session)
+            _account_id, identity_id = await _seed_mail_account_and_identity(
+                session, "freddy@work.example",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO calendar_prefs (collection_id, identity_id) "
+                    "VALUES (:collection_id, :identity_id)"
+                ),
+                {"collection_id": collection_id, "identity_id": identity_id},
+            )
+            accepted_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-a", dtstart="20260905T090000Z",
+                attendee_email="freddy@work.example",
+            )
+            declined_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-b", dtstart="20260912T090000Z",
+                attendee_email="freddy@work.example",
+            )
+            unanswered_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-c", dtstart="20260919T090000Z",
+                attendee_email="freddy@work.example",
+            )
+            recurring_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-recurring", dtstart="20260903T090000Z",
+                attendee_email="freddy@work.example", rrule="FREQ=WEEKLY;COUNT=2",
+            )
+            await session.commit()
+        return collection_id, identity_id, accepted_id, declined_id, unanswered_id, recurring_id
+
+    def test_each_instances_own_reply_lands_on_the_right_instance(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A plain invitation is answered at master scope, recurrence_id
+        omitted, the way the single-event view already reads and writes
+        it -- own_reply resolution in the batched month listing has to
+        agree with that, not with the synthetic occurrence id
+        recurring-ical-events stamps on a plain object's own expansion
+        (see ical.py's expand_from_query). The recurring series is
+        answered at one specific occurrence instead, and only that
+        occurrence's own_reply may resolve -- proving the batch keys on
+        (object_id, recurrence_id) together, not on the object alone."""
+        (
+            collection_id, identity_id, accepted_id, declined_id, unanswered_id, recurring_id,
+        ) = client.portal.call(self._seed_scenario, migrated_db)
+        list_params = {"month": "2026-09", "calendars": str(collection_id)}
+
+        with patch(_TARGET, return_value=migrated_db):
+            before = client.get("/calendar/events", params=list_params)
+        assert before.status_code == 200, before.text
+        recurring_occurrences = sorted(
+            e["recurrence_id"] for e in before.json()["events"]
+            if e["object_id"] == str(recurring_id)
+        )
+        assert len(recurring_occurrences) == 2
+        answered_occurrence, unanswered_occurrence = recurring_occurrences
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp_a = client.post(
+                f"/calendar/events/{accepted_id}/respond",
+                json={"identity_id": str(identity_id), "partstat": "accepted"},
+            )
+            resp_b = client.post(
+                f"/calendar/events/{declined_id}/respond",
+                json={"identity_id": str(identity_id), "partstat": "declined"},
+            )
+            resp_c = client.post(
+                f"/calendar/events/{recurring_id}/respond",
+                json={
+                    "identity_id": str(identity_id), "partstat": "accepted",
+                    "recurrence_id": answered_occurrence,
+                },
+            )
+        assert resp_a.status_code == 200, resp_a.text
+        assert resp_b.status_code == 200, resp_b.text
+        assert resp_c.status_code == 200, resp_c.text
+
+        with patch(_TARGET, return_value=migrated_db):
+            listed = client.get("/calendar/events", params=list_params)
+        assert listed.status_code == 200, listed.text
+        by_object = {e["object_id"]: e for e in listed.json()["events"]}
+        by_recurring_occurrence = {
+            e["recurrence_id"]: e for e in listed.json()["events"]
+            if e["object_id"] == str(recurring_id)
+        }
+
+        assert by_object[str(accepted_id)]["own_reply"]["partstat"] == "accepted"
+        assert by_object[str(declined_id)]["own_reply"]["partstat"] == "declined"
+        assert by_object[str(unanswered_id)]["own_reply"] is None
+        assert by_recurring_occurrence[answered_occurrence]["own_reply"]["partstat"] == "accepted"
+        assert by_recurring_occurrence[unanswered_occurrence]["own_reply"] is None
 
 
 class TestRecurrenceRoundTrip:

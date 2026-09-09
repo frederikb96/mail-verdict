@@ -398,10 +398,16 @@ class TestEachOccurrenceReturnedOnce:
 
 class TestExceptionFlag:
     """is_exception says this occurrence is overridden by a stored
-    RECURRENCE-ID component. recurring-ical-events stamps a RECURRENCE-ID
-    on every occurrence it generates, overridden or not -- reading the
-    flag off the generated component's own property therefore reports
-    true for everything, a plain event included."""
+    RECURRENCE-ID component, and recurrence_id names which occurrence of
+    a series this is. recurring-ical-events stamps a RECURRENCE-ID on
+    every occurrence it generates, overridden or not and recurring or
+    not -- reading either straight off the generated component's own
+    property therefore reports an exception, and an occurrence id, for
+    everything, a plain event included. There is no series for a plain
+    event's synthetic id to be naming an occurrence *of*, and
+    get_event's own master-parse path already reports recurrence_id=None
+    for the same object -- calendar_replies and own_reply resolution
+    both key on that agreement."""
 
     def test_a_non_recurring_events_occurrence_is_not_an_exception(self) -> None:
         instances = ical.expand_instances(
@@ -411,6 +417,14 @@ class TestExceptionFlag:
         )
         assert [i.is_exception for i in instances] == [False]
 
+    def test_a_non_recurring_events_occurrence_carries_no_recurrence_id(self) -> None:
+        instances = ical.expand_instances(
+            _SIMPLE_EVENT,
+            datetime(2026, 9, 1, tzinfo=timezone.utc),
+            datetime(2026, 9, 10, tzinfo=timezone.utc),
+        )
+        assert [i.recurrence_id for i in instances] == [None]
+
     def test_only_the_overridden_occurrence_of_a_series_is_an_exception(self) -> None:
         instances = ical.expand_instances(
             _RECURRING_EVENT,
@@ -418,6 +432,14 @@ class TestExceptionFlag:
             datetime(2026, 10, 1, tzinfo=timezone.utc),
         )
         assert [i.is_exception for i in instances] == [False, True, False, False]
+
+    def test_a_recurring_series_occurrence_still_carries_its_recurrence_id(self) -> None:
+        instances = ical.expand_instances(
+            _RECURRING_EVENT,
+            datetime(2026, 8, 1, tzinfo=timezone.utc),
+            datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert all(i.recurrence_id is not None for i in instances)
 
 
 class TestOccurrenceBound:

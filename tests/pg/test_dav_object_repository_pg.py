@@ -111,6 +111,28 @@ class TestWindowFilter:
         assert {o.id for o in objects} == {recurring_id}
 
     @pytest.mark.asyncio
+    async def test_recurring_master_starting_after_the_window_is_excluded(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A series cannot produce an occurrence before its own dtstart,
+        so one whose dtstart is after the window ends can never
+        contribute to it -- the mirror image of the "kept regardless"
+        test above, which starts its series well before the window."""
+        async with migrated_db.session() as session:
+            dav_account_id, collection_id = await _seed_dav_calendar(session)
+            await _seed_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                dtstart=datetime(2027, 1, 1, 9, tzinfo=timezone.utc),
+                dtend=datetime(2027, 1, 1, 10, tzinfo=timezone.utc), is_recurring=True,
+            )
+
+        objects = await DavObjectRepository(migrated_db).list_in_collections(
+            [collection_id],
+            datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 10, 1, tzinfo=timezone.utc),
+        )
+        assert objects == []
+
+    @pytest.mark.asyncio
     async def test_pending_object_with_no_parsed_dtstart_yet_is_kept(
         self, migrated_db: DatabaseConnection,
     ) -> None:

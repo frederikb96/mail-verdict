@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Calendar
+
+- A month's event listing no longer scans every recurring series in a calendar regardless of the
+  window -- a series whose own start date is after the window ends can never contribute to it and
+  is excluded from the query.
+- The `calendar.object` live-update event now names what changed (insert, update or delete) and
+  the object's own start/end and whether it recurs, so a client can invalidate only the months a
+  change actually touches instead of every month it has open.
+- Listing a month's events no longer runs two extra database queries per invited instance to
+  resolve its own RSVP status -- the whole month resolves it in two queries total.
+- The event list's month window can now be given a timezone (`tz`, an IANA zone name) so it lines
+  up with a browser's local-month grouping rather than UTC -- an event stored close to midnight on
+  the edge of a month could otherwise vanish from the month view entirely.
+- A non-recurring event's own occurrence no longer carries a synthetic recurrence id in the month
+  listing. Responding to, editing or deleting a plain invitation from that view now stores and
+  resolves its RSVP the same way the single-event view does, instead of under an id the single-event
+  view never asks for.
+
 ## [5.4.0] - 2026-09-09
 
 ### Mail
