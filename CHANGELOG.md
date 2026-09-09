@@ -113,6 +113,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A Web Push signing key this server can no longer decrypt (following an `ENCRYPTION_KEY`
   rotation) is regenerated in place rather than leaving push silently and permanently broken.
 - The account switcher no longer intermittently loses a click right after switching accounts.
+- A middle-truncated label -- a long attachment name, a contact suggestion's address -- no longer
+  gains a stray space in the middle when read by a screen reader; the truncation is now purely
+  visual.
 
 ## [5.3.4] - 2026-09-08
 
