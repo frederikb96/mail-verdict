@@ -12,9 +12,9 @@
  * date. `scrollToWeek` writes `scrollTop` for external navigation (Today,
  * the mini-month, the toolbar arrows); `applyMeasurement` writes it for a
  * mount or a resize, correcting for whatever rowHeight just became. The
- * scroll listener writes the week at the top back into the atom, comparing
- * against `currentWeekRef` so its own programmatic writes never re-trigger
- * a second scroll.
+ * scroll listener writes the week at the top back into the atom, and
+ * remembers the Date objects it wrote so the navigation effect can tell
+ * them from an external write when they come back around a render later.
  *
  * Two more things are deliberately NOT driven by the raw scroll position:
  *
@@ -138,6 +138,13 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
   renderRangeRef.current = renderRange;
 
   const currentWeekRef = useRef<number>(dateToWeekIndex(calendarDate));
+  /** The Date objects `handleScroll` itself wrote into calendarDateAtom.
+   * A render carrying one of them can commit after the scroll has already
+   * moved `currentWeekRef` a row further on, so comparing week numbers
+   * alone reads that stale render as a navigation and scrolls back a row.
+   * Identity is exact: every external write is a Date this component never
+   * saw. */
+  const selfWrittenDatesRef = useRef(new WeakSet<Date>());
   const mountedRef = useRef(false);
   /** True from the moment `scrollToWeek` issues a programmatic scroll until
    * it settles. While true, `handleScroll` still tracks the viewport for
@@ -300,6 +307,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
   // External navigation (Today, the mini-month, the toolbar arrows) writes
   // calendarDateAtom; this is the one place that turns that into a scroll.
   useEffect(() => {
+    if (selfWrittenDatesRef.current.has(calendarDate)) return;
     const week = dateToWeekIndex(calendarDate);
     if (week === currentWeekRef.current) return;
     scrollToWeek(week, mountedRef.current ? "smooth" : "instant");
@@ -343,7 +351,9 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       // Cheap: writes only the jotai atom, so the toolbar and mini-month
       // follow scroll without paying for a Next.js navigation on every row
       // crossed. The URL itself catches up once, in `settle`.
-      setCalendarDate(weekIndexToDate(week));
+      const date = weekIndexToDate(week);
+      selfWrittenDatesRef.current.add(date);
+      setCalendarDate(date);
     }
   }, [updateMonthLabel, resetSettleTimer, setCalendarDate]);
 

@@ -16,7 +16,7 @@ import { useCallback } from "react";
 import { useSetAtom, useStore } from "jotai";
 import { useRouter } from "next/navigation";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
-import { isoDate } from "@/lib/dates";
+import { calendarUrl } from "@/lib/calendar-url";
 
 /**
  * `view`/`date` are read from the jotai store at call time, never
@@ -40,8 +40,7 @@ export function useCalendarNavigate() {
       const nextDate = next.date ?? store.get(calendarDateAtom);
       if (next.view !== undefined) setView(next.view);
       if (next.date !== undefined) setDate(next.date);
-      const params = new URLSearchParams({ view: nextView, date: isoDate(nextDate) });
-      const url = `/calendar?${params.toString()}`;
+      const url = calendarUrl(nextView, nextDate);
       if (options?.push === false) router.replace(url, { scroll: false });
       else router.push(url, { scroll: false });
     },
@@ -61,9 +60,6 @@ export function useCalendarUrlWriter() {
   const router = useRouter();
   const store = useStore();
   return useCallback(() => {
-    const params = new URLSearchParams({
-      view: store.get(calendarViewAtom), date: isoDate(store.get(calendarDateAtom)),
-    });
-    router.replace(`/calendar?${params.toString()}`, { scroll: false });
+    router.replace(calendarUrl(store.get(calendarViewAtom), store.get(calendarDateAtom)), { scroll: false });
   }, [store, router]);
 }
