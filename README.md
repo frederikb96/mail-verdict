@@ -42,10 +42,11 @@ mirror, which is what keeps it simple.
   it happens.
 - **Alerts** — new mail raises a bell with a durable, dismissable list, and — once notifications
   are turned on for a device — a system notification that reaches it even with no MailVerdict page
-  open, using the browser's own Web Push. Which folders alert, and whether calendar reminders do,
-  are per-device settings; every registered device can be reviewed and removed from Settings.
-  Requires a home-screen install on iOS/iPadOS, and stops the moment the browser itself is quit on
-  a desktop — the durable list is what a closed tab or a declined permission falls back to.
+  open, using the browser's own Web Push. Which folders alert is a per-device setting; every
+  registered device can be reviewed and removed from Settings. Requires a home-screen install on
+  iOS/iPadOS, and stops the moment the browser itself is quit on a desktop — the durable list is
+  what a closed tab or a declined permission falls back to. Calendar reminders are not delivered
+  as alerts yet.
 - **Spam verdicts** — each new message is classified by a language model, with the reasoning
   visible and a correction loop when it gets one wrong. A dedicated review screen lists every
   message currently called spam with no ruling yet, across every account and folder including

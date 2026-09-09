@@ -200,9 +200,6 @@ class TestPushSubscriptionSettings:
             disable = page.get_by_role("button", name="Disable", exact=True)
             expect(disable).to_be_visible(timeout=15_000)
             expect(
-                page.get_by_text("Also notify for calendar reminders on this device")
-            ).to_be_visible()
-            expect(
                 page.get_by_text(
                     "This device receives a notification for new mail even when "
                     "MailVerdict isn't open.",

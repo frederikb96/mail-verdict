@@ -15,7 +15,6 @@ import { Bell, BellOff, Loader2, Smartphone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
 import { alertEnabledFolderIdsAtom } from "@/lib/alert-prefs";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import {
@@ -161,21 +160,6 @@ export function AlertSettings() {
           <div className="text-xs text-destructive">
             This server has no push notifications configured yet.
           </div>
-        )}
-
-        {mySubscription && (
-          <label className="flex cursor-pointer items-center justify-between gap-3 rounded-md border p-2 text-sm">
-            <span>Also notify for calendar reminders on this device</span>
-            <Switch
-              checked={mySubscription.reminders_enabled}
-              onCheckedChange={(checked) =>
-                updatePrefs.mutate({
-                  subscriptionId: mySubscription.id,
-                  data: { reminders_enabled: checked },
-                })
-              }
-            />
-          </label>
         )}
 
         <div className="flex flex-col gap-2">

@@ -291,20 +291,24 @@ way folder CRUD is.
 
 ## Alerts and push notifications
 
-An alert is something meant to interrupt the reader on their device — new mail today, a calendar
-reminder — distinct from a notification (above), which is PostIMAP's own record of a write that
-failed. One `alerts` table is both the durable "what did I miss" list a bell icon reads and, for a
-kind whose delivery needs scheduling, the queue a dispatcher would claim from; a mail alert has no
-such phase and is delivered (`delivered_at` stamped) at insert. `dedupe_key`'s unique index —
-embedding `msg_key` rather than `messages.id`, since a UIDVALIDITY resync replaces every id in a
-folder — is the entire fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING` discipline
-`Verdict` and `CalendarIntake` already use. `alerts.new` on the SSE ring is what lets an open page
-raise a browser notification and refresh its own list without polling.
+An alert is something meant to interrupt the reader on their device, distinct from a notification
+(above), which is PostIMAP's own record of a write that failed. The only kind an alert is created
+for today is new mail; it is delivered (`delivered_at` stamped) at insert. `dedupe_key`'s unique
+index — embedding `msg_key` rather than `messages.id`, since a UIDVALIDITY resync replaces every
+id in a folder — is the entire fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING`
+discipline `Verdict` and `CalendarIntake` already use. `alert.new` on the SSE ring is what lets an
+open page raise a browser notification and refresh its own list without polling.
 
-Reaching a device with no page open at all is Web Push, layered on top rather than replacing that:
-`push_subscriptions` (one row per browser, carrying that browser's own per-device preferences —
-`alert_folder_ids`, `reminders_enabled` — since a subscription row is the only genuinely
-per-device thing a system with no login has) and `vapid_keypair`, this server's signing identity.
+The schema also carries what a scheduled kind would need — `deliver_at`, `object_id`,
+`recurrence_id`, an `idx_alerts_due` index a dispatcher would claim from, and a per-subscription
+`reminders_enabled` flag — for a calendar-reminder alert that nothing yet produces: no code path
+inserts one, and no dispatcher reads the index. Building that delivery path is future work, not a
+column left over from one.
+
+Reaching a device with no page open at all is Web Push, layered on top of the mail alert path
+rather than replacing it: `push_subscriptions` (one row per browser, carrying that browser's own
+per-device preferences — since a subscription row is the only genuinely per-device thing a system
+with no login has) and `vapid_keypair`, this server's signing identity.
 The keypair is generated the first time it is asked for rather than provisioned — nothing seeds
 it, and no chart value or environment variable carries it — with the private key encrypted the
 same way a provider API key is (`core/encryption.py`, gated on `ENCRYPTION_KEY` exactly like a
