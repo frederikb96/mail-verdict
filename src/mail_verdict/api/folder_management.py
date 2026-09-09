@@ -35,7 +35,7 @@ from mail_verdict.api.schemas import (
     FolderResponse,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, FolderPrefs, Message
+from mail_verdict.database.models import Account, Folder, FolderPrefs, Message, SyncNotification
 from mail_verdict.postimap.actions import create_folder as postimap_create_folder
 from mail_verdict.postimap.actions import delete_folder as postimap_delete_folder
 from mail_verdict.postimap.actions import set_folder_idle
@@ -226,6 +226,76 @@ async def _require_folder_crud_support(session: AsyncSession) -> None:
         )
 
 
+async def _require_no_writes_in_flight(session: AsyncSession, account_id: uuid.UUID) -> None:
+    """
+    Refuse while this account has a write PostIMAP has not yet confirmed
+    on the mail server -- deleting a folder destroys every message
+    physically sitting in it on the server at the moment the server
+    processes the DELETE, and that can include mail an in-flight
+    optimistic move has already reassigned to a different folder_id in
+    the mirror, before the real IMAP MOVE has actually run. Scoping this
+    check to "messages currently in the folder about to be deleted"
+    would miss exactly that message: by the time of deletion its
+    folder_id already points elsewhere, even though the server may still
+    be holding it under the folder this call is about to destroy. Only
+    an account-wide check can see it.
+
+    `imap_uid IS NULL` (with `expunged_at IS NULL`) is the consumer
+    contract's own documented "an optimistic move is pending" predicate
+    -- the same one PostIMAP's own outbound-queue reconciliation reads
+    back to know a folder still holds a UID its mirrored rows no longer
+    mention (see postimap's own sync/loop-guard.ts). A pending expunge
+    needs no guard here: `expunged_at` is the only column a delete
+    touches, so the row stays attributed to its real folder throughout,
+    and destroying that folder along with it produces the same outcome
+    the expunge itself was going for.
+
+    An unacknowledged sync_notifications row is a second, weaker signal:
+    it means a write already failed and gave up, not merely that one is
+    still pending, so the mirror may not match the server for it until
+    someone has looked at why. Treated as an override rather than a hard
+    block -- acknowledging it (or resolving what it reports) through the
+    existing notifications API is a conscious decision this endpoint can
+    accept in place of blocking forever.
+
+    Raises:
+        HTTPException: 409, naming whichever condition blocked it
+    """
+    pending_moves = await session.scalar(
+        select(sa_func.count(Message.id)).where(
+            Message.account_id == account_id,
+            Message.imap_uid.is_(None),
+            Message.expunged_at.is_(None),
+        )
+    )
+    if pending_moves:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account has {pending_moves} message move(s) not yet confirmed by "
+                "the mail server. Deleting a folder now could destroy mail the mirror no "
+                "longer attributes to it -- wait for the pending move(s) to finish and "
+                "try again."
+            ),
+        )
+
+    unacknowledged = await session.scalar(
+        select(sa_func.count(SyncNotification.id)).where(
+            SyncNotification.account_id == account_id,
+            SyncNotification.acknowledged_at.is_(None),
+        )
+    )
+    if unacknowledged:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account has {unacknowledged} unacknowledged notification(s) about a "
+                "write that did not reach the mail server. Acknowledge them (or resolve "
+                "what they report) before deleting a folder."
+            ),
+        )
+
+
 # --- Folder creation and deletion ---
 
 
@@ -327,7 +397,9 @@ async def delete_folder(
     does not recreate the folder. Requires PostIMAP >= 1.3.0.
 
     Deleting INBOX (or any folder the server otherwise refuses) is rejected
-    up front rather than accepted and silently dead-lettered later.
+    up front rather than accepted and silently dead-lettered later. So is
+    deleting anything while this account has a write the mail server
+    has not yet confirmed -- see _require_no_writes_in_flight.
 
     There is no UI confirmation dialog at this layer -- an API or MCP
     client would otherwise destroy a folder's mail on the first call with
@@ -359,6 +431,8 @@ async def delete_folder(
         effective_special_use = (special_use_override or folder.special_use or "").lower()
         if effective_special_use == "inbox" or folder.imap_name.upper() == "INBOX":
             raise HTTPException(status_code=400, detail="INBOX cannot be deleted")
+
+        await _require_no_writes_in_flight(session, folder.account_id)
 
         message_count = await session.scalar(
             select(sa_func.count(Message.id)).where(

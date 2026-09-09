@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- Deleting a folder is now refused while the account has a write the mail server has not yet
+  confirmed -- a bulk move whose real IMAP move is still queued had already reassigned the
+  mirror's folder_id before the folder holding those messages on the server could be deleted out
+  from under them. Wait for the pending write to finish, or acknowledge an existing
+  write-failure notification, and try again.
+
 ## [5.6.0] - 2026-09-09
 
 ### Rules
