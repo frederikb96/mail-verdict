@@ -658,6 +658,19 @@ def expand_from_query(
         )
         for occ in occurrences
     ]
+    if not eq.is_recurring:
+        # A non-recurring object has no series for its synthetic
+        # RECURRENCE-ID to be naming an occurrence *of* -- get_event's
+        # master-parse path already reports recurrence_id=None and
+        # is_exception=False for this same object, and everything that
+        # stores or looks up an RSVP reply (calendar_replies, own_reply
+        # resolution) keys on exactly that. Left as recurring-ical-events
+        # stamped it, a plain invitation answered from the month view
+        # stores its reply under an occurrence id the single-event view
+        # never asks for, and own_reply never resolves there.
+        for occurrence in parsed:
+            occurrence.recurrence_id = None
+            occurrence.is_exception = False
     if eq.is_recurring:
         # recurring-ical-events does not carry RRULE onto the occurrences
         # it generates -- each is one instant, not itself a recurring

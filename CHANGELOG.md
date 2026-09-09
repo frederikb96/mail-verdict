@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The event list's month window can now be given a timezone (`tz`, an IANA zone name) so it lines
   up with a browser's local-month grouping rather than UTC -- an event stored close to midnight on
   the edge of a month could otherwise vanish from the month view entirely.
+- A non-recurring event's own occurrence no longer carries a synthetic recurrence id in the month
+  listing. Responding to, editing or deleting a plain invitation from that view now stores and
+  resolves its RSVP the same way the single-event view does, instead of under an id the single-event
+  view never asks for.
 
 ## [5.4.0] - 2026-09-09
 

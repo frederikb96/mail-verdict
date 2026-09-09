@@ -632,7 +632,13 @@ class TestCreateWithTimezone:
         tools all reach an occurrence by exactly this id.
 
         A UTC-stamped event cannot show it: its identifier is the same
-        string either way."""
+        string either way.
+
+        A recurring series, not a plain event: a non-recurring object's
+        single occurrence carries no recurrence_id at all (see
+        ical.py's expand_from_query -- there is no series for a
+        synthetic one to be naming an occurrence *of*), so only a
+        genuine series exercises id resolution here."""
         calendar_id = client.portal.call(_seed, migrated_db)
         with patch(_TARGET, return_value=migrated_db):
             created = client.post(
@@ -642,6 +648,7 @@ class TestCreateWithTimezone:
                     "dtstart": "2026-09-10T10:00:00",
                     "dtend": "2026-09-10T11:00:00",
                     "tz": "Europe/Berlin",
+                    "rrule": "FREQ=WEEKLY;COUNT=3",
                 },
             )
             assert created.status_code == 201, created.text
@@ -1577,14 +1584,15 @@ class TestListOwnRepliesForSeveralInstances:
     async def _seed_invited_object(
         self, session: AsyncSession, *,
         dav_account_id: uuid.UUID, collection_id: uuid.UUID,
-        uid: str, dtstart: str, attendee_email: str,
+        uid: str, dtstart: str, attendee_email: str, rrule: str | None = None,
     ) -> uuid.UUID:
         object_id = uuid.uuid4()
+        rrule_line = f"RRULE:{rrule}\r\n" if rrule else ""
         data = (
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
             f"UID:{uid}\r\nDTSTAMP:20260901T120000Z\r\n"
             f"DTSTART:{dtstart}\r\nDTEND:{dtstart}\r\n"
-            f"SUMMARY:{uid}\r\nSEQUENCE:0\r\n"
+            f"SUMMARY:{uid}\r\nSEQUENCE:0\r\n{rrule_line}"
             "ORGANIZER;CN=Anna:mailto:anna@example.com\r\n"
             f"ATTENDEE;CN=Invitee;PARTSTAT=NEEDS-ACTION;ROLE=REQ-PARTICIPANT:"
             f"mailto:{attendee_email}\r\n"
@@ -1602,9 +1610,9 @@ class TestListOwnRepliesForSeveralInstances:
         )
         return object_id
 
-    async def _seed_three_invited_events(
+    async def _seed_scenario(
         self, db: DatabaseConnection,
-    ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
         async with db.session() as session:
             dav_account_id, collection_id = await _seed_calendar(session)
             _account_id, identity_id = await _seed_mail_account_and_identity(
@@ -1632,55 +1640,75 @@ class TestListOwnRepliesForSeveralInstances:
                 uid="own-reply-c", dtstart="20260919T090000Z",
                 attendee_email="freddy@work.example",
             )
+            recurring_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-recurring", dtstart="20260903T090000Z",
+                attendee_email="freddy@work.example", rrule="FREQ=WEEKLY;COUNT=2",
+            )
             await session.commit()
-        return collection_id, identity_id, accepted_id, declined_id, unanswered_id
+        return collection_id, identity_id, accepted_id, declined_id, unanswered_id, recurring_id
 
     def test_each_instances_own_reply_lands_on_the_right_instance(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
-        """recurring_ical_events tags every occurrence its expansion
-        returns with its own RECURRENCE-ID, even a plain object's only
-        occurrence -- so the recurrence_id own_reply has to key on here
-        is that occurrence's own identifier, the same one the month view
-        already listed it under, not None the way responding to the
-        master through the single-event endpoint would store it."""
-        collection_id, identity_id, accepted_id, declined_id, unanswered_id = client.portal.call(
-            self._seed_three_invited_events, migrated_db,
-        )
+        """A plain invitation is answered at master scope, recurrence_id
+        omitted, the way the single-event view already reads and writes
+        it -- own_reply resolution in the batched month listing has to
+        agree with that, not with the synthetic occurrence id
+        recurring-ical-events stamps on a plain object's own expansion
+        (see ical.py's expand_from_query). The recurring series is
+        answered at one specific occurrence instead, and only that
+        occurrence's own_reply may resolve -- proving the batch keys on
+        (object_id, recurrence_id) together, not on the object alone."""
+        (
+            collection_id, identity_id, accepted_id, declined_id, unanswered_id, recurring_id,
+        ) = client.portal.call(self._seed_scenario, migrated_db)
         list_params = {"month": "2026-09", "calendars": str(collection_id)}
+
         with patch(_TARGET, return_value=migrated_db):
             before = client.get("/calendar/events", params=list_params)
         assert before.status_code == 200, before.text
-        recurrence_id_by_object = {
-            e["object_id"]: e["recurrence_id"] for e in before.json()["events"]
-        }
+        recurring_occurrences = sorted(
+            e["recurrence_id"] for e in before.json()["events"]
+            if e["object_id"] == str(recurring_id)
+        )
+        assert len(recurring_occurrences) == 2
+        answered_occurrence, unanswered_occurrence = recurring_occurrences
 
         with patch(_TARGET, return_value=migrated_db):
             resp_a = client.post(
                 f"/calendar/events/{accepted_id}/respond",
-                json={
-                    "identity_id": str(identity_id), "partstat": "accepted",
-                    "recurrence_id": recurrence_id_by_object[str(accepted_id)],
-                },
+                json={"identity_id": str(identity_id), "partstat": "accepted"},
             )
             resp_b = client.post(
                 f"/calendar/events/{declined_id}/respond",
+                json={"identity_id": str(identity_id), "partstat": "declined"},
+            )
+            resp_c = client.post(
+                f"/calendar/events/{recurring_id}/respond",
                 json={
-                    "identity_id": str(identity_id), "partstat": "declined",
-                    "recurrence_id": recurrence_id_by_object[str(declined_id)],
+                    "identity_id": str(identity_id), "partstat": "accepted",
+                    "recurrence_id": answered_occurrence,
                 },
             )
         assert resp_a.status_code == 200, resp_a.text
         assert resp_b.status_code == 200, resp_b.text
+        assert resp_c.status_code == 200, resp_c.text
 
         with patch(_TARGET, return_value=migrated_db):
             listed = client.get("/calendar/events", params=list_params)
         assert listed.status_code == 200, listed.text
         by_object = {e["object_id"]: e for e in listed.json()["events"]}
+        by_recurring_occurrence = {
+            e["recurrence_id"]: e for e in listed.json()["events"]
+            if e["object_id"] == str(recurring_id)
+        }
 
         assert by_object[str(accepted_id)]["own_reply"]["partstat"] == "accepted"
         assert by_object[str(declined_id)]["own_reply"]["partstat"] == "declined"
         assert by_object[str(unanswered_id)]["own_reply"] is None
+        assert by_recurring_occurrence[answered_occurrence]["own_reply"]["partstat"] == "accepted"
+        assert by_recurring_occurrence[unanswered_occurrence]["own_reply"] is None
 
 
 class TestRecurrenceRoundTrip:
