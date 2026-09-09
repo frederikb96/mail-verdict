@@ -75,8 +75,13 @@ export const activeReplyDirtyForThreadIdAtom = atom<string | null>(null);
  * by requestSelectMailAtom below instead of writing selectedMailIdAtom
  * directly, and resolved by whichever composer is dirty (save, discard, or
  * cancel) writing selectedMailIdAtom itself once it is done, or clearing
- * this back to null. */
-export const blockedMailSelectionAtom = atom<string | null>(null);
+ * this back to `undefined`.
+ *
+ * `undefined`, not `null`, is "nothing pending" -- a blocked navigation can
+ * itself target `null` (closing the reading pane entirely, e.g. leaving
+ * for another section of the app), and that has to stay distinguishable
+ * from there being no pending selection at all. */
+export const blockedMailSelectionAtom = atom<string | null | undefined>(undefined);
 
 /** The only way to open a message, close the reading pane, or otherwise
  * change which message is selected. Write-only: it consults whatever

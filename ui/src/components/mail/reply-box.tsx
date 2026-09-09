@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Forward, Loader2, Reply, ReplyAll } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -10,11 +10,16 @@ import {
   ComposeForm,
   type ComposeFormControls,
 } from "@/components/mail/compose-form";
+import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { buildForward, buildReply } from "@/lib/reply";
 import { matchIdentity } from "@/lib/identities";
 import { useIdentities } from "@/hooks/use-identities";
 import { api } from "@/lib/api";
-import { activeReplyDirtyForThreadIdAtom } from "@/lib/atoms";
+import {
+  activeReplyDirtyForThreadIdAtom,
+  blockedMailSelectionAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
 import { cn } from "@/lib/utils";
 import type { MessageDetail } from "@/types/api";
 
@@ -50,6 +55,13 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [maximized, setMaximized] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
   const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
+  // Set by requestSelectMailAtom (lib/atoms.ts) when this box's own dirty
+  // flag blocked a navigation elsewhere -- the dialog below resolves it,
+  // and `undefined` (not `null`) is "nothing pending", since the blocked
+  // navigation can itself target `null` (closing the reading pane).
+  const blockedMailSelection = useAtomValue(blockedMailSelectionAtom);
+  const setBlockedMailSelection = useSetAtom(blockedMailSelectionAtom);
+  const setSelectedMailId = useSetAtom(selectedMailIdAtom);
 
   // Read by useMailAction and useBulkAction: while this is dirty, a
   // "leaves folder" action taken on any message in this same thread from
@@ -103,6 +115,13 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     setQuoteHtml(null);
     setIsDirty(false);
     setMaximized(false);
+    // A discard or a successful save/send resolves whatever navigation
+    // this box's own dirty flag was holding up -- advancing to it here,
+    // not leaving the application stuck on a selection nothing moves.
+    if (blockedMailSelection !== undefined) {
+      setSelectedMailId(blockedMailSelection);
+      setBlockedMailSelection(undefined);
+    }
   };
 
   if (!mode) {
@@ -173,6 +192,14 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
         onControlsReady={(controls) => {
           controlsRef.current = controls;
         }}
+      />
+      <DiscardChangesDialog
+        open={isDirty && blockedMailSelection !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setBlockedMailSelection(undefined);
+        }}
+        onDiscard={reset}
+        onSaveDraft={() => controlsRef.current?.saveDraft()}
       />
     </div>
   );

@@ -1013,3 +1013,136 @@ class TestBulkActionKeepsAnInProgressReply:
         expect(page.get_by_role("heading", name=target_subject, exact=True)).to_be_visible(
             timeout=15_000,
         )
+
+
+class TestNavigatingAwayFromADirtyReplyPrompts:
+    """Clicking a different message while a reply holds unsaved text used
+    to close the reply and take the text with it silently, in the split
+    view -- the same three-way choice the Close button already offers,
+    now covering any selection change rather than only an explicit close."""
+
+    @staticmethod
+    def _deliver_and_open_first(
+        page: Page, app_server: str, api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int], editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any], stem: object,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        first_subject = f"UI nav-prompt first {stem}"
+        second_subject = f"UI nav-prompt second {stem}"
+        for subject in (first_subject, second_subject):
+            message = build_eml(
+                sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+                body="Body for the navigation-prompt test.",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=editor_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, editor_account["id"], inbox_folder["id"])
+                if m["subject"] in (first_subject, second_subject)
+            ]
+            return found if len(found) == 2 else None
+
+        found = wait_for(_find_all, description="both nav-prompt messages synced into INBOX")
+        first = next(m for m in found if m["subject"] == first_subject)
+        second = next(m for m in found if m["subject"] == second_subject)
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, first["id"]).click()
+        expect(page.get_by_role("heading", name=first_subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply not ready to lose.")
+        expect(body).to_contain_text("A reply not ready to lose.")
+
+        return first, second
+
+    def test_cancelling_the_prompt_keeps_the_reply_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        first, second = self._deliver_and_open_first(
+            page, app_server, api_client, dovecot_endpoint, editor_account, inbox_folder,
+            uuid.uuid4(),
+        )
+
+        mail_row(page, second["id"]).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Cancel", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        # Still on the first message with the reply intact -- the click on
+        # the second row did not silently navigate away underneath the
+        # dialog.
+        expect(page.get_by_role("heading", name=first["subject"], exact=True)).to_be_visible()
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply not ready to lose.",
+        )
+
+    def test_discarding_the_prompt_opens_the_other_message(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        _first, second = self._deliver_and_open_first(
+            page, app_server, api_client, dovecot_endpoint, editor_account, inbox_folder,
+            uuid.uuid4(),
+        )
+
+        mail_row(page, second["id"]).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Discard", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        expect(page.get_by_role("heading", name=second["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+        # Collapsed reply/reply-all/forward row -- the discarded reply is
+        # gone, not stranded behind the newly opened message.
+        expect(page.get_by_role("button", name="Reply", exact=True)).to_be_visible()
+
+    def test_saving_a_draft_from_the_prompt_opens_the_other_message(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        _first, second = self._deliver_and_open_first(
+            page, app_server, api_client, dovecot_endpoint, editor_account, inbox_folder,
+            uuid.uuid4(),
+        )
+
+        mail_row(page, second["id"]).click()
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Save draft", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
+        expect(page.get_by_role("heading", name=second["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
