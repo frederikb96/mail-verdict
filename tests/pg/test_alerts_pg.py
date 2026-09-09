@@ -14,6 +14,7 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select, text
 
 from mail_verdict.alerts.dispatch import (
@@ -87,7 +88,7 @@ async def _seed_plain_folder(session, account_id: uuid.UUID, imap_name: str) -> 
     return folder_id
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _drop_seeded_pipeline_runs(migrated_db: DatabaseConnection):
     """Remove this module's seeded pipeline_runs rows after every test.
 
