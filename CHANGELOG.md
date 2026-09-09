@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   action and a drag-and-drop move alike. A setting turns this off.
 - An account can be given a Trash retention: mail sitting in Trash longer than that many days is
   permanently removed by a periodic sweep, batched and logged. Off by default, per account.
+- The account switcher's order is no longer fixed: drag accounts into the order you want in
+  Settings, and every place that lists accounts follows it.
 
 ### Alerts
 
