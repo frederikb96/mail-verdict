@@ -755,7 +755,13 @@ class TestIdentitySelection:
         mail_row(page, original["id"]).click()
         page.get_by_role("button", name="Reply", exact=True).click()
 
-        from_trigger = page.locator('[data-slot="select-trigger"]')
+        # Scoped to the "From" identity row specifically, not just any
+        # select-trigger on the page -- the compose dialog's own "From
+        # account" select (shown once more than one account exists) can
+        # otherwise resolve alongside it when an account happens to share
+        # its identity's own address as its name, the way these fixtures do.
+        from_row = page.get_by_text("From", exact=True).locator("xpath=..")
+        from_trigger = from_row.locator('[data-slot="select-trigger"]')
         expect(from_trigger.get_by_text(alias_identity["address"], exact=True)).to_be_visible(
             timeout=10_000,
         )
@@ -788,7 +794,10 @@ class TestIdentitySelection:
         page.get_by_role("button", name="Compose", exact=True).click()
         dialog = page.get_by_role("dialog", name="New Message")
 
-        from_trigger = dialog.locator('[data-slot="select-trigger"]')
+        # Scoped to the "From" identity row -- see the identical comment on
+        # test_a_reply_sends_from_the_address_the_original_arrived_at above.
+        from_row = dialog.get_by_text("From", exact=True).locator("xpath=..")
+        from_trigger = from_row.locator('[data-slot="select-trigger"]')
         expect(
             from_trigger.get_by_text(default_identity["address"], exact=True)
         ).to_be_visible(timeout=10_000)
