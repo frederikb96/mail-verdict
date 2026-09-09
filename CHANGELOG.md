@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Calendar
+
+- The month view scrolls smoothly on a mailbox with thousands of events: scrolling no longer
+  re-renders the whole grid on every pixel, a fast flick no longer fires one request per month
+  passed (or refetches a month already in memory), and localStorage no longer fills up with
+  cached calendar events. A month whose data hasn't arrived yet shows a brief loading placeholder
+  instead of appearing empty. The month view's own scrollbar is hidden (a thumb this fine-grained
+  was never usable for dragging), and the range it covers widens from 1990-2060 to 1900-2200.
+- A live update to a calendar event now only refreshes the months it can actually affect, rather
+  than every month currently open.
+
 ## [5.4.0] - 2026-09-09
 
 ### Mail
