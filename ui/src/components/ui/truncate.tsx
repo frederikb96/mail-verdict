@@ -28,9 +28,9 @@ export function Truncate({
     )
   }
   return (
-    <span className={cn("flex min-w-0 items-center", className)} title={text}>
-      <span className="truncate">{text.slice(0, -tail)}</span>
-      <span className="shrink-0">{text.slice(-tail)}</span>
+    <span className={cn("flex min-w-0 items-center", className)} title={text} aria-label={text}>
+      <span className="truncate" aria-hidden="true">{text.slice(0, -tail)}</span>
+      <span className="shrink-0" aria-hidden="true">{text.slice(-tail)}</span>
     </span>
   )
 }
