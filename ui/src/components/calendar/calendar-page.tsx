@@ -13,6 +13,7 @@ import { useCalendarUrlSync } from "@/hooks/use-calendar-url-sync";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   calendarViewAtom,
+  effectiveCalendarView,
   eventPopoverAnchorAtom,
   selectedEventAtom,
 } from "@/lib/atoms";
@@ -47,7 +48,7 @@ export function CalendarPage() {
     [navigate],
   );
 
-  const effectiveView = isMobile && view === "week" ? "day" : view;
+  const effectiveView = effectiveCalendarView(view, isMobile);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">

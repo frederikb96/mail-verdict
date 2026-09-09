@@ -125,6 +125,18 @@ export const composeIntentAtom = atom<{
 
 export type CalendarViewMode = "month" | "week" | "day" | "agenda";
 
+/** The view actually on screen -- the week view has no mobile layout of
+ * its own and is rendered as a single-day grid there instead, so a
+ * stored preference of "week" is never what's showing on a phone. The
+ * grid and the toolbar (title, selected tab) both need this rather than
+ * the raw stored preference, or they disagree about what's on screen. */
+export function effectiveCalendarView(
+  view: CalendarViewMode,
+  isMobile: boolean,
+): CalendarViewMode {
+  return isMobile && view === "week" ? "day" : view;
+}
+
 /** Persisted like threadedViewAtom -- a view preference, not server state. */
 export const calendarViewAtom = atomWithStorage<CalendarViewMode>(
   "mailverdict:calendar-view",

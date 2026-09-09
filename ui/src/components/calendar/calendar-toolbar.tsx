@@ -8,7 +8,12 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { MonthYearPicker } from "@/components/calendar/month-year-picker";
-import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
+import {
+  calendarDateAtom,
+  calendarViewAtom,
+  effectiveCalendarView,
+  type CalendarViewMode,
+} from "@/lib/atoms";
 import { addDays, addMonths, addWeeks, format, monthChunkKey, startOfWeek, weekNumber } from "@/lib/dates";
 import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 import { useCalendarShortcuts } from "@/hooks/use-calendar-shortcuts";
@@ -50,13 +55,14 @@ export function CalendarToolbar() {
   // push: false -- prev/next never spends a history entry (navigate()'s
   // default push is for the changes worth one), but still keeps the URL
   // in step via replace.
+  const visibleViews = isMobile ? VIEWS.filter((v) => v.value !== "week") : VIEWS;
+  const effectiveView = effectiveCalendarView(view, isMobile);
+
   const step = (dir: 1 | -1) => {
-    if (view === "day") navigate({ date: addDays(date, dir) }, { push: false });
-    else if (view === "week") navigate({ date: addWeeks(date, dir) }, { push: false });
+    if (effectiveView === "day") navigate({ date: addDays(date, dir) }, { push: false });
+    else if (effectiveView === "week") navigate({ date: addWeeks(date, dir) }, { push: false });
     else navigate({ date: addMonths(date, dir) }, { push: false });
   };
-
-  const visibleViews = isMobile ? VIEWS.filter((v) => v.value !== "week") : VIEWS;
 
   useCalendarShortcuts({ onCreate: () => setCreateOpen(true) });
 
@@ -78,7 +84,7 @@ export function CalendarToolbar() {
           className="rounded px-1 text-sm font-medium hover:bg-muted"
           data-testid="calendar-toolbar-title"
         >
-          {titleFor(view, date)}
+          {titleFor(effectiveView, date)}
         </span>
       </MonthYearPicker>
       {showTruncationWarning && (
@@ -93,7 +99,10 @@ export function CalendarToolbar() {
       )}
 
       <div className="ml-auto flex items-center gap-2">
-        <Tabs value={view} onValueChange={(v) => v && navigate({ view: v as CalendarViewMode })}>
+        <Tabs
+          value={effectiveView}
+          onValueChange={(v) => v && navigate({ view: v as CalendarViewMode })}
+        >
           <TabsList>
             {visibleViews.map((v) => (
               <TabsTrigger key={v.value} value={v.value}>
