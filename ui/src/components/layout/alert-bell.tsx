@@ -37,6 +37,8 @@ function AlertRow({
   const unseen = alert.dismissed_at === null;
   return (
     <div
+      data-testid="alert-row"
+      data-alert-id={alert.id}
       className={`flex flex-col gap-1 border-b px-3 py-2 last:border-b-0 ${
         unseen ? "bg-accent/30" : ""
       }`}
