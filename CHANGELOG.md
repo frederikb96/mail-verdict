@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.4.0] - 2026-09-09
+
+### Mail
+
+- Every message has a shareable URL: opening one updates the address bar, pasting the link into a
+  fresh browser opens that message in its folder however far back it sits, and the Back button
+  steps back through opened messages correctly.
+- A search result, the spam review screen, the outbox status banners and the alert bell now name
+  which account a row belongs to whenever more than one account is configured -- several of these
+  previously left it to guesswork. The unified view's merged folder row names every contributing
+  account inline rather than only on hover.
+- "Remove from Junk" has its own icon in the reading pane and a row's hover controls, rather than
+  reusing the same thumbs-up glyph a spam confirmation uses two positions along.
+- A chosen account, folder or calendar shows its name once selected, instead of its raw internal
+  id, in the account/folder pickers that had this gap.
+
+### Compose
+
+- Typing an address into a recipient field no longer loses what was typed, including at the exact
+  moment the autocomplete list opens or comes back empty.
+- A composer never silently loses unsaved text: it recovers into a toast offering it back after a
+  reload, and leaving one with unsaved text asks whether to save the draft, discard it, or stay --
+  including when a bulk action would otherwise archive or trash the very message it's replying to.
+  A reopened draft now gets the same protection a reply already had.
+- A reply's subject can be edited, and the sent message still threads correctly under the edited
+  subject.
+- A correction from a grammar-checker browser extension no longer breaks the paragraph it corrects.
+- A reply reliably sends from the address the original arrived at, and a fresh message from the
+  account's starred default -- both locked down with a test.
+- Saving a draft copy of a reply no longer shows a "Message sent" toast; only an actual send does.
+
+### Spam verdicts
+
+- Every way of ruling on a message -- the reading pane, a row's own control, the review screen, and
+  a rule's own move to Junk -- now goes through one function and produces the same result: a spam
+  ruling always moves the message to Junk, a correction moves it back only when it reverses an
+  earlier spam verdict, and confirming an already-clean message moves nothing.
+- Both thumbs appear on every message carrying a verdict, labelled for what they do ("Confirm this
+  verdict" / "Correct this verdict") rather than for an outcome.
+- Confirming a verdict on the review screen moves the message into Junk; correcting one moves it
+  back to the folder it came from.
+- Freddy's own past rulings are always in front of the model when it classifies a message that
+  resembles one he already ruled on, with no setting anywhere that can turn this off.
+- A ruling that fails to move its message (an account with no Junk or Inbox folder) now reports the
+  failure rather than claiming success while quietly doing nothing.
+
+### Calendar
+
+- Toggling a calendar's visibility is instant, even against a few thousand events -- it no longer
+  waits on a network round trip or refetches anything.
+- Dates and times are entered and shown day-first in a 24-hour clock, in an app-owned text field
+  with a popover picker, instead of the browser's own date/time input.
+- An event can carry any number of reminders and say whether it makes Freddy free or busy; a
+  calendar's own default reminder can override or switch off the global one. An absolute (rather
+  than relative) reminder written by another calendar client now shows read-only instead of being
+  silently rewritten as a relative one the moment the event is opened.
+- A new event opens on the calendar the last one was created in, and defaults to the next full hour
+  from now rather than always 01:00; pressing "Add reminder" a second time no longer duplicates the
+  reminder the form already pre-filled.
+- A month too large to expand in time now says so, both in a warning beside the month title and in
+  the response, instead of coming back looking like an empty month.
+- Scrolling the month view no longer starves the rest of the application: a chunk whose row has
+  since scrolled out of view is cancelled instead of running to completion and holding a connection
+  nothing will read.
+- The phone calendar toolbar's title, selected tab and prev/next step now agree with the view
+  actually on screen, rather than the stored preference that view collapses from.
+- The sidebar's folder menu no longer jumps to the corner once the pointer reaches it.
+- Two concurrent requests expanding the same recurring series can no longer produce an
+  intermittently wrong or missing occurrence.
+
+### Search
+
+- A search can be narrowed to a stretch of time by dragging a range over a timeline, and flipped
+  between best-match and newest-first ordering -- both remembered across a reload. Dragging the
+  range only re-runs the search once the drag ends, not on every step in between.
+- A search result shows who the mail was addressed to and, with more than one account configured,
+  which account it belongs to; a search can be scoped to every account at once from the search page
+  itself, without switching to the unified view first.
+
+### Alerts
+
+- New mail raises a bell with a durable, dismissable list, and -- once notifications are turned on
+  for a device -- a system notification that reaches it even with no MailVerdict page open, using
+  the browser's own Web Push. Which folders alert is a per-device setting; every registered device
+  can be reviewed and removed from Settings.
+- An alert defaults to the folders mail actually arrives in, not every folder -- a fresh install no
+  longer notifies about a reader's own Sent, Drafts, Trash and Junk mail, whether or not that
+  device has push turned on.
+- Unified View's empty state explains that it's configurable and links to where a folder gets its
+  unified name, instead of saying only "No unified folders configured".
+- A calendar-reminder push toggle that controlled a feature not yet built has been removed until
+  reminders are actually delivered as alerts.
+
+### Attachments
+
+- An image or PDF attachment opens full screen for a look at it, rendered rather than downloaded;
+  the download control stays for that and for anything else the preview doesn't recognise. A PDF
+  renders as a continuous, lazily-loaded scroll rather than loading every page up front.
+
+### Fixed
+
+- pdf.js's worker script is served with the content type a browser requires to run it as a module
+  worker, regardless of what the host's own guess would have been.
+- A Web Push signing key this server can no longer decrypt (following an `ENCRYPTION_KEY`
+  rotation) is regenerated in place rather than leaving push silently and permanently broken.
+- The account switcher no longer intermittently loses a click right after switching accounts.
+
 ## [5.3.4] - 2026-09-08
 
 ### Fixed
