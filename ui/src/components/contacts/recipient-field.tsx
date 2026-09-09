@@ -148,8 +148,10 @@ export function RecipientField({ value, onChange, placeholder }: RecipientFieldP
               <AvatarFallback>{getInitials(hit.name || hit.email)}</AvatarFallback>
             </Avatar>
             <div className="flex min-w-0 flex-col">
-              <span className="truncate">{hit.name || hit.email}</span>
-              {hit.name && <span className="truncate text-xs text-muted-foreground">{hit.email}</span>}
+              <Truncate text={hit.name || hit.email} tail={hit.name ? 0 : 12} />
+              {hit.name && (
+                <Truncate text={hit.email} tail={12} className="text-xs text-muted-foreground" />
+              )}
             </div>
           </ComboboxItem>
         ))}
