@@ -16,8 +16,10 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useCalendars } from "@/hooks/use-calendars";
 import { monthChunkKey, monthChunksForWeek, weekDays } from "@/lib/dates";
 import type {
+  Calendar,
   EventCreateRequest,
   EventDeleteRequest,
   EventInstance,
@@ -25,6 +27,20 @@ import type {
   EventUpdateRequest,
   RespondRequest,
 } from "@/types/api";
+
+/** Drops instances on a calendar the sidebar has hidden. is_visible is a
+ * client-side view concept -- GET /calendar/events never filters by it,
+ * which is what makes toggling it free of any server round trip -- so
+ * every hook that renders events applies this same predicate rather than
+ * a copy of it each. A calendar_id absent from the list (a stale or
+ * still-loading `calendars` query) is shown rather than hidden. */
+function filterVisible(
+  events: EventInstance[], calendars: Calendar[] | undefined,
+): EventInstance[] {
+  if (!calendars) return events;
+  const hidden = new Set(calendars.filter((c) => !c.is_visible).map((c) => c.id));
+  return hidden.size === 0 ? events : events.filter((e) => !hidden.has(e.calendar_id));
+}
 
 export const eventKeys = {
   chunk: (month: string) => ["calendar-events", month] as const,
@@ -60,6 +76,7 @@ export function useEventDetail(objectId: string | null, recurrenceId: string | n
 /** Every month chunk touching [from, to], merged and filtered to the range. */
 export function useEventsForRange(from: Date, to: Date) {
   const months = monthsBetween(from, to);
+  const { data: calendars } = useCalendars();
   const results = useQueries({
     queries: months.map((month) => ({
       queryKey: eventKeys.chunk(month),
@@ -78,7 +95,7 @@ export function useEventsForRange(from: Date, to: Date) {
   }
   const fromMs = from.getTime();
   const toMs = to.getTime();
-  const events = Array.from(byKey.values()).filter((e) => {
+  const events = filterVisible(Array.from(byKey.values()), calendars).filter((e) => {
     const start = new Date(e.dtstart).getTime();
     const end = new Date(e.dtend).getTime();
     return end >= fromMs && start <= toMs;
@@ -94,6 +111,7 @@ export function useEventsForRange(from: Date, to: Date) {
  * invisible to layout. */
 export function useWeekEvents(weekIndex: number): EventInstance[] {
   const months = monthChunksForWeek(weekIndex);
+  const { data: calendars } = useCalendars();
   const results = useQueries({
     queries: months.map((month) => ({
       queryKey: eventKeys.chunk(month),
@@ -115,7 +133,7 @@ export function useWeekEvents(weekIndex: number): EventInstance[] {
       if (end >= weekStart && start < weekEnd) byKey.set(instanceKey(e), e);
     }
   }
-  return Array.from(byKey.values());
+  return filterVisible(Array.from(byKey.values()), calendars);
 }
 
 function monthsBetween(from: Date, to: Date): string[] {

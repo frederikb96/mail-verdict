@@ -282,14 +282,16 @@ class TestCreateAndList:
 
 
 class TestVisibilityFiltering:
-    """The two independent levels a calendar can be hidden by: is_visible
-    (the sidebar's per-view checkbox) and is_enabled (the manage dialog's
-    own "offered at all" level). Either one off must remove the calendar's
-    events from the default (no `calendars` param) list -- the sidebar
-    checkbox writing is_visible with nothing reading that write back was
-    exactly the defect that made the toggle look inert."""
+    """is_visible (the sidebar's per-view checkbox) and is_enabled (the
+    manage dialog's own "offered at all" level) are independent, and only
+    one of them is this endpoint's concern. is_enabled off removes the
+    calendar's events from the default (no `calendars` param) list.
+    is_visible is a client-side view concept -- every instance carries its
+    own calendar_id (EventInstanceOut) for the browser to filter by, and
+    this endpoint returns them regardless, so toggling visibility never
+    invalidates or refetches anything server-side."""
 
-    def test_is_visible_false_hides_a_calendars_events_from_the_default_list(
+    def test_is_visible_false_does_not_hide_a_calendars_events_here(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         calendar_id = client.portal.call(_seed, migrated_db)
@@ -309,15 +311,7 @@ class TestVisibilityFiltering:
             assert patched.status_code == 200, patched.text
 
             after = client.get("/calendar/events", params={"month": "2026-09"})
-            assert "Toggled off" not in [e["summary"] for e in after.json()["events"]]
-
-            # Naming the calendar explicitly still bypasses both levels --
-            # the same escape hatch the event editor's own calendar field
-            # already relies on for is_visible.
-            explicit = client.get(
-                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
-            )
-        assert "Toggled off" in [e["summary"] for e in explicit.json()["events"]]
+        assert "Toggled off" in [e["summary"] for e in after.json()["events"]]
 
     def test_is_enabled_false_hides_a_calendars_events_from_the_default_list(
         self, client: TestClient, migrated_db: DatabaseConnection,
