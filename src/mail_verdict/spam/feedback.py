@@ -2,12 +2,12 @@
 Spam feedback handler.
 
 `apply_human_ruling` is the one place a person's ruling on a message is
-recorded and applied: it writes the correction unconditionally and moves
-the message to match, whatever route the ruling arrived by -- a reading-
-pane thumb, a row's own Spam/Not-spam button, the review screen, or an
-MCP tool call. The caller resolves which folder the ruling moves the
-message to (see its own docstring); this only ever moves to the folder
-it is given.
+recorded and applied: it writes the correction unconditionally, resolves
+and moves to whichever folder the ruling implies, and announces the
+change over the event ring -- whatever route the ruling arrived by, a
+reading-pane thumb, a row's own Spam/Not-spam button, the review screen,
+or an MCP tool call. One call does all of it; nothing else needs to be
+paired with it.
 
 `handle_folder_move_to_junk` / `handle_folder_move_out_of_junk` are a
 different thing in kind: not a caller stating a ruling, but this
@@ -48,10 +48,25 @@ from mail_verdict.database.repository import FolderRepository
 from mail_verdict.postimap.actions import move_message
 
 if TYPE_CHECKING:
+    from mail_verdict.api.event_ring import EventRing
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.database.repository import VerdictRepository
 
 logger = logging.getLogger(__name__)
+
+
+class FolderResolutionError(Exception):
+    """apply_human_ruling's ruling requires moving the message to a
+    special-use folder (junk or inbox) this account doesn't have. The
+    verdict itself is still recorded by the time this is raised -- only
+    the move failed -- the same distinction archive and trash already
+    make between "the ruling happened" and "the folder to put it in
+    exists"."""
+
+    def __init__(self, role: str, account_id: uuid.UUID) -> None:
+        self.role = role
+        self.account_id = account_id
+        super().__init__(f"No {role} folder found for this account")
 
 
 class SpamFeedbackHandler:
@@ -59,14 +74,23 @@ class SpamFeedbackHandler:
     (recorded and moved together), and from folder moves that contradict
     the current verdict (recorded only, the move having already happened)."""
 
-    def __init__(self, db: DatabaseConnection, verdict_repo: VerdictRepository) -> None:
+    def __init__(
+        self,
+        db: DatabaseConnection,
+        verdict_repo: VerdictRepository,
+        event_ring: EventRing | None = None,
+    ) -> None:
         """
         Args:
             db: Session factory for apply_human_ruling's own move
             verdict_repo: Verdict persistence and the current-verdict read
+            event_ring: Where apply_human_ruling announces verdict.issued
+                -- None in a context with no live clients to reach (a
+                test, a one-off script)
         """
         self._db = db
         self._verdict_repo = verdict_repo
+        self._event_ring = event_ring
 
     async def apply_human_ruling(
         self, mail_id: uuid.UUID, account_id: uuid.UUID, *, is_spam: bool,
@@ -91,6 +115,14 @@ class SpamFeedbackHandler:
         confirming a verdict that already said not-spam moves nothing,
         since there is nowhere to rescue it from.
 
+        Also the one place a ruling is announced: verdict.issued reaches
+        every open page over the event ring the moment the verdict row
+        is written, whatever surface this was called from -- a reading-
+        pane thumb, a row's own button, a bulk action, or an MCP tool
+        call. Announcing here rather than in each caller is what keeps
+        the other three surfaces from silently disagreeing with an open
+        page's stale badge, the way they used to.
+
         Args:
             mail_id: Mail UUID
             account_id: Account UUID
@@ -100,9 +132,25 @@ class SpamFeedbackHandler:
             True if the verdict was recorded successfully. A message
             already in the target folder is left untouched by the move
             itself -- move_message's own idempotence, not reflected here.
+
+        Raises:
+            FolderResolutionError: The ruling requires a move (to junk,
+                or back to the inbox) and this account has no such
+                folder. The verdict itself is still recorded and
+                announced by the time this raises -- only the move
+                didn't happen.
         """
         prior = await self._verdict_repo.get_current_verdict(mail_id)
         ok = await self._record_feedback(mail_id, account_id, is_spam=is_spam)
+
+        if ok and self._event_ring is not None:
+            await self._event_ring.add(
+                account_id, "verdict.issued",
+                {
+                    "message_id": str(mail_id), "is_spam": is_spam,
+                    "source": "user_feedback", "account_id": str(account_id),
+                },
+            )
 
         if is_spam:
             role = "junk"
@@ -114,13 +162,9 @@ class SpamFeedbackHandler:
         if role is not None:
             folder_id = await FolderRepository(self._db).resolve_special_folder(account_id, role)
             if folder_id is None:
-                logger.warning(
-                    "No %s folder found for account %s; ruling recorded but not moved",
-                    role, str(account_id)[:8],
-                )
-            else:
-                async with self._db.session() as session:
-                    await move_message(session, mail_id, folder_id)
+                raise FolderResolutionError(role, account_id)
+            async with self._db.session() as session:
+                await move_message(session, mail_id, folder_id)
         return ok
 
     async def handle_folder_move_to_junk(self, mail_id: uuid.UUID, account_id: uuid.UUID) -> bool:

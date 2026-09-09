@@ -551,14 +551,18 @@ async def submit_spam_feedback(mail_id: str, account_id: str, is_spam: bool) -> 
         {"success": bool, "message": str}
     """
     from mail_verdict.server import get_spam_processor
+    from mail_verdict.spam.feedback import FolderResolutionError
 
     processor = get_spam_processor()
     if processor is None:
         return {"success": False, "error": "Spam feedback handler not available"}
 
-    ok = await processor.feedback.apply_human_ruling(
-        uuid.UUID(mail_id), uuid.UUID(account_id), is_spam=is_spam,
-    )
+    try:
+        ok = await processor.feedback.apply_human_ruling(
+            uuid.UUID(mail_id), uuid.UUID(account_id), is_spam=is_spam,
+        )
+    except FolderResolutionError as exc:
+        return {"success": False, "error": f"No {exc.role} folder found for this account"}
     return {"success": ok, "message": "Feedback recorded" if ok else "Feedback processing failed"}
 
 

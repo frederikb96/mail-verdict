@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mail_verdict.database.models import VerdictSource
-from mail_verdict.spam.feedback import SpamFeedbackHandler
+from mail_verdict.spam.feedback import FolderResolutionError, SpamFeedbackHandler
 
 
 class _FakeSessionContext:
@@ -27,13 +27,18 @@ class _FakeDb:
         return _FakeSessionContext()
 
 
-def _make_handler() -> tuple[SpamFeedbackHandler, MagicMock]:
+def _make_handler(
+    *, event_ring: MagicMock | None = None,
+) -> tuple[SpamFeedbackHandler, MagicMock]:
     """Create a feedback handler with a mock verdict repo and a session
     factory real enough for apply_human_ruling's own move."""
     verdict_repo = MagicMock()
     verdict_repo.create_verdict = AsyncMock()
     verdict_repo.get_current_verdict = AsyncMock(return_value=None)
-    return SpamFeedbackHandler(db=_FakeDb(), verdict_repo=verdict_repo), verdict_repo
+    return (
+        SpamFeedbackHandler(db=_FakeDb(), verdict_repo=verdict_repo, event_ring=event_ring),
+        verdict_repo,
+    )
 
 
 class _Verdict:
@@ -159,11 +164,12 @@ class TestApplyHumanRuling:
         assert calls == ["read", "write"]
 
     @pytest.mark.asyncio
-    async def test_no_folder_found_records_but_does_not_move(self) -> None:
+    async def test_no_folder_found_records_but_raises(self) -> None:
         """An account with no junk folder at all -- the ruling is still
-        recorded; the move is silently skipped rather than raised, since
-        this function is called from surfaces with very different error
-        handling of their own."""
+        recorded and announced, but FolderResolutionError is raised
+        rather than silently reporting the move as done. Every caller
+        that used to see a bare True has its own mapping onto an error
+        response (a 400, an MCP error field)."""
         handler, verdict_repo = _make_handler()
         verdict_repo.get_current_verdict = AsyncMock(return_value=_Verdict(is_spam=False))
 
@@ -172,10 +178,61 @@ class TestApplyHumanRuling:
             patch("mail_verdict.spam.feedback.move_message", new=AsyncMock()) as move_message,
         ):
             folder_repo_cls.return_value.resolve_special_folder = AsyncMock(return_value=None)
+            with pytest.raises(FolderResolutionError) as exc_info:
+                await handler.apply_human_ruling(uuid.uuid4(), uuid.uuid4(), is_spam=True)
+
+        assert exc_info.value.role == "junk"
+        verdict_repo.create_verdict.assert_awaited_once()
+        move_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_announces_verdict_issued_over_the_event_ring(self) -> None:
+        """Every surface that calls this shares one announcement, made
+        here rather than by each caller -- a row's button, a bulk action
+        and an MCP tool call used to emit nothing at all."""
+        event_ring = MagicMock()
+        event_ring.add = AsyncMock()
+        handler, verdict_repo = _make_handler(event_ring=event_ring)
+        verdict_repo.get_current_verdict = AsyncMock(return_value=_Verdict(is_spam=False))
+        mail_id, account_id = uuid.uuid4(), uuid.uuid4()
+
+        with (
+            patch("mail_verdict.spam.feedback.FolderRepository") as folder_repo_cls,
+            patch("mail_verdict.spam.feedback.move_message", new=AsyncMock()),
+        ):
+            folder_repo_cls.return_value.resolve_special_folder = AsyncMock(
+                return_value=uuid.uuid4(),
+            )
+            await handler.apply_human_ruling(mail_id, account_id, is_spam=True)
+
+        event_ring.add.assert_awaited_once_with(
+            account_id, "verdict.issued",
+            {
+                "message_id": str(mail_id), "is_spam": True,
+                "source": "user_feedback", "account_id": str(account_id),
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_recording_announces_nothing(self) -> None:
+        """No verdict actually changed, so no open page should be told
+        one did."""
+        event_ring = MagicMock()
+        event_ring.add = AsyncMock()
+        handler, verdict_repo = _make_handler(event_ring=event_ring)
+        verdict_repo.create_verdict = AsyncMock(side_effect=RuntimeError("DB down"))
+
+        with (
+            patch("mail_verdict.spam.feedback.FolderRepository") as folder_repo_cls,
+            patch("mail_verdict.spam.feedback.move_message", new=AsyncMock()),
+        ):
+            folder_repo_cls.return_value.resolve_special_folder = AsyncMock(
+                return_value=uuid.uuid4(),
+            )
             result = await handler.apply_human_ruling(uuid.uuid4(), uuid.uuid4(), is_spam=True)
 
-        assert result is True
-        move_message.assert_not_awaited()
+        assert result is False
+        event_ring.add.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_recording_the_verdict_returns_false(self) -> None:

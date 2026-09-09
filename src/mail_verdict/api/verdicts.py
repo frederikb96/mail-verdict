@@ -17,7 +17,6 @@ from sqlalchemy import and_, desc, or_, select
 from sqlalchemy.orm import aliased
 
 from mail_verdict.api.deps import get_message_repo, get_verdict_repo
-from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.mails import _LIST_DEFERRED_COLUMNS
 from mail_verdict.api.schemas import (
     FeedbackRequest,
@@ -197,7 +196,9 @@ async def submit_feedback(
 
     Records the correction and moves the message to match -- see
     SpamFeedbackHandler.apply_human_ruling for exactly what moves and
-    when. One call does both; nothing else needs to be paired with it.
+    when, and for the verdict.issued announcement every viewer of this
+    message picks up -- both are that one call's own doing, nothing else
+    needs to be paired with it.
     """
     msg_repo = get_message_repo()
     msg = await msg_repo.get_by_id(account_id, mail_id)
@@ -206,28 +207,20 @@ async def submit_feedback(
 
     # Access SpamFeedbackHandler from server state
     from mail_verdict.server import get_spam_processor
+    from mail_verdict.spam.feedback import FolderResolutionError
 
     processor = get_spam_processor()
     if processor is None:
         raise HTTPException(status_code=503, detail="Spam feedback handler not available")
 
-    ok = await processor.feedback.apply_human_ruling(
-        mail_id, account_id, is_spam=request.is_spam,
-    )
-
-    # A correction changes what every viewer of this message should see
-    # (the verdict badge, the reasoning), not only the browser that
-    # submitted it -- the same event the AI pipeline's own verdict fires,
-    # so a listener never needs to tell the two sources apart.
-    event_ring = get_event_ring()
-    if ok and event_ring is not None:
-        await event_ring.add(
-            account_id, "verdict.issued",
-            {
-                "message_id": str(mail_id), "is_spam": request.is_spam,
-                "source": "user_feedback", "account_id": str(account_id),
-            },
+    try:
+        ok = await processor.feedback.apply_human_ruling(
+            mail_id, account_id, is_spam=request.is_spam,
         )
+    except FolderResolutionError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"No {exc.role} folder found for this account",
+        ) from exc
 
     return FeedbackResponse(
         success=ok,

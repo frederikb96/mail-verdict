@@ -211,7 +211,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     verdict_repo = VerdictRepository(db)
     folder_repo = FolderRepository(db)
     account_prefs_repo = AccountPrefsRepository(db)
-    feedback = SpamFeedbackHandler(db, verdict_repo)
+    feedback = SpamFeedbackHandler(db, verdict_repo, event_ring)
     _spam_processor = SpamFeedbackListener(feedback=feedback, folder_repo=folder_repo)
     logger.info("Spam feedback listener initialized")
 

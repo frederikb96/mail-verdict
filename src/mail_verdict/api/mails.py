@@ -1000,19 +1000,31 @@ async def _handle_spam_action(
     through SpamFeedbackHandler.apply_human_ruling -- see its own
     docstring for exactly what moves and when, and for why this no
     longer relies on the folder-move listener to catch the 'spam'
-    direction.
+    direction. Raises the same 400 archive/trash already raise when the
+    account has no folder to move into -- the ruling is recorded either
+    way, but "moved to Junk" would otherwise be reported for a message
+    that never moved.
     """
     from mail_verdict.server import get_spam_processor
+    from mail_verdict.spam.feedback import FolderResolutionError
 
     processor = get_spam_processor()
     if processor is None:
         raise HTTPException(status_code=503, detail="Spam feedback handler not available")
-    await processor.feedback.apply_human_ruling(message_id, account_id, is_spam=is_spam)
+    try:
+        ok = await processor.feedback.apply_human_ruling(message_id, account_id, is_spam=is_spam)
+    except FolderResolutionError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"No {exc.role} folder found for this account",
+        ) from exc
 
     action = "spam" if is_spam else "not_spam"
     return MessageActionResponse(
-        success=True, action=action, message_id=message_id,
-        message="Marked as spam" if is_spam else "Marked as not spam",
+        success=ok, action=action, message_id=message_id,
+        message=(
+            ("Marked as spam" if is_spam else "Marked as not spam")
+            if ok else "Feedback processing failed"
+        ),
     )
 
 
@@ -1174,6 +1186,7 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
                 affected = await move_message_bulk(session, message_ids, folder_id)
     elif action in ("spam", "not_spam"):
         from mail_verdict.server import get_spam_processor
+        from mail_verdict.spam.feedback import FolderResolutionError
 
         processor = get_spam_processor()
         if processor is None:
@@ -1183,12 +1196,26 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
             # message's ruling is recorded and applied together through
             # the same function every other surface calls (see
             # SpamFeedbackHandler.apply_human_ruling), not a bulk move
-            # with the feedback bolted on separately.
+            # with the feedback bolted on separately. affected counts
+            # only rulings that actually moved -- one message whose
+            # verdict couldn't be recorded, or whose account has no
+            # folder to move it into, must not be reported as moved
+            # alongside the rest.
+            succeeded = 0
+            missing_role: str | None = None
             for mid in message_ids:
-                await processor.feedback.apply_human_ruling(
-                    mid, account_id, is_spam=(action == "spam"),
-                )
-            affected = len(message_ids)
+                try:
+                    ok = await processor.feedback.apply_human_ruling(
+                        mid, account_id, is_spam=(action == "spam"),
+                    )
+                except FolderResolutionError as exc:
+                    missing_role = exc.role
+                    continue
+                if ok:
+                    succeeded += 1
+            affected = succeeded
+            if missing_role is not None:
+                errors.append(f"No {missing_role} folder found for this account")
     else:
         raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
 
