@@ -2,10 +2,14 @@
  * of something worth interrupting the reader for (new mail today, a
  * calendar reminder in a later feature). Not account-scoped: an installed
  * application watches every account from one page, the same breadth the
- * SSE stream itself already has. */
+ * SSE stream itself already has. Folder-scoped, though, the same way the
+ * SSE and push paths already are -- both hooks read
+ * useEffectiveAlertFolderIds themselves so a caller can't forget it and
+ * end up disagreeing with the notification it just got. */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import type { AlertResponse, AlertUnseenCountResponse } from "@/types/api";
 
 export const alertKeys = {
@@ -14,17 +18,19 @@ export const alertKeys = {
 };
 
 export function useAlerts(limit = 50) {
+  const folderIds = useEffectiveAlertFolderIds();
   return useQuery<AlertResponse[]>({
-    queryKey: alertKeys.list,
-    queryFn: () => api.alerts.list(limit),
+    queryKey: [...alertKeys.list, limit, folderIds],
+    queryFn: () => api.alerts.list(limit, folderIds),
     staleTime: 10_000,
   });
 }
 
 export function useUnseenAlertCount() {
+  const folderIds = useEffectiveAlertFolderIds();
   return useQuery<AlertUnseenCountResponse>({
-    queryKey: alertKeys.count,
-    queryFn: () => api.alerts.unseenCount(),
+    queryKey: [...alertKeys.count, folderIds],
+    queryFn: () => api.alerts.unseenCount(folderIds),
     staleTime: 10_000,
   });
 }

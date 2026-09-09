@@ -576,6 +576,7 @@ class AlertResponse(BaseModel):
     url: str | None
     account_id: uuid.UUID | None
     message_id: uuid.UUID | None
+    folder_id: uuid.UUID | None
     delivered_at: datetime | None
     dismissed_at: datetime | None
     created_at: datetime

@@ -291,3 +291,84 @@ class TestListAndDismiss:
         # count and the shape rather than a specific order that depends
         # on wall-clock resolution.
         assert all(a.kind == "mail" for a in recent)
+
+
+class TestFolderScope:
+    """create_mail_alert_for_arrival threads folder_id onto the row
+    itself, and list_recent/unseen_count read it back -- the same "which
+    folders alert" preference the SSE and push paths already compute, now
+    applying to the durable list and badge too rather than only to a live
+    notification."""
+
+    @pytest.mark.asyncio
+    async def test_create_mail_alert_for_arrival_stores_the_folder(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+
+        repo = AlertRepository(migrated_db)
+        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        assert len(matching) == 1
+        assert matching[0].folder_id == inbox_id
+
+    @pytest.mark.asyncio
+    async def test_list_recent_and_unseen_count_honour_a_folder_filter(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+            inbox_message = await _seed_message(session, account_id, inbox_id, subject="Inbox")
+            junk_message = await _seed_message(session, account_id, junk_id, subject="Junk")
+            await session.commit()
+
+        repo = AlertRepository(migrated_db)
+        baseline = await repo.unseen_count(folder_ids=[inbox_id])
+        await repo.create_mail_alert(
+            account_id=account_id, message_id=inbox_message, msg_key=f"scope-{uuid.uuid4()}",
+            title="Inbox", body=None, folder_id=inbox_id,
+        )
+        await repo.create_mail_alert(
+            account_id=account_id, message_id=junk_message, msg_key=f"scope-{uuid.uuid4()}",
+            title="Junk", body=None, folder_id=junk_id,
+        )
+
+        scoped_to_inbox = await repo.list_recent(folder_ids=[inbox_id])
+        assert inbox_message in {a.message_id for a in scoped_to_inbox}
+        assert junk_message not in {a.message_id for a in scoped_to_inbox}
+        assert await repo.unseen_count(folder_ids=[inbox_id]) - baseline == 1
+
+        unrestricted = await repo.list_recent(folder_ids=None)
+        assert {inbox_message, junk_message} <= {a.message_id for a in unrestricted}
+
+        scoped_to_nothing = await repo.list_recent(folder_ids=[])
+        assert inbox_message not in {a.message_id for a in scoped_to_nothing}
+        assert junk_message not in {a.message_id for a in scoped_to_nothing}
+
+    @pytest.mark.asyncio
+    async def test_a_row_with_no_folder_passes_every_filter(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A row that predates the column, or a future reminder kind with
+        no folder at all, is never excluded by a folder preference -- the
+        preference has nothing to say about it."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        repo = AlertRepository(migrated_db)
+        await repo.create_mail_alert(
+            account_id=account_id, message_id=message_id, msg_key=f"nofolder-{uuid.uuid4()}",
+            title="No folder", body=None,
+        )
+
+        scoped = await repo.list_recent(folder_ids=[uuid.uuid4()])
+        assert message_id in {a.message_id for a in scoped}

@@ -1354,6 +1354,12 @@ class Alert(Base):
     owned table. kind, title, body and url are filled in by whichever
     code path creates the row -- this table makes no assumption about
     when that happens relative to insert.
+
+    folder_id is what "which folders alert" actually scopes -- also no
+    foreign key, and NULL for a row that predates the column or for a
+    "reminder" kind, which has no folder at all. A row with NULL here is
+    never excluded by a folder filter; only a mail alert with a known
+    folder can be.
     """
 
     __tablename__ = "alerts"
@@ -1367,6 +1373,7 @@ class Alert(Base):
     dedupe_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     account_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     object_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     recurrence_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

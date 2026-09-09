@@ -534,11 +534,20 @@ export const api = {
   },
 
   alerts: {
-    list(limit?: number): Promise<AlertResponse[]> {
-      return request(`/alerts${qs({ limit })}`);
+    // folderIds null means unrestricted -- the same convention
+    // useEffectiveAlertFolderIds itself uses -- and is sent as no filter
+    // at all. A non-null list, even empty, sets folder_scoped so the
+    // server applies it rather than reading an empty folder_ids the same
+    // way as an omitted one.
+    list(limit: number, folderIds: string[] | null): Promise<AlertResponse[]> {
+      return request(
+        `/alerts${qs({ limit, folder_ids: folderIds ?? undefined, folder_scoped: folderIds !== null })}`,
+      );
     },
-    unseenCount(): Promise<AlertUnseenCountResponse> {
-      return request("/alerts/unseen-count");
+    unseenCount(folderIds: string[] | null): Promise<AlertUnseenCountResponse> {
+      return request(
+        `/alerts/unseen-count${qs({ folder_ids: folderIds ?? undefined, folder_scoped: folderIds !== null })}`,
+      );
     },
     dismiss(alertId: string): Promise<void> {
       return request(`/alerts/${alertId}/dismiss`, { method: "POST" });

@@ -1604,6 +1604,7 @@ class AlertRepository:
         msg_key: str,
         title: str | None,
         body: str | None,
+        folder_id: uuid.UUID | None = None,
     ) -> Alert | None:
         """
         Insert a "new mail" alert, delivered immediately -- the in-app
@@ -1623,6 +1624,9 @@ class AlertRepository:
                 dedupe_key is built from
             title, body: Rendered once here (subject, sender) rather than
                 resolved again by every reader of the alert list
+            folder_id: What a folder filter (list_recent, unseen_count)
+                scopes against -- the same folder the live event and the
+                push dispatch already carry
 
         Returns:
             The inserted Alert, or None if an alert for this msg_key
@@ -1643,6 +1647,7 @@ class AlertRepository:
                     dedupe_key=dedupe_key,
                     account_id=account_id,
                     message_id=message_id,
+                    folder_id=folder_id,
                 )
                 .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
                 .returning(Alert)
@@ -1650,7 +1655,9 @@ class AlertRepository:
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
-    async def list_recent(self, *, limit: int = 50) -> list[Alert]:
+    async def list_recent(
+        self, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
+    ) -> list[Alert]:
         """
         The durable alert list, newest first -- delivered_at rather than
         deliver_at, since a future-dated reminder alert (not built by this
@@ -1659,29 +1666,43 @@ class AlertRepository:
 
         Args:
             limit: Max rows
+            folder_ids: The same "which folders alert" preference the SSE
+                and push paths already compute (use-push.ts's
+                useEffectiveAlertFolderIds) -- None (the caller's own
+                folder scope is unrestricted) skips the filter entirely;
+                a list, possibly empty, restricts to alerts whose
+                folder_id is in it. A row with no folder_id (a reminder,
+                or one that predates the column) always passes, since a
+                folder preference has nothing to say about it.
 
         Returns:
             Alerts ordered (delivered_at DESC, id DESC), delivered only
         """
         async with self._db.session() as session:
-            stmt = (
-                select(Alert)
-                .where(Alert.delivered_at.is_not(None))
-                .order_by(desc(Alert.delivered_at), desc(Alert.id))
-                .limit(limit)
-            )
+            stmt = select(Alert).where(Alert.delivered_at.is_not(None))
+            if folder_ids is not None:
+                stmt = stmt.where(
+                    or_(Alert.folder_id.is_(None), Alert.folder_id.in_(folder_ids)),
+                )
+            stmt = stmt.order_by(desc(Alert.delivered_at), desc(Alert.id)).limit(limit)
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def unseen_count(self) -> int:
+    async def unseen_count(self, *, folder_ids: list[uuid.UUID] | None = None) -> int:
         """
         How many delivered alerts have not been dismissed yet -- the
-        bell's own badge count.
+        bell's own badge count. folder_ids is the same filter list_recent
+        takes, for the same reason: the badge and the list it counts must
+        agree on what's in scope.
         """
         async with self._db.session() as session:
             stmt = select(func.count(Alert.id)).where(
                 Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None),
             )
+            if folder_ids is not None:
+                stmt = stmt.where(
+                    or_(Alert.folder_id.is_(None), Alert.folder_id.in_(folder_ids)),
+                )
             return (await session.execute(stmt)).scalar_one()
 
     async def dismiss(self, alert_id: uuid.UUID) -> bool:

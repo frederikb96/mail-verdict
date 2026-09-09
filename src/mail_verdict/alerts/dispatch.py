@@ -58,15 +58,16 @@ async def create_mail_alert_for_arrival(
     passed, hand the alert to a background task that pushes it to every
     subscription that wants it (push/send.py).
 
-    folder_id rides along on the live event and the push dispatch only --
-    alerts carries no folder_id column of its own (only account_id/
-    message_id, the same source-coordinate shape every alert kind uses).
-    "Which folders alert" is a client-side preference for a browser with
-    no push subscription (see the SSE handler and alert-prefs.ts) and a
-    server-side one (push_subscriptions.alert_folder_ids) for a
-    subscribed device -- both read this one threaded-through value rather
-    than re-querying the message's folder. The caller already has it (the
-    postimap event that triggered this).
+    folder_id rides along on the live event, the push dispatch, and the
+    row itself. "Which folders alert" is a client-side preference for a
+    browser with no push subscription (see the SSE handler and
+    alert-prefs.ts) and a server-side one (push_subscriptions.
+    alert_folder_ids) for a subscribed device -- both read this one
+    threaded-through value rather than re-querying the message's folder,
+    and the durable list (AlertRepository.list_recent/unseen_count) reads
+    the same value back off the row it was stored on, so the three
+    surfaces agree on what "which folders alert" means. The caller
+    already has it (the postimap event that triggered this).
 
     The push dispatch runs as a fire-and-forget background task rather
     than being awaited here: it makes outbound HTTPS requests to however
@@ -100,7 +101,7 @@ async def create_mail_alert_for_arrival(
 
     alert = await AlertRepository(db).create_mail_alert(
         account_id=account_id, message_id=message_id, msg_key=msg_key,
-        title=row.subject or "(no subject)", body=body,
+        title=row.subject or "(no subject)", body=body, folder_id=folder_id,
     )
     if alert is None:
         return

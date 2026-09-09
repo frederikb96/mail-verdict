@@ -372,6 +372,7 @@ export interface AlertResponse {
   url: string | null;
   account_id: string | null;
   message_id: string | null;
+  folder_id: string | null;
   delivered_at: string | null;
   dismissed_at: string | null;
   created_at: string;

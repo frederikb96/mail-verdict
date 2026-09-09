@@ -46,21 +46,42 @@ router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 
 @router.get("", response_model=list[AlertResponse])
-async def list_alerts(limit: int = Query(default=50, ge=1, le=200)) -> list[AlertResponse]:
+async def list_alerts(
+    limit: int = Query(default=50, ge=1, le=200),
+    folder_ids: list[uuid.UUID] = Query(default=[]),
+    folder_scoped: bool = Query(
+        default=False,
+        description=(
+            "Whether folder_ids should be applied at all -- an omitted or "
+            "empty folder_ids is ambiguous over a query string (both look "
+            "the same as not sending the parameter), so this is what "
+            "actually distinguishes 'no restriction' from 'restricted to "
+            "nothing'."
+        ),
+    ),
+) -> list[AlertResponse]:
     """The durable alert list, newest first -- not account-scoped, the
     same as the SSE stream itself: an installed application watches every
-    account from one page, and "which folders alert" is a narrower,
-    per-browser choice made client-side, not a server-side filter here."""
+    account from one page. "Which folders alert" is scoped the same way
+    for this list as it already is for the SSE and push paths: the
+    caller passes its own effective folder scope (use-push.ts's
+    useEffectiveAlertFolderIds) rather than the server guessing at one."""
     repo = get_alert_repo()
-    rows = await repo.list_recent(limit=limit)
+    rows = await repo.list_recent(
+        limit=limit, folder_ids=folder_ids if folder_scoped else None,
+    )
     return [AlertResponse.model_validate(row) for row in rows]
 
 
 @router.get("/unseen-count", response_model=AlertUnseenCountResponse)
-async def get_unseen_count() -> AlertUnseenCountResponse:
-    """Delivered, not-yet-dismissed count -- the bell's own badge."""
+async def get_unseen_count(
+    folder_ids: list[uuid.UUID] = Query(default=[]),
+    folder_scoped: bool = Query(default=False),
+) -> AlertUnseenCountResponse:
+    """Delivered, not-yet-dismissed count -- the bell's own badge, scoped
+    the same way list_alerts is so the two never disagree."""
     repo = get_alert_repo()
-    count = await repo.unseen_count()
+    count = await repo.unseen_count(folder_ids=folder_ids if folder_scoped else None)
     return AlertUnseenCountResponse(unseen=count)
 
 
