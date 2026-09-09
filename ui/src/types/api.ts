@@ -145,12 +145,25 @@ export interface SearchResponse {
   total: number;
 }
 
+/** "relevance" (field tier then newest, or nearest-first for semantic --
+ * the default for each) or "chronological" (date alone, ranking ignored
+ * entirely). */
+export type SearchSort = "relevance" | "chronological";
+
 export interface SemanticSearchResponse {
   results: SearchResult[];
   query: string;
   model: string;
   strictness: SearchStrictness;
   min_similarity_applied: number;
+}
+
+/** The oldest and newest received_at across a search scope, with no
+ * query of its own -- the date-range control's own axis. Both null when
+ * the scope has no dated message at all. */
+export interface SearchDateBoundsResponse {
+  oldest: string | null;
+  newest: string | null;
 }
 
 export interface AccountResponse {
@@ -342,6 +355,30 @@ export interface SSEEvent {
   /** The settings category that changed, on settings.changed -- omitted
    * when one write touched several (bulk import). */
   category?: string;
+  /** Present on alert.new -- the same fields AlertResponse itself carries,
+   * so an open page can raise a notification and refresh its list without
+   * a round trip back to GET /api/alerts. */
+  title?: string | null;
+  body?: string | null;
+  url?: string | null;
+}
+
+/** One alerts row -- see AlertResponse in the backend schema. */
+export interface AlertResponse {
+  id: string;
+  kind: string;
+  title: string | null;
+  body: string | null;
+  url: string | null;
+  account_id: string | null;
+  message_id: string | null;
+  delivered_at: string | null;
+  dismissed_at: string | null;
+  created_at: string;
+}
+
+export interface AlertUnseenCountResponse {
+  unseen: number;
 }
 
 export interface ImageExceptionResponse {

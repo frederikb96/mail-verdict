@@ -11,20 +11,24 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FolderPicker } from "@/components/search/folder-picker";
+import { DateRangePicker } from "@/components/search/date-range-picker";
 import { SearchResultRow } from "@/components/search/search-result-row";
 
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { buildMailUrl } from "@/lib/mail-url";
 import { useSearchResults } from "@/hooks/use-search";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import {
   ALL_SEARCH_FIELDS,
+  searchDateRangeAtom,
   searchFieldsAtom,
   searchFolderIdsAtom,
   searchQueryAtom,
   searchScrollAnchorAtom,
   searchScrollCacheAtom,
   searchSemanticModeAtom,
+  searchSortModeAtom,
   searchStrictnessAtom,
 } from "@/lib/search-prefs";
 import {
@@ -66,6 +70,8 @@ export function SearchPage() {
   const [folderIds, setFolderIds] = useAtom(searchFolderIdsAtom);
   const [semantic, setSemantic] = useAtom(searchSemanticModeAtom);
   const [strictness, setStrictness] = useAtom(searchStrictnessAtom);
+  const [sort, setSort] = useAtom(searchSortModeAtom);
+  const [dateRange, setDateRange] = useAtom(searchDateRangeAtom);
   const [scrollAnchor, setScrollAnchor] = useAtom(searchScrollAnchorAtom);
   const [scrollCache, setScrollCache] = useAtom(searchScrollCacheAtom);
 
@@ -97,6 +103,10 @@ export function SearchPage() {
       fields,
       semantic,
       strictness,
+      sort,
+      dateRange: dateRange
+        ? { after: dateRange.after ?? undefined, before: dateRange.before ?? undefined }
+        : undefined,
     });
 
   // The picker's own options, scoped the same way the search itself is --
@@ -128,7 +138,10 @@ export function SearchPage() {
 
   // A search result carries no account/folder context for opening -- it's
   // resolved from the message itself, then handed to the mail view's own
-  // selection atoms exactly like the old search page did.
+  // selection atoms exactly like the old search page did. Navigating with
+  // the fully-formed URL (rather than a bare "/") means the mail view's
+  // own url-sync effect finds its cold-read already matching these atoms
+  // on mount, and does not push a second history entry on top of this one.
   const openResult = useMutation({
     mutationFn: (messageId: string) => api.mails.get(messageId),
     onSuccess: (mail) => {
@@ -139,7 +152,12 @@ export function SearchPage() {
       // ordinarily fetches -- this centres its very first page on it
       // instead of the newest edge. See mail-list.tsx's own reveal step.
       setPendingAroundMailId({ id: mail.id, threadId: mail.thread_id });
-      router.push("/");
+      router.push(
+        buildMailUrl({
+          accountId: mail.account_id, isUnified: false,
+          unifiedFolder: null, folderId: mail.folder_id, messageId: mail.id,
+        }),
+      );
     },
   });
 
@@ -156,8 +174,10 @@ export function SearchPage() {
         searchAccountId ?? "all",
         (folderIds ?? []).slice().sort().join(","),
         semantic ? strictness : [...fields].sort().join(","),
+        sort,
+        dateRange?.after ?? "", dateRange?.before ?? "",
       ].join("|"),
-    [semantic, query, searchAccountId, folderIds, strictness, fields],
+    [semantic, query, searchAccountId, folderIds, strictness, fields, sort, dateRange],
   );
 
   // --- Scroll position restore-and-hold (SKILL.md) ---
@@ -319,6 +339,36 @@ export function SearchPage() {
 
       <div className="flex flex-wrap items-center gap-3">
         <FolderPicker selectedIds={folderIds} onChange={setFolderIds} accountId={searchAccountId} />
+
+        <DateRangePicker
+          value={dateRange}
+          onChange={setDateRange}
+          accountId={searchAccountId}
+          folderIds={folderIds}
+        />
+
+        <div className="flex gap-1" data-testid="search-sort-mode">
+          <button
+            type="button"
+            onClick={() => setSort("relevance")}
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-xs",
+              sort === "relevance" ? "border-primary bg-primary/10" : "text-muted-foreground",
+            )}
+          >
+            Best match
+          </button>
+          <button
+            type="button"
+            onClick={() => setSort("chronological")}
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-xs",
+              sort === "chronological" ? "border-primary bg-primary/10" : "text-muted-foreground",
+            )}
+          >
+            Newest first
+          </button>
+        </div>
 
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           <Switch checked={semantic} onCheckedChange={setSemantic} />

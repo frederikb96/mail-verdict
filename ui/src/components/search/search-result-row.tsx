@@ -11,9 +11,15 @@
 
 import { Star } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { extractEmail, formatRelativeDate, extractSenderName } from "@/lib/format";
+import {
+  extractEmail,
+  formatRelativeDate,
+  formatRecipientList,
+  extractSenderName,
+} from "@/lib/format";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
+import { useAccounts } from "@/hooks/use-accounts";
 import type { SearchResultItem } from "@/hooks/use-search";
 
 /**
@@ -44,6 +50,17 @@ export function SearchResultRow({ result, onOpen }: SearchResultRowProps) {
   const senderEmail = extractEmail(result.from_addr).toLowerCase();
   const photoUrl = photoIndex?.by_email[senderEmail]?.photo_url ?? null;
 
+  // Cached once across every row (TanStack Query, not one request per
+  // row) -- the account label is only worth showing at all once more
+  // than one account exists to tell apart; with a single account it
+  // would say nothing a reader doesn't already know.
+  const { data: accounts } = useAccounts();
+  const accountName =
+    (accounts?.length ?? 0) > 1
+      ? (accounts?.find((a) => a.id === result.account_id)?.name ?? null)
+      : null;
+  const recipients = formatRecipientList(result.to_addrs);
+
   return (
     <button
       type="button"
@@ -67,6 +84,11 @@ export function SearchResultRow({ result, onOpen }: SearchResultRowProps) {
           {result.is_flagged && (
             <Star className="h-3 w-3 shrink-0 fill-amber-400 text-amber-400" />
           )}
+          {accountName && (
+            <span className="shrink-0 truncate rounded-full border px-1.5 py-0 text-[10px] text-muted-foreground">
+              {accountName}
+            </span>
+          )}
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {formatRelativeDate(result.received_at)}
           </span>
@@ -79,6 +101,9 @@ export function SearchResultRow({ result, onOpen }: SearchResultRowProps) {
         >
           {result.subject || "(no subject)"}
         </span>
+        {recipients && (
+          <span className="truncate text-xs text-muted-foreground">To: {recipients}</span>
+        )}
         {result.snippet && (
           <span className="truncate text-xs text-muted-foreground">
             {renderSnippet(result.snippet)}

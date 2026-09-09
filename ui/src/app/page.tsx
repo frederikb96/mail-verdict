@@ -8,14 +8,32 @@ import {
 import { BulkPanel } from "@/components/mail/bulk-panel";
 import { MailList } from "@/components/mail/mail-list";
 import { ReadingPane } from "@/components/mail/reading-pane";
+import { ClientOnly } from "@/components/client-only";
 import { useSelection } from "@/hooks/use-selection";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useMailUrlSync } from "@/hooks/use-mail-url-sync";
 import { useAtomValue, useSetAtom } from "jotai";
 import { requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
 import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export default function MailPage() {
+  return (
+    <ClientOnly>
+      <MailView />
+    </ClientOnly>
+  );
+}
+
+/**
+ * useMailUrlSync() calls useSearchParams(), which next's static export
+ * refuses to prerender without a Suspense boundary -- ClientOnly above is
+ * that boundary here, the same reason calendar/page.tsx wraps
+ * CalendarPage the same way: nothing renders during the build's
+ * prerender pass, so useSearchParams() is never actually called then.
+ */
+function MailView() {
+  useMailUrlSync();
   const isMobile = useIsMobile();
   const selectedMailId = useAtomValue(selectedMailIdAtom);
   const requestSelectMail = useSetAtom(requestSelectMailAtom);
