@@ -154,7 +154,14 @@ class TestFolderDeletion:
 
         # Deletion is refused outright while a folder has not finished its
         # own first sync -- see folder_management.py's backfill guard.
-        wait_for_folder_synced(app_client, str(folder_account["id"]), "ToDelete")
+        # This class-scoped fixture has already created several other
+        # folders on this account by the time this test runs (Archive,
+        # Projects and its child, Duplicate) -- PostIMAP backfills one
+        # folder per account at a time, so ToDelete's own turn can sit
+        # well behind them in the queue.
+        wait_for_folder_synced(
+            app_client, str(folder_account["id"]), "ToDelete", timeout_s=120.0,
+        )
 
         # An unconfirmed DELETE reports the count rather than deleting --
         # the caller is expected to read it and repeat the call.
@@ -257,7 +264,10 @@ class TestFolderDeletion:
         ordered = app_client.get(f"/api/accounts/{account_id}/folder-order").json()
         assert any(f["imap_name"] == "Ephemeral" for f in ordered["folders"])
 
-        wait_for_folder_synced(app_client, account_id, "Ephemeral")
+        # By this point the fixture account already carries several other
+        # folders from earlier tests in this class -- see the same note on
+        # ToDelete above.
+        wait_for_folder_synced(app_client, account_id, "Ephemeral", timeout_s=120.0)
 
         deleted = app_client.delete(
             f"/api/folders/{folder_id}", params={"confirm_message_count": 0},
