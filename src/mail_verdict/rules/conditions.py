@@ -51,8 +51,8 @@ class ConditionEvaluator:
         - subject_matches / body_matches (regex)
         - sender_match (address or domain)
         - sender_domain (domain only)
-        - header_match(field, pattern)
-        - header_exists(field)
+        - header_match(field, pattern) -- field matched case-insensitively
+        - header_exists(field) -- field matched case-insensitively
         - size_gt / size_lt (bytes)
         - has_attachment (bool, optional type filter)
         - folder_is(name)
@@ -157,8 +157,13 @@ class ConditionEvaluator:
         return from_lower.endswith(f"@{value.lower()}")
 
     def _eval_header_match(self, value: dict[str, str], ctx: MailContext) -> bool:
-        """Match a specific header field against a regex pattern."""
-        header_field = value.get("field", "")
+        """Match a specific header field against a regex pattern.
+
+        The field name is matched case-insensitively -- raw_headers is
+        always lower-cased at the source (message_view.py's own load), so
+        a rule naming "From" would otherwise silently match nothing
+        against a header dict that only ever holds "from"."""
+        header_field = str(value.get("field", "")).lower()
         pattern = value.get("pattern", "")
         header_value = str(ctx.raw_headers.get(header_field, ""))
         try:
@@ -168,8 +173,9 @@ class ConditionEvaluator:
             return False
 
     def _eval_header_exists(self, value: str, ctx: MailContext) -> bool:
-        """Check if a header field exists."""
-        return value in ctx.raw_headers
+        """Check if a header field exists -- field name matched
+        case-insensitively, the same reason _eval_header_match is."""
+        return str(value).lower() in ctx.raw_headers
 
     def _eval_size_gt(self, value: int, ctx: MailContext) -> bool:
         """Check if mail size exceeds threshold in bytes."""

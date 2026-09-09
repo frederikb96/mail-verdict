@@ -25,7 +25,7 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -224,6 +224,9 @@ class PipelineRunner:
             self._db, view, outcome.effects, apply=False,
             folders=ctx.folders, event_ring=None, stage_id=stage_def.stage_id,
         )
+        # Same combination _execute_run's own loop makes -- a stage tested
+        # here alone should report the same halt value a real run would.
+        outcome = replace(outcome, halt=stage_def.halt or outcome.halt)
         return _trace_entry(stage_def, outcome, applied=applied)
 
     def _pipeline_settings(self) -> dict[str, Any]:
@@ -344,6 +347,13 @@ class PipelineRunner:
                 self._db, view, outcome.effects, apply=apply_writes,
                 folders=ctx.folders, event_ring=self._event_ring, stage_id=stage_def.stage_id,
             )
+            # stage_def.halt is the persisted per-stage config a person sets
+            # in the pipeline editor; outcome.halt is a stage halting on its
+            # own initiative (nothing sets it today, but the field exists
+            # for one that might). Combined once, here, so the trace this
+            # run reports and the break decision this loop actually makes
+            # can never disagree about which stage halted it.
+            outcome = replace(outcome, halt=stage_def.halt or outcome.halt)
             trace.append(_trace_entry(stage_def, outcome, applied=applied))
             ctx = ctx.with_trace_entry(outcome)
             ctx = _project_verdict(ctx, outcome, applied)
