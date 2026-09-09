@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
 import { ArrowLeft, FileEdit, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,11 @@ import { parseQuotedMessageAttrs } from "@/components/mail/editor/quoted-message
 import { useMessageQuote } from "@/hooks/use-mails";
 import { useIdentities } from "@/hooks/use-identities";
 import { matchIdentity } from "@/lib/identities";
+import {
+  activeReplyDirtyForThreadIdAtom,
+  blockedMailSelectionAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
 import type { MessageDetail } from "@/types/api";
 
 interface DraftEditorProps {
@@ -65,7 +71,49 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
   const [confirming, setConfirming] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
 
+  const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
+  // Set by requestSelectMailAtom (lib/atoms.ts) when this editor's own
+  // dirty flag blocked a navigation elsewhere -- a row click, a folder
+  // switch, a keyboard shortcut -- the same guard ReplyBox registers for
+  // an in-progress reply. Without it, reopening a draft was the one
+  // other place in the app a composer's own content could be discarded
+  // by clicking away with no prompt at all.
+  const blockedMailSelection = useAtomValue(blockedMailSelectionAtom);
+  const setBlockedMailSelection = useSetAtom(blockedMailSelectionAtom);
+  const setSelectedMailId = useSetAtom(selectedMailIdAtom);
+
+  useEffect(() => {
+    setActiveReplyDirtyForThreadId(isDirty ? mail.thread_id : null);
+    if (!isDirty) {
+      setBlockedMailSelection(undefined);
+    }
+  }, [isDirty, mail.thread_id, setActiveReplyDirtyForThreadId, setBlockedMailSelection]);
+
   const attemptBack = () => (isDirty ? setConfirming(true) : onDone());
+
+  // Resolves whatever navigation this editor's own dirty flag was
+  // holding up -- a click elsewhere advances to it, otherwise this
+  // falls back to the ordinary "done editing this draft" the Back
+  // button and a successful send/save both mean. Passed to ComposeForm
+  // as its own onDone, not the raw prop, so a save or send completing
+  // while a selection is blocked lands there instead of just closing
+  // the editor out from under it.
+  const advance = () => {
+    if (blockedMailSelection !== undefined) {
+      setSelectedMailId(blockedMailSelection);
+      setBlockedMailSelection(undefined);
+    } else {
+      onDone();
+    }
+  };
+
+  const discard = () => {
+    setConfirming(false);
+    // A submit already clears its own recovery buffer -- this is what
+    // makes an explicit discard clear the one case it does not cover.
+    controlsRef.current?.clearRecovery();
+    advance();
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -95,7 +143,7 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
             inReplyTo={mail.in_reply_to ?? undefined}
             references={mail.references ?? undefined}
             replacesMessageId={mail.id}
-            onDone={onDone}
+            onDone={advance}
             onDirtyChange={setIsDirty}
             onControlsReady={(controls) => {
               controlsRef.current = controls;
@@ -104,16 +152,14 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
         )}
       </div>
       <DiscardChangesDialog
-        open={confirming}
-        onOpenChange={setConfirming}
-        onDiscard={() => {
-          setConfirming(false);
-          // A submit already clears its own recovery buffer -- this is
-          // what makes an explicit discard clear the one case it does
-          // not cover.
-          controlsRef.current?.clearRecovery();
-          onDone();
+        open={confirming || (isDirty && blockedMailSelection !== undefined)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setConfirming(false);
+            setBlockedMailSelection(undefined);
+          }
         }}
+        onDiscard={discard}
         onSaveDraft={() => {
           setConfirming(false);
           controlsRef.current?.saveDraft();

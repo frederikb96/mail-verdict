@@ -560,6 +560,98 @@ class TestDraftReopenPreservesTheQuote:
         )
 
 
+class TestNavigatingAwayFromADirtyDraftPrompts:
+    """A reopened draft is the one other composer in this app -- the same
+    dirty-navigation guard ReplyBox registers for an in-progress reply
+    was missing here, so switching folders while editing a reopened
+    draft used to discard it with no prompt at all."""
+
+    def test_switching_folders_with_a_dirty_reopened_draft_prompts(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        drafts_folder: dict[str, Any],
+    ) -> None:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        stem = uuid.uuid4()
+        original_subject = f"UI draft-guard original {stem}"
+        draft_subject = f"Re: {original_subject}"
+        message = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"],
+            subject=original_subject, message_id=f"<{uuid.uuid4()}@example.com>",
+            body="Body for the draft-guard test.",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+
+        def _find_original() -> dict[str, Any] | None:
+            resp = api_client.get(
+                f"/api/accounts/{editor_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            return next(
+                (m for m in resp.json()["messages"] if m["subject"] == original_subject), None,
+            )
+
+        original = wait_for(_find_original, description=f"{original_subject!r} synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, original["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply, saved as a draft.")
+        expect(body).to_contain_text("A reply, saved as a draft.")
+
+        page.get_by_role("button", name="Save draft", exact=True).click()
+        expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
+
+        _trigger_sync(api_client, editor_account["id"])
+        draft = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, editor_account["id"], drafts_folder["id"])
+                 if m["subject"] == draft_subject), None,
+            ),
+            timeout_s=60.0, description=f"Draft {draft_subject!r} synced into Drafts",
+        )
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        _open_folder(page, drafts_folder)
+        mail_row(page, draft["id"]).click()
+        expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type(" More, not yet saved.")
+        expect(body).to_contain_text("More, not yet saved.")
+
+        # Switching folders is the same "leaves the current view" action
+        # a row click or a keyboard shortcut is -- all of it used to
+        # silently unmount this editor with the new text still in it.
+        _open_folder(page, inbox_folder)
+        confirm = page.get_by_role("dialog", name="Save this message?")
+        expect(confirm).to_be_visible(timeout=10_000)
+
+        confirm.get_by_role("button", name="Cancel", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        expect(page.get_by_text("Editing draft")).to_be_visible()
+        expect(body).to_contain_text("More, not yet saved.")
+
+        _open_folder(page, inbox_folder)
+        expect(confirm).to_be_visible(timeout=10_000)
+        confirm.get_by_role("button", name="Discard", exact=True).click()
+        expect(confirm).not_to_be_visible()
+        expect(page.get_by_text("Editing draft")).to_have_count(0)
+
+
 @pytest.fixture(scope="module")
 def identity_account(
     api_client: httpx.Client, dovecot_endpoint: tuple[str, int, int],
