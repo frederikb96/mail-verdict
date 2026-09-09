@@ -933,3 +933,83 @@ class TestTrashingAnOlderThreadMessageKeepsAnInProgressReply:
 
         # Left as found, for whatever else in this module runs after it.
         page.get_by_role("switch", name="Group by conversation").click()
+
+
+class TestBulkActionKeepsAnInProgressReply:
+    def test_a_bulk_action_covering_the_open_message_returns_to_it_afterward(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """Checking a second row replaces the reading pane with the bulk
+        panel regardless -- that part is not in question. What the bulk
+        path got wrong is what happens once the panel goes away again: the
+        single-message action path already keeps the selection on a
+        message whose reply is dirty rather than clearing it, and the bulk
+        path carried a comment claiming the same reasoning while never
+        actually checking anything -- so the reading pane came back empty
+        instead of reopening the very message the reply belongs to."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        stem = uuid.uuid4()
+        target_subject = f"UI bulk-keeps-reply target {stem}"
+        other_subject = f"UI bulk-keeps-reply other {stem}"
+        for subject in (target_subject, other_subject):
+            message = build_eml(
+                sender="sender@example.com", recipient=editor_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+                body="Body for the bulk-keeps-reply test.",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=editor_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, editor_account["id"], inbox_folder["id"])
+                if m["subject"] in (target_subject, other_subject)
+            ]
+            return found if len(found) == 2 else None
+
+        targets = wait_for(
+            _find_all, description="both bulk-keeps-reply messages synced into INBOX",
+        )
+        target = next(m for m in targets if m["subject"] == target_subject)
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, target["id"]).click()
+        expect(page.get_by_role("heading", name=target_subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply worth keeping.")
+        expect(body).to_contain_text("A reply worth keeping.")
+
+        rows = [mail_row(page, m["id"]) for m in targets]
+        for row in rows:
+            expect(row).to_be_visible(timeout=15_000)
+        rows[0].hover()
+        for row in rows:
+            row.get_by_role("checkbox").click()
+
+        page.get_by_role("toolbar", name="Bulk actions").get_by_role(
+            "button", name="Move to trash", exact=True,
+        ).click()
+        for row in rows:
+            expect(row).not_to_be_visible(timeout=10_000)
+
+        # The bulk panel replacing the reading pane while both rows were
+        # checked is expected; the selection clearing once the action
+        # settles brings the reading pane back, and it must point at the
+        # same message rather than showing nothing.
+        expect(page.get_by_role("heading", name=target_subject, exact=True)).to_be_visible(
+            timeout=15_000,
+        )

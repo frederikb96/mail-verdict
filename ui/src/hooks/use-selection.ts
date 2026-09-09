@@ -17,7 +17,7 @@ import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import { ACTION_LABELS, UNDOABLE_ACTIONS, updateFolderCounts } from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
-import { selectedMailIdAtom } from "@/lib/atoms";
+import { activeReplyDirtyForThreadIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 import {
   EMPTY_SELECTION,
   extendRange,
@@ -220,8 +220,11 @@ export function useBulkAction() {
   const state = useAtomValue(effectiveSelectionAtom);
   const clearSelection = useClearSelection();
   // Same reasoning as useMailAction: a bulk action that carries the open
-  // message out of its folder must not leave the reading pane pointed at it.
+  // message out of its folder must not leave the reading pane pointed at it
+  // -- except when a reply or forward against that message's own thread is
+  // still dirty, the same guard useMailAction's single-message path applies.
   const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
+  const activeReplyDirtyForThreadId = useAtomValue(activeReplyDirtyForThreadIdAtom);
   const { push: pushToast } = useToast();
 
   const mutation = useMutation({
@@ -258,8 +261,18 @@ export function useBulkAction() {
       const removesFromList = ["move", "trash", "expunge", "archive", "spam"].includes(action);
       const explicitIds = state.predicate ? null : new Set(state.included.keys());
 
+      // Matched on the thread rather than requiring the open message
+      // itself to be the reply's source -- same reasoning useMailAction's
+      // own hasDirtyReply carries.
+      const selectedThreadId = selectedMailId
+        ? qc.getQueryData<{ thread_id?: string }>(["mail", selectedMailId])?.thread_id
+        : undefined;
+      const hasDirtyReply =
+        selectedThreadId != null && selectedThreadId === activeReplyDirtyForThreadId;
+
       const wasSelected =
         removesFromList &&
+        !hasDirtyReply &&
         selectedMailId != null &&
         (state.predicate
           ? qc.getQueryData<{ folder_id?: string }>(["mail", selectedMailId])?.folder_id ===

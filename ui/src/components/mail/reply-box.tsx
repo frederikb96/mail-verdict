@@ -51,18 +51,26 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const controlsRef = useRef<ComposeFormControls | null>(null);
   const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
 
-  // Read by useMailAction: while this is dirty, a "leaves folder" action
-  // taken on any message in this same thread from somewhere else (a
-  // row's own hover control, a keyboard shortcut) must not clear the
-  // open selection -- that would unmount this box along with it,
-  // discarding whatever was typed with no prompt at all. Keyed by thread
-  // rather than by source.id: the reading pane's own "open" message can
-  // be an older one the reader expanded within this thread, and trashing
-  // that one must not discard a reply against the newest either. Cleared
-  // on unmount too, so a stale id never outlives the box that set it.
+  // Read by useMailAction and useBulkAction: while this is dirty, a
+  // "leaves folder" action taken on any message in this same thread from
+  // somewhere else (a row's own hover control, a keyboard shortcut, a
+  // bulk selection covering it) must not clear the open selection --
+  // that would leave the reading pane pointed at nothing once whatever
+  // unmounted this box goes away again. Keyed by thread rather than by
+  // source.id: the reading pane's own "open" message can be an older one
+  // the reader expanded within this thread, and trashing that one must
+  // not discard a reply against the newest either.
+  //
+  // Deliberately no cleanup clearing this on unmount: checking a second
+  // row replaces the reading pane with the bulk panel, unmounting this
+  // box well before any bulk action runs, and a cleanup here would clear
+  // the flag before useBulkAction ever got to read it. isDirty flipping
+  // back to false -- reset()'s own doing, on save/discard/send -- is what
+  // actually resolves this, via the effect re-running with isDirty=false;
+  // a freshly mounted box's own first run (isDirty starting false) is
+  // what clears a stale value once the reading pane comes back.
   useEffect(() => {
     setActiveReplyDirtyForThreadId(isDirty ? source.thread_id : null);
-    return () => setActiveReplyDirtyForThreadId(null);
   }, [isDirty, source.thread_id, setActiveReplyDirtyForThreadId]);
 
   const { data: identities } = useIdentities(source.account_id);
