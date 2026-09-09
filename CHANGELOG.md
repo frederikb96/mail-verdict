@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- Archiving a message, or moving it into the spam folder, marks it read as it moves -- the toolbar
+  action and a drag-and-drop move alike. A setting turns this off.
+
 ### Alerts
 
 - A new-mail notification now waits for that message's pipeline run to finish filing it, and
