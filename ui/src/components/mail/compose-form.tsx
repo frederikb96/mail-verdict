@@ -27,6 +27,12 @@ import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { useCreateOutbox } from "@/hooks/use-outbox";
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
+import {
+  clearComposeRecovery,
+  composeRecoveryKey,
+  readComposeRecovery,
+  writeComposeRecovery,
+} from "@/lib/compose-recovery";
 import { cn } from "@/lib/utils";
 import type { OutboxCreateRequest } from "@/types/api";
 
@@ -42,6 +48,11 @@ export interface ComposeQuote {
  * button -- saving as a draft before actually closing. */
 export interface ComposeFormControls {
   saveDraft: () => void;
+  /** Drops this composer's local recovery buffer -- every host's own
+   * discard path calls this alongside whatever it already does, since a
+   * deliberate discard means there is nothing left to offer back. A
+   * successful send or save clears it on its own. */
+  clearRecovery: () => void;
 }
 
 interface ComposeFormProps {
@@ -127,6 +138,14 @@ export function ComposeForm({
   const [attachments, setAttachments] = useState<File[]>(initialAttachments);
   const [identityId, setIdentityId] = useState("");
   const [bodyDirty, setBodyDirty] = useState(false);
+  // Set the moment a recovered snapshot is applied -- restoring only the
+  // header fields could otherwise leave to/cc/bcc/subject identical to
+  // this composer's own defaults (nothing but the body changed), which
+  // isDirty's field comparison below would then read as clean even
+  // though there is a recovered body that still has nowhere durable to
+  // go until the reader acts on it again.
+  const [justRestored, setJustRestored] = useState(false);
+  const [recoveredBodyHtml, setRecoveredBodyHtml] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // A ref, not the mutation's own isPending: that is react-query's state as
   // of the last render, so two submits reaching this handler in the same
@@ -150,8 +169,11 @@ export function ComposeForm({
 
   const editorHandle = useRef<MailEditorHandle | null>(null);
 
+  // A recovered body wins over the server-provided one -- it can only
+  // exist if this exact composer was left dirty since, which is more
+  // recent than whatever the server currently holds.
   const initialHtml =
-    defaultBodyHtml ?? (quote ? `<p></p>${buildQuotedMessageHtml(quote)}` : "");
+    recoveredBodyHtml ?? defaultBodyHtml ?? (quote ? `<p></p>${buildQuotedMessageHtml(quote)}` : "");
 
   const initialSnapshot = useRef({
     to: defaultTo,
@@ -163,12 +185,62 @@ export function ComposeForm({
 
   const isDirty =
     bodyDirty ||
+    justRestored ||
     JSON.stringify(to) !== JSON.stringify(initialSnapshot.current.to) ||
     JSON.stringify(cc) !== JSON.stringify(initialSnapshot.current.cc) ||
     JSON.stringify(bcc) !== JSON.stringify(initialSnapshot.current.bcc) ||
     subject !== initialSnapshot.current.subject ||
     JSON.stringify(attachments.map((f) => f.name)) !==
       JSON.stringify(initialSnapshot.current.attachmentNames);
+
+  // Which local recovery slot this composer's own crash/reload/close-tab
+  // buffer lives in -- see compose-recovery.ts. Not `to`/`cc`/`bcc`
+  // themselves: those are exactly what a restore below would overwrite,
+  // and recomputing this from them would make the key move under its own
+  // feet the moment a recovery is applied.
+  const recoveryKey = composeRecoveryKey(replacesMessageId, inReplyTo);
+
+  useEffect(() => {
+    const recovered = readComposeRecovery(recoveryKey);
+    if (!recovered) return;
+    pushToast(
+      "Recovered unsaved text from an earlier session.",
+      "info",
+      0,
+      {
+        label: "Restore",
+        onClick: () => {
+          setTo(recovered.to);
+          setCc(recovered.cc);
+          setBcc(recovered.bcc);
+          if (recovered.cc.length > 0 || recovered.bcc.length > 0) setShowCcBcc(true);
+          setSubject(recovered.subject);
+          setRecoveredBodyHtml(recovered.bodyHtml);
+          setJustRestored(true);
+        },
+      },
+    );
+    // Deliberately mount-only -- recoveryKey does not change across this
+    // component's lifetime (it is derived from props that identify which
+    // composer this is, not from anything this effect itself writes).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sampled on an interval rather than debounced off a keystroke: the
+  // editor's own dirty flag flips true once and stays there, so nothing
+  // re-fires an effect keyed on it for every later keystroke the way a
+  // real debounce would need. Polling the live editor handle while dirty
+  // is simpler and just as effective for what this is protecting against.
+  useEffect(() => {
+    if (!isDirty) return;
+    const interval = setInterval(() => {
+      writeComposeRecovery(recoveryKey, {
+        to, cc, bcc, subject,
+        bodyHtml: editorHandle.current?.getHTML() ?? "",
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isDirty, recoveryKey, to, cc, bcc, subject]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -244,6 +316,7 @@ export function ComposeForm({
               "success",
             );
           }
+          clearComposeRecovery(recoveryKey);
           onDone();
         },
         onError: (err) => {
@@ -261,11 +334,17 @@ export function ComposeForm({
   submitRef.current = submit;
 
   useEffect(() => {
-    onControlsReady?.({ saveDraft: () => submitRef.current("draft") });
+    onControlsReady?.({
+      saveDraft: () => submitRef.current("draft"),
+      clearRecovery: () => clearComposeRecovery(recoveryKey),
+    });
     // onControlsReady is called once -- submitRef.current is always the
     // latest submit, so the host surface's close button never sends a
     // stale snapshot of the form even though this effect itself never
-    // re-runs.
+    // re-runs. recoveryKey does not change across this component's
+    // lifetime either, for the same reason the offer effect above does
+    // not depend on it changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (

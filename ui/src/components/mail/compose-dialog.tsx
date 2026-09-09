@@ -57,6 +57,9 @@ export function ComposeDialog() {
     setOpen(false);
     setComposeIntent(null);
     setIsDirty(false);
+    // A submit already clears its own recovery buffer -- this is what
+    // makes an explicit discard clear the one case it does not cover.
+    controlsRef.current?.clearRecovery();
   };
 
   return (

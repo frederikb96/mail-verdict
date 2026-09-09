@@ -115,6 +115,9 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     setQuoteHtml(null);
     setIsDirty(false);
     setMaximized(false);
+    // A submit already clears its own recovery buffer -- this is what
+    // makes an explicit discard clear the one case it does not cover.
+    controlsRef.current?.clearRecovery();
     // A discard or a successful save/send resolves whatever navigation
     // this box's own dirty flag was holding up -- advancing to it here,
     // not leaving the application stuck on a selection nothing moves.

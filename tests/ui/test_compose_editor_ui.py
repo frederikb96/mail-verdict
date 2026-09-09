@@ -393,6 +393,43 @@ class TestReplyQuoting:
         assert sent["thread_id"] == original_message["thread_id"]
 
 
+class TestComposeRecoveryBuffer:
+    def test_typing_into_a_reply_then_reloading_offers_it_back(
+        self,
+        page: Page,
+        app_server: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        """There is no server-side draft autosave -- see compose-form.tsx
+        for why -- so a crash, reload or closed tab relies entirely on a
+        local recovery buffer instead. Typing, then reloading, must offer
+        the text back rather than silently losing it."""
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("Recovered after a reload.")
+        expect(body).to_contain_text("Recovered after a reload.")
+
+        # The recovery buffer samples on an interval rather than on every
+        # keystroke -- give it time to actually persist before reloading.
+        page.wait_for_timeout(1500)
+
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        expect(
+            page.get_by_text("Recovered unsaved text from an earlier session.")
+        ).to_be_visible(timeout=10_000)
+        page.get_by_role("button", name="Restore", exact=True).click()
+
+        expect(page.get_by_test_id("mail-editor-body")).to_contain_text(
+            "Recovered after a reload.",
+        )
+
+
 class TestReplyQuoteDoesNotLeakImages:
     """A message from a sender who is not allowlisted shows no images when
     read -- replying to it must not be a stronger signal than opening it,
