@@ -26,11 +26,16 @@ import {
  * origin -- it carries no meaning beyond that. */
 export const WEEK_EPOCH = startOfWeek(new Date(2000, 0, 3), { weekStartsOn: 1 });
 
-/** The month scroller renders weeks in this closed range. ~3,700 weeks at a
- * 120px row is far under both browsers' element-size ceilings, so the whole
- * range renders as one absolutely-positioned spacer with no prepending. */
-export const WEEK_INDEX_MIN = -weeksBetween(WEEK_EPOCH, new Date(1990, 0, 1));
-export const WEEK_INDEX_MAX = weeksBetween(WEEK_EPOCH, new Date(2060, 11, 31));
+/** The month scroller renders weeks in this closed range. ~15,700 weeks at
+ * the 180px max row height is ~2.8M px, well under both browsers' known
+ * element-size ceilings (~33M px Chrome, ~17M px Firefox), so the whole
+ * range renders as one absolutely-positioned spacer with no prepending.
+ * The scrollbar itself is hidden on this view -- a thumb this fine-grained
+ * is a few pixels wide and unusable for dragging -- so the range is chosen
+ * for how far a person can reasonably reach by scrolling or by typing a
+ * date, not for how it would look as a scrollbar. */
+export const WEEK_INDEX_MIN = weeksBetween(WEEK_EPOCH, new Date(1900, 0, 1));
+export const WEEK_INDEX_MAX = weeksBetween(WEEK_EPOCH, new Date(2200, 11, 31));
 
 function weeksBetween(from: Date, to: Date): number {
   return differenceInCalendarWeeks(to, from, { weekStartsOn: 1 });
@@ -67,6 +72,20 @@ export function monthChunkKey(date: Date): string {
 export function monthChunksForWeek(index: number): string[] {
   const days = weekDays(index);
   return Array.from(new Set(days.map(monthChunkKey)));
+}
+
+/** Every month chunk key between two dates, inclusive of both ends'
+ * months. Shared by every range- or window-based event query so "which
+ * months does this span" has one definition. */
+export function monthsBetween(from: Date, to: Date): string[] {
+  const months: string[] = [];
+  const cursor = new Date(from.getFullYear(), from.getMonth(), 1);
+  const end = new Date(to.getFullYear(), to.getMonth(), 1);
+  while (cursor <= end) {
+    months.push(monthChunkKey(cursor));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return months;
 }
 
 /** ISO-8601 week number, for the gutter next to the month view. */
