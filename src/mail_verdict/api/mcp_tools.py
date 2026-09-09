@@ -81,6 +81,7 @@ from mail_verdict.api.schemas import (
     EventAttendeeIn,
     EventCreateRequest,
     EventDeleteRequest,
+    EventReminder,
     EventUpdateRequest,
     RespondRequest,
 )
@@ -208,7 +209,8 @@ async def list_mails(
 )
 async def get_mail(mail_id: str) -> dict[str, Any]:
     """
-    Get full email details by ID: subject, sender, recipients, body, flags.
+    Get full email details by ID: subject, sender, recipients, body, flags,
+    attachments.
 
     Args:
         mail_id: Message UUID
@@ -216,12 +218,16 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
     Returns:
         Full message content, or {"error": "Message not found"}
     """
+    from mail_verdict.api.deps import get_attachment_repo
+
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(select(Message).where(Message.id == uuid.UUID(mail_id)))
         msg = result.scalar_one_or_none()
     if msg is None:
         return {"error": "Message not found"}
+
+    attachments = await get_attachment_repo().get_by_message_id(msg.id)
 
     return {
         **_message_summary(msg),
@@ -232,6 +238,13 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
         "is_answered": msg.is_answered,
         "is_draft": msg.is_draft,
         "keywords": msg.keywords or [],
+        "attachments": [
+            {
+                "id": str(a.id), "filename": a.filename,
+                "content_type": a.content_type, "size_bytes": a.size_bytes,
+            }
+            for a in attachments
+        ],
     }
 
 
@@ -945,6 +958,15 @@ async def get_event(event_id: str, recurrence_id: str | None = None) -> dict[str
     return instance.model_dump(mode="json")
 
 
+def _event_reminders(reminders: list[dict[str, Any]] | None) -> list[EventReminder] | None:
+    if reminders is None:
+        return None
+    return [
+        EventReminder(offset_minutes=r.get("offset_minutes"), at=r.get("at"))
+        for r in reminders
+    ]
+
+
 @mcp.tool(
     name="create_event",
     annotations={
@@ -966,6 +988,8 @@ async def create_event(
     rrule: str | None = None,
     tz: str | None = None,
     attendee_emails: list[str] | None = None,
+    reminders: list[dict[str, Any]] | None = None,
+    transparency: str | None = None,
 ) -> dict[str, Any]:
     """
     Create an event. With attendees, the calendar needs a linked identity
@@ -990,6 +1014,14 @@ async def create_event(
             only the zone they resolve against changes. Not valid with
             all_day, which has no time-of-day to bind
         attendee_emails: Email addresses to invite, optional
+        reminders: [{"offset_minutes": int, "at": None} | {"offset_minutes":
+            None, "at": str}, ...], optional -- exactly one of the two set
+            per entry. offset_minutes follows iCalendar's own sign
+            convention (negative before the start, positive after);
+            omitting this leaves the calendar's own default reminder
+            (if any) to apply instead
+        transparency: "opaque" (busy, the default) or "transparent"
+            (free) -- whether this event blocks free/busy time, optional
 
     Returns:
         The created event instance, or {"error": ...} on failure -- e.g.
@@ -1003,6 +1035,8 @@ async def create_event(
         attendees=(
             [EventAttendeeIn(email=e) for e in attendee_emails] if attendee_emails else None
         ),
+        reminders=_event_reminders(reminders),
+        transparency=transparency,  # type: ignore[arg-type]
     )
     try:
         instance = await _create_calendar_event(request)
@@ -1033,6 +1067,8 @@ async def update_event(
     rrule: str | None = None,
     scope: str = "all",
     recurrence_id: str | None = None,
+    reminders: list[dict[str, Any]] | None = None,
+    transparency: str | None = None,
 ) -> dict[str, Any]:
     """
     Edit an event. Fields left unset are unchanged. scope="all" edits the
@@ -1054,6 +1090,11 @@ async def update_event(
         rrule: New raw RRULE value, or "" to remove recurrence -- scope="all" only
         scope: "this" or "all" (default)
         recurrence_id: Required with scope="this"
+        reminders: New whole list of [{"offset_minutes": int, "at": None}
+            | {"offset_minutes": None, "at": str}, ...], replacing every
+            existing reminder -- pass an empty list to remove them all,
+            omit to leave unchanged
+        transparency: New "opaque" (busy) or "transparent" (free), optional
 
     Returns:
         The updated event instance, or {"error": ...} on failure
@@ -1064,6 +1105,8 @@ async def update_event(
         all_day=all_day, location=location, description=description, rrule=rrule,
         scope=scope,  # type: ignore[arg-type]
         recurrence_id=recurrence_id,
+        reminders=_event_reminders(reminders),
+        transparency=transparency,  # type: ignore[arg-type]
     )
     try:
         instance = await _update_calendar_event(uuid.UUID(event_id), request)

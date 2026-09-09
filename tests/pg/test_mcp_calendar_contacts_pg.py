@@ -164,6 +164,54 @@ class TestCalendarTools:
         )
         assert "error" in result.data
 
+    @pytest.mark.asyncio
+    async def test_reminders_and_transparency_round_trip(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Both fields went in through the REST API and the browser
+        without a matching tool-layer parameter -- an agent could create
+        an event but never set a reminder or mark it free rather than
+        busy."""
+        async with migrated_db.session() as session:
+            _dav_account_id, collection_id = await _seed_calendar(session)
+            await session.commit()
+
+        created = await mcp_client.call_tool(
+            "create_event",
+            {
+                "calendar_id": str(collection_id), "summary": "Dentist",
+                "dtstart": "2026-09-10T10:00:00+00:00", "dtend": "2026-09-10T11:00:00+00:00",
+                "reminders": [{"offset_minutes": -30}],
+                "transparency": "transparent",
+            },
+        )
+        event = created.data
+        assert "error" not in event, event
+        assert event["reminders"] == [{"offset_minutes": -30, "at": None}]
+        assert event["transparency"] == "transparent"
+        object_id = event["object_id"]
+
+        updated = await mcp_client.call_tool(
+            "update_event",
+            {
+                "event_id": object_id,
+                "reminders": [{"offset_minutes": -15}, {"offset_minutes": -60}],
+                "transparency": "opaque",
+            },
+        )
+        assert updated.data["reminders"] == [
+            {"offset_minutes": -15, "at": None}, {"offset_minutes": -60, "at": None},
+        ]
+        assert updated.data["transparency"] == "opaque"
+
+        # An empty list is a real instruction (remove every reminder),
+        # distinct from omitting the field entirely (leave unchanged).
+        cleared = await mcp_client.call_tool(
+            "update_event", {"event_id": object_id, "reminders": []},
+        )
+        assert cleared.data["reminders"] == []
+        assert cleared.data["transparency"] == "opaque"  # left alone, not reset
+
 
 class TestContactTools:
     @pytest.mark.asyncio
