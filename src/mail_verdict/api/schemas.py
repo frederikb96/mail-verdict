@@ -325,6 +325,15 @@ class SearchResponse(BaseModel):
     total: int
 
 
+class SearchDateBoundsResponse(BaseModel):
+    """The oldest and newest received_at across a search scope, with no
+    query of its own -- what the date-range control draws its axis from.
+    Both None when the scope has no dated message at all."""
+
+    oldest: datetime | None = None
+    newest: datetime | None = None
+
+
 # --- Account schemas ---
 
 

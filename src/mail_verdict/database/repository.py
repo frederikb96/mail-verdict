@@ -11,14 +11,14 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import Text, and_, case, cast, delete, desc, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from mail_verdict.core.cursor import after_tier_cursor
+from mail_verdict.core.cursor import after_cursor, after_tier_cursor
 from mail_verdict.database.models import (
     Account,
     AccountPrefs,
@@ -291,6 +291,11 @@ class FolderPrefsRepository:
 # in either the name or the address of any recipient, without unnesting.
 SEARCH_FIELDS = frozenset({"subject", "from", "to", "body"})
 
+# "relevance" (field tier then date, the historical and still-default
+# behaviour) or "chronological" (date alone, ignoring tier entirely) --
+# see search_messages for what each does to the ORDER BY and the cursor.
+SearchSort = Literal["relevance", "chronological"]
+
 
 def _ilike_escape(token: str) -> str:
     """Escape ILIKE's own wildcards in raw user input before wrapping it
@@ -421,6 +426,9 @@ def _build_candidate_query(
     tokens: list[str],
     folder_ids: Sequence[uuid.UUID] | None,
     fields: frozenset[str],
+    *,
+    received_after: datetime | None = None,
+    received_before: datetime | None = None,
 ) -> tuple[Any, Any] | None:
     """The primary-recall candidate set: tsquery-matched rows (subject,
     from_addr and body_text -- what search_vector covers) UNIONed with an
@@ -432,6 +440,13 @@ def _build_candidate_query(
     The union is wrapped in a subquery and re-aliased onto Message so a
     caller can layer the per-field restriction and the tier computation
     on top of one thing, the same shape whether or not the union ran.
+
+    received_after/received_before narrow the candidate set itself (both
+    branches of the union alike) rather than being applied to the page
+    returned -- a message with no Date header (received_at IS NULL) never
+    matches either bound, the same choice search's NULLS LAST ordering
+    already makes for a dateless message: nothing to compare a range
+    against, so it is excluded rather than assumed in or out of range.
 
     Returns:
         (subquery, aliased Message), or None when the query has no
@@ -447,6 +462,10 @@ def _build_candidate_query(
         base = base.where(Message.account_id == account_id)
     if folder_ids is not None:
         base = base.where(Message.folder_id.in_(folder_ids))
+    if received_after is not None:
+        base = base.where(Message.received_at >= received_after)
+    if received_before is not None:
+        base = base.where(Message.received_at <= received_before)
 
     candidate_stmt: Any = base.where(primary)
     if "to" in fields:
@@ -724,31 +743,72 @@ class MessageRepository:
         async with self._db.session() as session:
             return await _resolve_lexemes(session, query)
 
-    async def resolve_search_cursor(
-        self, message_id: uuid.UUID, tokens: list[str],
-    ) -> tuple[datetime | None, uuid.UUID, int] | None:
+    async def search_date_bounds(
+        self,
+        account_id: uuid.UUID | None,
+        *,
+        folder_ids: Sequence[uuid.UUID] | None = None,
+    ) -> tuple[datetime | None, datetime | None]:
         """
-        (received_at, id, tier) for a keyset cursor row.
+        (oldest, newest) received_at across the given scope -- independent
+        of any query text, since the date-range control's own slider needs
+        an axis to draw before a word has been typed. Dateless messages
+        (received_at IS NULL) never affect either bound: MIN/MAX already
+        ignore NULL, the same way the range predicate itself excludes them.
 
-        search_messages orders by (tier, received_at, id), so a cursor
-        naming only the last row's id has to recover its tier too --
-        re-evaluated against the same tokens the search itself is using,
-        since tier depends on the query, not just the row.
+        Args:
+            account_id: Account scope, or None for every account
+            folder_ids: Restrict to these folders, or None for no restriction
+
+        Returns:
+            (None, None) when the scope has no dated messages at all
+        """
+        stmt = select(
+            func.min(Message.received_at), func.max(Message.received_at),
+        ).where(Message.expunged_at.is_(None))
+        if account_id is not None:
+            stmt = stmt.where(Message.account_id == account_id)
+        if folder_ids is not None:
+            stmt = stmt.where(Message.folder_id.in_(folder_ids))
+        async with self._db.session() as session:
+            row = (await session.execute(stmt)).one()
+            return (row[0], row[1])
+
+    async def resolve_search_cursor(
+        self, message_id: uuid.UUID, tokens: list[str], *, sort: SearchSort = "relevance",
+    ) -> tuple[datetime | None, uuid.UUID, int | None] | None:
+        """
+        (received_at, id, tier) for a keyset cursor row -- tier only in
+        "relevance" mode, since that is the only mode search_messages
+        orders by it at all; a chronological cursor needs nothing but the
+        two ordinary keyset columns, so tier is None rather than computed
+        and then ignored.
 
         Args:
             message_id: The cursor row (GET /api/search's `before`)
             tokens: This search's tokens, from tokenize()
+            sort: The mode the cursor is being resolved for -- must match
+                the mode the page it continues was fetched under; see
+                search_messages, which never mixes the two.
 
         Returns:
             None if the message does not exist (an invalid cursor)
         """
         async with self._db.session() as session:
-            tier = _match_tier(Message, tokens)
-            stmt = select(Message.received_at, Message.id, tier).where(Message.id == message_id)
+            if sort == "relevance":
+                tier = _match_tier(Message, tokens)
+                stmt = select(Message.received_at, Message.id, tier).where(
+                    Message.id == message_id
+                )
+                row = (await session.execute(stmt)).one_or_none()
+                if row is None:
+                    return None
+                return (row[0], row[1], row[2])
+            stmt = select(Message.received_at, Message.id).where(Message.id == message_id)
             row = (await session.execute(stmt)).one_or_none()
             if row is None:
                 return None
-            return (row[0], row[1], row[2])
+            return (row[0], row[1], None)
 
     async def count_search_candidates(
         self,
@@ -757,19 +817,27 @@ class MessageRepository:
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
         fields: frozenset[str] = SEARCH_FIELDS,
+        received_after: datetime | None = None,
+        received_before: datetime | None = None,
     ) -> int:
         """
         An exact count over the same candidate predicate search_messages
         pages through -- computed once, not by summing pages, so the
-        number a person sees does not move as they scroll.
+        number a person sees does not move as they scroll. Sort mode
+        never affects the candidate set, only its order, so this takes
+        no sort argument.
 
         Args:
             account_id, tokens, folder_ids, fields: As in search_messages
+            received_after, received_before: As in search_messages
 
         Returns:
             0 when tokens has no lexemes at all
         """
-        built = _build_candidate_query(account_id, tokens, folder_ids, fields)
+        built = _build_candidate_query(
+            account_id, tokens, folder_ids, fields,
+            received_after=received_after, received_before=received_before,
+        )
         if built is None:
             return 0
         _sub, msg = built
@@ -785,6 +853,9 @@ class MessageRepository:
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
         fields: frozenset[str] = SEARCH_FIELDS,
+        sort: SearchSort = "relevance",
+        received_after: datetime | None = None,
+        received_before: datetime | None = None,
         cursor_received_at: datetime | None = None,
         cursor_id: uuid.UUID | None = None,
         cursor_tier: int | None = None,
@@ -792,7 +863,8 @@ class MessageRepository:
     ) -> list[tuple[Message, str | None, int]]:
         """
         Field- and folder-scoped search, ranked by field tier then newest
-        first, keyset-paged.
+        first (sort="relevance") or by date alone (sort="chronological"),
+        keyset-paged.
 
         The recall stage is a prefix-AND tsquery over search_vector
         (subject, from_addr and body_text -- what PostIMAP's generated
@@ -815,7 +887,15 @@ class MessageRepository:
         folder_ids is enforced here, in the query itself -- a caller
         filtering the returned page instead would silently turn a scoped
         search into an unscoped one with a smaller page, and would make
-        keyset pagination lose rows across page boundaries.
+        keyset pagination lose rows across page boundaries. Same reason
+        received_after/received_before narrow the candidate query rather
+        than filtering the page.
+
+        sort="chronological" drops tier from both the ORDER BY and the
+        keyset predicate entirely -- a cursor produced under one mode is
+        never valid to continue under the other, matching every other
+        search-page control already: changing scope restarts pagination
+        from scratch rather than reusing a cursor.
 
         A query with no lexemes at all (tokens == []) returns no rows --
         the caller (GET /api/search) is expected to have already checked
@@ -827,16 +907,27 @@ class MessageRepository:
             tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
             fields: Which of "subject"/"from"/"to"/"body" to search
+            sort: "relevance" (tier then date, the default) or
+                "chronological" (date alone, ranking tier ignored)
+            received_after, received_before: Inclusive bounds on
+                received_at; a message with no Date header matches
+                neither and is excluded once either bound is given
             cursor_received_at, cursor_id, cursor_tier: Keyset cursor, from
-                resolve_search_cursor
+                resolve_search_cursor under the same sort mode
             limit: Max rows
 
         Returns:
-            (Message, snippet, tier) triples ordered (tier ASC,
-            received_at DESC NULLS LAST, id DESC). snippet is None only
-            when the matched text was empty.
+            (Message, snippet, tier) triples. In "relevance" mode ordered
+            (tier ASC, received_at DESC NULLS LAST, id DESC); in
+            "chronological" mode ordered (received_at DESC NULLS LAST, id
+            DESC) and tier is still returned (for display) but plays no
+            part in the order. snippet is None only when the matched text
+            was empty.
         """
-        built = _build_candidate_query(account_id, tokens, folder_ids, fields)
+        built = _build_candidate_query(
+            account_id, tokens, folder_ids, fields,
+            received_after=received_after, received_before=received_before,
+        )
         if built is None:
             return []
         _sub, msg = built
@@ -845,19 +936,33 @@ class MessageRepository:
             field_pred = _field_predicate(msg, tokens, fields)
             tier = _match_tier(msg, tokens)
 
-            stmt = (
-                select(msg, tier.label("tier"))
-                .where(field_pred)
-                .order_by(tier, desc(msg.received_at).nulls_last(), desc(msg.id))
-            )
-            if cursor_id is not None:
-                stmt = stmt.where(
-                    after_tier_cursor(
-                        tier, msg.received_at, msg.id,
-                        cursor_tier if cursor_tier is not None else 0,
-                        cursor_received_at, cursor_id,
-                    )
+            if sort == "chronological":
+                stmt = (
+                    select(msg, tier.label("tier"))
+                    .where(field_pred)
+                    .order_by(desc(msg.received_at).nulls_last(), desc(msg.id))
                 )
+                if cursor_id is not None:
+                    stmt = stmt.where(
+                        after_cursor(
+                            msg.received_at, msg.id,
+                            cursor_received_at, cursor_id, nulls_last=True,
+                        )
+                    )
+            else:
+                stmt = (
+                    select(msg, tier.label("tier"))
+                    .where(field_pred)
+                    .order_by(tier, desc(msg.received_at).nulls_last(), desc(msg.id))
+                )
+                if cursor_id is not None:
+                    stmt = stmt.where(
+                        after_tier_cursor(
+                            tier, msg.received_at, msg.id,
+                            cursor_tier if cursor_tier is not None else 0,
+                            cursor_received_at, cursor_id,
+                        )
+                    )
             stmt = stmt.limit(limit)
 
             result = await session.execute(stmt)
@@ -872,6 +977,8 @@ class MessageRepository:
         tokens: list[str],
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
+        received_after: datetime | None = None,
+        received_before: datetime | None = None,
         limit: int = 50,
     ) -> list[tuple[Message, str | None]]:
         """
@@ -880,11 +987,15 @@ class MessageRepository:
         (and only for the first page -- a cursor never reaches this).
         Body is deliberately never trigram-matched here, which is the
         18-second-per-query cost the tsquery path above exists to avoid.
+        Already newest-first with no tier of its own, so sort mode is not
+        a parameter here -- a chronological search misses this stage
+        exactly as often as a relevance one does.
 
         Args:
             account_id: Account scope, or None to search across every account
             tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
+            received_after, received_before: As in search_messages
             limit: Max rows
 
         Returns:
@@ -906,6 +1017,10 @@ class MessageRepository:
                 stmt = stmt.where(Message.account_id == account_id)
             if folder_ids is not None:
                 stmt = stmt.where(Message.folder_id.in_(folder_ids))
+            if received_after is not None:
+                stmt = stmt.where(Message.received_at >= received_after)
+            if received_before is not None:
+                stmt = stmt.where(Message.received_at <= received_before)
             stmt = (
                 stmt.where(*[_fallback_token_predicate(t) for t in tokens])
                 .order_by(desc(Message.received_at).nulls_last(), desc(Message.id))

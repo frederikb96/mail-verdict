@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import BigInteger, Column, DateTime, MetaData, Table, Text, Uuid, insert, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.api.search import search_messages
+from mail_verdict.api.search import search_date_bounds, search_messages
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.repository import FALLBACK_MATCH_TIER
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
@@ -605,6 +605,194 @@ class TestTotalCount:
         )
         assert len(page.results) == 2
         assert page.total == 5
+
+
+class TestSearchDateBounds:
+    """The date-range control's own axis -- oldest/newest received_at
+    across a scope, with no query text involved at all."""
+
+    @pytest.mark.asyncio
+    async def test_returns_oldest_and_newest_ignoring_dateless(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            await _seed_message(
+                session, account_id, inbox_id, uid=1, subject="a",
+                received_at=datetime(2025, 6, 1, tzinfo=UTC),
+            )
+            await _seed_message(
+                session, account_id, inbox_id, uid=2, subject="b",
+                received_at=datetime(2026, 3, 1, tzinfo=UTC),
+            )
+            undated = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO messages "
+                    "(id, account_id, folder_id, imap_uid, thread_id, message_id, "
+                    "subject, received_at) "
+                    "VALUES (:id, :account_id, :folder_id, 3, :thread_id, :msg_id, "
+                    "'c', NULL)"
+                ),
+                {
+                    "id": undated, "account_id": account_id, "folder_id": inbox_id,
+                    "thread_id": uuid.uuid4(), "msg_id": f"<{undated}@example.com>",
+                },
+            )
+            await session.commit()
+
+        bounds = await search_date_bounds(account_id=account_id, folder_ids=None)
+        assert bounds.oldest == datetime(2025, 6, 1, tzinfo=UTC)
+        assert bounds.newest == datetime(2026, 3, 1, tzinfo=UTC)
+
+    @pytest.mark.asyncio
+    async def test_empty_scope_returns_none_for_both(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, _junk_id = await _seed_account_two_folders(session)
+            await session.commit()
+
+        bounds = await search_date_bounds(account_id=account_id, folder_ids=None)
+        assert bounds.oldest is None
+        assert bounds.newest is None
+
+
+class TestSortMode:
+    """sort="chronological" drops tier from the ordering entirely -- a
+    message ranked worse by field tier but newer must come first, the
+    opposite of the default "relevance" ordering TestTierRanking proves."""
+
+    @pytest.mark.asyncio
+    async def test_chronological_ignores_tier_and_orders_by_date(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            older_subject_hit = await _seed_message(
+                session, account_id, inbox_id, uid=1,
+                subject="zzqsort report", body_text="unrelated",
+            )
+            newer_body_hit = await _seed_message(
+                session, account_id, inbox_id, uid=2,
+                subject="unrelated", body_text="the zzqsort appears here",
+            )
+            await session.commit()
+
+        relevance_page = await search_messages(
+            q="zzqsort", account_id=account_id, folder_ids=None,
+            fields=["subject", "body"], before=None, limit=50,
+        )
+        assert [r.id for r in relevance_page.results] == [older_subject_hit, newer_body_hit]
+
+        chronological_page = await search_messages(
+            q="zzqsort", account_id=account_id, folder_ids=None,
+            fields=["subject", "body"], before=None, limit=50, sort="chronological",
+        )
+        assert [r.id for r in chronological_page.results] == [newer_body_hit, older_subject_hit]
+
+    @pytest.mark.asyncio
+    async def test_paging_chronologically_visits_every_match_once(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            expected = {
+                await _seed_message(session, account_id, inbox_id, uid=i, subject="zzqchron")
+                for i in range(1, 6)
+            }
+            await session.commit()
+
+        seen: list[uuid.UUID] = []
+        cursor: uuid.UUID | None = None
+        for _ in range(20):
+            page = await search_messages(
+                q="zzqchron", account_id=account_id, folder_ids=None,
+                fields=["subject"], before=cursor, limit=2, sort="chronological",
+            )
+            seen.extend(r.id for r in page.results)
+            if not page.has_more:
+                break
+            assert page.next_cursor is not None
+            cursor = uuid.UUID(page.next_cursor)
+
+        assert set(seen) == expected
+        assert len(seen) == len(expected)
+
+
+class TestDateRangeFilter:
+    """received_after/received_before narrow the candidate set itself, and
+    a dateless message matches neither bound once either is given."""
+
+    @pytest.mark.asyncio
+    async def test_range_excludes_messages_outside_it(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            too_old = await _seed_message(
+                session, account_id, inbox_id, uid=1, subject="zzqrange",
+                received_at=datetime(2025, 1, 1, tzinfo=UTC),
+            )
+            in_range = await _seed_message(
+                session, account_id, inbox_id, uid=2, subject="zzqrange",
+                received_at=datetime(2026, 3, 1, tzinfo=UTC),
+            )
+            too_new = await _seed_message(
+                session, account_id, inbox_id, uid=3, subject="zzqrange",
+                received_at=datetime(2026, 6, 1, tzinfo=UTC),
+            )
+            await session.commit()
+
+        page = await search_messages(
+            q="zzqrange", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+            received_after=datetime(2026, 2, 1, tzinfo=UTC),
+            received_before=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        assert {r.id for r in page.results} == {in_range}
+        assert too_old not in {r.id for r in page.results}
+        assert too_new not in {r.id for r in page.results}
+        assert page.total == 1
+
+    @pytest.mark.asyncio
+    async def test_dateless_message_is_excluded_once_a_range_is_given(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            dated = await _seed_message(
+                session, account_id, inbox_id, uid=1, subject="zzqdateless",
+                received_at=datetime(2026, 3, 1, tzinfo=UTC),
+            )
+            undated = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO messages "
+                    "(id, account_id, folder_id, imap_uid, thread_id, message_id, "
+                    "subject, received_at) "
+                    "VALUES (:id, :account_id, :folder_id, 2, :thread_id, :msg_id, "
+                    "'zzqdateless', NULL)"
+                ),
+                {
+                    "id": undated, "account_id": account_id, "folder_id": inbox_id,
+                    "thread_id": uuid.uuid4(), "msg_id": f"<{undated}@example.com>",
+                },
+            )
+            await session.commit()
+
+        unranged = await search_messages(
+            q="zzqdateless", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+        )
+        assert {r.id for r in unranged.results} == {dated, undated}
+
+        ranged = await search_messages(
+            q="zzqdateless", account_id=account_id, folder_ids=None,
+            fields=["subject"], before=None, limit=50,
+            received_after=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        assert {r.id for r in ranged.results} == {dated}
 
 
 class TestKeysetAcrossTiers:
