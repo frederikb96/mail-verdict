@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Archiving a message, or moving it into the spam folder, marks it read as it moves -- the toolbar
   action and a drag-and-drop move alike. A setting turns this off.
+- An account can be given a Trash retention: mail sitting in Trash longer than that many days is
+  permanently removed by a periodic sweep, batched and logged. Off by default, per account.
 
 ### Alerts
 

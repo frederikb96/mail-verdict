@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Save, Loader2, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
+import { Save, Loader2, Archive, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -365,6 +365,24 @@ export function SettingsPage() {
         <SectionHeading>Mail</SectionHeading>
         <UnifiedOrder />
         <AlertSettings />
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Archive className="h-4 w-4" />
+              Filing and notifications
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {allSettings?.mail ? (
+              <CategorySettings category="mail" settings={allSettings.mail} />
+            ) : (
+              <div className="py-4 text-sm text-muted-foreground">
+                The server didn&apos;t return mail settings -- the interface and the server may be
+                running different versions.
+              </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
 
       <div id="calendar" className="flex flex-col gap-3">

@@ -182,6 +182,8 @@ export interface AccountResponse {
   emoji: string | null;
   spam_enabled: boolean;
   folder_order: string[] | null;
+  /** NULL is off -- no periodic Trash sweep runs for this account. */
+  trash_retention_days: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -197,6 +199,7 @@ export interface AccountCreateRequest {
   smtp_user?: string;
   smtp_password?: string;
   spam_enabled?: boolean;
+  trash_retention_days?: number | null;
 }
 
 /**
@@ -212,6 +215,7 @@ export interface AccountUpdateRequest {
   smtp_password?: string;
   is_active?: boolean;
   spam_enabled?: boolean;
+  trash_retention_days?: number | null;
 }
 
 export interface FolderResponse {
