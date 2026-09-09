@@ -7,18 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Mail
-
-- Deleting a folder is now refused while the account has a write the mail server has not yet
-  confirmed -- a bulk move whose real IMAP move is still queued had already reassigned the
-  mirror's folder_id before the folder holding those messages on the server could be deleted out
-  from under them. Wait for the pending write to finish, or acknowledge an existing
-  write-failure notification, and try again.
-- An account can now be given a Junk retention too, independently of Trash retention -- mail
-  sitting in Junk longer than its own configured period is permanently removed the same way
-  Trash already works, including the part that matters most: the clock runs from when a message
-  entered the folder, not from its own date, and leaving and returning starts it again.
-
 ## [5.6.0] - 2026-09-09
 
 ### Rules
@@ -46,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   folder unread, whichever way it got there. Rescuing one back out never marks it read.
 - The account switcher's order is no longer fixed: drag accounts into the order you want in
   Settings, and every place that lists accounts follows it.
+- Deleting a folder is now refused while the account has a write the mail server has not yet
+  confirmed -- a bulk move whose real IMAP move is still queued had already reassigned the
+  mirror's folder_id before the folder holding those messages on the server could be deleted out
+  from under them. Wait for the pending write to finish, or acknowledge an existing
+  write-failure notification, and try again.
+- An account can now be given a Junk retention too, independently of Trash retention -- mail
+  sitting in Junk longer than its own configured period is permanently removed the same way
+  Trash already works, including the part that matters most: the clock runs from when a message
+  entered the folder, not from its own date, and leaving and returning starts it again.
 
 ### Notifications
 
