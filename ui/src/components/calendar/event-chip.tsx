@@ -10,6 +10,7 @@
 import type { CSSProperties, MouseEvent, PointerEvent } from "react";
 import { AlertTriangle, Ban, Loader2, Repeat } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Truncate } from "@/components/ui/truncate";
 import { deriveEventLook } from "@/components/calendar/layout";
 import { resolveCalendarColor } from "@/components/calendar/colors";
 import type { Calendar, EventInstance } from "@/types/api";
@@ -99,7 +100,7 @@ export function EventChip({
       {timeLabel && variant !== "allday" && (
         <span className="shrink-0 font-medium opacity-80">{timeLabel}</span>
       )}
-      <span className="truncate">{event.summary || "(no title)"}</span>
+      <Truncate text={event.summary || "(no title)"} />
     </div>
   );
 }

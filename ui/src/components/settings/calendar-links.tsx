@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import { Code, Loader2, Save, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Truncate } from "@/components/ui/truncate";
 import {
   Combobox,
   ComboboxChip,
@@ -79,7 +80,7 @@ function IdentityLinkRow({
         invalid && "border-destructive bg-destructive/10",
       )}
     >
-      <span className="truncate text-sm font-medium">{row.identity_address}</span>
+      <Truncate text={row.identity_address} tail={12} className="text-sm font-medium" />
 
       <Combobox
         multiple

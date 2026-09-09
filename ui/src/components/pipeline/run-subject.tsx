@@ -1,5 +1,6 @@
 "use client";
 
+import { Truncate } from "@/components/ui/truncate";
 import { useMailDetail } from "@/hooks/use-mails";
 
 /**
@@ -18,14 +19,15 @@ export function RunSubject({
   const { data: mail, isError } = useMailDetail(messageId);
 
   if (!messageId || isError) {
-    return <span className="truncate text-muted-foreground">{msgKey}</span>;
+    return <Truncate text={msgKey} className="text-muted-foreground" />;
   }
   if (!mail) {
-    return <span className="truncate text-muted-foreground">Loading…</span>;
+    return <Truncate text="Loading…" className="text-muted-foreground" />;
   }
   return (
-    <span className="truncate">
-      {mail.subject || <span className="text-muted-foreground">(no subject)</span>}
-    </span>
+    <Truncate
+      text={mail.subject || "(no subject)"}
+      className={mail.subject ? undefined : "text-muted-foreground"}
+    />
   );
 }

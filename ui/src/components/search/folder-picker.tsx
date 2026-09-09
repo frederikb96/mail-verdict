@@ -14,6 +14,7 @@ import { ChevronDown, Folder as FolderIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Truncate } from "@/components/ui/truncate";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 
 interface FolderPickerProps {
@@ -120,7 +121,7 @@ export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerP
                     checked={selectedSet.has(folder.id)}
                     onCheckedChange={(checked) => toggleFolder(folder.id, checked === true)}
                   />
-                  <span className="truncate">{folder.display_name ?? folder.imap_name}</span>
+                  <Truncate text={folder.display_name ?? folder.imap_name} className="min-w-0" />
                 </label>
               ))}
             </div>

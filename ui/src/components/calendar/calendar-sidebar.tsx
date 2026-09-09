@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/sidebar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import { Truncate } from "@/components/ui/truncate";
 import { MiniMonth } from "@/components/calendar/mini-month";
 import { CalendarManageDialog } from "@/components/calendar/calendar-manage-dialog";
 import { useCalendars, useUpdateCalendar } from "@/hooks/use-calendars";
@@ -72,7 +73,7 @@ export function CalendarSidebar() {
                         backgroundColor: c.is_visible ? resolveCalendarColor(c) : undefined,
                       }}
                     />
-                    <span className="flex-1 truncate">{c.display_name}</span>
+                    <Truncate text={c.display_name} className="flex-1" />
                     {c.read_only && (
                       <Badge variant="outline" className="text-[10px]">
                         Read-only

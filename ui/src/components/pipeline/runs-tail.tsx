@@ -5,6 +5,7 @@ import { Radio } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Truncate } from "@/components/ui/truncate";
 
 import { RunDetailSheet } from "@/components/pipeline/run-detail-sheet";
 import { RunStatusBadge } from "@/components/pipeline/run-status-badge";
@@ -50,9 +51,10 @@ export function RunsTail() {
                   <RunSubject messageId={run.message_id} msgKey={run.msg_key} />
                 </div>
                 {run.halted_at_stage && (
-                  <span className="shrink-0 truncate font-mono text-xs text-muted-foreground">
-                    halted @ {run.halted_at_stage}
-                  </span>
+                  <Truncate
+                    text={`halted @ ${run.halted_at_stage}`}
+                    className="shrink-0 font-mono text-xs text-muted-foreground"
+                  />
                 )}
                 <span className="w-14 shrink-0 text-right text-xs text-muted-foreground">
                   {formatRelativeDate(run.finished_at ?? run.created_at)}
