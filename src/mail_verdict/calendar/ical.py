@@ -589,6 +589,92 @@ def parse_itip_message(data: str) -> ParsedInvitation:
     return ParsedInvitation(method=method, master=master, exceptions=exceptions)
 
 
+@dataclass
+class ExpansionQuery:
+    """A pre-parsed VCALENDAR plus recurring-ical-events' own query object
+    over it -- the two costs expand_instances() pays on every call
+    regardless of the window asked for (icalendar parsing, and for a
+    recurring series, building the query object), and which never change
+    for an unchanged object body. calendar/expansion_cache.py is what
+    actually caches this, keyed on (object id, etag); expand_from_query()
+    below is then a plain between() call plus the per-window parsing that
+    does depend on which occurrences came back."""
+
+    vevents: list[Component]
+    is_recurring: bool
+    query: Any
+
+
+def build_expansion_query(data: str) -> ExpansionQuery:
+    """The parse-and-validate half of expand_instances(), split out so a
+    caller expanding the same object over several windows (a month view
+    re-requested, or several visible months at once) pays it once. Raises
+    the same as expand_instances() for a rule too dense to expand."""
+    cal = _parse_calendar(data)
+    vevents = [c for c in cal.walk() if c.name == "VEVENT"]
+    # Every store-time path validates the RRULE it writes, but a stored
+    # object proves nothing about which path it passed through -- a row
+    # from before this check existed, or one a bug in some other writer
+    # let through. recurring-ical-events' own walk is what actually hangs
+    # (_bounded_between()'s MAX_EXPANDED_OCCURRENCES only ever sees the
+    # result of a call that already finished), so this has to run before
+    # that call rather than bound it afterward.
+    for component in vevents:
+        for rrule_prop in _as_list(component.get("RRULE")):
+            validate_rrule_frequency(
+                rrule_prop.to_ical().decode("utf-8"),
+                count_exempt_at_most=MAX_EXPANDED_OCCURRENCES,
+            )
+    is_recurring = any(c.get("RRULE") or c.get("RDATE") for c in vevents)
+    return ExpansionQuery(
+        vevents=vevents, is_recurring=is_recurring, query=recurring_ical_events.of(cal),
+    )
+
+
+def expand_from_query(
+    eq: ExpansionQuery, window_start: datetime, window_end: datetime,
+) -> list[ParsedEvent]:
+    """The window-dependent half of expand_instances() -- everything
+    build_expansion_query() above does not already cover."""
+    occurrences = (
+        _bounded_between(eq.query, window_start, window_end)
+        if eq.is_recurring
+        else eq.query.between(window_start, window_end)
+    )
+    # recurring-ical-events stamps a RECURRENCE-ID on every occurrence it
+    # generates, naming the occurrence's own start -- so an occurrence
+    # carrying one says nothing about whether the stored body overrides
+    # it, and a plain event's single occurrence carries one too. What
+    # is_exception means is that this occurrence is overridden, which the
+    # stored components are the only record of.
+    exception_ids = {
+        _recurrence_id_value(c) for c in eq.vevents if c.get("RECURRENCE-ID") is not None
+    }
+    parsed = [
+        _parse_component(
+            occ, is_recurring=eq.is_recurring,
+            is_exception=_recurrence_id_value(occ) in exception_ids,
+        )
+        for occ in occurrences
+    ]
+    if eq.is_recurring:
+        # recurring-ical-events does not carry RRULE onto the occurrences
+        # it generates -- each is one instant, not itself a recurring
+        # component -- so it is restored here from the master's own text,
+        # the same fix parse_master_and_exceptions() makes for a stored
+        # exception. Without it, every expanded occurrence (which is all
+        # this application's month view ever returns) reports no repeat
+        # at all despite is_recurring being true.
+        master_component = next((c for c in eq.vevents if c.get("RECURRENCE-ID") is None), None)
+        master_rrule = (
+            _parse_component(master_component, is_recurring=True, is_exception=False).rrule
+            if master_component is not None else None
+        )
+        for occurrence in parsed:
+            occurrence.rrule = master_rrule
+    return sorted(parsed, key=lambda e: e.dtstart)
+
+
 def expand_instances(data: str, window_start: datetime, window_end: datetime) -> list[ParsedEvent]:
     """
     Every occurrence between window_start and window_end, master and
@@ -613,60 +699,7 @@ def expand_instances(data: str, window_start: datetime, window_end: datetime) ->
         ValueError: a stored RRULE is too dense to expand safely -- see
             validate_rrule_frequency().
     """
-    cal = _parse_calendar(data)
-    vevents = [c for c in cal.walk() if c.name == "VEVENT"]
-    # Every store-time path validates the RRULE it writes, but a stored
-    # object proves nothing about which path it passed through -- a row
-    # from before this check existed, or one a bug in some other writer
-    # let through. recurring-ical-events' own walk is what actually hangs
-    # (_bounded_between()'s MAX_EXPANDED_OCCURRENCES only ever sees the
-    # result of a call that already finished), so this has to run before
-    # that call rather than bound it afterward.
-    for component in vevents:
-        for rrule_prop in _as_list(component.get("RRULE")):
-            validate_rrule_frequency(
-                rrule_prop.to_ical().decode("utf-8"),
-                count_exempt_at_most=MAX_EXPANDED_OCCURRENCES,
-            )
-    is_recurring = any(c.get("RRULE") or c.get("RDATE") for c in vevents)
-    query = recurring_ical_events.of(cal)
-    occurrences = (
-        _bounded_between(query, window_start, window_end)
-        if is_recurring
-        else query.between(window_start, window_end)
-    )
-    # recurring-ical-events stamps a RECURRENCE-ID on every occurrence it
-    # generates, naming the occurrence's own start -- so an occurrence
-    # carrying one says nothing about whether the stored body overrides
-    # it, and a plain event's single occurrence carries one too. What
-    # is_exception means is that this occurrence is overridden, which the
-    # stored components are the only record of.
-    exception_ids = {
-        _recurrence_id_value(c) for c in vevents if c.get("RECURRENCE-ID") is not None
-    }
-    parsed = [
-        _parse_component(
-            occ, is_recurring=is_recurring,
-            is_exception=_recurrence_id_value(occ) in exception_ids,
-        )
-        for occ in occurrences
-    ]
-    if is_recurring:
-        # recurring-ical-events does not carry RRULE onto the occurrences
-        # it generates -- each is one instant, not itself a recurring
-        # component -- so it is restored here from the master's own text,
-        # the same fix parse_master_and_exceptions() makes for a stored
-        # exception. Without it, every expanded occurrence (which is all
-        # this application's month view ever returns) reports no repeat
-        # at all despite is_recurring being true.
-        master_component = next((c for c in vevents if c.get("RECURRENCE-ID") is None), None)
-        master_rrule = (
-            _parse_component(master_component, is_recurring=True, is_exception=False).rrule
-            if master_component is not None else None
-        )
-        for occurrence in parsed:
-            occurrence.rrule = master_rrule
-    return sorted(parsed, key=lambda e: e.dtstart)
+    return expand_from_query(build_expansion_query(data), window_start, window_end)
 
 
 def strip_method(data: str) -> str:

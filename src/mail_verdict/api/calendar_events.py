@@ -59,7 +59,7 @@ from mail_verdict.api.schemas import (
     OwnReplyOut,
     RespondRequest,
 )
-from mail_verdict.calendar import ical
+from mail_verdict.calendar import expansion_cache, ical
 from mail_verdict.calendar.prefs import calendar_is_enabled
 from mail_verdict.calendar.repository import (
     CalendarPrefsRepository,
@@ -241,7 +241,9 @@ def _expand_all_sync(
     expanded: dict[uuid.UUID, list[ical.ParsedEvent]] = {}
     for obj in objects:
         try:
-            expanded[obj.id] = ical.expand_instances(obj.data, window_start, window_end)
+            expanded[obj.id] = expansion_cache.occurrences_for(
+                obj.id, obj.etag, obj.data, window_start, window_end,
+            )
         except Exception:
             # A single malformed or pathological object (an unparseable
             # body, or one that would expand past the occurrence bound)
