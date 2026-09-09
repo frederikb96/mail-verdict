@@ -270,6 +270,41 @@ class TestPasteAndScroll:
         assert dialog_box is not None and viewport is not None
         assert dialog_box["height"] <= viewport["height"]
 
+    def test_a_plain_text_paste_over_a_selected_word_stays_in_the_paragraph(
+        self, page: Page, app_server: str, editor_account: dict[str, Any],
+    ) -> None:
+        """A grammar-checker extension applies its correction by selecting
+        the flagged word in the DOM and dispatching a synthetic paste event
+        carrying only the replacement as plain text -- the same shape an
+        ordinary paste over a selection takes. Replacing the selected range
+        with a paragraph-shaped node instead of inline content splits the
+        paragraph in two and strands the replacement between the halves."""
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        body = dialog.get_by_test_id("mail-editor-body")
+        body.click()
+        page.keyboard.type("This is a msitake in the sentence.")
+
+        body.evaluate(
+            """(el) => {
+                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                const node = walker.nextNode();
+                const offset = node.textContent.indexOf('msitake');
+                const range = document.createRange();
+                range.setStart(node, offset);
+                range.setEnd(node, offset + 'msitake'.length);
+                const selection = node.ownerDocument.getSelection();
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }""",
+        )
+        _dispatch_paste(body, "", "mistake")
+
+        expect(body.locator("p")).to_have_count(1)
+        expect(body).to_have_text("This is a mistake in the sentence.")
+
 
 class TestRecipientFieldAccessibleName:
     def test_the_to_field_keeps_its_accessible_name_once_a_chip_exists(
