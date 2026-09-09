@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.6.0] - 2026-09-09
+
 ### Mail
 
 - Archiving a message, or moving it into the spam folder, marks it read as it moves -- the toolbar
