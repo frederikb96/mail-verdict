@@ -15,7 +15,7 @@ import { Bell, BellOff, Loader2, Smartphone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { alertEnabledFolderIdsAtom } from "@/lib/alert-prefs";
+import { alertEnabledFolderIdsAtom, isArrivalFolder } from "@/lib/alert-prefs";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import {
   usePushSupported,
@@ -59,7 +59,15 @@ export function AlertSettings() {
   };
 
   const allIds = options.map((o) => o.folder.id);
-  const effectiveEnabled = enabledFolderIds === null ? allIds : enabledFolderIds;
+  // What an unset preference resolves to -- the folders mail actually
+  // arrives in, not Sent/Drafts/Trash/Junk -- the same default
+  // useEffectiveAlertFolderIds computes, so the checklist a person opens
+  // shows exactly what's already in effect rather than starting them
+  // from a different picture of "the default".
+  const defaultIds = options
+    .filter((o) => isArrivalFolder(o.folder.special_use))
+    .map((o) => o.folder.id);
+  const effectiveEnabled = enabledFolderIds === null ? defaultIds : enabledFolderIds;
   const enabledSet = new Set(effectiveEnabled);
   const allEnabled = allIds.length > 0 && effectiveEnabled.length === allIds.length;
 
@@ -70,14 +78,19 @@ export function AlertSettings() {
     groups.set(opt.accountId, entry);
   }
 
+  const isDefaultSet = (ids: string[]) =>
+    ids.length === defaultIds.length && defaultIds.every((id) => ids.includes(id));
+
   const toggleFolder = (folderId: string, checked: boolean) => {
     const next = new Set(effectiveEnabled);
     if (checked) next.add(folderId);
     else next.delete(folderId);
-    // Collapses back to null ("every folder") once everything is ticked,
-    // the same convention search's own FolderPicker uses -- so a folder
-    // created later is included by default rather than silently left out.
-    setEnabledFolderIds(next.size >= allIds.length ? null : Array.from(next));
+    const nextArray = Array.from(next);
+    // Collapses back to null (the default arrival-folder scope) once the
+    // ticked set matches it exactly, so a folder created later that also
+    // isn't Sent/Drafts/Trash/Junk is included by default rather than
+    // silently left out.
+    setEnabledFolderIds(isDefaultSet(nextArray) ? null : nextArray);
   };
 
   const otherDevices = (allSubscriptions ?? []).filter((s) => s.id !== mySubscription?.id);
@@ -168,7 +181,9 @@ export function AlertSettings() {
             <button
               type="button"
               className="text-primary hover:underline"
-              onClick={() => setEnabledFolderIds(allEnabled ? [] : null)}
+              onClick={() =>
+                setEnabledFolderIds(allEnabled ? [] : isDefaultSet(allIds) ? null : allIds)
+              }
             >
               {allEnabled ? "Deselect all" : "Select all"}
             </button>

@@ -16,7 +16,8 @@ import { useAtomValue } from "jotai";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api } from "@/lib/api";
-import { alertEnabledFolderIdsAtom } from "@/lib/alert-prefs";
+import { alertEnabledFolderIdsAtom, isArrivalFolder } from "@/lib/alert-prefs";
+import { useSearchFolders } from "@/hooks/use-search-folders";
 import type { PushSubscriptionResponse } from "@/types/api";
 
 const SUBSCRIPTION_ID_KEY = "mailverdict:alerts.subscription-id";
@@ -263,12 +264,22 @@ export function useUpdatePushSubscription() {
  * preference lives on -- see the model's own docstring) once it has
  * one, the localStorage atom otherwise. One function computing this is
  * what keeps the SSE handler and the settings panel from drifting apart
- * on which of the two sources is authoritative right now. */
+ * on which of the two sources is authoritative right now.
+ *
+ * Neither source has ever been explicitly narrowed until someone opens
+ * Settings, so both start out null -- resolved here to the folders mail
+ * actually arrives in rather than to literally everything, so a fresh
+ * browser or device isn't notified about its own Sent, Drafts, Trash and
+ * Junk. Returns null (fail open, matching the old behaviour) only while
+ * the folder list itself hasn't loaded yet. */
 export function useEffectiveAlertFolderIds(): string[] | null {
   const localFolderIds = useAtomValue(alertEnabledFolderIdsAtom);
   const { subscription } = useMyPushSubscription();
-  if (subscription) return subscription.alert_folder_ids;
-  return localFolderIds;
+  const explicit = subscription ? subscription.alert_folder_ids : localFolderIds;
+  const { options, isLoading } = useSearchFolders();
+  if (explicit !== null) return explicit;
+  if (isLoading) return null;
+  return options.filter((o) => isArrivalFolder(o.folder.special_use)).map((o) => o.folder.id);
 }
 
 /** Notification.permission read once on mount and refreshed by whatever

@@ -96,15 +96,19 @@ def _seed_alert(postgres_url: str, title: str) -> None:
         pool.submit(asyncio.run, _run()).result()
 
 
-def _seed_account_with_inbox(postgres_url: str) -> None:
-    """An account with one folder, so the folder checklist has something
-    to actually check -- with none seeded it renders "No folders yet"
-    and there would be nothing to prove."""
+def _seed_account_with_inbox(postgres_url: str) -> str:
+    """An account with an Inbox and a Sent folder, so the folder checklist
+    has both an arrival folder and an outgoing one to actually check --
+    with none seeded it renders "No folders yet" and there would be
+    nothing to prove. Returns the account's own name/email, which is the
+    only thing distinguishing its folder rows from another seeded
+    account's identically-named Inbox and Sent once more than one test in
+    this module has called this."""
+    email = unique_email("push-settings")
 
     async def _run() -> None:
         engine = create_async_engine(postgres_url)
         async with engine.begin() as conn:
-            email = unique_email("push-settings")
             account_id = uuid.uuid4()
             await conn.execute(
                 text(
@@ -122,10 +126,19 @@ def _seed_account_with_inbox(postgres_url: str) -> None:
                 ),
                 {"id": uuid.uuid4(), "account_id": account_id},
             )
+            await conn.execute(
+                text(
+                    "INSERT INTO folders (id, account_id, imap_name, special_use) "
+                    "VALUES (:id, :account_id, 'Sent', 'sent')"
+                ),
+                {"id": uuid.uuid4(), "account_id": account_id},
+            )
         await engine.dispose()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(asyncio.run, _run()).result()
+
+    return email
 
 
 class TestAlertBell:
@@ -262,5 +275,40 @@ class TestPushSubscriptionSettings:
                 timeout=10_000,
             ):
                 folder_checkbox.click()
+        finally:
+            context.close()
+
+    def test_the_default_scope_ticks_inbox_and_leaves_sent_unticked(
+        self, browser: Browser, app_server_with_encryption_key: str, postgres_url: str,
+    ) -> None:
+        """A device that has never touched this checklist gets a scope of
+        the folders mail actually arrives in -- not literally every
+        folder, which would notify Freddy about his own mail landing in
+        Sent every time he pressed Send."""
+        account_email = _seed_account_with_inbox(postgres_url)
+
+        context = browser.new_context()
+        page = context.new_page()
+        try:
+            page.add_init_script(_STUB_SERVICE_WORKER_SCRIPT)
+            page.goto(f"{app_server_with_encryption_key}/settings")
+
+            # An earlier test in this module seeded its own Inbox/Sent
+            # pair under a different account, so "Inbox" alone is
+            # ambiguous once more than one account has folders -- this
+            # account's own name is what the checklist groups its rows
+            # under (alert-settings.tsx), and no more deeply nested
+            # element than that group also carries both texts.
+            group = (
+                page.locator("div")
+                .filter(has_text=account_email)
+                .filter(has_text="Inbox")
+                .last
+            )
+            inbox_checkbox = group.locator("label", has_text="Inbox").get_by_role("checkbox")
+            sent_checkbox = group.locator("label", has_text="Sent").get_by_role("checkbox")
+            expect(inbox_checkbox).to_be_visible(timeout=15_000)
+            expect(inbox_checkbox).to_be_checked()
+            expect(sent_checkbox).not_to_be_checked()
         finally:
             context.close()

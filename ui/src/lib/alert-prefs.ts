@@ -9,10 +9,14 @@
  * path degrades to when it is declined or unavailable, not a separate,
  * permanent mechanism.
  *
- * null means "every folder" -- the same NULL-means-nobody-narrowed-it-
- * down convention push_subscriptions.alert_folder_ids itself documents,
- * so a browser that has never opened the alerts settings still gets
- * notified for everything rather than silently nothing.
+ * null means "nobody has narrowed this down yet" -- resolved to the
+ * folders mail actually arrives in (see isArrivalFolder) rather than to
+ * every folder, so a browser or device that has never opened the alerts
+ * settings isn't notified about its own Sent, Drafts, Trash and Junk.
+ * The same resolution is what useEffectiveAlertFolderIds performs before
+ * this ever sees a raw null; an explicit selection -- including one that
+ * ticks every folder, outgoing ones included -- is stored and honoured
+ * as the concrete list it is.
  */
 
 import { atomWithStorage } from "jotai/utils";
@@ -22,10 +26,21 @@ export const alertEnabledFolderIdsAtom = atomWithStorage<string[] | null>(
   null,
 );
 
+/** Whether a folder is one mail arrives in, as opposed to one it only
+ * ever leaves through or lands in as a side effect of something else you
+ * did -- Sent, Drafts, Trash, Junk. What an unset alert preference
+ * defaults to, so pressing Send doesn't notify you about your own mail. */
+export function isArrivalFolder(specialUse: string | null | undefined): boolean {
+  return specialUse == null || specialUse === "inbox";
+}
+
 /** Whether a folder is currently allowed to raise a system notification --
  * the single place this predicate is computed, so the settings checklist
  * and the SSE handler that actually decides whether to call
- * `new Notification(...)` never drift apart. */
+ * `new Notification(...)` never drift apart. enabledFolderIds is expected
+ * pre-resolved (see useEffectiveAlertFolderIds); null here only means "the
+ * folder list hasn't loaded yet", not "every folder", so callers with no
+ * scope yet fail open rather than notifying for outgoing folders. */
 export function folderAlertsEnabled(
   enabledFolderIds: string[] | null,
   folderId: string | null | undefined,
