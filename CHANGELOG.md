@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.6.1] - 2026-09-10
+
 ### Rules
 
 - A stage's "halt after this stage matches" setting no longer stops the pipeline for a message
