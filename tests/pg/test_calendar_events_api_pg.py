@@ -1507,6 +1507,121 @@ class TestRespond:
         assert own_reply["partstat"] == "accepted"
 
 
+class TestListOwnRepliesForSeveralInstances:
+    """list_events resolves own_reply for a whole month in two batched
+    queries rather than resolve_own_reply's two-query round trip per
+    invited instance -- the values still have to land on the right
+    instance rather than on whichever one happened to run last."""
+
+    async def _seed_invited_object(
+        self, session: AsyncSession, *,
+        dav_account_id: uuid.UUID, collection_id: uuid.UUID,
+        uid: str, dtstart: str, attendee_email: str,
+    ) -> uuid.UUID:
+        object_id = uuid.uuid4()
+        data = (
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n"
+            f"UID:{uid}\r\nDTSTAMP:20260901T120000Z\r\n"
+            f"DTSTART:{dtstart}\r\nDTEND:{dtstart}\r\n"
+            f"SUMMARY:{uid}\r\nSEQUENCE:0\r\n"
+            "ORGANIZER;CN=Anna:mailto:anna@example.com\r\n"
+            f"ATTENDEE;CN=Invitee;PARTSTAT=NEEDS-ACTION;ROLE=REQ-PARTICIPANT:"
+            f"mailto:{attendee_email}\r\n"
+            "END:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+        await session.execute(
+            text(
+                "INSERT INTO dav_objects (id, account_id, collection_id, kind, data) "
+                "VALUES (:id, :account_id, :collection_id, 'calendar', :data)"
+            ),
+            {
+                "id": object_id, "account_id": dav_account_id,
+                "collection_id": collection_id, "data": data,
+            },
+        )
+        return object_id
+
+    async def _seed_three_invited_events(
+        self, db: DatabaseConnection,
+    ) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+        async with db.session() as session:
+            dav_account_id, collection_id = await _seed_calendar(session)
+            _account_id, identity_id = await _seed_mail_account_and_identity(
+                session, "freddy@work.example",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO calendar_prefs (collection_id, identity_id) "
+                    "VALUES (:collection_id, :identity_id)"
+                ),
+                {"collection_id": collection_id, "identity_id": identity_id},
+            )
+            accepted_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-a", dtstart="20260905T090000Z",
+                attendee_email="freddy@work.example",
+            )
+            declined_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-b", dtstart="20260912T090000Z",
+                attendee_email="freddy@work.example",
+            )
+            unanswered_id = await self._seed_invited_object(
+                session, dav_account_id=dav_account_id, collection_id=collection_id,
+                uid="own-reply-c", dtstart="20260919T090000Z",
+                attendee_email="freddy@work.example",
+            )
+            await session.commit()
+        return collection_id, identity_id, accepted_id, declined_id, unanswered_id
+
+    def test_each_instances_own_reply_lands_on_the_right_instance(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """recurring_ical_events tags every occurrence its expansion
+        returns with its own RECURRENCE-ID, even a plain object's only
+        occurrence -- so the recurrence_id own_reply has to key on here
+        is that occurrence's own identifier, the same one the month view
+        already listed it under, not None the way responding to the
+        master through the single-event endpoint would store it."""
+        collection_id, identity_id, accepted_id, declined_id, unanswered_id = client.portal.call(
+            self._seed_three_invited_events, migrated_db,
+        )
+        list_params = {"month": "2026-09", "calendars": str(collection_id)}
+        with patch(_TARGET, return_value=migrated_db):
+            before = client.get("/calendar/events", params=list_params)
+        assert before.status_code == 200, before.text
+        recurrence_id_by_object = {
+            e["object_id"]: e["recurrence_id"] for e in before.json()["events"]
+        }
+
+        with patch(_TARGET, return_value=migrated_db):
+            resp_a = client.post(
+                f"/calendar/events/{accepted_id}/respond",
+                json={
+                    "identity_id": str(identity_id), "partstat": "accepted",
+                    "recurrence_id": recurrence_id_by_object[str(accepted_id)],
+                },
+            )
+            resp_b = client.post(
+                f"/calendar/events/{declined_id}/respond",
+                json={
+                    "identity_id": str(identity_id), "partstat": "declined",
+                    "recurrence_id": recurrence_id_by_object[str(declined_id)],
+                },
+            )
+        assert resp_a.status_code == 200, resp_a.text
+        assert resp_b.status_code == 200, resp_b.text
+
+        with patch(_TARGET, return_value=migrated_db):
+            listed = client.get("/calendar/events", params=list_params)
+        assert listed.status_code == 200, listed.text
+        by_object = {e["object_id"]: e for e in listed.json()["events"]}
+
+        assert by_object[str(accepted_id)]["own_reply"]["partstat"] == "accepted"
+        assert by_object[str(declined_id)]["own_reply"]["partstat"] == "declined"
+        assert by_object[str(unanswered_id)]["own_reply"] is None
+
+
 class TestRecurrenceRoundTrip:
     """An object shaped like something a real CalDAV server
     produced must survive an edit through the PATCH endpoint an agent or

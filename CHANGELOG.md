@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The `calendar.object` live-update event now names what changed (insert, update or delete) and
   the object's own start/end and whether it recurs, so a client can invalidate only the months a
   change actually touches instead of every month it has open.
+- Listing a month's events no longer runs two extra database queries per invited instance to
+  resolve its own RSVP status -- the whole month resolves it in two queries total.
 
 ## [5.4.0] - 2026-09-09
 

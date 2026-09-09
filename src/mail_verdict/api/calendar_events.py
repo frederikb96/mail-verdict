@@ -41,6 +41,7 @@ import asyncio
 import concurrent.futures
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
@@ -149,6 +150,39 @@ async def resolve_own_reply(
     )
 
 
+async def _own_replies_for_month(
+    reply_repo: CalendarReplyRepository, session: AsyncSession, object_ids: list[uuid.UUID],
+) -> dict[tuple[uuid.UUID, str | None], OwnReplyOut]:
+    """
+    resolve_own_reply's answer for every (object_id, recurrence_id) a
+    month's worth of instances could ask for -- one query for the latest
+    calendar_replies row per instance, then one for the outbox rows those
+    replies point at, rather than list_events calling resolve_own_reply
+    (two queries of its own) once per invited instance in the month.
+    Same "unknown" vs. "pending" distinction resolve_own_reply's own
+    docstring explains -- a purged outbox row reports "unknown" here too.
+    """
+    replies = await reply_repo.get_latest_for_objects(object_ids, session)
+    if not replies:
+        return {}
+    outbox_ids = [r.outbox_id for r in replies]
+    result = await session.execute(
+        select(Outbox.id, Outbox.status, Outbox.error).where(Outbox.id.in_(outbox_ids))
+    )
+    outbox_by_id = {row.id: row for row in result.all()}
+    own_replies: dict[tuple[uuid.UUID, str | None], OwnReplyOut] = {}
+    for reply in replies:
+        outbox_row = outbox_by_id.get(reply.outbox_id)
+        own_replies[(reply.object_id, reply.recurrence_id)] = OwnReplyOut(
+            partstat=reply.partstat,  # type: ignore[arg-type]
+            outbox_id=reply.outbox_id,
+            outbox_status=outbox_row.status if outbox_row else "unknown",
+            error=outbox_row.error if outbox_row else None,
+            updated_at=reply.created_at,
+        )
+    return own_replies
+
+
 def _reminders_out(reminders: list[ical.Reminder]) -> list[EventReminder]:
     return [EventReminder(offset_minutes=r.offset_minutes, at=r.at) for r in reminders]
 
@@ -166,14 +200,26 @@ async def _to_instance(
     parsed: ical.ParsedEvent, obj: DavObject, *,
     own_identity_email: str | None, read_only: bool, sync_error: str | None,
     reply_repo: CalendarReplyRepository,
+    own_replies: Mapping[tuple[uuid.UUID, str | None], OwnReplyOut] | None = None,
 ) -> EventInstanceOut:
+    """
+    own_replies, when given, is a precomputed (object_id, recurrence_id)
+    -> OwnReplyOut mapping covering every instance the caller is about to
+    render -- list_events's own way of asking this question once for a
+    whole month rather than once per invited instance. None (every other
+    caller, rendering a single instance) falls back to resolve_own_reply's
+    own per-instance query.
+    """
     own_email = own_identity_email.lower() if own_identity_email else None
     own_attendee = next(
         (a for a in parsed.attendees if own_email and a.email.lower() == own_email), None,
     )
     own_reply = None
     if own_attendee is not None:
-        own_reply = await resolve_own_reply(reply_repo, obj.id, parsed.recurrence_id)
+        own_reply = (
+            own_replies.get((obj.id, parsed.recurrence_id)) if own_replies is not None
+            else await resolve_own_reply(reply_repo, obj.id, parsed.recurrence_id)
+        )
 
     return EventInstanceOut(
         object_id=obj.id,
@@ -367,6 +413,7 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
             collection_ids, window_start, window_end, session,
         )
         errors = await object_repo.get_write_errors([o.id for o in objects], session)
+        own_replies = await _own_replies_for_month(reply_repo, session, [o.id for o in objects])
         identity_by_collection = {c.id: email for c, email in visible}
         read_only_by_collection = {c.id: c.read_only for c, _ in visible}
 
@@ -385,6 +432,7 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
                     read_only=read_only_by_collection.get(obj.collection_id, False),
                     sync_error=errors.get(obj.id),
                     reply_repo=reply_repo,
+                    own_replies=own_replies,
                 )
             )
     events.sort(key=lambda e: e.dtstart)

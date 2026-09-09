@@ -667,6 +667,27 @@ class CalendarReplyRepository:
             )
             return result.scalar_one_or_none()
 
+    async def get_latest_for_objects(
+        self, object_ids: list[uuid.UUID], session: AsyncSession | None = None,
+    ) -> list[CalendarReply]:
+        """The latest reply per (object_id, recurrence_id) across a whole
+        batch of objects, in one query -- a month view otherwise calls
+        get_latest() once per invited instance. Same "any identity"
+        reasoning as get_latest() above."""
+        if not object_ids:
+            return []
+        async with self._db.session_or(session) as session:
+            result = await session.execute(
+                select(CalendarReply)
+                .distinct(CalendarReply.object_id, CalendarReply.recurrence_id)
+                .where(CalendarReply.object_id.in_(object_ids))
+                .order_by(
+                    CalendarReply.object_id, CalendarReply.recurrence_id,
+                    desc(CalendarReply.created_at),
+                )
+            )
+            return list(result.scalars().all())
+
 
 class CalendarLinksRevisionRepository:
     """The single-row optimistic-concurrency counter PUT /calendar/links checks."""
