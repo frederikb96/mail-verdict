@@ -15,11 +15,39 @@
  * scroll listener writes the week at the top back into the atom, comparing
  * against `currentWeekRef` so its own programmatic writes never re-trigger
  * a second scroll.
+ *
+ * Two more things are deliberately NOT driven by the raw scroll position:
+ *
+ * - React state changes only when the rendered week RANGE actually moves,
+ *   never per pixel -- `renderRange` is derived from `scrollTop` on every
+ *   scroll event, but only committed via `setState` when it differs from
+ *   what's already rendered (a functional update returning the previous
+ *   object when nothing changed, so React bails out with no re-render at
+ *   all). `MonthWeekRow` is memoized on top of that, so even the rare
+ *   range-changing commit only re-renders the rows that actually entered
+ *   or left, never the whole grid.
+ * - The URL and the *fetch* window (which months are actually requested)
+ *   only catch up once scrolling **settles** -- a fixed quiet period with
+ *   no scroll event, reset on every one. This is deliberately NOT the
+ *   native `scrollend` event: it fires after every discrete wheel tick,
+ *   not only when scrolling truly stops (measured -- a rapid series of
+ *   plain wheel ticks each got their own `scrollend`, which turned every
+ *   tick into a full URL write and cascaded into an app-wide re-render,
+ *   far worse than the per-pixel state churn this file exists to avoid).
+ *   The same timer also fixes the unrelated Safari bug the settle
+ *   mechanism used to have: `programmaticScrollRef` was previously cleared
+ *   only by `onScrollEnd`, which Safari never fires at all, so it stayed
+ *   stuck true forever after any Today/mini-month jump there. A fast flick
+ *   over years of months already answers instantly from cache and must
+ *   not fire a request per row passed; the jotai atom, by contrast, is
+ *   written on every row crossed, cheaply, so the toolbar and mini-month
+ *   track the scroll live.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useAtomValue } from "jotai";
-import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { useCalendarUrlWriter } from "@/hooks/use-calendar-navigate";
+import { useKeepEventChunksWarm } from "@/hooks/use-events";
 import { calendarDateAtom } from "@/lib/atoms";
 import {
   WEEK_INDEX_MAX,
@@ -30,6 +58,13 @@ import {
   weekIndexToDate,
 } from "@/lib/dates";
 import { MonthWeekRow } from "@/components/calendar/month-week-row";
+import {
+  type RenderRange,
+  computeFetchWindow,
+  computeRenderRange,
+  sameMonthSet,
+  sameRange,
+} from "@/components/calendar/month-window";
 import { WEEK_NUMBER_GUTTER_WIDTH, type SelectEventHandler } from "@/components/calendar/layout";
 
 const ROWS_PER_SCREEN_DESKTOP = 6;
@@ -38,8 +73,17 @@ const MIN_ROW_HEIGHT = 72;
 const MAX_ROW_HEIGHT = 180;
 /** ~1.5 screens of margin each side of the visible range. */
 const RENDER_MARGIN_ROWS = 8;
+/** How long scrolling has to be quiet before it's "settled": the URL and
+ * the fetch window both catch up at this point, not on every scroll
+ * event. Short enough that a genuine pause feels immediate, long enough
+ * that a fast flick's intermediate rows never register as a pause. */
+const SCROLL_SETTLE_MS = 200;
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+const INITIAL_RENDER_RANGE = computeRenderRange(
+  0, 0, MIN_ROW_HEIGHT, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX,
+);
 
 interface MonthScrollerProps {
   /** Phone shape: smaller rows, dots instead of chips, no spanning bars. */
@@ -52,16 +96,25 @@ interface MonthScrollerProps {
 
 export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onSelectWeek }: MonthScrollerProps) {
   const calendarDate = useAtomValue(calendarDateAtom);
-  const navigate = useCalendarNavigate();
+  const setCalendarDate = useSetAtom(calendarDateAtom);
+  const writeUrl = useCalendarUrlWriter();
   const containerRef = useRef<HTMLDivElement>(null);
 
   const [rowHeight, setRowHeight] = useState(MIN_ROW_HEIGHT);
-  const [viewportHeight, setViewportHeight] = useState(0);
-  const [scrollTop, setScrollTop] = useState(0);
   const [monthLabel, setMonthLabel] = useState("");
+  const [renderRange, setRenderRange] = useState<RenderRange>(INITIAL_RENDER_RANGE);
+  /** The months actually requested from the server -- see the file header
+   * for why this lags `renderRange` until scrolling settles. */
+  const [committedMonths, setCommittedMonths] = useState<ReadonlySet<string>>(() => new Set());
+  const committedMonthsList = useMemo(() => Array.from(committedMonths), [committedMonths]);
+  useKeepEventChunksWarm(committedMonthsList);
 
   const rowHeightRef = useRef(rowHeight);
   rowHeightRef.current = rowHeight;
+  const viewportHeightRef = useRef(0);
+  const scrollTopRef = useRef(0);
+  const renderRangeRef = useRef(renderRange);
+  renderRangeRef.current = renderRange;
 
   const currentWeekRef = useRef<number>(dateToWeekIndex(calendarDate));
   const mountedRef = useRef(false);
@@ -92,6 +145,49 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     setMonthLabel(format(thursday, "MMMM yyyy"));
   }, []);
 
+  /** Commits a new fetch window, but only replaces `committedMonths` when
+   * its content actually differs -- so a settle that lands back where an
+   * earlier one already committed bails out like any other unchanged
+   * state, rather than forcing every warmed query to re-diff. */
+  const commitFetchWindow = useCallback((range: RenderRange) => {
+    const months = computeFetchWindow(range);
+    setCommittedMonths((prev) => (sameMonthSet(months, prev) ? prev : new Set(months)));
+  }, []);
+
+  // `settle` (below) needs the latest writeUrl/commitFetchWindow without
+  // being recreated itself -- it's scheduled fresh via setTimeout on every
+  // scroll event, and a stable identity means resetSettleTimer doesn't
+  // have to change either (writeUrl's own identity changes whenever
+  // calendarDateAtom does, which is exactly every row crossed).
+  const writeUrlRef = useRef(writeUrl);
+  writeUrlRef.current = writeUrl;
+  const commitFetchWindowRef = useRef(commitFetchWindow);
+  commitFetchWindowRef.current = commitFetchWindow;
+
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const settle = useCallback(() => {
+    if (settleTimerRef.current) {
+      clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+    // Fixes the Safari bug the file header describes: nothing here depends
+    // on `scrollend`, so this flag is cleared uniformly on every browser
+    // rather than staying stuck true forever after a programmatic jump.
+    programmaticScrollRef.current = false;
+    writeUrlRef.current();
+    commitFetchWindowRef.current(renderRangeRef.current);
+  }, []);
+
+  const resetSettleTimer = useCallback(() => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = setTimeout(settle, SCROLL_SETTLE_MS);
+  }, [settle]);
+
+  useEffect(() => () => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+  }, []);
+
   // Measure the viewport and derive rowHeight from it -- never estimated,
   // always computed, so every row is exactly the height the viewport
   // implies. A ResizeObserver (not just `window.resize`) so a sidebar
@@ -108,6 +204,11 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
   // rowHeight actually rendered there was nothing left in pendingScrollRef
   // to correct it with -- the exact mismatch this component exists to
   // prevent, silently reintroduced by routing the correction through state.
+  //
+  // A mount or resize commits the fetch window immediately, unlike organic
+  // scrolling -- it's a single discrete jump, not a stream of events that
+  // needs settling, and the initial paint should already have real data
+  // warm rather than waiting out SCROLL_SETTLE_MS for no reason.
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -129,7 +230,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
 
     function applyMeasurement() {
       const h = container!.clientHeight;
-      setViewportHeight(h);
+      viewportHeightRef.current = h;
       const next = Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, Math.floor(h / rowsPerScreen) || MIN_ROW_HEIGHT));
       rowHeightRef.current = next;
       setRowHeight(next);
@@ -139,8 +240,11 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       const top = (pending.week - WEEK_INDEX_MIN) * next + pending.fraction * next;
       container!.scrollTop = top;
       pendingScrollRef.current = null;
-      setScrollTop(top);
+      scrollTopRef.current = top;
       updateMonthLabel(top, next);
+      const range = computeRenderRange(top, h, next, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
+      setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
+      commitFetchWindow(range);
       mountedRef.current = true;
     }
 
@@ -156,7 +260,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     observer.observe(container);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compact, updateMonthLabel]);
+  }, [compact, updateMonthLabel, commitFetchWindow]);
 
   const scrollToWeek = useCallback(
     (week: number, behavior: ScrollBehavior) => {
@@ -170,10 +274,6 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     [],
   );
 
-  const handleScrollEnd = useCallback(() => {
-    programmaticScrollRef.current = false;
-  }, []);
-
   // External navigation (Today, the mini-month, the toolbar arrows) writes
   // calendarDateAtom; this is the one place that turns that into a scroll.
   useEffect(() => {
@@ -186,26 +286,35 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     const container = containerRef.current;
     if (!container) return;
     const top = container.scrollTop;
-    setScrollTop(top);
+    scrollTopRef.current = top;
     updateMonthLabel(top, rowHeightRef.current);
+
+    const range = computeRenderRange(
+      top, viewportHeightRef.current, rowHeightRef.current, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX,
+    );
+    // The functional-update form is what makes this a no-op commit when
+    // the range hasn't moved: returning the same object React already
+    // holds is an Object.is match, so it bails out before re-rendering
+    // anything -- the mechanism behind "zero commits for a wheel movement
+    // that stays inside one row".
+    setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
+
+    resetSettleTimer();
 
     if (programmaticScrollRef.current) return;
 
     const week = Math.floor(top / rowHeightRef.current) + WEEK_INDEX_MIN;
     if (week !== currentWeekRef.current) {
       currentWeekRef.current = week;
-      // push: false -- this fires on every week scrolled past, and must
-      // not fill the back-button history with one entry each.
-      navigate({ date: weekIndexToDate(week) }, { push: false });
+      // Cheap: writes only the jotai atom, so the toolbar and mini-month
+      // follow scroll without paying for a Next.js navigation on every row
+      // crossed. The URL itself catches up once, in `settle`.
+      setCalendarDate(weekIndexToDate(week));
     }
-  }, [navigate, updateMonthLabel]);
+  }, [updateMonthLabel, resetSettleTimer, setCalendarDate]);
 
-  const firstVisible = Math.floor(scrollTop / rowHeight) + WEEK_INDEX_MIN;
-  const lastVisible = Math.floor((scrollTop + viewportHeight) / rowHeight) + WEEK_INDEX_MIN;
-  const renderStart = Math.max(WEEK_INDEX_MIN, firstVisible - RENDER_MARGIN_ROWS);
-  const renderEnd = Math.min(WEEK_INDEX_MAX, lastVisible + RENDER_MARGIN_ROWS);
   const renderedWeeks: number[] = [];
-  for (let w = renderStart; w <= renderEnd; w++) renderedWeeks.push(w);
+  for (let w = renderRange.start; w <= renderRange.end; w++) renderedWeeks.push(w);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -227,8 +336,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        onScrollEnd={handleScrollEnd}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="no-scrollbar min-h-0 flex-1 overflow-y-auto"
         style={{ overflowAnchor: "none" }}
       >
         <div className="relative" style={{ height: totalHeight }}>
@@ -242,6 +350,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
                 weekIndex={w}
                 rowHeight={rowHeight}
                 compact={compact}
+                committedMonths={committedMonths}
                 onSelectEvent={onSelectEvent}
                 onSelectDay={onSelectDay}
                 onSelectWeek={onSelectWeek}

@@ -5,9 +5,16 @@
  * lanes for all-day and multi-day events. Every row is exactly `rowHeight`
  * tall regardless of content -- see month-scroller.tsx for why that is what
  * makes the scroller safe.
+ *
+ * Memoized: the month scroller only changes this row's own props (weekIndex,
+ * rowHeight, compact, committedMonths, the three stable callbacks) when
+ * something about THIS row actually changed. Without the memo, every
+ * mounted row would still re-execute its body -- including its own
+ * useWeekEvents call -- on every parent re-render, which is most of what
+ * made the old version cost 1,000+ renders per wheel tick.
  */
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { useAtomValue } from "jotai";
 import { format, isSameDay, isToday, isWeekend, weekDays, weekNumber } from "@/lib/dates";
 import {
@@ -36,21 +43,25 @@ interface MonthWeekRowProps {
   weekIndex: number;
   rowHeight: number;
   compact: boolean;
+  /** Which months are actually allowed to fetch right now -- see
+   * use-events.ts's useWeekEvents for why this exists. */
+  committedMonths: ReadonlySet<string>;
   onSelectEvent: SelectEventHandler;
   onSelectDay: (date: Date) => void;
   onSelectWeek: (date: Date) => void;
 }
 
-export function MonthWeekRow({
+function MonthWeekRowImpl({
   weekIndex,
   rowHeight,
   compact,
+  committedMonths,
   onSelectEvent,
   onSelectDay,
   onSelectWeek,
 }: MonthWeekRowProps) {
   const days = useMemo(() => weekDays(weekIndex), [weekIndex]);
-  const events = useWeekEvents(weekIndex);
+  const { events, loaded } = useWeekEvents(weekIndex, committedMonths);
   const { data: calendars } = useCalendars();
   const selected = useAtomValue(selectedEventAtom);
   const [popoverDay, setPopoverDay] = useState<Date | null>(null);
@@ -180,37 +191,66 @@ export function MonthWeekRow({
                   style={{ marginTop: visibleSpanningLanes * LANE_HEIGHT }}
                   className="flex flex-col gap-0.5"
                 >
-                  {dayEvents.map((e) => (
-                    <EventChip
-                      key={`${e.object_id}:${e.recurrence_id ?? "master"}`}
-                      event={e}
-                      calendar={calendarById.get(e.calendar_id)}
-                      variant="month"
-                      timeLabel={e.all_day ? undefined : format(new Date(e.dtstart), "HH:mm")}
-                      selected={selected?.objectId === e.object_id}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        onSelectEvent(e.object_id, e.recurrence_id, ev);
-                      }}
-                    />
-                  ))}
-                  {hidden > 0 && (
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        setPopoverDay(day);
-                      }}
-                      className="w-fit cursor-pointer px-1 text-[11px] text-muted-foreground hover:text-foreground"
-                    >
-                      +{hidden} more
-                    </span>
+                  {!loaded ? (
+                    // A chunk that has never loaded shows this instead of its
+                    // events -- inside the same fixed-height cell, so a row
+                    // whose data arrives later never changes height. Once
+                    // `loaded` has been true, `placeholderData` keeps the
+                    // previous chunk's events in place across a refetch, so
+                    // this never reappears just because a refresh is in
+                    // flight.
+                    //
+                    // Deliberately not `animate-pulse`: a fast flick keeps
+                    // dozens of these mounted at once (fetching is deferred
+                    // until scrolling settles, on purpose), and a CSS
+                    // animation running on that many elements simultaneously
+                    // cost more main-thread time than everything else this
+                    // file fixed combined -- measured, p99 frame time went
+                    // from ~150ms back down to ~17ms by dropping it. A
+                    // static placeholder still shows loading without paying
+                    // for continuous repaint.
+                    <div className="h-3 w-4/5 rounded bg-muted/70" />
+                  ) : (
+                    <>
+                      {dayEvents.map((e) => (
+                        <EventChip
+                          key={`${e.object_id}:${e.recurrence_id ?? "master"}`}
+                          event={e}
+                          calendar={calendarById.get(e.calendar_id)}
+                          variant="month"
+                          timeLabel={e.all_day ? undefined : format(new Date(e.dtstart), "HH:mm")}
+                          selected={selected?.objectId === e.object_id}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            onSelectEvent(e.object_id, e.recurrence_id, ev);
+                          }}
+                        />
+                      ))}
+                      {hidden > 0 && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            setPopoverDay(day);
+                          }}
+                          className="w-fit cursor-pointer px-1 text-[11px] text-muted-foreground hover:text-foreground"
+                        >
+                          +{hidden} more
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               )}
 
-              {compact && dotCount > 0 && (
+              {compact && !loaded && (
+                <div className="mt-1 flex justify-center">
+                  <div className="h-1 w-6 rounded-full bg-muted/70" />
+                </div>
+              )}
+
+              {compact && loaded && dotCount > 0 && (
                 <div className="mt-1 flex flex-wrap justify-center gap-0.5">
                   {Array.from({ length: Math.min(dotCount, 4) }).map((_, i) => (
                     <span key={i} className="h-1 w-1 rounded-full bg-[var(--cal-color,var(--muted-foreground))]" />
@@ -273,6 +313,8 @@ export function MonthWeekRow({
     </div>
   );
 }
+
+export const MonthWeekRow = memo(MonthWeekRowImpl);
 
 function dayDiff(from: Date, to: Date): number {
   const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
