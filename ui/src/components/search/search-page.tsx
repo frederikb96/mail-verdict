@@ -10,6 +10,7 @@ import { AlertCircle, Folder as FolderIcon, Loader2, Search as SearchIcon } from
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FolderPicker } from "@/components/search/folder-picker";
 import { DateRangePicker } from "@/components/search/date-range-picker";
 import { SearchResultRow } from "@/components/search/search-result-row";
@@ -19,8 +20,10 @@ import { cn } from "@/lib/utils";
 import { buildMailUrl } from "@/lib/mail-url";
 import { useSearchResults } from "@/hooks/use-search";
 import { useSearchFolders } from "@/hooks/use-search-folders";
+import { useAccounts } from "@/hooks/use-accounts";
 import {
   ALL_SEARCH_FIELDS,
+  searchAccountIdAtom,
   searchDateRangeAtom,
   searchFieldsAtom,
   searchFolderIdsAtom,
@@ -34,11 +37,12 @@ import {
 import {
   selectedAccountIdAtom,
   selectedFolderIdAtom,
-  isUnifiedViewAtom,
   pendingAroundMailIdAtom,
   requestSelectMailAtom,
 } from "@/lib/atoms";
 import type { SearchField, SearchStrictness } from "@/types/api";
+
+const ALL_ACCOUNTS_VALUE = "__all__";
 
 const FIELD_LABELS: Record<SearchField, string> = {
   subject: "Subject",
@@ -59,8 +63,6 @@ export function SearchPage() {
   const [rawQuery, setRawQuery] = useAtom(searchQueryAtom);
   const [query, setQuery] = useState(rawQuery);
   const router = useRouter();
-  const selectedAccountId = useAtomValue(selectedAccountIdAtom);
-  const isUnified = useAtomValue(isUnifiedViewAtom);
   const setSelectedAccountId = useSetAtom(selectedAccountIdAtom);
   const setSelectedFolderId = useSetAtom(selectedFolderIdAtom);
   const requestSelectMail = useSetAtom(requestSelectMailAtom);
@@ -74,6 +76,12 @@ export function SearchPage() {
   const [dateRange, setDateRange] = useAtom(searchDateRangeAtom);
   const [scrollAnchor, setScrollAnchor] = useAtom(searchScrollAnchorAtom);
   const [scrollCache, setScrollCache] = useAtom(searchScrollCacheAtom);
+  // The search page's own account scope -- deliberately independent of
+  // the sidebar's selected account/Unified View, so searching everywhere
+  // never requires switching the sidebar out of whatever account is
+  // being read. null means every account.
+  const [searchScopeAccountId, setSearchScopeAccountId] = useAtom(searchAccountIdAtom);
+  const { data: accounts } = useAccounts();
 
   const vlistRef = useRef<VListHandle>(null);
 
@@ -86,7 +94,15 @@ export function SearchPage() {
     return () => clearTimeout(timer);
   }, [rawQuery]);
 
-  const searchAccountId = isUnified ? undefined : (selectedAccountId ?? undefined);
+  // A scope naming an account that no longer exists (deleted since it was
+  // last picked) falls back to "every account" rather than silently
+  // matching nothing.
+  useEffect(() => {
+    if (!accounts || searchScopeAccountId === null) return;
+    if (!accounts.some((a) => a.id === searchScopeAccountId)) setSearchScopeAccountId(null);
+  }, [accounts, searchScopeAccountId, setSearchScopeAccountId]);
+
+  const searchAccountId = searchScopeAccountId ?? undefined;
 
   // An explicitly-cleared folder scope ([] -- see search-prefs.ts) means
   // "search nothing", distinct from null ("every folder"). useSearchResults
@@ -338,6 +354,27 @@ export function SearchPage() {
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
+        {(accounts?.length ?? 0) > 1 && (
+          <Select
+            value={searchScopeAccountId ?? ALL_ACCOUNTS_VALUE}
+            onValueChange={(v) =>
+              setSearchScopeAccountId(v === ALL_ACCOUNTS_VALUE ? null : (v ?? null))
+            }
+          >
+            <SelectTrigger className="w-auto gap-1.5" size="sm">
+              <SelectValue placeholder="All accounts" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_ACCOUNTS_VALUE}>All accounts</SelectItem>
+              {accounts?.map((account) => (
+                <SelectItem key={account.id} value={account.id}>
+                  {account.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
         <FolderPicker selectedIds={folderIds} onChange={setFolderIds} accountId={searchAccountId} />
 
         <DateRangePicker

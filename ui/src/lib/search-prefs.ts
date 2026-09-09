@@ -12,6 +12,19 @@ import type { SearchField, SearchSort, SearchStrictness } from "@/types/api";
 
 export const ALL_SEARCH_FIELDS: SearchField[] = ["subject", "from", "to", "body"];
 
+/** Which account(s) a search runs against -- null means every account,
+ * a real scope of its own rather than inherited from whichever account
+ * the sidebar happens to have selected. With several accounts
+ * configured, "whichever the sidebar shows" was the wrong default: a
+ * search opened while reading one account silently missed every other
+ * one, reachable only by first switching the sidebar into its separate
+ * Unified View. This is what makes "search everywhere" the search
+ * page's own choice instead. */
+export const searchAccountIdAtom = atomWithStorage<string | null>(
+  "mailverdict:search-account",
+  null,
+);
+
 /** Which fields a fulltext search scans. Semantic mode ignores this --
  * there is one embedding per message, nothing to scope by field. */
 export const searchFieldsAtom = atomWithStorage<SearchField[]>(
