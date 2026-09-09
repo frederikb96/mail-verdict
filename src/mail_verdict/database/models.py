@@ -12,7 +12,7 @@ MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
   calendar_links_revision, pending_sends, pending_send_attachments, alerts,
-  push_subscriptions
+  push_subscriptions, vapid_keypair
   (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
@@ -34,6 +34,7 @@ from sqlalchemy import (
     ARRAY,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     FetchedValue,
@@ -1414,3 +1415,31 @@ class PushSubscription(Base):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VapidKeypair(Base):
+    """The server's single Web Push signing identity -- one row, always
+    id=1 (the check constraint is what makes a second row impossible, not
+    application discipline). Generated on first use rather than
+    provisioned: nothing seeds this table, push/vapid.py inserts the row
+    the first time a public key or a push send is asked for, so a
+    self-hosted deployment gains push by upgrading rather than by editing
+    a chart or setting an environment variable.
+
+    encrypted_private_key is AES-256-GCM ciphertext in the same format
+    core/encryption.py already uses for provider API keys -- one
+    encryption mechanism and one key (config.security.encryption_key)
+    protects both. The public key is never stored: it is cheap to
+    re-derive from the private key (see push/vapid.py), and doing so
+    keeps the private key the one source of truth for the pair.
+    """
+
+    __tablename__ = "vapid_keypair"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    encrypted_private_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (CheckConstraint("id = 1", name="ck_vapid_keypair_singleton"),)
