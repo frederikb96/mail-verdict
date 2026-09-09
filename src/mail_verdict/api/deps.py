@@ -14,6 +14,7 @@ from mail_verdict.database.repository import (
     FolderPrefsRepository,
     FolderRepository,
     MessageRepository,
+    PushSubscriptionRepository,
     SyncNotificationRepository,
     TagRepository,
     VerdictRepository,
@@ -63,3 +64,8 @@ def get_sync_notification_repo() -> SyncNotificationRepository:
 def get_alert_repo() -> AlertRepository:
     """Get AlertRepository using the global DB connection."""
     return AlertRepository(get_db_connection())
+
+
+def get_push_subscription_repo() -> PushSubscriptionRepository:
+    """Get PushSubscriptionRepository using the global DB connection."""
+    return PushSubscriptionRepository(get_db_connection())

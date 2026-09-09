@@ -167,6 +167,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else "No ENCRYPTION_KEY set -- provider keys must come from environment variables",
     )
 
+    from mail_verdict.push.vapid import init_vapid_key_repo
+
+    vapid_repo = init_vapid_key_repo(db, config.security.encryption_key)
+    logger.info(
+        "VAPID key storage ready -- push notifications available"
+        if config.security.encryption_key
+        else "No ENCRYPTION_KEY set -- push notifications unavailable",
+    )
+
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.api.events import init_event_ring
 
@@ -308,7 +317,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         except ValueError:
                             folder_uuid = None
                         await create_mail_alert_for_arrival(
-                            db, event_ring, account_id=account_uuid, message_id=message_uuid,
+                            db, event_ring, vapid_repo,
+                            account_id=account_uuid, message_id=message_uuid,
                             folder_id=folder_uuid,
                         )
             elif event.op == "update":
@@ -415,10 +425,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
     from mail_verdict.core.openai_provider import reset_openai_provider
+    from mail_verdict.push.vapid import reset_vapid_key_repo
 
     reset_anthropic_provider()
     reset_openai_provider()
     reset_provider_credential_repo()
+    reset_vapid_key_repo()
     reset_settings_service()
     await close_database()
     logger.info("Database connection closed")
