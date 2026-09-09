@@ -35,6 +35,16 @@ const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
 
+// MAX_PREVIEW_BYTES bounds the file this preview ever opens, not how many
+// pages are inside it -- a PDF a few MB in size can still carry many
+// thousands of pages, each with its own mounted slot and
+// IntersectionObserver even with the draw (and now the fetch) gated on
+// proximity. This is a hard ceiling on the ordinary case ("a mail
+// attachment is usually a handful of pages") rather than a bound this
+// component tries to hold under, since a stranger's PDF is exactly the
+// kind of file that would otherwise be trusted to stay small.
+const MAX_RENDERED_PAGES = 300;
+
 /** How far past the visible area a page still gets drawn -- a couple of
  * screens' worth of the scroll container's own measured height, in pixels
  * rather than a percentage: percentage rootMargin resolves against the
@@ -50,12 +60,19 @@ function PdfPage({
   columnWidth,
   zoom,
   scrollRoot,
+  estimatedAspectRatio,
 }: {
   doc: PDFDocumentProxy;
   pageNumber: number;
   columnWidth: number;
   zoom: number;
   scrollRoot: Element | null;
+  // height/width of page 1, fetched once for the whole document -- what
+  // sizes this page's slot before its own metadata has loaded, so the
+  // column never collapses a not-yet-near page to zero height (which
+  // would defeat the IntersectionObserver measuring against it, and
+  // jump the scroll position once the real size lands).
+  estimatedAspectRatio: number;
 }) {
   const [page, setPage] = useState<PDFPageProxy | null>(null);
   const [isNear, setIsNear] = useState(false);
@@ -65,7 +82,14 @@ function PdfPage({
   const lastRenderedZoomRef = useRef<number | null>(null);
   const renderTaskRef = useRef<ReturnType<PDFPageProxy["render"]> | null>(null);
 
+  // Fetching the page object itself -- not only drawing it -- waits for
+  // isNear too. doc.getPage() holds the parsed page dictionary and its
+  // resources in memory for as long as anything references it, so
+  // fetching every page up front is the same unbounded-memory shape the
+  // draw-gating below already avoids for canvases: a PDF bounded only by
+  // MAX_PREVIEW_BYTES can still carry many thousands of pages.
   useEffect(() => {
+    if (!isNear) return;
     let cancelled = false;
     doc.getPage(pageNumber).then(
       (p) => {
@@ -78,7 +102,7 @@ function PdfPage({
     return () => {
       cancelled = true;
     };
-  }, [doc, pageNumber]);
+  }, [doc, pageNumber, isNear]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -98,7 +122,9 @@ function PdfPage({
   const naturalViewport = page?.getViewport({ scale: 1 });
   const scale = naturalViewport && columnWidth > 0 ? (columnWidth / naturalViewport.width) * zoom : 0;
   const scaledWidth = naturalViewport ? naturalViewport.width * scale : columnWidth;
-  const scaledHeight = naturalViewport ? naturalViewport.height * scale : 0;
+  const scaledHeight = naturalViewport
+    ? naturalViewport.height * scale
+    : columnWidth * estimatedAspectRatio * zoom;
 
   useEffect(() => {
     if (!page || !isNear || scale <= 0 || failed) return;
@@ -158,10 +184,12 @@ function PdfPage({
   return (
     <div
       ref={containerRef}
+      data-testid="pdf-page"
+      data-page-number={pageNumber}
       style={{ width: scaledWidth || columnWidth, height: scaledHeight || undefined }}
       className="mx-auto mb-2 shadow-sm"
     >
-      <canvas ref={canvasRef} className="block" />
+      {page ? <canvas ref={canvasRef} className="block" /> : null}
     </div>
   );
 }
@@ -169,6 +197,11 @@ function PdfPage({
 export function AttachmentPdfPreview({ src }: { src: string }) {
   const [pdfjs, setPdfjs] = useState<PdfjsModule | null>(null);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
+  // Page 1's own aspect ratio, fetched once for the whole document -- the
+  // one page every PdfPage slot needs a real size estimate from before
+  // its own turn to load, not fetched per page (that would be exactly
+  // the up-front cost this component exists to avoid).
+  const [estimatedAspectRatio, setEstimatedAspectRatio] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [columnWidth, setColumnWidth] = useState(0);
@@ -210,6 +243,25 @@ export function AttachmentPdfPreview({ src }: { src: string }) {
   }, [pdfjs, src]);
 
   useEffect(() => {
+    if (!doc) return;
+    let cancelled = false;
+    doc.getPage(1).then((p) => {
+      if (cancelled) return;
+      const v = p.getViewport({ scale: 1 });
+      setEstimatedAspectRatio(v.height / v.width);
+    }, () => {
+      // Page 1 itself failed to load -- every other page's own getPage()
+      // will fail the same way once it becomes near and reports its own
+      // per-page failure there; a fallback ratio just keeps not-yet-near
+      // slots from collapsing to zero height in the meantime.
+      if (!cancelled) setEstimatedAspectRatio(1.4);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc]);
+
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const measure = () => setColumnWidth(el.clientWidth - 32);
@@ -222,6 +274,8 @@ export function AttachmentPdfPreview({ src }: { src: string }) {
   if (failed) {
     return <PreviewUnavailable url={src} filename="attachment.pdf" reason="This file could not be previewed." />;
   }
+
+  const renderedPageCount = doc ? Math.min(doc.numPages, MAX_RENDERED_PAGES) : 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -236,12 +290,13 @@ export function AttachmentPdfPreview({ src }: { src: string }) {
         style={{ overflowAnchor: "none" }}
         className="min-h-0 flex-1 overflow-y-auto p-4"
       >
-        {!doc && (
+        {(!doc || estimatedAspectRatio === null) && (
           <p className="p-6 text-center text-sm text-muted-foreground">Loading…</p>
         )}
         {doc &&
+          estimatedAspectRatio !== null &&
           columnWidth > 0 &&
-          Array.from({ length: doc.numPages }, (_, i) => i + 1).map((pageNumber) => (
+          Array.from({ length: renderedPageCount }, (_, i) => i + 1).map((pageNumber) => (
             <PdfPage
               key={pageNumber}
               doc={doc}
@@ -249,8 +304,15 @@ export function AttachmentPdfPreview({ src }: { src: string }) {
               columnWidth={columnWidth}
               zoom={zoom}
               scrollRoot={scrollRef.current}
+              estimatedAspectRatio={estimatedAspectRatio}
             />
           ))}
+        {doc && doc.numPages > MAX_RENDERED_PAGES && (
+          <p className="p-4 text-center text-xs text-muted-foreground">
+            Showing the first {MAX_RENDERED_PAGES} of {doc.numPages} pages. Download the file to
+            see the rest.
+          </p>
+        )}
       </div>
       <div className="flex shrink-0 items-center justify-center gap-2 border-t p-2">
         <Button

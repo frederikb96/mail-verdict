@@ -62,6 +62,38 @@ def _build_minimal_pdf() -> bytes:
     return header + bytes(body) + xref + trailer
 
 
+def _build_multi_page_pdf(page_count: int) -> bytes:
+    """A blank page repeated page_count times, sharing one /Pages node --
+    the same byte-accurate xref approach as _build_minimal_pdf, generalised
+    to more than one page. What proves the preview caps how many page
+    slots it mounts rather than mounting one per page unconditionally."""
+    page_refs = " ".join(f"{i} 0 R" for i in range(3, 3 + page_count))
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{page_refs}] /Count {page_count} >>".encode(),
+        *(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Resources << >> >>"
+            for _ in range(page_count)
+        ),
+    ]
+    header = b"%PDF-1.4\n"
+    body = bytearray()
+    offsets: list[int] = []
+    for i, obj in enumerate(objects, start=1):
+        offsets.append(len(header) + len(body))
+        body += f"{i} 0 obj\n".encode() + obj + b"\nendobj\n"
+    xref_offset = len(header) + len(body)
+    xref = f"xref\n0 {len(objects) + 1}\n".encode()
+    xref += b"0000000000 65535 f \n"
+    for offset in offsets:
+        xref += f"{offset:010d} 00000 n \n".encode()
+    trailer = (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n"
+    ).encode()
+    return header + bytes(body) + xref + trailer
+
+
 def _build_message_with_attachments(*, sender: str, recipient: str, subject: str) -> bytes:
     msg = EmailMessage()
     msg["From"] = sender
@@ -120,6 +152,48 @@ def message_with_attachments(
         sender="sender@example.com", recipient=recipient, subject=subject,
     )
     deliver_message(message, host, lmtp_port, sender="sender@example.com", recipient=recipient)
+
+    def _find() -> dict[str, Any] | None:
+        resp = api_client.get(
+            f"/api/accounts/{attachments_account['id']}/messages",
+            params={"folder_id": inbox_folder["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        for m in resp.json()["messages"]:
+            if m["subject"] == subject:
+                return m
+        return None
+
+    return wait_for(_find, description=f"{subject!r} synced into INBOX")
+
+
+@pytest.fixture(scope="module")
+def many_pages_message(
+    api_client: httpx.Client,
+    dovecot_endpoint: tuple[str, int, int],
+    attachments_account: dict[str, Any],
+    inbox_folder: dict[str, Any],
+) -> dict[str, Any]:
+    """A PDF carrying more pages than the preview will ever mount slots
+    for -- MAX_RENDERED_PAGES bounds page count regardless of how small
+    the file itself is, which byte size alone (MAX_PREVIEW_BYTES) cannot."""
+    host, _imap_port, lmtp_port = dovecot_endpoint
+    subject = "UI many-page attachment preview test"
+    recipient = attachments_account["email"]
+    msg = EmailMessage()
+    msg["From"] = "sender@example.com"
+    msg["To"] = recipient
+    msg["Subject"] = subject
+    msg["Message-ID"] = f"<{uuid.uuid4()}@example.com>"
+    msg.set_content("See attached.")
+    msg.add_attachment(
+        _build_multi_page_pdf(320),
+        maintype="application", subtype="pdf", filename="manypages.pdf",
+    )
+    deliver_message(
+        msg.as_bytes(policy=email.policy.SMTP), host, lmtp_port,
+        sender="sender@example.com", recipient=recipient,
+    )
 
     def _find() -> dict[str, Any] | None:
         resp = api_client.get(
@@ -208,3 +282,27 @@ class TestAttachmentPreview:
             "an ineligible attachment's bytes were fetched even though nothing "
             "renders them"
         )
+
+    def test_a_many_page_pdf_caps_how_many_page_slots_are_mounted(
+        self,
+        page: Page,
+        app_server: str,
+        attachments_account: dict[str, Any],
+        many_pages_message: dict[str, Any],
+    ) -> None:
+        """MAX_PREVIEW_BYTES bounds the file's bytes, not its page count --
+        a small PDF can still carry hundreds of pages, each with its own
+        mounted slot and IntersectionObserver if nothing caps it."""
+        _open_message(page, app_server, attachments_account, many_pages_message)
+
+        page.get_by_label("Preview manypages.pdf").click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog).to_be_visible(timeout=10_000)
+
+        expect(dialog.get_by_text("Showing the first 300 of 320 pages.")).to_be_visible(
+            timeout=15_000,
+        )
+        expect(dialog.locator('[data-testid="pdf-page"]')).to_have_count(300, timeout=15_000)
+
+        canvas = dialog.locator("canvas").first
+        expect(canvas).to_be_visible(timeout=15_000)
