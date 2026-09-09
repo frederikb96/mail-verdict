@@ -83,8 +83,8 @@ function ColorPicker({ calendar }: { calendar: Calendar }) {
 }
 
 /** A calendar's own reminder default -- two nullable questions
- * (calendar_prefs.reminders_enabled/default_reminder_minutes), both NULL
- * meaning inherit the global setting.settings/calendar default. Compact
+ * (calendar_prefs.reminders_enabled/default_reminder_minutes), both null
+ * meaning inherit settings.calendar.default_reminder_minutes. Compact
  * popover, the same shape ColorPicker above already uses for a per-
  * calendar override that does not need its own row. */
 function ReminderPicker({ calendar }: { calendar: Calendar }) {
