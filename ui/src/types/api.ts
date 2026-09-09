@@ -184,6 +184,9 @@ export interface AccountResponse {
   folder_order: string[] | null;
   /** NULL is off -- no periodic Trash sweep runs for this account. */
   trash_retention_days: number | null;
+  /** NULL is off -- no periodic Junk sweep runs for this account. Independently
+   * configurable from trash_retention_days, not the same period applied twice. */
+  junk_retention_days: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -200,6 +203,7 @@ export interface AccountCreateRequest {
   smtp_password?: string;
   spam_enabled?: boolean;
   trash_retention_days?: number | null;
+  junk_retention_days?: number | null;
 }
 
 /**
@@ -216,6 +220,7 @@ export interface AccountUpdateRequest {
   is_active?: boolean;
   spam_enabled?: boolean;
   trash_retention_days?: number | null;
+  junk_retention_days?: number | null;
 }
 
 export interface FolderResponse {

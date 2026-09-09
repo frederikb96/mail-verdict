@@ -1,8 +1,10 @@
 """
-account_prefs.trash_retention_days round-trips through the accounts API
--- proof that it is routed as an AccountPrefs field (update_account's
-own prefs_fields set), not forwarded to PostIMAP's accounts table, where
-it has no column and the write would fail.
+account_prefs.trash_retention_days and .junk_retention_days round-trip
+through the accounts API -- proof that both are routed as AccountPrefs
+fields (update_account's own prefs_fields set), not forwarded to
+PostIMAP's accounts table, where they have no column and the write
+would fail -- and that the two periods are independently configurable,
+not one setting applied to both folders.
 """
 
 from __future__ import annotations
@@ -109,3 +111,53 @@ class TestTrashRetentionDaysRoundTrip:
             )
         assert resp.status_code == 201, resp.text
         assert resp.json()["trash_retention_days"] == 14
+
+
+class TestJunkRetentionDaysRoundTrip:
+    """Same shape as trash_retention_days -- a second, independent field,
+    not the same setting reused for a second folder."""
+
+    def test_defaults_to_off(self, client: TestClient, migrated_db: DatabaseConnection) -> None:
+        account_id = client.portal.call(_seed, migrated_db)
+        with (
+            patch(_ACCOUNTS_DB_TARGET, return_value=migrated_db),
+            patch(_ACCOUNTS_EVENT_RING_TARGET, return_value=None),
+        ):
+            resp = client.get(f"/accounts/{account_id}")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["junk_retention_days"] is None
+
+    def test_patch_sets_it_and_get_reflects_it(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed, migrated_db)
+        with (
+            patch(_ACCOUNTS_DB_TARGET, return_value=migrated_db),
+            patch(_ACCOUNTS_EVENT_RING_TARGET, return_value=None),
+        ):
+            patch_resp = client.patch(
+                f"/accounts/{account_id}", json={"junk_retention_days": 7},
+            )
+            assert patch_resp.status_code == 200, patch_resp.text
+            assert patch_resp.json()["junk_retention_days"] == 7
+
+            get_resp = client.get(f"/accounts/{account_id}")
+        assert get_resp.json()["junk_retention_days"] == 7
+
+    def test_setting_one_period_leaves_the_other_untouched(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The owner talked himself round to the same number (30) for
+        both, but arrived there by considering a different number (7)
+        for Junk first -- the two must never be coupled."""
+        account_id = client.portal.call(_seed, migrated_db)
+        with (
+            patch(_ACCOUNTS_DB_TARGET, return_value=migrated_db),
+            patch(_ACCOUNTS_EVENT_RING_TARGET, return_value=None),
+        ):
+            client.patch(f"/accounts/{account_id}", json={"trash_retention_days": 30})
+            resp = client.patch(f"/accounts/{account_id}", json={"junk_retention_days": 7})
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["trash_retention_days"] == 30
+        assert resp.json()["junk_retention_days"] == 7

@@ -753,43 +753,66 @@ class AccountPrefs(Base):
     # only ever considers an account with this set. Not a settings-category
     # value: it varies per account the same way spam_enabled does.
     trash_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The same retention, independently configurable, for the account's
+    # spam (Junk) folder -- deliberately a second column rather than one
+    # setting applied to both roles, since the two periods a person
+    # actually wants for Trash and Junk need not agree.
+    junk_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
-class TrashEntry(Base):
-    """When a message was first observed sitting in Trash -- the clock
-    the retention sweep (retention/sweep.py) ages against. Retention means
-    time IN Trash, not the message's own age, and no "moved to Trash at"
-    timestamp exists anywhere in the mirror to read that from, so the
-    sweep creates this one itself, for any account with retention
-    configured: the first tick that sees a message in that account's
-    Trash without a row here stamps one at that moment.
+class RetentionEntry(Base):
+    """When a message was first observed sitting in a retention-tracked
+    folder -- Trash or Junk, named by `role` -- the clock the retention
+    sweep (retention/sweep.py) ages against for that role. Retention
+    means time IN the folder, not the message's own age, and no
+    "moved to Trash/Junk at" timestamp exists anywhere in the mirror to
+    read that from, so the sweep creates this one itself, per account
+    and role independently configured: the first tick that sees a
+    message sitting in a retention-configured account's Trash or Junk
+    without a row here stamps one at that moment.
+
+    One table for both roles rather than a second, parallel copy of the
+    same mechanism -- they would agree the day they were written and
+    drift apart the first time only one of them was fixed. `message_id`
+    alone is the primary key, not `(message_id, role)`: a message is in
+    exactly one folder at a time, so at most one role's sweep can ever
+    stamp a fresh row for it in a given tick. A message that transitions
+    folder role directly (rescued from Junk and moved straight to Trash,
+    say) briefly still carries its old role's row -- that role's own
+    stamp step sees the existing `message_id` and skips it, the other
+    role's own cleanup step (the one whose folder the message just left)
+    drops the stale row on the same tick, and the next tick's stamp
+    claims it cleanly under the new role. One tick of delay in that
+    direction, never a collision and never an early deletion -- see the
+    sweep's own stamping query for the exact mechanics.
 
     No foreign key onto messages, consistent with every other
     MailVerdict-owned table -- and message_id is not a durable identifier
     across a UIDVALIDITY resync besides. A resync while a message sits in
-    Trash orphans this row, and the next tick re-stamps it as newly
-    arrived: the clock restarts rather than carrying over, which delays
-    deletion rather than causing an early one -- the direction retention
-    is designed to fail toward.
+    a tracked folder orphans this row, and the next tick re-stamps it as
+    newly arrived: the clock restarts rather than carrying over, which
+    delays deletion rather than causing an early one -- the direction
+    retention is designed to fail toward.
 
     Deleted by the same sweep the moment the message it names is no
-    longer observed sitting in Trash -- moved elsewhere, or expunged --
-    so a message that leaves Trash and later returns gets a fresh clock,
-    never resuming the old one.
+    longer observed sitting in that role's folder -- moved elsewhere, or
+    expunged -- so a message that leaves and later returns gets a fresh
+    clock, never resuming the old one.
     """
 
-    __tablename__ = "trash_entries"
+    __tablename__ = "retention_entries"
 
     message_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
-    entered_trash_at: Mapped[datetime] = mapped_column(
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    entered_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
 
     __table_args__ = (
         # The sweep's own claim query drives from account_prefs (a
         # handful of rows with retention set) into this table.
-        Index("idx_trash_entries_account_id", "account_id"),
+        Index("idx_retention_entries_account_id", "account_id"),
     )
 
 

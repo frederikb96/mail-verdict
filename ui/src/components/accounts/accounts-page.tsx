@@ -175,6 +175,17 @@ function AccountCard({
               ? `${account.trash_retention_days} days`
               : "Off"}
           </div>
+          <div className="text-muted-foreground">Junk retention</div>
+          <div className="flex items-center gap-1">
+            {account.junk_retention_days ? (
+              <CheckCircle2 className="h-3 w-3 text-green-500" />
+            ) : (
+              <XCircle className="h-3 w-3 text-muted-foreground" />
+            )}
+            {account.junk_retention_days
+              ? `${account.junk_retention_days} days`
+              : "Off"}
+          </div>
         </div>
 
         {/* Sync status */}
@@ -354,6 +365,8 @@ function AccountForm({
     const spam_enabled = form.get("spam_enabled") === "on";
     const trashRetentionRaw = form.get("trash_retention_days") as string;
     const trash_retention_days = trashRetentionRaw ? Number(trashRetentionRaw) : null;
+    const junkRetentionRaw = form.get("junk_retention_days") as string;
+    const junk_retention_days = junkRetentionRaw ? Number(junkRetentionRaw) : null;
 
     if (isEditing) {
       // imap_host/imap_port/imap_user are insert-only -- not part of this payload.
@@ -366,6 +379,7 @@ function AccountForm({
         smtp_password,
         spam_enabled,
         trash_retention_days,
+        junk_retention_days,
       };
       updateAccount.mutate(
         { id: account.id, data },
@@ -384,6 +398,7 @@ function AccountForm({
         smtp_password,
         spam_enabled,
         trash_retention_days,
+        junk_retention_days,
       };
       createAccount.mutate(data, { onSuccess: onClose });
     }
@@ -504,16 +519,29 @@ function AccountForm({
           />
           <Label htmlFor="spam_enabled">Enable spam detection</Label>
         </div>
-        <div className="grid gap-1.5">
-          <Label htmlFor="trash_retention_days">Trash retention (days)</Label>
-          <Input
-            id="trash_retention_days"
-            name="trash_retention_days"
-            type="number"
-            min={1}
-            defaultValue={account?.trash_retention_days ?? ""}
-            placeholder="Off -- Trash is never emptied automatically"
-          />
+        <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-1.5">
+            <Label htmlFor="trash_retention_days">Trash retention (days)</Label>
+            <Input
+              id="trash_retention_days"
+              name="trash_retention_days"
+              type="number"
+              min={1}
+              defaultValue={account?.trash_retention_days ?? ""}
+              placeholder="Off -- Trash is never emptied automatically"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="junk_retention_days">Junk retention (days)</Label>
+            <Input
+              id="junk_retention_days"
+              name="junk_retention_days"
+              type="number"
+              min={1}
+              defaultValue={account?.junk_retention_days ?? ""}
+              placeholder="Off -- Junk is never emptied automatically"
+            />
+          </div>
         </div>
       </div>
       <div className="flex justify-end gap-2">
