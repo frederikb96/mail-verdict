@@ -97,29 +97,55 @@ class TestSenderDomain:
 
 
 class TestHeaderMatch:
-    """Tests for header_match(field, pattern) condition."""
+    """Tests for header_match(field, pattern) condition.
+
+    raw_headers is always lower-cased at the source (message_view.py's own
+    load) before it ever reaches a MailContext -- fixtures here use that
+    same shape rather than the mixed case a header name is conventionally
+    written in, precisely because that gap is what let the field-name
+    lookup go silently case-sensitive."""
 
     def test_match(self) -> None:
-        ctx = _ctx(raw_headers={"X-Mailer": "Thunderbird 102"})
+        ctx = _ctx(raw_headers={"x-mailer": "Thunderbird 102"})
         cond = {"header_match": {"field": "X-Mailer", "pattern": "Thunderbird"}}
         assert evaluate_condition(cond, ctx) is True
 
     def test_no_match(self) -> None:
-        ctx = _ctx(raw_headers={"X-Mailer": "Outlook"})
+        ctx = _ctx(raw_headers={"x-mailer": "Outlook"})
         cond = {"header_match": {"field": "X-Mailer", "pattern": "Thunderbird"}}
         assert evaluate_condition(cond, ctx) is False
 
+    def test_field_name_matched_case_insensitively(self) -> None:
+        """A rule naming the header exactly as mail conventionally writes
+        it ("From", not "from") must still match the always-lower-cased
+        raw_headers dict a real message produces."""
+        ctx = _ctx(raw_headers={"from": '"Alice" <alice@example.com>'})
+        cond = {"header_match": {"field": "From", "pattern": "alice@example.com"}}
+        assert evaluate_condition(cond, ctx) is True
+
+    def test_lowercase_field_name_still_matches(self) -> None:
+        """A rule already written with a lower-case field name -- the only
+        form that ever worked before this fix -- must keep working."""
+        ctx = _ctx(raw_headers={"x-mailer": "Thunderbird 102"})
+        cond = {"header_match": {"field": "x-mailer", "pattern": "Thunderbird"}}
+        assert evaluate_condition(cond, ctx) is True
+
 
 class TestHeaderExists:
-    """Tests for header_exists condition."""
+    """Tests for header_exists condition. Same lower-cased raw_headers
+    shape as TestHeaderMatch, for the same reason."""
 
     def test_exists(self) -> None:
-        ctx = _ctx(raw_headers={"X-Priority": "1"})
+        ctx = _ctx(raw_headers={"x-priority": "1"})
         assert evaluate_condition({"header_exists": "X-Priority"}, ctx) is True
 
     def test_not_exists(self) -> None:
         ctx = _ctx(raw_headers={})
         assert evaluate_condition({"header_exists": "X-Priority"}, ctx) is False
+
+    def test_lowercase_field_name_still_matches(self) -> None:
+        ctx = _ctx(raw_headers={"x-priority": "1"})
+        assert evaluate_condition({"header_exists": "x-priority"}, ctx) is True
 
 
 class TestSizeConditions:

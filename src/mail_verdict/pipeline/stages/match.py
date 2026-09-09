@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from mail_verdict.pipeline.context import RunContext
 from mail_verdict.pipeline.contracts import StageOutcome
 from mail_verdict.pipeline.effect_codec import parse_effect
-from mail_verdict.pipeline.message_view import MessageView
+from mail_verdict.pipeline.message_view import MessageView, extract_display_name_and_addr
 from mail_verdict.rules.conditions import MailContext, evaluate_condition
 
 
@@ -58,12 +58,19 @@ class MatchStage:
 
 
 def _to_mail_context(msg: MessageView, ctx: RunContext) -> MailContext:
+    # msg.from_addr is the raw From header -- display name and all, e.g.
+    # '"Anthropic, PBC" <invoice+statements@mail.anthropic.com>'. sender_match
+    # and sender_domain compare against a bare address, so a display name
+    # would make an exact match impossible and a domain suffix check fail
+    # even when the address is exactly right. A bare-address From (no
+    # display name) parses to itself unchanged.
+    _, bare_from_addr = extract_display_name_and_addr(msg.from_addr)
     return MailContext(
         mail_id=msg.message_id,
         subject=msg.subject,
         body_text=msg.body,
         body_html="",
-        from_addr=msg.from_addr,
+        from_addr=bare_from_addr,
         to_addrs=list(msg.to_addrs),
         cc_addrs=list(msg.cc_addrs),
         raw_headers=dict(msg.headers),
