@@ -37,6 +37,7 @@ import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
+import { useAlerts, useDismissAlert } from "@/hooks/use-alerts";
 import { isEditableElement } from "@/lib/utils";
 import { explicitlyUnreadMailIdAtom, requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
 
@@ -47,6 +48,8 @@ export function ReadingPane() {
   const { data: thread, isLoading } = useThread(mailId);
   const mailAction = useMailAction();
   const verdictFeedback = useVerdictFeedback();
+  const { data: alerts } = useAlerts();
+  const dismissAlert = useDismissAlert();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
   const [confirmExpunge, setConfirmExpunge] = useState(false);
@@ -106,6 +109,23 @@ export function ReadingPane() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primary?.id, primary?.is_seen, isDraft, explicitlyUnreadMailId]);
+
+  // Clears the opened message's own new-mail bell entry, live -- covers
+  // both ways a message ends up open here (a row click and arriving from
+  // a clicked push notification's ?message= URL both land on primary the
+  // same way). Undismissed alerts loaded for a message not yet reflected
+  // in the list (or several, though that shouldn't happen in practice)
+  // are all dismissed; nothing to do while the list hasn't loaded yet or
+  // carries no match.
+  useEffect(() => {
+    if (!primary) return;
+    for (const alert of alerts ?? []) {
+      if (alert.message_id === primary.id && alert.dismissed_at === null) {
+        dismissAlert.mutate(alert.id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primary?.id, alerts]);
 
   // The explicit-unread protection lasts only while its message is the one
   // open -- looking at a different message (or none) drops it, so reopening

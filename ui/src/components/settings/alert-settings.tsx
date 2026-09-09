@@ -122,7 +122,7 @@ export function AlertSettings() {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
           <Bell className="h-4 w-4" />
-          Alerts
+          New mail
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
