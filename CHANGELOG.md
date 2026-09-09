@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Rules
+
+- A sender condition (matching an exact address or a domain) now matches real mail: it compared
+  the raw From header, display name included, against a bare address, so it could never match
+  anything. A header condition's field name is now matched case-insensitively too -- naming a
+  header the conventional way ("From") previously matched nothing, since the underlying header
+  dictionary always holds lower-case names.
+- A stage's "halt after this" setting now actually stops the pipeline there. It was stored,
+  validated and shown in the editor, but nothing ever read it back, so a message matching two
+  rules had both applied, with the later one's effects winning.
+
 ## [5.6.0] - 2026-09-09
 
 ### Mail
