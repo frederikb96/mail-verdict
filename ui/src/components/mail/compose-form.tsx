@@ -307,6 +307,16 @@ export function ComposeForm({
           placeholder="Subject"
         />
       )}
+      {compact && (
+        <div className="grid grid-cols-[auto_1fr] items-center gap-2">
+          <span className="text-xs text-muted-foreground">Subject</span>
+          <Input
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            placeholder="Subject"
+          />
+        </div>
+      )}
 
       {identities && identities.length > 1 && (
         <div className="grid grid-cols-[auto_1fr] items-center gap-2">

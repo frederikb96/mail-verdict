@@ -353,6 +353,44 @@ class TestReplyQuoting:
         )
         assert quoted_heading == "Original heading"
 
+    def test_editing_a_replys_subject_keeps_threading_intact(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        mailpit_http_url: str,
+        editor_account: dict[str, Any],
+        original_message: dict[str, Any],
+    ) -> None:
+        """The subject a reply starts with is derived, not fixed -- typing
+        over it does not touch the threading headers, which come from the
+        original message's id rather than from its subject line."""
+        custom_subject = f"Something else entirely {uuid.uuid4()}"
+
+        _open_thread(page, app_server, editor_account, original_message)
+        page.get_by_role("button", name="Reply", exact=True).click()
+
+        subject_field = page.get_by_role("textbox", name="Subject", exact=True)
+        expect(subject_field).to_be_visible(timeout=10_000)
+        subject_field.fill(custom_subject)
+
+        page.get_by_role("button", name="Send", exact=True).click()
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
+
+        wait_for_mailpit_message(mailpit_http_url, custom_subject)
+
+        _trigger_sync(api_client, editor_account["id"])
+        sent_folder = wait_for_folder(api_client, str(editor_account["id"]), "Sent")
+        sent = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, editor_account["id"], sent_folder["id"])
+                 if m["subject"] == custom_subject),
+                None,
+            ),
+            timeout_s=60.0, description=f"Reply {custom_subject!r} synced into Sent",
+        )
+        assert sent["thread_id"] == original_message["thread_id"]
+
 
 class TestReplyQuoteDoesNotLeakImages:
     """A message from a sender who is not allowlisted shows no images when
