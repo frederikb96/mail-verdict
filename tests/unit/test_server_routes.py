@@ -8,6 +8,7 @@ cannot connect at all.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
@@ -60,13 +61,29 @@ class TestStaticMediaTypes:
     This host's own mimetypes module already guesses .mjs correctly, so
     proving the override actually takes effect (not merely that the
     right answer comes out, which it would either way here) needs the
-    guess forced wrong first."""
+    guess forced wrong first.
+
+    This class builds its own throwaway ui/build directory rather than
+    sharing app_routes: the unit layer promises to need nothing built,
+    and spa_fallback -- the route this guards -- is only ever registered
+    when a build directory exists at all, so a real one would make the
+    fixture's own presence or absence in a given environment decide
+    whether this test proves anything.
+    """
+
+    @pytest.fixture()
+    def static_routes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+        (tmp_path / "pdf.worker.min.mjs").write_text("// worker\n", encoding="utf-8")
+        monkeypatch.setattr("mail_verdict.server._resolve_ui_build_dir", lambda: tmp_path)
+        from mail_verdict.server import create_app
+
+        return TestClient(create_app())
 
     def test_the_pdf_worker_is_served_as_javascript_even_if_the_hosts_own_guess_is_wrong(
-        self, app_routes: TestClient, monkeypatch: pytest.MonkeyPatch,
+        self, static_routes: TestClient, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr("starlette.responses.guess_type", lambda *a, **kw: (None, None))
-        response = app_routes.get("/pdf.worker.min.mjs")
+        response = static_routes.get("/pdf.worker.min.mjs")
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/javascript")
 
