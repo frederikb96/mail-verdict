@@ -552,6 +552,19 @@ def _resolve_ui_build_dir() -> Path:
     return ui_build_dir
 
 
+# Python's mimetypes module does not reliably map every extension to the
+# type a browser needs -- whether it does for .mjs depends on the image's
+# own /etc/mime.types and Python build, which is exactly the kind of thing
+# that differs between a checkout and a container. pdf.js's own worker
+# (ui/public/pdf.worker.min.mjs, see scripts/copy-pdf-worker.mjs) is
+# served through spa_fallback's static-file branch below, and a wrong
+# type there makes the browser refuse to load it as a module worker;
+# pdf.js falls back to a blob worker, which this app's CSP (worker-src
+# 'self') then blocks too -- silently, previewing PDFs where this map
+# is honoured and not where it isn't.
+_STATIC_MEDIA_TYPE_OVERRIDES = {".mjs": "text/javascript"}
+
+
 def _build_fastapi(ui_build_dir: Path) -> FastAPI:
     """Build the FastAPI root app: MCP mount, API routers, SSE route, health."""
     from mail_verdict.api.mcp_tools import mcp as mcp_server
@@ -700,7 +713,10 @@ def create_app() -> ASGIApp:
 
                 exact_file = ui_build_dir / path
                 if exact_file.is_file() and _within(exact_file):
-                    return FileResponse(str(exact_file))
+                    return FileResponse(
+                        str(exact_file),
+                        media_type=_STATIC_MEDIA_TYPE_OVERRIDES.get(exact_file.suffix),
+                    )
                 page_html = ui_build_dir / f"{path}.html"
                 if page_html.is_file() and _within(page_html):
                     return FileResponse(str(page_html))

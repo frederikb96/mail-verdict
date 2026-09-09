@@ -52,6 +52,25 @@ class TestMcpAddress:
         assert response.headers["location"].endswith("/mcp/")
 
 
+class TestStaticMediaTypes:
+    """A file's extension, not whatever this host's own Python build and
+    /etc/mime.types happen to guess for it, decides the Content-Type
+    spa_fallback serves it with -- the gap that made pdf.js's own worker
+    preview locally and fail silently, CSP-blocked, only once deployed.
+    This host's own mimetypes module already guesses .mjs correctly, so
+    proving the override actually takes effect (not merely that the
+    right answer comes out, which it would either way here) needs the
+    guess forced wrong first."""
+
+    def test_the_pdf_worker_is_served_as_javascript_even_if_the_hosts_own_guess_is_wrong(
+        self, app_routes: TestClient, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("starlette.responses.guess_type", lambda *a, **kw: (None, None))
+        response = app_routes.get("/pdf.worker.min.mjs")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/javascript")
+
+
 class TestOpenApiVersion:
     """The served document must name the version of the package serving it."""
 
