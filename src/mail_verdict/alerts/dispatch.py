@@ -17,11 +17,15 @@ message a rule moves out of the inbox used to announce itself, and apply
 a per-folder notification preference, against the folder it merely
 arrived in.
 
-Mail arriving directly into a folder the pipeline never runs against
-(sent/drafts/trash/junk/archive -- pipeline/enqueue.py's own scope) skips
-staging entirely and is delivered immediately, the same as before this
-module grew a staged path: no pipeline run will ever reach a terminal
-status for it, so waiting could only ever mean waiting out the bound.
+A message no pipeline run will ever exist for -- arriving directly into
+a folder the pipeline never runs against (sent/drafts/trash/junk/
+archive), a folder with no watermark yet (pipeline/enqueue.py's own
+is_live_pipeline_possible re-derives the whole eligibility predicate,
+not just the folder's role, for exactly this reason), or mail older than
+pipeline.live_max_age_days -- skips staging entirely and is delivered
+immediately, the same as before this module grew a staged path: no
+pipeline run will ever reach a terminal status for it, so waiting could
+only ever mean waiting out the bound.
 
 Either path funnels through AlertRepository.create_mail_alert's single
 ON CONFLICT DO NOTHING on dedupe_key -- the entire fires-exactly-once
@@ -45,7 +49,8 @@ from sqlalchemy import delete, select, text, update
 
 from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.msg_key import compute_msg_key
-from mail_verdict.database.repository import AlertRepository, FolderRepository
+from mail_verdict.database.repository import AlertRepository
+from mail_verdict.pipeline.enqueue import is_live_pipeline_possible
 from mail_verdict.push.send import dispatch_push_for_alert
 from mail_verdict.queue.notify import ReconciliationTimer
 
@@ -126,25 +131,6 @@ async def _load_arrival_facts(
     )
 
 
-async def _pipeline_never_runs_for(db: DatabaseConnection, folder_id: uuid.UUID | None) -> bool:
-    """
-    Whether the pipeline will simply never run against a message arriving
-    in this folder -- the same scope pipeline/enqueue.py's own gate
-    excludes. True means immediate delivery is correct, since no terminal
-    pipeline status will ever arrive for finalize_pending_mail_alerts_once()
-    to wait on.
-
-    An unresolvable folder_id (should not happen on a real arrival event,
-    since PostIMAP always carries one) is treated as False -- staged
-    rather than assumed excluded, so the bound in
-    finalize_pending_mail_alerts_once() is what still guarantees delivery.
-    """
-    if folder_id is None:
-        return False
-    role = await FolderRepository(db).get_effective_special_use(folder_id)
-    return (role or "") in _SKIP_FOLDER_SPECIAL_USE
-
-
 async def create_mail_alert_for_arrival(
     db: DatabaseConnection,
     event_ring: EventRing | None,
@@ -152,12 +138,17 @@ async def create_mail_alert_for_arrival(
     *,
     account_id: uuid.UUID,
     message_id: uuid.UUID,
+    settings_service: SettingsService,
     folder_id: uuid.UUID | None = None,
 ) -> None:
     """
     Turn a newly-arrived message into an alert -- delivered immediately if
-    the pipeline will never run against it (see _pipeline_never_runs_for),
-    staged otherwise. See this module's own docstring for why, and
+    no pipeline run will ever exist for it (is_live_pipeline_possible,
+    pipeline/enqueue.py -- the same predicate the pipeline's own live-
+    arrival enqueue checks, not merely the folder's role: a message can
+    just as well be permanently excluded by a missing watermark or the
+    age limit as by arriving straight into Junk), staged otherwise. See
+    this module's own docstring for why, and
     finalize_pending_mail_alerts_once() for the other half of the staged
     path.
 
@@ -168,7 +159,10 @@ async def create_mail_alert_for_arrival(
     ever a placeholder, overwritten once the message's real folder is
     known.
     """
-    if await _pipeline_never_runs_for(db, folder_id):
+    possible = await is_live_pipeline_possible(
+        db, account_id=account_id, message_id=message_id, settings_service=settings_service,
+    )
+    if not possible:
         await _insert_and_deliver(
             db, event_ring, vapid_repo,
             account_id=account_id, message_id=message_id, folder_id=folder_id,

@@ -45,12 +45,18 @@ async def _seed_message(
     session, account_id: uuid.UUID, folder_id: uuid.UUID, *,
     subject: str = "Hello", from_addr: str = "sender@example.com",
 ) -> uuid.UUID:
+    """received_at is set explicitly -- unlike created_at, it carries no
+    server default (see the consumer contract), and
+    is_live_pipeline_possible's age-limit check reads NULL as excluded
+    rather than as "unknown, assume recent"."""
     message_id = uuid.uuid4()
     await session.execute(
         text(
             "INSERT INTO messages "
-            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, from_addr) "
-            "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, :subject, :from_addr)"
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, from_addr, "
+            "received_at) "
+            "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, :subject, "
+            ":from_addr, now())"
         ),
         {
             "id": message_id, "account_id": account_id, "folder_id": folder_id,
@@ -86,6 +92,40 @@ async def _seed_plain_folder(session, account_id: uuid.UUID, imap_name: str) -> 
         {"id": folder_id, "account_id": account_id, "name": imap_name},
     )
     return folder_id
+
+
+async def _seed_watermark(session, *, account_id: uuid.UUID, folder_id: uuid.UUID) -> None:
+    """A folder's pipeline watermark -- the same signal
+    pipeline/enqueue.py's record_folder_watermark writes once PostIMAP
+    reports that folder's first sync complete. Mail arriving in a folder
+    with no such row is never live-pipeline-eligible, whatever its role.
+
+    Backdated by a minute rather than set to bare now(): within one
+    uncommitted transaction Postgres's now() is the transaction's start
+    time, not the wall clock, so a watermark and a message seeded in the
+    same session/transaction (as every caller here does) would otherwise
+    tie -- and is_live_pipeline_possible requires the message strictly
+    newer than the watermark."""
+    await session.execute(
+        text(
+            "INSERT INTO pipeline_folder_state (folder_id, account_id, backfill_completed_at) "
+            "VALUES (:folder_id, :account_id, now() - interval '1 minute')"
+        ),
+        {"folder_id": folder_id, "account_id": account_id},
+    )
+
+
+async def _seed_account_two_folders_with_watermark(
+    session,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """_seed_account_two_folders, plus a pipeline watermark on the inbox
+    -- what every test below expecting an ordinary-folder arrival to
+    stage (rather than deliver immediately) needs, since
+    is_live_pipeline_possible checks for one rather than only the
+    folder's role."""
+    account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+    await _seed_watermark(session, account_id=account_id, folder_id=inbox_id)
+    return account_id, inbox_id, junk_id
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -192,10 +232,11 @@ class TestCreateMailAlert:
 
 
 class TestImmediateDelivery:
-    """A message arriving directly into a folder the pipeline never runs
-    against (here, Junk) is delivered the moment it arrives -- no
-    terminal pipeline status will ever tell finalize_pending_mail_alerts_once
-    to stop waiting."""
+    """A message no pipeline run will ever exist for -- arriving directly
+    into a folder the pipeline never runs against (here, Junk), a folder
+    with no watermark, or mail older than pipeline.live_max_age_days --
+    is delivered the moment it arrives -- no terminal pipeline status
+    will ever tell finalize_pending_mail_alerts_once to stop waiting."""
 
     @pytest.mark.asyncio
     async def test_inserts_one_delivered_alert_with_subject_and_sender(
@@ -209,8 +250,10 @@ class TestImmediateDelivery:
             )
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
-            migrated_db, None, account_id=account_id, message_id=message_id, folder_id=junk_id,
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            settings_service=settings_service, folder_id=junk_id,
         )
 
         alert = await _alert_row(migrated_db, message_id)
@@ -229,11 +272,14 @@ class TestImmediateDelivery:
             message_id = await _seed_message(session, account_id, junk_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
-            migrated_db, None, account_id=account_id, message_id=message_id, folder_id=junk_id,
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            settings_service=settings_service, folder_id=junk_id,
         )
         await create_mail_alert_for_arrival(
-            migrated_db, None, account_id=account_id, message_id=message_id, folder_id=junk_id,
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            settings_service=settings_service, folder_id=junk_id,
         )
 
         repo = AlertRepository(migrated_db)
@@ -258,9 +304,10 @@ class TestImmediateDelivery:
         ring = EventRing()
         await ring.add(account_id, "test.seed", {})
         seq_before = ring.get_latest_seq()
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, ring, account_id=account_id, message_id=message_id,
-            folder_id=junk_id,
+            settings_service=settings_service, folder_id=junk_id,
         )
 
         events = await ring.replay_from(seq_before, str(account_id))
@@ -282,12 +329,75 @@ class TestImmediateDelivery:
             await session.commit()
 
         dead_message_id = uuid.uuid4()
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=dead_message_id,
-            folder_id=junk_id,
+            settings_service=settings_service, folder_id=junk_id,
         )
 
         assert await _alert_row(migrated_db, dead_message_id) is None
+
+    @pytest.mark.asyncio
+    async def test_a_folder_with_no_watermark_delivers_immediately(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """An otherwise ordinary folder that has never gotten a
+        pipeline_folder_state row -- the same permanent state a folder
+        synced before the pipeline feature shipped is left in -- can
+        never produce a pipeline_runs row either, so staging and waiting
+        out the bound would only ever end in the bound. Delivered right
+        away instead, the same as an explicitly excluded folder."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id, subject="No watermark")
+            await session.commit()
+
+        settings_service = await _settings(migrated_db)
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            settings_service=settings_service, folder_id=inbox_id,
+        )
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is not None
+        assert alert.folder_id == inbox_id
+
+    @pytest.mark.asyncio
+    async def test_mail_older_than_the_live_max_age_delivers_immediately(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A watermark exists, but the message's own received_at is older
+        than pipeline.live_max_age_days (a backdated Date header, most
+        likely) -- exactly as permanently pipeline-ineligible as a
+        missing watermark, so this must not wait out the bound either.
+
+        received_at is backdated on the row itself, deliberately, rather
+        than by lowering the pipeline.live_max_age_days setting: settings
+        persist in the database this whole pg-layer session shares, so a
+        lowered setting would silently outlive this test and misclassify
+        every later test's own "recent" mail as too old."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
+            message_id = await _seed_message(session, account_id, inbox_id, subject="Too old")
+            await session.execute(
+                text("UPDATE messages SET received_at = now() - interval '30 days' WHERE id = :id"),
+                {"id": message_id},
+            )
+            await session.commit()
+
+        settings_service = await _settings(migrated_db)
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            settings_service=settings_service, folder_id=inbox_id,
+        )
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is not None
+        assert alert.folder_id == inbox_id
 
 
 class TestStagedArrival:
@@ -301,13 +411,16 @@ class TestStagedArrival:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id, subject="Staged")
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
 
         alert = await _alert_row(migrated_db, message_id)
@@ -324,16 +437,19 @@ class TestStagedArrival:
     @pytest.mark.asyncio
     async def test_staged_arrival_pushes_nothing_yet(self, migrated_db: DatabaseConnection) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
         ring = EventRing()
         await ring.add(account_id, "test.seed", {})
         seq_before = ring.get_latest_seq()
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, ring, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
 
         events = await ring.replay_from(seq_before, str(account_id))
@@ -344,17 +460,20 @@ class TestStagedArrival:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
 
         async with migrated_db.session() as session:
@@ -373,7 +492,9 @@ class TestFinalizePendingMailAlerts:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             # A second ordinary folder, not Junk/Archive/Trash -- so only
             # the terminal pipeline run, never the folder itself, can
             # explain the alert being delivered below.
@@ -381,9 +502,10 @@ class TestFinalizePendingMailAlerts:
             message_id = await _seed_message(session, account_id, inbox_id, subject="Filed")
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         staged = await _alert_row(migrated_db, message_id)
         assert staged is not None
@@ -412,13 +534,16 @@ class TestFinalizePendingMailAlerts:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         async with migrated_db.session() as session:
             await _seed_pipeline_run(
@@ -437,16 +562,22 @@ class TestFinalizePendingMailAlerts:
     async def test_bound_expiring_delivers_with_whatever_folder_it_is_in(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """No pipeline_runs row at all (a stalled provider, or a folder
-        with no watermark yet) is exactly the case the bound exists for."""
+        """No pipeline_runs row at all (a stalled embeddings provider,
+        say, so the message's own transition to a terminal pipeline
+        status never happens) is exactly the case the bound exists for --
+        distinct from a folder with no watermark, which is now caught at
+        arrival time instead (see TestImmediateDelivery)."""
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
 
         settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
@@ -466,14 +597,17 @@ class TestFinalizePendingMailAlerts:
         pipeline-dead as one that arrived there -- delivered on the very
         next tick rather than waiting out the full bound."""
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             archive_id = await _seed_archive_folder(session, account_id)
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         async with migrated_db.session() as session:
             await move_message(session, message_id, archive_id)
@@ -492,13 +626,16 @@ class TestFinalizePendingMailAlerts:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         async with migrated_db.session() as session:
             await session.execute(
@@ -517,13 +654,16 @@ class TestFinalizePendingMailAlerts:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id, subject="Filed")
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         async with migrated_db.session() as session:
             await move_message(session, message_id, junk_id)
@@ -545,13 +685,16 @@ class TestFinalizePendingMailAlerts:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
         settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
         ring = EventRing()
@@ -579,7 +722,9 @@ class TestFinalizePendingMailAlerts:
         staged alert can be finalized from is by definition one the
         pipeline still runs against, never Junk or Archive."""
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders_with_watermark(
+                session,
+            )
             message_id = await _seed_message(session, account_id, inbox_id, subject="Push me")
             await session.commit()
 
@@ -597,9 +742,10 @@ class TestFinalizePendingMailAlerts:
             "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
         )
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            settings_service=settings_service, folder_id=inbox_id,
         )
 
         vapid_repo = VapidKeyRepository(migrated_db, "00" * 32)
@@ -656,6 +802,36 @@ class TestListAndDismiss:
         assert await repo.unseen_count() == 0
 
     @pytest.mark.asyncio
+    async def test_list_recent_unseen_only_excludes_dismissed(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """unseen_only is what a caller needing its list and its count to
+        agree (the bell badge) asks for -- a dismissed alert must not
+        reappear in it even though it's still within the recency window."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            seen_message = await _seed_message(session, account_id, inbox_id, subject="Seen")
+            unseen_message = await _seed_message(session, account_id, inbox_id, subject="Unseen")
+            await session.commit()
+
+        repo = AlertRepository(migrated_db)
+        seen_alert = await repo.create_mail_alert(
+            account_id=account_id, message_id=seen_message, msg_key=f"unseen-only-{uuid.uuid4()}",
+            title="Seen", body=None,
+        )
+        await repo.create_mail_alert(
+            account_id=account_id, message_id=unseen_message,
+            msg_key=f"unseen-only-{uuid.uuid4()}", title="Unseen", body=None,
+        )
+        assert seen_alert is not None
+        await repo.dismiss(seen_alert.id)
+
+        unseen_only = await repo.list_recent(limit=200, unseen_only=True)
+        ids = {a.message_id for a in unseen_only}
+        assert unseen_message in ids
+        assert seen_message not in ids
+
+    @pytest.mark.asyncio
     async def test_list_recent_is_newest_first_and_respects_limit(
         self, migrated_db: DatabaseConnection,
     ) -> None:
@@ -699,9 +875,10 @@ class TestFolderScope:
             message_id = await _seed_message(session, account_id, junk_id)
             await session.commit()
 
+        settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=junk_id,
+            settings_service=settings_service, folder_id=junk_id,
         )
 
         repo = AlertRepository(migrated_db)
@@ -762,3 +939,4 @@ class TestFolderScope:
 
         scoped = await repo.list_recent(folder_ids=[uuid.uuid4()])
         assert message_id in {a.message_id for a in scoped}
+
