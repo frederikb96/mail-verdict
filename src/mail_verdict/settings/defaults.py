@@ -2,7 +2,7 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, retry, pipeline, semantic, calendar, outbox.
+Categories: ai, retry, pipeline, semantic, calendar, outbox, mail.
 
 "rules" is not one of them: a rule is a `match` stage in the pipeline
 now (see pipeline/stages/match.py), and `settings.rules` -- if a pre-
@@ -34,6 +34,7 @@ class SettingCategory(str, enum.Enum):
     SEMANTIC = "semantic"
     CALENDAR = "calendar"
     OUTBOX = "outbox"
+    MAIL = "mail"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -152,5 +153,20 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # staging entirely and inserts immediately, as every send did
         # before this setting existed.
         "undo_send_seconds": 5.0,
+    },
+    SettingCategory.MAIL: {
+        # A message the user files into Archive or the spam (Junk) folder
+        # -- the toolbar action or a drag-and-drop move alike -- is marked
+        # read as it moves (alerts/dispatch.py's own arrival marking is
+        # unaffected; this is about the user's moves, not the pipeline's).
+        "mark_read_on_file_to_archive_or_junk": True,
+        # How long a new-mail alert waits for that message's pipeline run
+        # (rules/classification, which can still refile it) to reach a
+        # terminal status before notifying anyway with whatever folder the
+        # message is in by then. Long enough to outlast one
+        # pipeline.unavailable_probe_seconds retry cycle of a suspended
+        # provider circuit breaker, short enough that a stalled provider
+        # never means a silent mailbox for long.
+        "notify_wait_seconds": 120.0,
     },
 }

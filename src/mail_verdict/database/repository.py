@@ -1605,18 +1605,27 @@ class AlertRepository:
         title: str | None,
         body: str | None,
         folder_id: uuid.UUID | None = None,
+        delivered: bool = True,
     ) -> Alert | None:
         """
-        Insert a "new mail" alert, delivered immediately -- the in-app
-        path has no separate dispatch phase (no push subscriptions to
+        Insert a "new mail" alert.
+
+        Delivered immediately by default -- the in-app path has no
+        separate dispatch phase of its own (no push subscriptions to
         notify, no VAPID keys), so delivered_at is stamped at insert time
-        rather than left for a later dispatcher pass to claim.
+        rather than left for a later pass to claim. `delivered=False` is
+        for a message whose final folder is not yet known (see
+        alerts/dispatch.py's own docstring on staging vs. immediate
+        delivery): the row exists, but delivered_at stays NULL and
+        neither list_recent nor unseen_count see it until something calls
+        finalize_pending_mail_alerts() and stamps delivered_at itself.
 
         dedupe_key embeds msg_key rather than message_id, the same reason
         Verdict and MessageEmbedding do: a UIDVALIDITY resync replaces
         every messages.id in a folder, and the row that must never fire
         twice has to survive that. ON CONFLICT DO NOTHING is the entire
-        "fires exactly once" mechanism -- ordinary insert, not an upsert.
+        "fires exactly once" mechanism -- ordinary insert, not an upsert,
+        whether the row lands delivered or staged.
 
         Args:
             account_id, message_id: Source coordinates for the alert's URL
@@ -1626,7 +1635,10 @@ class AlertRepository:
                 resolved again by every reader of the alert list
             folder_id: What a folder filter (list_recent, unseen_count)
                 scopes against -- the same folder the live event and the
-                push dispatch already carry
+                push dispatch already carry. For a staged row this is the
+                arrival folder, a placeholder overwritten with the real
+                one at finalization.
+            delivered: False stages the row instead of delivering it
 
         Returns:
             The inserted Alert, or None if an alert for this msg_key
@@ -1640,7 +1652,7 @@ class AlertRepository:
                 .values(
                     kind="mail",
                     deliver_at=now,
-                    delivered_at=now,
+                    delivered_at=now if delivered else None,
                     title=title,
                     body=body,
                     url=f"/?message={message_id}",
