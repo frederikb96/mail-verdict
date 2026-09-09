@@ -13,7 +13,13 @@ import uuid
 import pytest
 from starlette.testclient import TestClient
 
-from tests.e2e.helpers import unique_email, wait_for, wait_for_account_active, wait_for_folder
+from tests.e2e.helpers import (
+    unique_email,
+    wait_for,
+    wait_for_account_active,
+    wait_for_folder,
+    wait_for_folder_synced,
+)
 from tests.setup.containers import DOVECOT_ALIAS, DOVECOT_IMAP_PORT, DOVECOT_PASSWORD
 from tests.setup.mail_delivery import build_eml, deliver_message
 
@@ -146,6 +152,10 @@ class TestFolderDeletion:
 
         wait_for(_move_confirmed, description="Message move into ToDelete confirmed by IMAP")
 
+        # Deletion is refused outright while a folder has not finished its
+        # own first sync -- see folder_management.py's backfill guard.
+        wait_for_folder_synced(app_client, str(folder_account["id"]), "ToDelete")
+
         # An unconfirmed DELETE reports the count rather than deleting --
         # the caller is expected to read it and repeat the call.
         unconfirmed = app_client.delete(f"/api/folders/{target['id']}")
@@ -246,6 +256,8 @@ class TestFolderDeletion:
 
         ordered = app_client.get(f"/api/accounts/{account_id}/folder-order").json()
         assert any(f["imap_name"] == "Ephemeral" for f in ordered["folders"])
+
+        wait_for_folder_synced(app_client, account_id, "Ephemeral")
 
         deleted = app_client.delete(
             f"/api/folders/{folder_id}", params={"confirm_message_count": 0},

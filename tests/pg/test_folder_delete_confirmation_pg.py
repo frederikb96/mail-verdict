@@ -52,11 +52,14 @@ async def _seed_account(session: AsyncSession) -> uuid.UUID:
 
 
 async def _seed_folder(session: AsyncSession, account_id: uuid.UUID, imap_name: str) -> uuid.UUID:
+    """A folder past its own first sync -- the state every test here except
+    TestBackfillGuard cares about. See test_folder_backfill_guard_pg.py for
+    the states this deliberately does not cover."""
     folder_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO folders (id, account_id, imap_name, special_use) "
-            "VALUES (:id, :account_id, :imap_name, 'archive')"
+            "INSERT INTO folders (id, account_id, imap_name, special_use, initial_sync_done) "
+            "VALUES (:id, :account_id, :imap_name, 'archive', true)"
         ),
         {"id": folder_id, "account_id": account_id, "imap_name": imap_name},
     )
@@ -175,7 +178,7 @@ class TestWritesInFlightGuard:
         message moved OUT of the folder being deleted, still pending on
         the server, is invisible to that folder's own message_count --
         confirming the (already wrong) count must not be enough."""
-        async def _seed(db: DatabaseConnection) -> uuid.UUID:
+        async def _seed(db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID]:
             async with db.session() as session:
                 account_id = await _seed_account(session)
                 folder_a = await _seed_folder(session, account_id, "Archive")
@@ -196,9 +199,9 @@ class TestWritesInFlightGuard:
                     {"b": folder_b, "id": moved_id},
                 )
                 await session.commit()
-            return folder_a
+            return folder_a, moved_id
 
-        folder_a = client.portal.call(_seed, migrated_db)
+        folder_a, moved_id = client.portal.call(_seed, migrated_db)
         target = "mail_verdict.api.folder_management.get_db_connection"
         with patch(target, return_value=migrated_db):
             # folder_a's own message_count now reads 2 (one row already
@@ -207,7 +210,13 @@ class TestWritesInFlightGuard:
             resp = client.delete(f"/folders/{folder_a}?confirm_message_count=2")
 
         assert resp.status_code == 409
-        assert "move" in resp.json()["detail"].lower()
+        detail = resp.json()["detail"].lower()
+        assert "move" in detail
+        # Naming the message id is what stands between this and hunting
+        # for it with raw SQL against production (see this guard's own
+        # docstring on the incident that cost real time doing exactly
+        # that).
+        assert str(moved_id) in detail
         assert client.portal.call(_folder_deleted_at, migrated_db, folder_a) is None
 
     def test_a_pending_move_blocks_a_different_folders_deletion_too(

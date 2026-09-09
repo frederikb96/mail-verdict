@@ -51,6 +51,10 @@ _FOLDER_CRUD_UNSUPPORTED_DETAIL = (
     "the running instance reports {version}."
 )
 
+# How many message ids _require_no_writes_in_flight names directly in its
+# 409 rather than leaving the caller to find them by hand.
+_PENDING_MOVES_NAMED_LIMIT = 20
+
 
 async def _get_account_or_404(account_id: uuid.UUID) -> Account:
     """Fetch account by ID or raise 404."""
@@ -269,13 +273,34 @@ async def _require_no_writes_in_flight(session: AsyncSession, account_id: uuid.U
         )
     )
     if pending_moves:
+        # A row that never resolves (a dead-lettered move whose revert
+        # never ran, say) blocks every future folder deletion on this
+        # account behind this 409 forever, with only a count to go on --
+        # naming the ids is the difference between that and raw SQL
+        # against production to find out which messages they are.
+        pending_ids = (
+            await session.scalars(
+                select(Message.id)
+                .where(
+                    Message.account_id == account_id,
+                    Message.imap_uid.is_(None),
+                    Message.expunged_at.is_(None),
+                )
+                .order_by(Message.id)
+                .limit(_PENDING_MOVES_NAMED_LIMIT)
+            )
+        ).all()
+        omitted = pending_moves - len(pending_ids)
+        ids_clause = ", ".join(str(i) for i in pending_ids)
+        if omitted:
+            ids_clause += f", and {omitted} more"
         raise HTTPException(
             status_code=409,
             detail=(
                 f"This account has {pending_moves} message move(s) not yet confirmed by "
                 "the mail server. Deleting a folder now could destroy mail the mirror no "
                 "longer attributes to it -- wait for the pending move(s) to finish and "
-                "try again."
+                f"try again. Affected message id(s): {ids_clause}."
             ),
         )
 
@@ -431,6 +456,28 @@ async def delete_folder(
         effective_special_use = (special_use_override or folder.special_use or "").lower()
         if effective_special_use == "inbox" or folder.imap_name.upper() == "INBOX":
             raise HTTPException(status_code=400, detail="INBOX cannot be deleted")
+
+        # A folder that has not finished its first sync cannot be trusted
+        # to report how much mail is really in it: on a freshly added
+        # account, most folders sit at a mirrored count of zero for a long
+        # while (PostIMAP backfills one folder per account at a time) with
+        # the server still holding everything. confirm_message_count would
+        # then confirm a real folder as empty, and the delete destroys
+        # whatever the server actually has. See the contract's "Watching
+        # an initial sync" section for what the three states on this row
+        # mean; the same reading the API surfaces on initial_sync_done /
+        # backfill_total.
+        if not folder.initial_sync_done:
+            state = "has not started yet" if folder.backfill_total is None else "is in progress"
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This folder has not finished its first sync -- backfill {state}. Its "
+                    "message count cannot be trusted until that finishes, since the mail "
+                    "server may still be holding mail this mirror has not counted yet. "
+                    "Wait for the sync to finish and try again."
+                ),
+            )
 
         await _require_no_writes_in_flight(session, folder.account_id)
 

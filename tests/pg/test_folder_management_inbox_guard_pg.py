@@ -46,11 +46,14 @@ async def _seed_account(session: AsyncSession) -> uuid.UUID:
 async def _seed_folder(
     session: AsyncSession, account_id: uuid.UUID, imap_name: str, special_use: str | None,
 ) -> uuid.UUID:
+    """A folder past its own first sync -- this module is about the INBOX
+    guard, not the backfill guard (test_folder_backfill_guard_pg.py), and
+    the control case below needs to reach the real delete."""
     folder_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO folders (id, account_id, imap_name, special_use) "
-            "VALUES (:id, :account_id, :imap_name, :special_use)"
+            "INSERT INTO folders (id, account_id, imap_name, special_use, initial_sync_done) "
+            "VALUES (:id, :account_id, :imap_name, :special_use, true)"
         ),
         {
             "id": folder_id, "account_id": account_id,
