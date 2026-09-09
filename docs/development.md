@@ -60,6 +60,17 @@ confirmed dead before starting anything of its own -- never by age, since a genu
 `scripts/prune_orphaned_containers.py` runs the same sweep standalone, for whenever containers are
 suspected to have accumulated and nothing is about to start a session anyway.
 
+The same leak applies to the Docker network each session's containers share -- nothing sweeps that
+the way containers are swept, so hundreds can accumulate across enough killed runs. The symptom is
+not a startup failure: every container comes up and every readiness check passes, but two
+containers on a *freshly created* network can no longer reach each other -- a subnet-pool
+exhaustion that manifests as one specific container-to-container connection failing (in this
+project, most visibly PostIMAP reaching Radicale) while the host's own connections to every
+container keep working. `podman network ls | wc -l` in the hundreds, with `podman ps -a` showing
+nothing currently running, is the tell; `podman network prune -f` only removes networks with no
+attached container, so it is safe to run even with other sessions' work nearby, as long as nothing
+of theirs is actively running at that moment.
+
 ### The layers
 
 | Marker | What it covers | What it needs |
