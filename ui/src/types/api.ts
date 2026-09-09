@@ -350,6 +350,13 @@ export interface SSEEvent {
   calendar_id?: string;
   dav_account_id?: string;
   addressbook_id?: string;
+  /** Present on calendar.object, for targeting which cached month chunks
+   * a change can affect rather than invalidating every one. `is_recurring:
+   * null` and a missing dtstart/dtend both mean "can't target this one",
+   * the same as an older server that doesn't send these fields at all. */
+  dtstart?: string | null;
+  dtend?: string | null;
+  is_recurring?: boolean | null;
   /** Present on outbox.updated when the row is an iTIP reply, not a mail send. */
   itip?: "reply";
   /** The settings category that changed, on settings.changed -- omitted

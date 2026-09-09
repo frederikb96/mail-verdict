@@ -23,7 +23,11 @@ import { alertKeys } from "@/hooks/use-alerts";
 import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import { useToast } from "@/hooks/use-toast";
 import { folderAlertsEnabled } from "@/lib/alert-prefs";
-import type { OutboxStatus, SSEEvent } from "@/types/api";
+import {
+  type CalendarObjectPayload,
+  resolveCalendarInvalidationTargets,
+} from "@/components/calendar/calendar-sse-targets";
+import type { EventListResponse, OutboxStatus, SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
@@ -84,6 +88,15 @@ export function useSSE(accountId?: string) {
   const pendingRemovedIdsRef = useRef<Set<string>>(new Set());
   const pendingFolderCountsRef = useRef(false);
 
+  // Buffered calendar.object state -- calendar sync is polling-based on the
+  // backend (60s), but a single poll landing several changes still fires
+  // one event per row, and every mounted month-chunk observer used to
+  // invalidate on every one of them. Buffered the same way as mail above,
+  // then targeted at flush time (see calendar-sse-targets.ts) rather than
+  // invalidating every loaded chunk.
+  const calFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCalendarEventsRef = useRef<CalendarObjectPayload[]>([]);
+
   useEffect(() => {
     function flushPending() {
       flushTimerRef.current = null;
@@ -117,6 +130,58 @@ export function useSSE(accountId?: string) {
     function scheduleFlush() {
       if (flushTimerRef.current) return;
       flushTimerRef.current = setTimeout(flushPending, FLUSH_INTERVAL_MS);
+    }
+
+    function flushCalendarPending() {
+      calFlushTimerRef.current = null;
+      const pending = pendingCalendarEventsRef.current;
+      pendingCalendarEventsRef.current = [];
+      if (pending.length === 0) return;
+
+      // Which months currently hold each object -- computed once for the
+      // whole flush window, from whatever chunks happen to be cached right
+      // now, rather than once per event.
+      const monthsByObjectId = new Map<string, string[]>();
+      for (const [key, data] of queryClient.getQueriesData<EventListResponse>({
+        queryKey: ["calendar-events"],
+      })) {
+        const month = key[1] as string | undefined;
+        if (!month || !data) continue;
+        for (const e of data.events) {
+          const months = monthsByObjectId.get(e.object_id);
+          if (months) months.push(month);
+          else monthsByObjectId.set(e.object_id, [month]);
+        }
+      }
+
+      const targets = new Set<string>();
+      let invalidateAll = false;
+      for (const payload of pending) {
+        const result = resolveCalendarInvalidationTargets(
+          payload, payload.id ? (monthsByObjectId.get(payload.id) ?? []) : [],
+        );
+        if (result === "all") {
+          invalidateAll = true;
+          break;
+        }
+        for (const month of result) targets.add(month);
+      }
+
+      if (invalidateAll) {
+        queryClient.invalidateQueries({ queryKey: ["calendar-events"], refetchType: "active" });
+        return;
+      }
+
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "calendar-events" && targets.has(query.queryKey[1] as string),
+        refetchType: "active",
+      });
+    }
+
+    function scheduleCalendarFlush() {
+      if (calFlushTimerRef.current) return;
+      calFlushTimerRef.current = setTimeout(flushCalendarPending, FLUSH_INTERVAL_MS);
     }
 
     function connect() {
@@ -380,9 +445,24 @@ export function useSSE(accountId?: string) {
       // refreshes what a poll already changed -- it doesn't shorten the lag.
       source.addEventListener("calendar.object", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
-        queryClient.invalidateQueries({ queryKey: ["calendar-events"], refetchType: "active" });
+        try {
+          const data: SSEEvent = JSON.parse(e.data);
+          pendingCalendarEventsRef.current.push({
+            id: data.id, dtstart: data.dtstart, dtend: data.dtend, is_recurring: data.is_recurring,
+          });
+        } catch {
+          // An unparseable payload can't be targeted -- resolved as "all"
+          // by flushCalendarPending, which treats a missing id the same
+          // way (empty months-containing-id, no dtstart/dtend either).
+          pendingCalendarEventsRef.current.push({});
+        }
+        // The detail and invitation caches stay immediate: each targets
+        // one specific cached entry and only costs a real fetch if that
+        // exact one happens to be open, so unlike the chunk list above it
+        // never fans out into a storm.
         queryClient.invalidateQueries({ queryKey: ["calendar-event"] });
         queryClient.invalidateQueries({ queryKey: ["invitation"] });
+        scheduleCalendarFlush();
       });
 
       source.addEventListener("calendar.collection", (e: MessageEvent) => {
@@ -459,6 +539,10 @@ export function useSSE(accountId?: string) {
       if (flushTimerRef.current) {
         clearTimeout(flushTimerRef.current);
         flushTimerRef.current = null;
+      }
+      if (calFlushTimerRef.current) {
+        clearTimeout(calFlushTimerRef.current);
+        calFlushTimerRef.current = null;
       }
       setConnectionState("disconnected");
     };
