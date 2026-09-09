@@ -87,6 +87,7 @@ def _build_account_response(
         emoji=prefs.emoji if prefs else None,
         spam_enabled=prefs.spam_enabled if prefs else False,
         folder_order=prefs.folder_order if prefs else None,
+        trash_retention_days=prefs.trash_retention_days if prefs else None,
     )
 
 
@@ -132,6 +133,7 @@ async def create_account(request: AccountCreateRequest) -> AccountResponse:
             account_id=account.id,
             emoji=request.emoji,
             spam_enabled=request.spam_enabled,
+            trash_retention_days=request.trash_retention_days,
         )
         session.add(prefs)
         await session.flush()
@@ -169,7 +171,7 @@ async def update_account(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     # Separate Account fields from AccountPrefs fields
-    prefs_fields = {"emoji", "spam_enabled"}
+    prefs_fields = {"emoji", "spam_enabled", "trash_retention_days"}
     account_values = {k: v for k, v in all_values.items() if k not in prefs_fields}
     prefs_values = {k: v for k, v in all_values.items() if k in prefs_fields}
 

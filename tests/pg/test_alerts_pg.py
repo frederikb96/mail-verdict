@@ -1,7 +1,9 @@
 """
 The alerts table's own repository, and turning a live mail arrival into
 one -- the fires-exactly-once dedupe gate, the durable list, the unseen
-count, and dismissal, against a real Postgres schema.
+count, dismissal, and the staged-then-finalized path a message that can
+still be refiled by the pipeline goes through -- against a real Postgres
+schema.
 """
 
 from __future__ import annotations
@@ -12,16 +14,30 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from mail_verdict.alerts.dispatch import create_mail_alert_for_arrival
+from mail_verdict.alerts.dispatch import (
+    _finalize_pending_mail_alerts_once,
+    create_mail_alert_for_arrival,
+)
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.database.models import Alert
 from mail_verdict.database.repository import AlertRepository, PushSubscriptionRepository
+from mail_verdict.postimap.actions import move_message
 from mail_verdict.push.vapid import VapidKeyRepository
+from mail_verdict.settings.service import SettingsService
 from tests.pg.test_bulk_actions_and_outbox import _seed_account_two_folders
 
 _imap_uid_counter = itertools.count(1)
+
+
+async def _settings(db: DatabaseConnection, **mail_overrides: object) -> SettingsService:
+    service = SettingsService(db)
+    await service.load()
+    if mail_overrides:
+        await service.update("mail", mail_overrides)
+    return service
 
 
 async def _seed_message(
@@ -43,6 +59,59 @@ async def _seed_message(
         },
     )
     return message_id
+
+
+async def _seed_archive_folder(session, account_id: uuid.UUID) -> uuid.UUID:
+    folder_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO folders (id, account_id, imap_name, special_use) "
+            "VALUES (:id, :account_id, 'Archive', 'archive')"
+        ),
+        {"id": folder_id, "account_id": account_id},
+    )
+    return folder_id
+
+
+async def _seed_plain_folder(session, account_id: uuid.UUID, imap_name: str) -> uuid.UUID:
+    """A second ordinary folder, special_use unset -- still pipeline-
+    eligible, unlike Junk/Archive/Trash/Sent/Drafts, so moving a message
+    here isolates "pipeline run reached a terminal status" from "the
+    folder itself makes the pipeline dead" as the reason a staged alert
+    gets delivered."""
+    folder_id = uuid.uuid4()
+    await session.execute(
+        text("INSERT INTO folders (id, account_id, imap_name) VALUES (:id, :account_id, :name)"),
+        {"id": folder_id, "account_id": account_id, "name": imap_name},
+    )
+    return folder_id
+
+
+async def _seed_pipeline_run(
+    session, *, account_id: uuid.UUID, message_id: uuid.UUID, status: str,
+) -> None:
+    """A pipeline_runs row in a given status -- 'pending'/'claimed' are
+    not terminal, everything else (done/failed/skipped) is."""
+    await session.execute(
+        text(
+            "INSERT INTO pipeline_runs "
+            "(account_id, msg_key, message_id, dedup_key, origin, apply, status) "
+            "VALUES (:account_id, :msg_key, :message_id, 'live', 'live', true, :status)"
+        ),
+        {
+            "account_id": account_id, "msg_key": f"key-{uuid.uuid4()}",
+            "message_id": message_id, "status": status,
+        },
+    )
+
+
+async def _alert_row(db: DatabaseConnection, message_id: uuid.UUID) -> Alert | None:
+    """Read the alert row directly, delivered or still staged -- unlike
+    AlertRepository.list_recent/unseen_count, which only ever see a
+    delivered row."""
+    async with db.session() as session:
+        result = await session.execute(select(Alert).where(Alert.message_id == message_id))
+        return result.scalars().first()
 
 
 class TestCreateMailAlert:
@@ -82,39 +151,8 @@ class TestCreateMailAlert:
         matching = [a for a in await repo.list_recent() if a.message_id == message_id]
         assert len(matching) == 1
 
-
-class TestCreateMailAlertForArrival:
-    """The server.py hook -- reads the message row itself, computes
-    msg_key, and inserts. A resync (the same message id, same content)
-    must never produce a second alert."""
-
     @pytest.mark.asyncio
-    async def test_inserts_one_alert_with_subject_and_sender(
-        self, migrated_db: DatabaseConnection,
-    ) -> None:
-        async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
-            message_id = await _seed_message(
-                session, account_id, inbox_id,
-                subject="Quarterly report", from_addr="finance@example.com",
-            )
-            await session.commit()
-
-        await create_mail_alert_for_arrival(
-            migrated_db, None, account_id=account_id, message_id=message_id,
-        )
-
-        repo = AlertRepository(migrated_db)
-        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
-        assert len(matching) == 1
-        alert = matching[0]
-        assert alert.title == "Quarterly report"
-        assert alert.body == "finance@example.com"
-        assert alert.url == f"/?message={message_id}"
-        assert alert.account_id == account_id
-
-    @pytest.mark.asyncio
-    async def test_a_resync_never_produces_a_second_alert(
+    async def test_staged_row_is_invisible_until_delivered(
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
@@ -122,11 +160,61 @@ class TestCreateMailAlertForArrival:
             message_id = await _seed_message(session, account_id, inbox_id)
             await session.commit()
 
+        repo = AlertRepository(migrated_db)
+        staged = await repo.create_mail_alert(
+            account_id=account_id, message_id=message_id, msg_key=f"staged-{uuid.uuid4()}",
+            title="Later", body=None, delivered=False,
+        )
+        assert staged is not None
+        assert staged.delivered_at is None
+
+        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
+        assert matching == []
+
+
+class TestImmediateDelivery:
+    """A message arriving directly into a folder the pipeline never runs
+    against (here, Junk) is delivered the moment it arrives -- no
+    terminal pipeline status will ever tell finalize_pending_mail_alerts_once
+    to stop waiting."""
+
+    @pytest.mark.asyncio
+    async def test_inserts_one_delivered_alert_with_subject_and_sender(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(
+                session, account_id, junk_id,
+                subject="Quarterly report", from_addr="finance@example.com",
+            )
+            await session.commit()
+
         await create_mail_alert_for_arrival(
-            migrated_db, None, account_id=account_id, message_id=message_id,
+            migrated_db, None, account_id=account_id, message_id=message_id, folder_id=junk_id,
+        )
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is not None
+        assert alert.title == "Quarterly report"
+        assert alert.body == "finance@example.com"
+        assert alert.folder_id == junk_id
+
+    @pytest.mark.asyncio
+    async def test_a_resync_never_produces_a_second_alert(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, _inbox_id, junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, junk_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id, folder_id=junk_id,
         )
         await create_mail_alert_for_arrival(
-            migrated_db, None, account_id=account_id, message_id=message_id,
+            migrated_db, None, account_id=account_id, message_id=message_id, folder_id=junk_id,
         )
 
         repo = AlertRepository(migrated_db)
@@ -138,9 +226,9 @@ class TestCreateMailAlertForArrival:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, _inbox_id, junk_id = await _seed_account_two_folders(session)
             message_id = await _seed_message(
-                session, account_id, inbox_id, subject="Ping", from_addr="a@example.com",
+                session, account_id, junk_id, subject="Ping", from_addr="a@example.com",
             )
             await session.commit()
 
@@ -153,7 +241,7 @@ class TestCreateMailAlertForArrival:
         seq_before = ring.get_latest_seq()
         await create_mail_alert_for_arrival(
             migrated_db, ring, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            folder_id=junk_id,
         )
 
         events = await ring.replay_from(seq_before, str(account_id))
@@ -161,7 +249,7 @@ class TestCreateMailAlertForArrival:
         assert len(alert_events) == 1
         assert alert_events[0]["data"]["title"] == "Ping"
         assert alert_events[0]["data"]["url"] == f"/?message={message_id}"
-        assert alert_events[0]["data"]["folder_id"] == str(inbox_id)
+        assert alert_events[0]["data"]["folder_id"] == str(junk_id)
 
     @pytest.mark.asyncio
     async def test_a_message_already_expunged_is_skipped(
@@ -171,26 +259,306 @@ class TestCreateMailAlertForArrival:
         event firing and this call reaching the database -- must not
         raise; there is nothing left to build an alert about."""
         async with migrated_db.session() as session:
-            account_id, _inbox_id, _junk_id = await _seed_account_two_folders(session)
+            account_id, _inbox_id, junk_id = await _seed_account_two_folders(session)
             await session.commit()
 
         dead_message_id = uuid.uuid4()
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=dead_message_id,
+            folder_id=junk_id,
         )
 
+        assert await _alert_row(migrated_db, dead_message_id) is None
+
+
+class TestStagedArrival:
+    """A message arriving in an ordinary folder the pipeline can still act
+    on is staged, not delivered -- the fix for a notification announcing
+    the arrival folder rather than wherever a rule later files the
+    message."""
+
+    @pytest.mark.asyncio
+    async def test_arriving_in_an_ordinary_folder_is_staged_not_delivered(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id, subject="Staged")
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is None
+        assert alert.title == "Staged"
+        # The arrival folder is stored as a placeholder even while staged.
+        assert alert.folder_id == inbox_id
+
         repo = AlertRepository(migrated_db)
-        matching = [a for a in await repo.list_recent() if a.message_id == dead_message_id]
+        matching = [a for a in await repo.list_recent() if a.message_id == message_id]
         assert matching == []
 
     @pytest.mark.asyncio
-    async def test_a_vapid_repo_triggers_a_background_push_dispatch(
+    async def test_staged_arrival_pushes_nothing_yet(self, migrated_db: DatabaseConnection) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        ring = EventRing()
+        await ring.add(account_id, "test.seed", {})
+        seq_before = ring.get_latest_seq()
+        await create_mail_alert_for_arrival(
+            migrated_db, ring, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+
+        events = await ring.replay_from(seq_before, str(account_id))
+        assert [e for e in events if e["event_type"] == "alert.new"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_resync_of_a_staged_arrival_never_produces_a_second_row(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+
+        async with migrated_db.session() as session:
+            result = await session.execute(select(Alert).where(Alert.message_id == message_id))
+            assert len(result.scalars().all()) == 1
+
+
+class TestFinalizePendingMailAlerts:
+    """The periodic pass: a staged alert is delivered once its message's
+    pipeline run reaches a terminal status, once its message can no
+    longer reach one, or once the bound expires -- always with the
+    folder the message is actually in by then."""
+
+    @pytest.mark.asyncio
+    async def test_terminal_pipeline_run_delivers_with_the_current_folder(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            # A second ordinary folder, not Junk/Archive/Trash -- so only
+            # the terminal pipeline run, never the folder itself, can
+            # explain the alert being delivered below.
+            other_id = await _seed_plain_folder(session, account_id, "Filed")
+            message_id = await _seed_message(session, account_id, inbox_id, subject="Filed")
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        staged = await _alert_row(migrated_db, message_id)
+        assert staged is not None
+        assert staged.delivered_at is None
+
+        # A rule moved it out of the inbox, and its pipeline run finished,
+        # before the alert was ever delivered.
+        async with migrated_db.session() as session:
+            await move_message(session, message_id, other_id)
+            await _seed_pipeline_run(
+                session, account_id=account_id, message_id=message_id, status="done",
+            )
+            await session.commit()
+
+        settings_service = await _settings(migrated_db)
+        ring = EventRing()
+        await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is not None
+        assert alert.folder_id == other_id
+
+    @pytest.mark.asyncio
+    async def test_pending_pipeline_run_within_bound_stays_staged(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        async with migrated_db.session() as session:
+            await _seed_pipeline_run(
+                session, account_id=account_id, message_id=message_id, status="pending",
+            )
+            await session.commit()
+
+        settings_service = await _settings(migrated_db, notify_wait_seconds=3600.0)
+        await _finalize_pending_mail_alerts_once(migrated_db, None, None, settings_service)
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is None
+
+    @pytest.mark.asyncio
+    async def test_bound_expiring_delivers_with_whatever_folder_it_is_in(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """No pipeline_runs row at all (a stalled provider, or a folder
+        with no watermark yet) is exactly the case the bound exists for."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+
+        settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
+        await _finalize_pending_mail_alerts_once(migrated_db, None, None, settings_service)
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is not None
+        assert alert.folder_id == inbox_id
+
+    @pytest.mark.asyncio
+    async def test_moved_to_a_pipeline_excluded_folder_delivers_before_the_bound(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A message the user or an unrelated action moved to Archive
+        before its own pipeline run ever reached one is exactly as
+        pipeline-dead as one that arrived there -- delivered on the very
+        next tick rather than waiting out the full bound."""
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            archive_id = await _seed_archive_folder(session, account_id)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        async with migrated_db.session() as session:
+            await move_message(session, message_id, archive_id)
+            await session.commit()
+
+        settings_service = await _settings(migrated_db, notify_wait_seconds=3600.0)
+        await _finalize_pending_mail_alerts_once(migrated_db, None, None, settings_service)
+
+        alert = await _alert_row(migrated_db, message_id)
+        assert alert is not None
+        assert alert.delivered_at is not None
+        assert alert.folder_id == archive_id
+
+    @pytest.mark.asyncio
+    async def test_expunged_before_delivery_is_dropped(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        async with migrated_db.session() as session:
+            await session.execute(
+                text("UPDATE messages SET expunged_at = now() WHERE id = :id"),
+                {"id": message_id},
+            )
+            await session.commit()
+
+        settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
+        await _finalize_pending_mail_alerts_once(migrated_db, None, None, settings_service)
+
+        assert await _alert_row(migrated_db, message_id) is None
+
+    @pytest.mark.asyncio
+    async def test_finalizing_pushes_alert_new_with_the_current_folder(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id, subject="Filed")
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        async with migrated_db.session() as session:
+            await move_message(session, message_id, junk_id)
+            await session.commit()
+
+        ring = EventRing()
+        await ring.add(account_id, "test.seed", {})
+        seq_before = ring.get_latest_seq()
+        settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
+        await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
+
+        events = await ring.replay_from(seq_before, str(account_id))
+        alert_events = [e for e in events if e["event_type"] == "alert.new"]
+        assert len(alert_events) == 1
+        assert alert_events[0]["data"]["folder_id"] == str(junk_id)
+
+    @pytest.mark.asyncio
+    async def test_a_second_finalize_pass_never_redelivers(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, inbox_id)
+            await session.commit()
+
+        await create_mail_alert_for_arrival(
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
+        )
+        settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
+        ring = EventRing()
+        await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
+
+        await ring.add(account_id, "test.seed", {})
+        seq_before = ring.get_latest_seq()
+        await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
+
+        events = await ring.replay_from(seq_before, str(account_id))
+        assert [e for e in events if e["event_type"] == "alert.new"] == []
+
+    @pytest.mark.asyncio
+    async def test_finalizing_triggers_a_background_push_dispatch(
         self, migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Not push/send.py's own coverage (test_push_pg.py has that) --
-        this proves the wiring: passing a VapidKeyRepository causes a push
-        attempt to run, as the fire-and-forget background task this
-        function does not itself await."""
+        this proves the wiring: a delivered-by-finalize alert reaches a
+        push attempt exactly as one delivered immediately would, as the
+        fire-and-forget background task _deliver() does not itself await.
+
+        The message stays in the inbox throughout -- a subscription with
+        no explicit alert_folder_ids only matches an arrival folder (see
+        PushSubscriptionRepository.list_for_alert), and every folder a
+        staged alert can be finalized from is by definition one the
+        pipeline still runs against, never Junk or Archive."""
         async with migrated_db.session() as session:
             account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
             message_id = await _seed_message(session, account_id, inbox_id, subject="Push me")
@@ -210,15 +578,18 @@ class TestCreateMailAlertForArrival:
             "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
         )
 
-        vapid_repo = VapidKeyRepository(migrated_db, "00" * 32)
-        started = {t for t in asyncio.all_tasks()}
         await create_mail_alert_for_arrival(
-            migrated_db, None, vapid_repo,
-            account_id=account_id, message_id=message_id, folder_id=inbox_id,
+            migrated_db, None, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
         )
-        # The push dispatch is a fire-and-forget task this function does
-        # not await -- give it a chance to actually run before asserting
-        # anything about it.
+
+        vapid_repo = VapidKeyRepository(migrated_db, "00" * 32)
+        settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
+        started = {t for t in asyncio.all_tasks()}
+        await _finalize_pending_mail_alerts_once(migrated_db, None, vapid_repo, settings_service)
+        # The push dispatch is a fire-and-forget task _deliver() does not
+        # itself await -- give it a chance to actually run before
+        # asserting anything about it.
         spawned = [t for t in asyncio.all_tasks() - started]
         if spawned:
             await asyncio.gather(*spawned)
@@ -305,19 +676,19 @@ class TestFolderScope:
         self, migrated_db: DatabaseConnection,
     ) -> None:
         async with migrated_db.session() as session:
-            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
-            message_id = await _seed_message(session, account_id, inbox_id)
+            account_id, _inbox_id, junk_id = await _seed_account_two_folders(session)
+            message_id = await _seed_message(session, account_id, junk_id)
             await session.commit()
 
         await create_mail_alert_for_arrival(
             migrated_db, None, account_id=account_id, message_id=message_id,
-            folder_id=inbox_id,
+            folder_id=junk_id,
         )
 
         repo = AlertRepository(migrated_db)
         matching = [a for a in await repo.list_recent() if a.message_id == message_id]
         assert len(matching) == 1
-        assert matching[0].folder_id == inbox_id
+        assert matching[0].folder_id == junk_id
 
     @pytest.mark.asyncio
     async def test_list_recent_and_unseen_count_honour_a_folder_filter(

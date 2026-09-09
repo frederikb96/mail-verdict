@@ -73,6 +73,8 @@ _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
+_mail_alert_finalizer: Any | None = None
+_trash_retention_sweeper: Any | None = None
 _contract_ok: bool = False
 _liveness_server: ThreadingHTTPServer | None = None
 _liveness_thread: Thread | None = None
@@ -137,6 +139,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
+    global _mail_alert_finalizer, _trash_retention_sweeper
 
     config = get_config()
 
@@ -288,6 +291,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pending_send_timer = build_pending_send_timer(db)
     await _pending_send_timer.start()
 
+    from mail_verdict.alerts.dispatch import build_mail_alert_finalizer_timer
+
+    _mail_alert_finalizer = build_mail_alert_finalizer_timer(
+        db, event_ring, vapid_repo, settings_service,
+    )
+    await _mail_alert_finalizer.start()
+
+    from mail_verdict.retention.sweep import build_trash_retention_timer
+
+    _trash_retention_sweeper = build_trash_retention_timer(db)
+    await _trash_retention_sweeper.start()
+
     async def _on_postimap_event(event: Any) -> None:
         """Dispatch a parsed postimap_events payload to EventRing, the
         pipeline's live-arrival enqueue, and the spam feedback listener."""
@@ -410,6 +425,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _pipeline_reconciler.stop()
     if _pending_send_timer:
         await _pending_send_timer.stop()
+    if _mail_alert_finalizer:
+        await _mail_alert_finalizer.stop()
+    if _trash_retention_sweeper:
+        await _trash_retention_sweeper.stop()
     if _embedding_components:
         await _embedding_components.stop()
     if _queue_manager:
@@ -423,6 +442,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_notifier = None
     _pipeline_reconciler = None
     _pending_send_timer = None
+    _mail_alert_finalizer = None
+    _trash_retention_sweeper = None
     _contract_ok = False
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider

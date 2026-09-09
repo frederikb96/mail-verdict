@@ -61,6 +61,7 @@ from mail_verdict.core.sanitizer import (
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Attachment, Folder, Message
+from mail_verdict.database.repository import FolderRepository
 from mail_verdict.postimap.actions import (
     expunge,
     expunge_bulk,
@@ -71,6 +72,7 @@ from mail_verdict.postimap.actions import (
     set_flags_bulk,
     set_keywords,
 )
+from mail_verdict.settings.service import get_settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -970,12 +972,15 @@ async def message_action(
     if action == "move":
         if not request.target_folder_id:
             raise HTTPException(status_code=400, detail="target_folder_id required for move")
+        target_role = await FolderRepository(db).get_effective_special_use(request.target_folder_id)
         async with db.session() as session:
             if not await _folder_belongs_to_account(session, account_id, request.target_folder_id):
                 raise HTTPException(
                     status_code=400, detail="target_folder_id does not belong to this account",
                 )
             await move_message(session, message_id, request.target_folder_id)
+            if _should_mark_read_on_file(target_role):
+                await set_flags(session, message_id, is_seen=True)
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     if action == "archive":
@@ -984,6 +989,8 @@ async def message_action(
             raise HTTPException(status_code=400, detail="No archive folder found for this account")
         async with db.session() as session:
             await move_message(session, message_id, target_folder_id)
+            if _should_mark_read_on_file("archive"):
+                await set_flags(session, message_id, is_seen=True)
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     if action in ("spam", "not_spam"):
@@ -1028,6 +1035,42 @@ async def _handle_spam_action(
     )
 
 
+# Mail filed here by the user is marked read as it moves --
+# settings.mail.mark_read_on_file_to_archive_or_junk. Narrower than
+# pipeline/enqueue.py's own _SKIP_FOLDER_SPECIAL_USE on purpose: this is
+# about where the user just filed something, not about pipeline scope.
+_MARK_READ_SPECIAL_USE = frozenset({"archive", "junk"})
+
+
+def _should_mark_read_on_file(target_role: str | None) -> bool:
+    """
+    Whether a move into a folder with this effective special_use should
+    mark the moved message(s) read -- the toolbar Archive action and a
+    drag-and-drop move both resolve to the "move"/"archive" handlers
+    below, so this is the one place that decides it, not two.
+
+    Deliberately not an on-move pipeline rule: the pipeline only ever
+    triggers on arrival (see pipeline/enqueue.py's own docstring on why),
+    and this is about a move the user just made, not something the
+    pipeline should ever re-evaluate. The AI spam stage already marks its
+    own moves to Junk read; this is the same folder-role condition
+    applied to the user's own moves instead.
+
+    Args:
+        target_role: The move's target folder's effective special_use, or
+            None if it isn't one of PostIMAP's or folder_prefs' known roles
+
+    Returns:
+        False immediately if target_role isn't archive or junk, without
+        even reading the setting -- so a plain move to an ordinary folder
+        never pays for a settings lookup it doesn't need.
+    """
+    if target_role not in _MARK_READ_SPECIAL_USE:
+        return False
+    settings = get_settings_service().get("mail")
+    return bool(settings.get("mark_read_on_file_to_archive_or_junk", True))
+
+
 async def _resolve_special_folder(account_id: uuid.UUID, role: str) -> uuid.UUID | None:
     """
     Resolve a special folder UUID by its effective special_use.
@@ -1044,8 +1087,6 @@ async def _resolve_special_folder(account_id: uuid.UUID, role: str) -> uuid.UUID
     Returns:
         Folder UUID or None if not found
     """
-    from mail_verdict.database.repository import FolderRepository
-
     return await FolderRepository(get_db_connection()).resolve_special_folder(account_id, role)
 
 
@@ -1171,12 +1212,15 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
     elif action == "move":
         if not request.target_folder_id:
             raise HTTPException(status_code=400, detail="target_folder_id required for move")
+        target_role = await FolderRepository(db).get_effective_special_use(request.target_folder_id)
         async with db.session() as session:
             if not await _folder_belongs_to_account(session, account_id, request.target_folder_id):
                 raise HTTPException(
                     status_code=400, detail="target_folder_id does not belong to this account",
                 )
             affected = await move_message_bulk(session, message_ids, request.target_folder_id)
+            if _should_mark_read_on_file(target_role):
+                await set_flags_bulk(session, message_ids, is_seen=True)
     elif action == "archive":
         folder_id = await _resolve_special_folder(account_id, "archive")
         if folder_id is None:
@@ -1184,6 +1228,8 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
         else:
             async with db.session() as session:
                 affected = await move_message_bulk(session, message_ids, folder_id)
+                if _should_mark_read_on_file("archive"):
+                    await set_flags_bulk(session, message_ids, is_seen=True)
     elif action in ("spam", "not_spam"):
         from mail_verdict.server import get_spam_processor
         from mail_verdict.spam.feedback import FolderResolutionError

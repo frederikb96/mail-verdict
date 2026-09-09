@@ -301,17 +301,27 @@ way folder CRUD is.
 
 An alert is something meant to interrupt the reader on their device, distinct from a notification
 (above), which is PostIMAP's own record of a write that failed. The only kind an alert is created
-for today is new mail; it is delivered (`delivered_at` stamped) at insert. `dedupe_key`'s unique
-index — embedding `msg_key` rather than `messages.id`, since a UIDVALIDITY resync replaces every
-id in a folder — is the entire fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING`
-discipline `Verdict` and `CalendarIntake` already use. `alert.new` on the SSE ring is what lets an
-open page raise a browser notification and refresh its own list without polling.
+for today is new mail. `dedupe_key`'s unique index — embedding `msg_key` rather than
+`messages.id`, since a UIDVALIDITY resync replaces every id in a folder — is the entire
+fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING` discipline `Verdict` and
+`CalendarIntake` already use, whether the row lands delivered immediately or staged. `alert.new` on
+the SSE ring is what lets an open page raise a browser notification and refresh its own list
+without polling.
 
-The schema also carries what a scheduled kind would need — `deliver_at`, `object_id`,
-`recurrence_id`, an `idx_alerts_due` index a dispatcher would claim from, and a per-subscription
-`reminders_enabled` flag — for a calendar-reminder alert that nothing yet produces: no code path
-inserts one, and no dispatcher reads the index. Building that delivery path is future work, not a
-column left over from one.
+One row is both the dispatch queue a periodic pass claims from and, once delivered, the durable
+record a bell reads back — `delivered_at` distinguishes the two states, and `idx_alerts_due` is
+what that pass's claim query scans. Mail arriving directly into a folder the pipeline never runs
+against (Sent, Drafts, Trash, Junk, Archive) is delivered at insert: no pipeline run will ever tell
+it apart from staying staged. Anything else is inserted with `delivered_at` left `NULL` and
+`folder_id` holding the arrival folder as a placeholder only; `alerts/dispatch.py`'s periodic pass
+delivers it once that message's pipeline run reaches a terminal status, once the message can no
+longer reach one, or once a bounded wait (`settings.mail.notify_wait_seconds`) expires, overwriting
+`folder_id` with wherever the message actually is by then. That is what keeps a message a rule
+files elsewhere from announcing itself against the folder it merely arrived in.
+
+`object_id`, `recurrence_id` and a per-subscription `reminders_enabled` flag are what a
+calendar-reminder alert would need on top of this — for a kind that nothing yet produces: no code
+path inserts one. Building that delivery path is future work, not a column left over from one.
 
 Reaching a device with no page open at all is Web Push, layered on top of the mail alert path
 rather than replacing it: `push_subscriptions` (one row per browser, carrying that browser's own

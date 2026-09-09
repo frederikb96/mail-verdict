@@ -749,6 +749,10 @@ class AccountPrefs(Base):
     emoji: Mapped[str | None] = mapped_column(String(10), nullable=True)
     spam_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     folder_order: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    # NULL is off (the default) -- the retention sweep (retention/sweep.py)
+    # only ever considers an account with this set. Not a settings-category
+    # value: it varies per account the same way spam_enabled does.
+    trash_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class FolderPrefs(Base):
