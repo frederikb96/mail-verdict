@@ -94,13 +94,7 @@ class _ThreadedUvicornServer(uvicorn.Server):
         pass
 
 
-@pytest.fixture(scope="module")
-def app_server(
-    postgres_url: str,
-    dovecot_container: DockerContainer,
-    mailpit_container: DockerContainer,
-    postimap_container: DockerContainer,
-) -> Iterator[str]:
+def _run_app_server(postgres_url: str, *, encryption_key: str | None) -> Iterator[str]:
     """
     The MailVerdict ASGI app, migrated and actually listening on a loopback
     port for one test module, reused by every test in that module -- the
@@ -114,18 +108,26 @@ def app_server(
     own asyncio loop by making one appear "running" on the main thread for
     the duration of the browser/page fixtures, and asyncio.run() refuses
     to nest inside a loop that is already running.
+
+    Args:
+        encryption_key: None leaves ENCRYPTION_KEY unset, the same "fresh
+            install" state a plain `app_server` needs -- a UI test named
+            after that exact absence (a provider key save refused for
+            lacking one) depends on it. A caller that needs the opposite
+            (push notifications, or any other encryption-gated feature)
+            asks for `app_server_with_encryption_key` below instead of
+            passing a value here directly, so the two never collide
+            within one process.
     """
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(asyncio.run, run_migrations(postgres_url)).result()
 
     os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
     os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
-    # A throwaway key so a test can exercise anything gated on one being
-    # configured (provider-key storage, VAPID key generation) -- never
-    # overridden if a test run already set a real one for its own reasons.
-    os.environ.setdefault(
-        "ENCRYPTION_KEY", "a" * 64,
-    )
+    if encryption_key is None:
+        os.environ.pop("ENCRYPTION_KEY", None)
+    else:
+        os.environ["ENCRYPTION_KEY"] = encryption_key
     reset_config()
 
     from mail_verdict.server import create_app
@@ -164,7 +166,35 @@ def app_server(
 
     server.should_exit = True
     thread.join(timeout=_APP_SHUTDOWN_TIMEOUT_S)
+    if encryption_key is None:
+        os.environ.pop("ENCRYPTION_KEY", None)
     reset_config()
+
+
+@pytest.fixture(scope="module")
+def app_server(
+    postgres_url: str,
+    dovecot_container: DockerContainer,
+    mailpit_container: DockerContainer,
+    postimap_container: DockerContainer,
+) -> Iterator[str]:
+    """No ENCRYPTION_KEY -- the "fresh install" state most UI tests run
+    against, including one named after that exact absence."""
+    yield from _run_app_server(postgres_url, encryption_key=None)
+
+
+@pytest.fixture(scope="module")
+def app_server_with_encryption_key(
+    postgres_url: str,
+    dovecot_container: DockerContainer,
+    mailpit_container: DockerContainer,
+    postimap_container: DockerContainer,
+) -> Iterator[str]:
+    """The same app, with a throwaway ENCRYPTION_KEY configured -- for a
+    module whose tests need something gated on one (provider-key storage,
+    Web Push's VAPID keypair) rather than the "not configured" case
+    `app_server` itself is for."""
+    yield from _run_app_server(postgres_url, encryption_key="a" * 64)
 
 
 @pytest.fixture(scope="module")

@@ -130,12 +130,18 @@ def _seed_account_with_inbox(postgres_url: str) -> None:
 
 class TestAlertBell:
     def test_a_delivered_alert_shows_in_the_badge_and_dismissing_clears_it(
-        self, page: Page, app_server: str, postgres_url: str,
+        self, page: Page, app_server_with_encryption_key: str, postgres_url: str,
     ) -> None:
+        # Shares app_server_with_encryption_key with the push tests below
+        # rather than the plain app_server every other module uses --
+        # this file would otherwise bootstrap the whole app twice per
+        # invocation (once per distinct fixture), which is both slower
+        # and, empirically, is what made this file's own runs flakier
+        # under host load than a single-server module needs to be.
         alert_title = f"alert-bell-test-{uuid.uuid4().hex[:8]}"
         _seed_alert(postgres_url, alert_title)
 
-        page.goto(app_server)
+        page.goto(app_server_with_encryption_key)
         # A `title` attribute selector, not a role/accessible-name query:
         # the button's own visible content (an icon plus a conditional
         # unseen badge) is what actually decides its accessible name,
@@ -165,13 +171,13 @@ class TestPushSubscriptionSettings:
     module docstring) so this never depends on a real push service."""
 
     def test_enabling_registers_a_device_and_disabling_removes_it(
-        self, browser: Browser, app_server: str,
+        self, browser: Browser, app_server_with_encryption_key: str,
     ) -> None:
         context = browser.new_context()
         page = context.new_page()
         try:
             page.add_init_script(_STUB_SERVICE_WORKER_SCRIPT)
-            page.goto(f"{app_server}/settings")
+            page.goto(f"{app_server_with_encryption_key}/settings")
 
             enable = page.get_by_role("button", name="Enable", exact=True)
             expect(enable).to_be_visible(timeout=15_000)
@@ -212,7 +218,7 @@ class TestPushSubscriptionSettings:
             context.close()
 
     def test_toggling_a_folder_writes_the_subscriptions_own_scope(
-        self, browser: Browser, app_server: str, postgres_url: str,
+        self, browser: Browser, app_server_with_encryption_key: str, postgres_url: str,
     ) -> None:
         """The regression this guards: a subscribed device's folder scope
         must move onto its push_subscriptions row rather than staying in
@@ -225,7 +231,7 @@ class TestPushSubscriptionSettings:
         page = context.new_page()
         try:
             page.add_init_script(_STUB_SERVICE_WORKER_SCRIPT)
-            page.goto(f"{app_server}/settings")
+            page.goto(f"{app_server_with_encryption_key}/settings")
 
             # Waits on the registration response itself rather than
             # polling the DOM for the "Disable" button it eventually
