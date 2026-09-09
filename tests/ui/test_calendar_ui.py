@@ -1564,11 +1564,33 @@ class TestCalendarNavigation:
         )
 
     def test_a_day_reached_from_the_month_view_can_be_left_by_going_back(
-        self, page: Page, app_server: str,
+        self, page: Page, app_server: str, api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
     ) -> None:
         """The concrete case named for this feature: jumping from the
         month view into a specific day, then going back, must return to
-        the month view rather than landing somewhere else entirely."""
+        the month view rather than landing somewhere else entirely.
+
+        Crowds today's own cell with real events first -- every earlier
+        test in this module anchors its own events to today too, so by
+        the time this runs against the whole file that cell already
+        holds several; recreating that here rather than relying on
+        incidental leftovers from test order is what actually proves the
+        fix rather than merely exercising an accidentally-empty cell."""
+        today = datetime.now(timezone.utc).replace(hour=8, minute=0, second=0, microsecond=0)
+        for i in range(8):
+            resp = api_client.post(
+                "/api/calendar/events",
+                json={
+                    "calendar_id": calendar_collection["id"],
+                    "summary": f"Crowd {uuid.uuid4()}",
+                    "dtstart": (today + timedelta(hours=i)).isoformat(),
+                    "dtend": (today + timedelta(hours=i, minutes=30)).isoformat(),
+                },
+            )
+            assert resp.status_code == 201, resp.text
+            wait_for_event_synced(api_client, resp.json()["object_id"])
+
         page.goto(f"{app_server}/calendar")
         page.get_by_role("tab", name="Month", exact=True).click()
         expect(page).to_have_url(re.compile(r"[?&]view=month(&|$)"))
@@ -1586,7 +1608,17 @@ class TestCalendarNavigation:
         )
         day_cell = page.locator(f'button[data-date="{today_iso}"]')
         expect(day_cell).to_be_visible(timeout=15_000)
-        day_cell.click()
+        expect(day_cell.locator('[data-testid="event"]').first).to_be_visible(timeout=15_000)
+        # Not a plain .click() -- that lands at the cell's centre, which
+        # every earlier test in this module's own day can have crowded
+        # with event chips by the time this runs, and each of those stops
+        # its own click from ever reaching the cell's onClick at all. The
+        # cell's day-number header is a fixed DAY_HEADER_HEIGHT strip at
+        # its very top that no event chip or all-day spanning bar is ever
+        # laid out over (month-week-row.tsx), so a click anchored there
+        # always reaches the cell itself regardless of how many events
+        # today holds.
+        day_cell.click(position={"x": 8, "y": 8})
         expect(page).to_have_url(re.compile(r"[?&]view=day(&|$)"))
 
         page.go_back()
