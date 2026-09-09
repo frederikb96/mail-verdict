@@ -6,6 +6,7 @@
 
 import type {
   AccountCreateRequest,
+  AccountOrderResponse,
   AccountResponse,
   AlertResponse,
   AlertUnseenCountResponse,
@@ -176,6 +177,18 @@ export const api = {
       return request(`/accounts/${id}/emoji`, {
         method: "PUT",
         body: JSON.stringify({ emoji }),
+      });
+    },
+  },
+
+  accountOrder: {
+    get(): Promise<AccountOrderResponse> {
+      return request("/account-order");
+    },
+    update(order: string[]): Promise<AccountOrderResponse> {
+      return request("/account-order", {
+        method: "PUT",
+        body: JSON.stringify({ order }),
       });
     },
   },

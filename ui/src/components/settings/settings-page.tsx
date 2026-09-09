@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
 import { useTheme } from "@/components/theme-provider";
+import { AccountOrder } from "@/components/settings/account-order";
 import { UnifiedOrder } from "@/components/settings/unified-order";
 import { AlertSettings } from "@/components/settings/alert-settings";
 import { CalendarLinksCard } from "@/components/settings/calendar-links";
@@ -363,6 +364,7 @@ export function SettingsPage() {
 
       <div className="flex flex-col gap-3">
         <SectionHeading>Mail</SectionHeading>
+        <AccountOrder />
         <UnifiedOrder />
         <AlertSettings />
         <Card>

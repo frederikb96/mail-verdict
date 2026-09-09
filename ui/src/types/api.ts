@@ -537,6 +537,10 @@ export interface UnifiedFolderOrderResponse {
   order: string[];
 }
 
+export interface AccountOrderResponse {
+  order: string[];
+}
+
 export interface SyncStatusResponse {
   account_id: string;
   state: string;

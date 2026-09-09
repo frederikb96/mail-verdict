@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.account_order import router as account_order_router
 from mail_verdict.api.accounts import router as accounts_router
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.api.folder_management import folder_prefs_router
@@ -36,6 +37,7 @@ from mail_verdict.settings.service import init_settings_service, reset_settings_
 def client() -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(accounts_router)
+    app.include_router(account_order_router)
     app.include_router(folder_order_router)
     app.include_router(folder_prefs_router)
     app.include_router(settings_router)
@@ -85,6 +87,8 @@ _SETTINGS_EVENT_RING_TARGET = "mail_verdict.api.settings_api.get_event_ring"
 _SETTINGS_DB_TARGET = "mail_verdict.api.settings_api.get_db_connection"
 _UNIFIED_TARGET = "mail_verdict.api.unified.get_db_connection"
 _UNIFIED_EVENT_RING_TARGET = "mail_verdict.api.unified.get_event_ring"
+_ACCOUNT_ORDER_TARGET = "mail_verdict.api.account_order.get_db_connection"
+_ACCOUNT_ORDER_EVENT_RING_TARGET = "mail_verdict.api.account_order.get_event_ring"
 
 
 class TestAccountPrefsAnnouncesItself:
@@ -124,6 +128,30 @@ class TestAccountPrefsAnnouncesItself:
             patch(_UNIFIED_EVENT_RING_TARGET, return_value=event_ring),
         ):
             resp = client.put(f"/accounts/{account_id}/emoji", json={"emoji": "📭"})
+        assert resp.status_code == 200, resp.text
+
+        new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
+        matching = [e for e in new_events if e["event_type"] == "account.changed"]
+        assert len(matching) == 1, f"expected one account.changed event, got {new_events!r}"
+
+
+class TestAccountOrderAnnouncesItself:
+    """The account order is a global Setting row, not account-scoped --
+    broadcast_event reaches every account's ring, this one included."""
+
+    def test_saving_the_account_order_announces_itself(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
+        event_ring = EventRing()
+        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        seq_before = event_ring.get_latest_seq()
+
+        with (
+            patch(_ACCOUNT_ORDER_TARGET, return_value=migrated_db),
+            patch(_ACCOUNT_ORDER_EVENT_RING_TARGET, return_value=event_ring),
+        ):
+            resp = client.put("/account-order", json={"order": [str(account_id)]})
         assert resp.status_code == 200, resp.text
 
         new_events = client.portal.call(event_ring.replay_from, seq_before, str(account_id))
