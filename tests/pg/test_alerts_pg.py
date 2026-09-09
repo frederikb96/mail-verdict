@@ -150,6 +150,7 @@ class TestCreateMailAlertForArrival:
         seq_before = ring.get_latest_seq()
         await create_mail_alert_for_arrival(
             migrated_db, ring, account_id=account_id, message_id=message_id,
+            folder_id=inbox_id,
         )
 
         events = await ring.replay_from(seq_before, str(account_id))
@@ -157,6 +158,7 @@ class TestCreateMailAlertForArrival:
         assert len(alert_events) == 1
         assert alert_events[0]["data"]["title"] == "Ping"
         assert alert_events[0]["data"]["url"] == f"/?message={message_id}"
+        assert alert_events[0]["data"]["folder_id"] == str(inbox_id)
 
     @pytest.mark.asyncio
     async def test_a_message_already_expunged_is_skipped(

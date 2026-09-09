@@ -303,8 +303,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     except ValueError:
                         message_uuid = None
                     if message_uuid is not None:
+                        try:
+                            folder_uuid = _uuid.UUID(event.folder_id) if event.folder_id else None
+                        except ValueError:
+                            folder_uuid = None
                         await create_mail_alert_for_arrival(
                             db, event_ring, account_id=account_uuid, message_id=message_uuid,
+                            folder_id=folder_uuid,
                         )
             elif event.op == "update":
                 await event_ring.add(

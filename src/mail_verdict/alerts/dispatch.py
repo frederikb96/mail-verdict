@@ -36,6 +36,7 @@ async def create_mail_alert_for_arrival(
     *,
     account_id: uuid.UUID,
     message_id: uuid.UUID,
+    folder_id: uuid.UUID | None = None,
 ) -> None:
     """
     Insert an alert for a newly-arrived message and, if this is genuinely
@@ -43,6 +44,14 @@ async def create_mail_alert_for_arrival(
     alert.new so an open page can raise a notification and refresh its
     unseen count immediately -- the SSE round trip is what makes the
     in-app path need no polling.
+
+    folder_id rides along on the live event only -- alerts carries no
+    folder_id column of its own (only account_id/message_id, the same
+    source-coordinate shape every alert kind uses), since "which folders
+    alert" is a per-browser preference read client-side from this one
+    live field, not a server-side filter the durable row needs to carry.
+    The caller already has it (the postimap event that triggered this),
+    so it is threaded through rather than re-queried.
 
     A message already gone by the time this runs (expunged between the
     insert and this call) is skipped rather than raising -- an alert for
@@ -80,5 +89,6 @@ async def create_mail_alert_for_arrival(
         {
             "id": str(alert.id), "kind": alert.kind, "title": alert.title,
             "body": alert.body, "url": alert.url, "account_id": str(account_id),
+            "folder_id": str(folder_id) if folder_id else None,
         },
     )
