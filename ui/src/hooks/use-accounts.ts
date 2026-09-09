@@ -1,5 +1,6 @@
 /** TanStack Query hooks for account operations. */
 
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { AccountCreateRequest, AccountResponse, AccountUpdateRequest } from "@/types/api";
@@ -40,13 +41,21 @@ export function useAccounts() {
     queryFn: () => api.accountOrder.get(),
     staleTime: 30_000,
   });
+  const order = orderQuery.data?.order;
 
-  return {
-    ...accountsQuery,
-    data: accountsQuery.data
-      ? applyAccountOrder(accountsQuery.data, orderQuery.data?.order ?? [])
-      : accountsQuery.data,
-  };
+  // Memoized on the two query results, not recomputed on every call: an
+  // effect elsewhere (account-order.tsx) depends on this array, and a
+  // fresh reference on every render -- even with identical contents --
+  // reruns that effect every render, which sets state and forces another
+  // render, forever. That loop starves any Next.js navigation started
+  // while it's live, since App Router transitions run at lower priority
+  // than the ordinary updates the loop keeps producing.
+  const data = useMemo(
+    () => (accountsQuery.data ? applyAccountOrder(accountsQuery.data, order ?? []) : accountsQuery.data),
+    [accountsQuery.data, order],
+  );
+
+  return { ...accountsQuery, data };
 }
 
 export function useAccount(id: string | null) {

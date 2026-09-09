@@ -41,6 +41,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   account are also no longer skipped, since the folder-delete guard they block isn't scoped to
   active accounts either.
 
+### Fixed
+
+- From Settings, the sidebar's other links (Mail, Calendar, Contacts, Search, Accounts, Pipeline)
+  no longer do nothing. The account list was rebuilt from scratch on every render, which kept the
+  Account Order card re-rendering itself without pause, and that endless stream of updates left no
+  room for a click elsewhere to take effect -- reloading the page was the only way out.
+
 ## [5.6.0] - 2026-09-09
 
 ### Rules

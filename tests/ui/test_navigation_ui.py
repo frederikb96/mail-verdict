@@ -11,7 +11,14 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.ui.helpers import folder, unique_email, wait_for_account_active, wait_for_folder
+from tests.ui.helpers import (
+    create_account,
+    folder,
+    select_account,
+    unique_email,
+    wait_for_account_active,
+    wait_for_folder,
+)
 
 from tests.setup.containers import (  # isort: skip
     DOVECOT_ALIAS,
@@ -54,6 +61,14 @@ def inbox_folder(api_client: httpx.Client, ui_account: dict[str, Any]) -> dict[s
     return wait_for_folder(api_client, str(ui_account["id"]), "INBOX")
 
 
+@pytest.fixture(scope="module")
+def second_ui_account(api_client: httpx.Client) -> dict[str, Any]:
+    """The Account Order card on Settings only renders with more than one
+    account -- the test below needs it mounted to reproduce the
+    regression it guards."""
+    return create_account(api_client, "nav2")
+
+
 class TestNavigationShellUi:
     def test_contacts_view_does_not_render_the_mail_folder_tree(
         self, page: Page, app_server: str, inbox_folder: dict[str, Any],
@@ -91,6 +106,36 @@ class TestNavigationShellUi:
         names = footer_links.all_text_contents()
         assert names.index("Mail") == names.index("Search") + 1
         assert names.index("Calendar") == names.index("Mail") + 1
+
+        page.get_by_role("link", name="Mail", exact=True).click()
+        expect(folder(page, inbox_folder["id"])).to_be_visible(timeout=15_000)
+
+    def test_settings_sidebar_links_still_navigate_away(
+        self,
+        page: Page,
+        app_server: str,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        second_ui_account: dict[str, Any],
+    ) -> None:
+        """The regression this guards: from Settings, every sidebar nav
+        link did nothing -- Next's Link handler ran (it called
+        preventDefault) but the transition never committed. An effect on
+        the Account Order card fed itself a freshly-built array on every
+        render, which reran the effect, which set state, forever; that
+        endless stream of ordinary-priority renders starved the
+        lower-priority transition Link started, so it never got a turn to
+        commit history.pushState. Reproducing it needs a second account,
+        which is what makes that card render at all."""
+        # A fresh page.goto() is a hard reload, which drops any
+        # client-side selection made before it -- the account switcher
+        # picked here has to happen on /settings itself, the way a real
+        # visit reaches Settings from wherever the sidebar already had
+        # selected, for the assertion below to check a known folder
+        # rather than whichever account the auto-select effect lands on.
+        page.goto(f"{app_server}/settings")
+        expect(page.get_by_role("heading", name="Settings")).to_be_visible(timeout=15_000)
+        select_account(page, ui_account)
 
         page.get_by_role("link", name="Mail", exact=True).click()
         expect(folder(page, inbox_folder["id"])).to_be_visible(timeout=15_000)
