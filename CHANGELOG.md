@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Rules
+
+- A stage's "halt after this stage matches" setting no longer stops the pipeline for a message
+  the stage didn't actually match -- it ended every run behind it regardless, so a halting stage
+  that only occasionally matches silently stopped ordinary mail from ever reaching the stages
+  after it.
+
 ### Mail
 
 - Deleting a folder is now also refused while it has not finished its first sync. A freshly
@@ -19,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   previously reached the sweep unchecked and could clear the folder on the very next pass.
 - The retention sweep no longer risks permanently removing a message on the same pass it was
   rescued out of Trash or Junk, under load.
+
+### Notifications
+
+- A new-mail notification for a message the pipeline will never run against -- a folder with no
+  watermark yet, or mail older than the configured age limit, as well as one of the already-
+  excluded folders -- now delivers immediately instead of waiting out the full configurable wait
+  every time.
+- The bell badge and its Mail/System lists now always agree: both read the same unseen/
+  unacknowledged rows the server itself counts, rather than a badge computed from a separately
+  capped list. An account with enough history could previously show a badge of zero, an empty
+  "Dismiss all", and a folder-delete guard still refusing to act over notifications the bell
+  never showed -- with no way to resolve it from the interface. Notifications for a disabled
+  account are also no longer skipped, since the folder-delete guard they block isn't scoped to
+  active accounts either.
 
 ## [5.6.0] - 2026-09-09
 

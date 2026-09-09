@@ -335,6 +335,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                         await create_mail_alert_for_arrival(
                             db, event_ring, vapid_repo,
                             account_id=account_uuid, message_id=message_uuid,
+                            settings_service=settings_service,
                             folder_id=folder_uuid,
                         )
             elif event.op == "update":

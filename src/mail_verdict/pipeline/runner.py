@@ -226,7 +226,7 @@ class PipelineRunner:
         )
         # Same combination _execute_run's own loop makes -- a stage tested
         # here alone should report the same halt value a real run would.
-        outcome = replace(outcome, halt=stage_def.halt or outcome.halt)
+        outcome = replace(outcome, halt=(stage_def.halt and outcome.matched) or outcome.halt)
         return _trace_entry(stage_def, outcome, applied=applied)
 
     def _pipeline_settings(self) -> dict[str, Any]:
@@ -353,7 +353,17 @@ class PipelineRunner:
             # for one that might). Combined once, here, so the trace this
             # run reports and the break decision this loop actually makes
             # can never disagree about which stage halted it.
-            outcome = replace(outcome, halt=stage_def.halt or outcome.halt)
+            #
+            # stage_def.halt only takes effect when the stage actually
+            # matched: a match stage whose conditions did not fire is the
+            # ordinary, cheap "did nothing" case, and a halt configured on
+            # it must not end the run for every other message just because
+            # this one didn't match -- the same reading a Sieve `stop` or
+            # a Thunderbird "Stop execution" action already has, and the
+            # one the legacy-rule migration assumes (pipeline/revisions.py
+            # derives halt from the `stop` action, and an action only runs
+            # when its rule matched).
+            outcome = replace(outcome, halt=(stage_def.halt and outcome.matched) or outcome.halt)
             trace.append(_trace_entry(stage_def, outcome, applied=applied))
             ctx = ctx.with_trace_entry(outcome)
             ctx = _project_verdict(ctx, outcome, applied)

@@ -28,29 +28,63 @@ export function useUnacknowledgedCount(accountId: string | null) {
   });
 }
 
-/** Every active account's own notification list, merged -- there is no
- * cross-account endpoint, so this fans out one request per account (the
- * same pattern useSearchFolders() already uses for folders) rather than
- * scoping to whichever account the sidebar happens to have selected. A
- * write-failure is account-wide by nature, not folder-scoped, so nothing
- * here narrows further the way useAlerts() narrows by folder. */
+// The API's own ceiling (GET .../notifications?limit=..., le=500) -- the
+// largest unacknowledged_only list a single account can ever return.
+const _MAX_UNACKNOWLEDGED_LIST = 500;
+
+/** Every account's own unacknowledged notifications, merged -- there is
+ * no cross-account endpoint, so this fans out one request per account
+ * (the same pattern useSearchFolders() already uses for folders) rather
+ * than scoping to whichever account the sidebar happens to have
+ * selected. A write-failure is account-wide by nature, not folder-
+ * scoped, so nothing here narrows further the way useAlerts() narrows by
+ * folder -- and not is_active-scoped either: the folder-delete guard
+ * this bell is the only warning for checks unacknowledged notifications
+ * account-wide, inactive accounts included, so hiding them here would
+ * make the badge lie in exactly the direction that matters.
+ *
+ * The list itself is fetched unacknowledged_only, not the plain recent
+ * list filtered client-side afterward -- the previous shape read the
+ * server's default page (its 100 most recent, acknowledged or not) and
+ * filtered in the browser, so an account with over 100 notifications
+ * could have every unacknowledged one sitting past that page: the badge
+ * read zero, the "Dismiss all" control (gated on this same list) never
+ * appeared, and the guard still refused to delete a folder -- blocked
+ * with no control anywhere in the interface able to unblock it. The
+ * count show on the badge still comes from unacknowledgedCount, the
+ * exact predicate the guard itself evaluates, rather than this list's
+ * own length: correct even past _MAX_UNACKNOWLEDGED_LIST, where the list
+ * can no longer show every row but is still guaranteed non-empty. */
 export function useAllAccountsNotifications() {
   const { data: accounts, isLoading: accountsLoading } = useAccounts();
-  const activeAccounts = (accounts ?? []).filter((a) => a.is_active);
+  const allAccounts = accounts ?? [];
 
-  const results = useQueries({
-    queries: activeAccounts.map((account) => ({
-      queryKey: notificationKeys.list(account.id),
-      queryFn: () => api.notifications.list(account.id),
+  const listResults = useQueries({
+    queries: allAccounts.map((account) => ({
+      queryKey: [...notificationKeys.list(account.id), "unacknowledged"],
+      queryFn: () =>
+        api.notifications.list(account.id, {
+          unacknowledged_only: true, limit: _MAX_UNACKNOWLEDGED_LIST,
+        }),
+      staleTime: 10_000,
+    })),
+  });
+  const countResults = useQueries({
+    queries: allAccounts.map((account) => ({
+      queryKey: notificationKeys.count(account.id),
+      queryFn: () => api.notifications.unacknowledgedCount(account.id),
       staleTime: 10_000,
     })),
   });
 
-  const isLoading = accountsLoading || results.some((r) => r.isLoading);
-  const notifications = activeAccounts.flatMap(
-    (_account, i) => results[i]?.data ?? [],
+  const isLoading = accountsLoading || listResults.some((r) => r.isLoading);
+  const notifications = allAccounts.flatMap(
+    (_account, i) => listResults[i]?.data ?? [],
   );
-  return { notifications, isLoading };
+  const unacknowledgedCount = countResults.reduce(
+    (sum, r) => sum + (r.data?.unacknowledged ?? 0), 0,
+  );
+  return { notifications, isLoading, unacknowledgedCount };
 }
 
 export function useAcknowledgeNotification() {

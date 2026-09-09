@@ -310,9 +310,13 @@ without polling.
 
 One row is both the dispatch queue a periodic pass claims from and, once delivered, the durable
 record a bell reads back — `delivered_at` distinguishes the two states, and `idx_alerts_due` is
-what that pass's claim query scans. Mail arriving directly into a folder the pipeline never runs
-against (Sent, Drafts, Trash, Junk, Archive) is delivered at insert: no pipeline run will ever tell
-it apart from staying staged. Anything else is inserted with `delivered_at` left `NULL` and
+what that pass's claim query scans. A message no `pipeline_runs` row will ever exist for --
+arriving directly into a folder the pipeline never runs against (Sent, Drafts, Trash, Junk,
+Archive), a folder with no watermark yet, or mail older than `pipeline.live_max_age_days` --
+is delivered at insert: `pipeline/enqueue.py`'s `is_live_pipeline_possible` re-derives the whole
+eligibility predicate the pipeline's own live-arrival enqueue checks, not merely the folder's
+role, so waiting for a run that can never exist means waiting out the bound every time. Anything
+else is inserted with `delivered_at` left `NULL` and
 `folder_id` holding the arrival folder as a placeholder only; `alerts/dispatch.py`'s periodic pass
 delivers it once that message's pipeline run reaches a terminal status, once the message can no
 longer reach one, or once a bounded wait (`settings.mail.notify_wait_seconds`) expires, overwriting

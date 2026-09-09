@@ -561,9 +561,14 @@ export const api = {
     // at all. A non-null list, even empty, sets folder_scoped so the
     // server applies it rather than reading an empty folder_ids the same
     // way as an omitted one.
-    list(limit: number, folderIds: string[] | null): Promise<AlertResponse[]> {
+    list(
+      limit: number, folderIds: string[] | null, unseenOnly?: boolean,
+    ): Promise<AlertResponse[]> {
       return request(
-        `/alerts${qs({ limit, folder_ids: folderIds ?? undefined, folder_scoped: folderIds !== null })}`,
+        `/alerts${qs({
+          limit, folder_ids: folderIds ?? undefined, folder_scoped: folderIds !== null,
+          unseen_only: unseenOnly,
+        })}`,
       );
     },
     unseenCount(folderIds: string[] | null): Promise<AlertUnseenCountResponse> {

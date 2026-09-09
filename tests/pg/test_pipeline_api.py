@@ -465,6 +465,64 @@ def test_a_halting_stage_stops_the_second_matching_stage_from_running(
     assert first_entry["applied"][0]["applied"] is True
 
 
+def test_a_halting_stage_whose_conditions_do_not_fire_never_stops_the_run(
+    client: TestClient, migrated_db: DatabaseConnection,
+) -> None:
+    """halt is per-stage config, but it must only end the run when the
+    stage carrying it actually matched -- a stage with halt set whose
+    conditions never fire is the ordinary "did nothing" case, and must
+    not silence every stage after it for every message that stage
+    doesn't apply to."""
+    account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
+    mail_id = client.portal.call(
+        functools.partial(_seed_message, account_id=account_id, folder_id=folder_id),
+        migrated_db,
+    )
+    settings_service = client.portal.call(_configure_fake_ai_provider, migrated_db)
+
+    _put(client, migrated_db, {
+        "enabled": True, "stages": [
+            {
+                "stage_id": "first", "type": "match", "halt": True,
+                "config": {
+                    "when": {"subject_contains": "pharmacy"},
+                    "effects": [{"tag": {"add": ["first-stage"]}}],
+                },
+            },
+            {
+                "stage_id": "second", "type": "match",
+                "config": {
+                    "when": {"subject_contains": "viagra"},
+                    "effects": [{"tag": {"add": ["second-stage"]}}],
+                },
+            },
+        ],
+    })
+
+    with patch("mail_verdict.api.pipeline.get_db_connection", return_value=migrated_db), \
+         patch("mail_verdict.api.pipeline.get_settings_service", return_value=settings_service), \
+         patch(
+             "mail_verdict.api.pipeline.get_provider_credential_repo",
+             return_value=ProviderCredentialRepository(migrated_db, ""),
+         ), \
+         patch("mail_verdict.api.pipeline.get_event_ring", return_value=None):
+        resp = client.post("/pipeline/test", json={"message_id": str(mail_id)})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "done"
+
+    stage_ids = [e["stage_id"] for e in body["trace"]]
+    assert stage_ids == ["first", "second"]
+
+    first_entry = body["trace"][0]
+    assert first_entry["matched"] is False
+    assert first_entry["halt"] is False
+
+    second_entry = body["trace"][1]
+    assert second_entry["matched"] is True
+    assert second_entry["applied"][0]["applied"] is True
+
+
 def test_dry_run_missing_message_is_404(
     client: TestClient, migrated_db: DatabaseConnection,
 ) -> None:

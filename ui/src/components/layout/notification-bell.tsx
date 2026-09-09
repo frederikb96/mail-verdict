@@ -4,9 +4,17 @@
  * One bell for both durable, in-app record kinds: new mail (the Mail tab)
  * and a write PostIMAP gave up on permanently (the System tab). Neither
  * list is account-scoped -- Mail already wasn't (see use-alerts.ts), and
- * System is fanned out across every active account (see
+ * System is fanned out across every account, active or not (see
  * useAllAccountsNotifications) so a write failure on an account that
- * isn't currently selected is never silently invisible.
+ * isn't currently selected -- or is disabled -- is never silently
+ * invisible, and never blocks a folder-delete guard the bell itself
+ * cannot explain.
+ *
+ * Both tabs are fetched unseen/unacknowledged-only, not a plain recent
+ * page filtered client-side: a page capped smaller than what's actually
+ * outstanding used to read as "nothing here" while the count (and, for
+ * notifications, a folder-delete guard) disagreed -- see both hooks'
+ * own comments.
  *
  * The badge and both tabs all read the same two counts computed below --
  * nowhere else re-derives "how many are unread".
@@ -170,11 +178,13 @@ export function NotificationBell() {
   const [tab, setTab] = useState<"mail" | "system">("mail");
 
   const { data: alertCount } = useUnseenAlertCount();
-  const { data: alerts, isLoading: alertsLoading } = useAlerts();
+  const { data: alerts, isLoading: alertsLoading } = useAlerts(200, { unseenOnly: true });
   const dismissAlert = useDismissAlert();
   const dismissAllAlerts = useDismissAllAlerts();
 
-  const { notifications, isLoading: notificationsLoading } = useAllAccountsNotifications();
+  const {
+    notifications: unacknowledged, isLoading: notificationsLoading, unacknowledgedCount,
+  } = useAllAccountsNotifications();
   const acknowledge = useAcknowledgeNotification();
   const acknowledgeAllEverywhere = useAcknowledgeAllNotificationsEverywhere();
 
@@ -184,10 +194,12 @@ export function NotificationBell() {
     showAccount && accountId ? (accounts?.find((a) => a.id === accountId)?.name ?? null) : null;
 
   const unseenAlerts = alertCount?.unseen ?? 0;
-  const unacknowledged = notifications.filter((n) => n.acknowledged_at === null);
-  // The one place both counts are combined -- the trigger badge and
-  // each tab's own bulk-dismiss control all read from here.
-  const totalUnseen = unseenAlerts + unacknowledged.length;
+  // unacknowledgedCount is the account-wide server count (matching the
+  // folder-delete guard's own predicate exactly), not unacknowledged's
+  // own length -- see useAllAccountsNotifications for why the two can
+  // differ. The one place both counts are combined -- the trigger badge
+  // and each tab's own bulk-dismiss control all read from here.
+  const totalUnseen = unseenAlerts + unacknowledgedCount;
 
   const openAlert = (alert: AlertResponse) => {
     if (alert.dismissed_at === null) dismissAlert.mutate(alert.id);
@@ -268,10 +280,10 @@ export function NotificationBell() {
           <TabsContent value="system" className="m-0">
             <div className="max-h-80 overflow-y-auto">
               {notificationsLoading && <EmptyState text="Loading..." />}
-              {!notificationsLoading && notifications.length === 0 && (
+              {!notificationsLoading && unacknowledged.length === 0 && (
                 <EmptyState text="Nothing to report" />
               )}
-              {notifications.map((n) => (
+              {unacknowledged.map((n) => (
                 <SystemRow
                   key={n.id}
                   notification={n}

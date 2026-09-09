@@ -214,7 +214,7 @@ export function StageFormDialog({
                 checked={halt}
                 onChange={(e) => setHalt(e.target.checked)}
               />
-              Halt the pipeline after this stage
+              Halt the pipeline after this stage matches
             </label>
           </div>
 

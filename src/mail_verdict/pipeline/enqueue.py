@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
 
@@ -110,42 +110,30 @@ async def enqueue_live_arrival(
             await WorkQueueNotifier.notify(session, "embeddings")
 
 
-async def enqueue_pipeline_run_if_live_eligible(
-    session: AsyncSession,
-    *,
-    account_id: uuid.UUID,
-    message_id: uuid.UUID | None,
-    settings_service: SettingsService,
-) -> bool:
+async def _select_live_eligible_row(
+    session: AsyncSession, *, account_id: uuid.UUID, message_id: uuid.UUID, max_age_days: int,
+) -> Any:
     """
-    The pipeline half of the embedding gate. Called by
-    embeddings/repository.py inside the same transaction that moves a
-    message_embeddings row to 'done' or 'failed' -- never called directly,
-    and never opens its own session, so the two writes commit or roll back
-    together and the second enqueue can never be lost independently of the
-    first.
+    The live-eligibility predicate itself, shared by every caller that
+    needs to know whether a message can still ever produce a
+    `pipeline_runs` row: the message's folder carries our watermark
+    (pipeline_folder_state), the message arrived after it, and it is not
+    older than `pipeline.live_max_age_days` -- the secondary guard
+    against a missing or stale watermark reclassifying old mail.
 
-    Live-eligible mirrors _reconcile_once's own definition exactly, since
-    both answer the same question at different moments: the message's
-    folder carries our watermark (pipeline_folder_state), the message
-    arrived after it, and it is not older than
-    pipeline.live_max_age_days -- the secondary guard against a missing or
-    stale watermark reclassifying old mail. A message that fails this
-    check produces no row and no explanation, the same "never existed"
-    convention the old direct enqueue used, since scope was never in
-    doubt (see the module docstring).
+    Deliberately silent on embedding state -- unlike
+    `enqueue_pipeline_run_if_live_eligible`, which only ever runs once
+    the embedding transaction it shares a caller with has already
+    reached one, `alerts/dispatch.py` needs the answer before an
+    embedding has even been enqueued. Folding embedding state into this
+    query would make it lie for that caller rather than merely being
+    silent about a state it does not yet have an opinion on.
 
-    Returns:
-        True if a new row was inserted -- the caller notifies "pipeline"
+    Returns the row needed to compute msg_key when eligible, None
+    otherwise -- None is also the answer for "this message is gone",
+    since an expunged message and one that will never be pipeline-live-
+    eligible mean exactly the same thing to every caller of this.
     """
-    if message_id is None:
-        return False
-
-    pipeline_settings = (
-        settings_service.get("pipeline") if settings_service.has_category("pipeline") else {}
-    )
-    max_age_days = int(pipeline_settings.get("live_max_age_days", 7))
-
     row = await session.execute(
         text(
             """
@@ -166,7 +154,78 @@ async def enqueue_pipeline_run_if_live_eligible(
         ),
         {"message_id": message_id, "account_id": account_id, "max_age_days": max_age_days},
     )
-    result = row.one_or_none()
+    return row.one_or_none()
+
+
+def _max_age_days(settings_service: SettingsService) -> int:
+    pipeline_settings = (
+        settings_service.get("pipeline") if settings_service.has_category("pipeline") else {}
+    )
+    return int(pipeline_settings.get("live_max_age_days", 7))
+
+
+async def is_live_pipeline_possible(
+    db: DatabaseConnection,
+    *,
+    account_id: uuid.UUID,
+    message_id: uuid.UUID,
+    settings_service: SettingsService,
+) -> bool:
+    """
+    Whether a `pipeline_runs` row can still ever be created for this
+    message -- the same predicate `enqueue_pipeline_run_if_live_eligible`
+    checks once the embedding reaches a terminal state, evaluated here
+    for a caller that needs the answer immediately, before that state
+    exists (`alerts/dispatch.py`, to decide whether waiting for one is
+    worth it at all). One definition, shared by both: a caller
+    re-deriving only part of it -- a folder's role, say, without the
+    watermark or the age limit -- is exactly how a notification ended up
+    waiting out its full timeout for a message the pipeline was never
+    going to touch.
+
+    False means no run will ever exist for this message; a caller
+    waiting on one should stop and act now instead.
+    """
+    async with db.session() as session:
+        result = await _select_live_eligible_row(
+            session, account_id=account_id, message_id=message_id,
+            max_age_days=_max_age_days(settings_service),
+        )
+    return result is not None
+
+
+async def enqueue_pipeline_run_if_live_eligible(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    message_id: uuid.UUID | None,
+    settings_service: SettingsService,
+) -> bool:
+    """
+    The pipeline half of the embedding gate. Called by
+    embeddings/repository.py inside the same transaction that moves a
+    message_embeddings row to 'done' or 'failed' -- never called directly,
+    and never opens its own session, so the two writes commit or roll back
+    together and the second enqueue can never be lost independently of the
+    first.
+
+    Live-eligible mirrors _reconcile_once's own definition exactly, since
+    both answer the same question at different moments -- see
+    _select_live_eligible_row for what "eligible" means. A message that
+    fails this check produces no row and no explanation, the same "never
+    existed" convention the old direct enqueue used, since scope was
+    never in doubt (see the module docstring).
+
+    Returns:
+        True if a new row was inserted -- the caller notifies "pipeline"
+    """
+    if message_id is None:
+        return False
+
+    result = await _select_live_eligible_row(
+        session, account_id=account_id, message_id=message_id,
+        max_age_days=_max_age_days(settings_service),
+    )
     if result is None:
         return False
 
