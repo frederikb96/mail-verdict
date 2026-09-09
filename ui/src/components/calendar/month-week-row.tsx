@@ -7,14 +7,14 @@
  * makes the scroller safe.
  *
  * Memoized: the month scroller only changes this row's own props (weekIndex,
- * rowHeight, compact, committedMonths, the three stable callbacks) when
+ * rowHeight, compact, the calendars lookup, the three stable callbacks) when
  * something about THIS row actually changed. Without the memo, every
  * mounted row would still re-execute its body -- including its own
  * useWeekEvents call -- on every parent re-render, which is most of what
  * made the old version cost 1,000+ renders per wheel tick.
  */
 
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { format, isSameDay, isToday, isWeekend, weekDays, weekNumber } from "@/lib/dates";
 import {
@@ -27,10 +27,9 @@ import {
 import { EventChip } from "@/components/calendar/event-chip";
 import { DayEventsPopover } from "@/components/calendar/day-events-popover";
 import { useWeekEvents } from "@/hooks/use-events";
-import { useCalendars } from "@/hooks/use-calendars";
 import { selectedEventAtom } from "@/lib/atoms";
 import { cn } from "@/lib/utils";
-import type { EventInstance } from "@/types/api";
+import type { Calendar, EventInstance } from "@/types/api";
 
 const DAY_HEADER_HEIGHT = 20;
 const LANE_HEIGHT = 20;
@@ -43,9 +42,19 @@ interface MonthWeekRowProps {
   weekIndex: number;
   rowHeight: number;
   compact: boolean;
-  /** Which months are actually allowed to fetch right now -- see
-   * use-events.ts's useWeekEvents for why this exists. */
-  committedMonths: ReadonlySet<string>;
+  /** True while the scroller is flinging. A row that mounts light renders
+   * its dates and no events -- the cost of a row full of chips is what
+   * makes a fast fling over cached months stutter -- and fills them in on
+   * the next render with `light` false, which the scroller issues once
+   * scrolling settles. A row that has ever shown its events keeps them
+   * whatever `light` says, so reading at any speed never sees a chip
+   * disappear. */
+  light: boolean;
+  /** The calendars by id and the sidebar's hidden set, both built once by
+   * the scroller from a single calendars subscription -- a row subscribing
+   * on its own would re-render on every fetch of that query. */
+  calendarById: ReadonlyMap<string, Calendar>;
+  hiddenCalendarIds: ReadonlySet<string>;
   onSelectEvent: SelectEventHandler;
   onSelectDay: (date: Date) => void;
   onSelectWeek: (date: Date) => void;
@@ -55,21 +64,20 @@ function MonthWeekRowImpl({
   weekIndex,
   rowHeight,
   compact,
-  committedMonths,
+  light,
+  calendarById,
+  hiddenCalendarIds,
   onSelectEvent,
   onSelectDay,
   onSelectWeek,
 }: MonthWeekRowProps) {
   const days = useMemo(() => weekDays(weekIndex), [weekIndex]);
-  const { events, loaded } = useWeekEvents(weekIndex, committedMonths);
-  const { data: calendars } = useCalendars();
+  const { events, loaded: chunkLoaded } = useWeekEvents(weekIndex, hiddenCalendarIds);
+  const shownEventsRef = useRef(false);
+  const loaded = chunkLoaded && (!light || shownEventsRef.current);
+  if (loaded) shownEventsRef.current = true;
   const selected = useAtomValue(selectedEventAtom);
   const [popoverDay, setPopoverDay] = useState<Date | null>(null);
-
-  const calendarById = useMemo(() => {
-    const map = new Map((calendars ?? []).map((c) => [c.id, c]));
-    return map;
-  }, [calendars]);
 
   const weekStart = days[0];
 
@@ -160,14 +168,17 @@ function MonthWeekRowImpl({
               timedByDay[col].length
             : 0;
 
+          // The cell is a plain element with a click handler, and the date
+          // number is the control that opens the day: a cell that is itself
+          // a <button> would nest the event chips' own buttons inside it,
+          // which assistive technology cannot represent.
           return (
-            <button
+            <div
               key={isoKey(day)}
-              type="button"
               data-date={isoKey(day)}
               onClick={() => onSelectDay(day)}
               className={cn(
-                "relative flex min-w-0 flex-1 flex-col overflow-hidden border-r px-1 pt-0.5 text-left last:border-r-0 hover:bg-accent/50",
+                "relative flex min-w-0 flex-1 cursor-pointer flex-col overflow-hidden border-r px-1 pt-0.5 text-left last:border-r-0 hover:bg-accent/50",
                 // Alternating by month (not by "current" month -- there is no
                 // such thing in a continuous scroll) is what makes a month
                 // boundary read as a colour change mid-row.
@@ -175,15 +186,21 @@ function MonthWeekRowImpl({
               )}
             >
               <div className="flex h-5 items-center gap-1">
-                <span
+                <button
+                  type="button"
+                  aria-label={`Open ${format(day, "EEEE, MMM d, yyyy")}`}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    onSelectDay(day);
+                  }}
                   className={cn(
-                    "flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs",
+                    "flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     isToday(day) && "bg-primary font-medium text-primary-foreground",
                     !isToday(day) && isWeekend(day) && "text-muted-foreground",
                   )}
                 >
                   {day.getDate() === 1 ? format(day, "MMM d") : day.getDate()}
-                </span>
+                </button>
               </div>
 
               {!compact && (
@@ -257,7 +274,7 @@ function MonthWeekRowImpl({
                   ))}
                 </div>
               )}
-            </button>
+            </div>
           );
         })}
 

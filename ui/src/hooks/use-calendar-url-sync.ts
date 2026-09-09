@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useRef } from "react";
-import { useAtom } from "jotai";
+import { useSetAtom, useStore } from "jotai";
 import { useRouter, useSearchParams } from "next/navigation";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
 import { isoDate } from "@/lib/dates";
@@ -33,13 +33,19 @@ function parseDateParam(value: string | null): Date | null {
 export function useCalendarUrlSync(): void {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [view, setView] = useAtom(calendarViewAtom);
-  const [date, setDate] = useAtom(calendarDateAtom);
+  // The atoms are read from the store inside the effect rather than
+  // subscribed to: this hook sits at the top of the calendar page, and
+  // calendarDateAtom changes on every row the month scroller scrolls past.
+  const store = useStore();
+  const setView = useSetAtom(calendarViewAtom);
+  const setDate = useSetAtom(calendarDateAtom);
   const populatedRef = useRef(false);
 
   useEffect(() => {
     const paramView = searchParams.get("view");
     const paramDate = parseDateParam(searchParams.get("date"));
+    const view = store.get(calendarViewAtom);
+    const date = store.get(calendarDateAtom);
 
     if (!paramView && !paramDate) {
       if (populatedRef.current) return;

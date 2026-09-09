@@ -47,7 +47,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useCalendarUrlWriter } from "@/hooks/use-calendar-navigate";
-import { useKeepEventChunksWarm } from "@/hooks/use-events";
+import { useCalendars } from "@/hooks/use-calendars";
+import { hiddenCalendarIds, useKeepEventChunksWarm } from "@/hooks/use-events";
 import { calendarDateAtom } from "@/lib/atoms";
 import {
   WEEK_INDEX_MAX,
@@ -78,6 +79,13 @@ const RENDER_MARGIN_ROWS = 8;
  * event. Short enough that a genuine pause feels immediate, long enough
  * that a fast flick's intermediate rows never register as a pause. */
 const SCROLL_SETTLE_MS = 200;
+/** Scroll speed, in px per ms, above which the view counts as flinging:
+ * rows mounting while it is fling-mount light (dates only, no chips) and
+ * fill in once scrolling settles. A single wheel tick animates at roughly
+ * 1 px/ms, a deliberate fast flick at 10 px/ms and more, so this separates
+ * the two with room on both sides. Rows already showing their events
+ * never downgrade -- see MonthWeekRow's `light`. */
+const FLING_PX_PER_MS = 3;
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -103,11 +111,24 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
   const [rowHeight, setRowHeight] = useState(MIN_ROW_HEIGHT);
   const [monthLabel, setMonthLabel] = useState("");
   const [renderRange, setRenderRange] = useState<RenderRange>(INITIAL_RENDER_RANGE);
+  /** True while the reader is flinging (see FLING_PX_PER_MS); cleared when
+   * scrolling settles. Rows mounting meanwhile render light. */
+  const [flinging, setFlinging] = useState(false);
+  const lastScrollSampleRef = useRef<{ top: number; at: number } | null>(null);
   /** The months actually requested from the server -- see the file header
    * for why this lags `renderRange` until scrolling settles. */
   const [committedMonths, setCommittedMonths] = useState<ReadonlySet<string>>(() => new Set());
   const committedMonthsList = useMemo(() => Array.from(committedMonths), [committedMonths]);
   useKeepEventChunksWarm(committedMonthsList);
+
+  // One calendars subscription for the whole grid, handed to every row as
+  // two memoized props -- see MonthWeekRowProps for why the rows must not
+  // subscribe themselves.
+  const { data: calendars } = useCalendars();
+  const calendarById = useMemo(
+    () => new Map((calendars ?? []).map((c) => [c.id, c])), [calendars],
+  );
+  const hidden = useMemo(() => hiddenCalendarIds(calendars), [calendars]);
 
   const rowHeightRef = useRef(rowHeight);
   rowHeightRef.current = rowHeight;
@@ -175,6 +196,8 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     // on `scrollend`, so this flag is cleared uniformly on every browser
     // rather than staying stuck true forever after a programmatic jump.
     programmaticScrollRef.current = false;
+    lastScrollSampleRef.current = null;
+    setFlinging(false);
     writeUrlRef.current();
     commitFetchWindowRef.current(renderRangeRef.current);
   }, []);
@@ -299,6 +322,17 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     // that stays inside one row".
     setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
 
+    // Velocity from the last two scroll events -- a fling mounts rows light
+    // (see FLING_PX_PER_MS); `settle` is what turns it back off, so a fling
+    // that slows down still fills in only once it has actually stopped.
+    const now = performance.now();
+    const sample = lastScrollSampleRef.current;
+    if (sample && now > sample.at) {
+      const velocity = Math.abs(top - sample.top) / (now - sample.at);
+      if (velocity > FLING_PX_PER_MS) setFlinging(true);
+    }
+    lastScrollSampleRef.current = { top, at: now };
+
     resetSettleTimer();
 
     if (programmaticScrollRef.current) return;
@@ -350,7 +384,9 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
                 weekIndex={w}
                 rowHeight={rowHeight}
                 compact={compact}
-                committedMonths={committedMonths}
+                light={flinging}
+                calendarById={calendarById}
+                hiddenCalendarIds={hidden}
                 onSelectEvent={onSelectEvent}
                 onSelectDay={onSelectDay}
                 onSelectWeek={onSelectWeek}

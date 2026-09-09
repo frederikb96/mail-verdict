@@ -12,35 +12,32 @@
  * neither spends a history entry on every unit stepped through.
  */
 
-import { useCallback, useRef } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useCallback } from "react";
+import { useSetAtom, useStore } from "jotai";
 import { useRouter } from "next/navigation";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
 import { isoDate } from "@/lib/dates";
 
 /**
- * `view`/`date` are read from refs, not from the callback's own closure,
- * so the returned function has one stable identity for the component's
- * whole lifetime rather than a new one every time either atom changes --
- * which, for `date`, is on every row the month scroller scrolls past. A
- * churning `navigate` identity cascades into every caller that builds a
- * handler with `[navigate]` as a dependency (onSelectDay, onSelectWeek in
- * calendar-page.tsx), and from there into the props `MonthWeekRow`
- * receives -- silently defeating its memoization on every row crossed,
- * regardless of how stable everything else about it is. */
+ * `view`/`date` are read from the jotai store at call time, never
+ * subscribed to: this hook is mounted by the calendar page itself and by
+ * every control on it, and `calendarDateAtom` changes on every row the
+ * month scroller scrolls past, so subscribing here would re-render all of
+ * them per row crossed and hand the returned function a new identity each
+ * time -- which cascades into every handler built with `[navigate]` as a
+ * dependency and from there into the props `MonthWeekRow` receives,
+ * silently defeating its memoization. Reading from the store gives one
+ * stable function for the component's whole lifetime and no re-render. */
 export function useCalendarNavigate() {
   const router = useRouter();
-  const [view, setView] = useAtom(calendarViewAtom);
-  const [date, setDate] = useAtom(calendarDateAtom);
-  const viewRef = useRef(view);
-  viewRef.current = view;
-  const dateRef = useRef(date);
-  dateRef.current = date;
+  const store = useStore();
+  const setView = useSetAtom(calendarViewAtom);
+  const setDate = useSetAtom(calendarDateAtom);
 
   return useCallback(
     (next: { view?: CalendarViewMode; date?: Date }, options?: { push?: boolean }) => {
-      const nextView = next.view ?? viewRef.current;
-      const nextDate = next.date ?? dateRef.current;
+      const nextView = next.view ?? store.get(calendarViewAtom);
+      const nextDate = next.date ?? store.get(calendarDateAtom);
       if (next.view !== undefined) setView(next.view);
       if (next.date !== undefined) setDate(next.date);
       const params = new URLSearchParams({ view: nextView, date: isoDate(nextDate) });
@@ -48,7 +45,7 @@ export function useCalendarNavigate() {
       if (options?.push === false) router.replace(url, { scroll: false });
       else router.push(url, { scroll: false });
     },
-    [setView, setDate, router],
+    [store, setView, setDate, router],
   );
 }
 
@@ -62,10 +59,11 @@ export function useCalendarNavigate() {
  * once per user gesture, so it never deserves a history entry. */
 export function useCalendarUrlWriter() {
   const router = useRouter();
-  const view = useAtomValue(calendarViewAtom);
-  const date = useAtomValue(calendarDateAtom);
+  const store = useStore();
   return useCallback(() => {
-    const params = new URLSearchParams({ view, date: isoDate(date) });
+    const params = new URLSearchParams({
+      view: store.get(calendarViewAtom), date: isoDate(store.get(calendarDateAtom)),
+    });
     router.replace(`/calendar?${params.toString()}`, { scroll: false });
-  }, [view, date, router]);
+  }, [store, router]);
 }

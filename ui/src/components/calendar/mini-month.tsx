@@ -7,9 +7,11 @@
  */
 
 import { useEffect, useState } from "react";
+import { useAtomValue } from "jotai";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
+import { calendarDateAtom } from "@/lib/atoms";
 import {
   addMonths,
   daysOfMonthGrid,
@@ -21,7 +23,11 @@ import {
 } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 
-export function MiniMonth({ anchor }: { anchor: Date }) {
+/** Reads the anchor date itself rather than taking it from the sidebar:
+ * the month scroller writes that atom on every week row crossed, and
+ * this is the only part of the sidebar that has to follow it. */
+export function MiniMonth() {
+  const anchor = useAtomValue(calendarDateAtom);
   const navigate = useCalendarNavigate();
   const [displayMonth, setDisplayMonth] = useState(() => startOfMonth(anchor));
 

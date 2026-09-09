@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   was never usable for dragging), and the range it covers widens from 1990-2060 to 1900-2200.
 - A live update to a calendar event now only refreshes the months it can actually affect, rather
   than every month currently open.
+- A fast fling through the month view mounts the passing weeks with their dates only and fills in
+  the events the moment scrolling stops; a week that is already showing its events never loses
+  them, so reading at any speed is unaffected.
+- The calendar list is no longer refetched every time a component that reads it mounts -- in the
+  month view that was once per week row scrolled into view -- and the week rows no longer
+  subscribe to it individually.
+- A day cell in the month view is no longer a button wrapping the event chips' own buttons, which
+  assistive technology cannot represent; the date number is the control that opens the day.
 
 ## [5.4.0] - 2026-09-09
 

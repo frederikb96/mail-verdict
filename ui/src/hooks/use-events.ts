@@ -29,17 +29,17 @@ import type {
   RespondRequest,
 } from "@/types/api";
 
-/** Drops instances on a calendar the sidebar has hidden. is_visible is a
+/** The ids of every calendar the sidebar has hidden. is_visible is a
  * client-side view concept -- GET /calendar/events never filters by it,
  * which is what makes toggling it free of any server round trip -- so
- * every hook that renders events applies this same predicate rather than
- * a copy of it each. A calendar_id absent from the list (a stale or
- * still-loading `calendars` query) is shown rather than hidden. */
-function filterVisible(
-  events: EventInstance[], calendars: Calendar[] | undefined,
-): EventInstance[] {
-  if (!calendars) return events;
-  const hidden = new Set(calendars.filter((c) => !c.is_visible).map((c) => c.id));
+ * every hook that renders events applies the same predicate, built once
+ * here. A calendar_id absent from the list (a stale or still-loading
+ * `calendars` query) is shown rather than hidden. */
+export function hiddenCalendarIds(calendars: Calendar[] | undefined): ReadonlySet<string> {
+  return new Set((calendars ?? []).filter((c) => !c.is_visible).map((c) => c.id));
+}
+
+function filterHidden(events: EventInstance[], hidden: ReadonlySet<string>): EventInstance[] {
   return hidden.size === 0 ? events : events.filter((e) => !hidden.has(e.calendar_id));
 }
 
@@ -118,7 +118,8 @@ export function useEventsForRange(from: Date, to: Date) {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, dataRefs);
-  const visible = useMemo(() => filterVisible(events, calendars), [events, calendars]);
+  const hidden = useMemo(() => hiddenCalendarIds(calendars), [calendars]);
+  const visible = useMemo(() => filterHidden(events, hidden), [events, hidden]);
 
   return { events: visible, isLoading };
 }
@@ -126,29 +127,32 @@ export function useEventsForRange(from: Date, to: Date) {
 /** Events touching a given week, read from whichever month chunks the week's
  * days fall into (a week can touch two, at a month boundary).
  *
- * `enabledMonths`, when given, gates which of those chunks are actually
- * fetched -- the month scroller uses this to keep a fast flick from firing
- * one request per row passed: a row mounts (and this hook runs) well
- * before its month is committed to the fetch window, so it must not
- * request in the meantime. Omitted (the day/week/agenda views, which have
- * no such flick problem), every relevant month is simply always enabled.
+ * A row only READS its chunks -- `enabled: false` here means a row never
+ * starts a request of its own. Fetching belongs to the scroller's
+ * useKeepEventChunksWarm observers, which follow the settled fetch window:
+ * a row mounts (and this hook runs) well before its month is committed to
+ * that window, and a fast flick must not fire one request per row passed.
+ * Keeping the fetch decision out of the row also keeps it out of the
+ * row's props, so a change of fetch window re-renders nothing here.
  *
- * `loaded` is false while any relevant chunk has never had data (gated OR
- * genuinely still loading) -- month-week-row.tsx renders a skeleton in
- * that case, but keeps rendering nothing once it has ever loaded, thanks
- * to `placeholderData: keepPreviousData` keeping the previous chunk's data
- * in place across a refetch. */
+ * `hidden` is the sidebar's hidden-calendar set, passed in rather than
+ * read from the calendars query here: a few dozen mounted rows each
+ * subscribing to that query would all re-render every time it so much as
+ * starts a fetch, so the scroller subscribes once and hands the result
+ * down.
+ *
+ * `loaded` is false while any relevant chunk has never had data --
+ * month-week-row.tsx renders a skeleton in that case, but keeps rendering
+ * events once it has ever loaded, thanks to `placeholderData:
+ * keepPreviousData` keeping the previous chunk's data in place across a
+ * refetch. */
 export function useWeekEvents(
   weekIndex: number,
-  enabledMonths?: ReadonlySet<string>,
+  hidden: ReadonlySet<string>,
 ): { events: EventInstance[]; loaded: boolean } {
   const months = monthChunksForWeek(weekIndex);
-  const { data: calendars } = useCalendars();
   const results = useQueries({
-    queries: months.map((month) => ({
-      ...chunkQueryOptions(month),
-      enabled: enabledMonths ? enabledMonths.has(month) : true,
-    })),
+    queries: months.map((month) => ({ ...chunkQueryOptions(month), enabled: false })),
   });
   const dataRefs = results.map((r) => r.data);
 
@@ -168,7 +172,7 @@ export function useWeekEvents(
     return Array.from(byKey.values());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, dataRefs);
-  const visible = useMemo(() => filterVisible(events, calendars), [events, calendars]);
+  const visible = useMemo(() => filterHidden(events, hidden), [events, hidden]);
 
   return { events: visible, loaded: results.every((r) => r.data !== undefined) };
 }
