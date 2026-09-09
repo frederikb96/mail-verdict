@@ -20,7 +20,9 @@ mirror, which is what keeps it simple.
   filter narrows the open folder by subject, sender or recipient, its rows carrying the same
   actions an ordinary row does. Opening a reply collapses the quoted original behind a "Show
   quoted text" control, and ctrl+F (or a control beside the message's other icons) searches and
-  highlights matches inside the open message, which the browser's own find cannot reach.
+  highlights matches inside the open message, which the browser's own find cannot reach. An
+  image or PDF attachment opens full screen for a look at it, rendered rather than downloaded;
+  the download control stays for that and for anything else the preview does not recognise.
 - **Compose** — a rich-text editor with Markdown input rules, tables, checklists and pasted
   images, send, reply, reply-all, forward and drafts, with attachments. The panel resizes by
   dragging its top edge or expanding to fill the window. A reply or forward embeds the original as

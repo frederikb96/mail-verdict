@@ -7,9 +7,11 @@
  * attachments) live, separate from the reading pane's own thread-level
  * header, action row and reply box. */
 
+import { useState } from "react";
 import {
   Paperclip,
   Download,
+  Eye,
   ChevronRight,
   ChevronDown,
   Loader2,
@@ -17,6 +19,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
+import { AttachmentPreviewDialog } from "@/components/mail/attachment-preview-dialog";
 import { EmailRenderer } from "@/components/mail/email-renderer";
 import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
@@ -31,7 +34,7 @@ import {
   formatRelativeDate,
   formatSize,
 } from "@/lib/format";
-import type { MessageDetail } from "@/types/api";
+import type { AttachmentSummary, MessageDetail } from "@/types/api";
 
 const CALENDAR_CONTENT_TYPES = ["text/calendar", "application/ics"];
 
@@ -63,6 +66,7 @@ export function ThreadMessage({
   activeMatchIndex?: number;
   onMatchCountChange?: (count: number) => void;
 }) {
+  const [previewAttachment, setPreviewAttachment] = useState<AttachmentSummary | null>(null);
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
 
@@ -200,10 +204,18 @@ export function ThreadMessage({
                     ({formatSize(att.size_bytes)})
                   </span>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setPreviewAttachment(att)}
+                  className="ml-1"
+                  title={`Preview ${att.filename ?? "attachment"}`}
+                  aria-label={`Preview ${att.filename ?? "attachment"}`}
+                >
+                  <Eye className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                </button>
                 <a
                   href={api.mails.attachmentUrl(mail.id, att.id)}
                   download={att.filename ?? "attachment"}
-                  className="ml-1"
                   title={`Download ${att.filename ?? "attachment"}`}
                   aria-label={`Download ${att.filename ?? "attachment"}`}
                 >
@@ -213,6 +225,16 @@ export function ThreadMessage({
             ))}
           </div>
         </div>
+      )}
+
+      {previewAttachment && (
+        <AttachmentPreviewDialog
+          messageId={mail.id}
+          attachment={previewAttachment}
+          onOpenChange={(open) => {
+            if (!open) setPreviewAttachment(null);
+          }}
+        />
       )}
     </div>
   );
