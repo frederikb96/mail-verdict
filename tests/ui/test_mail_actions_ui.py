@@ -1050,6 +1050,37 @@ class TestMailActionsUi:
             description=f"{target['subject']!r} marked read via the folder menu",
         )
 
+    def test_folder_menu_stays_positioned_once_the_pointer_reaches_it(
+        self,
+        page: Page,
+        app_server: str,
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the trigger button was only
+        rendered while the row itself was hovered, so the moment the
+        pointer left the row to reach the open menu, the row stopped
+        being hovered, the trigger went display:none, and the open
+        menu's own positioner read a collapsed rect from that trigger
+        and snapped to the corner."""
+        page.goto(app_server)
+        select_account(page, ui_account)
+
+        inbox_row = folder(page, inbox_folder["id"])
+        inbox_row.hover()
+        inbox_row.get_by_role("button", name="INBOX options").click()
+
+        menu_item = page.get_by_role("menuitem", name="Mark all as read")
+        expect(menu_item).to_be_visible(timeout=10_000)
+        menu_item.hover()
+
+        box = menu_item.bounding_box()
+        assert box is not None
+        assert box["x"] > 50 and box["y"] > 50, (
+            f"the menu relocated to the corner once the pointer reached it: {box}"
+        )
+        expect(menu_item).to_be_visible()
+
     def test_folder_hover_menu_empties_a_folder_with_confirmation(
         self,
         page: Page,

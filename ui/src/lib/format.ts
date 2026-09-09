@@ -96,6 +96,18 @@ export function formatAddresses(
   return addrs;
 }
 
+/** A recipient line for a search result row: display names only (dropping
+ * the address the way the from column already does), joined and truncated
+ * to a small, fixed count with a "+N more" tail rather than growing the
+ * row for a message with a long recipient list. `null`/empty -- no To at
+ * all, which a genuinely to-less message can have -- renders nothing. */
+export function formatRecipientList(addrs: string[] | null, maxShown = 3): string | null {
+  if (!addrs || addrs.length === 0) return null;
+  const names = addrs.map((a) => extractSenderName(a));
+  if (names.length <= maxShown) return names.join(", ");
+  return `${names.slice(0, maxShown).join(", ")} +${names.length - maxShown} more`;
+}
+
 /** Parse a comma/semicolon-separated address field into a list. This does
  * not validate the individual addresses -- a caller that turns free text
  * into recipients checks each one with `isValidEmail` before sending it

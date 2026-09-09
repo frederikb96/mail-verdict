@@ -896,7 +896,7 @@ async def list_events(
 ) -> list[dict[str, Any]] | dict[str, Any]:
     """
     List every event instance in one calendar-month window, recurring
-    series expanded, across every visible calendar unless calendar_ids
+    series expanded, across every enabled calendar unless calendar_ids
     narrows it.
 
     Args:

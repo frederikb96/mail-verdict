@@ -55,7 +55,10 @@ mirror, which is what keeps it simple.
 - **Calendars and contacts** — CalDAV and CardDAV servers mirrored the same way mail is: calendars
   with recurring events, RSVPs and per-occurrence editing, and address books with compose
   autocomplete. An emailed invitation is parsed and offered for import on its own, and a reply
-  goes back over the identity's own outbox rather than the server's scheduling engine.
+  goes back over the identity's own outbox rather than the server's scheduling engine. An event
+  can carry any number of reminders and say whether it makes you free or busy; a calendar's own
+  default reminder can override or switch off the global one. Dates and times are entered and
+  shown day-first in a 24-hour clock, in an app-owned control rather than the browser's own.
 - **Privacy** — remote images are blocked by default, with a per-sender and per-domain allowlist.
   A sender's avatar shows their address-book photo when one exists — an embedded photo is served
   from this application's own endpoint, never a third-party request, and a remote one follows the

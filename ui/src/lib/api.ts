@@ -7,6 +7,8 @@
 import type {
   AccountCreateRequest,
   AccountResponse,
+  AlertResponse,
+  AlertUnseenCountResponse,
   AccountUpdateRequest,
   AddressbookSummary,
   BulkActionRequest,
@@ -62,8 +64,10 @@ import type {
   QueuePatchRequest,
   QueueResponse,
   RespondRequest,
+  SearchDateBoundsResponse,
   SearchField,
   SearchResponse,
+  SearchSort,
   SearchStrictness,
   SelectionSnapshotResponse,
   SemanticSearchResponse,
@@ -397,6 +401,9 @@ export const api = {
       fields?: SearchField[];
       before?: string;
       limit?: number;
+      sort?: SearchSort;
+      received_after?: string;
+      received_before?: string;
     }): Promise<SearchResponse> {
       return request(`/search${qs(params)}`);
     },
@@ -407,8 +414,18 @@ export const api = {
       account_id?: string;
       folder_ids?: string[];
       strictness?: SearchStrictness;
+      sort?: SearchSort;
+      received_after?: string;
+      received_before?: string;
     }): Promise<SemanticSearchResponse> {
       return request(`/embeddings/search${qs(params)}`);
+    },
+    /** The date-range control's own axis, independent of any query text. */
+    dateBounds(params: {
+      account_id?: string;
+      folder_ids?: string[];
+    }): Promise<SearchDateBoundsResponse> {
+      return request(`/search/date-bounds${qs(params)}`);
     },
   },
 
@@ -511,6 +528,21 @@ export const api = {
       return request(`/accounts/${accountId}/notifications/ack-all`, {
         method: "POST",
       });
+    },
+  },
+
+  alerts: {
+    list(limit?: number): Promise<AlertResponse[]> {
+      return request(`/alerts${qs({ limit })}`);
+    },
+    unseenCount(): Promise<AlertUnseenCountResponse> {
+      return request("/alerts/unseen-count");
+    },
+    dismiss(alertId: string): Promise<void> {
+      return request(`/alerts/${alertId}/dismiss`, { method: "POST" });
+    },
+    dismissAll(): Promise<void> {
+      return request("/alerts/dismiss-all", { method: "POST" });
     },
   },
 

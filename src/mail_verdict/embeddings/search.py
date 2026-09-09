@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import and_, select, text
@@ -50,6 +51,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 Strictness = Literal["loose", "balanced", "strict"]
+
+# "relevance" (nearest-first, the historical and still-default behaviour)
+# or "chronological" (newest first, over the same strictness-cut pool --
+# see semantic_search's own docstring for why this is applied to the pool
+# rather than the ranking itself).
+SemanticSort = Literal["relevance", "chronological"]
 
 # Relative-to-best-match factor per strictness position: an absolute
 # similarity floor cannot work here --
@@ -100,11 +107,24 @@ async def semantic_search(
     folder_ids: list[uuid.UUID] | None = None,
     k: int = _CANDIDATE_POOL_SIZE,
     strictness: Strictness = "balanced",
+    sort: SemanticSort = "relevance",
+    received_after: datetime | None = None,
+    received_before: datetime | None = None,
 ) -> SemanticSearchOutcome:
     """
     Find the messages whose current-model vector is closest to a query
     vector, cut down by a strictness level relative to the best match in
     this pool rather than an absolute floor (see the module docstring).
+
+    received_after/received_before narrow the nearest-neighbour pool
+    itself, applied before the k-nearest cut -- the same choice
+    search_messages makes for fulltext search, and for the same reason:
+    a date range is a real restriction on what can match at all, not a
+    filter over an already-decided page. sort="chronological" re-orders
+    the pool that survives the strictness cutoff by received_at instead
+    of by distance -- applied after the cutoff, never before, since the
+    cutoff is what "matches this query at all" means here and a message
+    outside it is not a worse-ranked hit, it is not a hit.
 
     Args:
         db: Database connection
@@ -117,10 +137,15 @@ async def semantic_search(
             computed over
         strictness: How much of the pool the cutoff keeps -- "loose",
             "balanced" (default) or "strict"
+        sort: "relevance" (nearest first, the default) or "chronological"
+            (newest first, over the same cutoff pool)
+        received_after, received_before: Inclusive bounds on received_at;
+            a message with no Date header matches neither
 
     Returns:
-        Results ordered nearest first, and the absolute similarity the
-        relative cutoff resolved to for this query
+        Results ordered nearest first (or newest first under
+        sort="chronological"), and the absolute similarity the relative
+        cutoff resolved to for this query
     """
     async with db.session() as session:
         # The pgvector HNSW index on this column returns at most
@@ -160,6 +185,10 @@ async def semantic_search(
             stmt = stmt.where(Message.account_id == account_id)
         if folder_ids is not None:
             stmt = stmt.where(Message.folder_id.in_(folder_ids))
+        if received_after is not None:
+            stmt = stmt.where(Message.received_at >= received_after)
+        if received_before is not None:
+            stmt = stmt.where(Message.received_at <= received_before)
 
         pool = [
             SemanticSearchResult(message=row[0], similarity=row[1])
@@ -173,4 +202,19 @@ async def semantic_search(
     factor = _STRICTNESS_FACTORS[strictness]
     min_similarity_applied = max(best * factor, _ABSOLUTE_SIMILARITY_FLOOR)
     results = [r for r in pool if r.similarity >= min_similarity_applied]
+    if sort == "chronological":
+        # nulls_last: a dateless message still belongs in the result set
+        # (the cutoff above already decided that), it just sorts behind
+        # every dated one rather than in front -- the same placement
+        # search text's own chronological mode gives it.
+        _EPOCH = datetime.min.replace(tzinfo=timezone.utc)  # never actually used -- see below
+        dated = sorted(
+            (r for r in results if r.message.received_at is not None),
+            # The `or _EPOCH` is unreachable given the filter above; it
+            # only satisfies the type checker, which cannot narrow
+            # received_at's Optional-ness across the generator boundary.
+            key=lambda r: r.message.received_at or _EPOCH, reverse=True,
+        )
+        dateless = [r for r in results if r.message.received_at is None]
+        results = dated + dateless
     return SemanticSearchOutcome(results=results, min_similarity_applied=min_similarity_applied)

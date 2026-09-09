@@ -34,7 +34,7 @@ from mail_verdict.api.schemas import (
     CalendarResponse,
     CalendarUpdateRequest,
 )
-from mail_verdict.calendar.prefs import calendar_is_enabled
+from mail_verdict.calendar.prefs import calendar_is_enabled, resolve_default_reminder
 from mail_verdict.calendar.repository import (
     CalendarLinksRevisionRepository,
     CalendarPrefsRepository,
@@ -45,6 +45,7 @@ from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import CalendarPrefs, DavAccount, DavCollection, Identity
 from mail_verdict.postimap.actions import create_collection, delete_collection, update_collection
 from mail_verdict.postimap.contract import read_postimap_info, supports_dav
+from mail_verdict.settings.service import get_settings_service
 
 router = APIRouter(prefix="/calendars", tags=["calendars"])
 links_router = APIRouter(prefix="/calendar/links", tags=["calendars"])
@@ -87,6 +88,7 @@ def _intake_state(prefs: CalendarPrefs | None) -> CalendarIntakeState:
 def _to_response(
     collection: DavCollection, account: DavAccount, prefs: CalendarPrefs | None,
 ) -> CalendarResponse:
+    calendar_settings = get_settings_service().get("calendar")
     return CalendarResponse(
         id=collection.id,
         dav_account_id=account.id,
@@ -104,6 +106,9 @@ def _to_response(
         sync_error=collection.sync_error,
         initial_sync_done=collection.initial_sync_done,
         total_count=collection.total_count,
+        default_reminder_minutes=prefs.default_reminder_minutes if prefs else None,
+        reminders_enabled=prefs.reminders_enabled if prefs else None,
+        resolved_default_reminder_minutes=resolve_default_reminder(prefs, calendar_settings),
     )
 
 
@@ -168,6 +173,10 @@ async def update_calendar(
         prefs_fields["is_enabled"] = values["is_enabled"]
     if "identity_id" in values:
         prefs_fields["identity_id"] = values["identity_id"]
+    if "default_reminder_minutes" in values:
+        prefs_fields["default_reminder_minutes"] = values["default_reminder_minutes"]
+    if "reminders_enabled" in values:
+        prefs_fields["reminders_enabled"] = values["reminders_enabled"]
     if "intake" in values:
         wants_intake = values["intake"] in ("import", "import_and_link")
         prefs_fields["intake"] = wants_intake

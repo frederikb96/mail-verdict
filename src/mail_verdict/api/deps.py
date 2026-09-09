@@ -9,6 +9,7 @@ from __future__ import annotations
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import (
     AccountPrefsRepository,
+    AlertRepository,
     AttachmentRepository,
     FolderPrefsRepository,
     FolderRepository,
@@ -57,3 +58,8 @@ def get_folder_prefs_repo() -> FolderPrefsRepository:
 def get_sync_notification_repo() -> SyncNotificationRepository:
     """Get SyncNotificationRepository using the global DB connection."""
     return SyncNotificationRepository(get_db_connection())
+
+
+def get_alert_repo() -> AlertRepository:
+    """Get AlertRepository using the global DB connection."""
+    return AlertRepository(get_db_connection())

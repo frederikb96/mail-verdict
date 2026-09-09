@@ -45,6 +45,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.schemas import (
     EventAttendeeOut,
@@ -53,11 +54,12 @@ from mail_verdict.api.schemas import (
     EventInstanceOut,
     EventListResponse,
     EventOrganizerOut,
+    EventReminder,
     EventUpdateRequest,
     OwnReplyOut,
     RespondRequest,
 )
-from mail_verdict.calendar import ical
+from mail_verdict.calendar import expansion_cache, ical
 from mail_verdict.calendar.prefs import calendar_is_enabled
 from mail_verdict.calendar.repository import (
     CalendarPrefsRepository,
@@ -86,9 +88,9 @@ _UNSUPPORTED_DETAIL = (
 )
 
 
-async def _require_support() -> None:
+async def _require_support(session: AsyncSession | None = None) -> None:
     db = get_db_connection()
-    async with db.session() as session:
+    async with db.session_or(session) as session:
         info = await read_postimap_info(session)
     if info is None or not supports_dav(info):
         raise HTTPException(
@@ -147,6 +149,19 @@ async def resolve_own_reply(
     )
 
 
+def _reminders_out(reminders: list[ical.Reminder]) -> list[EventReminder]:
+    return [EventReminder(offset_minutes=r.offset_minutes, at=r.at) for r in reminders]
+
+
+def _reminders_in(reminders: list[EventReminder] | None) -> list[ical.Reminder] | None:
+    """None means "leave the stored reminders unchanged" (the same rule
+    every other optional field on an update follows); the wire schema and
+    the domain dataclass otherwise carry identical fields."""
+    if reminders is None:
+        return None
+    return [ical.Reminder(offset_minutes=r.offset_minutes, at=r.at) for r in reminders]
+
+
 async def _to_instance(
     parsed: ical.ParsedEvent, obj: DavObject, *,
     own_identity_email: str | None, read_only: bool, sync_error: str | None,
@@ -191,6 +206,8 @@ async def _to_instance(
         own_reply=own_reply,
         source_message_id=None,
         read_only=read_only,
+        reminders=_reminders_out(parsed.reminders),
+        transparency=parsed.transparency,  # type: ignore[arg-type]
     )
 
 
@@ -224,7 +241,9 @@ def _expand_all_sync(
     expanded: dict[uuid.UUID, list[ical.ParsedEvent]] = {}
     for obj in objects:
         try:
-            expanded[obj.id] = ical.expand_instances(obj.data, window_start, window_end)
+            expanded[obj.id] = expansion_cache.occurrences_for(
+                obj.id, obj.etag, obj.data, window_start, window_end,
+            )
         except Exception:
             # A single malformed or pathological object (an unparseable
             # body, or one that would expand past the occurrence bound)
@@ -265,8 +284,12 @@ async def _expand_all(
 @router.get("", response_model=EventListResponse)
 async def list_events(month: str, calendars: str | None = None) -> EventListResponse:
     """Every instance (recurring series expanded) in one calendar-month
-    window, across every visible calendar unless `calendars` narrows it."""
-    await _require_support()
+    window, across every enabled calendar unless `calendars` narrows it.
+    A disabled calendar's instances are never returned; a hidden one's
+    are -- is_visible is a client-side view concept, filtered by the
+    client from each instance's own calendar_id, so toggling it never
+    changes what this endpoint returns or invalidates this response's
+    cache."""
     window_start, window_end = _parse_month(month)
 
     db = get_db_connection()
@@ -275,66 +298,77 @@ async def list_events(month: str, calendars: str | None = None) -> EventListResp
     object_repo = DavObjectRepository(db)
     reply_repo = CalendarReplyRepository(db)
 
-    pairs = await collection_repo.list_by_kind("calendar")
-    all_prefs = await prefs_repo.list_all()
+    # One session for the whole read path -- list_events used to open six
+    # of them (one per repository call plus the identity lookup below),
+    # which under a burst of concurrent month requests queued the pool
+    # against every unrelated subsystem sharing it, including the
+    # PostIMAP event listener. Nothing here writes, so one session
+    # covers it.
+    async with db.session() as session:
+        await _require_support(session)
+        pairs = await collection_repo.list_by_kind("calendar", session)
+        all_prefs = await prefs_repo.list_all(session)
 
-    requested_ids = {uuid.UUID(c) for c in calendars.split(",") if c} if calendars else None
-    candidates: list[tuple[DavCollection, CalendarPrefs | None]] = []
-    for collection, _account in pairs:
-        # A to-do-only collection (Nextcloud's task lists are the common
-        # case) never has a VEVENT to expand -- excluded unconditionally,
-        # even from an explicit `calendars` request, so its objects are
-        # never fetched from the DB at all, let alone parsed for nothing.
-        if not collection.supports_vevent:
-            continue
-        if requested_ids is not None and collection.id not in requested_ids:
-            continue
-        prefs = all_prefs.get(collection.id)
-        # is_enabled gates whether the calendar is offered at all (the
-        # sidebar list, the event editor's picker) and is resolved by the
-        # one function that resolves it everywhere; is_visible is the
-        # separate per-view toggle over an offered calendar. Either one
-        # off means this calendar's events are absent from the month
-        # view -- an explicit `calendars` param (opened directly, e.g.
-        # from the editor's own calendar field) still bypasses both, the
-        # same way it already bypassed is_visible.
-        hidden = not calendar_is_enabled(collection, prefs) or (
-            prefs is not None and not prefs.is_visible
+        requested_ids = (
+            {uuid.UUID(c) for c in calendars.split(",") if c} if calendars else None
         )
-        if requested_ids is None and hidden:
-            continue
-        candidates.append((collection, prefs))
+        candidates: list[tuple[DavCollection, CalendarPrefs | None]] = []
+        for collection, _account in pairs:
+            # A to-do-only collection (Nextcloud's task lists are the
+            # common case) never has a VEVENT to expand -- excluded
+            # unconditionally, even from an explicit `calendars` request,
+            # so its objects are never fetched from the DB at all, let
+            # alone parsed for nothing.
+            if not collection.supports_vevent:
+                continue
+            if requested_ids is not None and collection.id not in requested_ids:
+                continue
+            prefs = all_prefs.get(collection.id)
+            # is_enabled gates whether the calendar is offered at all
+            # (the sidebar list, the event editor's picker) and is
+            # resolved by the one function that resolves it everywhere.
+            # is_visible is a client-side view concept -- see
+            # EventInstanceOut.calendar_id -- filtered by the client
+            # instead, so hiding a calendar never invalidates this
+            # response's cache. An explicit `calendars` param (opened
+            # directly, e.g. from the editor's own calendar field) still
+            # bypasses is_enabled the same way it already did.
+            if requested_ids is None and not calendar_is_enabled(collection, prefs):
+                continue
+            candidates.append((collection, prefs))
 
-    # One query for every identity a visible calendar is linked to,
-    # instead of one per calendar -- list_by_kind already returned every
-    # collection there is, so this was a request-shaped fan-out over a
-    # fixed, small set that a single IN() covers just as well.
-    identity_ids = {
-        prefs.identity_id for _, prefs in candidates
-        if prefs is not None and prefs.identity_id is not None
-    }
-    identity_emails: dict[uuid.UUID, str] = {}
-    if identity_ids:
-        async with db.session() as session:
+        # One query for every identity a visible calendar is linked to,
+        # instead of one per calendar -- list_by_kind already returned
+        # every collection there is, so this was a request-shaped
+        # fan-out over a fixed, small set that a single IN() covers just
+        # as well.
+        identity_ids = {
+            prefs.identity_id for _, prefs in candidates
+            if prefs is not None and prefs.identity_id is not None
+        }
+        identity_emails: dict[uuid.UUID, str] = {}
+        if identity_ids:
             result = await session.execute(
                 select(Identity.id, Identity.email).where(Identity.id.in_(identity_ids))
             )
             identity_emails = dict(result.tuples().all())
 
-    visible: list[tuple[DavCollection, str | None]] = [
-        (
-            collection,
-            identity_emails.get(prefs.identity_id)
-            if prefs is not None and prefs.identity_id is not None else None,
-        )
-        for collection, prefs in candidates
-    ]
+        visible: list[tuple[DavCollection, str | None]] = [
+            (
+                collection,
+                identity_emails.get(prefs.identity_id)
+                if prefs is not None and prefs.identity_id is not None else None,
+            )
+            for collection, prefs in candidates
+        ]
 
-    collection_ids = [c.id for c, _ in visible]
-    objects = await object_repo.list_in_collections(collection_ids, window_start, window_end)
-    errors = await object_repo.get_write_errors([o.id for o in objects])
-    identity_by_collection = {c.id: email for c, email in visible}
-    read_only_by_collection = {c.id: c.read_only for c, _ in visible}
+        collection_ids = [c.id for c, _ in visible]
+        objects = await object_repo.list_in_collections(
+            collection_ids, window_start, window_end, session,
+        )
+        errors = await object_repo.get_write_errors([o.id for o in objects], session)
+        identity_by_collection = {c.id: email for c, email in visible}
+        read_only_by_collection = {c.id: c.read_only for c, _ in visible}
 
     expanded, truncated = await _expand_all(objects, window_start, window_end)
 
@@ -440,6 +474,7 @@ async def create_event(request: EventCreateRequest) -> EventInstanceOut:
             rrule=request.rrule, tz=request.tz, organizer_email=organizer_email,
             organizer_cn=organizer_identity.display_name if organizer_identity else None,
             attendees=[(a.email, a.cn) for a in request.attendees] if request.attendees else None,
+            reminders=_reminders_in(request.reminders), transparency=request.transparency,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -563,6 +598,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
                 summary=request.summary, dtstart=request.dtstart, dtend=request.dtend,
                 all_day=request.all_day, location=request.location,
                 description=request.description, bump_sequence=bump_sequence,
+                reminders=_reminders_in(request.reminders), transparency=request.transparency,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -574,6 +610,7 @@ async def update_event(object_id: uuid.UUID, request: EventUpdateRequest) -> Eve
                 all_day=request.all_day, location=request.location,
                 description=request.description, rrule=request.rrule,
                 bump_sequence=bump_sequence,
+                reminders=_reminders_in(request.reminders), transparency=request.transparency,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

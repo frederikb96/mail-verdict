@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -26,7 +28,7 @@ from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL, resolve_embedding_provider
 from mail_verdict.embeddings.repository import EmbeddingRepository
-from mail_verdict.embeddings.search import Strictness, semantic_search
+from mail_verdict.embeddings.search import SemanticSort, Strictness, semantic_search
 from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
 
@@ -112,6 +114,24 @@ async def search(
             "loose/balanced/strict. Omit to use semantic.default_strictness."
         ),
     ),
+    # Annotated, not `= Query(default=...)`: see the identical comment in
+    # api/search.py -- keeps a direct call's real default a plain Python
+    # value rather than an unresolved FastAPI descriptor.
+    sort: Annotated[
+        SemanticSort,
+        Query(
+            description=(
+                "'relevance' (nearest first, the default) or 'chronological' "
+                "(newest first, over the same strictness-cut pool)"
+            ),
+        ),
+    ] = "relevance",
+    received_after: Annotated[
+        datetime | None, Query(description="Only messages received at or after this instant"),
+    ] = None,
+    received_before: Annotated[
+        datetime | None, Query(description="Only messages received at or before this instant"),
+    ] = None,
 ) -> SemanticSearchResponse:
     """
     Semantic search: nearest messages to the meaning of the query text,
@@ -141,6 +161,7 @@ async def search(
     outcome = await semantic_search(
         get_db_connection(), query_vector=vectors[0], model=model,
         account_id=account_id, folder_ids=folder_ids, strictness=resolved_strictness,
+        sort=sort, received_after=received_after, received_before=received_before,
     )
     return SemanticSearchResponse(
         results=[

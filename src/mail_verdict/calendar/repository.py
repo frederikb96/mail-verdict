@@ -111,10 +111,12 @@ class CollectionRepository:
             )
             return result.scalar_one_or_none()
 
-    async def list_by_kind(self, kind: str) -> list[tuple[DavCollection, DavAccount]]:
+    async def list_by_kind(
+        self, kind: str, session: AsyncSession | None = None,
+    ) -> list[tuple[DavCollection, DavAccount]]:
         """Every non-deleted collection of one kind, joined to its DAV
         account for the *_name fields the API responses carry."""
-        async with self._db.session() as session:
+        async with self._db.session_or(session) as session:
             result = await session.execute(
                 select(DavCollection, DavAccount)
                 .join(DavAccount, DavCollection.account_id == DavAccount.id)
@@ -225,6 +227,7 @@ class DavObjectRepository:
     async def list_in_collections(
         self, collection_ids: list[uuid.UUID],
         window_start: datetime | None = None, window_end: datetime | None = None,
+        session: AsyncSession | None = None,
     ) -> list[DavObject]:
         """Live objects across a set of visible calendars -- the raw
         material calendar/ical.py's expand_instances() then windows.
@@ -255,7 +258,7 @@ class DavObjectRepository:
         """
         if not collection_ids:
             return []
-        async with self._db.session() as session:
+        async with self._db.session_or(session) as session:
             stmt = select(DavObject).where(
                 DavObject.collection_id.in_(collection_ids),
                 DavObject.deleted_at.is_(None),
@@ -426,7 +429,7 @@ class DavObjectRepository:
             return {row.object_id: row.error for row in result.all() if row.object_id is not None}
 
     async def get_write_errors(
-        self, object_ids: list[uuid.UUID],
+        self, object_ids: list[uuid.UUID], session: AsyncSession | None = None,
     ) -> dict[uuid.UUID, str]:
         """
         object_id -> a message worth surfacing at the event level, for
@@ -444,7 +447,7 @@ class DavObjectRepository:
         """
         if not object_ids:
             return {}
-        async with self._db.session() as session:
+        async with self._db.session_or(session) as session:
             result = await session.execute(
                 select(
                     DavNotification.object_id, DavNotification.error,
@@ -478,8 +481,10 @@ class CalendarPrefsRepository:
             )
             return result.scalar_one_or_none()
 
-    async def list_all(self) -> dict[uuid.UUID, CalendarPrefs]:
-        async with self._db.session() as session:
+    async def list_all(
+        self, session: AsyncSession | None = None,
+    ) -> dict[uuid.UUID, CalendarPrefs]:
+        async with self._db.session_or(session) as session:
             result = await session.execute(select(CalendarPrefs))
             return {p.collection_id: p for p in result.scalars().all()}
 

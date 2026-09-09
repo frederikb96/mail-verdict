@@ -76,6 +76,7 @@ async def _seed_message(
     body_html: str | None = None,
     is_truncated: bool = False,
     expunged: bool = False,
+    received_at: datetime = datetime(2026, 1, 1, tzinfo=timezone.utc),
 ) -> uuid.UUID:
     """Insert a minimal message row, return its id."""
     mail_id = uuid.uuid4()
@@ -95,7 +96,7 @@ async def _seed_message(
             "thread_id": uuid.uuid4(), "message_id": message_id_hdr, "from_addr": from_addr,
             "subject": subject, "body_text": body_text, "body_html": body_html,
             "is_truncated": is_truncated,
-            "received_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "received_at": received_at,
             "expunged_at": datetime(2026, 1, 2, tzinfo=timezone.utc) if expunged else None,
         },
     )
@@ -531,6 +532,92 @@ async def test_strictness_drops_a_noise_level_neighbour_the_absolute_floor_catch
     )
     assert [r.message.id for r in outcome.results] == [close_id]
     assert outcome.min_similarity_applied >= 0.25  # the absolute floor
+
+
+@pytest.mark.asyncio
+async def test_chronological_sort_reorders_the_cutoff_pool_by_date(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """sort="chronological" re-orders what strictness already kept, by
+    date rather than by distance -- the farther (but still-kept) match is
+    newer, and must come first once sorted chronologically."""
+    model = _unique_model()
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        close_but_older = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, subject="close",
+            received_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        farther_but_newer = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, subject="far",
+            received_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+        await session.commit()
+
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
+    close_vector = [0.99] + [0.01] * (EMBEDDING_DIMENSIONS - 1)
+    far_vector = [0.7, 0.7] + [0.0] * (EMBEDDING_DIMENSIONS - 2)
+
+    async with migrated_db.session() as session:
+        for mail_id, vector in ((close_but_older, close_vector), (farther_but_newer, far_vector)):
+            await session.execute(
+                MessageEmbedding.__table__.insert().values(
+                    account_id=account_id, msg_key=str(mail_id), message_id=mail_id,
+                    model=model, status="done", embedding=vector,
+                )
+            )
+
+    relevance = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        k=10, strictness="loose",
+    )
+    assert [r.message.id for r in relevance.results] == [close_but_older, farther_but_newer]
+
+    chronological = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        k=10, strictness="loose", sort="chronological",
+    )
+    assert [r.message.id for r in chronological.results] == [farther_but_newer, close_but_older]
+
+
+@pytest.mark.asyncio
+async def test_date_range_narrows_the_pool_before_the_strictness_cutoff(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """received_after/received_before exclude a message from the pool
+    entirely -- it never counts toward the strictness cutoff, so its
+    absence cannot even be inferred from a similarity score."""
+    model = _unique_model()
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        in_range = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, subject="close",
+            received_at=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        )
+        outside_range = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, subject="also close",
+            received_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        )
+        await session.commit()
+
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
+    close_vector = [0.99] + [0.01] * (EMBEDDING_DIMENSIONS - 1)
+
+    async with migrated_db.session() as session:
+        for mail_id in (in_range, outside_range):
+            await session.execute(
+                MessageEmbedding.__table__.insert().values(
+                    account_id=account_id, msg_key=str(mail_id), message_id=mail_id,
+                    model=model, status="done", embedding=close_vector,
+                )
+            )
+
+    outcome = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        k=10, strictness="loose",
+        received_after=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    assert [r.message.id for r in outcome.results] == [in_range]
 
 
 @pytest.mark.asyncio

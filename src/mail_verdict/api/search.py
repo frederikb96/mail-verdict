@@ -16,16 +16,24 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
 from mail_verdict.api.deps import get_message_repo
-from mail_verdict.api.schemas import SearchField, SearchResponse, SearchResult
+from mail_verdict.api.schemas import (
+    SearchDateBoundsResponse,
+    SearchField,
+    SearchResponse,
+    SearchResult,
+)
 from mail_verdict.database.models import Message
 from mail_verdict.database.repository import (
     FALLBACK_MATCH_TIER,
     SEARCH_FIELDS,
     MessageRepository,
+    SearchSort,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,6 +65,25 @@ def _to_search_result(msg: Message, snippet: str | None, tier: int) -> SearchRes
     )
 
 
+@router.get("/date-bounds", response_model=SearchDateBoundsResponse)
+async def search_date_bounds(
+    account_id: uuid.UUID | None = Query(default=None),
+    folder_ids: list[uuid.UUID] | None = Query(
+        default=None, description="Restrict to these folders; omit for no restriction",
+    ),
+) -> SearchDateBoundsResponse:
+    """
+    The oldest and newest received_at across a scope, independent of any
+    search query -- what the date-range control draws its axis from
+    before a word has been typed. Registered ahead of the bare "" route
+    below only by file order, not by necessity: "/date-bounds" and "" can
+    never collide since one names a distinct sub-path.
+    """
+    msg_repo: MessageRepository = get_message_repo()
+    oldest, newest = await msg_repo.search_date_bounds(account_id, folder_ids=folder_ids)
+    return SearchDateBoundsResponse(oldest=oldest, newest=newest)
+
+
 @router.get("", response_model=SearchResponse)
 async def search_messages(
     q: str = Query(min_length=1),
@@ -71,13 +98,41 @@ async def search_messages(
         default=None, description="Cursor: id of the last result in the previous page",
     ),
     limit: int = Query(default=50, ge=1, le=200),
+    # Annotated, not `= Query(default=...)` -- the tests in tests/pg call
+    # this function directly rather than through the app, and a bare
+    # `= Query(default=X)` default is a FastAPI descriptor object, only
+    # ever resolved to X by the request-handling path. Annotated keeps the
+    # real Python default (X) as the default while still attaching Query's
+    # OpenAPI metadata, so a direct call that omits the parameter behaves
+    # like an ordinary Python default rather than passing that descriptor
+    # straight through to the repository layer.
+    sort: Annotated[
+        SearchSort,
+        Query(
+            description=(
+                "'relevance' (field tier then newest, the default) or "
+                "'chronological' (newest first, tier ignored entirely)"
+            ),
+        ),
+    ] = "relevance",
+    received_after: Annotated[
+        datetime | None, Query(description="Only messages received at or after this instant"),
+    ] = None,
+    received_before: Annotated[
+        datetime | None, Query(description="Only messages received at or before this instant"),
+    ] = None,
 ) -> SearchResponse:
     """
-    Search over the toggled fields, scoped to the given folders, ranked by
-    field tier then newest first. See MessageRepository.search_messages
-    for the matching and ranking rule itself; this endpoint resolves the
-    cursor, falls back to the trigram tier when the primary stage's first
-    page is empty, and shapes the response.
+    Search over the toggled fields, scoped to the given folders and, if
+    given, a received_at range, ranked by field tier then newest first or
+    by date alone (sort). See MessageRepository.search_messages for the
+    matching and ranking rule itself; this endpoint resolves the cursor,
+    falls back to the trigram tier when the primary stage's first page is
+    empty, and shapes the response.
+
+    received_after/received_before are named distinctly from `before` (the
+    pagination cursor) deliberately -- both are dates, but one bounds the
+    search and the other continues it, and the two must never be confused.
     """
     msg_repo: MessageRepository = get_message_repo()
     field_set = frozenset(fields) if fields else SEARCH_FIELDS
@@ -92,7 +147,7 @@ async def search_messages(
 
     cursor_received_at, cursor_id, cursor_tier = None, None, None
     if before is not None:
-        cursor_row = await msg_repo.resolve_search_cursor(before, tokens)
+        cursor_row = await msg_repo.resolve_search_cursor(before, tokens, sort=sort)
         if cursor_row is None:
             raise HTTPException(
                 status_code=400, detail=f"Invalid cursor: message {before} not found"
@@ -104,6 +159,9 @@ async def search_messages(
         tokens,
         folder_ids=folder_ids,
         fields=field_set,
+        sort=sort,
+        received_after=received_after,
+        received_before=received_before,
         cursor_received_at=cursor_received_at,
         cursor_id=cursor_id,
         cursor_tier=cursor_tier,
@@ -114,6 +172,7 @@ async def search_messages(
     rows = rows[:limit]
     total = await msg_repo.count_search_candidates(
         account_id, tokens, folder_ids=folder_ids, fields=field_set,
+        received_after=received_after, received_before=received_before,
     )
 
     if not rows and before is None:
@@ -122,7 +181,8 @@ async def search_messages(
         # typo-tolerant). Never on a later page: a cursor here always
         # means the primary stage, whose page this is a continuation of.
         fallback_rows = await msg_repo.search_messages_fallback(
-            account_id, tokens, folder_ids=folder_ids, limit=limit,
+            account_id, tokens, folder_ids=folder_ids,
+            received_after=received_after, received_before=received_before, limit=limit,
         )
         results = [
             _to_search_result(msg, snippet, FALLBACK_MATCH_TIER)

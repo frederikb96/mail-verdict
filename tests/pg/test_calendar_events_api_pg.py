@@ -22,6 +22,7 @@ from mail_verdict.calendar import ical
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Identity
 from mail_verdict.postimap.actions import create_object
+from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
@@ -86,12 +87,18 @@ _EXOTIC_RECURRING_ICS = (
 
 
 @pytest.fixture()
-def client() -> Iterator[TestClient]:
+def client(migrated_db: DatabaseConnection) -> Iterator[TestClient]:
     app = FastAPI()
     app.include_router(events_router)
     app.include_router(calendars_router)
     with TestClient(app) as c:
+        # api/calendars.py resolves a calendar's default reminder against
+        # the global settings.calendar category -- the same global
+        # settings service singleton embeddings.py/pipeline.py already
+        # depend on, so it needs initializing here too.
+        c.portal.call(init_settings_service, migrated_db)
         yield c
+        c.portal.call(reset_settings_service)
 
 
 async def _seed_calendar(session: AsyncSession) -> tuple[uuid.UUID, uuid.UUID]:
@@ -282,14 +289,16 @@ class TestCreateAndList:
 
 
 class TestVisibilityFiltering:
-    """The two independent levels a calendar can be hidden by: is_visible
-    (the sidebar's per-view checkbox) and is_enabled (the manage dialog's
-    own "offered at all" level). Either one off must remove the calendar's
-    events from the default (no `calendars` param) list -- the sidebar
-    checkbox writing is_visible with nothing reading that write back was
-    exactly the defect that made the toggle look inert."""
+    """is_visible (the sidebar's per-view checkbox) and is_enabled (the
+    manage dialog's own "offered at all" level) are independent, and only
+    one of them is this endpoint's concern. is_enabled off removes the
+    calendar's events from the default (no `calendars` param) list.
+    is_visible is a client-side view concept -- every instance carries its
+    own calendar_id (EventInstanceOut) for the browser to filter by, and
+    this endpoint returns them regardless, so toggling visibility never
+    invalidates or refetches anything server-side."""
 
-    def test_is_visible_false_hides_a_calendars_events_from_the_default_list(
+    def test_is_visible_false_does_not_hide_a_calendars_events_here(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
         calendar_id = client.portal.call(_seed, migrated_db)
@@ -309,15 +318,7 @@ class TestVisibilityFiltering:
             assert patched.status_code == 200, patched.text
 
             after = client.get("/calendar/events", params={"month": "2026-09"})
-            assert "Toggled off" not in [e["summary"] for e in after.json()["events"]]
-
-            # Naming the calendar explicitly still bypasses both levels --
-            # the same escape hatch the event editor's own calendar field
-            # already relies on for is_visible.
-            explicit = client.get(
-                "/calendar/events", params={"month": "2026-09", "calendars": str(calendar_id)},
-            )
-        assert "Toggled off" in [e["summary"] for e in explicit.json()["events"]]
+        assert "Toggled off" in [e["summary"] for e in after.json()["events"]]
 
     def test_is_enabled_false_hides_a_calendars_events_from_the_default_list(
         self, client: TestClient, migrated_db: DatabaseConnection,
@@ -1251,6 +1252,121 @@ class TestUpdateAndDelete:
                 },
             )
         assert updated.status_code == 400, updated.text
+
+
+class TestRemindersAndTransparency:
+    """The full API path -- schemas.py, calendar_events.py, ical.py --
+    rather than ical.py alone (test_calendar_ical.py already proves the
+    round trip at that layer)."""
+
+    def test_create_with_reminders_and_transparency_round_trips(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Planning",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "reminders": [
+                        {"offset_minutes": -15}, {"offset_minutes": -1440},
+                    ],
+                    "transparency": "transparent",
+                },
+            )
+            assert created.status_code == 201, created.text
+            body = created.json()
+            assert body["reminders"] == [
+                {"offset_minutes": -15, "at": None}, {"offset_minutes": -1440, "at": None},
+            ]
+            assert body["transparency"] == "transparent"
+
+            fetched = client.get(f"/calendar/events/{body['object_id']}")
+        assert fetched.json()["reminders"] == body["reminders"]
+        assert fetched.json()["transparency"] == "transparent"
+
+    def test_create_with_neither_field_defaults_to_none_and_opaque(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Plain",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                },
+            )
+        assert created.json()["reminders"] == []
+        assert created.json()["transparency"] == "opaque"
+
+    def test_update_replaces_the_whole_reminder_list(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Planning",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "reminders": [{"offset_minutes": -15}],
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}",
+                json={"scope": "all", "reminders": [], "transparency": "transparent"},
+            )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["reminders"] == []
+        assert updated.json()["transparency"] == "transparent"
+
+    def test_update_with_reminders_omitted_leaves_them_unchanged(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """None on the wire means "unchanged", not "clear them" -- the
+        same rule every other optional field on an update already
+        follows."""
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Planning",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "reminders": [{"offset_minutes": -30}],
+                },
+            )
+            object_id = created.json()["object_id"]
+
+            updated = client.patch(
+                f"/calendar/events/{object_id}", json={"scope": "all", "summary": "Renamed"},
+            )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["reminders"] == [{"offset_minutes": -30, "at": None}]
+
+    def test_reminder_needs_exactly_one_of_offset_or_at(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        calendar_id = client.portal.call(_seed, migrated_db)
+        with patch(_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/calendar/events",
+                json={
+                    "calendar_id": str(calendar_id), "summary": "Bad reminder",
+                    "dtstart": "2026-09-10T10:00:00+00:00",
+                    "dtend": "2026-09-10T11:00:00+00:00",
+                    "reminders": [{}],
+                },
+            )
+        assert created.status_code == 422, created.text
 
 
 class TestRespond:

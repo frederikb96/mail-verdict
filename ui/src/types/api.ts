@@ -145,12 +145,25 @@ export interface SearchResponse {
   total: number;
 }
 
+/** "relevance" (field tier then newest, or nearest-first for semantic --
+ * the default for each) or "chronological" (date alone, ranking ignored
+ * entirely). */
+export type SearchSort = "relevance" | "chronological";
+
 export interface SemanticSearchResponse {
   results: SearchResult[];
   query: string;
   model: string;
   strictness: SearchStrictness;
   min_similarity_applied: number;
+}
+
+/** The oldest and newest received_at across a search scope, with no
+ * query of its own -- the date-range control's own axis. Both null when
+ * the scope has no dated message at all. */
+export interface SearchDateBoundsResponse {
+  oldest: string | null;
+  newest: string | null;
 }
 
 export interface AccountResponse {
@@ -342,6 +355,30 @@ export interface SSEEvent {
   /** The settings category that changed, on settings.changed -- omitted
    * when one write touched several (bulk import). */
   category?: string;
+  /** Present on alert.new -- the same fields AlertResponse itself carries,
+   * so an open page can raise a notification and refresh its list without
+   * a round trip back to GET /api/alerts. */
+  title?: string | null;
+  body?: string | null;
+  url?: string | null;
+}
+
+/** One alerts row -- see AlertResponse in the backend schema. */
+export interface AlertResponse {
+  id: string;
+  kind: string;
+  title: string | null;
+  body: string | null;
+  url: string | null;
+  account_id: string | null;
+  message_id: string | null;
+  delivered_at: string | null;
+  dismissed_at: string | null;
+  created_at: string;
+}
+
+export interface AlertUnseenCountResponse {
+  unseen: number;
 }
 
 export interface ImageExceptionResponse {
@@ -822,6 +859,13 @@ export interface Calendar {
   sync_error: string | null;
   initial_sync_done: boolean;
   total_count: number;
+  /** The raw per-calendar override -- null means inherit the global
+   * setting, the same way is_enabled's own null means nobody decided. */
+  default_reminder_minutes: number | null;
+  reminders_enabled: boolean | null;
+  /** What a freshly created event on this calendar should actually
+   * pre-fill with, already resolved -- null means no default reminder. */
+  resolved_default_reminder_minutes: number | null;
 }
 
 export interface CalendarCreateRequest {
@@ -837,11 +881,23 @@ export interface CalendarUpdateRequest {
   is_enabled?: boolean;
   identity_id?: string | null;
   intake?: CalendarIntake;
+  default_reminder_minutes?: number | null;
+  reminders_enabled?: boolean | null;
 }
 
 export type Partstat = "needs-action" | "accepted" | "declined" | "tentative";
 export type AttendeeRole = "chair" | "req-participant" | "opt-participant" | "non-participant";
 export type EventStatus = "confirmed" | "tentative" | "cancelled";
+export type EventTransparency = "opaque" | "transparent";
+
+/** One DISPLAY alarm -- exactly one of the two is set. offset_minutes
+ * keeps iCalendar's own sign convention (negative = before the start,
+ * positive = after), matching the server's own Reminder shape exactly:
+ * a reminder read back is what a client would send to recreate it. */
+export interface EventReminder {
+  offset_minutes: number | null;
+  at: string | null;
+}
 /** "unknown" is the ITIP-reply-summary's own fallback once the outbox row
  * it points at has aged out of retention -- not a status a real outbox row
  * ever carries, so it lives here rather than on OutboxStatus itself. */
@@ -894,6 +950,8 @@ export interface EventInstance {
   own_reply: OwnReply | null;
   source_message_id: string | null;
   read_only: boolean;
+  reminders: EventReminder[];
+  transparency: EventTransparency;
 }
 
 export type RecurrenceScope = "this" | "following" | "all";
@@ -909,6 +967,8 @@ export interface EventCreateRequest {
   description?: string;
   rrule?: string;
   attendees?: { email: string; cn?: string }[];
+  reminders?: EventReminder[];
+  transparency?: EventTransparency;
 }
 
 export interface EventUpdateRequest {
@@ -923,6 +983,10 @@ export interface EventUpdateRequest {
   /** Required when the object is a recurring instance. */
   scope?: RecurrenceScope;
   recurrence_id?: string;
+  /** A whole-list replace, never a per-alarm patch -- omitted means
+   * unchanged, an empty list means "remove every reminder". */
+  reminders?: EventReminder[];
+  transparency?: EventTransparency;
 }
 
 export interface EventDeleteRequest {

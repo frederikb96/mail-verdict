@@ -8,7 +8,7 @@
 
 import { atomWithStorage } from "jotai/utils";
 import type { CacheSnapshot } from "virtua";
-import type { SearchField, SearchStrictness } from "@/types/api";
+import type { SearchField, SearchSort, SearchStrictness } from "@/types/api";
 
 export const ALL_SEARCH_FIELDS: SearchField[] = ["subject", "from", "to", "body"];
 
@@ -33,6 +33,29 @@ export const searchFolderIdsAtom = atomWithStorage<string[] | null>(
 export const searchSemanticModeAtom = atomWithStorage<boolean>(
   "mailverdict:search-semantic",
   false,
+);
+
+/** "relevance" (field tier then newest, or nearest-first for semantic --
+ * the historical default for each) vs "chronological" (newest first, no
+ * ranking at all). A cursor is never reused across a mode switch -- same
+ * convention as every other control here, see search-page.tsx's
+ * listIdentity. */
+export const searchSortModeAtom = atomWithStorage<SearchSort>(
+  "mailverdict:search-sort",
+  "relevance",
+);
+
+/** A stretch of received_at, both ends inclusive -- null means the full
+ * range (no filter applied). ISO strings, not Date objects: this is what
+ * both search endpoints take directly and what survives atomWithStorage's
+ * JSON round-trip without a custom (de)serializer. */
+export interface SearchDateRange {
+  after: string | null;
+  before: string | null;
+}
+export const searchDateRangeAtom = atomWithStorage<SearchDateRange | null>(
+  "mailverdict:search-date-range",
+  null,
 );
 
 /** The typed query text -- persisted alongside scope and mode so opening a

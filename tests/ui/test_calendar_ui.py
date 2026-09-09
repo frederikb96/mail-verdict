@@ -32,7 +32,6 @@ from tests.ui.helpers import (
     drag_by_pixels,
     event_chip,
     event_occurrence_chip,
-    set_date_input,
     wait_for_account_active,
 )
 
@@ -405,9 +404,11 @@ class TestCalendarUi:
         title_input = page.get_by_label("Title")
         expect(title_input).to_be_visible(timeout=10_000)
 
-        starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
-        assert starts_input.input_value() == f"{date_str}T03:00"
-        assert ends_input.input_value() == f"{date_str}T05:00"
+        starts_input = page.get_by_label("Starts", exact=True)
+        ends_input = page.get_by_label("Ends", exact=True)
+        expected_date = datetime.strptime(date_str, "%Y-%m-%d").strftime("%d.%m.%Y")
+        assert starts_input.input_value() == f"{expected_date} 03:00"
+        assert ends_input.input_value() == f"{expected_date} 05:00"
 
     def test_creating_a_timed_event_binds_the_browsers_own_timezone(
         self,
@@ -444,9 +445,12 @@ class TestCalendarUi:
         expect(title_input).to_be_visible(timeout=15_000)
         title_input.fill(summary)
 
-        starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
-        set_date_input(starts_input, "2026-09-10T10:00")
-        set_date_input(ends_input, "2026-09-10T11:00")
+        starts_input = page.get_by_label("Starts", exact=True)
+        ends_input = page.get_by_label("Ends", exact=True)
+        starts_input.fill("10.09.2026 10:00")
+        starts_input.press("Enter")
+        ends_input.fill("10.09.2026 11:00")
+        ends_input.press("Enter")
 
         page.get_by_role("button", name="Save", exact=True).click()
         expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
@@ -491,9 +495,12 @@ class TestCalendarUi:
             expect(title_input).to_be_visible(timeout=15_000)
             title_input.fill(summary)
 
-            starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
-            set_date_input(starts_input, "2026-09-10T10:00")
-            set_date_input(ends_input, "2026-09-10T11:00")
+            starts_input = page.get_by_label("Starts", exact=True)
+            ends_input = page.get_by_label("Ends", exact=True)
+            starts_input.fill("10.09.2026 10:00")
+            starts_input.press("Enter")
+            ends_input.fill("10.09.2026 11:00")
+            ends_input.press("Enter")
 
             page.get_by_role("button", name="Save", exact=True).click()
             expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
@@ -530,54 +537,69 @@ class TestCalendarUi:
         expect(title_input).to_be_visible(timeout=15_000)
         title_input.fill(f"Backwards {uuid.uuid4()}")
 
-        starts_input, ends_input = page.locator('input[type="datetime-local"]').all()
-        set_date_input(starts_input, "2026-09-10T10:00")
-        set_date_input(ends_input, "2026-09-10T09:00")
+        starts_input = page.get_by_label("Starts", exact=True)
+        ends_input = page.get_by_label("Ends", exact=True)
+        starts_input.fill("10.09.2026 10:00")
+        starts_input.press("Enter")
+        ends_input.fill("10.09.2026 09:00")
+        ends_input.press("Enter")
 
         expect(page.get_by_text("Ends must be after Starts.")).to_be_visible(timeout=10_000)
         expect(page.get_by_role("button", name="Save", exact=True)).to_be_disabled()
 
         # Fixing it re-enables Save -- this isn't a stuck, permanently
         # disabled control once tripped once.
-        set_date_input(ends_input, "2026-09-10T11:00")
+        ends_input.fill("10.09.2026 11:00")
+        ends_input.press("Enter")
         expect(page.get_by_text("Ends must be after Starts.")).to_have_count(0)
         expect(page.get_by_role("button", name="Save", exact=True)).to_be_enabled()
 
-    def test_retyping_the_year_in_the_editor_does_not_take_the_page_down(
+    def test_the_date_popover_does_not_hide_the_rest_of_the_form(
         self, page: Page, app_server: str, calendar_collection: dict[str, Any],
     ) -> None:
-        """The regression this guards: one digit typed into the Starts
-        field's year segment replaced the whole calendar with the error
-        boundary's screen, editor and typed values gone. Two causes, both
-        needed: an unpadded year rendered back as `2-09-03T06:00`, which
-        the control cannot parse and so empties itself; and the state
-        updater read `e.target.value` from the live element inside its own
-        body, which React runs during render -- so the empty value was
-        read a render later and `new Date("").toISOString()` threw where an
-        error boundary could catch it.
-
-        Retyping a date is what a person does, not an edge case. The
-        arrow-key walk is how the year segment is reached: a
-        datetime-local renders as month/day/year/hour/minute segments, and
-        ArrowLeft/ArrowRight move between them."""
+        """date-time-field.tsx uses a plain Popover, never a Combobox or
+        Autocomplete -- a popup whose input sits outside it computes a
+        modal focus manager that aria-hides the entire rest of the page
+        while open, which a Combobox-based picker would have inherited
+        silently. Opening the picker must leave a field below it
+        reachable by role, the regression test the design for this
+        control names explicitly."""
         page.goto(f"{app_server}/calendar")
         expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
 
         page.get_by_role("button", name="New event", exact=True).click()
         expect(page.get_by_label("Title")).to_be_visible(timeout=15_000)
 
-        starts_input = page.locator('input[type="datetime-local"]').first
-        original = starts_input.input_value()
-        starts_input.click()
-        for _ in range(6):
-            page.keyboard.press("ArrowLeft")
-        page.keyboard.press("ArrowRight")
-        page.keyboard.press("ArrowRight")
-        page.keyboard.type("2")
+        page.get_by_role("button", name="Choose a date").first.click()
+        expect(page.get_by_label("Attendees")).to_be_visible(timeout=10_000)
+
+    def test_typing_unparseable_text_into_starts_disables_save_without_crashing(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """date-time-field.tsx parses on blur/Enter, never inside a state
+        updater, and never throws: unparseable text keeps the text on
+        screen, shown with a hint, and disables Save -- it must never
+        silently clear itself or revert to the previous value, both of
+        which would hide the mistake. This replaces a test that exercised
+        the native datetime-local control's own segment navigation, which
+        no longer exists now that the field is a single text input."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        expect(page.get_by_label("Title")).to_be_visible(timeout=15_000)
+
+        starts_input = page.get_by_label("Starts", exact=True)
+        starts_input.fill("not a date")
+        starts_input.press("Tab")
 
         expect(page.get_by_text("Something went wrong")).to_have_count(0)
         expect(page.get_by_label("Title")).to_be_visible()
-        expect(starts_input).to_have_value(f"0002{original[4:]}")
+        expect(starts_input).to_have_value("not a date")
+        expect(page.get_by_text("Not a date and time this understands.")).to_be_visible(
+            timeout=10_000,
+        )
+        expect(page.get_by_role("button", name="Save", exact=True)).to_be_disabled()
 
     def test_escaping_a_dirty_event_editor_prompts_instead_of_discarding_silently(
         self, page: Page, app_server: str, calendar_collection: dict[str, Any],
@@ -676,10 +698,19 @@ class TestCalendarUi:
 
         page.get_by_role("switch", name="All day").click()
 
-        date_inputs = page.locator('input[type="date"]')
-        expect(date_inputs).to_have_count(2)
-        start_value = date_inputs.nth(0).input_value()
-        end_value = date_inputs.nth(1).input_value()
+        starts_input = page.get_by_label("Starts", exact=True)
+        ends_input = page.get_by_label("Ends", exact=True)
+        expect(starts_input).to_be_visible()
+        # date-time-field.tsx resyncs its own displayed text from the
+        # parent's new value/mode props through its own effect, a render
+        # after the switch -- read once that has settled rather than
+        # immediately after the click.
+        wait_for(
+            lambda: True if starts_input.input_value() == ends_input.input_value() else None,
+            timeout_s=5.0, description="all-day Starts/Ends show the same day",
+        )
+        start_value = starts_input.input_value()
+        end_value = ends_input.input_value()
         assert start_value == end_value, (
             "the all-day fields must show the same day the timed default was "
             "showing, not a UTC day one off from a near-midnight local instant"
@@ -711,6 +742,47 @@ class TestCalendarUi:
 
         page.get_by_role("tab", name="Month", exact=True).click()
         expect(chip).to_be_visible(timeout=10_000)  # a bar in the month grid
+
+    def test_toggling_show_as_busy_round_trips_through_the_server(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """free/busy (TRANSP) end to end: switching it off on create, then
+        confirming the reopened editor shows it off too -- not just that
+        the server accepted the write."""
+        summary = f"Busy toggle test {uuid.uuid4()}"
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(summary)
+
+        page.get_by_role("switch", name="Show as busy").click()
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+
+        def _created() -> dict[str, Any] | None:
+            listed = api_client.get(
+                "/api/calendar/events",
+                params={"month": "2026-09", "calendars": calendar_collection["id"]},
+            ).json()["events"]
+            return next((e for e in listed if e["summary"] == summary), None)
+
+        event = wait_for(_created, description="Created event synced back")
+        assert event["transparency"] == "transparent"
+
+        chip = event_chip(page, event["object_id"])
+        expect(chip).to_be_visible(timeout=15_000)
+        chip.click()
+        page.get_by_role("button", name="Edit", exact=True).click()
+        sheet = page.locator('[data-slot="sheet-content"]')
+        expect(sheet).to_be_visible(timeout=15_000)
+        expect(sheet.get_by_role("switch", name="Show as busy")).not_to_be_checked()
 
     def test_a_multi_day_all_day_event_does_not_gain_a_day_in_a_non_utc_browser(
         self,
@@ -1307,6 +1379,50 @@ class TestCalendarUi:
         expect(sheet).to_be_visible(timeout=15_000)
         sheet.locator('[data-slot="select-trigger"]').first.click()
         expect(page.get_by_role("option", name=name, exact=True)).to_have_count(0)
+
+    def test_a_new_event_defaults_to_the_calendar_last_created_in(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dav_account: dict[str, Any],
+    ) -> None:
+        """The regression this guards: a new event's Calendar field always
+        preselected settings.calendar.default_calendar_id (or the first
+        writable calendar), never wherever the person actually created
+        their last one -- tracked separately in browser storage rather
+        than overloading that Settings-page default, which means
+        something else. Persisted across a reload, since it lives in
+        localStorage rather than component state."""
+        name = f"Last used test {uuid.uuid4().hex[:8]}"
+        created = api_client.post(
+            "/api/calendars", json={"dav_account_id": dav_account["id"], "display_name": name},
+        )
+        assert created.status_code == 201, created.text
+
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name=name, exact=True)).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+        title_input.fill(f"In the last-used calendar {uuid.uuid4()}")
+
+        sheet = page.locator('[data-slot="sheet-content"]')
+        sheet.locator('[data-slot="select-trigger"]').first.click()
+        page.get_by_role("option", name=name, exact=True).click()
+
+        page.get_by_role("button", name="Save", exact=True).click()
+        expect(page.get_by_text("Event created")).to_be_visible(timeout=10_000)
+
+        page.reload()
+        expect(page.get_by_role("checkbox", name=name, exact=True)).to_be_visible(timeout=15_000)
+        page.get_by_role("button", name="New event", exact=True).click()
+        expect(page.get_by_label("Title")).to_be_visible(timeout=15_000)
+        reopened_trigger = page.locator('[data-slot="sheet-content"]').locator(
+            '[data-slot="select-trigger"]',
+        ).first
+        expect(reopened_trigger).to_contain_text(name)
 
     def test_clicking_a_yearly_all_day_event_shows_its_popover_promptly(
         self,

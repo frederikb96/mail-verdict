@@ -7,7 +7,8 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Trash2 } from "lucide-react";
+import { useAtom } from "jotai";
+import { Loader2, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -28,6 +29,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { DateTimeField } from "@/components/ui/date-time-field";
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
 import { eventDeletionNotice, isEventOrganizedBySelf } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
@@ -36,7 +38,26 @@ import { useCreateEvent, useDeleteEvent, useUpdateEvent } from "@/hooks/use-even
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
 import { parseAddressList } from "@/lib/format";
-import type { EventInstance, RecurrenceScope } from "@/types/api";
+import { addDaysIso, toLocalDateValue, toLocalWallClock, wholeDayIso } from "@/lib/dates";
+import { lastCreatedCalendarIdAtom } from "@/lib/atoms";
+import type { EventInstance, EventReminder, EventTransparency, RecurrenceScope } from "@/types/api";
+
+const REMINDER_PRESETS_MINUTES = [0, 5, 10, 15, 30, 60, 120, 1440, 2880, 10080];
+
+function reminderPresetLabel(minutes: number): string {
+  if (minutes === 0) return "At time of event";
+  if (minutes < 60) return `${minutes} minutes before`;
+  if (minutes < 1440) return `${minutes / 60} hour${minutes === 60 ? "" : "s"} before`;
+  if (minutes < 10080) return `${minutes / 1440} day${minutes === 1440 ? "" : "s"} before`;
+  return `${minutes / 10080} week${minutes === 10080 ? "" : "s"} before`;
+}
+
+/** The Select's own item value for a reminder's minutes-before -- "custom"
+ * for anything not one of the fixed presets, the same one-more-item-than-
+ * the-map pattern the recurrence Select above already uses. */
+function reminderSelectValue(minutesBefore: number): string {
+  return REMINDER_PRESETS_MINUTES.includes(minutesBefore) ? String(minutesBefore) : "custom";
+}
 
 // The Select primitive treats an empty item value as "no selection", so
 // "Does not repeat" is represented on the wire as well as here: sending
@@ -71,72 +92,6 @@ function presetSelectValue(rrule: string): string {
   const freq = /(?:^|;)FREQ=([A-Z]+)/.exec(rrule)?.[1];
   const preset = freq && RECURRENCE_PRESETS.find((p) => p.rrule === `FREQ=${freq}`);
   return preset ? preset.rrule : rrule;
-}
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** A year always occupies four digits in a date/datetime-local value --
- * an unpadded one is not a value the control can parse, so it silently
- * empties itself instead, which is what turns a half-typed year into an
- * unreadable field. */
-const padYear = (n: number) => String(n).padStart(4, "0");
-
-function toLocalInputValue(iso: string): string {
-  const d = new Date(iso);
-  return `${padYear(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** The wall clock an instant reads as in the browser's own zone, for a
- * request that sends `tz` alongside: the API keeps the reading it is
- * given and binds it to that zone, so sending a UTC instant there would
- * stamp the UTC reading onto the local zone -- an event entered at 10:00
- * stored as 10:00 in a zone it was never 10:00 in. */
-function toLocalWallClock(iso: string): string {
-  return `${toLocalInputValue(iso)}:00`;
-}
-
-/** What a date or datetime-local field currently names, as an instant --
- * or null while it names nothing readable. Ordinary typing goes through
- * such states (retyping a year momentarily leaves the control empty),
- * and building a Date from one throws on the *next render*, not here,
- * because a state updater's body runs during render: the error lands in
- * the page's error boundary and takes the whole calendar down with it. */
-function fromInputValue(value: string, allDay: boolean): string | null {
-  const d = allDay ? wholeDayDate(value) : new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-/** The calendar day an instant falls on in the browser's own local time --
- * what someone looking at a wall-clock time means by "today", unlike the
- * UTC day the same instant can carry near midnight in a positive offset. */
-function toLocalDateValue(iso: string): string {
-  const d = new Date(iso);
-  return `${padYear(d.getFullYear())}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-
-/** An all-day dtstart/dtend carries no timezone at all (RFC 5545
- * VALUE=DATE) -- the API always encodes the day as literal UTC midnight,
- * so reading it back must read the UTC date directly rather than through
- * whatever zone the browser sits in, or the same stored day would render
- * differently depending on where it's opened. */
-function toWholeDayValue(iso: string): string {
-  const d = new Date(iso);
-  return `${padYear(d.getUTCFullYear())}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-}
-
-function wholeDayDate(value: string): Date {
-  const [year, month, day] = value.split("-").map(Number);
-  return new Date(Date.UTC(year, month - 1, day));
-}
-
-function wholeDayIso(value: string): string {
-  return wholeDayDate(value).toISOString();
-}
-
-function addDaysIso(iso: string, days: number): string {
-  const d = new Date(iso);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString();
 }
 
 /** A range dragged out on the grid, in preference to the rounded default
@@ -203,6 +158,7 @@ export function EventEditor({
   const { push: pushToast } = useToast();
   const durationMinutes = useDefaultEventDurationMinutes();
   const defaultCalendarSetting = useDefaultCalendarId();
+  const [lastCreatedCalendarId, setLastCreatedCalendarId] = useAtom(lastCreatedCalendarIdAtom);
 
   // Offering a disabled calendar here would let an event land somewhere
   // that just vanished from the sidebar the manage dialog hid it from.
@@ -213,20 +169,27 @@ export function EventEditor({
   );
 
   // Only honoured while it still names a calendar this editor actually
-  // offers -- one picked as the default and later disabled or made
-  // read-only falls through to the ordinary first-writable fallback
-  // rather than handing the Select a value with no matching item.
+  // offers -- one picked and later disabled or made read-only falls
+  // through to the ordinary first-writable fallback rather than handing
+  // the Select a value with no matching item. Applies to both defaults
+  // below for the same reason.
   const validDefaultCalendarSetting = writableCalendars.some(
     (c) => c.id === defaultCalendarSetting,
   )
     ? defaultCalendarSetting
+    : undefined;
+  const validLastCreatedCalendarId = writableCalendars.some(
+    (c) => c.id === lastCreatedCalendarId,
+  )
+    ? lastCreatedCalendarId
     : undefined;
 
   const [summary, setSummary] = useState(event?.summary ?? "");
   const [allDay, setAllDay] = useState(event?.all_day ?? false);
   const [range, setRange] = useState(() => toDisplayRange(event, durationMinutes, defaultDate, dragRange));
   const [calendarId, setCalendarId] = useState(
-    event?.calendar_id ?? defaultCalendarId ?? validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
+    event?.calendar_id ?? defaultCalendarId ?? validLastCreatedCalendarId ??
+      validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
   );
   const [location, setLocation] = useState(event?.location ?? "");
   const [description, setDescription] = useState(event?.description ?? "");
@@ -234,10 +197,27 @@ export function EventEditor({
   const [attendees, setAttendees] = useState(
     (event?.attendees ?? []).map((a) => a.email).join(", "),
   );
+  const [transparency, setTransparency] = useState<EventTransparency>(
+    event?.transparency ?? "opaque",
+  );
+  const [reminders, setReminders] = useState<EventReminder[]>(event?.reminders ?? []);
+  // Only a *create* form pre-fills from the calendar's own resolved
+  // default, and only until the person has touched the list themselves --
+  // an edit always starts "touched" so opening one never overwrites
+  // whatever it already has with today's default. Not state: touching it
+  // must never itself trigger the effect it is guarding.
+  const remindersTouched = useRef(mode === "edit");
   const [scopeDialog, setScopeDialog] = useState<"save" | "delete" | null>(null);
   const [confirmSimpleDelete, setConfirmSimpleDelete] = useState(false);
   const [confirmUpdateNotice, setConfirmUpdateNotice] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // Whether each date field currently holds text DateTimeField could parse
+  // -- distinct from rangeInvalid below, which is about a *parsed* range
+  // being backwards. Invalid text must disable Save rather than silently
+  // falling back to whatever range.start/end last held, which is exactly
+  // the silent-revert the field itself refuses to do.
+  const [startValid, setStartValid] = useState(true);
+  const [endValid, setEndValid] = useState(true);
 
   // What counts as "unsaved work" for the close-confirmation below --
   // deliberately not calendarId, the same way the composer's own isDirty
@@ -252,6 +232,8 @@ export function EventEditor({
     description: event?.description ?? "",
     rrule: event?.rrule ?? "",
     attendees: (event?.attendees ?? []).map((a) => a.email).join(", "),
+    transparency: event?.transparency ?? "opaque",
+    reminders: JSON.stringify(event?.reminders ?? []),
   });
 
   useEffect(() => {
@@ -263,22 +245,31 @@ export function EventEditor({
     const nextDescription = event?.description ?? "";
     const nextRrule = event?.rrule ?? "";
     const nextAttendees = (event?.attendees ?? []).map((a) => a.email).join(", ");
+    const nextTransparency = event?.transparency ?? "opaque";
+    const nextReminders = event?.reminders ?? [];
 
     setSummary(nextSummary);
     setAllDay(nextAllDay);
     setRange(nextRange);
     setCalendarId(
-      event?.calendar_id ?? defaultCalendarId ?? validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
+      event?.calendar_id ?? defaultCalendarId ?? validLastCreatedCalendarId ??
+        validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
     );
     setLocation(nextLocation);
     setDescription(nextDescription);
     setRrule(nextRrule);
     setAttendees(nextAttendees);
+    setStartValid(true);
+    setEndValid(true);
+    setTransparency(nextTransparency);
+    setReminders(nextReminders);
+    remindersTouched.current = mode === "edit";
 
     initialSnapshot.current = {
       summary: nextSummary, allDay: nextAllDay, range: nextRange,
       location: nextLocation, description: nextDescription, rrule: nextRrule,
-      attendees: nextAttendees,
+      attendees: nextAttendees, transparency: nextTransparency,
+      reminders: JSON.stringify(nextReminders),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, event?.object_id, event?.recurrence_id]);
@@ -291,7 +282,9 @@ export function EventEditor({
     location !== initialSnapshot.current.location ||
     description !== initialSnapshot.current.description ||
     rrule !== initialSnapshot.current.rrule ||
-    attendees !== initialSnapshot.current.attendees;
+    attendees !== initialSnapshot.current.attendees ||
+    transparency !== initialSnapshot.current.transparency ||
+    JSON.stringify(reminders) !== initialSnapshot.current.reminders;
 
   // Computed fresh from the current range on every render, not inside
   // either date field's own onChange -- a value derived one field's
@@ -317,14 +310,27 @@ export function EventEditor({
     setCalendarId(
       (current) =>
         current || event?.calendar_id || defaultCalendarId ||
-        validDefaultCalendarSetting || writableCalendars[0]?.id || "",
+        validLastCreatedCalendarId || validDefaultCalendarSetting || writableCalendars[0]?.id || "",
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, calendars, defaultCalendarSetting]);
+  }, [open, calendars, defaultCalendarSetting, lastCreatedCalendarId]);
 
   const calendar = calendars?.find((c) => c.id === calendarId);
   const readOnly = calendar?.read_only ?? false;
   const isRecurring = mode === "edit" && (event?.is_recurring ?? false);
+
+  // Pre-fills a *create* form's reminders from the chosen calendar's own
+  // resolved default -- seeded from the calendars query the same as
+  // calendarId's own catch-up effect above, and re-resolved whenever the
+  // calendar changes, but only while the person has not touched the list
+  // themselves. Never applied server-side at save time: that would put
+  // alarms on events the MCP tools or invitation intake create too.
+  useEffect(() => {
+    if (!open || mode !== "create" || remindersTouched.current) return;
+    const minutes = calendar?.resolved_default_reminder_minutes;
+    setReminders(typeof minutes === "number" ? [{ offset_minutes: -minutes, at: null }] : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, calendarId, calendars]);
 
   const attendeeCount = parseAddressList(attendees).length;
   // Organising an event is the ORGANIZER address matching the identity the
@@ -372,6 +378,8 @@ export function EventEditor({
       location: location || undefined,
       description: description || undefined,
       rrule,
+      reminders,
+      transparency,
     };
   };
 
@@ -390,6 +398,7 @@ export function EventEditor({
         {
           onSuccess: () => {
             pushToast("Event created", "success");
+            setLastCreatedCalendarId(calendarId);
             onOpenChange(false);
           },
           onError: (err) => pushToast(`Could not create event: ${err.message}`, "error", 0),
@@ -518,30 +527,27 @@ export function EventEditor({
 
             <div className="grid grid-cols-2 gap-2">
               <div className="grid gap-1.5">
-                <Label>Starts</Label>
-                <Input
-                  type={allDay ? "date" : "datetime-local"}
-                  value={allDay ? toWholeDayValue(range.start) : toLocalInputValue(range.start)}
+                <Label htmlFor="event-start">Starts</Label>
+                <DateTimeField
+                  id="event-start"
+                  mode={allDay ? "date" : "datetime"}
+                  value={range.start}
+                  tz={event?.tz ?? null}
                   disabled={readOnly}
-                  onChange={(e) => {
-                    // Read outside the updater: React runs an updater's
-                    // body during render, by which time the control has
-                    // moved on and e.target is the live element.
-                    const start = fromInputValue(e.target.value, allDay);
-                    if (start) setRange((r) => ({ ...r, start }));
-                  }}
+                  onValidityChange={(valid) => setStartValid(valid)}
+                  onChange={(start) => setRange((r) => ({ ...r, start }))}
                 />
               </div>
               <div className="grid gap-1.5">
-                <Label>Ends</Label>
-                <Input
-                  type={allDay ? "date" : "datetime-local"}
-                  value={allDay ? toWholeDayValue(range.end) : toLocalInputValue(range.end)}
+                <Label htmlFor="event-end">Ends</Label>
+                <DateTimeField
+                  id="event-end"
+                  mode={allDay ? "date" : "datetime"}
+                  value={range.end}
+                  tz={event?.tz ?? null}
                   disabled={readOnly}
-                  onChange={(e) => {
-                    const end = fromInputValue(e.target.value, allDay);
-                    if (end) setRange((r) => ({ ...r, end }));
-                  }}
+                  onValidityChange={(valid) => setEndValid(valid)}
+                  onChange={(end) => setRange((r) => ({ ...r, end }))}
                 />
               </div>
             </div>
@@ -616,6 +622,100 @@ export function EventEditor({
               </Select>
             </div>
 
+            <div className="flex items-center justify-between">
+              <Label htmlFor="event-busy">Show as busy</Label>
+              <Switch
+                id="event-busy"
+                checked={transparency === "opaque"}
+                onCheckedChange={(checked) => setTransparency(checked ? "opaque" : "transparent")}
+                disabled={readOnly}
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label>Reminders</Label>
+              {reminders.map((reminder, index) => {
+                const minutesBefore = -(reminder.offset_minutes ?? 0);
+                const selectValue = reminderSelectValue(minutesBefore);
+                return (
+                  <div key={index} className="flex items-center gap-1.5">
+                    <Select
+                      value={selectValue}
+                      disabled={readOnly}
+                      onValueChange={(v) => {
+                        if (v === "custom") return;
+                        remindersTouched.current = true;
+                        const minutes = Number(v);
+                        setReminders((rs) =>
+                          rs.map((r, i) => (i === index ? { offset_minutes: -minutes, at: null } : r)),
+                        );
+                      }}
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue>
+                          {(v: string) =>
+                            v === "custom"
+                              ? `${minutesBefore} minutes before`
+                              : reminderPresetLabel(Number(v))
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {REMINDER_PRESETS_MINUTES.map((minutes) => (
+                          <SelectItem key={minutes} value={String(minutes)}>
+                            {reminderPresetLabel(minutes)}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {selectValue === "custom" && (
+                      <Input
+                        type="number"
+                        min={0}
+                        className="w-20"
+                        value={minutesBefore}
+                        disabled={readOnly}
+                        onChange={(e) => {
+                          remindersTouched.current = true;
+                          const minutes = Number(e.target.value);
+                          setReminders((rs) =>
+                            rs.map((r, i) => (i === index ? { offset_minutes: -minutes, at: null } : r)),
+                          );
+                        }}
+                      />
+                    )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Remove reminder"
+                      disabled={readOnly}
+                      onClick={() => {
+                        remindersTouched.current = true;
+                        setReminders((rs) => rs.filter((_, i) => i !== index));
+                      }}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                );
+              })}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-fit"
+                disabled={readOnly}
+                onClick={() => {
+                  remindersTouched.current = true;
+                  setReminders((rs) => [...rs, { offset_minutes: -15, at: null }]);
+                }}
+              >
+                Add reminder
+              </Button>
+            </div>
+
             <div className="grid gap-1.5">
               <Label htmlFor="event-attendees">Attendees</Label>
               <Input
@@ -654,6 +754,7 @@ export function EventEditor({
               <Button
                 disabled={
                   readOnly || !summary || !calendarId || rangeInvalid ||
+                  !startValid || !endValid ||
                   createEvent.isPending || updateEvent.isPending
                 }
                 onClick={handleSave}

@@ -215,7 +215,10 @@ export function MailList() {
   // expect a filter to check. Not offered in the unified view (an empty
   // folderIds array is the existing hook's own way to stay disabled,
   // the same state an explicitly-cleared folder scope on the search page
-  // already means).
+  // already means). Always chronological, with no toggle: a filter over
+  // one open folder is expected to read strictly newest-first, unlike
+  // the full search page, which defaults to relevance ranking and offers
+  // a switch to override it.
   const filterResult = useSearchResults({
     query: trimmedFilter,
     accountId: accountId ?? undefined,
@@ -223,6 +226,7 @@ export function MailList() {
     fields: ["subject", "from", "to"],
     semantic: false,
     strictness: "balanced",
+    sort: "chronological",
   });
 
   const result = isUnifiedView ? unifiedResult : singleAccountResult;
