@@ -73,7 +73,19 @@ class _LruCache(dict[_K, _V]):
             del self[oldest]
 
 
-_query_cache: _LruCache[tuple[uuid.UUID, str], ical.ExpansionQuery] = _LruCache(_MAX_QUERY_ENTRIES)
+_QueryEntry = tuple[ical.ExpansionQuery, threading.Lock]
+
+# Paired with the query object it guards, in the same cache entry, rather
+# than in a separate dict keyed the same way: expand_from_query() mutates
+# internal series state on ExpansionQuery, and recurring_ical_events makes
+# no thread-safety promise about that -- two of the four worker threads
+# calling it on the same query object at once (a cache hit on the query,
+# a miss on this exact window, from two concurrent month requests) is
+# reachable and would otherwise race. Keeping the lock in the same entry
+# as the query means an eviction removes both together, so there is never
+# a live query object whose lock has already been evicted out from under
+# it -- a separate parallel dict of locks could not promise that.
+_query_cache: _LruCache[tuple[uuid.UUID, str], _QueryEntry] = _LruCache(_MAX_QUERY_ENTRIES)
 _expansion_cache: _LruCache[
     tuple[uuid.UUID, str, datetime, datetime], list[ical.ParsedEvent]
 ] = _LruCache(_MAX_EXPANSION_ENTRIES)
@@ -108,13 +120,20 @@ def occurrences_for(
 
     query_key = (object_id, etag)
     with _lock:
-        query = _query_cache.get_hit(query_key)
-    if query is None:
-        query = ical.build_expansion_query(data)
+        entry = _query_cache.get_hit(query_key)
+    if entry is None:
+        entry = (ical.build_expansion_query(data), threading.Lock())
         with _lock:
-            _query_cache.put(query_key, query)
+            _query_cache.put(query_key, entry)
+    query, query_lock = entry
 
-    result = ical.expand_from_query(query, window_start, window_end)
+    # Global _lock is not held here: expand_from_query's own between()
+    # walk is the expensive half of this call, and holding a lock every
+    # other object's request also needs would serialize the 4-worker
+    # pool down to one. query_lock only ever contends with another
+    # request for this exact (object_id, etag).
+    with query_lock:
+        result = ical.expand_from_query(query, window_start, window_end)
     with _lock:
         _expansion_cache.put(expansion_key, result)
     return result

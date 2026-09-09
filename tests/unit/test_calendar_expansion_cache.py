@@ -6,6 +6,8 @@ signal arriving.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -91,3 +93,67 @@ def test_revisiting_the_same_object_in_a_different_window_reuses_the_parse() -> 
     build_spy.assert_not_called()
     expand_spy.assert_called_once()
     assert len(result) > 0
+
+
+def test_concurrent_requests_for_the_same_object_never_call_expand_from_query_at_once() -> None:
+    """Two worker threads racing a cache hit on the shared query object
+    but a miss on their own window -- exactly what two concurrent month
+    requests for the same recurring series produce, given
+    calendar_events.py's own 4-worker pool -- must never call
+    expand_from_query on that object at the same time. It mutates
+    internal series state, and recurring_ical_events makes no
+    thread-safety promise about that."""
+    object_id = uuid.uuid4()
+    # Warm the query cache first so every thread below hits it rather
+    # than racing to build it.
+    expansion_cache.occurrences_for(object_id, "etag-1", _RECURRING, _WINDOW_START, _WINDOW_END)
+
+    concurrent = 0
+    max_concurrent = 0
+    counter_lock = threading.Lock()
+    real_expand = ical.expand_from_query
+
+    def _tracking_expand(
+        query: ical.ExpansionQuery, start: datetime, end: datetime,
+    ) -> list[ical.ParsedEvent]:
+        nonlocal concurrent, max_concurrent
+        with counter_lock:
+            concurrent += 1
+            max_concurrent = max(max_concurrent, concurrent)
+        try:
+            # A pause between the count and the real call, long enough
+            # that a second thread reaching this before the first
+            # returns is certain if nothing is serializing them -- the
+            # race this guards is a window-timing accident on real
+            # requests, not something this test should leave to chance.
+            time.sleep(0.02)
+            return real_expand(query, start, end)
+        finally:
+            with counter_lock:
+                concurrent -= 1
+
+    windows = [
+        (
+            datetime(2026, month, 1, tzinfo=timezone.utc),
+            datetime(2026, month + 1, 1, tzinfo=timezone.utc),
+        )
+        for month in range(2, 8)
+    ]
+
+    with patch.object(ical, "expand_from_query", side_effect=_tracking_expand):
+        threads = [
+            threading.Thread(
+                target=expansion_cache.occurrences_for,
+                args=(object_id, "etag-1", _RECURRING, start, end),
+            )
+            for start, end in windows
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert max_concurrent == 1, (
+        f"expand_from_query ran concurrently on the shared query object "
+        f"(max {max_concurrent} at once)"
+    )
