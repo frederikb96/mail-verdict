@@ -3,7 +3,7 @@ _to_mail_context (pipeline/stages/match.py): a message's From header,
 display name included, must be reduced to a bare address before
 sender_match/sender_domain compare against it -- MessageView.from_addr is
 the raw header as PostIMAP mirrors it, e.g.
-'"Anthropic, PBC" <invoice+statements@mail.anthropic.com>', and neither
+'"Acme Billing" <invoice+statements@mail.acme-billing.example>', and neither
 condition can ever match a From carrying one otherwise: sender_match's
 exact-address comparison and sender_domain's suffix check both fail
 against the whole quoted string.
@@ -33,16 +33,16 @@ def _view(from_addr: str) -> MessageView:
 
 class TestSenderConditionsAgainstADisplayNameFrom:
     def test_sender_match_against_a_full_address_with_a_display_name(self) -> None:
-        view = _view('"Anthropic, PBC" <invoice+statements@mail.anthropic.com>')
+        view = _view('"Acme Billing" <invoice+statements@mail.acme-billing.example>')
         ctx = _to_mail_context(view, SimpleNamespace(verdict=None))
         assert evaluate_condition(
-            {"sender_match": "invoice+statements@mail.anthropic.com"}, ctx,
+            {"sender_match": "invoice+statements@mail.acme-billing.example"}, ctx,
         ) is True
 
     def test_sender_domain_against_a_display_name_from(self) -> None:
-        view = _view('"Anthropic, PBC" <invoice+statements@mail.anthropic.com>')
+        view = _view('"Acme Billing" <invoice+statements@mail.acme-billing.example>')
         ctx = _to_mail_context(view, SimpleNamespace(verdict=None))
-        assert evaluate_condition({"sender_domain": "mail.anthropic.com"}, ctx) is True
+        assert evaluate_condition({"sender_domain": "mail.acme-billing.example"}, ctx) is True
 
     def test_a_bare_address_from_keeps_working(self) -> None:
         """No display name -- the only shape either condition ever matched
@@ -55,4 +55,4 @@ class TestSenderConditionsAgainstADisplayNameFrom:
     def test_a_display_name_from_a_different_domain_does_not_match(self) -> None:
         view = _view('"Someone" <person@other.example>')
         ctx = _to_mail_context(view, SimpleNamespace(verdict=None))
-        assert evaluate_condition({"sender_domain": "mail.anthropic.com"}, ctx) is False
+        assert evaluate_condition({"sender_domain": "mail.acme-billing.example"}, ctx) is False
