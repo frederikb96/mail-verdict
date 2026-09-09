@@ -179,6 +179,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # stage's own account_spam_enabled check) is what decides whether
     # anything gets classified; the listener only ever reacts to a folder
     # move, and a move can happen whether or not spam detection is on.
+    from mail_verdict.alerts.dispatch import create_mail_alert_for_arrival
     from mail_verdict.database.repository import (
         AccountPrefsRepository,
         FolderRepository,
@@ -297,6 +298,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     await enqueue_live_arrival(db, event, settings_service)
                     if _calendar_intake_handler:
                         await _calendar_intake_handler.handle_message_event(event)
+                    try:
+                        message_uuid = _uuid.UUID(event.id)
+                    except ValueError:
+                        message_uuid = None
+                    if message_uuid is not None:
+                        await create_mail_alert_for_arrival(
+                            db, event_ring, account_id=account_uuid, message_id=message_uuid,
+                        )
             elif event.op == "update":
                 await event_ring.add(
                     account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},

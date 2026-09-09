@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import Text, and_, case, cast, delete, desc, func, or_, select, text
+from sqlalchemy import Text, and_, case, cast, delete, desc, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -22,6 +22,7 @@ from mail_verdict.core.cursor import after_cursor, after_tier_cursor
 from mail_verdict.database.models import (
     Account,
     AccountPrefs,
+    Alert,
     Attachment,
     Folder,
     FolderPrefs,
@@ -1584,3 +1585,134 @@ class TagRepository:
                 select(MailTag).where(MailTag.mail_id == mail_id)
             )
             return list(result.scalars().all())
+
+
+class AlertRepository:
+    """Repository for the alerts table -- both the durable in-app list and,
+    for a mail alert, the fires-exactly-once dedup gate (see Alert's own
+    docstring). Owned table, no foreign key onto anything of PostIMAP's."""
+
+    def __init__(self, db: DatabaseConnection) -> None:
+        self._db = db
+
+    async def create_mail_alert(
+        self,
+        *,
+        account_id: uuid.UUID,
+        message_id: uuid.UUID,
+        msg_key: str,
+        title: str | None,
+        body: str | None,
+    ) -> Alert | None:
+        """
+        Insert a "new mail" alert, delivered immediately -- the in-app
+        path has no separate dispatch phase (no push subscriptions to
+        notify, no VAPID keys), so delivered_at is stamped at insert time
+        rather than left for a later dispatcher pass to claim.
+
+        dedupe_key embeds msg_key rather than message_id, the same reason
+        Verdict and MessageEmbedding do: a UIDVALIDITY resync replaces
+        every messages.id in a folder, and the row that must never fire
+        twice has to survive that. ON CONFLICT DO NOTHING is the entire
+        "fires exactly once" mechanism -- ordinary insert, not an upsert.
+
+        Args:
+            account_id, message_id: Source coordinates for the alert's URL
+            msg_key: The durable key (database/msg_key.py) -- what
+                dedupe_key is built from
+            title, body: Rendered once here (subject, sender) rather than
+                resolved again by every reader of the alert list
+
+        Returns:
+            The inserted Alert, or None if an alert for this msg_key
+            already exists (a resync, not a new arrival)
+        """
+        dedupe_key = f"mail:{account_id}:{msg_key}"
+        now = func.now()
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(Alert)
+                .values(
+                    kind="mail",
+                    deliver_at=now,
+                    delivered_at=now,
+                    title=title,
+                    body=body,
+                    url=f"/?message={message_id}",
+                    dedupe_key=dedupe_key,
+                    account_id=account_id,
+                    message_id=message_id,
+                )
+                .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
+                .returning(Alert)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def list_recent(self, *, limit: int = 50) -> list[Alert]:
+        """
+        The durable alert list, newest first -- delivered_at rather than
+        deliver_at, since a future-dated reminder alert (not built by this
+        block) has not happened yet and does not belong in this list until
+        it has.
+
+        Args:
+            limit: Max rows
+
+        Returns:
+            Alerts ordered (delivered_at DESC, id DESC), delivered only
+        """
+        async with self._db.session() as session:
+            stmt = (
+                select(Alert)
+                .where(Alert.delivered_at.is_not(None))
+                .order_by(desc(Alert.delivered_at), desc(Alert.id))
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def unseen_count(self) -> int:
+        """
+        How many delivered alerts have not been dismissed yet -- the
+        bell's own badge count.
+        """
+        async with self._db.session() as session:
+            stmt = select(func.count(Alert.id)).where(
+                Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None),
+            )
+            return (await session.execute(stmt)).scalar_one()
+
+    async def dismiss(self, alert_id: uuid.UUID) -> bool:
+        """
+        Mark one alert dismissed. Idempotent -- dismissing an
+        already-dismissed alert (two browsers, the same click twice) is
+        not an error, it does nothing on the second call.
+
+        Returns:
+            True if this call is what dismissed it, False if it was
+            already dismissed or does not exist
+        """
+        async with self._db.session() as session:
+            stmt = (
+                update(Alert)
+                .where(Alert.id == alert_id, Alert.dismissed_at.is_(None))
+                .values(dismissed_at=func.now())
+            )
+            result = await session.execute(stmt)
+            return bool(result.rowcount > 0)  # type: ignore[attr-defined]
+
+    async def dismiss_all(self) -> int:
+        """Mark every currently-undismissed, delivered alert dismissed.
+
+        Returns:
+            The number of rows this call dismissed
+        """
+        async with self._db.session() as session:
+            stmt = (
+                update(Alert)
+                .where(Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None))
+                .values(dismissed_at=func.now())
+            )
+            result = await session.execute(stmt)
+            return int(result.rowcount)  # type: ignore[attr-defined]

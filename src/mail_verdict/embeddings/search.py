@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Literal
 
 from sqlalchemy import and_, select, text
@@ -207,9 +207,13 @@ async def semantic_search(
         # (the cutoff above already decided that), it just sorts behind
         # every dated one rather than in front -- the same placement
         # search text's own chronological mode gives it.
+        _EPOCH = datetime.min.replace(tzinfo=timezone.utc)  # never actually used -- see below
         dated = sorted(
             (r for r in results if r.message.received_at is not None),
-            key=lambda r: r.message.received_at, reverse=True,
+            # The `or _EPOCH` is unreachable given the filter above; it
+            # only satisfies the type checker, which cannot narrow
+            # received_at's Optional-ness across the generator boundary.
+            key=lambda r: r.message.received_at or _EPOCH, reverse=True,
         )
         dateless = [r for r in results if r.message.received_at is None]
         results = dated + dateless

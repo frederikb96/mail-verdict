@@ -562,6 +562,33 @@ class NotificationCountResponse(BaseModel):
     unacknowledged: int
 
 
+class AlertResponse(BaseModel):
+    """One alerts row -- a delivered "something happened" record: a new
+    message today, a calendar reminder in a later feature. Distinct from
+    NotificationResponse above, which is PostIMAP's own durable record of
+    a write that never reached the server; the two names are deliberately
+    not interchangeable (see the architecture doc)."""
+
+    id: uuid.UUID
+    kind: str
+    title: str | None
+    body: str | None
+    url: str | None
+    account_id: uuid.UUID | None
+    message_id: uuid.UUID | None
+    delivered_at: datetime | None
+    dismissed_at: datetime | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AlertUnseenCountResponse(BaseModel):
+    """Delivered, not-yet-dismissed alert count -- the bell's own badge."""
+
+    unseen: int
+
+
 # --- Pipeline run schemas ---
 
 
