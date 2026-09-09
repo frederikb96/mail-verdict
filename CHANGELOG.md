@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- From Settings, the sidebar's other links (Mail, Calendar, Contacts, Search, Accounts, Pipeline)
+  no longer do nothing -- with more than one account configured, the Account Order card kept
+  re-rendering itself continuously, and that endless stream of updates left no room for a click
+  elsewhere to actually take effect.
+
 ## [5.6.0] - 2026-09-09
 
 ### Rules
