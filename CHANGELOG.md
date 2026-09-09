@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.5.1] - 2026-09-09
+
+### Calendar
+
+- Scrolling the month view in touchpad swipes no longer jumps back a month or two when the months
+  ahead are still loading: the address bar's own catch-up write was being read back as a
+  navigation and dragged the view to wherever it had last paused. The browser's back and forward
+  buttons still move the calendar as before.
+- A row-sized backward jitter under a busy CPU is gone with it: a render of an already-passed
+  week could land after the scroll had moved on and step the view back a row.
+
 ## [5.5.0] - 2026-09-09
 
 ### Calendar
