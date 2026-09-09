@@ -59,6 +59,23 @@ function reminderSelectValue(minutesBefore: number): string {
   return REMINDER_PRESETS_MINUTES.includes(minutesBefore) ? String(minutesBefore) : "custom";
 }
 
+/** The minutes-before a freshly added reminder starts at: 15 (the
+ * longstanding default for the first one), or the first preset not
+ * already used by a relative reminder on this event once 15 itself is
+ * taken -- so "Add reminder", pressed right after the calendar's own
+ * default pre-filled one, doesn't add a second, identical one. Falls
+ * back to the longest preset once every preset is already in use. */
+function nextReminderPresetMinutes(existing: EventReminder[]): number {
+  const used = new Set(
+    existing.filter((r) => r.offset_minutes !== null).map((r) => -r.offset_minutes!),
+  );
+  if (!used.has(15)) return 15;
+  return (
+    REMINDER_PRESETS_MINUTES.find((m) => !used.has(m)) ??
+    REMINDER_PRESETS_MINUTES[REMINDER_PRESETS_MINUTES.length - 1]
+  );
+}
+
 // The Select primitive treats an empty item value as "no selection", so
 // "Does not repeat" is represented on the wire as well as here: sending
 // rrule="" is what actually removes an existing RRULE (see the comment on
@@ -108,9 +125,13 @@ function defaultRange(
   if (dragRange) {
     return { start: dragRange.start.toISOString(), end: dragRange.end.toISOString() };
   }
-  const base = defaultDate ? new Date(defaultDate) : new Date();
-  base.setMinutes(0, 0, 0);
-  base.setHours(base.getHours() + 1);
+  const now = new Date();
+  const base = defaultDate ? new Date(defaultDate) : now;
+  // The next full hour from *now*, on the anchor day -- not hour 0 of
+  // that day, which is what defaultDate carries when it's a day picked
+  // with no specific time (the month/week toolbar's "New event") and
+  // used to produce 01:00 for any anchor day starting at local midnight.
+  base.setHours(now.getHours() + 1, 0, 0, 0);
   const end = new Date(base.getTime() + durationMinutes * 60_000);
   return { start: base.toISOString(), end: end.toISOString() };
 }
@@ -739,7 +760,10 @@ export function EventEditor({
                 disabled={readOnly}
                 onClick={() => {
                   remindersTouched.current = true;
-                  setReminders((rs) => [...rs, { offset_minutes: -15, at: null }]);
+                  setReminders((rs) => [
+                    ...rs,
+                    { offset_minutes: -nextReminderPresetMinutes(rs), at: null },
+                  ]);
                 }}
               >
                 Add reminder

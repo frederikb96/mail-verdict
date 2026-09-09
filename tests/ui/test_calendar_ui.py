@@ -411,6 +411,31 @@ class TestCalendarUi:
         assert starts_input.input_value() == f"{expected_date} 03:00"
         assert ends_input.input_value() == f"{expected_date} 05:00"
 
+    def test_new_event_from_the_toolbar_defaults_to_the_next_full_hour(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the toolbar's New event (no drag,
+        so no dragged range) rounded to the next full hour *of the anchor
+        date itself* -- which the URL sync sets at local midnight -- so
+        it opened at 01:00 on whatever day the calendar was showing,
+        rather than the next full hour from the actual current time."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        now_hour = page.evaluate("new Date().getHours()")
+        page.get_by_role("button", name="New event", exact=True).click()
+
+        starts_input = page.get_by_label("Starts", exact=True)
+        expect(starts_input).to_be_visible(timeout=10_000)
+        value = starts_input.input_value()
+
+        expected_hour = (now_hour + 1) % 24
+        # A run straddling the hour boundary between reading now_hour and
+        # the editor opening can legitimately land one hour later still.
+        assert value.endswith(f"{expected_hour:02d}:00") or value.endswith(
+            f"{(expected_hour + 1) % 24:02d}:00"
+        ), f"expected the next full hour from ~{now_hour}:00, got {value!r}"
+
     def test_creating_a_timed_event_binds_the_browsers_own_timezone(
         self,
         page: Page,
@@ -784,6 +809,32 @@ class TestCalendarUi:
         sheet = page.locator('[data-slot="sheet-content"]')
         expect(sheet).to_be_visible(timeout=15_000)
         expect(sheet.get_by_role("switch", name="Show as busy")).not_to_be_checked()
+
+    def test_add_reminder_does_not_duplicate_the_pre_filled_default(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: a create form pre-fills one
+        reminder from the (global, absent a calendar-specific override)
+        15-minutes-before default, and Add reminder always inserted a
+        second, hardcoded 15-minutes-before entry regardless of what was
+        already there -- so the very first press duplicated it."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        title_input = page.get_by_label("Title")
+        expect(title_input).to_be_visible(timeout=15_000)
+
+        reminder_triggers = page.locator('[data-slot="select-trigger"]').filter(
+            has_text=re.compile(r"before|At time of event")
+        )
+        expect(reminder_triggers).to_have_count(1, timeout=10_000)
+
+        page.get_by_role("button", name="Add reminder", exact=True).click()
+
+        expect(reminder_triggers).to_have_count(2, timeout=10_000)
+        labels = reminder_triggers.all_inner_texts()
+        assert labels[0] != labels[1], f"both reminders read the same: {labels!r}"
 
     def test_an_absolute_reminder_from_another_client_shows_its_real_time_and_survives_a_save(
         self,
