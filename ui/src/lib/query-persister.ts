@@ -28,9 +28,25 @@ function isMailListQuery(queryKey: readonly unknown[]): boolean {
   return queryKey[0] === "mails" || (queryKey[0] === "unified" && queryKey[1] === "mails");
 }
 
+/**
+ * Calendar-event month chunks -- `["calendar-events", "2026-09"]`, per
+ * hooks/use-events.ts's eventKeys.chunk. Persisting these buys nothing:
+ * SSE keeps them fresh (see use-sse.ts's calendar.object handling) and
+ * they're cheap to re-fetch, but scrolling the month view can build up
+ * years' worth of them, and every one is re-serialised into localStorage
+ * on each throttled write -- the same unbounded-growth shape the mail list
+ * is excluded for above, just discovered on the calendar side later.
+ * Excluded by exact key shape rather than by prefix alone, so it doesn't
+ * also catch `["calendar-event", id]` (singular -- the detail cache,
+ * small and worth persisting) or `["calendars"]`/`["calendar-links"]`.
+ */
+function isCalendarEventChunkQuery(queryKey: readonly unknown[]): boolean {
+  return queryKey[0] === "calendar-events";
+}
+
 export function isEphemeralQuery(queryKey: readonly unknown[]): boolean {
   const first = queryKey[0];
-  if (isMailListQuery(queryKey)) return true;
+  if (isMailListQuery(queryKey) || isCalendarEventChunkQuery(queryKey)) return true;
   if (typeof first !== "string") return false;
   return EPHEMERAL_PREFIXES.some((p) => first.startsWith(p));
 }

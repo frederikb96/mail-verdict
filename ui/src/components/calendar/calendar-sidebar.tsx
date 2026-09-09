@@ -4,7 +4,6 @@
  * mini-month, the calendar list grouped by DAV account with visibility
  * checkboxes, and the manage-calendars trigger. */
 
-import { useAtomValue } from "jotai";
 import {
   SidebarGroup,
   SidebarGroupContent,
@@ -17,10 +16,8 @@ import { MiniMonth } from "@/components/calendar/mini-month";
 import { CalendarManageDialog } from "@/components/calendar/calendar-manage-dialog";
 import { useCalendars, useUpdateCalendar } from "@/hooks/use-calendars";
 import { resolveCalendarColor } from "@/components/calendar/colors";
-import { calendarDateAtom } from "@/lib/atoms";
 
 export function CalendarSidebar() {
-  const anchor = useAtomValue(calendarDateAtom);
   const { data: calendars } = useCalendars();
   const updateCalendar = useUpdateCalendar();
 
@@ -41,7 +38,7 @@ export function CalendarSidebar() {
     <>
       <SidebarGroup>
         <SidebarGroupContent>
-          <MiniMonth anchor={anchor} />
+          <MiniMonth />
         </SidebarGroupContent>
       </SidebarGroup>
 

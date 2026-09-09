@@ -11,11 +11,17 @@ export const calendarKeys = {
   links: ["calendar-links"] as const,
 };
 
+/** The calendar list is announced over SSE (calendar.collection, and
+ * calendar_prefs changes), so it needs no refetch on every mount -- the
+ * app-wide `refetchOnMount: "always"` default would otherwise refetch it
+ * for every component that reads it as it mounts, and every observer of
+ * this query re-renders twice per fetch as `isFetching` flips. */
 export function useCalendars() {
   return useQuery({
     queryKey: calendarKeys.list,
     queryFn: () => api.calendars.list(),
     staleTime: 60_000,
+    refetchOnMount: true,
   });
 }
 
@@ -77,6 +83,7 @@ export function useCalendarLinks() {
     queryKey: calendarKeys.links,
     queryFn: () => api.calendars.links.get(),
     staleTime: 60_000,
+    refetchOnMount: true,
   });
 }
 
