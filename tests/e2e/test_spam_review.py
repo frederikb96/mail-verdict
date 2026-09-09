@@ -1,10 +1,9 @@
 """
 The spam review screen's read query and its two write paths, end to end
-through the real API: listing an undecided verdict, confirming one with no
-move, and rejecting one the pipeline already moved to Junk -- proving it
-moves back to the inbox. Verdicts are seeded directly through
-VerdictRepository rather than the real classifier, which this proves
-nothing about.
+through the real API: listing an undecided verdict, confirming one moves
+it to Junk, and rejecting one already sitting there moves it back to the
+inbox. Verdicts are seeded directly through VerdictRepository rather than
+the real classifier, which this proves nothing about.
 """
 
 from __future__ import annotations
@@ -78,6 +77,20 @@ def _list_inbox(
     return resp.json()["messages"]
 
 
+def _find_seed(
+    app_client: TestClient, account_id: str, inbox_folder: dict[str, Any], index: int,
+) -> dict[str, Any]:
+    """One of the four seeded messages, matched by its own subject rather
+    than by position -- a ruling that moves an earlier seed out of the
+    inbox changes what position N means for whichever test runs after it,
+    but never which message carries subject N."""
+    subject = f"Spam review seed {index}"
+    for m in _list_inbox(app_client, account_id, inbox_folder):
+        if m["subject"] == subject:
+            return m
+    raise AssertionError(f"seed message {subject!r} not found in the inbox")
+
+
 def _spam_review_items(app_client: TestClient) -> list[dict[str, Any]]:
     resp = app_client.get("/api/verdicts/spam-review")
     assert resp.status_code == 200, resp.text
@@ -101,7 +114,7 @@ class TestSpamReview:
         inbox_folder: dict[str, Any],
         db: DatabaseConnection,
     ) -> None:
-        target = _list_inbox(app_client, synced_account["id"], inbox_folder)[0]
+        target = _find_seed(app_client, synced_account["id"], inbox_folder, 0)
         message_id = uuid.UUID(target["id"])
 
         await VerdictRepository(db).create_verdict(
@@ -117,14 +130,15 @@ class TestSpamReview:
         assert item["reasoning"] == "looks spammy"
 
     @pytest.mark.asyncio
-    async def test_accepting_removes_it_with_no_move(
+    async def test_accepting_a_spam_verdict_moves_it_to_junk(
         self,
         app_client: TestClient,
         synced_account: dict[str, Any],
         inbox_folder: dict[str, Any],
+        junk_folder: dict[str, Any],
         db: DatabaseConnection,
     ) -> None:
-        target = _list_inbox(app_client, synced_account["id"], inbox_folder)[1]
+        target = _find_seed(app_client, synced_account["id"], inbox_folder, 1)
         message_id = uuid.UUID(target["id"])
         account_id = uuid.UUID(synced_account["id"])
 
@@ -146,8 +160,8 @@ class TestSpamReview:
             result = await session.execute(
                 select(Message.folder_id).where(Message.id == message_id)
             )
-            assert result.scalar_one() == uuid.UUID(inbox_folder["id"]), (
-                "agreeing it's spam must not move the message"
+            assert result.scalar_one() == uuid.UUID(junk_folder["id"]), (
+                "confirming a spam verdict must move the message to Junk"
             )
 
     @pytest.mark.asyncio
@@ -159,7 +173,7 @@ class TestSpamReview:
         junk_folder: dict[str, Any],
         db: DatabaseConnection,
     ) -> None:
-        target = _list_inbox(app_client, synced_account["id"], inbox_folder)[2]
+        target = _find_seed(app_client, synced_account["id"], inbox_folder, 2)
         message_id = uuid.UUID(target["id"])
         account_id = uuid.UUID(synced_account["id"])
 
@@ -167,12 +181,17 @@ class TestSpamReview:
             mail_id=message_id, account_id=account_id, is_spam=True, source=VerdictSource.AI,
         )
 
+        # The generic move, not the spam action -- that one is itself a
+        # ruling now (see apply_human_ruling) and would remove this
+        # message from review before the rest of the test ever gets to
+        # it. This stands in for whatever puts a message in Junk with no
+        # ruling behind it: the pipeline's own auto-move-to-junk stage,
+        # when enabled, or a third-party client's own move.
         resp = app_client.post(
-            f"/api/accounts/{account_id}/messages/bulk-action",
-            json={"action": "spam", "ids": [str(message_id)]},
+            f"/api/messages/{message_id}/action",
+            json={"action": "move", "target_folder_id": str(junk_folder["id"])},
         )
         assert resp.status_code == 200, resp.text
-        assert resp.json()["affected_count"] == 1
 
         items = {i["message_id"]: i for i in _spam_review_items(app_client)}
         assert items[str(message_id)]["is_junk"] is True
@@ -204,7 +223,7 @@ class TestSpamReview:
         """A later USER_FEEDBACK row, even one that agrees it's spam, is what
         'ruled on' means -- the message must not resurface just because its
         own is_spam still reads true."""
-        target = _list_inbox(app_client, synced_account["id"], inbox_folder)[3]
+        target = _find_seed(app_client, synced_account["id"], inbox_folder, 3)
         message_id = uuid.UUID(target["id"])
         account_id = uuid.UUID(synced_account["id"])
 

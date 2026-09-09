@@ -100,11 +100,9 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # Neighbour hints in the classify stage's prompt: the k nearest
         # past messages carrying a human label (a user correction, or the
         # folder they currently sit in -- never the classifier's own past
-        # verdicts, see pipeline/neighbors.py). Off by default so the
-        # effect can be measured against spam/metrics.py before it is
-        # ever the default; a low similarity floor keeps a weak match
-        # from padding the prompt with noise.
-        "neighbor_hints_enabled": False,
+        # verdicts, see pipeline/neighbors.py). Always on -- a low
+        # similarity floor keeps a weak match from padding the prompt
+        # with noise.
         "neighbor_k": 5,
         "neighbor_min_similarity": 0.75,
         # The semantic search endpoint's own fallback when a caller sends

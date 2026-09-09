@@ -20,12 +20,12 @@ below replaces every `<` and `>` in the JSON with its unicode escape
 first -- valid JSON, parses back to the same string, and contains no
 literal angle bracket the fence could ever be broken with.
 
-Neighbour hints (settings.semantic.neighbor_hints_enabled, default off)
-add a `similar_past_mail` list to the prompt's context: the k nearest
-messages carrying a human label, from pipeline/neighbors.py's
+Neighbour hints add a `similar_past_mail` list to the prompt's context:
+the k nearest messages carrying a human label, from pipeline/neighbors.py's
 NeighborService -- never the classifier's own past verdicts, which is
-what that module's docstring explains at length. Off by default so the
-effect on accuracy can be measured before it is ever the default.
+what that module's docstring explains at length. Always on: a person's
+own rulings are always what the model reads before judging the next
+message, with nothing able to turn that off.
 """
 
 from __future__ import annotations
@@ -211,13 +211,11 @@ class ClassifyStage:
     async def _neighbor_hints(
         self, msg: MessageView, ctx: RunContext,
     ) -> tuple[NeighborHint, ...]:
-        """Fetch neighbour hints if settings.semantic.neighbor_hints_enabled
-        is on; empty otherwise, including when the message has no
-        embedding yet (NeighborService.hints_for returns nothing rather
-        than raising -- see that method's docstring)."""
+        """Always fetches; empty when the message has no embedding yet
+        (NeighborService.hints_for returns nothing rather than raising --
+        see that method's docstring) or nothing in scope has a human
+        label yet."""
         semantic_settings = ctx.settings.get("semantic", {})
-        if not bool(semantic_settings.get("neighbor_hints_enabled", False)):
-            return ()
         embedding_model = str(semantic_settings.get("model", DEFAULT_EMBEDDING_MODEL))
         k = int(semantic_settings.get("neighbor_k", 5))
         min_similarity = float(semantic_settings.get("neighbor_min_similarity", 0.75))

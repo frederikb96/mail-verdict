@@ -296,40 +296,44 @@ export function ReadingPane() {
           >
             <Archive className="h-4 w-4" />
           </Button>
-          {/* The verdict thumb corrects the model's classification; the
-              Junk control below it moves the message on the server. Two
-              different actions, kept visually apart in the row. */}
-          {primary.verdict?.is_spam && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() =>
-                verdictFeedback.mutate({
-                  mailId: primary.id, accountId: primary.account_id, isSpam: false,
-                })
-              }
-              title="Mark verdict as not spam"
-              aria-label="Mark verdict as not spam"
-            >
-              <ThumbsUp className="h-4 w-4" />
-            </Button>
-          )}
-          {primary.verdict && !primary.verdict.is_spam && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() =>
-                verdictFeedback.mutate({
-                  mailId: primary.id, accountId: primary.account_id, isSpam: true,
-                })
-              }
-              title="Mark verdict as spam"
-              aria-label="Mark verdict as spam"
-            >
-              <ThumbsDown className="h-4 w-4" />
-            </Button>
+          {/* Both controls appear on every message carrying a verdict,
+              whichever way it went -- up always confirms it, down always
+              corrects it. Which is which is decided here, once, rather
+              than by four differently-labelled buttons across the two
+              verdict states. */}
+          {primary.verdict && (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() =>
+                  verdictFeedback.mutate({
+                    mailId: primary.id, accountId: primary.account_id,
+                    isSpam: primary.verdict!.is_spam,
+                  })
+                }
+                title="Confirm this verdict"
+                aria-label="Confirm this verdict"
+              >
+                <ThumbsUp className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() =>
+                  verdictFeedback.mutate({
+                    mailId: primary.id, accountId: primary.account_id,
+                    isSpam: !primary.verdict!.is_spam,
+                  })
+                }
+                title="Correct this verdict"
+                aria-label="Correct this verdict"
+              >
+                <ThumbsDown className="h-4 w-4" />
+              </Button>
+            </>
           )}
           {isInJunk ? (
             <Button

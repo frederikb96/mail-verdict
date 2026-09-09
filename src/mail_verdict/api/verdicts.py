@@ -193,9 +193,11 @@ async def submit_feedback(
     account_id: uuid.UUID = Query(),
 ) -> FeedbackResponse:
     """
-    Submit user feedback on spam classification.
+    Submit a person's ruling on a message's spam classification.
 
-    Triggers SpamFeedbackHandler to log a correction verdict.
+    Records the correction and moves the message to match -- see
+    SpamFeedbackHandler.apply_human_ruling for exactly what moves and
+    when. One call does both; nothing else needs to be paired with it.
     """
     msg_repo = get_message_repo()
     msg = await msg_repo.get_by_id(account_id, mail_id)
@@ -209,11 +211,9 @@ async def submit_feedback(
     if processor is None:
         raise HTTPException(status_code=503, detail="Spam feedback handler not available")
 
-    feedback = processor.feedback
-    if request.is_spam:
-        ok = await feedback.handle_moved_to_spam(mail_id, account_id)
-    else:
-        ok = await feedback.handle_moved_from_spam(mail_id, account_id)
+    ok = await processor.feedback.apply_human_ruling(
+        mail_id, account_id, is_spam=request.is_spam,
+    )
 
     # A correction changes what every viewer of this message should see
     # (the verdict badge, the reasoning), not only the browser that

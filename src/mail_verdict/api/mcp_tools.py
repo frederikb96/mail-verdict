@@ -524,15 +524,15 @@ async def get_verdict(mail_id: str) -> dict[str, Any] | None:
 )
 async def submit_spam_feedback(mail_id: str, account_id: str, is_spam: bool) -> dict[str, Any]:
     """
-    Correct a message's spam classification, recording a user_feedback verdict.
-
-    Does not move the message -- pair with move_mail if the correction
-    should also relocate it (e.g. out of Junk back to the inbox).
+    Record a ruling on a message's spam classification, and move it to
+    match -- see SpamFeedbackHandler.apply_human_ruling for exactly what
+    moves and when. One call does both; nothing else needs to be paired
+    with it.
 
     Args:
         mail_id: Message UUID
         account_id: Account UUID the message belongs to
-        is_spam: The corrected classification
+        is_spam: The ruling
 
     Returns:
         {"success": bool, "message": str}
@@ -543,11 +543,8 @@ async def submit_spam_feedback(mail_id: str, account_id: str, is_spam: bool) -> 
     if processor is None:
         return {"success": False, "error": "Spam feedback handler not available"}
 
-    feedback = processor.feedback
-    ok = (
-        await feedback.handle_moved_to_spam(uuid.UUID(mail_id), uuid.UUID(account_id))
-        if is_spam
-        else await feedback.handle_moved_from_spam(uuid.UUID(mail_id), uuid.UUID(account_id))
+    ok = await processor.feedback.apply_human_ruling(
+        uuid.UUID(mail_id), uuid.UUID(account_id), is_spam=is_spam,
     )
     return {"success": ok, "message": "Feedback recorded" if ok else "Feedback processing failed"}
 
