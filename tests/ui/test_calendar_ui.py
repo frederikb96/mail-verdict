@@ -554,6 +554,25 @@ class TestCalendarUi:
         expect(page.get_by_text("Ends must be after Starts.")).to_have_count(0)
         expect(page.get_by_role("button", name="Save", exact=True)).to_be_enabled()
 
+    def test_the_date_popover_does_not_hide_the_rest_of_the_form(
+        self, page: Page, app_server: str, calendar_collection: dict[str, Any],
+    ) -> None:
+        """date-time-field.tsx uses a plain Popover, never a Combobox or
+        Autocomplete -- a popup whose input sits outside it computes a
+        modal focus manager that aria-hides the entire rest of the page
+        while open, which a Combobox-based picker would have inherited
+        silently. Opening the picker must leave a field below it
+        reachable by role, the regression test the design for this
+        control names explicitly."""
+        page.goto(f"{app_server}/calendar")
+        expect(page.get_by_role("checkbox", name="Work")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="New event", exact=True).click()
+        expect(page.get_by_label("Title")).to_be_visible(timeout=15_000)
+
+        page.get_by_role("button", name="Choose a date").first.click()
+        expect(page.get_by_label("Attendees")).to_be_visible(timeout=10_000)
+
     def test_typing_unparseable_text_into_starts_disables_save_without_crashing(
         self, page: Page, app_server: str, calendar_collection: dict[str, Any],
     ) -> None:
