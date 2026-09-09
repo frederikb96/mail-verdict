@@ -8,7 +8,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ChevronDown, ChevronRight, Loader2, Pencil, Plus, Settings2, Trash2 } from "lucide-react";
+import {
+  Bell, ChevronDown, ChevronRight, Loader2, Pencil, Plus, Settings2, Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
@@ -74,6 +76,65 @@ function ColorPicker({ calendar }: { calendar: Calendar }) {
               }}
             />
           ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** A calendar's own reminder default -- two nullable questions
+ * (calendar_prefs.reminders_enabled/default_reminder_minutes), both null
+ * meaning inherit settings.calendar.default_reminder_minutes. Compact
+ * popover, the same shape ColorPicker above already uses for a per-
+ * calendar override that does not need its own row. */
+function ReminderPicker({ calendar }: { calendar: Calendar }) {
+  const updateCalendar = useUpdateCalendar();
+  const [open, setOpen] = useState(false);
+  const enabled = calendar.reminders_enabled !== false;
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            variant="ghost" size="icon-xs"
+            aria-label={`Reminder settings for ${calendar.display_name}`}
+          />
+        }
+      >
+        <Bell className="h-3.5 w-3.5" />
+      </PopoverTrigger>
+      <PopoverContent className="w-64 p-3">
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs">Default reminder</Label>
+            <Switch
+              checked={enabled}
+              onCheckedChange={(checked) =>
+                updateCalendar.mutate({
+                  id: calendar.id, data: { reminders_enabled: checked ? null : false },
+                })
+              }
+            />
+          </div>
+          {enabled && (
+            <div className="grid gap-1">
+              <Label className="text-xs">Minutes before (blank inherits the global default)</Label>
+              <Input
+                type="number"
+                min={0}
+                value={calendar.default_reminder_minutes ?? ""}
+                placeholder="Inherit"
+                onChange={(e) => {
+                  const raw = e.target.value;
+                  updateCalendar.mutate({
+                    id: calendar.id,
+                    data: { default_reminder_minutes: raw === "" ? null : Number(raw) },
+                  });
+                }}
+              />
+            </div>
+          )}
         </div>
       </PopoverContent>
     </Popover>
@@ -146,6 +207,7 @@ function CalendarRow({ calendar }: { calendar: Calendar }) {
             updateCalendar.mutate({ id: calendar.id, data: { is_enabled: checked } })
           }
         />
+        <ReminderPicker calendar={calendar} />
         <Button
           variant="ghost"
           size="icon-xs"

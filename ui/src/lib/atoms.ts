@@ -165,6 +165,15 @@ export const calendarScrollHourAtom = atomWithStorage<number | null>(
   "mailverdict:calendar-scroll-hour", null,
 );
 
+/** The calendar a new event's editor most recently opened on, kept
+ * distinct from settings.calendar.default_calendar_id -- that one is an
+ * explicit choice on the Settings page and means something else. This is
+ * a display preference the same as the view mode above, not server
+ * state, so it lives here rather than round-tripping to the database. */
+export const lastCreatedCalendarIdAtom = atomWithStorage<string | null>(
+  "mailverdict:last-created-calendar", null,
+);
+
 // --- Contacts ---
 
 export const selectedContactIdAtom = atom<string | null>(null);

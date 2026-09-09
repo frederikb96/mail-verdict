@@ -110,6 +110,18 @@ class DatabaseConnection:
                 await session.rollback()
                 raise
 
+    @asynccontextmanager
+    async def session_or(self, existing: AsyncSession | None) -> AsyncIterator[AsyncSession]:
+        """Reuse `existing` if given, otherwise open (and commit) a fresh
+        session -- lets a caller collapse several repository calls onto one
+        session it already holds, without every repository method needing
+        two separate code paths of its own."""
+        if existing is not None:
+            yield existing
+        else:
+            async with self.session() as session:
+                yield session
+
     async def health_check(self) -> bool:
         """
         Check database connectivity.

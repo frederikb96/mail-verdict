@@ -9,6 +9,8 @@ in one place and absent from another.
 
 from __future__ import annotations
 
+from typing import Any
+
 from mail_verdict.database.models import CalendarPrefs, DavCollection
 
 
@@ -25,3 +27,29 @@ def calendar_is_enabled(collection: DavCollection, prefs: CalendarPrefs | None) 
     if prefs is not None and prefs.is_enabled is not None:
         return prefs.is_enabled
     return collection.supports_vevent
+
+
+def resolve_default_reminder(
+    prefs: CalendarPrefs | None, settings: dict[str, Any],
+) -> int | None:
+    """How many minutes before an event's start a freshly created event on
+    this calendar should default to reminding at -- or None for no default
+    reminder at all. Two nullable questions resolved together: whether a
+    default exists at all (reminders_enabled) and how long before it falls
+    (default_reminder_minutes). Either calendar_prefs column left NULL
+    means inherit; reminders_enabled=False switches this calendar's
+    default off regardless of what the global setting says -- there is no
+    integer sentinel for "off" here, since 0 is a legitimate at-start-time
+    reminder.
+
+    Callers apply this only when the editor's create form opens, never
+    implicitly on the server at save time: a server-side injection would
+    put alarms on events the MCP tools and invitation intake create, where
+    nobody asked for one and nothing in the form shows it.
+    """
+    if prefs is not None and prefs.reminders_enabled is False:
+        return None
+    if prefs is not None and prefs.default_reminder_minutes is not None:
+        return prefs.default_reminder_minutes
+    global_default = settings.get("default_reminder_minutes")
+    return global_default if isinstance(global_default, int) else None

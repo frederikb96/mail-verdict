@@ -138,6 +138,14 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # event editor's own fallback (the first writable calendar) is
         # what a client uses meanwhile.
         "default_calendar_id": None,
+        # Minutes before an event's start a freshly created event defaults
+        # to reminding at, on a calendar with no override of its own --
+        # calendar_prefs.default_reminder_minutes/reminders_enabled, and
+        # calendar/prefs.py's resolve_default_reminder() resolves the two
+        # together. Applied only when the editor's create form opens,
+        # never implicitly on the server at save time, which would put
+        # alarms on events the MCP tools or invitation intake create.
+        "default_reminder_minutes": 15,
     },
     SettingCategory.OUTBOX: {
         # How long a send sits in MailVerdict's own staging table before

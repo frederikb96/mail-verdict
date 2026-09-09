@@ -1190,6 +1190,15 @@ class CalendarResponse(BaseModel):
     sync_error: str | None
     initial_sync_done: bool
     total_count: int
+    # The raw per-calendar override -- NULL means inherit the global
+    # setting, the same way is_enabled's own NULL means nobody decided.
+    default_reminder_minutes: int | None
+    reminders_enabled: bool | None
+    # What a freshly created event on this calendar should actually
+    # pre-fill with, resolve_default_reminder() already applied -- never
+    # None-means-inherit here, since there is nothing left to inherit
+    # from once this is computed.
+    resolved_default_reminder_minutes: int | None
 
 
 class CalendarCreateRequest(BaseModel):
@@ -1205,6 +1214,8 @@ class CalendarUpdateRequest(BaseModel):
     is_enabled: bool | None = None
     identity_id: uuid.UUID | None = None
     intake: CalendarIntakeState | None = None
+    default_reminder_minutes: int | None = None
+    reminders_enabled: bool | None = None
 
 
 class AddressbookSummaryResponse(BaseModel):
@@ -1227,6 +1238,7 @@ Partstat = Literal["needs-action", "accepted", "declined", "tentative"]
 AttendeeRole = Literal["chair", "req-participant", "opt-participant", "non-participant"]
 EventStatus = Literal["confirmed", "tentative", "cancelled"]
 RecurrenceScope = Literal["this", "following", "all"]
+EventTransparency = Literal["opaque", "transparent"]
 
 
 class EventAttendeeOut(BaseModel):
@@ -1250,6 +1262,24 @@ class OwnReplyOut(BaseModel):
     outbox_status: str
     error: str | None
     updated_at: datetime
+
+
+class EventReminder(BaseModel):
+    """One DISPLAY alarm -- exactly one of the two is set. offset_minutes
+    keeps iCalendar's own sign convention (negative = before the start,
+    positive = after) rather than inventing "minutes before"; a positive
+    offset is a legitimate after-the-start reminder. The same shape both
+    ways: a reminder read back is exactly what a client would send to
+    recreate it."""
+
+    offset_minutes: int | None = None
+    at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_of_offset_or_at(self) -> EventReminder:
+        if (self.offset_minutes is None) == (self.at is None):
+            raise ValueError("Exactly one of 'offset_minutes' or 'at' must be set")
+        return self
 
 
 class EventInstanceOut(BaseModel):
@@ -1277,6 +1307,8 @@ class EventInstanceOut(BaseModel):
     own_reply: OwnReplyOut | None
     source_message_id: uuid.UUID | None
     read_only: bool
+    reminders: list[EventReminder]
+    transparency: EventTransparency
 
 
 class EventAttendeeIn(BaseModel):
@@ -1295,6 +1327,10 @@ class EventCreateRequest(BaseModel):
     description: str | None = None
     rrule: str | None = None
     attendees: list[EventAttendeeIn] | None = None
+    # None means none, the same as an empty list -- there is no "leave
+    # unset" reading on a create, unlike the update request below.
+    reminders: list[EventReminder] | None = None
+    transparency: EventTransparency | None = None
 
 
 class EventUpdateRequest(BaseModel):
@@ -1310,6 +1346,10 @@ class EventUpdateRequest(BaseModel):
     attendees: list[EventAttendeeIn] | None = None
     scope: RecurrenceScope | None = None
     recurrence_id: str | None = None
+    # A whole-list replace, never a per-alarm patch -- None means
+    # unchanged, an empty list means "remove every reminder".
+    reminders: list[EventReminder] | None = None
+    transparency: EventTransparency | None = None
 
 
 class EventDeleteRequest(BaseModel):
