@@ -381,6 +381,25 @@ export interface AlertUnseenCountResponse {
   unseen: number;
 }
 
+/** See VapidPublicKeyResponse in the backend schema. */
+export interface VapidPublicKeyResponse {
+  available: boolean;
+  public_key: string | null;
+}
+
+/** One registered device -- see PushSubscriptionResponse in the backend
+ * schema. Never carries endpoint/keys, the same write-only discipline a
+ * provider API key follows. */
+export interface PushSubscriptionResponse {
+  id: string;
+  label: string | null;
+  alert_folder_ids: string[] | null;
+  reminders_enabled: boolean;
+  created_at: string;
+  last_seen_at: string | null;
+  failed_at: string | null;
+}
+
 export interface ImageExceptionResponse {
   id: string;
   type: "sender" | "domain";

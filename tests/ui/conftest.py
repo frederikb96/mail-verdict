@@ -120,6 +120,12 @@ def app_server(
 
     os.environ["MAIL_VERDICT_DATABASE_URL"] = postgres_url
     os.environ["MAIL_VERDICT_SERVER_LIVENESS_PORT"] = str(_get_random_port())
+    # A throwaway key so a test can exercise anything gated on one being
+    # configured (provider-key storage, VAPID key generation) -- never
+    # overridden if a test run already set a real one for its own reasons.
+    os.environ.setdefault(
+        "ENCRYPTION_KEY", "a" * 64,
+    )
     reset_config()
 
     from mail_verdict.server import create_app
