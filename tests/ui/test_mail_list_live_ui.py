@@ -418,11 +418,23 @@ class TestMailListLiveUi:
         assert resp.status_code == 200, resp.text
 
         page.goto(app_server)
-        trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-        trigger.click()
-        page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
+        # The account switcher only opens once the page has hydrated; the
+        # auto-selected account appearing in it is the sign that it has.
+        trigger = page.locator('[data-slot="sidebar-header"]').get_by_role(
+            "button", name=f"large-mailbox-{account_id}", exact=True
+        )
+        expect(trigger).to_be_visible(timeout=15_000)
+        unified_entry = page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
             "Unified View", exact=True
-        ).click()
+        )
+        for _ in range(3):
+            trigger.click()
+            try:
+                expect(unified_entry).to_be_visible(timeout=5_000)
+                break
+            except AssertionError:
+                page.keyboard.press("Escape")
+        unified_entry.click()
         unified_item = page.locator('[data-testid="folder"]').filter(has_text=unified_name)
         unified_item.get_by_role("button").first.click()
         expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
