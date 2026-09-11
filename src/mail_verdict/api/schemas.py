@@ -955,6 +955,13 @@ class OutboxCreateRequest(BaseModel):
         "image. Omitted or shorter than 'attachments' treats the missing "
         "entries as null.",
     )
+    idempotency_key: uuid.UUID | None = Field(
+        default=None,
+        description="A key the caller generates once per composed message. A "
+        "repeat of a request carrying the same key returns the row the first "
+        "one created instead of creating a second; reusing it for a different "
+        "kind is refused with 409.",
+    )
 
 
 class OutboxAttachmentSummary(BaseModel):

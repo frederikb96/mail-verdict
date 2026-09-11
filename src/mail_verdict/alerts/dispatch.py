@@ -237,6 +237,17 @@ async def _deliver(
     )
 
 
+async def deliver_alert(
+    db: DatabaseConnection,
+    event_ring: EventRing | None,
+    vapid_repo: VapidKeyRepository | None,
+    alert: Alert,
+) -> None:
+    """_deliver for a producer outside this module whose alert is
+    delivered the moment it is created (outbox/stalled.py)."""
+    await _deliver(db, event_ring, vapid_repo, alert)
+
+
 async def _dispatch_push_safe(
     db: DatabaseConnection,
     vapid_repo: VapidKeyRepository,

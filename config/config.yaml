@@ -41,6 +41,11 @@ outbox:
   max_attachments_total_bytes: 52428800
   # How many attachments one message may carry.
   max_attachments: 20
+  # How long a message may wait on its way out before it is raised as an
+  # alert rather than left waiting silently: an outbox row PostIMAP has not
+  # finished with, or a send whose undo window passed without it moving on.
+  # A healthy send takes seconds; this catches the one that stopped.
+  stalled_alert_after_seconds: 600
 
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
