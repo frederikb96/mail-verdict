@@ -922,3 +922,39 @@ class TestKeysetAcrossTiers:
 
         assert set(seen) == expected
         assert len(seen) == len(expected)  # no row repeated across pages
+
+
+class TestReadStateFilter:
+    """is_seen narrows the candidate set itself, so the total agrees with
+    the page -- what the mail list's quick filter relies on while it shows
+    only unread mail."""
+
+    @pytest.mark.asyncio
+    async def test_unread_only_finds_only_unread_matches(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, _junk_id = await _seed_account_two_folders(session)
+            unread = await _seed_message(
+                session, account_id, inbox_id, uid=1, subject="budget review",
+            )
+            read = await _seed_message(
+                session, account_id, inbox_id, uid=2, subject="budget review again",
+            )
+            await session.execute(
+                text("UPDATE messages SET is_seen = true WHERE id = :id"), {"id": read},
+            )
+            await session.commit()
+
+        unread_only = await search_messages(
+            q="budget", account_id=account_id, folder_ids=None,
+            fields=None, before=None, limit=50, is_seen=False,
+        )
+        assert {r.id for r in unread_only.results} == {unread}
+        assert unread_only.total == 1
+
+        everything = await search_messages(
+            q="budget", account_id=account_id, folder_ids=None,
+            fields=None, before=None, limit=50,
+        )
+        assert {r.id for r in everything.results} == {unread, read}

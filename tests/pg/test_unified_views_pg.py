@@ -11,6 +11,7 @@ called directly, a bare `Query(...)` default arrives as a descriptor object.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -279,3 +280,31 @@ async def test_location_follows_a_move_made_in_another_mail_client(
     with pytest.raises(HTTPException) as exc:
         await locate_message(vanished)
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_overlapping_membership_writes_for_one_folder_never_collide(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The multi-select saves on every tick, so two writes replacing one
+    folder's set can overlap. Neither may fail, and the result is one of
+    the two sets, never a mix."""
+    async with migrated_db.session() as session:
+        _account_id, inbox_id = await _seed_account_and_inbox(session)
+    first = await create_unified_view(UnifiedViewCreate(name=_unique("One")))
+    second = await create_unified_view(UnifiedViewCreate(name=_unique("Two")))
+    await _assign(inbox_id, first.id)
+
+    for _ in range(15):
+        results = await asyncio.gather(
+            _assign(inbox_id, first.id),
+            _assign(inbox_id, first.id, second.id),
+            return_exceptions=True,
+        )
+        assert not [r for r in results if isinstance(r, BaseException)], results
+        async with migrated_db.session() as session:
+            rows = set((await session.execute(
+                text("SELECT view_id FROM unified_view_folders WHERE folder_id = :f"),
+                {"f": inbox_id},
+            )).scalars())
+        assert rows in ({first.id}, {first.id, second.id}), rows

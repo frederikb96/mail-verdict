@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import Select, case, delete, insert, select
+from sqlalchemy import Select, case, delete, insert, select, text
 from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -142,6 +142,16 @@ async def set_folder_views(
     404 for a folder that does not exist (or was deleted) or a view id
     that names no view -- checked before anything is written, so a bad
     request changes nothing."""
+    # The multi-select saves on every tick, so two writes for one folder can
+    # overlap. Held until this transaction commits, the lock has each one
+    # replace the whole set in turn; otherwise the later insert collides
+    # with rows the earlier one committed after this delete had already run.
+    await session.execute(
+        text(
+            "SELECT pg_advisory_xact_lock(hashtext('unified_view_folders'), hashtext(:folder))"
+        ),
+        {"folder": str(folder_id)},
+    )
     folder_exists = await session.scalar(
         select(Folder.id).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
     )

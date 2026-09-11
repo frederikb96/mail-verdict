@@ -284,14 +284,43 @@ function FolderViewsSelect({
   // Mirrors `ids` synchronously, so two ticks landing before a re-render
   // both build on the latest set rather than on the same stale one.
   const idsRef = useRef(ids);
+  // One save in flight at a time, the newest wanted set queued behind it:
+  // each save replaces the folder's whole set, so saves overtaking one
+  // another would leave whichever finished last, not the latest tick.
+  const savingRef = useRef(false);
+  const queuedRef = useRef<string[] | null>(null);
   const serverKey = folder.unified_view_ids.join(",");
 
   useEffect(() => {
+    // A refetch landing between queued saves describes a set the reader
+    // has already moved past.
+    if (savingRef.current || queuedRef.current) return;
     idsRef.current = folder.unified_view_ids;
     setIds(folder.unified_view_ids);
     // Keyed on the value, not the array's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverKey]);
+
+  const save = (viewIds: string[]) => {
+    if (savingRef.current) {
+      queuedRef.current = viewIds;
+      return;
+    }
+    savingRef.current = true;
+    setFolderViews
+      .mutateAsync({ folderId: folder.id, viewIds })
+      .catch(() => {
+        queuedRef.current = null;
+        idsRef.current = folder.unified_view_ids;
+        setIds(folder.unified_view_ids);
+      })
+      .finally(() => {
+        savingRef.current = false;
+        const queued = queuedRef.current;
+        queuedRef.current = null;
+        if (queued) save(queued);
+      });
+  };
 
   const toggle = (viewId: string, checked: boolean) => {
     const wanted = new Set(idsRef.current);
@@ -300,15 +329,7 @@ function FolderViewsSelect({
     const next = views.map((v) => v.id).filter((id) => wanted.has(id));
     idsRef.current = next;
     setIds(next);
-    setFolderViews.mutate(
-      { folderId: folder.id, viewIds: next },
-      {
-        onError: () => {
-          idsRef.current = folder.unified_view_ids;
-          setIds(folder.unified_view_ids);
-        },
-      },
-    );
+    save(next);
   };
 
   const chosen = views.filter((v) => ids.includes(v.id));
