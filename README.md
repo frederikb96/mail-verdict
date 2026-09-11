@@ -41,7 +41,9 @@ mirror, which is what keeps it simple.
   can be worked through from the keyboard alone: the arrow keys move the reading pane between
   messages, `e` archives, `Delete` trashes, `r` toggles read and unread, and whatever takes the
   open message out of the list opens the next one in the direction you were already going.
-  Archiving a message, or filing it as spam, marks it read as it moves — a setting turns this off.
+  Archiving a message, or filing it as spam, marks it read as it moves, and mail in Archive or
+  Trash stays read even when another client put it there — a setting turns this off for Archive
+  and Junk.
   An account can also be given a Trash retention and a Junk retention, each in days and set
   independently, so mail sitting in either long enough is permanently removed on its own.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
@@ -52,8 +54,9 @@ mirror, which is what keeps it simple.
   open, using the browser's own Web Push. Which folders alert is a per-device setting; every
   registered device can be reviewed and removed from Settings. Requires a home-screen install on
   iOS/iPadOS, and stops the moment the browser itself is quit on a desktop — the durable list is
-  what a closed tab or a declined permission falls back to. Calendar reminders are not delivered
-  as alerts yet.
+  what a closed tab or a declined permission falls back to. An alert resolves itself once its mail
+  is read anywhere, and a setting keeps new-mail alerts out of the bell's badge so it counts only
+  system notifications. Calendar reminders are not delivered as alerts yet.
 - **Spam verdicts** — each new message is classified by a language model, with the reasoning
   visible and a correction loop when it gets one wrong. A dedicated review screen lists every
   message currently called spam with no ruling yet, across every account and folder including

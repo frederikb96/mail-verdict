@@ -13,8 +13,8 @@ PostIMAP's".
 The sidebar order moves from the settings row's folder_order list into
 unified_views.position, so the order has one home.
 
-Revision ID: 0029_unified_views
-Revises: 0028_retention_min_days
+Revision ID: 0030_unified_views
+Revises: 0029_alerts_unresolved_mail
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "0029_unified_views"
-down_revision: str | None = "0028_retention_min_days"
+revision: str = "0030_unified_views"
+down_revision: str | None = "0029_alerts_unresolved_mail"
 branch_labels: str | None = None
 depends_on: str | None = None
 

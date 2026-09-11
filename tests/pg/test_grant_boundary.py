@@ -46,6 +46,7 @@ from mail_verdict.postimap.actions import (
     expunge_bulk,
     expunge_guarded,
     insert_outbox,
+    mark_seen_if_live,
     move_message,
     move_message_bulk,
     move_message_guarded,
@@ -454,6 +455,7 @@ async def test_every_contract_write_survives_the_restricted_grant(
         ("set_flags", lambda s: set_flags(s, message_id, is_seen=True)),
         ("set_keywords", lambda s: set_keywords(s, message_id, ["sweep"])),
         ("set_flags_bulk", lambda s: set_flags_bulk(s, [message_id], is_flagged=True)),
+        ("mark_seen_if_live", lambda s: mark_seen_if_live(s, [message_id])),
         ("move_message", lambda s: move_message(s, message_id, folder_id)),
         ("move_message_guarded", lambda s: move_message_guarded(
             s, message_id, folder_id, expected_folder_id=folder_id,

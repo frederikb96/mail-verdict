@@ -382,6 +382,36 @@ async def set_flags_bulk(
     return result.rowcount or 0  # type: ignore[attr-defined]
 
 
+async def mark_seen_if_live(session: AsyncSession, message_ids: list[uuid.UUID]) -> int:
+    """
+    Mark messages read, skipping any already read or already expunged.
+
+    For writes nobody asked for in the moment (filing/read_state.py): a
+    flag stored against an expunged row reaches a server that no longer
+    holds the message, dead-letters, and surfaces as a write-failure
+    notification about mail the user never touched.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_ids: Messages to mark read
+
+    Returns:
+        The number of rows actually updated
+    """
+    if not message_ids:
+        return 0
+    result = await session.execute(
+        update(Message)
+        .where(
+            Message.id == any_(message_ids),  # type: ignore[arg-type]
+            Message.expunged_at.is_(None),
+            Message.is_seen.is_(False),
+        )
+        .values(is_seen=True)
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
 async def move_message_bulk(
     session: AsyncSession,
     message_ids: list[uuid.UUID],

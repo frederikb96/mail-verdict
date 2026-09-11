@@ -323,6 +323,15 @@ longer reach one, or once a bounded wait (`settings.mail.notify_wait_seconds`) e
 `folder_id` with wherever the message actually is by then. That is what keeps a message a rule
 files elsewhere from announcing itself against the folder it merely arrived in.
 
+A mail alert resolves itself once its mail is read, by any path — `alerts/resolve.py` holds the one
+predicate: the alert's own message row, or a live row in the same account with the same Message-ID
+header, is read. The header half is what follows a move made in another client, which PostIMAP
+mirrors as an expunge plus a fresh row. It is checked on every message insert and read-state
+event, before an immediate alert is announced, before a staged one is delivered, and by the
+periodic read-state pass below as the net for a lost event. What the bell's badge counts is decided
+in one place too, `ui/src/lib/bell-badge.ts`: system notifications always, new-mail alerts only
+while `settings.mail.bell_badge_counts_new_mail` is on.
+
 `object_id`, `recurrence_id` and a per-subscription `reminders_enabled` flag are what a
 calendar-reminder alert would need on top of this — for a kind that nothing yet produces: no code
 path inserts one. Building that delivery path is future work, not a column left over from one.
@@ -340,6 +349,18 @@ background task off the postimap event listener (`push/send.py`, `pywebpush`): a
 the push service is its own protocol-level unsubscribe signal and deletes the row, anything else
 is stamped `failed_at` and left for the next alert to try again — an outbound push is never
 awaited inline in the listener, which would delay every event still queued behind it.
+
+## Read state in Archive and Trash
+
+Mail in Trash, and in Archive unless `settings.mail.mark_read_on_file_to_archive_or_junk` is off,
+is kept read however it got there (`filing/read_state.py`). The postimap event that lands a message
+in a folder — an insert, or an update whose `changed` includes `folder_id` — is recognised in one
+place, `filing/landing.py`, for anything else that needs to react to mail arriving somewhere. A
+periodic, advisory-locked pass is the net under the event path. It cannot rely on an index of its
+own on `messages` (DDL on a PostIMAP-owned table needs ownership), so it reads what exists: the
+trigger-maintained `folders.unread_count` gates each folder, and otherwise PostIMAP's
+`idx_msg_folder_uid_live` is walked backwards a bounded window at a time, top first, where a
+message another client just moved in lands.
 
 ## Folders
 

@@ -75,6 +75,7 @@ _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
+_read_state_reconciler: Any | None = None
 _contract_ok: bool = False
 _liveness_server: ThreadingHTTPServer | None = None
 _liveness_thread: Thread | None = None
@@ -139,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
-    global _mail_alert_finalizer, _retention_sweeper
+    global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler
 
     config = get_config()
 
@@ -303,9 +304,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _retention_sweeper = build_retention_timer(db)
     await _retention_sweeper.start()
 
+    from mail_verdict.alerts.resolve import resolve_for_message_event
+    from mail_verdict.filing.read_state import build_read_state_timer, mark_read_on_landing
+
+    _read_state_reconciler = build_read_state_timer(db, event_ring, settings_service)
+    await _read_state_reconciler.start()
+
     async def _on_postimap_event(event: Any) -> None:
         """Dispatch a parsed postimap_events payload to EventRing, the
-        pipeline's live-arrival enqueue, and the spam feedback listener."""
+        pipeline's live-arrival enqueue, the spam feedback listener, and
+        the read-state reactions (filing/read_state.py, alerts/resolve.py)."""
         import uuid as _uuid
 
         try:
@@ -320,6 +328,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if event.op == "insert":
                 await event_ring.add(account_uuid, "mail.new", sse_data)
                 if event.origin == "sync":
+                    # Ahead of the alert below: mail landing in Archive or
+                    # Trash is read by the time its alert is created, so
+                    # that alert resolves at birth instead of announcing.
+                    await mark_read_on_landing(db, settings_service, event)
                     await enqueue_live_arrival(db, event, settings_service)
                     if _calendar_intake_handler:
                         await _calendar_intake_handler.handle_message_event(event)
@@ -338,10 +350,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                             settings_service=settings_service,
                             folder_id=folder_uuid,
                         )
+                # A row can arrive already read -- the destination half of
+                # a move another client made after reading it.
+                await resolve_for_message_event(db, event_ring, event.id)
             elif event.op == "update":
                 await event_ring.add(
                     account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},
                 )
+                if "folder_id" in event.changed:
+                    await mark_read_on_landing(db, settings_service, event)
+                if "is_seen" in event.changed:
+                    await resolve_for_message_event(db, event_ring, event.id)
                 if _spam_processor:
                     await _spam_processor.handle_message_event(event)
             elif event.op == "delete":
@@ -430,6 +449,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _mail_alert_finalizer.stop()
     if _retention_sweeper:
         await _retention_sweeper.stop()
+    if _read_state_reconciler:
+        await _read_state_reconciler.stop()
     if _embedding_components:
         await _embedding_components.stop()
     if _queue_manager:
@@ -445,6 +466,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pending_send_timer = None
     _mail_alert_finalizer = None
     _retention_sweeper = None
+    _read_state_reconciler = None
     _contract_ok = False
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
