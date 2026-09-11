@@ -380,10 +380,12 @@ class TestNotificationBell:
     def test_the_badge_sums_both_kinds_and_each_tab_lists_its_own(
         self, page: Page, app_server_with_encryption_key: str, postgres_url: str,
     ) -> None:
-        email, alert_titles, error_text = _seed_alerts_and_a_notification(postgres_url)
+        _email, alert_titles, error_text = _seed_alerts_and_a_notification(postgres_url)
 
+        # Neither of the bell's lists is account-scoped, so no account is
+        # selected first: driving the switcher right after load races the
+        # page's hydration and asserts nothing about the bell.
         page.goto(app_server_with_encryption_key)
-        select_account(page, {"name": email})
         _open_bell(page)
 
         popover = _popover(page)
