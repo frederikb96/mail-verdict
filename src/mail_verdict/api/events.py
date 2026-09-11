@@ -8,7 +8,7 @@ On fresh connect: sends connected event, then streams live events.
 On reconnect (Last-Event-ID header): replays missed events from EventRing,
 falls back to a resync event -- telling the client to invalidate every
 cache rather than trust one that may now be stale -- if the ID is too old
-to replay.
+to replay or was issued by another process (see EventRing.epoch).
 
 PostIMAP integration: postimap/listener.py listens on postimap_events and
 pushes parsed events into the EventRing.
@@ -136,12 +136,18 @@ async def broadcast_resync(db: DatabaseConnection, event_ring: EventRing) -> Non
     await broadcast_event(db, event_ring, "resync", {})
 
 
-def _format_sse(event_id: int, event_type: str, data: dict[str, Any]) -> str:
+# What sse_endpoint passes as the Last-Event-ID of a client presenting an id
+# this ring never issued -- a previous process's, most commonly. There is
+# nothing to replay it from, so the generator answers with a resync.
+FOREIGN_EVENT_ID = -1
+
+
+def _format_sse(event_id: str, event_type: str, data: dict[str, Any]) -> str:
     """
     Format an SSE message with id, event type, and JSON data.
 
     Args:
-        event_id: Sequence ID for Last-Event-ID tracking
+        event_id: The ring's formatted id, for Last-Event-ID tracking
         event_type: SSE event type
         data: Payload to serialize as JSON
 
@@ -174,11 +180,20 @@ async def _sse_generator(
     try:
         last_seen: int
         if last_event_id is not None:
-            # Reconnect: try to replay from ring
-            if event_ring.has_events_after(last_event_id, account_id):
+            # Reconnect: replay from the ring when every id since the
+            # client's is still in it -- never for an id this ring did not
+            # issue (FOREIGN_EVENT_ID) or one past its own counter, which
+            # only a previous process could have handed out.
+            replayable = (
+                0 <= last_event_id <= event_ring.get_latest_seq()
+                and event_ring.has_events_after(last_event_id, account_id)
+            )
+            if replayable:
                 missed = await event_ring.replay_from(last_event_id, account_id)
                 for event in missed:
-                    yield _format_sse(event["id"], event["event_type"], event["data"])
+                    yield _format_sse(
+                        event_ring.format_event_id(event["id"]), event["event_type"], event["data"],
+                    )
                 # last_seen is what this client was actually handed, never a
                 # fresh read of the global counter -- anything appended to
                 # the ring while the yields above were suspended would
@@ -186,16 +201,19 @@ async def _sse_generator(
                 # skipped for good, since the next replay starts past it.
                 last_seen = missed[-1]["id"] if missed else last_event_id
             else:
-                # Gap too large to replay: whatever changed while disconnected
-                # is gone from the ring, so tell the client to invalidate
-                # everything rather than trust a cache that may be stale.
+                # Gap too large to replay, or an id from another process:
+                # whatever changed while disconnected is not in this ring,
+                # so tell the client to invalidate everything rather than
+                # trust a cache that may be stale.
                 seq = event_ring.get_latest_seq()
-                yield f"id: {seq}\nevent: resync\ndata: {{}}\n\n"
+                yield _format_sse(event_ring.format_event_id(seq), "resync", {})
                 last_seen = seq
         else:
-            # Fresh connect: send connected event
+            # Fresh connect: send connected event. Its id is what the client
+            # reconnects with, so a gap is replayable even when no other
+            # event reached it first.
             seq = event_ring.get_latest_seq()
-            yield f"id: {seq}\nevent: connected\ndata: {{}}\n\n"
+            yield _format_sse(event_ring.format_event_id(seq), "connected", {})
             last_seen = seq
 
         # Stream live events
@@ -220,7 +238,9 @@ async def _sse_generator(
                 new_events = await event_ring.replay_from(last_seen, account_id)
 
             for event in new_events:
-                yield _format_sse(event["id"], event["event_type"], event["data"])
+                yield _format_sse(
+                    event_ring.format_event_id(event["id"]), event["event_type"], event["data"],
+                )
                 last_seen = event["id"]
 
     except asyncio.CancelledError:
@@ -265,10 +285,8 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
         or request.query_params.get("last_event_id")
     )
     if raw_last_id:
-        try:
-            last_event_id = int(raw_last_id)
-        except ValueError:
-            pass
+        parsed = _event_ring.parse_event_id(raw_last_id)
+        last_event_id = FOREIGN_EVENT_ID if parsed is None else parsed
 
     return StreamingResponse(
         _sse_generator(_event_ring, filter_account_id, last_event_id, request),

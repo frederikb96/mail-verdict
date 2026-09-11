@@ -7,6 +7,7 @@ import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
+import { isRowUnread } from "@/lib/mail-unread";
 import type { MailRowAction, MessageSummary } from "@/types/api";
 
 // Opacity/pointer-events only -- these float over the row's own background
@@ -77,7 +78,7 @@ export function MailListItem({
           : isChecked
             ? "bg-accent/70"
             : "hover:bg-accent/50",
-        !mail.is_seen && !isSelected && !isChecked && "bg-accent/20",
+        isRowUnread(mail) && !isSelected && !isChecked && "bg-accent/20",
         isFocused && "ring-2 ring-inset ring-ring",
         mail.pending_sync && "opacity-60",
       )}
@@ -124,13 +125,13 @@ export function MailListItem({
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
         <div className="flex items-center gap-2">
           {/* Unread dot */}
-          {!mail.is_seen && (
+          {isRowUnread(mail) && (
             <div className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
           )}
           <span
             className={cn(
               "truncate text-sm text-foreground",
-              !mail.is_seen ? "font-semibold" : "font-medium",
+              isRowUnread(mail) ? "font-semibold" : "font-medium",
             )}
           >
             {senderName}
@@ -164,15 +165,15 @@ export function MailListItem({
               className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
               onClick={(e) => {
                 e.stopPropagation();
-                onAction?.(mail.id, mail.is_seen ? "mark_unread" : "mark_read");
+                onAction?.(mail.id, isRowUnread(mail) ? "mark_read" : "mark_unread");
               }}
-              title={mail.is_seen ? "Mark as unread" : "Mark as read"}
-              aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
+              title={isRowUnread(mail) ? "Mark as read" : "Mark as unread"}
+              aria-label={isRowUnread(mail) ? "Mark as read" : "Mark as unread"}
             >
-              {mail.is_seen ? (
-                <MailIcon className="h-3.5 w-3.5" />
-              ) : (
+              {isRowUnread(mail) ? (
                 <MailOpen className="h-3.5 w-3.5" />
+              ) : (
+                <MailIcon className="h-3.5 w-3.5" />
               )}
             </button>
             <span className="text-xs text-muted-foreground">

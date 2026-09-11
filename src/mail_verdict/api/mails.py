@@ -174,7 +174,13 @@ async def list_messages(
             "before/after."
         ),
     ),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(
+        default=50, ge=1, le=1000,
+        description=(
+            "Rows per page. The ceiling is high enough for a client to re-read "
+            "everything it has loaded in one request rather than page by page."
+        ),
+    ),
 ) -> MessageListResponse:
     """
     List messages with cursor-based pagination.

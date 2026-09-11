@@ -12,6 +12,7 @@ import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import { selectedMailIdAtom, requestSelectMailAtom } from "@/lib/atoms";
 import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
+import { isRowUnread } from "@/lib/mail-unread";
 import type { MailRowAction, MessageSummary } from "@/types/api";
 
 interface UseKeyboardShortcutsOptions {
@@ -145,7 +146,7 @@ export function useKeyboardShortcuts({
         case "r": {
           e.preventDefault();
           const mail = getCurrentMail();
-          if (mail) act(mail.is_seen ? "mark_unread" : "mark_read");
+          if (mail) act(isRowUnread(mail) ? "mark_read" : "mark_unread");
           break;
         }
         case "u": {

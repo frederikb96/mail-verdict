@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- New mail always reaches the open list, and every unread count agrees with it. A list scrolled
+  more than a few pages deep used to skip its refresh on arriving mail while the folder count
+  still went up, so the count showed mail the list did not; every open list now re-reads all the
+  rows it has loaded in a single request, together with the counts, whatever its depth.
+- Grouped by conversation, a row is shown unread while any message in its thread is unread, not
+  only its newest one -- the folder count already counted them all, so an older unread reply
+  used to raise the count with no unread row anywhere in the list. Opening such a conversation,
+  or marking its row read, marks every message in it read.
+- A list resting at the very top shows newly arrived mail at the top instead of slipping it in
+  above what the reader can see. A reader scrolled down still keeps their place.
+- Mail that arrives while the live connection is down now appears once it reconnects, even when
+  nothing had arrived since the page loaded, and a page left open across a server restart is
+  told to refresh rather than silently receiving no further updates.
+
 ## [5.6.1] - 2026-09-10
 
 ### Rules

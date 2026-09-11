@@ -79,12 +79,19 @@ postimap_events ──► listener ──► EventRing ──► SSE ──► b
 ```
 
 The EventRing is an in-memory ring buffer per account with monotonic ids, so a browser that
-reconnects replays what it missed via `Last-Event-ID` rather than refetching everything.
+reconnects replays what it missed via `Last-Event-ID` rather than refetching everything. Ids
+restart with every process, so each one carries the ring's own random epoch; an id from another
+process is answered with a resync rather than replayed from.
 
 Two deliberate details:
 
 - **Counts are not evented.** Folder totals change on every sync cycle and notifying on each
   would be noise. The UI re-reads counts when a message event arrives for that folder.
+- **A list and its counts are refreshed by one call.** Every change to mail -- a live event, an
+  action settling, a resync -- goes through `refreshMailViews` (`ui/src/hooks/use-mails.ts`),
+  which re-reads each open list's whole loaded window from the newest message in one request
+  and invalidates the counts in the same pass, so neither can be refreshed without the other.
+  The list endpoints' `limit` ceiling is what makes one request enough for a deep list.
 - **A listener reconnect emits a resync event.** Notifications sent while the connection was down
   are gone for good, so clients are told once to invalidate everything rather than silently
   holding stale data.

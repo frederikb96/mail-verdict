@@ -180,7 +180,13 @@ async def list_unified_messages(
         default=None,
         description="Cursor: UUID of last message in previous page",
     ),
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(
+        default=50, ge=1, le=1000,
+        description=(
+            "Rows per page. The ceiling is high enough for a client to re-read "
+            "everything it has loaded in one request rather than page by page."
+        ),
+    ),
 ) -> UnifiedMessageListResponse:
     """
     List messages from all folders matching a unified name, sorted by date.

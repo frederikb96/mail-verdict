@@ -15,7 +15,12 @@ import { type InfiniteData, useMutation, useQueryClient } from "@tanstack/react-
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import { ACTION_LABELS, UNDOABLE_ACTIONS, updateFolderCounts } from "@/hooks/use-mails";
+import {
+  ACTION_LABELS,
+  UNDOABLE_ACTIONS,
+  refreshMailViews,
+  updateFolderCounts,
+} from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
 import { activeReplyDirtyForThreadIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 import {
@@ -364,9 +369,8 @@ export function useBulkAction() {
                 );
               }),
             );
-            qc.invalidateQueries({ queryKey: ["mails"] });
             qc.invalidateQueries({ queryKey: ["mail"] });
-            invalidateAllFolderCaches(qc);
+            refreshMailViews(qc);
           },
         },
       );
