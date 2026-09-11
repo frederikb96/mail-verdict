@@ -5,6 +5,7 @@ import {
   type InfiniteData,
   type Query,
   type QueryClient,
+  infiniteQueryOptions,
   keepPreviousData,
   useInfiniteQuery,
   useMutation,
@@ -74,10 +75,14 @@ export const UNDO_TOAST_LABELS: Record<string, string> = {
 };
 
 export const mailKeys = {
-  list: (accountId?: string, folderId?: string, threaded?: boolean, aroundId?: string) =>
-    ["mails", accountId, folderId, threaded ? "threaded" : "flat", aroundId].filter(
-      Boolean,
-    ) as string[],
+  list: (
+    accountId?: string, folderId?: string, threaded?: boolean, aroundId?: string,
+    unreadOnly?: boolean,
+  ) =>
+    [
+      "mails", accountId, folderId, threaded ? "threaded" : "flat",
+      unreadOnly ? "unread" : undefined, aroundId,
+    ].filter(Boolean) as string[],
   detail: (id: string) => ["mail", id] as const,
   thread: (id: string) => ["thread", id] as const,
   quote: (id: string) => ["mail-quote", id] as const,
@@ -102,8 +107,11 @@ function aroundWindowIsShallow(query: { state: { data?: unknown } }): boolean {
  * query's own `meta`, so a refresh can re-read it without parsing the key.
  */
 export type MailListWindow =
-  | { kind: "account"; accountId: string; folderId: string; threaded: boolean }
-  | { kind: "unified"; folderName: string };
+  | {
+      kind: "account"; accountId: string; folderId: string;
+      threaded: boolean; unreadOnly: boolean;
+    }
+  | { kind: "unified"; folderName: string; threaded: boolean; unreadOnly: boolean };
 
 type WindowPage = { messages: WindowRow[]; has_more: boolean };
 
@@ -115,52 +123,39 @@ async function readWindow(
   source: MailListWindow,
   limit: number,
 ): Promise<{ rows: WindowRow[]; hasMore: boolean }> {
+  const filters = {
+    threaded: source.threaded, is_seen: source.unreadOnly ? false : undefined, limit,
+  };
   const page =
     source.kind === "account"
       ? await api.mails.list({
-          account_id: source.accountId,
-          folder_id: source.folderId,
-          threaded: source.threaded,
-          limit,
+          account_id: source.accountId, folder_id: source.folderId, ...filters,
         })
-      : await api.unified.mails({ folder_name: source.folderName, limit });
+      : await api.unified.mails({ folder_name: source.folderName, ...filters });
   return { rows: page.messages, hasMore: page.has_more };
 }
 
-/** Rows back into the page shape each list's own infinite query holds, with
- * the page params its own paging would have produced -- so the next page it
- * fetches continues from the right row. */
-function windowAsInfiniteData(
-  source: MailListWindow,
-  rows: WindowRow[],
-  hasMore: boolean,
-): InfiniteData<unknown, unknown> {
+/** Rows back into the page shape a mail list's infinite query holds -- an
+ * account's and a unified view's alike -- with the page params its own
+ * paging would have produced, so the next page it fetches continues from
+ * the right row. */
+function windowAsInfiniteData(rows: WindowRow[], hasMore: boolean): InfiniteData<unknown, unknown> {
   const pages = chunkIntoPages(rows);
   const last = pages.length - 1;
   const lastIdOf = (page: WindowRow[]) => page[page.length - 1]?.id ?? null;
   const pageHasMore = (i: number) => (i < last || hasMore) && lastIdOf(pages[i]) !== null;
   const nextCursor = (i: number) => (pageHasMore(i) ? lastIdOf(pages[i]) : null);
-  if (source.kind === "account") {
-    return {
-      pages: pages.map((messages, i) => ({
-        messages,
-        has_more: pageHasMore(i),
-        next_cursor: nextCursor(i),
-        has_more_newer: false,
-        prev_cursor: null,
-      })),
-      pageParams: pages.map((_, i) =>
-        i === 0 ? { kind: "initial" } : { kind: "before", cursor: lastIdOf(pages[i - 1]) },
-      ),
-    };
-  }
   return {
     pages: pages.map((messages, i) => ({
       messages,
       has_more: pageHasMore(i),
       next_cursor: nextCursor(i),
+      has_more_newer: false,
+      prev_cursor: null,
     })),
-    pageParams: pages.map((_, i) => (i === 0 ? undefined : lastIdOf(pages[i - 1]))),
+    pageParams: pages.map((_, i) =>
+      i === 0 ? { kind: "initial" } : { kind: "before", cursor: lastIdOf(pages[i - 1]) },
+    ),
   };
 }
 
@@ -203,7 +198,7 @@ async function refreshWindowOnce(
     fresh.hasMore,
     current.pages[current.pages.length - 1]?.has_more ?? false,
   );
-  qc.setQueryData(query.queryKey, windowAsInfiniteData(source, merged.rows, merged.hasMore));
+  qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore));
 }
 
 const windowRefreshes = new WeakMap<Query, { again: boolean }>();
@@ -302,41 +297,40 @@ type MailListPageParam =
   | { kind: "before"; cursor: string }
   | { kind: "after"; cursor: string };
 
+/** Where in the list one page sits -- the list's own filters are the
+ * caller's business, this is only the cursor. */
+export type MailListCursor = { before?: string; after?: string; around?: string };
+
 /**
+ * The paging every mail list shares: an account's folder (useMailList) and
+ * a unified view (useUnifiedMails) page, refetch and centre on a message
+ * identically, and differ only in the request one page makes.
+ *
  * aroundId centres the *first* fetch of a fresh query key on that message
  * instead of the newest edge -- see mail-list.tsx, which captures it once
- * per list identity rather than re-reading it reactively, and folds it
- * into the query key so a centred window is a genuinely different cached
- * list from an edge-anchored one under the same account/folder.
+ * per list identity rather than re-reading it reactively. The caller folds
+ * it into queryKey, so a centred window is a genuinely different cached
+ * list from an edge-anchored one over the same messages.
  */
-export function useMailList(
-  accountId: string | null,
-  folderId: string | null,
-  threaded: boolean,
-  aroundId?: string | null,
+export function mailListQueryOptions(
+  queryKey: string[],
+  fetchPage: (cursor: MailListCursor) => Promise<MessageListResponse>,
+  aroundId: string | null | undefined,
+  enabled: boolean,
+  listWindow: MailListWindow | undefined,
 ) {
-  const queryKey = mailKeys.list(
-    accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
-  );
-  // Only a list starting at the newest edge is refreshed as one window; one
-  // opened around a message keeps TanStack's own refetch, bounded.
-  const listWindow: MailListWindow | undefined =
-    accountId && folderId && !aroundId
-      ? { kind: "account", accountId, folderId, threaded }
-      : undefined;
-  const result = useInfiniteQuery({
+  return infiniteQueryOptions({
     queryKey,
     queryFn: ({ pageParam }: { pageParam: MailListPageParam }) => {
-      const base = { account_id: accountId!, folder_id: folderId ?? undefined, threaded };
       switch (pageParam.kind) {
         case "around":
-          return api.mails.list({ ...base, around: pageParam.id, limit: 50 });
+          return fetchPage({ around: pageParam.id });
         case "before":
-          return api.mails.list({ ...base, before: pageParam.cursor, limit: 50 });
+          return fetchPage({ before: pageParam.cursor });
         case "after":
-          return api.mails.list({ ...base, after: pageParam.cursor, limit: 50 });
+          return fetchPage({ after: pageParam.cursor });
         case "initial":
-          return api.mails.list({ ...base, limit: 50 });
+          return fetchPage({});
       }
     },
     initialPageParam: (
@@ -346,13 +340,46 @@ export function useMailList(
       lastPage.has_more ? { kind: "before", cursor: lastPage.next_cursor! } : undefined,
     getPreviousPageParam: (firstPage): MailListPageParam | undefined =>
       firstPage.has_more_newer ? { kind: "after", cursor: firstPage.prev_cursor! } : undefined,
-    enabled: !!accountId && !!folderId,
+    enabled,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
+    // Only a list starting at the newest edge is refreshed as one window
+    // (listWindow, which the caller also hands useRefreshWindowOnMount); one
+    // opened around a message keeps TanStack's own refetch, bounded.
     meta: listWindow ? { mailListWindow: listWindow } : undefined,
     refetchOnWindowFocus: listWindow ? false : aroundWindowIsShallow,
     refetchOnMount: listWindow ? false : aroundWindowIsShallow,
   });
+}
+
+/** An account's folder, newest first; unreadOnly narrows it to unread mail. */
+export function useMailList(
+  accountId: string | null,
+  folderId: string | null,
+  threaded: boolean,
+  aroundId?: string | null,
+  unreadOnly = false,
+) {
+  const queryKey = mailKeys.list(
+    accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined, unreadOnly,
+  );
+  const listWindow: MailListWindow | undefined =
+    accountId && folderId && !aroundId
+      ? { kind: "account", accountId, folderId, threaded, unreadOnly }
+      : undefined;
+  const result = useInfiniteQuery(
+    mailListQueryOptions(
+      queryKey,
+      (cursor) =>
+        api.mails.list({
+          account_id: accountId!, folder_id: folderId ?? undefined, threaded,
+          is_seen: unreadOnly ? false : undefined, limit: 50, ...cursor,
+        }),
+      aroundId,
+      !!accountId && !!folderId,
+      listWindow,
+    ),
+  );
   useRefreshWindowOnMount(queryKey, listWindow !== undefined);
   return result;
 }
@@ -568,25 +595,28 @@ function updateConversationUnread(
   rowId: string,
   next: (unread: number) => number,
 ) {
-  qc.setQueriesData<InfiniteData<MessageListResponse>>({ queryKey: ["mails"] }, (old) => {
-    if (!old) return old;
-    return {
-      ...old,
-      pages: old.pages.map((page) => ({
-        ...page,
-        messages: page.messages.map((m) =>
-          m.id === rowId && m.unread_in_thread !== undefined
-            ? { ...m, unread_in_thread: Math.max(0, next(m.unread_in_thread)) }
-            : m,
-        ),
-      })),
-    };
-  });
+  for (const prefix of [["mails"], ["unified", "mails"]] as const) {
+    qc.setQueriesData<InfiniteData<MessageListResponse>>({ queryKey: prefix }, (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((page) => ({
+          ...page,
+          messages: page.messages.map((m) =>
+            m.id === rowId && m.unread_in_thread !== undefined
+              ? { ...m, unread_in_thread: Math.max(0, next(m.unread_in_thread)) }
+              : m,
+          ),
+        })),
+      };
+    });
+  }
 }
 
 /**
  * Mark read every unread message of a conversation row's thread in that
- * row's folder -- what reading a row grouped by conversation means, since
+ * row's folder -- or, for a unified view's row, in any of the view's folders
+ * (`folderIds`) -- what reading a row grouped by conversation means, since
  * the row counts all of them (isRowUnread). The row's own message is left
  * out unless `includeRow`: opening a row already marks it read through the
  * reading pane.
@@ -595,7 +625,7 @@ export function useMarkConversationRead() {
   const qc = useQueryClient();
   const { push: pushToast } = useToast();
   return useCallback(
-    async (row: MessageSummary, includeRow: boolean) => {
+    async (row: MessageSummary, includeRow: boolean, folderIds?: readonly string[]) => {
       let thread: ThreadResponse;
       try {
         thread = await qc.fetchQuery({
@@ -607,10 +637,12 @@ export function useMarkConversationRead() {
         pushToast(`Could not mark as read: ${(err as Error).message}`, "error", 0);
         return;
       }
-      const ids = thread.messages
-        .filter((m) => m.folder_id === row.folder_id && !m.is_seen)
-        .filter((m) => includeRow || m.id !== row.id)
-        .map((m) => m.id);
+      const inScope = (folderId: string) =>
+        folderIds ? folderIds.includes(folderId) : folderId === row.folder_id;
+      const toRead = thread.messages
+        .filter((m) => inScope(m.folder_id) && !m.is_seen)
+        .filter((m) => includeRow || m.id !== row.id);
+      const ids = toRead.map((m) => m.id);
       if (ids.length === 0) return;
 
       for (const id of ids) updateMailInThreadCaches(qc, id, { is_seen: true });
@@ -620,7 +652,11 @@ export function useMarkConversationRead() {
       // have marked it read meanwhile.
       const rowStillUnread = !includeRow && findMailInCache(qc, row.id)?.isSeen === false;
       updateConversationUnread(qc, row.id, () => (rowStillUnread ? 1 : 0));
-      updateFolderCounts(qc, row.account_id, row.folder_id, 0, -ids.length);
+      const perFolder = new Map<string, number>();
+      for (const m of toRead) perFolder.set(m.folder_id, (perFolder.get(m.folder_id) ?? 0) + 1);
+      for (const [folderId, count] of perFolder) {
+        updateFolderCounts(qc, row.account_id, folderId, 0, -count);
+      }
       try {
         await api.messages.bulkAction(row.account_id, { action: "mark_read", ids });
       } catch (err) {

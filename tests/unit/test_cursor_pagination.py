@@ -99,30 +99,14 @@ class TestMessageSummarySchema:
 
 
 class TestUnifiedMessageListCursorPagination:
-    """Tests for cursor-based pagination in unified message lists."""
+    """A unified view's list answers in the same shape as an account's."""
 
-    def test_unified_message_list_response_pagination(self) -> None:
-        """UnifiedMessageListResponse supports cursor pagination."""
-        from mail_verdict.api.schemas import UnifiedMessageListResponse
+    def test_unified_list_uses_the_account_list_response(self) -> None:
+        from mail_verdict.api.schemas import MessageListResponse
+        from mail_verdict.api.unified import unified_router
 
-        resp = UnifiedMessageListResponse(
-            messages=[],
-            has_more=True,
-            next_cursor=str(uuid.uuid4()),
-        )
-        assert resp.has_more is True
-        assert resp.next_cursor is not None
-
-    def test_unified_message_list_no_more(self) -> None:
-        """UnifiedMessageListResponse with no more pages."""
-        from mail_verdict.api.schemas import UnifiedMessageListResponse
-
-        resp = UnifiedMessageListResponse(
-            messages=[],
-            has_more=False,
-            next_cursor=None,
-        )
-        assert not resp.has_more
+        route = next(r for r in unified_router.routes if r.path.endswith("/mails"))  # type: ignore[union-attr]
+        assert route.response_model is MessageListResponse  # type: ignore[union-attr]
 
 
 class TestMessageDetailSchema:

@@ -16,7 +16,6 @@ import {
   ChevronDown,
   GripVertical,
   ImageOff,
-  Layers,
   MoreVertical,
   Zap,
   AlertCircle,
@@ -49,10 +48,7 @@ import { FolderOrder } from "@/components/settings/folder-order";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
 import { IdentitiesSection } from "@/components/accounts/identities-section";
 import { DavAccountsSection } from "@/components/accounts/dav-account-card";
-import {
-  EmojiPicker,
-  UnifiedNames,
-} from "@/components/settings/unified-setup";
+import { EmojiPicker } from "@/components/settings/unified-setup";
 
 import {
   useAccounts,
@@ -320,15 +316,6 @@ function AccountCard({
                 <Collapsible.Panel className="overflow-hidden">
                   <div className="px-1 pt-2">
                     <ImageExceptionsList accountId={account.id} />
-                  </div>
-                </Collapsible.Panel>
-              </Collapsible.Root>
-
-              <Collapsible.Root>
-                <SectionTrigger icon={Layers} label="Unified View Names" />
-                <Collapsible.Panel className="overflow-hidden">
-                  <div className="px-1 pt-2">
-                    <UnifiedNames accountId={account.id} />
                   </div>
                 </Collapsible.Panel>
               </Collapsible.Root>

@@ -43,6 +43,7 @@ import {
   useAllAccountsNotifications,
 } from "@/hooks/use-notifications";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useOpenMessage } from "@/hooks/use-open-message";
 import { useSettings } from "@/hooks/use-settings";
 import { MAIL_ALERT_KIND, bellBadgeCount, isMailAlertKind } from "@/lib/bell-badge";
 import { formatRelativeDate } from "@/lib/format";
@@ -181,6 +182,8 @@ function SystemRow({
 export function NotificationBell() {
   const router = useRouter();
   const [tab, setTab] = useState<"mail" | "system">("mail");
+  const [open, setOpen] = useState(false);
+  const { openMessageById } = useOpenMessage();
 
   const { data: alertCount } = useUnseenAlertCount();
   const { data: alerts, isLoading: alertsLoading } = useAlerts(200, { unseenOnly: true });
@@ -215,13 +218,18 @@ export function NotificationBell() {
   const systemAlerts = (alerts ?? []).filter((a) => !isMailAlertKind(a.kind));
   const systemAlertKinds = Object.keys(unseenAlertsByKind).filter((k) => !isMailAlertKind(k));
 
+  // A mail alert opens its message where it is now -- see
+  // use-open-message.ts -- straight from here rather than through a URL
+  // round trip, and the panel closes so the message is not left behind it.
   const openAlert = (alert: AlertResponse) => {
     if (alert.dismissed_at === null) dismissAlert.mutate(alert.id);
-    if (alert.url) router.push(alert.url);
+    setOpen(false);
+    if (alert.message_id) void openMessageById(alert.message_id);
+    else if (alert.url) router.push(alert.url);
   };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={<Button variant="ghost" size="icon" className="relative h-8 w-8" />}
         title="Notifications"

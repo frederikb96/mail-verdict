@@ -82,15 +82,20 @@ class TestFolderPrefsUpdateSchema:
         visibility_only = FolderPrefsUpdate(is_visible=False)
         assert visibility_only.model_dump(exclude_unset=True) == {"is_visible": False}
 
-        unified_name_only = FolderPrefsUpdate(unified_name="Inbox")
-        assert unified_name_only.model_dump(exclude_unset=True) == {"unified_name": "Inbox"}
+        view_id = uuid.uuid4()
+        views_only = FolderPrefsUpdate(unified_view_ids=[view_id])
+        assert views_only.model_dump(exclude_unset=True) == {"unified_view_ids": [view_id]}
 
-    def test_unified_name_accepts_null_to_clear(self) -> None:
-        """Explicitly setting unified_name to None clears it, distinct from leaving it unset."""
+    def test_an_empty_view_list_is_distinct_from_leaving_membership_unset(self) -> None:
+        """An empty list removes the folder from every view; omitting the
+        field leaves its membership alone."""
         from mail_verdict.api.schemas import FolderPrefsUpdate
 
-        clear = FolderPrefsUpdate(unified_name=None)
-        assert clear.model_dump(exclude_unset=True) == {"unified_name": None}
+        clear = FolderPrefsUpdate(unified_view_ids=[])
+        assert clear.model_dump(exclude_unset=True) == {"unified_view_ids": []}
+        assert FolderPrefsUpdate(is_visible=True).model_dump(exclude_unset=True) == {
+            "is_visible": True,
+        }
 
 
 class TestFolderManagementRouterRegistration:

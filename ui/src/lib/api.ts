@@ -50,6 +50,7 @@ import type {
   MessageActionResponse,
   MessageDetail,
   MessageListResponse,
+  MessageLocation,
   MessageQuoteResponse,
   NotificationCountResponse,
   NotificationResponse,
@@ -83,7 +84,7 @@ import type {
   ThreadResponse,
   UnifiedFolderOrderResponse,
   UnifiedFolderResponse,
-  UnifiedMessageListResponse,
+  UnifiedViewResponse,
   VerdictResponse,
 } from "@/types/api";
 
@@ -276,6 +277,7 @@ export const api = {
       account_id: string;
       folder_id?: string;
       threaded?: boolean;
+      is_seen?: boolean;
       before?: string;
       after?: string;
       around?: string;
@@ -283,6 +285,12 @@ export const api = {
     }): Promise<MessageListResponse> {
       const { account_id, ...rest } = params;
       return request(`/accounts/${account_id}/messages${qs(rest)}`);
+    },
+
+    /** Where a message is now -- cheap (no body), and follows a move made
+     * in another mail client to the row that replaced it. */
+    location(id: string): Promise<MessageLocation> {
+      return request(`/messages/${id}/location`);
     },
 
     get(id: string, loadImages?: boolean): Promise<MessageDetail> {
@@ -423,6 +431,7 @@ export const api = {
         sort?: SearchSort;
         received_after?: string;
         received_before?: string;
+        is_seen?: boolean;
       },
       signal?: AbortSignal,
     ): Promise<SearchResponse> {
@@ -502,25 +511,34 @@ export const api = {
   },
 
   unified: {
-    setUnifiedName(
-      accountId: string,
-      folderId: string,
-      unifiedName: string | null,
-    ): Promise<FolderResponse> {
-      return request(`/folders/${folderId}/prefs`, {
-        method: "PATCH",
-        body: JSON.stringify({ unified_name: unifiedName }),
-      });
-    },
     folders(): Promise<UnifiedFolderResponse[]> {
       return request("/unified/folders");
     },
     mails(params: {
       folder_name: string;
+      threaded?: boolean;
+      is_seen?: boolean;
       before?: string;
+      after?: string;
+      around?: string;
       limit?: number;
-    }): Promise<UnifiedMessageListResponse> {
+    }): Promise<MessageListResponse> {
       return request(`/unified/mails${qs(params)}`);
+    },
+    createView(data: { name: string; emoji?: string | null }): Promise<UnifiedViewResponse> {
+      return request("/unified/views", { method: "POST", body: JSON.stringify(data) });
+    },
+    updateView(
+      viewId: string,
+      data: { name?: string; emoji?: string | null },
+    ): Promise<UnifiedViewResponse> {
+      return request(`/unified/views/${viewId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+    deleteView(viewId: string): Promise<void> {
+      return request(`/unified/views/${viewId}`, { method: "DELETE" });
     },
     getFolderOrder(): Promise<UnifiedFolderOrderResponse> {
       return request("/unified/folder-order");

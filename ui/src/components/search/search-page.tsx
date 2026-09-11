@@ -17,7 +17,6 @@ import { SearchResultRow } from "@/components/search/search-result-row";
 
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { buildMailUrl } from "@/lib/mail-url";
 import { useSearchResults } from "@/hooks/use-search";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import { useAccounts } from "@/hooks/use-accounts";
@@ -34,12 +33,7 @@ import {
   searchSortModeAtom,
   searchStrictnessAtom,
 } from "@/lib/search-prefs";
-import {
-  selectedAccountIdAtom,
-  selectedFolderIdAtom,
-  pendingAroundMailIdAtom,
-  requestSelectMailAtom,
-} from "@/lib/atoms";
+import { useOpenMessage } from "@/hooks/use-open-message";
 import type { SearchField, SearchStrictness } from "@/types/api";
 
 const ALL_ACCOUNTS_VALUE = "__all__";
@@ -63,10 +57,6 @@ export function SearchPage() {
   const [rawQuery, setRawQuery] = useAtom(searchQueryAtom);
   const [query, setQuery] = useState(rawQuery);
   const router = useRouter();
-  const setSelectedAccountId = useSetAtom(selectedAccountIdAtom);
-  const setSelectedFolderId = useSetAtom(selectedFolderIdAtom);
-  const requestSelectMail = useSetAtom(requestSelectMailAtom);
-  const setPendingAroundMailId = useSetAtom(pendingAroundMailIdAtom);
 
   const [fields, setFields] = useAtom(searchFieldsAtom);
   const [folderIds, setFolderIds] = useAtom(searchFolderIdsAtom);
@@ -158,23 +148,12 @@ export function SearchPage() {
   // the fully-formed URL (rather than a bare "/") means the mail view's
   // own url-sync effect finds its cold-read already matching these atoms
   // on mount, and does not push a second history entry on top of this one.
+  // Where a hit lands -- its folder wherever it sits, however far down,
+  // or a recent unified view holding that folder -- is the same decision
+  // every other "open this message" entry point makes: use-open-message.ts.
+  const { openMessageById } = useOpenMessage();
   const openResult = useMutation({
-    mutationFn: (messageId: string) => api.mails.get(messageId),
-    onSuccess: (mail) => {
-      setSelectedAccountId(mail.account_id);
-      setSelectedFolderId(mail.folder_id);
-      requestSelectMail(mail.id);
-      // A hit far down a large folder is not in the window the mail list
-      // ordinarily fetches -- this centres its very first page on it
-      // instead of the newest edge. See mail-list.tsx's own reveal step.
-      setPendingAroundMailId({ id: mail.id, threadId: mail.thread_id });
-      router.push(
-        buildMailUrl({
-          accountId: mail.account_id, isUnified: false,
-          unifiedFolder: null, folderId: mail.folder_id, messageId: mail.id,
-        }),
-      );
-    },
+    mutationFn: (messageId: string) => openMessageById(messageId),
   });
 
   // One string identifying exactly this search -- keys the VList (so a

@@ -39,6 +39,19 @@ export const selectedMailIdAtom = atom<string | null>(null);
  */
 export const pendingAroundMailIdAtom = atom<{ id: string; threadId: string } | null>(null);
 
+/** The unified views the reader opened, by name, most recent first, and
+ * whether the mail view last on screen was a unified one. Together they
+ * decide where a message opened from outside its list lands -- see
+ * use-open-message.ts. Persisted, so a notification opening a fresh
+ * window still knows; read on init, so the first message opened there
+ * does not see the empty defaults. */
+export const recentUnifiedViewsAtom = atomWithStorage<string[]>(
+  "mailverdict:recent-unified-views", [], undefined, { getOnInit: true },
+);
+export const lastMailViewWasUnifiedAtom = atomWithStorage<boolean>(
+  "mailverdict:last-mail-view-unified", false, undefined, { getOnInit: true },
+);
+
 /**
  * The most recent mail.new SSE arrival, by account/folder -- not a log,
  * just the latest one, since a mail-list watching for "is there something

@@ -9,11 +9,14 @@ from datetime import datetime, timezone
 class TestUnifiedViewModels:
     """Tests for unified view model columns (PostIMAP + Prefs split)."""
 
-    def test_folder_prefs_has_unified_name(self) -> None:
-        """FolderPrefs model includes unified_name column."""
-        from mail_verdict.database.models import FolderPrefs
+    def test_unified_view_membership_is_many_to_many(self) -> None:
+        """A view is its own row and membership is keyed by (view, folder),
+        so one folder can belong to several views."""
+        from mail_verdict.database.models import UnifiedView, UnifiedViewFolder
 
-        assert hasattr(FolderPrefs, "unified_name")
+        primary_key = {c.name for c in UnifiedViewFolder.__table__.primary_key}
+        assert primary_key == {"view_id", "folder_id"}
+        assert hasattr(UnifiedView, "emoji")
 
     def test_account_prefs_has_emoji(self) -> None:
         """AccountPrefs model includes emoji column."""
@@ -44,6 +47,7 @@ class TestUnifiedViewSchemas:
         from mail_verdict.api.schemas import UnifiedFolderResponse, UnifiedFolderSource
 
         resp = UnifiedFolderResponse(
+            id=uuid.uuid4(),
             unified_name="Inbox",
             folders=[
                 UnifiedFolderSource(
@@ -68,48 +72,6 @@ class TestUnifiedViewSchemas:
         assert len(resp.folders) == 2
         assert resp.unread_count == 15
         assert resp.total_count == 100
-
-    def test_unified_message_summary_schema(self) -> None:
-        """UnifiedMessageSummary includes account_emoji field."""
-        from mail_verdict.api.schemas import UnifiedMessageSummary
-
-        msg = UnifiedMessageSummary(
-            id=uuid.uuid4(),
-            account_id=uuid.uuid4(),
-            account_emoji="📮",
-            folder_id=uuid.uuid4(),
-            thread_id=uuid.uuid4(),
-            subject="Test",
-            from_addr="user@example.com",
-            received_at=datetime.now(timezone.utc),
-            is_seen=False,
-        )
-        assert msg.account_emoji == "📮"
-        assert not msg.is_seen
-
-    def test_unified_message_summary_nullable_emoji(self) -> None:
-        """UnifiedMessageSummary allows null emoji."""
-        from mail_verdict.api.schemas import UnifiedMessageSummary
-
-        msg = UnifiedMessageSummary(
-            id=uuid.uuid4(),
-            account_id=uuid.uuid4(),
-            folder_id=uuid.uuid4(),
-            thread_id=uuid.uuid4(),
-        )
-        assert msg.account_emoji is None
-
-    def test_unified_message_list_response(self) -> None:
-        """UnifiedMessageListResponse has pagination fields."""
-        from mail_verdict.api.schemas import UnifiedMessageListResponse
-
-        resp = UnifiedMessageListResponse(
-            messages=[],
-            has_more=False,
-            next_cursor=None,
-        )
-        assert resp.messages == []
-        assert not resp.has_more
 
     def test_emoji_update_schema(self) -> None:
         """EmojiUpdate validates max_length."""
@@ -162,26 +124,24 @@ class TestAccountResponseEmoji:
         assert resp.emoji is None
 
 
-class TestFolderResponseUnifiedName:
-    """Tests for unified_name field in FolderResponse."""
+class TestFolderResponseUnifiedViews:
+    """A folder answers with every unified view it belongs to."""
 
-    def test_folder_response_has_unified_name(self) -> None:
-        """FolderResponse includes unified_name field."""
+    def test_folder_response_lists_its_views(self) -> None:
         from mail_verdict.api.schemas import FolderResponse
 
-        fields = set(FolderResponse.model_fields.keys())
-        assert "unified_name" in fields
-
-    def test_folder_response_unified_name_nullable(self) -> None:
-        """FolderResponse unified_name defaults to None."""
-        from mail_verdict.api.schemas import FolderResponse
-
+        view_ids = [uuid.uuid4(), uuid.uuid4()]
         resp = FolderResponse(
-            id=uuid.uuid4(),
-            account_id=uuid.uuid4(),
-            imap_name="INBOX",
+            id=uuid.uuid4(), account_id=uuid.uuid4(), imap_name="INBOX",
+            unified_view_ids=view_ids,
         )
-        assert resp.unified_name is None
+        assert resp.unified_view_ids == view_ids
+
+    def test_folder_response_defaults_to_no_views(self) -> None:
+        from mail_verdict.api.schemas import FolderResponse
+
+        resp = FolderResponse(id=uuid.uuid4(), account_id=uuid.uuid4(), imap_name="INBOX")
+        assert resp.unified_view_ids == []
 
 
 class TestUnifiedRouterRegistration:
@@ -212,7 +172,7 @@ class TestUnifiedRouterRegistration:
     def test_account_router_endpoints(self) -> None:
         """Account-scoped unified router has the emoji endpoint.
 
-        A folder's unified_name is set via folder_management.folder_prefs_router
+        A folder's unified view membership is set via folder_management.folder_prefs_router
         instead -- one write surface for every folder preference.
         """
         from mail_verdict.api.unified import account_router

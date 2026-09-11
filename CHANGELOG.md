@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Mail
 
+- A unified view now has the same toolbar as a folder: the quick filter, and grouping by
+  conversation -- a conversation spanning two of the view's folders (the inbox and Sent, say) is
+  one row. Next to the filter, a new toggle shows only unread mail, in folder views and unified
+  views alike.
+- A folder can belong to several unified views, and a view can carry an emoji shown in the
+  sidebar. Views are created, renamed, given an icon, ordered and deleted in Settings, in the
+  same card that assigns each folder to its views with a multi-select. Existing
+  unified names become views on upgrade, keeping their order.
+- Unread mail is unmistakable in both themes: a bold sender, a full-contrast subject, a blue dot
+  in a column of its own and a tinted row, where a read row is quieter throughout. Every row shows
+  its subject bold, slightly smaller than the sender. The read/unread envelope is revealed on hover
+  with the other row controls instead of sitting beside every date, and a unified view no longer
+  repeats the account's emoji before the sender -- the avatar already carries it.
+- Clicking a mail alert, in the bell or as a system notification, opens the message where it is
+  now -- after a move too, including one made in another mail client -- and opens it inside a
+  recently used unified view containing its folder when a unified view is where you last were.
+  A notification click reuses the open window instead of reloading the whole application.
 - Sending a reopened draft sends it once. The draft editor raised its "Save this message?"
   prompt the moment a send succeeded, and dismissing the prompt left a composer whose Send still
   worked -- pressing it again sent the same message a second time. Sending now closes the editor,
@@ -111,6 +128,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### API
 
+- Unified views are their own resource: `POST /api/unified/views`, `PATCH` and `DELETE
+  /api/unified/views/{id}`, and `GET /api/unified/folders` lists every view with its `id` and
+  `emoji`. A folder's `unified_name` is replaced by `unified_view_ids`, read on every folder and
+  written through `PATCH /api/folders/{id}/prefs` as the folder's complete set of views.
+- `GET /api/unified/mails` answers in the same shape as an account's message list (no
+  `account_emoji` on its rows) and accepts `threaded`, `is_seen`, `after` and `around` the same
+  way; a view name that does not exist is a 404.
+- `GET /api/messages/{id}/location` returns where a message is now, following a move made in
+  another mail client to the row that replaced it. `GET /api/search` accepts `is_seen`.
 - `POST /outbox` takes an optional `idempotency_key`. A repeat carrying the same key returns the
   row the first request created instead of creating a second; reusing a key for a different kind
   is refused with 409. A send naming a draft that another send is already carrying is refused

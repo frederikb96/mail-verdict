@@ -3,21 +3,21 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { AlertCircle, Loader2, Inbox as InboxIcon, Layers } from "lucide-react";
+import { AlertCircle, Loader2, Inbox as InboxIcon, Layers, Mail as MailIcon } from "lucide-react";
 
 import { MailListItem } from "@/components/mail/mail-list-item";
-import { UnifiedMailItem } from "@/components/mail/unified-mail-item";
 import { DragMail } from "@/components/mail/drag-mail";
 import { SelectionBanner } from "@/components/mail/selection-banner";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction, useMarkConversationRead } from "@/hooks/use-mails";
 import { useFolders } from "@/hooks/use-folders";
-import { useAccount } from "@/hooks/use-accounts";
+import { useAccount, useAccounts } from "@/hooks/use-accounts";
 import { accountConnectionState, useSyncStatus } from "@/hooks/use-sync-status";
-import { useUnifiedMails } from "@/hooks/use-unified-view";
+import { useUnifiedFolders, useUnifiedMails } from "@/hooks/use-unified-view";
 import { useSearchResults, type SearchResultItem } from "@/hooks/use-search";
 import {
   useClearSelection,
@@ -41,7 +41,8 @@ import { selectionModeAtom } from "@/store/selection-atom";
 import type { SelectableRow } from "@/lib/selection";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import { mailNavDirectionAtom } from "@/store/mail-nav-atom";
-import type { MailRowAction, MessageSummary, UnifiedMessageSummary } from "@/types/api";
+import type { MailRowAction, MessageSummary } from "@/types/api";
+import { cn } from "@/lib/utils";
 
 /** How many ids at the front of `nextIds` are new, given `prevIds` -- zero
  * unless the whole of `prevIds` still appears afterward, in the same order.
@@ -101,11 +102,16 @@ export function MailList() {
   const markConversationRead = useMarkConversationRead();
   const vlistRef = useRef<VListHandle>(null);
 
-  // The same four values decide which list this is, for a selection's own
-  // scope below and for `VList`'s own identity further down: a change to
-  // any of them is a genuinely different list, not the same one showing
+  // Unread-only makes a genuinely different list, the same as a different
+  // folder does -- declared here so it folds into the identity below. Kept
+  // for the lifetime of the mail view, like the quick filter's text.
+  const [unreadOnly, setUnreadOnly] = useState(false);
+
+  // These values decide which list this is, for a selection's own scope
+  // below and for `VList`'s own identity further down: a change to any of
+  // them is a genuinely different list, not the same one showing
   // different rows.
-  const baseListIdentity = `${accountId}:${folderId}:${isUnifiedView}:${selectedUnifiedFolder}:${threaded}`;
+  const baseListIdentity = `${accountId}:${folderId}:${isUnifiedView}:${selectedUnifiedFolder}:${threaded}:${unreadOnly}`;
 
   // A one-shot signal from wherever a message was opened from outside the
   // ordinary newest-first browsing flow (search, currently the only such
@@ -121,9 +127,18 @@ export function MailList() {
   const capturedAroundRef = useRef<{
     baseListIdentity: string;
     around: { id: string; threadId: string } | null;
-  }>({ baseListIdentity, around: pendingAroundMail });
-  if (capturedAroundRef.current.baseListIdentity !== baseListIdentity) {
-    capturedAroundRef.current = { baseListIdentity, around: pendingAroundMail };
+    source: { id: string; threadId: string } | null;
+  }>({ baseListIdentity, around: pendingAroundMail, source: pendingAroundMail });
+  // Also re-captured when a new request arrives for the list already on
+  // screen: opening a message that sits in the open folder, far below what
+  // is loaded, changes no part of the identity at all.
+  if (
+    capturedAroundRef.current.baseListIdentity !== baseListIdentity ||
+    (pendingAroundMail !== null && pendingAroundMail !== capturedAroundRef.current.source)
+  ) {
+    capturedAroundRef.current = {
+      baseListIdentity, around: pendingAroundMail, source: pendingAroundMail,
+    };
   }
   const aroundId = capturedAroundRef.current.around?.id ?? null;
   const aroundThreadId = capturedAroundRef.current.around?.threadId ?? null;
@@ -137,7 +152,9 @@ export function MailList() {
   // non-tail obligations, and the effects further down that maintain it.
   const [newerArrivalCount, setNewerArrivalCount] = useState(0);
   const jumpToLatest = useCallback(() => {
-    capturedAroundRef.current = { baseListIdentity, around: null };
+    capturedAroundRef.current = {
+      baseListIdentity, around: null, source: capturedAroundRef.current.source,
+    };
     setJumpNonce((n) => n + 1);
     setNewerArrivalCount(0);
   }, [baseListIdentity]);
@@ -159,14 +176,34 @@ export function MailList() {
     return () => clearTimeout(timer);
   }, [filterText]);
   const trimmedFilter = debouncedFilterText.trim();
-  const isFiltering = !isUnifiedView && trimmedFilter.length >= 2;
+
+  // A unified view's member folders -- what its quick filter searches, and
+  // what decides whether a live arrival or a row's Junk control belongs to
+  // it. One subscriber here; the rows get what they need as props.
+  const { data: unifiedFolders } = useUnifiedFolders();
+  const currentView = isUnifiedView
+    ? unifiedFolders?.find((v) => v.unified_name === selectedUnifiedFolder)
+    : undefined;
+  const viewFolderIds = useMemo(
+    () => currentView?.folders.map((f) => f.folder_id) ?? [],
+    [currentView],
+  );
+  const viewJunkFolderIds = useMemo(
+    () =>
+      new Set(
+        currentView?.folders.filter((f) => f.special_use === "junk").map((f) => f.folder_id),
+      ),
+    [currentView],
+  );
+  const isFiltering =
+    trimmedFilter.length >= 2 && (!isUnifiedView || viewFolderIds.length > 0);
 
   const listIdentity = `${baseListIdentity}:${aroundId ?? ""}:${jumpNonce}:${trimmedFilter}`;
 
   useEffect(() => {
     if (pendingAroundMail) setPendingAroundMailId(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseListIdentity]);
+  }, [baseListIdentity, pendingAroundMail]);
 
   // A selection is scoped to the list it was made in (see
   // effectiveSelectionAtom): a change to any of these four values is
@@ -183,7 +220,7 @@ export function MailList() {
   useEffect(() => {
     clearSelection();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, folderId, isUnifiedView, selectedUnifiedFolder, threaded]);
+  }, [accountId, folderId, isUnifiedView, selectedUnifiedFolder, threaded, unreadOnly]);
 
   // An account stuck in `error` with no completed sync pass never gets a
   // folder to auto-select, so the loading state below would otherwise
@@ -196,34 +233,46 @@ export function MailList() {
     !!currentAccount &&
     accountConnectionState(currentAccount, currentSyncStatus) === "never_connected";
 
-  // Threading is a single-account concept (thread_id groups per-account folders).
   const unifiedResult = useUnifiedMails(
     isUnifiedView ? selectedUnifiedFolder : null,
+    threaded,
+    aroundId,
+    unreadOnly,
   );
   const singleAccountResult = useMailList(
     isUnifiedView ? null : accountId,
     folderId,
     threaded,
     aroundId,
+    unreadOnly,
   );
 
   const { data: folders } = useFolders(isUnifiedView ? null : accountId);
   const isJunkFolder = folders?.find((f) => f.id === folderId)?.special_use === "junk";
 
-  // The in-folder quick filter is a second caller of the same search
-  // mechanism the search page uses, not a new one -- scoped to the
-  // current account and folder, over the fields a mail reader would
-  // expect a filter to check. Not offered in the unified view (an empty
-  // folderIds array is the existing hook's own way to stay disabled,
-  // the same state an explicitly-cleared folder scope on the search page
-  // already means). Always chronological, with no toggle: a filter over
-  // one open folder is expected to read strictly newest-first, unlike
-  // the full search page, which defaults to relevance ranking and offers
-  // a switch to override it.
+  // A unified row names its account on the avatar -- looked up once here
+  // rather than by every row.
+  const { data: accounts } = useAccounts();
+  const accountsById = useMemo(
+    () => new Map((accounts ?? []).map((a) => [a.id, a])),
+    [accounts],
+  );
+
+  // The quick filter is a second caller of the same search mechanism the
+  // search page uses, not a new one -- scoped to the open folder, or to a
+  // unified view's member folders across every account, over the fields a
+  // mail reader would expect a filter to check, and to unread mail while
+  // unread-only is on. (An empty folderIds array is the hook's own way to
+  // stay disabled, the same state an explicitly-cleared folder scope on
+  // the search page already means.) Always chronological, with no toggle:
+  // a filter over one open list is expected to read strictly
+  // newest-first, unlike the full search page, which defaults to relevance
+  // ranking and offers a switch to override it.
   const filterResult = useSearchResults({
     query: trimmedFilter,
-    accountId: accountId ?? undefined,
-    folderIds: !isUnifiedView && folderId ? [folderId] : [],
+    accountId: isUnifiedView ? undefined : accountId ?? undefined,
+    folderIds: isUnifiedView ? viewFolderIds : folderId ? [folderId] : [],
+    isSeen: unreadOnly ? false : undefined,
     fields: ["subject", "from", "to"],
     semantic: false,
     strictness: "balanced",
@@ -237,11 +286,9 @@ export function MailList() {
     hasNextPage,
     fetchNextPage,
   } = isFiltering ? filterResult : result;
-  // Only ever meaningful for the single-account, unfiltered query --
-  // useUnifiedMails has no getPreviousPageParam (consistent with aroundId
-  // not being offered there either), and a filtered view has no window or
-  // live tail of its own to grow.
-  const { hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage } = singleAccountResult;
+  // Only ever meaningful for the unfiltered list -- a filtered view has no
+  // window or live tail of its own to grow.
+  const { hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage } = result;
 
   // One reference to whichever query is actually driving the view --
   // used below to detect "the underlying data object changed" the same
@@ -249,7 +296,7 @@ export function MailList() {
   // derived arrays every render and can never serve as that signal
   // themselves.
   const data = isFiltering ? filterResult.data : result.data;
-  const allMails: (MessageSummary | UnifiedMessageSummary | SearchResultItem)[] = isFiltering
+  const allMails: (MessageSummary | SearchResultItem)[] = isFiltering
     ? (filterResult.data?.pages.flatMap((p) => p.items) ?? [])
     : (result.data?.pages.flatMap((p) => p.messages) ?? []);
   const allMailIds = allMails.map((m) => m.id);
@@ -392,9 +439,13 @@ export function MailList() {
   // out), so the only thing missing is telling the reader something
   // exists beyond it -- newerArrivalCount above, maintained here.
   const mailArrived = useAtomValue(mailArrivedAtom);
+  const arrivedHere = (arrival: NonNullable<typeof mailArrived>) =>
+    isUnifiedView
+      ? viewFolderIds.includes(arrival.folderId)
+      : arrival.accountId === accountId && arrival.folderId === folderId;
   useEffect(() => {
-    if (isUnifiedView || isFiltering || !mailArrived) return;
-    if (mailArrived.accountId !== accountId || mailArrived.folderId !== folderId) return;
+    if (isFiltering || !mailArrived) return;
+    if (!arrivedHere(mailArrived)) return;
     if (!hasPreviousPage) return; // already at the edge -- nothing hidden above
     setNewerArrivalCount((n) => n + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -412,8 +463,7 @@ export function MailList() {
     if (!was || hasPreviousPage) return;
     if (
       mailArrived &&
-      mailArrived.accountId === accountId &&
-      mailArrived.folderId === folderId &&
+      arrivedHere(mailArrived) &&
       !allMailIds.includes(mailArrived.messageId)
     ) {
       fetchPreviousPage();
@@ -463,14 +513,18 @@ export function MailList() {
   // stands for.
   const conversationWithOtherUnread = useCallback(
     (mailId: string): MessageSummary | null => {
-      if (!threaded || isFiltering || isUnifiedView) return null;
+      if (!threaded || isFiltering) return null;
       const row = rowsById.get(mailId) as MessageSummary | undefined;
       if (!row) return null;
       const otherUnread = (row.unread_in_thread ?? 0) - (row.is_seen ? 0 : 1);
       return otherUnread > 0 ? row : null;
     },
-    [threaded, isFiltering, isUnifiedView, rowsById],
+    [threaded, isFiltering, rowsById],
   );
+
+  // A unified view's conversation can span several of its folders; reading
+  // it clears the unread messages in all of them, the ones its row counts.
+  const conversationScope = isUnifiedView ? viewFolderIds : undefined;
 
   const handleAction = useCallback(
     (mailId: string, action: MailRowAction, mailAccountId?: string) => {
@@ -478,7 +532,7 @@ export function MailList() {
       if (!account) return;
       const conversation = action === "mark_read" ? conversationWithOtherUnread(mailId) : null;
       if (conversation) {
-        void markConversationRead(conversation, true);
+        void markConversationRead(conversation, true, conversationScope);
         return;
       }
       mailAction.mutate({
@@ -487,7 +541,7 @@ export function MailList() {
         action: { action },
       });
     },
-    [accountId, mailAction, conversationWithOtherUnread, markConversationRead],
+    [accountId, mailAction, conversationWithOtherUnread, markConversationRead, conversationScope],
   );
 
   // Keyed on the opened message, however it was opened -- a click, keyboard
@@ -497,7 +551,7 @@ export function MailList() {
   useEffect(() => {
     if (!selectedMailId) return;
     const conversation = conversationWithOtherUnread(selectedMailId);
-    if (conversation) void markConversationRead(conversation, false);
+    if (conversation) void markConversationRead(conversation, false, conversationScope);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMailId]);
 
@@ -588,42 +642,75 @@ export function MailList() {
 
   return (
     <div className="flex h-full flex-col">
-      {!isUnifiedView && (
-        <div className="flex items-center justify-between border-b px-3 py-1.5">
-          <div className="flex items-center gap-3">
-            {/* One always-visible control for the whole folder: unchecked
-                mints a predicate over every message in it (no fetch of the
-                messages themselves), checked (any selection at all, not
-                just this control's own) clears it. The banner's own "every
-                unread" / clear-by-hand paths stay reachable once a
-                selection already exists. */}
+      <div className="flex items-center gap-3 border-b px-3 py-1.5">
+        <div className="flex shrink-0 items-center gap-3">
+          {/* One always-visible control for the whole folder: unchecked
+              mints a predicate over every message in it -- every unread
+              one while unread-only is on -- (no fetch of the messages
+              themselves), checked (any selection at all, not just this
+              control's own) clears it. The banner's own "every unread" /
+              clear-by-hand paths stay reachable once a selection already
+              exists. A unified view has no single folder to mint that
+              predicate over, so selection there is by hand. */}
+          {!isUnifiedView && (
             <Checkbox
               checked={selectionMode}
               onCheckedChange={() => {
                 if (selectionMode) {
                   clearSelection();
                 } else if (accountId && folderId) {
-                  selectFolderScope(accountId, folderId, "all", threaded);
+                  selectFolderScope(accountId, folderId, unreadOnly ? "unread" : "all", threaded);
                 }
               }}
-              aria-label={selectionMode ? "Deselect all" : "Select all messages in this folder"}
+              aria-label={
+                selectionMode
+                  ? "Deselect all"
+                  : unreadOnly
+                    ? "Select all unread messages in this folder"
+                    : "Select all messages in this folder"
+              }
               title={selectionMode ? "Deselect all" : "Select all messages in this folder"}
             />
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Switch checked={threaded} onCheckedChange={setThreaded} />
-              <Layers className="h-3 w-3" />
-              Group by conversation
-            </label>
-          </div>
+          )}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch checked={threaded} onCheckedChange={setThreaded} />
+            <Layers className="h-3 w-3" />
+            Group by conversation
+          </label>
+        </div>
+        <div className="flex min-w-0 flex-1 items-center justify-end gap-1">
+          {/* Unread-only: the envelope carries the same blue dot an unread
+              row does, lit while the toggle is on. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={cn("relative h-7 w-7 shrink-0", unreadOnly && "bg-accent text-foreground")}
+            aria-pressed={unreadOnly}
+            aria-label="Show only unread messages"
+            title={unreadOnly ? "Showing only unread mail -- click to show all" : "Show only unread mail"}
+            onClick={() => setUnreadOnly((on) => !on)}
+          >
+            <MailIcon className="h-4 w-4" />
+            <span
+              className={cn(
+                "absolute right-1 top-1 h-2 w-2 rounded-full ring-2 ring-background",
+                unreadOnly ? "bg-sky-500 dark:bg-sky-400" : "bg-muted-foreground/50",
+              )}
+            />
+          </Button>
           <Input
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
-            placeholder="Filter this folder…"
-            aria-label="Filter this folder by subject, sender or recipient"
-            className="h-7 w-48 text-xs"
+            placeholder={isUnifiedView ? "Filter this view…" : "Filter this folder…"}
+            aria-label={
+              isUnifiedView
+                ? "Filter this view by subject, sender or recipient"
+                : "Filter this folder by subject, sender or recipient"
+            }
+            className="h-7 w-full min-w-0 max-w-48 text-xs"
           />
         </div>
-      )}
+      </div>
       <SelectionBanner
         accountId={isUnifiedView ? null : accountId}
         folderId={isUnifiedView ? null : folderId}
@@ -648,8 +735,19 @@ export function MailList() {
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
           <InboxIcon className="h-12 w-12 opacity-50" />
           <p className="text-sm">
-            {isFiltering ? "No messages match this filter" : "No messages in this folder"}
+            {isFiltering
+              ? "No messages match this filter"
+              : unreadOnly
+                ? "No unread messages here"
+                : isUnifiedView
+                  ? "No messages in this view"
+                  : "No messages in this folder"}
           </p>
+          {unreadOnly && (
+            <Button variant="outline" size="sm" onClick={() => setUnreadOnly(false)}>
+              Show all messages
+            </Button>
+          )}
         </div>
       ) : (
         <VList
@@ -661,37 +759,24 @@ export function MailList() {
           shift={shiftForPrepend}
           onScroll={handleScroll}
         >
-          {allMails.map((mail, index) =>
-            isUnifiedView ? (
-              <DragMail key={mail.id} row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
-                <UnifiedMailItem
-                  mail={mail as UnifiedMessageSummary}
-                  isSelected={mail.id === selectedMailId}
-                  isFocused={index === focusedIndex}
-                  isChecked={isSelected(mail)}
-                  selectionMode={selectionMode}
-                  onOpen={handleOpen}
-                  onCheckToggle={handleCheckToggle}
-                  onAction={handleAction}
-                />
-              </DragMail>
-            ) : (
-              <DragMail key={mail.id} row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
-                <MailListItem
-                  mail={mail as MessageSummary}
-                  isSelected={mail.id === selectedMailId}
-                  isFocused={index === focusedIndex}
-                  isChecked={isSelected(mail)}
-                  selectionMode={selectionMode}
-                  isJunk={isJunkFolder}
-                  isThreaded={!isFiltering && threaded}
-                  onOpen={handleOpen}
-                  onCheckToggle={handleCheckToggle}
-                  onAction={handleAction}
-                />
-              </DragMail>
-            ),
-          )}
+          {allMails.map((mail, index) => (
+            <DragMail key={mail.id} row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
+              <MailListItem
+                mail={mail as MessageSummary}
+                accountEmoji={isUnifiedView ? accountsById.get(mail.account_id)?.emoji : undefined}
+                accountName={isUnifiedView ? accountsById.get(mail.account_id)?.name : undefined}
+                isSelected={mail.id === selectedMailId}
+                isFocused={index === focusedIndex}
+                isChecked={isSelected(mail)}
+                selectionMode={selectionMode}
+                isJunk={isUnifiedView ? viewJunkFolderIds.has(mail.folder_id) : isJunkFolder}
+                isThreaded={!isFiltering && threaded}
+                onOpen={handleOpen}
+                onCheckToggle={handleCheckToggle}
+                onAction={handleAction}
+              />
+            </DragMail>
+          ))}
         </VList>
       )}
       {isFetchingNextPage && (

@@ -824,8 +824,35 @@ class FolderPrefs(Base):
     folder_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
     is_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    unified_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     special_use_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class UnifiedView(Base):
+    """A merged mail view across folders of any account. Which folders it
+    shows is unified_view_folders; one folder may belong to several views."""
+
+    __tablename__ = "unified_views"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Sidebar order, ascending.
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class UnifiedViewFolder(Base):
+    """One folder's membership in one unified view. folder_id has no
+    foreign key onto PostIMAP's folders (see docs/architecture.md); a
+    membership naming a deleted folder simply never joins."""
+
+    __tablename__ = "unified_view_folders"
+
+    view_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("unified_views.id", ondelete="CASCADE"), primary_key=True,
+    )
+    folder_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+
+    __table_args__ = (Index("idx_unified_view_folders_folder_id", "folder_id"),)
 
 
 class Setting(Base):

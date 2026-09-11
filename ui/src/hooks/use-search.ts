@@ -35,6 +35,7 @@ export const searchKeys = {
     strictness: SearchStrictness,
     sort: SearchSort,
     dateRange: SearchDateRangeParam | undefined,
+    isSeen?: boolean,
   ) =>
     [
       "search",
@@ -45,6 +46,7 @@ export const searchKeys = {
       semantic ? strictness : [...fields].sort(),
       sort,
       dateRange?.after ?? "", dateRange?.before ?? "",
+      isSeen === undefined ? "any" : isSeen ? "read" : "unread",
     ] as const,
   dateBounds: (accountId: string | undefined, folderIds: string[] | null) =>
     ["search", "date-bounds", accountId ?? "all", folderIds ?? "all-folders"] as const,
@@ -79,10 +81,12 @@ export function useSearchResults(params: {
   strictness: SearchStrictness;
   sort?: SearchSort;
   dateRange?: SearchDateRangeParam;
+  /** Only read (true) or only unread (false) mail -- text search only. */
+  isSeen?: boolean;
 }) {
   const {
     query, accountId, folderIds, fields, semantic, strictness,
-    sort = "relevance", dateRange,
+    sort = "relevance", dateRange, isSeen,
   } = params;
   const trimmed = query.trim();
   // An explicitly-cleared folder scope ([] -- see search-prefs.ts) means
@@ -94,7 +98,7 @@ export function useSearchResults(params: {
 
   return useInfiniteQuery({
     queryKey: searchKeys.results(
-      semantic, trimmed, accountId, folderIds, fields, strictness, sort, dateRange,
+      semantic, trimmed, accountId, folderIds, fields, strictness, sort, dateRange, isSeen,
     ),
     queryFn: async ({ pageParam, signal }): Promise<SearchResultPage> => {
       if (semantic) {
@@ -119,6 +123,7 @@ export function useSearchResults(params: {
         sort,
         received_after: dateRange?.after,
         received_before: dateRange?.before,
+        is_seen: isSeen,
       }, signal);
       return {
         items: r.results,

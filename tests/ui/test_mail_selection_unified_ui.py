@@ -15,6 +15,7 @@ from playwright.sync_api import Page, Response, expect
 
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
+    add_folder_to_unified_view,
     create_account,
     mail_row,
     wait_for,
@@ -23,10 +24,7 @@ from tests.ui.helpers import (
 
 
 def _set_unified_name(api_client: httpx.Client, folder_id: str, unified_name: str) -> None:
-    resp = api_client.patch(
-        f"/api/folders/{folder_id}/prefs", json={"unified_name": unified_name},
-    )
-    assert resp.status_code == 200, resp.text
+    add_folder_to_unified_view(api_client, folder_id, unified_name)
 
 
 def _create_folder(api_client: httpx.Client, account_id: str, name: str) -> dict[str, Any]:

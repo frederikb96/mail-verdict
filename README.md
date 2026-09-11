@@ -15,12 +15,14 @@ mirror, which is what keeps it simple.
 ## What it does
 
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
-  list that stays smooth on large mailboxes, and unified views across accounts. A conversation
-  reads newest first, and a message header's sender and recipients copy their addresses on a
-  click, each alone or a whole line comma-separated. Folders can be
-  created and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick
-  filter narrows the open folder by subject, sender or recipient, its rows carrying the same
-  actions an ordinary row does. Opening a reply collapses the quoted original behind a "Show
+  list that stays smooth on large mailboxes, and unified views: any set of folders, across
+  accounts, merged into one list with an icon of its own in the sidebar -- one folder can sit in
+  several. A conversation reads newest first, and a message header's sender and recipients copy
+  their addresses on a click, each alone or a whole line comma-separated. Folders can be created
+  and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick filter
+  narrows the open folder or view by subject, sender or recipient, its rows carrying the same
+  actions an ordinary row does, and a toggle beside it shows only unread mail. Opening a reply
+  collapses the quoted original behind a "Show
   quoted text" control, and ctrl+F (or a control beside the message's other icons) searches and
   highlights matches inside the open message, which the browser's own find cannot reach. An
   image or PDF attachment opens full screen for a look at it, rendered rather than downloaded;

@@ -26,8 +26,9 @@ export interface SelectionScope {
   accountId: string;
   /** A real folder id in single-account mode, or the unified folder name. */
   folderId: string;
-  /** Threading only exists in single-account mode; always false for the
-   * unified view regardless of the (persisted, view-only) threaded toggle. */
+  /** Whether the list shows one row per conversation -- the persisted,
+   * view-only toggle, which a unified view honours the same way a folder
+   * does. */
   threaded: boolean;
 }
 

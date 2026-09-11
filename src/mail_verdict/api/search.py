@@ -121,6 +121,9 @@ async def search_messages(
     received_before: Annotated[
         datetime | None, Query(description="Only messages received at or before this instant"),
     ] = None,
+    is_seen: Annotated[
+        bool | None, Query(description="Only read (true) or only unread (false) messages"),
+    ] = None,
 ) -> SearchResponse:
     """
     Search over the toggled fields, scoped to the given folders and, if
@@ -162,6 +165,7 @@ async def search_messages(
         sort=sort,
         received_after=received_after,
         received_before=received_before,
+        is_seen=is_seen,
         cursor_received_at=cursor_received_at,
         cursor_id=cursor_id,
         cursor_tier=cursor_tier,
@@ -173,6 +177,7 @@ async def search_messages(
     total = await msg_repo.count_search_candidates(
         account_id, tokens, folder_ids=folder_ids, fields=field_set,
         received_after=received_after, received_before=received_before,
+        is_seen=is_seen,
     )
 
     if not rows and before is None:
@@ -182,7 +187,8 @@ async def search_messages(
         # means the primary stage, whose page this is a continuation of.
         fallback_rows = await msg_repo.search_messages_fallback(
             account_id, tokens, folder_ids=folder_ids,
-            received_after=received_after, received_before=received_before, limit=limit,
+            received_after=received_after, received_before=received_before,
+            is_seen=is_seen, limit=limit,
         )
         results = [
             _to_search_result(msg, snippet, FALLBACK_MATCH_TIER)

@@ -260,12 +260,14 @@ class TestMailActionsUi:
         expect(row).to_be_visible(timeout=15_000)
         before = _badge_count(page, inbox_folder["id"])
 
-        # The always-visible mark-read icon, not a click on the row itself --
-        # selecting a row auto-marks it read via the reading pane, which
-        # would conflate the two paths this test tells apart.
+        # The row's own mark-read control (revealed on hover), not a click
+        # on the row itself -- selecting a row auto-marks it read via the
+        # reading pane, which would conflate the two paths this test tells
+        # apart.
+        row.hover()
         row.get_by_title("Mark as read").click()
 
-        expect(row.locator(".bg-blue-500")).to_have_count(0, timeout=10_000)
+        expect(row.locator('[data-testid="unread-dot"]')).to_have_count(0, timeout=10_000)
         wait_for(
             lambda: _badge_count(page, inbox_folder["id"]) == before - 1 or None,
             timeout_s=10.0, description=f"INBOX badge drops from {before} to {before - 1}",
@@ -319,7 +321,7 @@ class TestMailActionsUi:
         toolbar = page.get_by_role("toolbar", name="Message actions")
         header_button = toolbar.get_by_title("Mark as unread")
         expect(header_button).to_be_visible(timeout=15_000)  # auto-read on open
-        expect(row.locator(".bg-blue-500")).to_have_count(0, timeout=10_000)
+        expect(row.locator('[data-testid="unread-dot"]')).to_have_count(0, timeout=10_000)
 
         def _delay_action(route: Any) -> None:
             time.sleep(2.0)
@@ -333,7 +335,7 @@ class TestMailActionsUi:
             # the action's response is being held back, so neither can be
             # passing because the request already settled.
             expect(toolbar.get_by_title("Mark as read")).to_be_visible(timeout=1_000)
-            expect(row.locator(".bg-blue-500")).to_be_visible(timeout=1_000)
+            expect(row.locator('[data-testid="unread-dot"]')).to_be_visible(timeout=1_000)
         finally:
             page.unroute("**/api/messages/*/action", _delay_action)
 
@@ -1978,7 +1980,7 @@ class TestRowControlLayoutUi:
         page.wait_for_timeout(300)
 
         read_icon = _rect(row.get_by_title("Mark as read"))
-        timestamp = _rect(row.locator("span.text-xs.text-muted-foreground").first)
+        timestamp = _rect(row.locator('[data-slot="row-date"]'))
         # "Archive"/"Move to Junk" alone, not exact: threading is on by
         # default for this account's shared view state, which appends
         # " (latest message in thread)" to both titles.
