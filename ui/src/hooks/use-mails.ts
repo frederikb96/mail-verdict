@@ -3,6 +3,7 @@
 import {
   type InfiniteData,
   type QueryClient,
+  infiniteQueryOptions,
   keepPreviousData,
   useInfiniteQuery,
   useMutation,
@@ -65,10 +66,14 @@ export const UNDO_TOAST_LABELS: Record<string, string> = {
 };
 
 export const mailKeys = {
-  list: (accountId?: string, folderId?: string, threaded?: boolean, aroundId?: string) =>
-    ["mails", accountId, folderId, threaded ? "threaded" : "flat", aroundId].filter(
-      Boolean,
-    ) as string[],
+  list: (
+    accountId?: string, folderId?: string, threaded?: boolean, aroundId?: string,
+    unreadOnly?: boolean,
+  ) =>
+    [
+      "mails", accountId, folderId, threaded ? "threaded" : "flat",
+      unreadOnly ? "unread" : undefined, aroundId,
+    ].filter(Boolean) as string[],
   detail: (id: string) => ["mail", id] as const,
   thread: (id: string) => ["thread", id] as const,
   quote: (id: string) => ["mail-quote", id] as const,
@@ -125,34 +130,39 @@ type MailListPageParam =
   | { kind: "before"; cursor: string }
   | { kind: "after"; cursor: string };
 
+/** Where in the list one page sits -- the list's own filters are the
+ * caller's business, this is only the cursor. */
+export type MailListCursor = { before?: string; after?: string; around?: string };
+
 /**
+ * The paging every mail list shares: an account's folder (useMailList) and
+ * a unified view (useUnifiedMails) page, refetch and centre on a message
+ * identically, and differ only in the request one page makes.
+ *
  * aroundId centres the *first* fetch of a fresh query key on that message
  * instead of the newest edge -- see mail-list.tsx, which captures it once
- * per list identity rather than re-reading it reactively, and folds it
- * into the query key so a centred window is a genuinely different cached
- * list from an edge-anchored one under the same account/folder.
+ * per list identity rather than re-reading it reactively. The caller folds
+ * it into queryKey, so a centred window is a genuinely different cached
+ * list from an edge-anchored one over the same messages.
  */
-export function useMailList(
-  accountId: string | null,
-  folderId: string | null,
-  threaded: boolean,
-  aroundId?: string | null,
+export function mailListQueryOptions(
+  queryKey: string[],
+  fetchPage: (cursor: MailListCursor) => Promise<MessageListResponse>,
+  aroundId: string | null | undefined,
+  enabled: boolean,
 ) {
-  return useInfiniteQuery({
-    queryKey: mailKeys.list(
-      accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
-    ),
+  return infiniteQueryOptions({
+    queryKey,
     queryFn: ({ pageParam }: { pageParam: MailListPageParam }) => {
-      const base = { account_id: accountId!, folder_id: folderId ?? undefined, threaded };
       switch (pageParam.kind) {
         case "around":
-          return api.mails.list({ ...base, around: pageParam.id, limit: 50 });
+          return fetchPage({ around: pageParam.id });
         case "before":
-          return api.mails.list({ ...base, before: pageParam.cursor, limit: 50 });
+          return fetchPage({ before: pageParam.cursor });
         case "after":
-          return api.mails.list({ ...base, after: pageParam.cursor, limit: 50 });
+          return fetchPage({ after: pageParam.cursor });
         case "initial":
-          return api.mails.list({ ...base, limit: 50 });
+          return fetchPage({});
       }
     },
     initialPageParam: (
@@ -162,12 +172,37 @@ export function useMailList(
       lastPage.has_more ? { kind: "before", cursor: lastPage.next_cursor! } : undefined,
     getPreviousPageParam: (firstPage): MailListPageParam | undefined =>
       firstPage.has_more_newer ? { kind: "after", cursor: firstPage.prev_cursor! } : undefined,
-    enabled: !!accountId && !!folderId,
+    enabled,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: hasFewEnoughPagesToEagerlyRefetch,
     refetchOnMount: hasFewEnoughPagesToEagerlyRefetch,
   });
+}
+
+/** An account's folder, newest first; unreadOnly narrows it to unread mail. */
+export function useMailList(
+  accountId: string | null,
+  folderId: string | null,
+  threaded: boolean,
+  aroundId?: string | null,
+  unreadOnly = false,
+) {
+  return useInfiniteQuery(
+    mailListQueryOptions(
+      mailKeys.list(
+        accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
+        unreadOnly,
+      ),
+      (cursor) =>
+        api.mails.list({
+          account_id: accountId!, folder_id: folderId ?? undefined, threaded,
+          is_seen: unreadOnly ? false : undefined, limit: 50, ...cursor,
+        }),
+      aroundId,
+      !!accountId && !!folderId,
+    ),
+  );
 }
 
 export function useMailDetail(mailId: string | null) {

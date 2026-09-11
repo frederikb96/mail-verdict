@@ -231,7 +231,8 @@ export interface FolderResponse {
   /** Effective special_use — folder_prefs.special_use_override coalesced with the server's own value. */
   special_use: string | null;
   mailbox_id: string | null;
-  unified_name: string | null;
+  /** Every unified view this folder belongs to, in sidebar order. */
+  unified_view_ids: string[];
   is_visible: boolean;
   initial_sync_done: boolean;
   last_synced_at: string | null;
@@ -244,7 +245,8 @@ export interface FolderResponse {
 export interface FolderPrefsUpdate {
   is_visible?: boolean;
   display_name?: string | null;
-  unified_name?: string | null;
+  /** The folder's complete set of unified views; [] removes it from all. */
+  unified_view_ids?: string[];
   special_use_override?: string | null;
 }
 
@@ -502,40 +504,33 @@ export interface UnifiedFolderSource {
   account_emoji: string | null;
   folder_id: string;
   imap_name: string;
+  special_use: string | null;
 }
 
+/** A unified view with its member folders and summed counts. Its
+ * `unified_name` is also how the mail URL and the list address it. */
 export interface UnifiedFolderResponse {
+  id: string;
   unified_name: string;
+  emoji: string | null;
   folders: UnifiedFolderSource[];
   unread_count: number;
   total_count: number;
 }
 
-export interface UnifiedMessageSummary {
+export interface UnifiedViewResponse {
   id: string;
-  account_id: string;
-  account_emoji: string | null;
-  folder_id: string;
-  thread_id: string;
-  subject: string | null;
-  from_addr: string | null;
-  to_addrs: string[] | null;
-  received_at: string | null;
-  is_seen: boolean;
-  is_flagged: boolean;
-  is_answered: boolean;
-  is_draft: boolean;
-  snippet: string | null;
-  pending_sync: boolean;
-  is_truncated: boolean;
-  thread_count?: number;
-  unread_in_thread?: number;
+  name: string;
+  emoji: string | null;
+  position: number;
 }
 
-export interface UnifiedMessageListResponse {
-  messages: UnifiedMessageSummary[];
-  has_more: boolean;
-  next_cursor: string | null;
+/** Where a message is now -- GET /messages/{id}/location. */
+export interface MessageLocation {
+  id: string;
+  account_id: string;
+  folder_id: string;
+  thread_id: string;
 }
 
 export interface UnifiedFolderOrderResponse {

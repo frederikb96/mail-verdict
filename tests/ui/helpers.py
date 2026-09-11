@@ -242,6 +242,29 @@ def create_account(client: httpx.Client, name_prefix: str) -> dict[str, Any]:
     return account
 
 
+def add_folder_to_unified_view(client: httpx.Client, folder_id: str, view_name: str) -> str:
+    """Put a folder into the unified view with this name, creating the view
+    if it does not exist yet, and keep whatever other views the folder is
+    already in. Returns the view's id."""
+    resp = client.get("/api/unified/folders")
+    assert resp.status_code == 200, resp.text
+    views = resp.json()
+    view = next((v for v in views if v["unified_name"] == view_name), None)
+    if view is None:
+        created = client.post("/api/unified/views", json={"name": view_name})
+        assert created.status_code == 201, created.text
+        view_id = created.json()["id"]
+    else:
+        view_id = view["id"]
+    current = [v["id"] for v in views if any(f["folder_id"] == folder_id for f in v["folders"])]
+    resp = client.patch(
+        f"/api/folders/{folder_id}/prefs",
+        json={"unified_view_ids": [*dict.fromkeys([*current, view_id])]},
+    )
+    assert resp.status_code == 200, resp.text
+    return str(view_id)
+
+
 def wait_for_folder(
     client: httpx.Client, account_id: str, imap_name: str, timeout_s: float = 30.0,
 ) -> dict[str, Any]:

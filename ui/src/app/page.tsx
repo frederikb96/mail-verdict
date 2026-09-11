@@ -12,6 +12,7 @@ import { ClientOnly } from "@/components/client-only";
 import { useSelection } from "@/hooks/use-selection";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useMailUrlSync } from "@/hooks/use-mail-url-sync";
+import { useRecordUnifiedView } from "@/hooks/use-open-message";
 import { useAtomValue, useSetAtom } from "jotai";
 import { requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
 import { ArrowLeft } from "lucide-react";
@@ -34,6 +35,7 @@ export default function MailPage() {
  */
 function MailView() {
   useMailUrlSync();
+  useRecordUnifiedView();
   const isMobile = useIsMobile();
   const selectedMailId = useAtomValue(selectedMailIdAtom);
   const requestSelectMail = useSetAtom(requestSelectMailAtom);

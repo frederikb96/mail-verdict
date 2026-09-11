@@ -43,15 +43,13 @@ import { useEffect, useRef } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  pendingAroundMailIdAtom,
-  requestSelectMailAtom,
   selectedAccountIdAtom,
   selectedFolderIdAtom,
   selectedMailIdAtom,
   selectedUnifiedFolderAtom,
 } from "@/lib/atoms";
 import { buildMailUrl } from "@/lib/mail-url";
-import { api } from "@/lib/api";
+import { useOpenMessage } from "@/hooks/use-open-message";
 
 export function useMailUrlSync(): void {
   const router = useRouter();
@@ -61,11 +59,10 @@ export function useMailUrlSync(): void {
   const [folderId, setFolderId] = useAtom(selectedFolderIdAtom);
   const [unifiedFolder, setUnifiedFolder] = useAtom(selectedUnifiedFolderAtom);
   const messageId = useAtomValue(selectedMailIdAtom);
-  // Opening a message via the URL respects an in-progress dirty reply the
-  // same way every other message-open action does -- requestSelectMailAtom,
-  // not the bare atom, matches search-page.tsx's own openResult.
-  const requestSelectMail = useSetAtom(requestSelectMailAtom);
-  const setPendingAroundMailId = useSetAtom(pendingAroundMailIdAtom);
+  // Opening a message via the URL lands it exactly where every other
+  // "open this message" entry point does -- see use-open-message.ts, which
+  // also respects an in-progress dirty reply.
+  const { resolveById: resolveMessageById, apply: applyMessagePlace } = useOpenMessage();
   const isUnified = accountId === "unified";
 
   // What the URL last named, for the cold-read effect below to compare
@@ -100,23 +97,17 @@ export function useMailUrlSync(): void {
     const paramFolder = searchParams.get("folder");
     const paramMessage = searchParams.get("message");
 
-    // `?message=` alone is a complete link -- GET /api/messages/{id}
-    // returns account_id/folder_id, so the account/folder params (if any)
-    // are redundant with it rather than needed alongside it.
+    // `?message=` alone is a complete link -- the message's own location
+    // is looked up, so the account/folder params (if any) are redundant
+    // with it rather than needed alongside it.
     if (paramMessage && paramMessage !== messageId) {
       let cancelled = false;
       applyingUrlRef.current = true;
       (async () => {
         try {
-          const mail = await api.mails.get(paramMessage);
+          const place = await resolveMessageById(paramMessage);
           if (cancelled) return;
-          setAccountId(mail.account_id);
-          setFolderId(mail.folder_id);
-          requestSelectMail(mail.id);
-          // The list this lands in may not have this message on its
-          // newest page -- centre the very first page on it, the same
-          // reveal step a search result opened from search-page.tsx uses.
-          setPendingAroundMailId({ id: mail.id, threadId: mail.thread_id });
+          applyMessagePlace(place);
         } catch {
           // A moved-or-resynced message id: leave the current selection
           // alone rather than clearing it out from under the reader over

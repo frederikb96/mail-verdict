@@ -23,6 +23,7 @@ from playwright.sync_api import Page, expect
 
 from tests.setup.mail_delivery import build_eml, deliver_message
 from tests.ui.helpers import (
+    add_folder_to_unified_view,
     create_account,
     folder_button,
     mail_row,
@@ -63,10 +64,7 @@ def _deliver(
 
 
 def _set_unified_name(api_client: httpx.Client, folder_id: str, unified_name: str) -> None:
-    resp = api_client.patch(
-        f"/api/folders/{folder_id}/prefs", json={"unified_name": unified_name},
-    )
-    assert resp.status_code == 200, resp.text
+    add_folder_to_unified_view(api_client, folder_id, unified_name)
 
 
 class TestAccountPicker:
@@ -152,13 +150,13 @@ class TestUnifiedViewIdentifiesEachAccount:
             "Unified View", exact=True,
         ).click()
 
-        expect(page.get_by_text("No unified folders configured yet.", exact=False)).to_be_visible(
+        expect(page.get_by_text("No unified views yet.", exact=False)).to_be_visible(
             timeout=15_000,
         )
-        link = page.get_by_role("link", name="Give matching folders the same unified name")
+        link = page.get_by_role("link", name="Create one in Settings")
         expect(link).to_be_visible()
         link.click()
-        expect(page).to_have_url(re.compile(r"/accounts$"))
+        expect(page).to_have_url(re.compile(r"/settings$"))
 
     def test_unified_folder_row_shows_both_accounts_and_both_messages(
         self,

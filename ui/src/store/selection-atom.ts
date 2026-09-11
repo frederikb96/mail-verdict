@@ -36,7 +36,7 @@ export const currentListScopeAtom = atom<SelectionScope>((get) => {
   return {
     accountId: isUnified ? "unified" : get(selectedAccountIdAtom) ?? "",
     folderId: isUnified ? get(selectedUnifiedFolderAtom) ?? "" : get(selectedFolderIdAtom) ?? "",
-    threaded: isUnified ? false : get(threadedViewAtom),
+    threaded: get(threadedViewAtom),
   };
 });
 

@@ -31,6 +31,21 @@ self.addEventListener("push", (event) => {
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
+// An open window is asked to open the URL itself -- the same in-app path a
+// click in the bell takes, so nothing reloads. A window that does not
+// answer in time (an older build, one still loading) is navigated instead.
+function askClientToOpen(client, url) {
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => resolve(false), 1500);
+    channel.port1.onmessage = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    client.postMessage({ type: "mailverdict:open-url", url }, [channel.port2]);
+  });
+}
+
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const url = (event.notification.data && event.notification.data.url) || "/";
@@ -40,20 +55,26 @@ self.addEventListener("notificationclick", (event) => {
         type: "window",
         includeUncontrolled: true,
       });
-      for (const client of clientsList) {
-        if ("focus" in client) {
+      const client = clientsList.find((c) => c.focused) || clientsList[0];
+      if (!client) {
+        await self.clients.openWindow(url);
+        return;
+      }
+      if ("focus" in client) {
+        try {
           await client.focus();
-          if ("navigate" in client) {
-            try {
-              await client.navigate(url);
-            } catch {
-              // Focusing the existing window is still most of the value.
-            }
-          }
-          return;
+        } catch {
+          // Opening the message in it is still most of the value.
         }
       }
-      await self.clients.openWindow(url);
+      if (await askClientToOpen(client, url)) return;
+      if ("navigate" in client) {
+        try {
+          await client.navigate(url);
+        } catch {
+          // Focusing the existing window is still most of the value.
+        }
+      }
     })(),
   );
 });

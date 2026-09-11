@@ -14,6 +14,7 @@ import { UndoSendBanner } from "@/components/mail/undo-send-banner";
 import { ToastContainer } from "@/components/common/toast-container";
 import { ProtocolHandler } from "@/components/layout/protocol-handler";
 import { SectionShortcuts } from "@/components/layout/section-shortcuts";
+import { ServiceWorkerNavigation } from "@/components/layout/service-worker-navigation";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -77,6 +78,7 @@ export default function RootLayout({
               <SSEConnector />
               <ProtocolHandler />
               <SectionShortcuts />
+              <ServiceWorkerNavigation />
               <MailDndProvider>
                 <ErrorBoundary section="sidebar">
                   <AppSidebar />

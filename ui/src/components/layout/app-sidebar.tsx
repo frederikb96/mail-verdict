@@ -57,6 +57,7 @@ import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useUnifiedFolders } from "@/hooks/use-unified-view";
+import { useMarkAccountView } from "@/hooks/use-open-message";
 import {
   isUnifiedViewAtom,
   requestSelectMailAtom,
@@ -172,6 +173,7 @@ export function AppSidebar() {
     isUnified ? null : selectedAccountId,
   );
   const { data: unifiedFolders } = useUnifiedFolders();
+  const markAccountView = useMarkAccountView();
 
   const currentAccount = isUnified
     ? null
@@ -243,6 +245,7 @@ export function AppSidebar() {
 
   /** Select a folder and navigate to the mail view if on a different page. */
   const handleFolderSelect = (folderId: string) => {
+    markAccountView();
     setSelectedFolderId(folderId);
     requestSelectMail(null);
     if (pathname !== "/") {
@@ -306,6 +309,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     key={account.id}
                     onClick={() => {
+                      markAccountView();
                       setSelectedAccountId(account.id);
                       setSelectedFolderId(null);
                       requestSelectMail(null);
@@ -389,9 +393,19 @@ export function AppSidebar() {
                           <SidebarMenuButton
                             isActive={isActive}
                             onClick={() => handleUnifiedFolderSelect(uf.unified_name)}
-                            tooltip={`${uf.unified_name} (${uf.folders.length} accounts)`}
+                            tooltip={`${uf.unified_name} (${uf.folders.length} folder${uf.folders.length === 1 ? "" : "s"})`}
                           >
-                            <Layers className="h-4 w-4" />
+                            {uf.emoji ? (
+                              <span
+                                data-testid="unified-view-emoji"
+                                aria-hidden
+                                className="flex h-4 w-4 shrink-0 items-center justify-center text-sm leading-none"
+                              >
+                                {uf.emoji}
+                              </span>
+                            ) : (
+                              <Layers className="h-4 w-4" />
+                            )}
                             <Truncate text={uf.unified_name} className="flex-1" />
                             {/* Which accounts merged into this row -- the
                                 tooltip above only ever gave a count, not
@@ -502,11 +516,11 @@ export function AppSidebar() {
               )}
               {isUnified && (!unifiedFolders || unifiedFolders.length === 0) && (
                 <div className="px-4 py-3 text-sm text-muted-foreground">
-                  No unified folders configured yet.{" "}
-                  <Link href="/accounts" className="underline">
-                    Give matching folders the same unified name
+                  No unified views yet.{" "}
+                  <Link href="/settings" className="underline">
+                    Create one in Settings
                   </Link>{" "}
-                  on each account to group them here.
+                  and choose which folders, from any account, it shows.
                 </div>
               )}
             </SidebarMenu>
