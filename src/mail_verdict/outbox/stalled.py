@@ -22,8 +22,9 @@ stuck first in one and then in the other still alerts once.
 
 The alert resolves itself once the message stops waiting on the user: its
 outbox row is sent, or its staged send is cancelled. A dead row keeps it,
-since the message still never went out. Each pass resolves first, and a
-sent outbox event resolves its own row's alert at once.
+since the message still never went out. Each pass resolves first; a sent
+outbox event, and Undo on a staged send (api/outbox.py), each resolve their
+own row's alert at once.
 """
 
 from __future__ import annotations
