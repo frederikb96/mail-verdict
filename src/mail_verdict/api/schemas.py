@@ -601,9 +601,11 @@ class AlertResponse(BaseModel):
 
 
 class AlertUnseenCountResponse(BaseModel):
-    """Delivered, not-yet-dismissed alert count -- the bell's own badge."""
+    """Delivered, not-yet-dismissed alert count -- in total, and per kind,
+    which is what the bell's badge is computed from."""
 
     unseen: int
+    by_kind: dict[str, int]
 
 
 class VapidPublicKeyResponse(BaseModel):

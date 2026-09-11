@@ -18,7 +18,9 @@
  *
  * The badge and both tabs all read the same two counts computed below --
  * nowhere else re-derives "how many are unread". Which of them the badge
- * adds up is lib/bell-badge.ts's decision alone.
+ * adds up, and which alert kinds are new mail rather than system
+ * notifications (listed under System with the write failures), is
+ * lib/bell-badge.ts's decision alone.
  */
 
 import { useState } from "react";
@@ -42,7 +44,7 @@ import {
 } from "@/hooks/use-notifications";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useSettings } from "@/hooks/use-settings";
-import { bellBadgeCount } from "@/lib/bell-badge";
+import { MAIL_ALERT_KIND, bellBadgeCount, isMailAlertKind } from "@/lib/bell-badge";
 import { formatRelativeDate } from "@/lib/format";
 import type { AlertResponse, NotificationResponse } from "@/types/api";
 
@@ -198,17 +200,20 @@ export function NotificationBell() {
 
   const { data: mailSettings } = useSettings("mail");
 
-  const unseenAlerts = alertCount?.unseen ?? 0;
   // unacknowledgedCount is the account-wide server count (matching the
   // folder-delete guard's own predicate exactly), not unacknowledged's
   // own length -- see useAllAccountsNotifications for why the two can
   // differ.
   const countsNewMail = mailSettings?.bell_badge_counts_new_mail;
+  const unseenAlertsByKind = alertCount?.by_kind ?? {};
   const badgeCount = bellBadgeCount({
-    unseenMailAlerts: unseenAlerts,
-    unacknowledgedSystem: unacknowledgedCount,
+    unseenAlertsByKind,
+    unacknowledgedNotifications: unacknowledgedCount,
     countsNewMail: typeof countsNewMail === "boolean" ? countsNewMail : undefined,
   });
+  const mailAlerts = (alerts ?? []).filter((a) => isMailAlertKind(a.kind));
+  const systemAlerts = (alerts ?? []).filter((a) => !isMailAlertKind(a.kind));
+  const systemAlertKinds = Object.keys(unseenAlertsByKind).filter((k) => !isMailAlertKind(k));
 
   const openAlert = (alert: AlertResponse) => {
     if (alert.dismissed_at === null) dismissAlert.mutate(alert.id);
@@ -242,29 +247,32 @@ export function NotificationBell() {
               <TabsTrigger value="mail">Mail</TabsTrigger>
               <TabsTrigger value="system">System</TabsTrigger>
             </TabsList>
-            {tab === "mail" && unseenAlerts > 0 && (
+            {tab === "mail" && mailAlerts.length > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-6 gap-1 px-2 text-xs"
                 disabled={dismissAllAlerts.isPending}
-                onClick={() => dismissAllAlerts.mutate()}
+                onClick={() => dismissAllAlerts.mutate([MAIL_ALERT_KIND])}
               >
                 <CheckCheck className="h-3 w-3" />
                 Dismiss all
               </Button>
             )}
-            {tab === "system" && unacknowledged.length > 0 && (
+            {tab === "system" && (unacknowledged.length > 0 || systemAlerts.length > 0) && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-6 gap-1 px-2 text-xs"
-                disabled={acknowledgeAllEverywhere.isPending}
-                onClick={() =>
-                  acknowledgeAllEverywhere.mutate(
-                    Array.from(new Set(unacknowledged.map((n) => n.account_id))),
-                  )
-                }
+                disabled={acknowledgeAllEverywhere.isPending || dismissAllAlerts.isPending}
+                onClick={() => {
+                  if (unacknowledged.length > 0) {
+                    acknowledgeAllEverywhere.mutate(
+                      Array.from(new Set(unacknowledged.map((n) => n.account_id))),
+                    );
+                  }
+                  if (systemAlertKinds.length > 0) dismissAllAlerts.mutate(systemAlertKinds);
+                }}
               >
                 <CheckCheck className="h-3 w-3" />
                 Dismiss all
@@ -274,8 +282,8 @@ export function NotificationBell() {
           <TabsContent value="mail" className="m-0">
             <div className="max-h-80 overflow-y-auto">
               {alertsLoading && <EmptyState text="Loading..." />}
-              {!alertsLoading && (alerts ?? []).length === 0 && <EmptyState text="Nothing yet" />}
-              {(alerts ?? []).map((alert) => (
+              {!alertsLoading && mailAlerts.length === 0 && <EmptyState text="Nothing yet" />}
+              {mailAlerts.map((alert) => (
                 <AlertRow
                   key={alert.id}
                   alert={alert}
@@ -289,10 +297,19 @@ export function NotificationBell() {
           </TabsContent>
           <TabsContent value="system" className="m-0">
             <div className="max-h-80 overflow-y-auto">
-              {notificationsLoading && <EmptyState text="Loading..." />}
-              {!notificationsLoading && unacknowledged.length === 0 && (
-                <EmptyState text="Nothing to report" />
-              )}
+              {(notificationsLoading || alertsLoading) && <EmptyState text="Loading..." />}
+              {!notificationsLoading && !alertsLoading && unacknowledged.length === 0 &&
+                systemAlerts.length === 0 && <EmptyState text="Nothing to report" />}
+              {systemAlerts.map((alert) => (
+                <AlertRow
+                  key={alert.id}
+                  alert={alert}
+                  accountName={accountName(alert.account_id)}
+                  onOpen={() => openAlert(alert)}
+                  onDismiss={() => dismissAlert.mutate(alert.id)}
+                  isDismissing={dismissAlert.isPending && dismissAlert.variables === alert.id}
+                />
+              ))}
               {unacknowledged.map((n) => (
                 <SystemRow
                   key={n.id}

@@ -579,8 +579,9 @@ export const api = {
     dismiss(alertId: string): Promise<void> {
       return request(`/alerts/${alertId}/dismiss`, { method: "POST" });
     },
-    dismissAll(): Promise<void> {
-      return request("/alerts/dismiss-all", { method: "POST" });
+    // No kinds dismisses every kind.
+    dismissAll(kinds?: string[]): Promise<void> {
+      return request(`/alerts/dismiss-all${qs({ kind: kinds })}`, { method: "POST" });
     },
     vapidPublicKey(): Promise<VapidPublicKeyResponse> {
       return request("/alerts/vapid-public-key");

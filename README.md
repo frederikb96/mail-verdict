@@ -49,7 +49,9 @@ mirror, which is what keeps it simple.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens. A message still waiting on its way out long after it should have gone raises an
-  alert of its own, rather than waiting silently.
+  alert of its own, rather than waiting silently, which clears itself once the message is sent
+  or the send is undone. Such alerts are system notifications: always counted on the bell, and
+  listed with the write failures.
 - **Alerts** — new mail raises a bell with a durable, dismissable list, and — once notifications
   are turned on for a device — a system notification that reaches it even with no MailVerdict page
   open, using the browser's own Web Push. Which folders alert is a per-device setting; every

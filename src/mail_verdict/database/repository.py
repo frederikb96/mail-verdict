@@ -1741,22 +1741,31 @@ class AlertRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
-    async def unseen_count(self, *, folder_ids: list[uuid.UUID] | None = None) -> int:
+    async def unseen_counts_by_kind(
+        self, *, folder_ids: list[uuid.UUID] | None = None,
+    ) -> dict[str, int]:
         """
-        How many delivered alerts have not been dismissed yet -- the
-        bell's own badge count. folder_ids is the same filter list_recent
-        takes, for the same reason: the badge and the list it counts must
-        agree on what's in scope.
+        How many delivered alerts of each kind have not been dismissed yet
+        -- what the bell's badge is computed from, per kind since not every
+        kind is new mail. folder_ids is the same filter list_recent takes,
+        for the same reason: the badge and the list it counts must agree
+        on what's in scope.
         """
         async with self._db.session() as session:
-            stmt = select(func.count(Alert.id)).where(
-                Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None),
+            stmt = (
+                select(Alert.kind, func.count(Alert.id))
+                .where(Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None))
+                .group_by(Alert.kind)
             )
             if folder_ids is not None:
                 stmt = stmt.where(
                     or_(Alert.folder_id.is_(None), Alert.folder_id.in_(folder_ids)),
                 )
-            return (await session.execute(stmt)).scalar_one()
+            return {kind: count for kind, count in (await session.execute(stmt)).all()}
+
+    async def unseen_count(self, *, folder_ids: list[uuid.UUID] | None = None) -> int:
+        """Every kind's unseen_counts_by_kind, added up."""
+        return sum((await self.unseen_counts_by_kind(folder_ids=folder_ids)).values())
 
     async def dismiss(self, alert_id: uuid.UUID) -> bool:
         """
@@ -1777,8 +1786,11 @@ class AlertRepository:
             result = await session.execute(stmt)
             return bool(result.rowcount > 0)  # type: ignore[attr-defined]
 
-    async def dismiss_all(self) -> int:
+    async def dismiss_all(self, *, kinds: list[str] | None = None) -> int:
         """Mark every currently-undismissed, delivered alert dismissed.
+
+        Args:
+            kinds: Only alerts of these kinds; None dismisses every kind
 
         Returns:
             The number of rows this call dismissed
@@ -1789,6 +1801,8 @@ class AlertRepository:
                 .where(Alert.delivered_at.is_not(None), Alert.dismissed_at.is_(None))
                 .values(dismissed_at=func.now())
             )
+            if kinds is not None:
+                stmt = stmt.where(Alert.kind.in_(kinds))
             result = await session.execute(stmt)
             return int(result.rowcount)  # type: ignore[attr-defined]
 

@@ -280,6 +280,29 @@ def _clear_the_bell(postgres_url: str) -> None:
     _run_seed(_run())
 
 
+def _seed_stalled_alert(postgres_url: str) -> str:
+    """One delivered stuck-message alert, the row outbox/stalled.py raises.
+    Returns its title."""
+
+    async def _run() -> str:
+        engine = create_async_engine(postgres_url)
+        title = f"stalled-send-{uuid.uuid4().hex[:8]}"
+        async with engine.begin() as conn:
+            alert_id = uuid.uuid4()
+            await conn.execute(
+                text(
+                    "INSERT INTO alerts (id, kind, deliver_at, delivered_at, title, body, "
+                    "dedupe_key) VALUES (:id, 'outbox_stalled', now(), now(), :title, "
+                    "'still waiting', :dedupe_key)"
+                ),
+                {"id": alert_id, "title": title, "dedupe_key": f"outbox-stalled:{alert_id}"},
+            )
+        await engine.dispose()
+        return title
+
+    return _run_seed(_run())
+
+
 def _put_mail_settings(base_url: str, data: dict[str, object]) -> None:
     httpx.put(
         f"{base_url}/api/settings/mail", json={"data": data}, timeout=30.0,
@@ -425,11 +448,12 @@ class TestBadgeSetting:
         _put_mail_settings(base, {"bell_badge_counts_new_mail": True})
         try:
             _clear_the_bell(postgres_url)
-            # Two new-mail alerts and one write failure.
+            # Two new-mail alerts, one write failure and one stuck send.
             _seed_alerts_and_a_notification(postgres_url)
+            stalled_title = _seed_stalled_alert(postgres_url)
 
             page.goto(base)
-            expect(page.get_by_test_id("bell-badge")).to_have_text("3", timeout=15_000)
+            expect(page.get_by_test_id("bell-badge")).to_have_text("4", timeout=15_000)
 
             page.goto(f"{base}/settings")
             # The mail category's generic renderer ties no label to its
@@ -447,14 +471,20 @@ class TestBadgeSetting:
             ):
                 page.get_by_role("button", name="Save", exact=True).click()
 
+            # The write failure and the stuck send are system notifications,
+            # which the setting never takes out of the badge.
             page.goto(base)
-            expect(page.get_by_test_id("bell-badge")).to_have_text("1", timeout=15_000)
+            expect(page.get_by_test_id("bell-badge")).to_have_text("2", timeout=15_000)
 
-            # The list itself is untouched by the setting.
+            # The lists are untouched by the setting: Mail holds the two
+            # new-mail alerts only, and the stuck send is listed under System.
             _open_bell(page)
-            expect(_popover(page).locator('[data-testid="alert-row"]')).to_have_count(
-                2, timeout=15_000,
-            )
+            popover = _popover(page)
+            expect(popover.locator('[data-testid="alert-row"]')).to_have_count(2, timeout=15_000)
+            popover.get_by_role("tab", name="System", exact=True).click()
+            expect(
+                popover.locator('[data-testid="alert-row"]').filter(has_text=stalled_title)
+            ).to_be_visible(timeout=15_000)
             page.keyboard.press("Escape")
         finally:
             _put_mail_settings(base, {"bell_badge_counts_new_mail": True})

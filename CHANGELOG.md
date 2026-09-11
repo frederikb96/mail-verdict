@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   marked read here or in another mail client, or archived. Mail that is already read by the time
   its alert would go out -- read on another device while the alert was still waiting on the
   pipeline, or arriving straight into Archive or Trash -- no longer raises a system notification.
+- An alert that is not about new mail -- a message stuck on its way out -- is a system
+  notification: it always counts on the bell, whatever "Bell badge counts new mail" says, and it
+  is listed under System rather than Mail. Each tab's "Dismiss all" now dismisses only what that
+  tab lists.
+- A stuck-message alert clears itself once the message is sent or its send is undone. One whose
+  message went dead stays, since that message never went out.
 
 ### Mail
 
