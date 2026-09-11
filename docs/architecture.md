@@ -277,6 +277,17 @@ draft's `messages.id`. PostIMAP appends the replacement first and only then remo
 names, so the two briefly coexist in Drafts; the composer renders from its own state rather than
 by re-reading the mailbox, which is what makes that gap invisible.
 
+Inserting an outbox row is itself the instruction to send, and nothing on PostIMAP's side notices
+two rows carrying the same message. So sending once is MailVerdict's guarantee to make, and the
+server makes it rather than trusting the browser: each composed message carries an idempotency key
+that a repeated request is collapsed onto, and a draft already on its way out cannot be sent a
+second time. The composer's own guards are what keep the button from being pressed twice; the
+server's are what hold when those fail.
+
+A message can also simply stop on its way out -- an outbox row PostIMAP never picks up fails
+nothing, so it produces no notification either. A periodic pass raises an alert, once, for anything
+waiting there longer than `outbox.stalled_alert_after_seconds`.
+
 ## Notifications
 
 A write to a column the contract grants is accepted immediately and reaches the mail server

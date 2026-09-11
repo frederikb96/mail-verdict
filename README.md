@@ -28,9 +28,11 @@ mirror, which is what keeps it simple.
   dragging its top edge or expanding to fill the window. A reply or forward embeds the original as
   a collapsible quote, replies thread correctly, and a sending identity is chosen for you —
   whichever address the original arrived at, or the account's starred default for a fresh message.
-  Reopening a draft continues editing it in place, and sending one leaves no draft behind. A send
-  can be undone for a few seconds after pressing Send, held durably on the server rather than in
-  the browser. Any message can be downloaded as a raw `.eml` file.
+  Reopening a draft continues editing it in place, and sending one leaves no draft behind. Pressing
+  Send takes the message out of the composer at once and sends it exactly once -- the server
+  refuses a repeat whatever the browser does -- and a failure brings the composer back as it was.
+  A send can be undone for a few seconds after pressing Send, held durably on the server rather
+  than in the browser. Any message can be downloaded as a raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
   touch device), and bulk actions over a selection or a whole folder, threaded or not. A folder
@@ -42,7 +44,8 @@ mirror, which is what keeps it simple.
   independently, so mail sitting in either long enough is permanently removed on its own.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
-  it happens.
+  it happens. A message still waiting on its way out long after it should have gone raises an
+  alert of its own, rather than waiting silently.
 - **Alerts** — new mail raises a bell with a durable, dismissable list, and — once notifications
   are turned on for a device — a system notification that reaches it even with no MailVerdict page
   open, using the browser's own Web Push. Which folders alert is a per-device setting; every

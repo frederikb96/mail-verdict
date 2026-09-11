@@ -100,6 +100,18 @@ interface ComposeFormProps {
   onMaximizedChange?: (maximized: boolean) => void;
 }
 
+/** A random v4 UUID. crypto.randomUUID() exists only in a secure context,
+ * and a self-hosted instance reached over plain HTTP is not one -- there
+ * it is undefined, and every Send would throw. getRandomValues() is
+ * available either way. */
+function newIdempotencyKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 /** Shared body for the new-mail dialog, the inline reply box, and the draft editor. */
 export function ComposeForm({
   accountId,
@@ -155,6 +167,24 @@ export function ComposeForm({
   // second one sees what the first just set.
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // "sending" hides the form and shows only that the message is on its
+  // way, so there is nothing left on screen to press twice. The form stays
+  // mounted underneath, which is what brings it back exactly as it was if
+  // the send fails.
+  const [phase, setPhase] = useState<"editing" | "sending">("editing");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  // Set once a submit succeeds and never cleared: what this composer held
+  // has been sent or saved, so nothing in it is unsaved any more, and
+  // submittingRef stays set so a later submit -- a host that has not
+  // closed it yet, a stray Enter -- has nothing left to do.
+  const [completed, setCompleted] = useState(false);
+  // One per kind for this composer's lifetime: the server answers a repeat
+  // of either with the row the first one created (outbox/submissions.py).
+  // Per kind, since a draft save and a send are never the same request.
+  const [idempotencyKeys] = useState(() => ({
+    send: newIdempotencyKey(),
+    draft: newIdempotencyKey(),
+  }));
 
   const { data: identities } = useIdentities(accountId);
   const createOutbox = useCreateOutbox();
@@ -184,14 +214,15 @@ export function ComposeForm({
   });
 
   const isDirty =
-    bodyDirty ||
-    justRestored ||
-    JSON.stringify(to) !== JSON.stringify(initialSnapshot.current.to) ||
-    JSON.stringify(cc) !== JSON.stringify(initialSnapshot.current.cc) ||
-    JSON.stringify(bcc) !== JSON.stringify(initialSnapshot.current.bcc) ||
-    subject !== initialSnapshot.current.subject ||
-    JSON.stringify(attachments.map((f) => f.name)) !==
-      JSON.stringify(initialSnapshot.current.attachmentNames);
+    !completed &&
+    (bodyDirty ||
+      justRestored ||
+      JSON.stringify(to) !== JSON.stringify(initialSnapshot.current.to) ||
+      JSON.stringify(cc) !== JSON.stringify(initialSnapshot.current.cc) ||
+      JSON.stringify(bcc) !== JSON.stringify(initialSnapshot.current.bcc) ||
+      subject !== initialSnapshot.current.subject ||
+      JSON.stringify(attachments.map((f) => f.name)) !==
+        JSON.stringify(initialSnapshot.current.attachmentNames));
 
   // Which local recovery slot this composer's own crash/reload/close-tab
   // buffer lives in -- see compose-recovery.ts. Not `to`/`cc`/`bcc`
@@ -285,6 +316,7 @@ export function ComposeForm({
           ...attachments.map(() => null),
           ...inlineImages.map((image) => image.contentId),
         ],
+        idempotency_key: idempotencyKeys[kind],
       },
       files: [...attachments, ...inlineImages.map((image) => image.file)],
     };
@@ -302,10 +334,13 @@ export function ComposeForm({
     }
     submittingRef.current = true;
     setIsSubmitting(true);
+    setSubmitError(null);
+    if (kind === "send") setPhase("sending");
     createOutbox.mutate(
       { data, attachments: files },
       {
         onSuccess: (result) => {
+          setCompleted(true);
           // A staged send (undo window above zero) is reported through
           // the undo banner instead of a toast -- the two would say the
           // same thing twice, and the banner is also where cancelling it
@@ -320,11 +355,10 @@ export function ComposeForm({
           onDone();
         },
         onError: (err) => {
-          pushToast(`Failed to queue message: ${err.message}`, "error", 0);
-        },
-        onSettled: () => {
           submittingRef.current = false;
           setIsSubmitting(false);
+          setPhase("editing");
+          setSubmitError(`${kind === "send" ? "Not sent" : "Not saved"}: ${err.message}`);
         },
       },
     );
@@ -347,11 +381,12 @@ export function ComposeForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return (
+  const form = (
     <div
       className={cn(
         "flex flex-col gap-2",
         resize.isMaximized && "h-full min-h-0 flex-1",
+        phase === "sending" && "hidden",
       )}
     >
       {!compact && <RecipientField value={to} onChange={setTo} placeholder="To" />}
@@ -453,6 +488,12 @@ export function ComposeForm({
         </div>
       )}
 
+      {submitError && (
+        <p role="alert" className="text-sm text-destructive">
+          {submitError}
+        </p>
+      )}
+
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">
           <input
@@ -504,6 +545,22 @@ export function ComposeForm({
         </div>
       </div>
     </div>
+  );
+
+  return (
+    <>
+      {phase === "sending" && (
+        <div
+          data-testid="compose-sending"
+          role="status"
+          className="flex items-center gap-2 py-6 text-sm text-muted-foreground"
+        >
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Sending...
+        </div>
+      )}
+      {form}
+    </>
   );
 }
 

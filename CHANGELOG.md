@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- Sending a reopened draft sends it once. The draft editor raised its "Save this message?"
+  prompt the moment a send succeeded, and dismissing the prompt left a composer whose Send still
+  worked -- pressing it again sent the same message a second time. Sending now closes the editor,
+  with no prompt, and leaves no draft behind.
+- Pressing Send takes the message out of the composer at once, into a visible sending state, so
+  there is nothing left to press twice. A failure brings the composer back exactly as it was,
+  with the reason shown inside it.
+- The server refuses to send one message twice whatever the browser does: a repeated request is
+  answered with the first one's result, and a second send of a draft that is already on its way
+  out is refused.
+- A message that waits on its way out far longer than it should -- not yet picked up by PostIMAP,
+  or held after its undo window -- now raises an alert in the bell, once, rather than sitting
+  there silently. The threshold is `outbox.stalled_alert_after_seconds` in `config/config.yaml`.
+
+### API
+
+- `POST /outbox` takes an optional `idempotency_key`. A repeat carrying the same key returns the
+  row the first request created instead of creating a second; reusing a key for a different kind
+  is refused with 409. A send naming a draft that another send is already carrying is refused
+  with 409.
+
 ## [5.6.1] - 2026-09-10
 
 ### Rules

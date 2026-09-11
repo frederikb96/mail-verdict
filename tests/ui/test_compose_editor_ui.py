@@ -560,6 +560,247 @@ class TestDraftReopenPreservesTheQuote:
         )
 
 
+def _reopen_a_saved_reply_draft(
+    page: Page,
+    app_server: str,
+    api_client: httpx.Client,
+    dovecot_endpoint: tuple[str, int, int],
+    editor_account: dict[str, Any],
+    inbox_folder: dict[str, Any],
+    drafts_folder: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    """Deliver a fresh original, reply to it, save the reply as a draft,
+    wait for the draft to land in Drafts, and reopen it in the draft
+    editor. Returns the draft's own message row -- its subject is unique to
+    this call, so counting anything by it counts only this test's own."""
+    host, _imap_port, lmtp_port = dovecot_endpoint
+    original_subject = f"UI {label} original {uuid.uuid4()}"
+    draft_subject = f"Re: {original_subject}"
+    message = build_eml(
+        sender="sender@example.com", recipient=editor_account["email"],
+        subject=original_subject, message_id=f"<{uuid.uuid4()}@example.com>",
+        body=f"Body for the {label} test.",
+    )
+    deliver_message(
+        message, host, lmtp_port,
+        sender="sender@example.com", recipient=editor_account["email"],
+    )
+
+    def _find_original() -> dict[str, Any] | None:
+        resp = api_client.get(
+            f"/api/accounts/{editor_account['id']}/messages",
+            params={"folder_id": inbox_folder["id"]},
+        )
+        return next(
+            (m for m in resp.json()["messages"] if m["subject"] == original_subject), None,
+        )
+
+    original = wait_for(_find_original, description=f"{original_subject!r} synced into INBOX")
+
+    page.goto(app_server)
+    select_account(page, editor_account)
+    mail_row(page, original["id"]).click()
+    page.get_by_role("button", name="Reply", exact=True).click()
+    body = page.get_by_test_id("mail-editor-body")
+    body.click()
+    body.type("A reply, saved as a draft.")
+    expect(body).to_contain_text("A reply, saved as a draft.")
+
+    page.get_by_role("button", name="Save draft", exact=True).click()
+    expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
+
+    _trigger_sync(api_client, editor_account["id"])
+    draft = wait_for(
+        lambda: next(
+            (m for m in _list_folder(api_client, editor_account["id"], drafts_folder["id"])
+             if m["subject"] == draft_subject), None,
+        ),
+        timeout_s=60.0, description=f"Draft {draft_subject!r} synced into Drafts",
+    )
+
+    page.goto(app_server)
+    select_account(page, editor_account)
+    _open_folder(page, drafts_folder)
+    mail_row(page, draft["id"]).click()
+    expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
+    return draft
+
+
+def _sends_for(
+    api_client: httpx.Client, account_id: str, subject: str,
+) -> list[dict[str, Any]]:
+    """Every send carrying this subject, still inside its undo window or
+    already handed on -- GET /api/outbox lists both."""
+    resp = api_client.get("/api/outbox", params={"account_id": account_id})
+    assert resp.status_code == 200, resp.text
+    return [row for row in resp.json() if row["kind"] == "send" and row["subject"] == subject]
+
+
+# Long enough for a send staged at the moment of pressing to leave its undo
+# window (settings.outbox.undo_send_seconds, 5 s by default) and reach the
+# outbox -- so a second send, had one been staged, would be counted too.
+_PAST_THE_UNDO_WINDOW_MS = 8_000
+
+
+class TestSendingAReopenedDraft:
+    """Sending from a reopened draft used to raise the unsaved-changes
+    prompt the moment the send succeeded -- the editor was still dirty when
+    it closed itself, so its own guard read the close as navigating away --
+    and dismissing that prompt left a composer whose Send worked a second
+    time. That is how one message reached its recipient twice."""
+
+    def test_sending_a_reopened_draft_sends_once_asks_nothing_and_removes_the_draft(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        drafts_folder: dict[str, Any],
+    ) -> None:
+        draft = _reopen_a_saved_reply_draft(
+            page, app_server, api_client, dovecot_endpoint,
+            editor_account, inbox_folder, drafts_folder, "send-draft",
+        )
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type(" Edited before sending.")
+        expect(body).to_contain_text("Edited before sending.")
+
+        page.get_by_role("button", name="Send", exact=True).click()
+
+        # The prompt came up within half a second of pressing Send, and
+        # stayed until the draft itself went away several seconds later --
+        # checked first, since the editor's later disappearance takes the
+        # prompt with it.
+        with pytest.raises(AssertionError):
+            expect(page.get_by_role("dialog", name="Save this message?")).to_be_visible(
+                timeout=3_000,
+            )
+        # The editor is done the moment the send is accepted.
+        expect(page.get_by_text("Editing draft")).not_to_be_visible(timeout=2_000)
+
+        page.wait_for_timeout(_PAST_THE_UNDO_WINDOW_MS)
+        sends = _sends_for(api_client, editor_account["id"], draft["subject"])
+        assert len(sends) == 1, f"expected exactly one send, got {sends}"
+
+        # Sending a draft leaves no draft behind: PostIMAP removes the one
+        # it names once the send has landed.
+        _trigger_sync(api_client, editor_account["id"])
+        wait_for(
+            lambda: all(
+                m["id"] != draft["id"]
+                for m in _list_folder(api_client, editor_account["id"], drafts_folder["id"])
+            ) or None,
+            timeout_s=60.0, description="Sent draft removed from Drafts",
+        )
+
+    def test_a_second_send_press_after_the_first_never_sends_twice(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        drafts_folder: dict[str, Any],
+    ) -> None:
+        """The exact sequence that sent twice: Send, then Escape out of
+        whatever came up, then Send again wherever one is still offered."""
+        draft = _reopen_a_saved_reply_draft(
+            page, app_server, api_client, dovecot_endpoint,
+            editor_account, inbox_folder, drafts_folder, "send-twice",
+        )
+        page.get_by_test_id("mail-editor-body").click()
+        page.keyboard.type(" One more line.")
+
+        page.get_by_role("button", name="Send", exact=True).click()
+        page.wait_for_timeout(1_000)
+        page.keyboard.press("Escape")
+        send_buttons = page.get_by_role("button", name="Send", exact=True)
+        for index in range(send_buttons.count()):
+            if send_buttons.nth(index).is_visible():
+                send_buttons.nth(index).click()
+                break
+
+        page.wait_for_timeout(_PAST_THE_UNDO_WINDOW_MS)
+        sends = _sends_for(api_client, editor_account["id"], draft["subject"])
+        assert len(sends) == 1, f"expected exactly one send, got {sends}"
+
+
+class TestSendingStateIsImmediate:
+    def test_send_shows_sending_at_once_and_a_failure_restores_the_composer(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        editor_account: dict[str, Any],
+    ) -> None:
+        """Pressing Send leaves the composer at once, into a visible sending
+        state -- there is nothing left to press twice -- and a failure puts
+        the composer back exactly as it was, with the error said."""
+        subject = f"UI sending state {uuid.uuid4()}"
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        dialog.get_by_role("combobox", name="To").fill("recipient@example.com")
+        dialog.get_by_role("textbox", name="Subject").fill(subject)
+        dialog.get_by_test_id("mail-editor-body").fill("Kept through a failed send.")
+
+        # Hold the send request so both the in-flight state and the failure
+        # are observed deterministically rather than raced.
+        held: list[Any] = []
+
+        def _hold_send(route: Any) -> None:
+            if route.request.method == "POST":
+                held.append(route)
+            else:
+                route.continue_()
+
+        page.route(lambda url: url.split("?")[0].endswith("/api/outbox"), _hold_send)
+
+        shown_within_a_frame = dialog.get_by_role("button", name="Send", exact=True).evaluate(
+            """async (button) => {
+                button.click();
+                await new Promise((resolve) => requestAnimationFrame(resolve));
+                return document.querySelector('[data-testid="compose-sending"]') !== null;
+            }"""
+        )
+        assert shown_within_a_frame, "no sending state within one frame of pressing Send"
+
+        for _ in range(100):
+            if held:
+                break
+            page.wait_for_timeout(100)
+        assert held, "the send request never left the browser"
+        expect(page.get_by_test_id("compose-sending")).to_be_visible()
+        expect(dialog.get_by_role("button", name="Send", exact=True)).not_to_be_visible()
+
+        held[0].fulfill(status=500, json={"detail": "Simulated failure"})
+
+        expect(page.get_by_test_id("compose-sending")).not_to_be_visible(timeout=10_000)
+        expect(dialog.get_by_role("alert")).to_contain_text("Simulated failure")
+        expect(dialog.get_by_test_id("mail-editor-body")).to_contain_text(
+            "Kept through a failed send.",
+        )
+        expect(dialog.get_by_role("textbox", name="Subject")).to_have_value(subject)
+        assert _sends_for(api_client, editor_account["id"], subject) == []
+
+        # The failure unlocked the composer rather than leaving it done --
+        # the same Send now goes through, once.
+        page.unroute_all()
+        dialog.get_by_role("button", name="Send", exact=True).click()
+        expect(dialog).not_to_be_visible(timeout=10_000)
+        wait_for(
+            lambda: _sends_for(api_client, editor_account["id"], subject) or None,
+            description=f"Send for {subject!r} accepted",
+        )
+        assert len(_sends_for(api_client, editor_account["id"], subject)) == 1
+
+
 class TestNavigatingAwayFromADirtyDraftPrompts:
     """A reopened draft is the one other composer in this app -- the same
     dirty-navigation guard ReplyBox registers for an in-progress reply
@@ -576,57 +817,10 @@ class TestNavigatingAwayFromADirtyDraftPrompts:
         inbox_folder: dict[str, Any],
         drafts_folder: dict[str, Any],
     ) -> None:
-        host, _imap_port, lmtp_port = dovecot_endpoint
-        stem = uuid.uuid4()
-        original_subject = f"UI draft-guard original {stem}"
-        draft_subject = f"Re: {original_subject}"
-        message = build_eml(
-            sender="sender@example.com", recipient=editor_account["email"],
-            subject=original_subject, message_id=f"<{uuid.uuid4()}@example.com>",
-            body="Body for the draft-guard test.",
+        _reopen_a_saved_reply_draft(
+            page, app_server, api_client, dovecot_endpoint,
+            editor_account, inbox_folder, drafts_folder, "draft-guard",
         )
-        deliver_message(
-            message, host, lmtp_port,
-            sender="sender@example.com", recipient=editor_account["email"],
-        )
-
-        def _find_original() -> dict[str, Any] | None:
-            resp = api_client.get(
-                f"/api/accounts/{editor_account['id']}/messages",
-                params={"folder_id": inbox_folder["id"]},
-            )
-            return next(
-                (m for m in resp.json()["messages"] if m["subject"] == original_subject), None,
-            )
-
-        original = wait_for(_find_original, description=f"{original_subject!r} synced into INBOX")
-
-        page.goto(app_server)
-        select_account(page, editor_account)
-        mail_row(page, original["id"]).click()
-        page.get_by_role("button", name="Reply", exact=True).click()
-        body = page.get_by_test_id("mail-editor-body")
-        body.click()
-        body.type("A reply, saved as a draft.")
-        expect(body).to_contain_text("A reply, saved as a draft.")
-
-        page.get_by_role("button", name="Save draft", exact=True).click()
-        expect(page.get_by_text("Draft saved")).to_be_visible(timeout=10_000)
-
-        _trigger_sync(api_client, editor_account["id"])
-        draft = wait_for(
-            lambda: next(
-                (m for m in _list_folder(api_client, editor_account["id"], drafts_folder["id"])
-                 if m["subject"] == draft_subject), None,
-            ),
-            timeout_s=60.0, description=f"Draft {draft_subject!r} synced into Drafts",
-        )
-
-        page.goto(app_server)
-        select_account(page, editor_account)
-        _open_folder(page, drafts_folder)
-        mail_row(page, draft["id"]).click()
-        expect(page.get_by_text("Editing draft")).to_be_visible(timeout=15_000)
 
         body = page.get_by_test_id("mail-editor-body")
         body.click()
