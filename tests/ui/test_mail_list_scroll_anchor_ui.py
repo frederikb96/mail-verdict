@@ -146,7 +146,9 @@ class TestMailListScrollAnchorUi:
         # Two folders exist on this account (the second is the move target
         # seeded above) -- the default folder selection is not guaranteed
         # to land on the one actually holding the mailbox under test.
-        page.get_by_role("button", name="INBOX", exact=True).click()
+        # The sidebar renders a special-use folder by role ("Inbox"), not
+        # its raw server name ("INBOX").
+        page.get_by_role("button", name="Inbox", exact=True).click()
 
         top_row = mail_row(page, message_ids[-1])
         expect(top_row).to_be_visible(timeout=15_000)

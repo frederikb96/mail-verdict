@@ -15,6 +15,7 @@ import {
   MailOpen,
   Mail as MailIcon,
   FileDown,
+  FolderInput,
   Search,
   ChevronUp,
   ChevronDown,
@@ -31,6 +32,7 @@ import { ReplyBox } from "@/components/mail/reply-box";
 import { DraftEditor } from "@/components/mail/draft-editor";
 import { ThreadMessage } from "@/components/mail/thread-message";
 import { BulkPanel } from "@/components/mail/bulk-panel";
+import { MoveToFolderPopover } from "@/components/mail/move-to-folder-popover";
 import { api } from "@/lib/api";
 import { useMailAction, useThread } from "@/hooks/use-mails";
 import { useVerdictFeedback } from "@/hooks/use-verdicts";
@@ -38,8 +40,14 @@ import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
 import { useAlerts, useDismissAlert } from "@/hooks/use-alerts";
-import { isEditableElement } from "@/lib/utils";
-import { explicitlyUnreadMailIdAtom, requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
+import { cn, isEditableElement } from "@/lib/utils";
+import { useIsMobile } from "@/hooks/use-mobile";
+import {
+  explicitlyUnreadMailIdAtom,
+  requestMoveDialogAtom,
+  requestSelectMailAtom,
+  selectedMailIdAtom,
+} from "@/lib/atoms";
 
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
@@ -47,6 +55,7 @@ export function ReadingPane() {
   const { count: selectionCount } = useSelection();
   const { data: thread, isLoading } = useThread(mailId);
   const mailAction = useMailAction();
+  const isMobile = useIsMobile();
   const verdictFeedback = useVerdictFeedback();
   const { data: alerts } = useAlerts();
   const dismissAlert = useDismissAlert();
@@ -60,6 +69,12 @@ export function ReadingPane() {
   const scrolledForMailIdRef = useRef<string | null>(null);
   const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
   const [confirmExpunge, setConfirmExpunge] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  // The `v` shortcut's route to the same picker the toolbar button opens --
+  // see requestMoveDialogAtom's own comment. Consumed by nonce so a stale
+  // request left over from a previous message does not reopen this one.
+  const requestMoveDialog = useAtomValue(requestMoveDialogAtom);
+  const consumedMoveNonceRef = useRef(0);
   // The id of the message someone explicitly marked unread, written by
   // useMailAction for every surface that can issue the action -- consulted,
   // never set, here. Without it, mark_unread's own refetch flips
@@ -172,6 +187,12 @@ export function ReadingPane() {
   }, [findOpen]);
 
   useEffect(() => {
+    if (!requestMoveDialog || requestMoveDialog.nonce === consumedMoveNonceRef.current) return;
+    consumedMoveNonceRef.current = requestMoveDialog.nonce;
+    if (mailId) setMoveOpen(true);
+  }, [requestMoveDialog, mailId]);
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!primary || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
       // Already open: swallow the keystroke rather than falling through to
@@ -246,12 +267,28 @@ export function ReadingPane() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* Subject and the consolidated action row for the opened message. */}
-      <div className="flex items-start justify-between gap-4 border-b p-4">
+      {/* Subject and the consolidated action row for the opened message.
+          On a phone the subject gets its own full-width line rather than
+          being squeezed beside up to ten icon buttons -- the toolbar wraps
+          onto its own row(s) below instead of forcing the subject into a
+          narrow column. */}
+      <div
+        className={cn(
+          "gap-2 border-b p-4",
+          isMobile ? "flex flex-col items-stretch" : "flex items-start justify-between gap-4",
+        )}
+      >
         <h2 className="text-lg font-semibold leading-tight">
           {primary.subject ?? "(no subject)"}
         </h2>
-        <div role="toolbar" aria-label="Message actions" className="flex shrink-0 items-center gap-1">
+        <div
+          role="toolbar"
+          aria-label="Message actions"
+          className={cn(
+            "flex shrink-0 items-center gap-1",
+            isMobile && "flex-wrap",
+          )}
+        >
           {messages.length > 1 && (
             <Badge variant="secondary" className="mr-1">
               {messages.length} messages
@@ -296,6 +333,9 @@ export function ReadingPane() {
           >
             <FileDown className="h-4 w-4" />
           </a>
+          {/* Grouped rather than seven-plus equal icons in a row: tools
+              (find/star/download) above, state and triage below. */}
+          {!isMobile && <Separator orientation="vertical" className="mx-1 h-5" />}
           <Button
             variant="ghost"
             size="icon"
@@ -312,6 +352,7 @@ export function ReadingPane() {
           >
             {primary.is_seen ? <MailIcon className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
           </Button>
+          {!isMobile && <Separator orientation="vertical" className="mx-1 h-5" />}
           <Button
             variant="ghost"
             size="icon"
@@ -328,6 +369,24 @@ export function ReadingPane() {
           >
             <Archive className="h-4 w-4" />
           </Button>
+          <MoveToFolderPopover
+            accountId={primary.account_id}
+            currentFolderId={primary.folder_id}
+            open={moveOpen}
+            onOpenChange={setMoveOpen}
+            onMove={(targetFolderId) =>
+              mailAction.mutate({
+                mailId: primary.id,
+                accountId: primary.account_id,
+                action: { action: "move", target_folder_id: targetFolderId },
+              })
+            }
+            trigger={
+              <Button variant="ghost" size="icon" className="h-8 w-8" title="Move to…" aria-label="Move to…">
+                <FolderInput className="h-4 w-4" />
+              </Button>
+            }
+          />
           {/* Both controls appear on every message carrying a verdict,
               whichever way it went -- up always confirms it, down always
               corrects it. Which is which is decided here, once, rather

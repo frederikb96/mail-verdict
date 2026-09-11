@@ -176,7 +176,7 @@ export function ThreadMessage({
         className="flex w-full items-center gap-3 border-b px-4 py-2.5 text-left hover:bg-accent/50"
       >
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <InitialsAvatar name={senderName} size="sm" photoUrl={senderPhotoUrl} />
+        <InitialsAvatar name={senderName} size="sm" photoUrl={senderPhotoUrl} colorSeed={senderEmail || senderName} />
         <span
           className={mail.is_seen ? "font-medium" : "font-semibold"}
         >
@@ -217,7 +217,7 @@ export function ThreadMessage({
       >
         <div className="flex min-w-0 items-start gap-2">
           <div className="cursor-default" onClick={(e) => e.stopPropagation()}>
-            <InitialsAvatar name={senderName} photoUrl={senderPhotoUrl} />
+            <InitialsAvatar name={senderName} photoUrl={senderPhotoUrl} colorSeed={senderEmail || senderName} />
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
             <span>

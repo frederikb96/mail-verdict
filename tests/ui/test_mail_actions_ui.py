@@ -978,9 +978,12 @@ class TestMailActionsUi:
         # earlier modules in the same session have created accounts of
         # their own by the time this one runs.
         select_account(page, ui_account)
-        expect(
-            page.get_by_role("button", name=re.compile("Connection status: Connected")),
-        ).to_be_visible(timeout=15_000)
+        # The connection indicator is absent while healthy -- see
+        # test_connection_indicator_is_absent_while_healthy below -- so
+        # this waits on the folder itself being live instead of a "SSE has
+        # connected" proxy; the mail arriving live further down is what
+        # actually proves it.
+        expect(page.locator('[data-testid="folder"]').first).to_be_visible(timeout=15_000)
 
         subject = f"Arrived live {uuid.uuid4()}"
         host, _imap_port, lmtp_port = dovecot_endpoint
@@ -993,6 +996,21 @@ class TestMailActionsUi:
         )
 
         expect(page.get_by_text(subject)).to_be_visible(timeout=45_000)
+
+    def test_connection_indicator_is_absent_while_healthy(
+        self, page: Page, app_server: str, ui_account: dict[str, Any],
+    ) -> None:
+        """A permanent "Connected" said nothing actionable and sat in the
+        header's most valuable strip of screen on every page -- it now
+        only ever appears when there is something to notice."""
+        page.goto(app_server)
+        select_account(page, ui_account)
+        expect(page.locator('[data-testid="folder"]').first).to_be_visible(timeout=15_000)
+
+        with pytest.raises(AssertionError):
+            expect(
+                page.get_by_role("button", name=re.compile("Connection status")),
+            ).to_be_visible(timeout=3_000)
 
     def test_mobile_list_to_reading_pane_and_back(
         self, page: Page, app_server: str, api_client: httpx.Client,
@@ -1911,7 +1929,9 @@ class TestMailActionsUi:
         )
         expect(mail_row(page, other["id"])).to_be_visible(timeout=15_000)
 
-        filter_input = page.get_by_placeholder("Filter this folder…")
+        # By label, not placeholder -- the placeholder itself is now the
+        # short "Filter…" so it never clips at the list's minimum width.
+        filter_input = page.get_by_label("Filter this folder by subject, sender or recipient")
         filter_input.fill(marker)
 
         target_row = mail_row(page, target["id"])

@@ -39,13 +39,14 @@ mirror, which is what keeps it simple.
   than in the browser. Any message can be downloaded as a raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
-  touch device), and bulk actions over a selection or a whole folder, threaded or not. A folder
-  can be worked through from the keyboard alone: the arrow keys move the reading pane between
-  messages, `e` archives, `Delete` trashes, `r` toggles read and unread, and whatever takes the
-  open message out of the list opens the next one in the direction you were already going.
-  Archiving a message, or filing it as spam, marks it read as it moves, and mail in Archive or
-  Trash stays read even when another client put it there — a setting turns this off for Archive
-  and Junk.
+  touch device) or a type-to-filter "Move to..." picker in the reading pane, and bulk actions over
+  a selection or a whole folder, threaded or not. A folder can be worked through from the keyboard
+  alone: the arrow keys move the reading pane between messages, `c` composes, `a` replies all, `f`
+  forwards, `v` moves the open message, `e` archives, `Delete` trashes, `r` toggles read and
+  unread, `/` focuses search, `?` lists every shortcut, and whatever takes the open message out of
+  the list opens the next one in the direction you were already going. Archiving a message, or
+  filing it as spam, marks it read as it moves, and mail in Archive or Trash stays read even when
+  another client put it there — a setting turns this off for Archive and Junk.
   An account can also be given a Trash retention and a Junk retention, each in days and set
   independently, so mail sitting in either long enough is permanently removed on its own.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
@@ -66,7 +67,8 @@ mirror, which is what keeps it simple.
   Junk, for confirming or correcting them singly or in bulk. Historical mail is never classified,
   and nothing is classified twice.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
-- **Search** — text search scoped to whichever accounts, folders and fields (subject, from, to,
+- **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
+  result; text search scoped to whichever accounts, folders and fields (subject, from, to,
   body) you pick, ranked by whether the word itself matched rather than merely started a longer
   one, then by where the match lands and newest first within that, with a typo-tolerant fallback
   for a query the primary match misses entirely; plus semantic search over an embedding of every

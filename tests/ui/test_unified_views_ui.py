@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import re
+import time
 import uuid
 from collections.abc import Coroutine
 from typing import Any
@@ -251,7 +252,9 @@ class TestUnifiedViewToolbar:
         expect(mail_row(page, first["id"])).to_be_visible(timeout=15_000)
         expect(answer_row).to_be_visible()
 
-        page.get_by_placeholder("Filter this view…").fill(loner_token)
+        # By label, not placeholder -- the placeholder itself is now the
+        # short "Filter…" so it never clips at the list's minimum width.
+        page.get_by_label("Filter this view by subject, sender or recipient").fill(loner_token)
         expect(mail_row(page, loner["id"])).to_be_visible(timeout=15_000)
         expect(answer_row).not_to_be_visible(timeout=15_000)
         expect(mail_row(page, first["id"])).not_to_be_visible()
@@ -434,6 +437,100 @@ class TestRows:
             assert row_backgrounds[0] != row_backgrounds[1], row_backgrounds
         finally:
             context.close()
+
+
+class TestUnreadOnlyKeepsReadRow:
+    def test_a_message_read_while_visible_stays_until_navigation(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+    ) -> None:
+        account = create_account(api_client, "uv-unread-keep")
+        inbox = wait_for_folder(api_client, account["id"], "INBOX")
+        marker = uuid.uuid4().hex[:8]
+        target = _deliver(dovecot_endpoint, api_client, account, inbox["id"], f"Keep {marker}")
+
+        _goto(page, app_server)
+        select_account(page, account)
+        toggle = _unread_toggle(page)
+        toggle.click()
+        expect(toggle).to_have_attribute("aria-pressed", "true")
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        row.click()
+        expect(page.get_by_role("heading", name=target["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        def _read() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["is_seen"] else None
+
+        wait_for(_read, description=f"{target['subject']!r} marked read on open")
+
+        # Long enough for the window refresh that follows the mark-read
+        # settling to have run -- a naive re-filter against is_seen=false
+        # would drop this row right here.
+        time.sleep(2.0)
+        expect(row).to_be_visible()
+
+        # Turning the filter off and back on is a fresh list -- unlike
+        # leaving it open, this does not keep the row.
+        toggle.click()
+        expect(toggle).to_have_attribute("aria-pressed", "false")
+        toggle.click()
+        expect(toggle).to_have_attribute("aria-pressed", "true")
+        expect(row).not_to_be_visible(timeout=15_000)
+
+
+class TestKeyboardActionInUnifiedView:
+    def test_trash_shortcut_moves_the_message_in_its_own_account(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+    ) -> None:
+        # Two accounts sharing one view -- a row's account is real, never
+        # the pseudo-id "unified", so a keyboard action on it must resolve
+        # against that one account's own Trash rather than falling back to
+        # something that names no account at all.
+        account_a = create_account(api_client, "uv-kbd-a")
+        account_b = create_account(api_client, "uv-kbd-b")
+        inbox_a = wait_for_folder(api_client, account_a["id"], "INBOX")
+        inbox_b = wait_for_folder(api_client, account_b["id"], "INBOX")
+        trash_a = wait_for_folder(api_client, account_a["id"], "Trash")
+        marker = uuid.uuid4().hex[:8]
+        target = _deliver(dovecot_endpoint, api_client, account_a, inbox_a["id"], f"Kbd {marker}")
+        # A second account's own mail sits in the same list, so a wrong
+        # fallback landing on the other account's folders would be visible.
+        _deliver(dovecot_endpoint, api_client, account_b, inbox_b["id"], f"Other {marker}")
+        view = f"Kbd check {marker}"
+        for folder_id in (inbox_a["id"], inbox_b["id"]):
+            add_folder_to_unified_view(api_client, folder_id, view)
+        _wait_for_view(api_client, view, 2)
+
+        _goto(page, app_server)
+        _select_unified_view(page)
+        _open_unified_folder(page, view)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+        expect(page.get_by_role("heading", name=target["subject"], exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        page.keyboard.press("Delete")
+        expect(row).not_to_be_visible(timeout=15_000)
+
+        def _in_trash_a() -> bool | None:
+            detail = api_client.get(f"/api/messages/{target['id']}").json()
+            return True if detail["folder_id"] == trash_a["id"] else None
+
+        wait_for(_in_trash_a, description=f"{target['subject']!r} moved to account A's Trash")
 
 
 class TestAlertOpensTheMessageWhereItIsNow:

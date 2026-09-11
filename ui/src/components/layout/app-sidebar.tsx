@@ -27,6 +27,7 @@ import { usePathname, useRouter } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import { Truncate } from "@/components/ui/truncate";
+import { folderDisplayName } from "@/lib/folders";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -111,11 +112,6 @@ function getFolderIcon(folder: FolderResponse | FolderOrderItem) {
     return SPECIAL_USE_ICONS[specialUse];
   }
   return Folder;
-}
-
-function getFolderDisplayName(folder: FolderResponse): string {
-  if (folder.display_name) return folder.display_name;
-  return folder.imap_name;
 }
 
 /** Which accounts feed a merged unified folder, deduplicated -- a folder
@@ -445,25 +441,22 @@ export function AppSidebar() {
                         <DroppableFolder
                           key={folder.folder_id}
                           folderId={folder.folder_id}
-                          folderName={folder.display_name || folder.imap_name}
+                          folderName={folderDisplayName(folder)}
                         >
                           <SidebarMenuItem className="flex items-center gap-1">
                             <SidebarMenuButton
                               isActive={isActive}
                               onClick={() => handleFolderSelect(folder.folder_id)}
-                              tooltip={folder.display_name || folder.imap_name}
+                              tooltip={folder.imap_name}
                             >
                               <Icon className="h-4 w-4" />
-                              <Truncate
-                                text={folder.display_name || folder.imap_name}
-                                className="flex-1"
-                              />
+                              <Truncate text={folderDisplayName(folder)} className="flex-1" />
                             </SidebarMenuButton>
                             {selectedAccountId && (
                               <FolderRowMenu
                                 accountId={selectedAccountId}
                                 folderId={folder.folder_id}
-                                folderName={folder.display_name || folder.imap_name}
+                                folderName={folderDisplayName(folder)}
                                 badgeCount={getFolderBadgeCount(folder)}
                                 totalCount={folder.total_count}
                               />
@@ -479,22 +472,22 @@ export function AppSidebar() {
                         <DroppableFolder
                           key={folder.id}
                           folderId={folder.id}
-                          folderName={getFolderDisplayName(folder)}
+                          folderName={folderDisplayName(folder)}
                         >
                           <SidebarMenuItem className="flex items-center gap-1">
                             <SidebarMenuButton
                               isActive={isActive}
                               onClick={() => handleFolderSelect(folder.id)}
-                              tooltip={getFolderDisplayName(folder)}
+                              tooltip={folder.imap_name}
                             >
                               <Icon className="h-4 w-4" />
-                              <Truncate text={getFolderDisplayName(folder)} className="flex-1" />
+                              <Truncate text={folderDisplayName(folder)} className="flex-1" />
                             </SidebarMenuButton>
                             {selectedAccountId && (
                               <FolderRowMenu
                                 accountId={selectedAccountId}
                                 folderId={folder.id}
-                                folderName={getFolderDisplayName(folder)}
+                                folderName={folderDisplayName(folder)}
                                 badgeCount={getFolderBadgeCount(folder)}
                                 totalCount={folder.total_count}
                               />

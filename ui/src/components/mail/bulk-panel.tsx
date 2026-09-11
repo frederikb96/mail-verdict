@@ -29,6 +29,7 @@ import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useBulkAction, useSelection } from "@/hooks/use-selection";
 import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import { useToast } from "@/hooks/use-toast";
+import { folderDisplayName } from "@/lib/folders";
 import { cn } from "@/lib/utils";
 import { isUnifiedViewAtom, selectedAccountIdAtom } from "@/lib/atoms";
 import type { BulkActionType } from "@/types/api";
@@ -162,9 +163,11 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
               : folders.map((folder) => (
                   <DropdownMenuItem
                     key={folder.folder_id}
-                    onClick={() => run("move", folder.folder_id, `Move to ${folder.imap_name}`)}
+                    onClick={() =>
+                      run("move", folder.folder_id, `Move to ${folderDisplayName(folder)}`)
+                    }
                   >
-                    {folder.imap_name}
+                    {folderDisplayName(folder)}
                   </DropdownMenuItem>
                 ))}
           </DropdownMenuContent>

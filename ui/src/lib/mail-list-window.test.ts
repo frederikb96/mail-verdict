@@ -79,6 +79,32 @@ test("a message with no date sits above every dated one, as the server orders it
   assert.deepEqual(ids(merged.rows), ["undated", row(1).id, row(2).id]);
 });
 
+test("a preserved row a fresh unread-only read no longer returns stays, in position", () => {
+  // Reading row(2) while an unread-only window is open drops it from the
+  // server's own fresh read (it is no longer unread) -- preserveIds keeps
+  // it visible anyway, sorted back into its real chronological position.
+  const current = [row(1), row(2), row(3)];
+  const fresh = [row(1), row(3)];
+  const merged = mergeRefreshedWindow(current, fresh, false, true, new Set([row(2).id]));
+  assert.deepEqual(ids(merged.rows), ids([row(1), row(2), row(3)]));
+});
+
+test("a preserved id already present in the fresh read is not duplicated", () => {
+  const current = [row(1), row(2), row(3)];
+  const fresh = [row(1), row(2), row(3)];
+  const merged = mergeRefreshedWindow(current, fresh, false, false, new Set([row(2).id]));
+  assert.deepEqual(ids(merged.rows), ids([row(1), row(2), row(3)]));
+});
+
+test("a preserved id for a row that has genuinely left the folder is not resurrected", () => {
+  // preserveIds only ever matters against rows still in `current` -- an id
+  // from an unrelated list can never appear there, so it has no effect.
+  const current = [row(1), row(3)];
+  const fresh = [row(1), row(3)];
+  const merged = mergeRefreshedWindow(current, fresh, false, false, new Set(["never-loaded"]));
+  assert.deepEqual(ids(merged.rows), ids([row(1), row(3)]));
+});
+
 test("the refresh reads the loaded window plus slack, capped", () => {
   assert.equal(windowRefreshLimit(0), 50);
   assert.equal(windowRefreshLimit(150), 200);

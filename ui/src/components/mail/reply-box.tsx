@@ -18,6 +18,7 @@ import { api } from "@/lib/api";
 import {
   activeReplyDirtyForThreadIdAtom,
   blockedMailSelectionAtom,
+  requestReplyModeAtom,
   selectedMailIdAtom,
 } from "@/lib/atoms";
 import { cn } from "@/lib/utils";
@@ -121,6 +122,21 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
       })
       .finally(() => setLoading(false));
   };
+
+  // The `a`/`f` keyboard shortcuts (use-keyboard-shortcuts.ts) start a
+  // reply-all or forward on whatever this box represents -- the only
+  // instance mounted while a message is open. Tracked by nonce so a
+  // stale request already consumed by a previous message's box (still in
+  // the atom when this one mounts) is never replayed, and a mode already
+  // open is left alone rather than restarted underneath the reader.
+  const requestReplyMode = useAtomValue(requestReplyModeAtom);
+  const consumedReplyModeNonceRef = useRef(0);
+  useEffect(() => {
+    if (!requestReplyMode || requestReplyMode.nonce === consumedReplyModeNonceRef.current) return;
+    consumedReplyModeNonceRef.current = requestReplyMode.nonce;
+    if (mode === null) start(requestReplyMode.mode);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestReplyMode]);
 
   const reset = () => {
     setMode(null);

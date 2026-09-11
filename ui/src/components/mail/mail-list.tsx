@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useMailList, useMailAction, useMarkConversationRead } from "@/hooks/use-mails";
+import { clearKeptWhileUnread } from "@/lib/mail-list-window";
 import { useFolders } from "@/hooks/use-folders";
 import { useAccount, useAccounts } from "@/hooks/use-accounts";
 import { accountConnectionState, useSyncStatus } from "@/hooks/use-sync-status";
@@ -217,8 +218,12 @@ export function MailList() {
   // whether any of its own dependencies moved. It is not a belt-and-braces
   // convenience on top of the guard -- for the view-round-trip shape, it
   // is the only thing that does the clearing.
+  // unreadOnly's own toggle is in these deps too: turning it off and back
+  // on drops whatever it was keeping visible, the same as leaving and
+  // returning to the folder does -- see keptWhileUnreadIds' own comment.
   useEffect(() => {
     clearSelection();
+    clearKeptWhileUnread();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, folderId, isUnifiedView, selectedUnifiedFolder, threaded, unreadOnly]);
 
@@ -701,7 +706,11 @@ export function MailList() {
           <Input
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
-            placeholder={isUnifiedView ? "Filter this view…" : "Filter this folder…"}
+            // Short enough to never clip at the list's own minimum width
+            // (300px) or on a phone -- the scope is already obvious from
+            // where the field sits, and the full sentence survives as the
+            // aria-label below.
+            placeholder="Filter…"
             aria-label={
               isUnifiedView
                 ? "Filter this view by subject, sender or recipient"

@@ -1,56 +1,62 @@
 /** Date and size formatting utilities. */
 
-import { format as formatDate } from "date-fns";
+import {
+  differenceInCalendarDays,
+  differenceInMinutes,
+  format as formatDate,
+  isToday as dfIsToday,
+  isYesterday as dfIsYesterday,
+} from "date-fns";
 
 /**
- * Format a date string as a relative time (e.g., "2h ago", "Yesterday")
- * or absolute date for older items.
+ * The one date/time convention every timestamp in the app uses -- day
+ * first, 24-hour, independent of the browser's own locale (the same
+ * reasoning as the calendar's DATE_TIME_DISPLAY_FORMAT in lib/dates.ts:
+ * an English-locale browser with a German user is exactly the mismatch
+ * this exists to avoid). A mail list column reads relative-to-today
+ * rather than as a plain date -- see formatRelativeDate below -- but
+ * both resolve to this same day-month ordering and 24-hour clock.
+ */
+
+/**
+ * A list row's timestamp: the time for anything received today, the
+ * weekday name for the six days before that, and a day-first date
+ * beyond it -- with the year appended only once it is not the current
+ * one. Never a relative duration ("2h", "3d"): those drift as the clock
+ * moves on without the row re-rendering, so a message read minutes ago
+ * looks identical to one read yesterday until the next paint.
  */
 export function formatRelativeDate(dateStr: string | null): string {
   if (!dateStr) return "";
   const date = new Date(dateStr);
   const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffMin = Math.floor(diffMs / 60_000);
-  const diffHours = Math.floor(diffMs / 3_600_000);
-  const diffDays = Math.floor(diffMs / 86_400_000);
 
-  if (diffMin < 1) return "now";
-  if (diffMin < 60) return `${diffMin}m`;
-  if (diffHours < 24) return `${diffHours}h`;
-  if (diffDays === 1) return "Yesterday";
-  if (diffDays < 7) return `${diffDays}d`;
+  if (dfIsToday(date)) return formatDate(date, "HH:mm");
+  if (dfIsYesterday(date)) return "Yesterday";
+  if (differenceInCalendarDays(now, date) < 7) return formatDate(date, "EEE");
 
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
+  return formatDate(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
 }
 
 /** formatRelativeDate() plus the trailing "ago" a sentence like "Synced
- * ... ago" needs -- only for the forms that read as a duration ("5m",
- * "2h", "3d"). "now", "Yesterday" and an absolute date already read fine
- * as a sentence's tail without it; appending "ago" to any of those reads
- * as "Synced now ago" / "Synced Yesterday ago". */
+ * ... ago" needs -- only for a message received within the last hour,
+ * the one case formatRelativeDate reads as a bare clock time that would
+ * otherwise make no sense mid-sentence ("Synced 14:32"). Everything
+ * older already reads fine as a sentence's tail without it. */
 export function formatRelativeAgo(dateStr: string | null): string {
-  const relative = formatRelativeDate(dateStr);
-  if (relative === "now") return "just now";
-  if (/^\d+[mhd]$/.test(relative)) return `${relative} ago`;
-  return relative;
+  if (!dateStr) return "";
+  const minutesAgo = differenceInMinutes(new Date(), new Date(dateStr));
+  if (minutesAgo < 1) return "just now";
+  if (minutesAgo < 60) return `${minutesAgo}m ago`;
+  return formatRelativeDate(dateStr);
 }
 
-/** Format a full date for display in reading pane header. */
+/** The full date/time shown in the reading pane and thread header --
+ * weekday, day-first date, 24-hour time, in the app's one convention
+ * rather than the browser's locale. */
 export function formatFullDate(dateStr: string | null): string {
   if (!dateStr) return "";
-  return new Date(dateStr).toLocaleString(undefined, {
-    weekday: "short",
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatDate(new Date(dateStr), "EEE, d MMM yyyy, HH:mm");
 }
 
 /** Format file size in human-readable form. */
@@ -96,16 +102,19 @@ export function formatAddresses(
   return addrs;
 }
 
-/** A recipient line for a search result row: display names only (dropping
- * the address the way the from column already does), joined and truncated
- * to a small, fixed count with a "+N more" tail rather than growing the
- * row for a message with a long recipient list. `null`/empty -- no To at
- * all, which a genuinely to-less message can have -- renders nothing. */
+/** A recipient line for a search result row: the full address rather than
+ * just its display name -- a name alone is ambiguous the moment two of
+ * the reader's own addresses share it (several Posteo identities, say),
+ * which a bare local part or display name cannot disambiguate. Joined and
+ * truncated to a small, fixed count with a "+N more" tail rather than
+ * growing the row for a message with a long recipient list. `null`/empty
+ * -- no To at all, which a genuinely to-less message can have -- renders
+ * nothing. */
 export function formatRecipientList(addrs: string[] | null, maxShown = 3): string | null {
   if (!addrs || addrs.length === 0) return null;
-  const names = addrs.map((a) => extractSenderName(a));
-  if (names.length <= maxShown) return names.join(", ");
-  return `${names.slice(0, maxShown).join(", ")} +${names.length - maxShown} more`;
+  const emails = addrs.map((a) => extractEmail(a));
+  if (emails.length <= maxShown) return emails.join(", ");
+  return `${emails.slice(0, maxShown).join(", ")} +${emails.length - maxShown} more`;
 }
 
 /** Parse a comma/semicolon-separated address field into a list. This does

@@ -60,6 +60,7 @@ from mail_verdict.core.sanitizer import (
     rewrite_remote_images,
     sanitize_email_html,
 )
+from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Attachment, Folder, Message
 from mail_verdict.database.repository import FolderRepository
@@ -86,9 +87,9 @@ account_router = APIRouter(prefix="/accounts/{account_id}/messages", tags=["mess
 # A list row (MessageSummary) never renders these -- deferring them keeps a
 # page of the list from pulling the full raw message and its HTML body
 # across the wire for every row just to read a sender and a subject.
-# body_text stays eager: the list snippet reads the first 120 characters of
-# it, and a deferred attribute accessed outside the session's own greenlet
-# raises MissingGreenlet rather than lazy-loading, the way it would sync.
+# body_text stays eager: the list snippet (build_snippet) reads it, and a
+# deferred attribute accessed outside the session's own greenlet raises
+# MissingGreenlet rather than lazy-loading, the way it would sync.
 _LIST_DEFERRED_COLUMNS = (
     defer(Message.raw_source),
     defer(Message.raw_headers),
@@ -123,7 +124,7 @@ def _flat_summary(m: Message) -> MessageSummary:
         is_draft=m.is_draft,
         is_truncated=m.is_truncated,
         pending_sync=m.imap_uid is None,
-        snippet=m.body_text[:120] if m.body_text else None,
+        snippet=build_snippet(m.body_text),
         mirrored_at=m.created_at,
     )
 
@@ -144,7 +145,7 @@ def _threaded_summary(m: Message, thread_count: int, unread_in_thread: int) -> M
         is_draft=m.is_draft,
         is_truncated=m.is_truncated,
         pending_sync=m.imap_uid is None,
-        snippet=m.body_text[:120] if m.body_text else None,
+        snippet=build_snippet(m.body_text),
         thread_count=thread_count,
         unread_in_thread=unread_in_thread,
         mirrored_at=m.created_at,
@@ -723,7 +724,7 @@ async def get_message(
         is_answered=msg.is_answered,
         is_draft=msg.is_draft,
         keywords=msg.keywords or [],
-        snippet=msg.body_text[:120] if msg.body_text else None,
+        snippet=build_snippet(msg.body_text),
         created_at=msg.created_at,
         has_blocked_images=has_blocked_images,
         images_allowed=images_allowed,
@@ -844,7 +845,7 @@ async def get_thread(
                     received_at=m.received_at, size_bytes=m.size_bytes,
                     is_seen=m.is_seen, is_flagged=m.is_flagged, is_answered=m.is_answered,
                     is_draft=m.is_draft, keywords=m.keywords or [],
-                    snippet=m.body_text[:120] if m.body_text else None,
+                    snippet=build_snippet(m.body_text),
                     created_at=m.created_at, has_blocked_images=has_blocked,
                     images_allowed=images_allowed,
                     tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],

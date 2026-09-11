@@ -10,11 +10,24 @@ import { useContactPhotoIndex } from "@/hooks/use-contacts";
 import { isRowUnread } from "@/lib/mail-unread";
 import type { MailRowAction, MessageSummary } from "@/types/api";
 
-// Opacity/pointer-events only -- these float over the row's own background
-// rather than reserving layout space, so the sender/subject/snippet keep
-// the row's full width whether or not the pointer is anywhere near it.
+// Opacity/pointer-events only -- these are ordinary flex children (or, for
+// the checkbox slot, absolutely positioned over the avatar) rather than a
+// second layer floating over the row's content, so nothing here can ever
+// overprint the subject or snippet text below.
+//
+// Keyed on DragMail's own [data-kbd-focus], not :focus-within: its wrapper
+// is the row's one real tab stop (dnd-kit puts tabIndex there for
+// keyboard-driven dragging), and an ordinary mouse click focuses it the
+// same as a Tab press does. :focus-within cannot tell those apart, so a
+// clicked-open row kept showing its hover state -- checkbox instead of
+// avatar, actions pinned open -- for as long as it stayed selected.
+// :focus-visible would answer this correctly for a real Tab press, but
+// not for a *programmatic* .focus() call (an accessibility test, an
+// assistive technology), which Chromium's own heuristic there often does
+// not grant -- data-kbd-focus is DragMail's own hand-rolled equivalent,
+// which does.
 const revealOnHoverClass =
-  "opacity-0 pointer-events-none group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto";
+  "opacity-0 pointer-events-none group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[kbd-focus]/row:opacity-100 group-data-[kbd-focus]/row:pointer-events-auto";
 
 interface MailListItemProps {
   mail: MessageSummary;
@@ -122,11 +135,12 @@ export function MailListItem({
         <InitialsAvatar
           name={senderName}
           photoUrl={photoUrl}
+          colorSeed={senderEmail || senderName}
           className={cn(
             "absolute inset-0",
             selectionMode
               ? "hidden"
-              : "opacity-100 transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0",
+              : "opacity-100 transition-opacity group-hover/row:opacity-0 group-data-[kbd-focus]/row:opacity-0",
           )}
           badge={
             accountEmoji && (
@@ -141,7 +155,7 @@ export function MailListItem({
             "absolute inset-0 flex items-center justify-center",
             selectionMode
               ? "opacity-100"
-              : "opacity-0 pointer-events-none transition-opacity group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-focus-within/row:opacity-100 group-focus-within/row:pointer-events-auto",
+              : "opacity-0 pointer-events-none transition-opacity group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[kbd-focus]/row:opacity-100 group-data-[kbd-focus]/row:pointer-events-auto",
           )}
         >
           <Checkbox
@@ -156,12 +170,11 @@ export function MailListItem({
         </div>
       </div>
 
-      {/* Content -- always the row's full width; the hover-only controls
-          below float over it. Star (once flagged) is the one control a row
-          shows *persistently*, so it lives here in a real, reserved slot
-          next to the timestamp, beside the read/unread toggle that only
-          appears on hover -- never the row's vertical centre line, which
-          for a two-line row (no snippet) sits across the very text above. */}
+      {/* Content -- always the row's full width; every hover-only control
+          lives in the header line's trailing group below rather than
+          floating over this area, so nothing here is ever at risk of
+          overprinting the subject or snippet. Star (once flagged) is the
+          one control a row shows *persistently*. */}
       <div className="flex min-w-0 flex-1 flex-col justify-center overflow-hidden">
         <div data-slot="row-sender-line" className="flex items-center gap-2">
           <span
@@ -176,6 +189,14 @@ export function MailListItem({
           {mail.pending_sync && (
             <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
           )}
+          {/* Every button here stays in the DOM at all times -- only
+              opacity/pointer-events toggle on hover or keyboard focus --
+              so nothing shifts under the pointer as the row reveals
+              itself, and the reserved width keeps the sender/date apart
+              whether or not anything is actually shown. Ordinary flex
+              children, not an absolutely positioned overlay: they can
+              only ever push the sender name to truncate further, never
+              sit on top of text below. */}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
             <button
               className={cn(
@@ -197,6 +218,65 @@ export function MailListItem({
                     : "text-muted-foreground",
                 )}
               />
+            </button>
+            <button
+              className={cn(
+                "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+                revealOnHoverClass,
+              )}
+              onClick={(e) => {
+                e.stopPropagation();
+                act("archive");
+              }}
+              title={`Archive${threadSuffix}`}
+              aria-label={`Archive${threadSuffix}`}
+            >
+              <Archive className="h-3.5 w-3.5" />
+            </button>
+            {isJunk ? (
+              <button
+                className={cn(
+                  "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+                  revealOnHoverClass,
+                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act("not_spam");
+                }}
+                title={`Remove from Junk${threadSuffix}`}
+                aria-label={`Remove from Junk${threadSuffix}`}
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </button>
+            ) : (
+              <button
+                className={cn(
+                  "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+                  revealOnHoverClass,
+                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act("spam");
+                }}
+                title={`Move to Junk${threadSuffix}`}
+                aria-label={`Move to Junk${threadSuffix}`}
+              >
+                <Ban className="h-3.5 w-3.5" />
+              </button>
+            )}
+            <button
+              className={cn(
+                "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
+                revealOnHoverClass,
+              )}
+              onClick={(e) => {
+                e.stopPropagation();
+                act("trash");
+              }}
+              title={`Move to trash${threadSuffix}`}
+              aria-label={`Move to trash${threadSuffix}`}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </button>
             {/* Revealed on hover like every other row action. The dot says
                 whether the row is unread; this icon shows the action it
@@ -252,86 +332,6 @@ export function MailListItem({
             {mail.snippet}
           </div>
         )}
-      </div>
-
-      {/*
-        Floating controls: only ever offered on hover or keyboard focus, a
-        momentary interaction, so they stay positioned over the row rather
-        than reserved in its flex layout. Star and read/unread are not in
-        this group: they live in the header line above instead, in a slot
-        that's never covering text -- which is why this group is anchored
-        from the top (`top-9`) rather than from the bottom: the row's
-        shortest shape has no room to spare below the header line, and a
-        bottom anchor's own position shifts with row height, so it can end
-        up right against that line rather than clear of it. All of them sit
-        in one row rather than Delete stacked in a row of its own above
-        this one, for the same reason: no clearance left over for a second
-        band. Delete keeps a wider gap from its neighbours instead, and its
-        own hover colour, so a reach for Archive or Junk doesn't land on it
-        by mistake. Every button here stays in the DOM at all times -- only
-        opacity/pointer-events toggle on hover or focus -- so nothing shifts
-        under the pointer as the row reveals itself.
-      */}
-      <div className="pointer-events-none absolute top-9 right-2 flex items-center gap-0.5">
-        <button
-          className={cn(
-            "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-            revealOnHoverClass,
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            act("archive");
-          }}
-          title={`Archive${threadSuffix}`}
-          aria-label={`Archive${threadSuffix}`}
-        >
-          <Archive className="h-4 w-4 text-muted-foreground" />
-        </button>
-        {isJunk ? (
-          <button
-            className={cn(
-              "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-              revealOnHoverClass,
-            )}
-            onClick={(e) => {
-              e.stopPropagation();
-              act("not_spam");
-            }}
-            title={`Remove from Junk${threadSuffix}`}
-            aria-label={`Remove from Junk${threadSuffix}`}
-          >
-            <Undo2 className="h-4 w-4 text-muted-foreground" />
-          </button>
-        ) : (
-          <button
-            className={cn(
-              "pointer-events-auto rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-              revealOnHoverClass,
-            )}
-            onClick={(e) => {
-              e.stopPropagation();
-              act("spam");
-            }}
-            title={`Move to Junk${threadSuffix}`}
-            aria-label={`Move to Junk${threadSuffix}`}
-          >
-            <Ban className="h-4 w-4 text-muted-foreground" />
-          </button>
-        )}
-        <button
-          className={cn(
-            "pointer-events-auto ml-2 rounded-md bg-background/95 p-1.5 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
-            revealOnHoverClass,
-          )}
-          onClick={(e) => {
-            e.stopPropagation();
-            act("trash");
-          }}
-          title={`Move to trash${threadSuffix}`}
-          aria-label={`Move to trash${threadSuffix}`}
-        >
-          <Trash2 className="h-4 w-4 text-muted-foreground" />
-        </button>
       </div>
     </div>
   );

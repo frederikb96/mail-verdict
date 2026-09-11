@@ -20,6 +20,7 @@
  * allowlist governs. */
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { avatarColorFor } from "@/lib/avatar-color";
 import { getInitials } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,11 @@ interface InitialsAvatarProps {
    * contact's photo -- already allowlist-checked by the caller if it came
    * from a `kind: "url"` source. */
   photoUrl?: string | null;
+  /** What the fallback's colour is derived from -- an email address where
+   * the caller has one, since a display name alone can collide across
+   * senders. Omitted keeps the plain neutral fallback, for a caller that
+   * has no stable identity to hash (a generic placeholder, say). */
+  colorSeed?: string;
 }
 
 export function InitialsAvatar({
@@ -42,12 +48,26 @@ export function InitialsAvatar({
   className,
   badge,
   photoUrl,
+  colorSeed,
 }: InitialsAvatarProps) {
+  const color = colorSeed ? avatarColorFor(colorSeed) : null;
   return (
     <div className={cn("relative shrink-0", className)}>
       <Avatar size={size}>
         {photoUrl && <AvatarImage src={photoUrl} />}
-        <AvatarFallback>{getInitials(name)}</AvatarFallback>
+        <AvatarFallback
+          className={color ? "text-[color:var(--avatar-color)]" : undefined}
+          style={
+            color
+              ? ({
+                  "--avatar-color": color,
+                  backgroundColor: "color-mix(in oklab, var(--avatar-color) 20%, transparent)",
+                } as React.CSSProperties)
+              : undefined
+          }
+        >
+          {getInitials(name)}
+        </AvatarFallback>
       </Avatar>
       {badge && (
         <span className="absolute -bottom-1 -right-1 text-xs leading-none">{badge}</span>

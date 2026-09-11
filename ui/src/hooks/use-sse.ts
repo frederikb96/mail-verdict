@@ -23,7 +23,9 @@ import {
 import { alertKeys } from "@/hooks/use-alerts";
 import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import { useToast } from "@/hooks/use-toast";
+import { api } from "@/lib/api";
 import { folderAlertsEnabled } from "@/lib/alert-prefs";
+import { closeResolvedNotifications, trackPageNotification } from "@/lib/live-notifications";
 import {
   type CalendarObjectPayload,
   resolveCalendarInvalidationTargets,
@@ -349,6 +351,7 @@ export function useSSE(accountId?: string) {
               body: data.body ?? undefined,
               tag: data.id,
             });
+            if (data.id) trackPageNotification(data.id, n);
             n.onclick = () => {
               window.focus();
               if (data.url) window.location.href = data.url;
@@ -361,11 +364,28 @@ export function useSSE(accountId?: string) {
       });
 
       // Withdraws an alert everywhere it is still showing -- dismissed on
-      // one browser or device, cleared on every other open one too.
+      // one browser or device, cleared on every other open one too. The
+      // event itself carries no id (see alerts/resolve.py), so a system
+      // notification already displayed is closed by reading back which
+      // alerts are still undismissed and closing whatever no longer
+      // belongs to that set, rather than trying to parse one out of here.
       source.addEventListener("alert.dismissed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: alertKeys.list });
         queryClient.invalidateQueries({ queryKey: alertKeys.count });
+        api.alerts
+          .list(200, null, false)
+          .then((alerts) => {
+            const liveIds = new Set(
+              alerts.filter((a) => a.dismissed_at === null).map((a) => a.id),
+            );
+            void closeResolvedNotifications(liveIds);
+          })
+          .catch(() => {
+            // The list refetch above (via the invalidate) is what the bell
+            // itself depends on; a displayed notification simply stays
+            // until the reader dismisses it by hand this time.
+          });
       });
 
       // A write PostIMAP gave up on permanently -- refresh the notification
