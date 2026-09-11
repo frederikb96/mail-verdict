@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { PipelineTestDialog } from "@/components/pipeline/pipeline-test-dialog";
 import { StageFormDialog } from "@/components/pipeline/stage-form-dialog";
@@ -88,9 +89,12 @@ function StageRow({
           {stage.name}
         </span>
         {stage.halt && (
-          <Badge variant="secondary" title="Stops the pipeline when this stage matches">
-            halt
-          </Badge>
+          <Tooltip>
+            <TooltipTrigger render={<Badge variant="secondary" />}>halt</TooltipTrigger>
+            <TooltipContent side="top">
+              Stops the pipeline for a matching message -- no stage after this one runs on it
+            </TooltipContent>
+          </Tooltip>
         )}
         <Switch
           checked={stage.enabled}
@@ -104,12 +108,23 @@ function StageRow({
         <Button variant="ghost" size="icon-sm" onClick={onEdit}>
           <Pencil className="h-3.5 w-3.5" />
         </Button>
-        <Button variant="ghost" size="icon-sm" className="text-destructive" onClick={onDelete}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="text-muted-foreground hover:text-destructive"
+          onClick={onDelete}
+        >
           <Trash2 className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="pl-6 text-xs text-muted-foreground">
-        {stage.stage_id} &bull; {scopeLabel}
+      <div className="flex items-center gap-1 pl-6 text-xs text-muted-foreground">
+        <span>{scopeLabel}</span>
+        <Tooltip>
+          <TooltipTrigger className="font-mono opacity-60">#{stage.stage_id}</TooltipTrigger>
+          <TooltipContent side="top">
+            Stage ID -- identifies this stage in the pipeline tail and the API
+          </TooltipContent>
+        </Tooltip>
       </div>
       {warnings.length > 0 && (
         <div className="ml-6 flex flex-col gap-1">

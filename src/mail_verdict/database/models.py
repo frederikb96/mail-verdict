@@ -1453,6 +1453,11 @@ class Alert(Base):
         # supports) scans: due, not-yet-delivered rows. A delivered row
         # never needs to be found by deliver_at again.
         Index("idx_alerts_due", "deliver_at", postgresql_where=delivered_at.is_(None)),
+        # What alerts/resolve.py looks unresolved mail alerts up by.
+        Index(
+            "idx_alerts_unresolved_mail", "message_id",
+            postgresql_where=(kind == "mail") & dismissed_at.is_(None),
+        ),
     )
 
 

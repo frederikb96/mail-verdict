@@ -91,6 +91,7 @@ def build_eml(
     message_id: str | None = None,
     in_reply_to: str | None = None,
     content_type: str = "text/plain; charset=utf-8",
+    extra_headers: dict[str, str] | None = None,
 ) -> bytes:
     """Build a minimal RFC822 message with CRLF line endings for LMTP delivery.
 
@@ -99,6 +100,11 @@ def build_eml(
     PostIMAP's own threading, which walks References/In-Reply-To against
     (account_id, message_id) and joins a match's thread, to put both
     messages on one thread_id.
+
+    `recipient` only fills the To header, so it may name several addresses;
+    the LMTP envelope recipient is deliver_message's own argument.
+    extra_headers are written after the standard ones, in order -- a Cc, a
+    read-receipt request, anything a test needs the message to carry.
     """
     headers = [
         f"From: {sender}",
@@ -110,6 +116,7 @@ def build_eml(
     if in_reply_to is not None:
         headers.append(f"In-Reply-To: {in_reply_to}")
         headers.append(f"References: {in_reply_to}")
+    headers += [f"{name}: {value}" for name, value in (extra_headers or {}).items()]
     headers += ["MIME-Version: 1.0", f"Content-Type: {content_type}"]
     lines = [*headers, "", body, ""]
     return "\r\n".join(lines).encode("utf-8")

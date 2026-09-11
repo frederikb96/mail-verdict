@@ -12,6 +12,7 @@ import asyncio
 import concurrent.futures
 import uuid
 
+import httpx
 from playwright.sync_api import Browser, Locator, Page, expect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -258,6 +259,33 @@ def _seed_second_account_with_a_notification(postgres_url: str) -> tuple[str, st
     return _run_seed(_run())
 
 
+def _clear_the_bell(postgres_url: str) -> None:
+    """Dismiss and acknowledge everything earlier tests left behind, so a
+    badge can be asserted as an exact number."""
+
+    async def _run() -> None:
+        engine = create_async_engine(postgres_url)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE alerts SET dismissed_at = now() WHERE dismissed_at IS NULL")
+            )
+            await conn.execute(
+                text(
+                    "UPDATE sync_notifications SET acknowledged_at = now() "
+                    "WHERE acknowledged_at IS NULL"
+                )
+            )
+        await engine.dispose()
+
+    _run_seed(_run())
+
+
+def _put_mail_settings(base_url: str, data: dict[str, object]) -> None:
+    httpx.put(
+        f"{base_url}/api/settings/mail", json={"data": data}, timeout=30.0,
+    ).raise_for_status()
+
+
 def _popover(page: Page) -> Locator:
     return page.locator('[data-slot="popover-content"]')
 
@@ -387,6 +415,49 @@ class TestNotificationBell:
             popover.locator('[data-testid="system-row"]').filter(has_text=error_text)
         ).to_be_visible(timeout=15_000)
         page.keyboard.press("Escape")
+
+
+class TestBadgeSetting:
+    def test_turning_new_mail_off_leaves_only_system_notifications_in_the_badge(
+        self, page: Page, app_server_with_encryption_key: str, postgres_url: str,
+    ) -> None:
+        base = app_server_with_encryption_key
+        _put_mail_settings(base, {"bell_badge_counts_new_mail": True})
+        try:
+            _clear_the_bell(postgres_url)
+            # Two new-mail alerts and one write failure.
+            _seed_alerts_and_a_notification(postgres_url)
+
+            page.goto(base)
+            expect(page.get_by_test_id("bell-badge")).to_have_text("3", timeout=15_000)
+
+            page.goto(f"{base}/settings")
+            # The mail category's generic renderer ties no label to its
+            # input, so the row is found by the label's own text.
+            checkbox = (
+                page.locator("div")
+                .filter(has=page.get_by_text("Bell badge counts new mail", exact=True))
+                .last.locator('input[type="checkbox"]')
+            )
+            expect(checkbox).to_be_checked(timeout=15_000)
+            checkbox.uncheck()
+            with page.expect_response(
+                lambda resp: "/api/settings/mail" in resp.url and resp.request.method == "PUT",
+                timeout=15_000,
+            ):
+                page.get_by_role("button", name="Save", exact=True).click()
+
+            page.goto(base)
+            expect(page.get_by_test_id("bell-badge")).to_have_text("1", timeout=15_000)
+
+            # The list itself is untouched by the setting.
+            _open_bell(page)
+            expect(_popover(page).locator('[data-testid="alert-row"]')).to_have_count(
+                2, timeout=15_000,
+            )
+            page.keyboard.press("Escape")
+        finally:
+            _put_mail_settings(base, {"bell_badge_counts_new_mail": True})
 
 
 class TestOpeningAMessageDismissesItsAlert:

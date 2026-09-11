@@ -6,10 +6,13 @@
  * backend's DAV sync state carry the same shape. */
 
 import { useState } from "react";
+import { Collapsible } from "@base-ui/react/collapsible";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   Loader2,
+  MoreVertical,
   Plus,
   RefreshCw,
   Server,
@@ -17,6 +20,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -24,11 +29,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   useCreateDavAccount,
   useDavAccounts,
@@ -107,6 +116,7 @@ function DavAccountCard({ account }: { account: DavAccountResponse }) {
   const deleteDavAccount = useDeleteDavAccount();
   const triggerSync = useTriggerDavSync();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const hasSyncedBefore = account.collections.some((c) => c.initial_sync_done);
   const isRetrying = account.state === "error" && hasSyncedBefore;
@@ -114,96 +124,109 @@ function DavAccountCard({ account }: { account: DavAccountResponse }) {
     ? { variant: "outline" as const, label: "Retrying" }
     : STATE_BADGES[account.state] ?? { variant: "outline" as const, label: account.state };
 
+  const lastSyncedLabel = account.last_polled_at
+    ? `Synced ${formatRelativeAgo(account.last_polled_at)}`
+    : "Never synced";
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <CardTitle className="text-base">{account.name}</CardTitle>
-          <Badge variant={badgeInfo.variant}>{badgeInfo.label}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <Label className="text-sm">Sync enabled</Label>
-          <Switch
-            checked={account.is_active}
-            onCheckedChange={(checked: boolean) =>
-              updateDavAccount.mutate({ id: account.id, data: { is_active: checked } })
-            }
-          />
+    <Card size="sm" className="overflow-hidden">
+      <Collapsible.Root open={expanded} onOpenChange={setExpanded}>
+        <div className="flex items-center gap-2 px-4">
+          <Collapsible.Trigger
+            className="group/dav-trigger flex min-w-0 flex-1 items-center gap-2 rounded-md py-2.5 text-left"
+            aria-label={expanded ? `Collapse ${account.name}` : `Expand ${account.name}`}
+          >
+            <span className="truncate text-sm font-medium">{account.name}</span>
+            <Badge variant={badgeInfo.variant} className="ml-auto shrink-0">
+              {badgeInfo.label}
+            </Badge>
+            <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+              {lastSyncedLabel}
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[panel-open]/dav-trigger:rotate-180" />
+          </Collapsible.Trigger>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button variant="ghost" size="icon-sm" />}
+              aria-label={`${account.name} options`}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => triggerSync.mutate(account.id)}
+                disabled={triggerSync.isPending}
+              >
+                <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                Sync now
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 className="mr-2 h-3.5 w-3.5" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="text-muted-foreground">Server</div>
-          <div className="truncate">{account.discovery_url}</div>
-          <div className="text-muted-foreground">Synced</div>
-          <div>
-            {account.last_polled_at ? formatRelativeAgo(account.last_polled_at) : "never"}
-          </div>
-        </div>
-
-        {account.collections.length > 0 && (
-          <div className="flex flex-col gap-1 rounded-md border p-2 text-xs">
-            {account.collections.map((c) => (
-              <div key={c.id} className="flex items-center justify-between">
-                <span className="flex items-center gap-1">
-                  {c.initial_sync_done ? (
-                    <CheckCircle2 className="h-3 w-3 text-green-500" />
-                  ) : (
-                    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                  )}
-                  {c.display_name ?? c.kind}
-                </span>
-                <span className="text-muted-foreground">
-                  {c.initial_sync_done
-                    ? `${c.total_count} items`
-                    : c.backfill_total
-                      ? `${c.total_count}/${c.backfill_total}`
-                      : "syncing…"}
-                </span>
+        <Collapsible.Panel className="overflow-hidden">
+          <CardContent className="flex flex-col gap-3 border-t pt-3">
+            {account.state === "error" && account.state_error && (
+              <div
+                className={
+                  isRetrying
+                    ? "flex items-center gap-1 text-sm text-muted-foreground"
+                    : "flex items-center gap-1 text-sm text-destructive"
+                }
+              >
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                {isRetrying ? `Reconnecting after: ${account.state_error}` : account.state_error}
               </div>
-            ))}
-          </div>
-        )}
-
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => triggerSync.mutate(account.id)}
-            disabled={triggerSync.isPending}
-          >
-            {triggerSync.isPending ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-1 h-3 w-3" />
             )}
-            Sync now
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2 className="mr-1 h-3 w-3" />
-            Delete
-          </Button>
-        </div>
 
-        {account.state === "error" && account.state_error && (
-          <div
-            className={
-              isRetrying
-                ? "flex items-center gap-1 text-sm text-muted-foreground"
-                : "flex items-center gap-1 text-sm text-destructive"
-            }
-          >
-            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-            {isRetrying ? `Reconnecting after: ${account.state_error}` : account.state_error}
-          </div>
-        )}
-      </CardContent>
+            <div className="flex items-center justify-between">
+              <Label className="text-sm">Sync enabled</Label>
+              <Switch
+                checked={account.is_active}
+                onCheckedChange={(checked: boolean) =>
+                  updateDavAccount.mutate({ id: account.id, data: { is_active: checked } })
+                }
+              />
+            </div>
+
+            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              <div className="text-muted-foreground">Server</div>
+              <div className="truncate">{account.discovery_url}</div>
+            </div>
+
+            {account.collections.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border p-2 text-xs">
+                {account.collections.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      {c.initial_sync_done ? (
+                        <CheckCircle2 className="h-3 w-3 text-green-500" />
+                      ) : (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                      )}
+                      {c.display_name ?? c.kind}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {c.initial_sync_done
+                        ? `${c.total_count} items`
+                        : c.backfill_total
+                          ? `${c.total_count}/${c.backfill_total}`
+                          : "syncing…"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Collapsible.Panel>
+      </Collapsible.Root>
 
       <ConfirmDialog
         open={confirmDelete}

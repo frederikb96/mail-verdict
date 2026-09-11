@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Notifications
+
+- A new setting, "Bell badge counts new mail", leaves new-mail alerts out of the bell's badge, so
+  it counts only system notifications -- a write or a send that never reached the server. The
+  bell still lists every alert either way.
+- A new-mail alert now resolves itself once its mail is read, however that happens: opened here,
+  marked read here or in another mail client, or archived. Mail that is already read by the time
+  its alert would go out -- read on another device while the alert was still waiting on the
+  pipeline, or arriving straight into Archive or Trash -- no longer raises a system notification.
+
 ### Mail
 
 - New mail always reaches the open list, and every unread count agrees with it. A list scrolled
@@ -22,6 +32,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Mail that arrives while the live connection is down now appears once it reconnects, even when
   nothing had arrived since the page loaded, and a page left open across a server restart is
   told to refresh rather than silently receiving no further updates.
+- A conversation in the reading pane now reads newest first. Opening an older message expands
+  just that one and scrolls to it.
+- In an open message's header, clicking the sender or a recipient copies that address, and a
+  control beside each recipient line copies the whole line comma-separated, ready to paste into
+  a recipient field. Only the header's blank area folds the message now; the addresses, the
+  avatar and the date no longer do.
+- Hovering or focusing a link in a message shows where it leads, in a status line at the bottom
+  of the window.
+- A message's own dark-mode styles now follow the canvas it is drawn on rather than the
+  operating system's preference. In the dark theme a message that declares dark-mode support
+  opens dark with the sender's own dark styles applied, even when the system is set to light;
+  in the light theme every message opens light, and its dark styles stay off even when the
+  system prefers dark.
+- Mail in Archive or Trash is now always read, including mail another client (a phone, webmail)
+  moves there. The move is reacted to as it happens, and a periodic pass catches anything missed
+  while reading only a bounded slice of each folder, however large the archive. Archive follows
+  the existing "mark read on file to archive or junk" setting; Trash is always read.
+
+### Privacy
+
+- Opening a message from a sender that is not allowlisted no longer lets it fetch anything
+  through CSS `image-set()`. A plain string there, or a custom property or attribute
+  substituted into it, is now blocked the same way a `url()` is. Before this, a stylesheet or
+  inline style using it could load a tracking pixel from any sender.
+- An allowlisted sender's table and cell background images now load. The client-side sanitizer
+  dropped the attribute even after the server had restored it.
+- Responses carry `X-DNS-Prefetch-Control: off`, so a browser does not resolve the hosts of a
+  message's links ahead of any click.
+
+### Accounts
+
+- Account cards collapse to a one-line summary (name, address, state, last synced) and expand for
+  detail; Sync, Edit and Delete moved into an overflow menu so the frequent actions aren't next to
+  a destructive one. The IMAP/SMTP user and server are now shown on separate lines instead of
+  joined into one, and the sync method (QRESYNC/CONDSTORE/full-scan) is explained in a tooltip
+  instead of shown as bare protocol jargon. Calendar and contact servers get the same treatment.
+
+### Contacts
+
+- The address-book and group filters are now two compact dropdowns instead of two rows of pills,
+  and a read-only address book or contact shows a lock icon with a tooltip instead of an "RO"
+  badge. Phone numbers are now `tel:` links, and the address book line on a contact's detail is
+  labelled.
+
+### Calendar
+
+- Agenda rows are denser: time, a colour dot, the title, and the location/calendar muted on one
+  line, instead of a full-width tinted pill per event. A week or day view event whose start has
+  scrolled above the visible area keeps its title stuck to the top of what's still visible,
+  instead of showing an unlabelled colour block.
+
+### Pipeline
+
+- A stage row now leads with its account scope and shows the stage id in a tooltip instead of as
+  plain text, and the "halt" badge and a run's "halted @ ..." tail entry explain what halting
+  means on hover. A queue's concurrency reading no longer wraps onto two lines, and a stage's
+  delete icon is only red on hover rather than permanently.
 
 ## [5.6.1] - 2026-09-10
 
