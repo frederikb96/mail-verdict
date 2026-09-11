@@ -129,6 +129,7 @@ class TestSecurityHeadersMiddleware:
         assert resp.headers["x-frame-options"] == "DENY"
         assert resp.headers["content-security-policy"] == "default-src 'self'"
         assert "strict-transport-security" in resp.headers
+        assert resp.headers["x-dns-prefetch-control"] == "off"
 
     def test_docs_path_is_exempt_from_csp_but_not_other_headers(self) -> None:
         """Swagger UI needs its CDN scripts; it does not need to lose nosniff too."""

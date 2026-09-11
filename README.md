@@ -17,10 +17,12 @@ mirror, which is what keeps it simple.
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
   list that stays smooth on large mailboxes, and unified views: any set of folders, across
   accounts, merged into one list with an icon of its own in the sidebar -- one folder can sit in
-  several. Folders can be created and deleted (renaming and re-nesting are an IMAP limitation, not
-  implemented). A quick filter narrows the open folder or view by subject, sender or recipient,
-  its rows carrying the same actions an ordinary row does, and a toggle beside it shows only
-  unread mail. Opening a reply collapses the quoted original behind a "Show
+  several. A conversation reads newest first, and a message header's sender and recipients copy
+  their addresses on a click, each alone or a whole line comma-separated. Folders can be created
+  and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick filter
+  narrows the open folder or view by subject, sender or recipient, its rows carrying the same
+  actions an ordinary row does, and a toggle beside it shows only unread mail. Opening a reply
+  collapses the quoted original behind a "Show
   quoted text" control, and ctrl+F (or a control beside the message's other icons) searches and
   highlights matches inside the open message, which the browser's own find cannot reach. An
   image or PDF attachment opens full screen for a look at it, rendered rather than downloaded;
@@ -80,9 +82,14 @@ mirror, which is what keeps it simple.
   same allowlist as any other remote image — and initials otherwise; never a lookup against an
   unrelated third party. Message HTML, including a sender's own stylesheet, is sanitized on the
   server and rendered in an isolated shadow root — every escaping declaration dropped, every
-  remote reference gated behind the same allowlist that governs images. A message opens dark when
-  it declares its own dark-mode support and light otherwise, judged from its own colours when it
-  declares nothing; a toggle in its header always overrides either default. The image block does
+  remote reference gated behind the same allowlist that governs images. Opening a message from a
+  sender that is not allowlisted makes no request anywhere, and a read-receipt request is never
+  answered; an allowlisted sender's images and backgrounds load, while active content
+  (frames, scripts, media, forms) and anything that escapes the message's box stay blocked for
+  everyone. In the dark theme a message opens dark when it declares its own dark-mode support,
+  with the sender's own dark styles applied, or when its own colours read safely on dark; in
+  the light theme every message opens light. A toggle in its header always overrides either
+  default. Hovering a link shows where it leads. The image block does
   not extend to the message body itself: a newly arrived message's subject, sender and a
   truncated body go to the configured model provider twice, once for spam classification and once
   for the embedding that powers semantic search — a deliberate design choice, not something a

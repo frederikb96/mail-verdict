@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   one row. Next to the filter, a new toggle shows only unread mail, in folder views and unified
   views alike.
 - A folder can belong to several unified views, and a view can carry an emoji shown in the
-  sidebar. Views are created, renamed, given an icon, ordered and deleted in Settings; each
-  account's folders are assigned to views on the Accounts page, with a multi-select. Existing
+  sidebar. Views are created, renamed, given an icon, ordered and deleted in Settings, in the
+  same card that assigns each folder to its views with a multi-select. Existing
   unified names become views on upgrade, keeping their order.
 - Unread mail is unmistakable in both themes: a bold sender, a full-contrast subject, a blue dot
   in a column of its own and a tinted row, where a read row is quieter throughout. Every row shows
@@ -26,6 +26,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   now -- after a move too, including one made in another mail client -- and opens it inside a
   recently used unified view containing its folder when a unified view is where you last were.
   A notification click reuses the open window instead of reloading the whole application.
+- A conversation in the reading pane now reads newest first. Opening an older message expands
+  just that one and scrolls to it.
+- In an open message's header, clicking the sender or a recipient copies that address, and a
+  control beside each recipient line copies the whole line comma-separated, ready to paste into
+  a recipient field. Only the header's blank area folds the message now; the addresses, the
+  avatar and the date no longer do.
+- Hovering or focusing a link in a message shows where it leads, in a status line at the bottom
+  of the window.
+- A message's own dark-mode styles now follow the canvas it is drawn on rather than the
+  operating system's preference. In the dark theme a message that declares dark-mode support
+  opens dark with the sender's own dark styles applied, even when the system is set to light;
+  in the light theme every message opens light, and its dark styles stay off even when the
+  system prefers dark.
+
+### Privacy
+
+- Opening a message from a sender that is not allowlisted no longer lets it fetch anything
+  through CSS `image-set()`. A plain string there, or a custom property or attribute
+  substituted into it, is now blocked the same way a `url()` is. Before this, a stylesheet or
+  inline style using it could load a tracking pixel from any sender.
+- An allowlisted sender's table and cell background images now load. The client-side sanitizer
+  dropped the attribute even after the server had restored it.
+- Responses carry `X-DNS-Prefetch-Control: off`, so a browser does not resolve the hosts of a
+  message's links ahead of any click.
 
 ### API
 
