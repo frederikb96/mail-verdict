@@ -159,7 +159,13 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # -- the toolbar action or a drag-and-drop move alike -- is marked
         # read as it moves (alerts/dispatch.py's own arrival marking is
         # unaffected; this is about the user's moves, not the pipeline's).
+        # Also decides whether mail another client puts in Archive is
+        # marked read (filing/read_state.py); Trash is always read.
         "mark_read_on_file_to_archive_or_junk": True,
+        # Whether the notification bell's badge counts new-mail alerts.
+        # Off, it counts system notifications only; the bell's own lists
+        # still show every alert either way.
+        "bell_badge_counts_new_mail": True,
         # How long a new-mail alert waits for that message's pipeline run
         # (rules/classification, which can still refile it) to reach a
         # terminal status before notifying anyway with whatever folder the
