@@ -316,6 +316,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from mail_verdict.alerts.resolve import resolve_for_message_event
     from mail_verdict.filing.read_state import build_read_state_timer, mark_read_on_landing
+    from mail_verdict.outbox.stalled import resolve_stalled_for_outbox_event
 
     _read_state_reconciler = build_read_state_timer(db, event_ring, settings_service)
     await _read_state_reconciler.start()
@@ -392,6 +393,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         elif event.type == "outbox":
             outbox_data = await _outbox_event_payload(db, event)
             await event_ring.add(account_uuid, "outbox.updated", outbox_data)
+            if outbox_data.get("status") == "sent":
+                await resolve_stalled_for_outbox_event(db, event_ring, event.id)
 
         elif event.type == "notification":
             await event_ring.add(

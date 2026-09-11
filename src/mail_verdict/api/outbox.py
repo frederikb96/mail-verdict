@@ -59,6 +59,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
+from mail_verdict.alerts.resolve import announce_alerts_dismissed
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.identities import resolve_send_from_addr
 from mail_verdict.api.schemas import (
@@ -79,6 +80,7 @@ from mail_verdict.database.models import (
     PendingSendAttachment,
 )
 from mail_verdict.outbox.pending import cancel_pending_send, list_pending_sends, stage_send
+from mail_verdict.outbox.stalled import resolve_settled_stalled_alerts
 from mail_verdict.outbox.submissions import (
     draft_send_in_flight,
     find_submission,
@@ -535,6 +537,11 @@ async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
             select(PendingSend.account_id).where(PendingSend.id == pending_send_id)
         )
         cancelled = await cancel_pending_send(session, pending_send_id)
+        # Undo settles a send stuck past its window, so its stalled alert
+        # clears with the cancel rather than on the stalled pass's next tick.
+        resolved = (
+            await resolve_settled_stalled_alerts(session, pending_send_id) if cancelled else []
+        )
     if not cancelled:
         raise HTTPException(
             status_code=404,
@@ -547,6 +554,8 @@ async def cancel_outbox_pending(pending_send_id: uuid.UUID) -> None:
         await event_ring.add(
             account_id, "outbox.updated", {"id": str(pending_send_id)},
         )
+    if resolved:
+        await announce_alerts_dismissed(db, event_ring)
 
 
 def _pending_to_response(

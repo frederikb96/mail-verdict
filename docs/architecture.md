@@ -347,8 +347,10 @@ header, is read. The header half is what follows a move made in another client, 
 mirrors as an expunge plus a fresh row. It is checked on every message insert and read-state
 event, before an immediate alert is announced, before a staged one is delivered, and by the
 periodic read-state pass below as the net for a lost event. What the bell's badge counts is decided
-in one place too, `ui/src/lib/bell-badge.ts`: system notifications always, new-mail alerts only
-while `settings.mail.bell_badge_counts_new_mail` is on.
+in one place too, `ui/src/lib/bell-badge.ts`: system notifications always — a failed write, and
+every alert kind that is not new mail — and new-mail alerts only while
+`settings.mail.bell_badge_counts_new_mail` is on. The same file decides which kinds the bell lists
+under Mail and which under System.
 
 `object_id`, `recurrence_id` and a per-subscription `reminders_enabled` flag are what a
 calendar-reminder alert would need on top of this — for a kind that nothing yet produces: no code
