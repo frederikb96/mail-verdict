@@ -28,7 +28,13 @@ from sqlalchemy import text
 from mail_verdict.config.loader import DatabaseConfig
 from mail_verdict.database.connection import DatabaseConnection
 from tests.setup.large_mailbox import build_large_mailbox
-from tests.ui.helpers import folder, folder_button, mail_row, select_account
+from tests.ui.helpers import (
+    add_folder_to_unified_view,
+    folder,
+    folder_button,
+    mail_row,
+    select_account,
+)
 
 # Six pages of fifty -- comfortably past any page-count threshold a list
 # refresh could be gated on, so a deep reader genuinely has many pages
@@ -412,10 +418,7 @@ class TestMailListLiveUi:
     ) -> None:
         account_id, folder_id, _message_ids = live_mailbox
         unified_name = f"Live unified {uuid.uuid4().hex[:8]}"
-        resp = api_client.patch(
-            f"/api/folders/{folder_id}/prefs", json={"unified_name": unified_name}
-        )
-        assert resp.status_code == 200, resp.text
+        add_folder_to_unified_view(api_client, folder_id, unified_name)
 
         page.goto(app_server)
         # The account switcher only opens once the page has hydrated; the
