@@ -17,7 +17,8 @@
  * own comments.
  *
  * The badge and both tabs all read the same two counts computed below --
- * nowhere else re-derives "how many are unread".
+ * nowhere else re-derives "how many are unread". Which of them the badge
+ * adds up is lib/bell-badge.ts's decision alone.
  */
 
 import { useState } from "react";
@@ -40,6 +41,8 @@ import {
   useAllAccountsNotifications,
 } from "@/hooks/use-notifications";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useSettings } from "@/hooks/use-settings";
+import { bellBadgeCount } from "@/lib/bell-badge";
 import { formatRelativeDate } from "@/lib/format";
 import type { AlertResponse, NotificationResponse } from "@/types/api";
 
@@ -193,13 +196,19 @@ export function NotificationBell() {
   const accountName = (accountId: string | null) =>
     showAccount && accountId ? (accounts?.find((a) => a.id === accountId)?.name ?? null) : null;
 
+  const { data: mailSettings } = useSettings("mail");
+
   const unseenAlerts = alertCount?.unseen ?? 0;
   // unacknowledgedCount is the account-wide server count (matching the
   // folder-delete guard's own predicate exactly), not unacknowledged's
   // own length -- see useAllAccountsNotifications for why the two can
-  // differ. The one place both counts are combined -- the trigger badge
-  // and each tab's own bulk-dismiss control all read from here.
-  const totalUnseen = unseenAlerts + unacknowledgedCount;
+  // differ.
+  const countsNewMail = mailSettings?.bell_badge_counts_new_mail;
+  const badgeCount = bellBadgeCount({
+    unseenMailAlerts: unseenAlerts,
+    unacknowledgedSystem: unacknowledgedCount,
+    countsNewMail: typeof countsNewMail === "boolean" ? countsNewMail : undefined,
+  });
 
   const openAlert = (alert: AlertResponse) => {
     if (alert.dismissed_at === null) dismissAlert.mutate(alert.id);
@@ -213,12 +222,13 @@ export function NotificationBell() {
         title="Notifications"
       >
         <Bell className="h-4 w-4" />
-        {totalUnseen > 0 && (
+        {badgeCount > 0 && (
           <Badge
             variant="destructive"
+            data-testid="bell-badge"
             className="absolute -right-1 -top-1 h-4 min-w-4 justify-center px-1 text-[10px]"
           >
-            {totalUnseen > 99 ? "99+" : totalUnseen}
+            {badgeCount > 99 ? "99+" : badgeCount}
           </Badge>
         )}
       </PopoverTrigger>

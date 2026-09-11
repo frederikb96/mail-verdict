@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from sqlalchemy import delete, select, text, update
 
+from mail_verdict.alerts.resolve import resolve_alert, resolve_staged
 from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.msg_key import compute_msg_key
 from mail_verdict.database.repository import AlertRepository
@@ -189,6 +190,11 @@ async def _insert_and_deliver(
     )
     if alert is None:
         return
+    async with db.session() as session:
+        if await resolve_alert(session, alert.id):
+            # Read before its alert existed -- landed in Archive or Trash,
+            # or arrived already read -- so there is nothing to announce.
+            return
     await _deliver(db, event_ring, vapid_repo, alert)
 
 
@@ -298,6 +304,9 @@ async def _finalize_pending_mail_alerts_once(
 
     delivered_alerts: list[Alert] = []
     async with db.session() as session:
+        # Mail read while its alert was still staged is resolved rather
+        # than delivered -- see alerts/resolve.py.
+        resolved = await resolve_staged(session)
         candidates = (
             await session.execute(
                 text(
@@ -325,8 +334,6 @@ async def _finalize_pending_mail_alerts_once(
                 {"bound_seconds": bound_seconds, "batch": _FINALIZE_BATCH_SIZE},
             )
         ).all()
-        if not candidates:
-            return
 
         to_drop: list[uuid.UUID] = []
         to_deliver: list[tuple[uuid.UUID, uuid.UUID | None]] = []
@@ -361,10 +368,13 @@ async def _finalize_pending_mail_alerts_once(
     for alert in delivered_alerts:
         await _deliver(db, event_ring, vapid_repo, alert)
 
-    if to_drop or delivered_alerts:
+    if to_drop or delivered_alerts or resolved:
         logger.info(
             "Mail alert finalize pass",
-            extra={"delivered": len(delivered_alerts), "dropped": len(to_drop)},
+            extra={
+                "delivered": len(delivered_alerts), "dropped": len(to_drop),
+                "resolved": len(resolved),
+            },
         )
 
 

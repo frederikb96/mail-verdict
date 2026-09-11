@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Notifications
+
+- A new setting, "Bell badge counts new mail", leaves new-mail alerts out of the bell's badge, so
+  it counts only system notifications -- a write or a send that never reached the server. The
+  bell still lists every alert either way.
+- A new-mail alert now resolves itself once its mail is read, however that happens: opened here,
+  marked read here or in another mail client, or archived. Mail that is already read by the time
+  its alert would go out -- read on another device while the alert was still waiting on the
+  pipeline, or arriving straight into Archive or Trash -- no longer raises a system notification.
+
 ### Mail
 
 - Sending a reopened draft sends it once. The draft editor raised its "Save this message?"
@@ -35,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   opens dark with the sender's own dark styles applied, even when the system is set to light;
   in the light theme every message opens light, and its dark styles stay off even when the
   system prefers dark.
+- Mail in Archive or Trash is now always read, including mail another client (a phone, webmail)
+  moves there. The move is reacted to as it happens, and a periodic pass catches anything missed
+  while reading only a bounded slice of each folder, however large the archive. Archive follows
+  the existing "mark read on file to archive or junk" setting; Trash is always read.
 
 ### Privacy
 

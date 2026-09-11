@@ -43,9 +43,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Distinct from every other ReconciliationTimer's lock key in the process
-# (pipeline/enqueue.py's 761_034_331, outbox/pending.py's 761_034_500,
-# alerts/dispatch.py's 761_034_600, retention/sweep.py's 761_034_700).
-_STALLED_LOCK_KEY = 761_034_800
+# (tests/unit/test_lock_keys.py checks them all).
+_STALLED_LOCK_KEY = 761_034_900
 
 # The threshold is minutes; checking once a minute costs one indexed-free
 # scan of two small tables and adds at most a minute to it.

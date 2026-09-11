@@ -29,8 +29,9 @@ import uuid
 
 from fastapi import APIRouter, HTTPException, Query
 
+from mail_verdict.alerts.resolve import announce_alerts_dismissed
 from mail_verdict.api.deps import get_alert_repo, get_push_subscription_repo
-from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.schemas import (
     AlertResponse,
     AlertUnseenCountResponse,
@@ -88,13 +89,9 @@ async def get_unseen_count(
 
 
 async def _announce_alerts_changed() -> None:
-    """alert.dismissed reaches every open page over the SSE ring it
-    already holds -- so dismissing on one device or browser drops the
-    same alert everywhere else it is still showing, cheaply, since SSE
-    already reaches them all."""
-    event_ring = get_event_ring()
-    if event_ring is not None:
-        await broadcast_event(get_db_connection(), event_ring, "alert.dismissed", {})
+    """Dismissing on one device or browser drops the same alert everywhere
+    else it is still showing, cheaply, since SSE already reaches them all."""
+    await announce_alerts_dismissed(get_db_connection(), get_event_ring())
 
 
 @router.post("/{alert_id}/dismiss", status_code=204)
