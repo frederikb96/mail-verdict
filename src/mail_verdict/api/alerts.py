@@ -81,11 +81,12 @@ async def get_unseen_count(
     folder_ids: list[uuid.UUID] = Query(default=[]),
     folder_scoped: bool = Query(default=False),
 ) -> AlertUnseenCountResponse:
-    """Delivered, not-yet-dismissed count -- the bell's own badge, scoped
-    the same way list_alerts is so the two never disagree."""
+    """Delivered, not-yet-dismissed count, in total and per kind -- what
+    the bell's badge is computed from, scoped the same way list_alerts is
+    so the two never disagree."""
     repo = get_alert_repo()
-    count = await repo.unseen_count(folder_ids=folder_ids if folder_scoped else None)
-    return AlertUnseenCountResponse(unseen=count)
+    by_kind = await repo.unseen_counts_by_kind(folder_ids=folder_ids if folder_scoped else None)
+    return AlertUnseenCountResponse(unseen=sum(by_kind.values()), by_kind=by_kind)
 
 
 async def _announce_alerts_changed() -> None:
@@ -104,10 +105,11 @@ async def dismiss_alert(alert_id: uuid.UUID) -> None:
 
 
 @router.post("/dismiss-all", status_code=204)
-async def dismiss_all_alerts() -> None:
-    """Dismiss every currently-undismissed alert."""
+async def dismiss_all_alerts(kind: list[str] = Query(default=[])) -> None:
+    """Dismiss every currently-undismissed alert, or only those of the
+    given kinds -- the bell dismisses its Mail and System tabs apart."""
     repo = get_alert_repo()
-    count = await repo.dismiss_all()
+    count = await repo.dismiss_all(kinds=kind or None)
     if count > 0:
         await _announce_alerts_changed()
 

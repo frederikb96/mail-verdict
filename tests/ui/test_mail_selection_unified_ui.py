@@ -18,6 +18,7 @@ from tests.ui.helpers import (
     add_folder_to_unified_view,
     create_account,
     mail_row,
+    select_unified_view,
     wait_for,
     wait_for_folder,
 )
@@ -61,24 +62,6 @@ def _deliver(
     return wait_for(
         _find, timeout_s=45.0, description=f"{subject!r} synced into folder {folder_id}",
     )
-
-
-def _select_unified_view(page: Page) -> None:
-    """Same control select_account() drives, picking the fixed "Unified
-    View" entry instead of an account by name."""
-    trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-    opened_sheet = trigger.is_hidden()
-    if opened_sheet:
-        page.locator('[data-slot="sidebar-trigger"]').click()
-        expect(trigger).to_be_visible(timeout=10_000)
-    trigger.click()
-    page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
-        "Unified View", exact=True,
-    ).click()
-    if opened_sheet:
-        sheet = page.locator('[data-slot="sheet-portal"]')
-        page.keyboard.press("Escape")
-        expect(sheet).to_have_count(0, timeout=10_000)
 
 
 def _open_unified_folder(page: Page, unified_name: str) -> None:
@@ -144,7 +127,7 @@ class TestUnifiedSelectionMoveUi:
         )
 
         page.goto(app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, unified_inbox_name)
 
         row_a = mail_row(page, msg_a["id"])
@@ -236,7 +219,7 @@ class TestSelectionSurvivesItsRowLeavingTheCache:
         wait_for(_group_ready, timeout_s=30.0, description="the unified folder group merged")
 
         page.goto(app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, unified_inbox_name)
 
         row_a = mail_row(page, msg_a["id"])
@@ -301,6 +284,16 @@ class TestUnifiedViewAutoSelectsAFolder:
         inbox = wait_for_folder(api_client, account["id"], "INBOX")
         unified_name = f"Unified Inbox {uuid.uuid4().hex[:8]}"
         _set_unified_name(api_client, inbox["id"], unified_name)
+        # The first view in sidebar order is the one selected, and other
+        # tests in this module leave views of their own behind -- put this
+        # one first rather than depend on how the names happen to sort.
+        order = api_client.get("/api/unified/folder-order")
+        assert order.status_code == 200, order.text
+        rest = [name for name in order.json()["order"] if name != unified_name]
+        reordered = api_client.put(
+            "/api/unified/folder-order", json={"order": [unified_name, *rest]},
+        )
+        assert reordered.status_code == 200, reordered.text
 
         msg = _deliver(
             dovecot_endpoint, api_client, account["id"], inbox["id"],
@@ -308,7 +301,7 @@ class TestUnifiedViewAutoSelectsAFolder:
         )
 
         page.goto(app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
 
         # No folder click at all -- the first (only) unified folder should
         # already be selected, and the message already visible.
