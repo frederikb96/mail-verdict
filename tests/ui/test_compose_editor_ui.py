@@ -794,11 +794,12 @@ class TestSendingStateIsImmediate:
         page.unroute_all()
         dialog.get_by_role("button", name="Send", exact=True).click()
         expect(dialog).not_to_be_visible(timeout=10_000)
-        wait_for(
-            lambda: _sends_for(api_client, editor_account["id"], subject) or None,
-            description=f"Send for {subject!r} accepted",
-        )
-        assert len(_sends_for(api_client, editor_account["id"], subject)) == 1
+        # Counted once the undo window has passed, which is also what keeps
+        # this send's undo banner from still showing in the next test on
+        # the same account.
+        page.wait_for_timeout(_PAST_THE_UNDO_WINDOW_MS)
+        sends = _sends_for(api_client, editor_account["id"], subject)
+        assert len(sends) == 1, f"expected exactly one send, got {sends}"
 
 
 class TestNavigatingAwayFromADirtyDraftPrompts:
