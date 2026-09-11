@@ -9,14 +9,15 @@
 
 import { useEffect, useRef } from "react";
 import { useSetAtom } from "jotai";
-import { useQueryClient } from "@tanstack/react-query";
+import { focusManager, useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { mailArrivedAtom } from "@/lib/atoms";
+import { isMailListQuery } from "@/lib/query-persister";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import {
-  invalidateMailListsBounded,
   mailKeys,
-  refreshMailFromServer,
+  refreshMailLists,
+  refreshMailViews,
   removeMailFromAllListCaches,
 } from "@/hooks/use-mails";
 import { alertKeys } from "@/hooks/use-alerts";
@@ -44,15 +45,6 @@ const MAX_RECONNECT_DELAY_MS = 30000;
  * long the write takes.
  */
 const FLUSH_INTERVAL_MS = 500;
-
-/**
- * Below this many distinct changed messages in one flush window, patch
- * each individually (one bounded fetch per row, via refreshMailFromServer)
- * -- the ordinary single- or few-message-action case. At or above it,
- * fetching one row at a time *is* the storm; treat the whole window as a
- * bulk change and do one bounded list refresh instead.
- */
-const PATCH_BURST_THRESHOLD = 20;
 
 const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" | "warning" | "error" } | null> = {
   pending: null,
@@ -109,21 +101,14 @@ export function useSSE(accountId?: string) {
       pendingNewOrMovedRef.current = false;
       pendingFolderCountsRef.current = false;
 
+      // Rows that left the folder leave at once. Everything else -- rows
+      // that changed, rows that arrived, and every count -- is re-read
+      // together by refreshMailViews, one request per open list however
+      // deep it is scrolled, so the list and the counts never disagree.
       for (const id of removed) removeMailFromAllListCaches(queryClient, id);
-
-      if (updated.size > 0) {
-        if (updated.size < PATCH_BURST_THRESHOLD) {
-          for (const id of updated) void refreshMailFromServer(queryClient, id);
-        } else {
-          // A burst this wide is a bulk action, not a handful of edits --
-          // fetching one row at a time here would itself be the storm.
-          invalidateMailListsBounded(queryClient);
-        }
-      }
-
-      if (hadNewOrMoved) invalidateMailListsBounded(queryClient);
+      for (const id of updated) queryClient.invalidateQueries({ queryKey: mailKeys.detail(id) });
       if (hadFolderCounts || hadNewOrMoved || removed.size > 0 || updated.size > 0) {
-        invalidateAllFolderCaches(queryClient);
+        refreshMailViews(queryClient);
       }
     }
 
@@ -228,11 +213,23 @@ export function useSSE(accountId?: string) {
         );
       };
 
+      // The first event on a fresh connection. Its id is recorded like any
+      // other's, so a connection that drops before a single real event
+      // reached it still reconnects with an id the server can replay from --
+      // without one, the reconnect is a fresh connection and everything
+      // that happened during the gap is lost.
+      source.addEventListener("connected", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+      });
+
       // A reconnect gap loses NOTIFYs in between; the server tells us to
-      // invalidate everything once rather than trust a stale cache.
+      // invalidate everything once rather than trust a stale cache. The mail
+      // lists are refreshed as windows instead -- invalidating one would
+      // re-read every page it has loaded, one request at a time.
       source.addEventListener("resync", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
-        queryClient.invalidateQueries();
+        queryClient.invalidateQueries({ predicate: (query) => !isMailListQuery(query.queryKey) });
+        refreshMailLists(queryClient);
       });
 
       // mail.new/mail.updated/mail.deleted are buffered rather than acted
@@ -386,15 +383,11 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries({ queryKey: ["sync-status"] });
       });
 
-      // A folder finished syncing (including initial backfill) — a full
-      // refetch is the right cost here (unlike mail.new/mail.updated,
-      // this fires once per sync pass, not once per message, and a
-      // resync can shift page contents arbitrarily) so this stays a
-      // plain invalidate rather than the bounded helper above.
+      // A folder finished syncing (including initial backfill) -- a resync
+      // can change any row, which is exactly what a window refresh re-reads.
       source.addEventListener("folder.synced", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
-        queryClient.invalidateQueries({ queryKey: ["mails"] });
-        invalidateAllFolderCaches(queryClient);
+        refreshMailViews(queryClient);
       });
 
       source.addEventListener("folder.changed", (e: MessageEvent) => {
@@ -426,8 +419,7 @@ export function useSSE(accountId?: string) {
           }
           if (data.status === "sent" && data.itip !== "reply") {
             // The sent (or drafts) copy lands in the account's folder on its next sync.
-            queryClient.invalidateQueries({ queryKey: ["mails"] });
-            invalidateAllFolderCaches(queryClient);
+            refreshMailViews(queryClient);
           }
         } catch {
           // Ignore
@@ -548,4 +540,16 @@ export function useSSE(accountId?: string) {
       setConnectionState("disconnected");
     };
   }, [accountId, setConnectionState, setMailArrived, queryClient, pushToast]);
+
+  // The mail lists opt out of TanStack's own refetch on focus, which would
+  // re-read every loaded page one request at a time; a window regaining
+  // focus re-reads each open list as one window instead. The counts refetch
+  // on focus through their own queries.
+  useEffect(
+    () =>
+      focusManager.subscribe((focused) => {
+        if (focused) refreshMailLists(queryClient);
+      }),
+    [queryClient],
+  );
 }

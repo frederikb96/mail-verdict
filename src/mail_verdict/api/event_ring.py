@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import uuid
 from collections import deque
 from datetime import datetime, timezone
@@ -40,6 +41,33 @@ class EventRing:
         self._seq: int = 0
         self._rings: dict[str, deque[dict[str, Any]]] = {}
         self._waiters: dict[str, list[asyncio.Event]] = {}
+        # Sequence ids restart at 1 with every process, so an id alone
+        # cannot say which ring issued it: a browser reconnecting after a
+        # restart would present an old, higher id and be replayed nothing,
+        # and then skip every new event until the counter caught up.
+        # Prefixing every id handed out with this ring's own epoch lets a
+        # reconnect tell "mine, replay from here" from "not mine, resync".
+        self.epoch = secrets.token_hex(4)
+
+    def format_event_id(self, seq: int) -> str:
+        """The SSE `id:` value for a sequence id of this ring."""
+        return f"{self.epoch}-{seq}"
+
+    def parse_event_id(self, raw: str) -> int | None:
+        """
+        The sequence id a client's Last-Event-ID names, if this ring issued it.
+
+        Args:
+            raw: The value the client sent back
+
+        Returns:
+            The sequence id, or None when the value came from another ring
+            (a previous process) or is not an id at all
+        """
+        epoch, sep, seq = raw.partition("-")
+        if not sep or epoch != self.epoch or not seq.isdigit():
+            return None
+        return int(seq)
 
     async def add(self, account_id: uuid.UUID, event_type: str, data: dict[str, Any]) -> int:
         """

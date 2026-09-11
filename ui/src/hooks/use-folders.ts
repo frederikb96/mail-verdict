@@ -49,12 +49,15 @@ export function useDeleteFolder() {
 }
 
 /**
- * Invalidate ALL folder-related caches.
+ * Invalidate ALL folder-related caches -- every count the sidebar and the
+ * settings pages show, per account and unified.
  * Must be used everywhere instead of individual invalidations
- * to keep ["folders"] and ["folder-order"] in sync.
+ * to keep ["folders"] and ["folder-order"] in sync. The unified mail lists
+ * are not folder caches and are left to refreshMailViews (use-mails.ts).
  */
 export function invalidateAllFolderCaches(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ["folders"] });
   qc.invalidateQueries({ queryKey: ["folder-order"] });
-  qc.invalidateQueries({ queryKey: ["unified"] });
+  qc.invalidateQueries({ queryKey: ["unified", "folders"] });
+  qc.invalidateQueries({ queryKey: ["unified", "folder-order"] });
 }

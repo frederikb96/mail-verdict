@@ -1,7 +1,7 @@
 /** TanStack Query hooks for verdict feedback. */
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { invalidateAllFolderCaches } from "@/hooks/use-folders";
+import { refreshMailViews } from "@/hooks/use-mails";
 import { api } from "@/lib/api";
 
 export function useVerdictFeedback() {
@@ -21,8 +21,7 @@ export function useVerdictFeedback() {
     onSuccess: (_data, { mailId }) => {
       qc.invalidateQueries({ queryKey: ["mail", mailId] });
       qc.invalidateQueries({ queryKey: ["thread", mailId] });
-      qc.invalidateQueries({ queryKey: ["mails"] });
-      invalidateAllFolderCaches(qc);
+      refreshMailViews(qc);
     },
   });
 }

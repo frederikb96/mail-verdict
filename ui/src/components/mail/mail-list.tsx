@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useMailList, useMailAction } from "@/hooks/use-mails";
+import { useMailList, useMailAction, useMarkConversationRead } from "@/hooks/use-mails";
 import { useFolders } from "@/hooks/use-folders";
 import { useAccount } from "@/hooks/use-accounts";
 import { accountConnectionState, useSyncStatus } from "@/hooks/use-sync-status";
@@ -98,6 +98,7 @@ export function MailList() {
   const clearSelection = useClearSelection();
   const { selectFolderScope } = useSelectAll();
   const mailAction = useMailAction();
+  const markConversationRead = useMarkConversationRead();
   const vlistRef = useRef<VListHandle>(null);
 
   // The same four values decide which list this is, for a selection's own
@@ -286,8 +287,18 @@ export function MailList() {
   // fit -- landing partway down a list the reader never scrolled, at
   // whatever offset the arithmetic of the two lists' heights happens to
   // produce, rather than at the top.
+  //
+  // The one exception is a reader resting at the very top of a window that
+  // starts at the newest message: they are watching for new mail, so a
+  // change there is shown rather than compensated for -- new rows appear at
+  // the top instead of being slid in above the viewport. Exactly the top,
+  // not near it, so a reader who has scrolled even one pixel keeps their
+  // place. A window opened around a message is not at the newest edge; a
+  // page prepended there as the reader scrolls up is still compensated, or
+  // the rows they are reading would drop by a page.
   const prevDataRef = useRef(data);
   const prevMailIdsRef = useRef<string[]>([]);
+  const prevAtNewestEdgeRef = useRef(!hasPreviousPage);
   const [shiftForPrepend, setShiftForPrepend] = useState(false);
   const pendingScrollCorrectionRef = useRef<{
     anchorId: string;
@@ -296,9 +307,10 @@ export function MailList() {
   } | null>(null);
   if (data !== prevDataRef.current) {
     const prevIds = prevMailIdsRef.current;
-    const isPrepend = countPrepended(prevIds, allMailIds) > 0;
     const handle = vlistRef.current;
-    if (!isPrepend && handle && prevIds.length > 0) {
+    const followsNewest = prevAtNewestEdgeRef.current && (!handle || handle.scrollOffset < 1);
+    const isPrepend = !followsNewest && countPrepended(prevIds, allMailIds) > 0;
+    if (!followsNewest && !isPrepend && handle && prevIds.length > 0) {
       const oldScrollOffset = handle.scrollOffset;
       const oldAnchorIndex = handle.findItemIndex(oldScrollOffset);
       const survivor = nearestSurvivor(prevIds, oldAnchorIndex, new Set(allMailIds));
@@ -312,6 +324,7 @@ export function MailList() {
     }
     prevDataRef.current = data;
     prevMailIdsRef.current = allMailIds;
+    prevAtNewestEdgeRef.current = !hasPreviousPage;
     if (isPrepend !== shiftForPrepend) setShiftForPrepend(isPrepend);
   }
 
@@ -444,18 +457,49 @@ export function MailList() {
     ],
   );
 
+  // Grouped by conversation, a row counts every unread message in its
+  // thread (isRowUnread), so reading it -- opening it, or its own "Mark as
+  // read" -- has to clear all of them, not only the newest message the row
+  // stands for.
+  const conversationWithOtherUnread = useCallback(
+    (mailId: string): MessageSummary | null => {
+      if (!threaded || isFiltering || isUnifiedView) return null;
+      const row = rowsById.get(mailId) as MessageSummary | undefined;
+      if (!row) return null;
+      const otherUnread = (row.unread_in_thread ?? 0) - (row.is_seen ? 0 : 1);
+      return otherUnread > 0 ? row : null;
+    },
+    [threaded, isFiltering, isUnifiedView, rowsById],
+  );
+
   const handleAction = useCallback(
     (mailId: string, action: MailRowAction, mailAccountId?: string) => {
       const account = mailAccountId || accountId;
       if (!account) return;
+      const conversation = action === "mark_read" ? conversationWithOtherUnread(mailId) : null;
+      if (conversation) {
+        void markConversationRead(conversation, true);
+        return;
+      }
       mailAction.mutate({
         mailId,
         accountId: account,
         action: { action },
       });
     },
-    [accountId, mailAction],
+    [accountId, mailAction, conversationWithOtherUnread, markConversationRead],
   );
+
+  // Keyed on the opened message, however it was opened -- a click, keyboard
+  // navigation, or a link -- and never on the row changing afterwards, so a
+  // conversation the reader marks unread again while it is open stays so.
+  // The opened message itself is left to the reading pane's own mark-read.
+  useEffect(() => {
+    if (!selectedMailId) return;
+    const conversation = conversationWithOtherUnread(selectedMailId);
+    if (conversation) void markConversationRead(conversation, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMailId]);
 
   // A plain click on a row's text abandons any active selection entirely
   // and just opens that message -- checking a checkbox never does this.

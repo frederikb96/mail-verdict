@@ -24,7 +24,7 @@ const EPHEMERAL_PREFIXES = ["sse", "selection"];
  * by the "unified" prefix alone, which also covers the small unified folder
  * tree -- that one is worth persisting.
  */
-function isMailListQuery(queryKey: readonly unknown[]): boolean {
+export function isMailListQuery(queryKey: readonly unknown[]): boolean {
   return queryKey[0] === "mails" || (queryKey[0] === "unified" && queryKey[1] === "mails");
 }
 

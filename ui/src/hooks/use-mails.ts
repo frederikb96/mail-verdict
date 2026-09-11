@@ -1,7 +1,9 @@
 /** TanStack Query hooks for mail operations. */
 
+import { useCallback, useEffect } from "react";
 import {
   type InfiniteData,
+  type Query,
   type QueryClient,
   keepPreviousData,
   useInfiniteQuery,
@@ -13,6 +15,13 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import { useToast } from "@/hooks/use-toast";
+import {
+  type WindowRow,
+  chunkIntoPages,
+  mergeRefreshedWindow,
+  windowRefreshLimit,
+} from "@/lib/mail-list-window";
+import { isMailListQuery } from "@/lib/query-persister";
 import {
   activeReplyDirtyForThreadIdAtom,
   explicitlyUnreadMailIdAtom,
@@ -75,39 +84,207 @@ export const mailKeys = {
 };
 
 /**
- * A live-mail-list infinite query is refetched by re-fetching every
- * already-loaded page in sequence (TanStack has no partial-refetch for an
- * infinite query) -- so invalidating, refocusing, or remounting one
- * scrolled hundreds of pages deep would turn a single arriving message,
- * or simply switching back to this tab, into hundreds of requests.
- * `hasFewEnoughPagesToEagerlyRefetch` below is the one predicate every
- * trigger is gated on, so a list past this depth never refetches eagerly
- * regardless of which of the three actually fires; a shallowly-loaded list
- * (the overwhelmingly common case) still refreshes immediately by any of
- * them.
- *
- * Past the bound, a list stays stale until its query is genuinely reset,
- * not merely re-observed -- switching to another folder and back does
- * NOT do this: the query keeps its cached pages for a full day
- * (`gcTime`, in providers.tsx) with no observer, and `refetchOnMount`
- * below is gated by this same bound, so remounting a still-deep query
- * skips the refetch exactly as a background tab regaining focus would.
- * What actually clears it: a full page reload (this query is excluded
- * from the persisted cache, so a reload observes it with nothing in it
- * and an uninitialized query always fetches, this bound or no), or any
- * bulk action anywhere finishing, since its own completion resets every
- * mail-list query -- including one the reader isn't currently looking at
- * -- back to page one.
+ * A list opened around a message rather than at the newest edge (see
+ * useMailList's `aroundId`) is refetched the ordinary TanStack way, which
+ * re-reads every loaded page one request at a time -- so only while it is
+ * this shallow. A list at the newest edge never is: refreshMailViews below
+ * re-reads its whole loaded window in one request, however deep.
  */
-const EAGER_REFETCH_MAX_PAGES = 3;
+const AROUND_WINDOW_EAGER_REFETCH_MAX_PAGES = 3;
 
-/** Shared by the SSE-driven invalidate below and by useMailList's/
- * useUnifiedMails's own refetchOnWindowFocus/refetchOnMount -- see
- * EAGER_REFETCH_MAX_PAGES's docstring for why the same bound has to gate
- * all three rather than only the one it was first written for. */
-export function hasFewEnoughPagesToEagerlyRefetch(query: { state: { data?: unknown } }): boolean {
+function aroundWindowIsShallow(query: { state: { data?: unknown } }): boolean {
   const data = query.state.data as { pages?: unknown[] } | undefined;
-  return (data?.pages?.length ?? 0) <= EAGER_REFETCH_MAX_PAGES;
+  return (data?.pages?.length ?? 0) <= AROUND_WINDOW_EAGER_REFETCH_MAX_PAGES;
+}
+
+/**
+ * Which list a mail-list query at the newest edge holds -- carried in the
+ * query's own `meta`, so a refresh can re-read it without parsing the key.
+ */
+export type MailListWindow =
+  | { kind: "account"; accountId: string; folderId: string; threaded: boolean }
+  | { kind: "unified"; folderName: string };
+
+type WindowPage = { messages: WindowRow[]; has_more: boolean };
+
+function windowOf(query: Query): MailListWindow | undefined {
+  return query.meta?.mailListWindow as MailListWindow | undefined;
+}
+
+async function readWindow(
+  source: MailListWindow,
+  limit: number,
+): Promise<{ rows: WindowRow[]; hasMore: boolean }> {
+  const page =
+    source.kind === "account"
+      ? await api.mails.list({
+          account_id: source.accountId,
+          folder_id: source.folderId,
+          threaded: source.threaded,
+          limit,
+        })
+      : await api.unified.mails({ folder_name: source.folderName, limit });
+  return { rows: page.messages, hasMore: page.has_more };
+}
+
+/** Rows back into the page shape each list's own infinite query holds, with
+ * the page params its own paging would have produced -- so the next page it
+ * fetches continues from the right row. */
+function windowAsInfiniteData(
+  source: MailListWindow,
+  rows: WindowRow[],
+  hasMore: boolean,
+): InfiniteData<unknown, unknown> {
+  const pages = chunkIntoPages(rows);
+  const last = pages.length - 1;
+  const lastIdOf = (page: WindowRow[]) => page[page.length - 1]?.id ?? null;
+  const pageHasMore = (i: number) => (i < last || hasMore) && lastIdOf(pages[i]) !== null;
+  const nextCursor = (i: number) => (pageHasMore(i) ? lastIdOf(pages[i]) : null);
+  if (source.kind === "account") {
+    return {
+      pages: pages.map((messages, i) => ({
+        messages,
+        has_more: pageHasMore(i),
+        next_cursor: nextCursor(i),
+        has_more_newer: false,
+        prev_cursor: null,
+      })),
+      pageParams: pages.map((_, i) =>
+        i === 0 ? { kind: "initial" } : { kind: "before", cursor: lastIdOf(pages[i - 1]) },
+      ),
+    };
+  }
+  return {
+    pages: pages.map((messages, i) => ({
+      messages,
+      has_more: pageHasMore(i),
+      next_cursor: nextCursor(i),
+    })),
+    pageParams: pages.map((_, i) => (i === 0 ? undefined : lastIdOf(pages[i - 1]))),
+  };
+}
+
+/** Resolves once the query has no fetch of its own in flight. */
+function whenQueryIdle(qc: QueryClient, query: Query): Promise<void> {
+  if (query.state.fetchStatus !== "fetching") return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = qc.getQueryCache().subscribe((event) => {
+      if (event.query !== query) return;
+      if (event.type === "removed" || query.state.fetchStatus !== "fetching") {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+}
+
+async function refreshWindowOnce(
+  qc: QueryClient,
+  query: Query,
+  source: MailListWindow,
+): Promise<void> {
+  const loaded = query.state.data as InfiniteData<WindowPage> | undefined;
+  if (!loaded) return;
+  const loadedRows = loaded.pages.reduce((n, page) => n + page.messages.length, 0);
+  let fresh: { rows: WindowRow[]; hasMore: boolean };
+  try {
+    fresh = await readWindow(source, windowRefreshLimit(loadedRows));
+  } catch {
+    // The next change, focus or reconnect refreshes it again.
+    return;
+  }
+  // Merged into what the cache holds now rather than what it held when the
+  // read began, so a page the reader fetched meanwhile is kept.
+  const current = qc.getQueryData<InfiniteData<WindowPage>>(query.queryKey);
+  if (!current) return;
+  const merged = mergeRefreshedWindow(
+    current.pages.flatMap((page) => page.messages),
+    fresh.rows,
+    fresh.hasMore,
+    current.pages[current.pages.length - 1]?.has_more ?? false,
+  );
+  qc.setQueryData(query.queryKey, windowAsInfiniteData(source, merged.rows, merged.hasMore));
+}
+
+const windowRefreshes = new WeakMap<Query, { again: boolean }>();
+
+/**
+ * Re-read one list's whole loaded window. Never more than one read per list
+ * in flight: a change arriving meanwhile queues exactly one more. A page
+ * fetch of the list's own is waited out first, and the window read again if
+ * one started during the read -- TanStack writes a fetched page on top of
+ * the pages it began from, which would put back whatever this replaced.
+ */
+function refreshWindow(qc: QueryClient, query: Query): void {
+  const source = windowOf(query);
+  if (!source) return;
+  const running = windowRefreshes.get(query);
+  if (running) {
+    running.again = true;
+    return;
+  }
+  const state = { again: true };
+  windowRefreshes.set(query, state);
+  void (async () => {
+    try {
+      while (state.again) {
+        state.again = false;
+        await whenQueryIdle(qc, query);
+        await refreshWindowOnce(qc, query, source);
+        if (query.state.fetchStatus === "fetching") state.again = true;
+      }
+    } finally {
+      windowRefreshes.delete(query);
+    }
+  })();
+}
+
+/**
+ * Bring every open mail list up to date -- the list half of
+ * refreshMailViews on its own, for a window regaining focus, where the
+ * counts already refetch through their own queries. A list nobody is
+ * looking at is refreshed when it is shown again (useRefreshWindowOnMount).
+ */
+export function refreshMailLists(qc: QueryClient): void {
+  const lists = qc.getQueryCache().findAll({ predicate: (q) => isMailListQuery(q.queryKey) });
+  for (const query of lists) {
+    if (windowOf(query)) {
+      if (query.getObserversCount() > 0) refreshWindow(qc, query);
+      continue;
+    }
+    qc.invalidateQueries({
+      queryKey: query.queryKey,
+      exact: true,
+      refetchType: aroundWindowIsShallow(query) ? "active" : "none",
+    });
+  }
+}
+
+/**
+ * The one way the mail lists and every count beside them are brought up to
+ * date after mail changed -- a live event, an action settling, a reconnect.
+ * Both halves are refreshed by the same call at the same moment, so no path
+ * can refresh the counts and leave a list behind.
+ */
+export function refreshMailViews(qc: QueryClient): void {
+  refreshMailLists(qc);
+  invalidateAllFolderCaches(qc);
+}
+
+/**
+ * A list shown again holds whatever its cache kept while it was away; one
+ * refresh of its window on mount brings it up to date. TanStack's own
+ * refetch-on-mount would re-read every loaded page, one request each.
+ */
+export function useRefreshWindowOnMount(queryKey: readonly unknown[], enabled: boolean): void {
+  const qc = useQueryClient();
+  const keyHash = JSON.stringify(queryKey);
+  useEffect(() => {
+    if (!enabled) return;
+    const query = qc.getQueryCache().find({ queryKey, exact: true });
+    if (query?.state.data !== undefined) refreshWindow(qc, query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, keyHash, enabled]);
 }
 
 /**
@@ -138,10 +315,17 @@ export function useMailList(
   threaded: boolean,
   aroundId?: string | null,
 ) {
-  return useInfiniteQuery({
-    queryKey: mailKeys.list(
-      accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
-    ),
+  const queryKey = mailKeys.list(
+    accountId ?? undefined, folderId ?? undefined, threaded, aroundId ?? undefined,
+  );
+  // Only a list starting at the newest edge is refreshed as one window; one
+  // opened around a message keeps TanStack's own refetch, bounded.
+  const listWindow: MailListWindow | undefined =
+    accountId && folderId && !aroundId
+      ? { kind: "account", accountId, folderId, threaded }
+      : undefined;
+  const result = useInfiniteQuery({
+    queryKey,
     queryFn: ({ pageParam }: { pageParam: MailListPageParam }) => {
       const base = { account_id: accountId!, folder_id: folderId ?? undefined, threaded };
       switch (pageParam.kind) {
@@ -165,9 +349,12 @@ export function useMailList(
     enabled: !!accountId && !!folderId,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
-    refetchOnWindowFocus: hasFewEnoughPagesToEagerlyRefetch,
-    refetchOnMount: hasFewEnoughPagesToEagerlyRefetch,
+    meta: listWindow ? { mailListWindow: listWindow } : undefined,
+    refetchOnWindowFocus: listWindow ? false : aroundWindowIsShallow,
+    refetchOnMount: listWindow ? false : aroundWindowIsShallow,
   });
+  useRefreshWindowOnMount(queryKey, listWindow !== undefined);
+  return result;
 }
 
 export function useMailDetail(mailId: string | null) {
@@ -371,42 +558,79 @@ export function updateMailInThreadCaches(
   });
 }
 
-export function invalidateMailListsBounded(qc: QueryClient): void {
-  for (const prefix of [["mails"], ["unified", "mails"]] as const) {
-    for (const query of qc.getQueryCache().findAll({ queryKey: prefix })) {
-      qc.invalidateQueries({
-        queryKey: query.queryKey,
-        exact: true,
-        refetchType: hasFewEnoughPagesToEagerlyRefetch(query) ? "active" : "none",
-      });
-    }
-  }
+/**
+ * Adjust a conversation row's own unread count in every list cache holding
+ * it as a conversation -- only rows fetched grouped carry the count, so a
+ * flat list's row of the same message is left alone.
+ */
+function updateConversationUnread(
+  qc: QueryClient,
+  rowId: string,
+  next: (unread: number) => number,
+) {
+  qc.setQueriesData<InfiniteData<MessageListResponse>>({ queryKey: ["mails"] }, (old) => {
+    if (!old) return old;
+    return {
+      ...old,
+      pages: old.pages.map((page) => ({
+        ...page,
+        messages: page.messages.map((m) =>
+          m.id === rowId && m.unread_in_thread !== undefined
+            ? { ...m, unread_in_thread: Math.max(0, next(m.unread_in_thread)) }
+            : m,
+        ),
+      })),
+    };
+  });
 }
 
 /**
- * A mail.updated SSE event names which columns changed but not their new
- * values (the underlying NOTIFY payload carries only column names) -- so
- * reflecting it needs one fetch of that message, never a full list
- * refetch. Patches every list cache holding the row plus its own detail
- * cache from the same response. Swallows a 404: the message may already
- * be gone by the time this runs, and the list settles on its own bounded
- * refetch regardless.
+ * Mark read every unread message of a conversation row's thread in that
+ * row's folder -- what reading a row grouped by conversation means, since
+ * the row counts all of them (isRowUnread). The row's own message is left
+ * out unless `includeRow`: opening a row already marks it read through the
+ * reading pane.
  */
-export async function refreshMailFromServer(qc: QueryClient, mailId: string): Promise<void> {
-  try {
-    const detail = await qc.fetchQuery({
-      queryKey: mailKeys.detail(mailId),
-      queryFn: () => api.mails.get(mailId),
-      staleTime: 0,
-    });
-    updateMailInCache(qc, mailId, {
-      is_seen: detail.is_seen,
-      is_flagged: detail.is_flagged,
-      is_answered: detail.is_answered,
-    });
-  } catch {
-    // Ignore -- see docstring.
-  }
+export function useMarkConversationRead() {
+  const qc = useQueryClient();
+  const { push: pushToast } = useToast();
+  return useCallback(
+    async (row: MessageSummary, includeRow: boolean) => {
+      let thread: ThreadResponse;
+      try {
+        thread = await qc.fetchQuery({
+          queryKey: mailKeys.thread(row.id),
+          queryFn: () => api.mails.thread(row.id),
+          staleTime: 0,
+        });
+      } catch (err) {
+        pushToast(`Could not mark as read: ${(err as Error).message}`, "error", 0);
+        return;
+      }
+      const ids = thread.messages
+        .filter((m) => m.folder_id === row.folder_id && !m.is_seen)
+        .filter((m) => includeRow || m.id !== row.id)
+        .map((m) => m.id);
+      if (ids.length === 0) return;
+
+      for (const id of ids) updateMailInThreadCaches(qc, id, { is_seen: true });
+      if (includeRow) updateMailInCache(qc, row.id, { is_seen: true });
+      // What stays unread afterwards is at most the row's own message, read
+      // from the cache now rather than from `row` -- the reading pane may
+      // have marked it read meanwhile.
+      const rowStillUnread = !includeRow && findMailInCache(qc, row.id)?.isSeen === false;
+      updateConversationUnread(qc, row.id, () => (rowStillUnread ? 1 : 0));
+      updateFolderCounts(qc, row.account_id, row.folder_id, 0, -ids.length);
+      try {
+        await api.messages.bulkAction(row.account_id, { action: "mark_read", ids });
+      } catch (err) {
+        pushToast(`Could not mark as read: ${(err as Error).message}`, "error", 0);
+      } finally {
+        refreshMailViews(qc);
+      }
+    },
+    [qc, pushToast],
+  );
 }
 
 /** Adjust folder total_count and unread_count in ALL folder caches. */
@@ -524,8 +748,9 @@ export function useMailAction() {
         // same fact -- the list row, the reading pane's thread cache, and
         // the single-message detail cache -- rather than three places each
         // deciding "what changed" and drifting apart. Folder unread counts
-        // are the one derived value that isn't a plain field copy, so they
-        // stay their own branch below.
+        // and a conversation row's own unread count are derived values
+        // rather than plain field copies, so they stay their own branch
+        // below.
         const updates: Partial<MessageSummary> = {};
         if (act === "flag") updates.is_flagged = true;
         if (act === "unflag") updates.is_flagged = false;
@@ -542,10 +767,14 @@ export function useMailAction() {
           });
         }
 
-        if (act === "mark_read" && !mailInfo.isSeen)
+        if (act === "mark_read" && !mailInfo.isSeen) {
           updateFolderCounts(qc, accountId, mailInfo.folderId, 0, -1);
-        if (act === "mark_unread" && mailInfo.isSeen)
+          updateConversationUnread(qc, mailId, (unread) => unread - 1);
+        }
+        if (act === "mark_unread" && mailInfo.isSeen) {
           updateFolderCounts(qc, accountId, mailInfo.folderId, 0, 1);
+          updateConversationUnread(qc, mailId, (unread) => unread + 1);
+        }
       }
 
       return {
@@ -599,10 +828,9 @@ export function useMailAction() {
     },
 
     onSettled: (_data, _err, { mailId }) => {
-      qc.invalidateQueries({ queryKey: ["mails"] });
       qc.invalidateQueries({ queryKey: ["mail"] });
       qc.invalidateQueries({ queryKey: ["thread", mailId] });
-      invalidateAllFolderCaches(qc);
+      refreshMailViews(qc);
     },
   });
 
