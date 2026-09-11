@@ -7,6 +7,7 @@ import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
+import { isRowUnread } from "@/lib/mail-unread";
 import type { MailRowAction, MessageSummary } from "@/types/api";
 
 // Opacity/pointer-events only -- these float over the row's own background
@@ -62,7 +63,7 @@ export function MailListItem({
 }: MailListItemProps) {
   const senderName = extractSenderName(mail.from_addr);
   const threadSuffix = isThreaded ? " (latest message in thread)" : "";
-  const unread = !mail.is_seen;
+  const unread = isRowUnread(mail);
 
   // One request per account rendered (deduped/cached by TanStack Query
   // across every row sharing it), never one per row -- see
@@ -208,15 +209,15 @@ export function MailListItem({
               )}
               onClick={(e) => {
                 e.stopPropagation();
-                act(mail.is_seen ? "mark_unread" : "mark_read");
+                act(unread ? "mark_read" : "mark_unread");
               }}
-              title={mail.is_seen ? "Mark as unread" : "Mark as read"}
-              aria-label={mail.is_seen ? "Mark as unread" : "Mark as read"}
+              title={unread ? "Mark as read" : "Mark as unread"}
+              aria-label={unread ? "Mark as read" : "Mark as unread"}
             >
-              {mail.is_seen ? (
-                <MailIcon className="h-3.5 w-3.5" />
-              ) : (
+              {unread ? (
                 <MailOpen className="h-3.5 w-3.5" />
+              ) : (
+                <MailIcon className="h-3.5 w-3.5" />
               )}
             </button>
             <span
