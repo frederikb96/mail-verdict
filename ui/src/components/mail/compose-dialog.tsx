@@ -55,6 +55,11 @@ export function ComposeDialog() {
 
   const closeAndClearIntent = () => {
     setOpen(false);
+    // A close asked for while a send was in flight raised the unsaved-work
+    // prompt; the send completing is what closes the dialog now, and the
+    // prompt goes with it rather than staying over the page with nothing
+    // left to save.
+    setConfirmClose(false);
     setComposeIntent(null);
     setIsDirty(false);
     // A submit already clears its own recovery buffer -- this is what

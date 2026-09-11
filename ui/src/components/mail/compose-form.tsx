@@ -167,10 +167,13 @@ export function ComposeForm({
   // second one sees what the first just set.
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  // "sending" hides the form and shows only that the message is on its
+  // "sending" covers the form and shows only that the message is on its
   // way, so there is nothing left on screen to press twice. The form stays
-  // mounted underneath, which is what brings it back exactly as it was if
-  // the send fails.
+  // mounted and laid out underneath -- invisible and inert rather than
+  // removed, so the host does not shrink under the pointer and a second
+  // click of a double click lands on the overlay instead of outside the
+  // dialog (an outside press is a close request). Kept mounted is also
+  // what brings it back exactly as it was if the send fails.
   const [phase, setPhase] = useState<"editing" | "sending">("editing");
   const [submitError, setSubmitError] = useState<string | null>(null);
   // Set once a submit succeeds and never cleared: what this composer held
@@ -383,10 +386,11 @@ export function ComposeForm({
 
   const form = (
     <div
+      inert={phase === "sending"}
       className={cn(
         "flex flex-col gap-2",
         resize.isMaximized && "h-full min-h-0 flex-1",
-        phase === "sending" && "hidden",
+        phase === "sending" && "invisible",
       )}
     >
       {!compact && <RecipientField value={to} onChange={setTo} placeholder="To" />}
@@ -548,19 +552,19 @@ export function ComposeForm({
   );
 
   return (
-    <>
+    <div className={cn("relative flex flex-col", resize.isMaximized && "h-full min-h-0 flex-1")}>
+      {form}
       {phase === "sending" && (
         <div
           data-testid="compose-sending"
           role="status"
-          className="flex items-center gap-2 py-6 text-sm text-muted-foreground"
+          className="absolute inset-0 flex items-center justify-center gap-2 text-sm text-muted-foreground"
         >
           <Loader2 className="h-4 w-4 animate-spin" />
           Sending...
         </div>
       )}
-      {form}
-    </>
+    </div>
   );
 }
 
