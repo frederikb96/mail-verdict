@@ -1678,6 +1678,39 @@ class AlertRepository:
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
+    async def create_outbox_stalled_alert(
+        self, *, account_id: uuid.UUID, dedupe_key: str, title: str, body: str,
+    ) -> Alert | None:
+        """
+        Insert a delivered "outbox_stalled" alert -- see outbox/stalled.py.
+
+        No folder_id, so no folder filter ever hides it: a message stuck on
+        its way out matters whichever folders a device alerts for. The same
+        ON CONFLICT DO NOTHING on dedupe_key as a mail alert is what makes
+        it fire once per stuck row.
+
+        Returns:
+            The inserted Alert, or None if this row was already alerted on
+        """
+        now = func.now()
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(Alert)
+                .values(
+                    kind="outbox_stalled",
+                    deliver_at=now,
+                    delivered_at=now,
+                    title=title,
+                    body=body,
+                    dedupe_key=dedupe_key,
+                    account_id=account_id,
+                )
+                .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
+                .returning(Alert)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
     async def list_recent(
         self, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
         unseen_only: bool = False,

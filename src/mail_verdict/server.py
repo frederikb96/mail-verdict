@@ -27,7 +27,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
@@ -73,6 +73,7 @@ _embedding_components: Any | None = None
 _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
+_stalled_outbox_timer: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
 _read_state_reconciler: Any | None = None
@@ -141,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
     global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler
+    global _stalled_outbox_timer
 
     config = get_config()
 
@@ -299,6 +301,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await _mail_alert_finalizer.start()
 
+    from mail_verdict.outbox.stalled import build_stalled_outbox_timer
+
+    _stalled_outbox_timer = build_stalled_outbox_timer(
+        db, event_ring, vapid_repo,
+        timedelta(seconds=config.outbox.stalled_alert_after_seconds),
+    )
+    await _stalled_outbox_timer.start()
+
     from mail_verdict.retention.sweep import build_retention_timer
 
     _retention_sweeper = build_retention_timer(db)
@@ -447,6 +457,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _pending_send_timer.stop()
     if _mail_alert_finalizer:
         await _mail_alert_finalizer.stop()
+    if _stalled_outbox_timer:
+        await _stalled_outbox_timer.stop()
     if _retention_sweeper:
         await _retention_sweeper.stop()
     if _read_state_reconciler:
@@ -464,6 +476,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_notifier = None
     _pipeline_reconciler = None
     _pending_send_timer = None
+    _stalled_outbox_timer = None
     _mail_alert_finalizer = None
     _retention_sweeper = None
     _read_state_reconciler = None

@@ -264,7 +264,8 @@ class DatabaseConfig(BaseModel):
 
 
 class OutboxConfig(BaseModel):
-    """Limits on an outgoing message's attachments.
+    """Limits on an outgoing message's attachments, and how long one may
+    wait on its way out before it is alerted on (outbox/stalled.py).
 
     Every attachment is held whole in memory to be handed to PostIMAP,
     so the total and the count matter as much as the single-file size --
@@ -275,6 +276,7 @@ class OutboxConfig(BaseModel):
     max_attachment_bytes: int
     max_attachments_total_bytes: int
     max_attachments: int
+    stalled_alert_after_seconds: int
 
 
 class SearchConfig(BaseModel):

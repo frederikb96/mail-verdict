@@ -582,6 +582,9 @@ export interface OutboxCreateRequest {
    * ordinary attachment, or the content id a matching cid:<value>
    * reference inside body_html resolves to for an inline image. */
   inline_attachment_content_ids?: (string | null)[];
+  /** Generated once per composed message and kind -- a repeat of a
+   * request carrying it returns the row the first one created. */
+  idempotency_key?: string;
 }
 
 /** A message's body as safe-to-send HTML, for a reply or forward quote. */

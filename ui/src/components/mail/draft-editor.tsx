@@ -107,6 +107,18 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
     }
   };
 
+  // A completed save or send leaves nothing unsaved, so the dirty guard is
+  // released before anything navigates -- requestSelectMailAtom reads it
+  // synchronously, and this editor's own effect clearing it only runs
+  // after that read. Left set, closing the editor after a send is itself
+  // held up as leaving unsaved work: the prompt comes up over a composer
+  // whose Send still works.
+  const complete = () => {
+    setIsDirty(false);
+    setActiveReplyDirtyForThreadId(null);
+    advance();
+  };
+
   const discard = () => {
     setConfirming(false);
     // A submit already clears its own recovery buffer -- this is what
@@ -143,7 +155,7 @@ export function DraftEditor({ mail, onDone }: DraftEditorProps) {
             inReplyTo={mail.in_reply_to ?? undefined}
             references={mail.references ?? undefined}
             replacesMessageId={mail.id}
-            onDone={advance}
+            onDone={complete}
             onDirtyChange={setIsDirty}
             onControlsReady={(controls) => {
               controlsRef.current = controls;

@@ -1424,9 +1424,33 @@ class PendingSendAttachment(Base):
     )
 
 
+class OutboxSubmission(Base):
+    """One accepted POST /outbox, keyed by the caller's own idempotency key.
+
+    A repeat of the same request -- a double press, a retry after a lost
+    response, a composer that failed to close -- finds its key here and is
+    answered with the row the first one created instead of creating a
+    second. target_id is that row's id, the one the caller was handed
+    either way: a staged send keeps its id when it moves into outbox (see
+    outbox/pending.py), so this never needs updating. No foreign key, like
+    every owned table -- the target sits in pending_sends or in PostIMAP's
+    outbox depending on when it is asked.
+    """
+
+    __tablename__ = "outbox_submissions"
+
+    idempotency_key: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    target_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
 class Alert(Base):
-    """Something meant to interrupt Freddy on his device -- new mail or a
-    calendar reminder -- and, once delivered_at is stamped, the durable
+    """Something meant to interrupt the reader on their device -- new mail,
+    a calendar reminder, or a message stuck on its way out (kind
+    "outbox_stalled", see outbox/stalled.py) -- and, once delivered_at is stamped, the durable
     record that it did. One row is both, before and after: this table is
     the queue a dispatcher claims from and the "what did I miss" list a
     bell icon reads back, with nothing else distinguishing the two states.

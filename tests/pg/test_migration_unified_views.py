@@ -1,5 +1,5 @@
 """
-0030 against the state the previous release actually reaches: folders
+0031 against the state the previous release actually reaches: folders
 carrying a unified name in folder_prefs (two sharing one, one alone, one
 NULL, one empty string) and a stored sidebar order that lists a name twice
 and a name no folder carries. The upgrade has to turn that into views with
@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import command
 from tests.pg.test_migration_from_v1 import _POSTIMAP_STUBS, _alembic_config
 
-_PREVIOUS = "0029_alerts_unresolved_mail"
-_THIS = "0030_unified_views"
+_PREVIOUS = "0030_outbox_submissions"
+_THIS = "0031_unified_views"
 
 
 async def _upgrade(url: str, revision: str) -> None:

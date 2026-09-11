@@ -31,6 +31,11 @@ POST /api/outbox — send a message or save a draft; inserting an outbox row
   back; nothing is watching one on behalf of the MCP send tool or the
   calendar's iTIP replies, so both of those insert an outbox row directly
   and go at once. Their own descriptions say so.
+
+  A message is sent once, whatever the client does (outbox/submissions.py):
+  a request repeating an earlier one's idempotency_key is answered with the
+  row that one created, and a send naming a draft that another send is
+  already carrying is refused with 409.
 GET /api/outbox — list outbox rows, for the outbox/status view. A send
   still inside its undo window is listed alongside real outbox rows,
   represented with status="pending" and the same id create_outbox()
@@ -51,6 +56,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
 from mail_verdict.api.events import get_event_ring
@@ -73,6 +79,11 @@ from mail_verdict.database.models import (
     PendingSendAttachment,
 )
 from mail_verdict.outbox.pending import cancel_pending_send, list_pending_sends, stage_send
+from mail_verdict.outbox.submissions import (
+    draft_send_in_flight,
+    find_submission,
+    record_submission,
+)
 from mail_verdict.postimap.actions import insert_outbox
 from mail_verdict.postimap.contract import (
     read_postimap_info,
@@ -252,6 +263,22 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
         )
     db = get_db_connection()
     async with db.session() as session:
+        # First, before anything that could answer differently the second
+        # time: a repeat whose draft has since been superseded by the first
+        # one's own send is still that same request, not a 404.
+        if payload.idempotency_key is not None:
+            previous = await find_submission(session, payload.idempotency_key)
+            if previous is not None:
+                if previous.kind != payload.kind:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"idempotency_key was already used for a {previous.kind}; "
+                            "a different kind needs a key of its own."
+                        ),
+                    )
+                return await _replay(session, previous.target_id)
+
         info = await read_postimap_info(session)
         # An inline image needs a matching outbox_attachments.content_id,
         # which does not exist as a column before PostIMAP 1.7.0 -- an
@@ -316,6 +343,13 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
                     status_code=400,
                     detail="A draft can only be superseded within its own account.",
                 )
+            if payload.kind == "send" and await draft_send_in_flight(
+                session, payload.replaces_message_id,
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This draft is already being sent.",
+                )
 
         from_addr = await resolve_send_from_addr(
             session, payload.account_id, payload.identity_id,
@@ -347,6 +381,10 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
                 attachments=attachments,
                 undo_seconds=undo_seconds,
             )
+            if payload.idempotency_key is not None:
+                await record_submission(
+                    session, payload.idempotency_key, payload.kind, pending.id,
+                )
             # PendingSend is MailVerdict's own staging table -- the real
             # outbox insert it eventually becomes fires outbox.updated via
             # PostIMAP's own trigger, but this row does not exist there
@@ -378,10 +416,38 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
             replaces_message_id=payload.replaces_message_id,
             attachments=attachments,
         )
+        if payload.idempotency_key is not None:
+            await record_submission(session, payload.idempotency_key, payload.kind, outbox.id)
         att_result = await session.execute(
             select(OutboxAttachment).where(OutboxAttachment.outbox_id == outbox.id)
         )
         return _to_response(outbox, list(att_result.scalars().all()))
+
+
+async def _replay(
+    session: AsyncSession, target_id: uuid.UUID,
+) -> OutboxResponse | PendingSendResponse:
+    """
+    Answer a repeated request with the row the first one created, in
+    whichever shape it has now -- still staged, or already in outbox under
+    the same id (see outbox/pending.py).
+
+    Raises:
+        HTTPException: 409 if that row no longer exists in either place
+    """
+    pending = await session.scalar(select(PendingSend).where(PendingSend.id == target_id))
+    if pending is not None:
+        return PendingSendResponse.model_validate(pending)
+    outbox = await session.scalar(select(Outbox).where(Outbox.id == target_id))
+    if outbox is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"This request was already accepted as {target_id}, which no longer exists.",
+        )
+    att_result = await session.execute(
+        select(OutboxAttachment).where(OutboxAttachment.outbox_id == outbox.id)
+    )
+    return _to_response(outbox, list(att_result.scalars().all()))
 
 
 @router.get("", response_model=list[OutboxResponse])
