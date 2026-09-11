@@ -197,10 +197,10 @@ export function MailListItem({
                 )}
               />
             </button>
-            {/* Revealed on hover like every other row action: the dot
-                already says whether the row is unread, and a permanent
-                envelope showing the *opposite* state (the action it would
-                take) read as a second, contradictory state marker. */}
+            {/* Revealed on hover like every other row action. The dot says
+                whether the row is unread; this icon shows the action it
+                takes -- the opposite state -- so left visible it would be a
+                second, contradicting state marker. */}
             <button
               className={cn(
                 "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
