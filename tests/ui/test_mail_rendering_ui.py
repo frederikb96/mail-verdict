@@ -382,9 +382,10 @@ class TestPerMessageDarkMode:
 
         # Collapse and re-expand the same message -- the choice must not
         # reset just because the component unmounted its shadow content.
+        # The header's own padding: its addresses and date copy instead.
         header = page.locator('[data-testid="thread-message-header"]')
-        header.click()
-        header.click()
+        header.click(position={"x": 3, "y": 3})
+        header.click(position={"x": 3, "y": 3})
         expect(light_mode_button).to_be_visible(timeout=10_000)
         assert _host_background() == dark_bg
 

@@ -42,6 +42,10 @@ _STATIC_HEADERS: list[tuple[bytes, bytes]] = [
     (b"referrer-policy", b"strict-origin-when-cross-origin"),
     (b"cross-origin-opener-policy", b"same-origin"),
     (b"permissions-policy", b"camera=(), microphone=(), geolocation=(), payment=()"),
+    # A browser may resolve the host of every link on a page ahead of any
+    # click. For a message's own links that lookup reaches the sender's DNS,
+    # whoever the sender is and whether or not they are trusted.
+    (b"x-dns-prefetch-control", b"off"),
     # Ignored by a browser that received it over plain HTTP, so this is a
     # no-op in development and only takes effect once actually served over
     # TLS.

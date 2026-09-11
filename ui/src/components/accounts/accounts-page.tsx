@@ -17,14 +17,15 @@ import {
   GripVertical,
   ImageOff,
   Layers,
-  Clock,
+  MoreVertical,
   Zap,
   AlertCircle,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -32,10 +33,17 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 import { FolderOrder } from "@/components/settings/folder-order";
 import { ImageExceptionsList } from "@/components/settings/image-exceptions-list";
@@ -54,11 +62,28 @@ import {
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
 import { accountConnectionState, useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
+import { formatRelativeAgo } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type {
   AccountCreateRequest,
   AccountResponse,
   AccountUpdateRequest,
 } from "@/types/api";
+
+/** Human explanation for the IMAP extension PostIMAP is using to detect
+ * changes on this account -- the raw value is protocol jargon on its own. */
+function syncTierDescription(tier: string | null | undefined): string {
+  switch (tier) {
+    case "qresync":
+      return "QRESYNC: the server reports exactly what changed, no rescan needed.";
+    case "condstore":
+      return "CONDSTORE: the server reports changed messages by modification time.";
+    case "full":
+      return "No fast change-detection extension on this server -- folders are rescanned in full.";
+    default:
+      return "Not yet determined.";
+  }
+}
 
 const STATE_BADGES: Record<string, { variant: "default" | "secondary" | "destructive" | "outline"; label: string }> = {
   created: { variant: "outline", label: "Created" },
@@ -100,6 +125,7 @@ function AccountCard({
   const { data: syncStatus } = useSyncStatus(account.id);
   const triggerSync = useTriggerSync();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const isRetrying = accountConnectionState(account, syncStatus) === "retrying";
 
@@ -110,232 +136,228 @@ function AccountCard({
         label: account.state,
       });
 
+  const lastSyncedLabel = syncStatus?.last_incr_sync
+    ? `Synced ${formatRelativeAgo(syncStatus.last_incr_sync)}`
+    : "Never synced";
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-2">
-            <EmojiPicker
-              currentEmoji={account.emoji}
-              onSelect={(emoji) =>
-                updateEmoji.mutate({ accountId: account.id, emoji })
-              }
-            />
-            <CardTitle className="text-base">{account.name}</CardTitle>
-          </div>
-          <Badge variant={badgeInfo.variant}>{badgeInfo.label}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {/* Sync toggle */}
-        <div className="flex items-center justify-between">
-          <Label className="text-sm">Sync enabled</Label>
-          <Switch
-            checked={account.is_active}
-            onCheckedChange={(checked: boolean) =>
-              updateAccount.mutate({
-                id: account.id,
-                data: { is_active: checked },
-              })
+    <Card size="sm" className="overflow-hidden">
+      <Collapsible.Root open={expanded} onOpenChange={setExpanded}>
+        <div className="flex items-center gap-2 px-4">
+          <EmojiPicker
+            currentEmoji={account.emoji}
+            onSelect={(emoji) =>
+              updateEmoji.mutate({ accountId: account.id, emoji })
             }
           />
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="text-muted-foreground">IMAP</div>
-          <div>
-            {account.imap_user}@{account.imap_host}:{account.imap_port}
-          </div>
-          {account.smtp_host && (
-            <>
-              <div className="text-muted-foreground">SMTP</div>
-              <div>
-                {account.smtp_user ?? account.imap_user}@{account.smtp_host}:
-                {account.smtp_port}
-              </div>
-            </>
-          )}
-          <div className="text-muted-foreground">Spam</div>
-          <div className="flex items-center gap-1">
-            {account.spam_enabled ? (
-              <CheckCircle2 className="h-3 w-3 text-green-500" />
-            ) : (
-              <XCircle className="h-3 w-3 text-muted-foreground" />
-            )}
-            {account.spam_enabled ? "Enabled" : "Disabled"}
-          </div>
-          <div className="text-muted-foreground">Trash retention</div>
-          <div className="flex items-center gap-1">
-            {account.trash_retention_days ? (
-              <CheckCircle2 className="h-3 w-3 text-green-500" />
-            ) : (
-              <XCircle className="h-3 w-3 text-muted-foreground" />
-            )}
-            {account.trash_retention_days
-              ? `${account.trash_retention_days} days`
-              : "Off"}
-          </div>
-          <div className="text-muted-foreground">Junk retention</div>
-          <div className="flex items-center gap-1">
-            {account.junk_retention_days ? (
-              <CheckCircle2 className="h-3 w-3 text-green-500" />
-            ) : (
-              <XCircle className="h-3 w-3 text-muted-foreground" />
-            )}
-            {account.junk_retention_days
-              ? `${account.junk_retention_days} days`
-              : "Off"}
-          </div>
-        </div>
-
-        {/* Sync status */}
-        {syncStatus && (
-          <div className="rounded-md border p-2 text-xs text-muted-foreground">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1">
-                <Zap className="h-3 w-3" />
-                {syncStatus.sync_tier ?? "pending"}
-              </span>
-              <span className="flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                {syncStatus.last_incr_sync
-                  ? new Date(syncStatus.last_incr_sync).toLocaleTimeString()
-                  : "never"}
+          <Collapsible.Trigger
+            className="group/account-trigger flex min-w-0 flex-1 items-center gap-2 rounded-md py-2.5 text-left"
+            aria-label={expanded ? `Collapse ${account.name}` : `Expand ${account.name}`}
+          >
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate text-sm font-medium">{account.name}</span>
+              <span className="truncate text-xs text-muted-foreground">
+                {account.imap_user}
               </span>
             </div>
-            {syncStatus.error_count > 0 && (
-              <div className="mt-1 flex items-center gap-1 text-destructive">
-                <AlertCircle className="h-3 w-3" />
-                {syncStatus.error_count} errors — {syncStatus.last_error}
-              </div>
-            )}
-            <div className="mt-1 text-[10px] opacity-70">
-              Real-time sync via IMAP IDLE &bull; Periodic fallback every 60s
-            </div>
-          </div>
-        )}
-
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => triggerSync.mutate(account.id)}
-            disabled={triggerSync.isPending}
-          >
-            {triggerSync.isPending ? (
-              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-            ) : (
-              <RefreshCw className="mr-1 h-3 w-3" />
-            )}
-            Sync
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onEdit(account)}
-          >
-            <Pencil className="mr-1 h-3 w-3" />
-            Edit
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-destructive"
-            onClick={() => setConfirmDelete(true)}
-          >
-            <Trash2 className="mr-1 h-3 w-3" />
-            Delete
-          </Button>
-        </div>
-
-        {account.state === "error" && account.state_error && (
-          <div
-            className={
-              isRetrying
-                ? "flex items-center gap-1 text-sm text-muted-foreground"
-                : "flex items-center gap-1 text-sm text-destructive"
-            }
-          >
-            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-            {isRetrying
-              ? `Reconnecting after: ${account.state_error}`
-              : account.state_error}
-          </div>
-        )}
-
-        <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
-          <DialogContent size="md">
-            <DialogHeader>
-              <DialogTitle>Delete &ldquo;{account.name}&rdquo;?</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">
-              This removes the account and its entire locally mirrored mailbox.
-              It cannot be undone. Nothing is touched on the mail server itself
-              — re-adding the account re-syncs everything from scratch.
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setConfirmDelete(false)}>
-                Cancel
-              </Button>
-              <Button
+            <Badge variant={badgeInfo.variant} className="ml-auto shrink-0">
+              {badgeInfo.label}
+            </Badge>
+            <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+              {lastSyncedLabel}
+            </span>
+            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[panel-open]/account-trigger:rotate-180" />
+          </Collapsible.Trigger>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={<Button variant="ghost" size="icon-sm" />}
+              aria-label={`${account.name} options`}
+            >
+              <MoreVertical className="h-4 w-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem
+                onClick={() => triggerSync.mutate(account.id)}
+                disabled={triggerSync.isPending}
+              >
+                <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                Sync now
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onEdit(account)}>
+                <Pencil className="mr-2 h-3.5 w-3.5" />
+                Edit
+              </DropdownMenuItem>
+              <DropdownMenuItem
                 variant="destructive"
-                disabled={deleteAccount.isPending}
-                onClick={() =>
-                  deleteAccount.mutate(account.id, {
-                    onSuccess: () => setConfirmDelete(false),
+                onClick={() => setConfirmDelete(true)}
+              >
+                <Trash2 className="mr-2 h-3.5 w-3.5" />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        <Collapsible.Panel className="overflow-hidden">
+          <CardContent className="flex flex-col gap-3 border-t pt-3">
+            {account.state === "error" && account.state_error && (
+              <div
+                className={cn(
+                  "flex items-center gap-1 text-sm",
+                  isRetrying ? "text-muted-foreground" : "text-destructive",
+                )}
+              >
+                <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+                {isRetrying
+                  ? `Reconnecting after: ${account.state_error}`
+                  : account.state_error}
+              </div>
+            )}
+
+            {/* Sync toggle */}
+            <div className="flex items-center justify-between">
+              <Label className="text-sm">Sync enabled</Label>
+              <Switch
+                checked={account.is_active}
+                onCheckedChange={(checked: boolean) =>
+                  updateAccount.mutate({
+                    id: account.id,
+                    data: { is_active: checked },
                   })
                 }
-              >
-                {deleteAccount.isPending ? (
-                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="mr-1 h-3 w-3" />
-                )}
-                Delete permanently
-              </Button>
+              />
             </div>
-          </DialogContent>
-        </Dialog>
 
-        {/* Per-account settings sections */}
-        <div className="mt-2 flex flex-col gap-1 border-t pt-3">
-          <Collapsible.Root>
-            <SectionTrigger icon={GripVertical} label="Folder Order & Visibility" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <FolderOrder accountId={account.id} />
+            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              <div className="text-muted-foreground">User</div>
+              <div className="truncate">{account.imap_user}</div>
+              <div className="text-muted-foreground">Server</div>
+              <div className="truncate">
+                {account.imap_host}:{account.imap_port}
               </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
+              {account.smtp_host && (
+                <>
+                  <div className="text-muted-foreground">SMTP user</div>
+                  <div className="truncate">{account.smtp_user ?? account.imap_user}</div>
+                  <div className="text-muted-foreground">SMTP server</div>
+                  <div className="truncate">
+                    {account.smtp_host}:{account.smtp_port}
+                  </div>
+                </>
+              )}
+              <div className="text-muted-foreground">Spam</div>
+              <div className="flex items-center gap-1">
+                {account.spam_enabled ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-muted-foreground" />
+                )}
+                {account.spam_enabled ? "Enabled" : "Disabled"}
+              </div>
+              <div className="text-muted-foreground">Trash retention</div>
+              <div className="flex items-center gap-1">
+                {account.trash_retention_days ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-muted-foreground" />
+                )}
+                {account.trash_retention_days
+                  ? `${account.trash_retention_days} days`
+                  : "Off"}
+              </div>
+              <div className="text-muted-foreground">Junk retention</div>
+              <div className="flex items-center gap-1">
+                {account.junk_retention_days ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-muted-foreground" />
+                )}
+                {account.junk_retention_days
+                  ? `${account.junk_retention_days} days`
+                  : "Off"}
+              </div>
+            </div>
 
-          <Collapsible.Root>
-            <SectionTrigger icon={ImageOff} label="Image Exceptions" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <ImageExceptionsList accountId={account.id} />
+            {/* Sync status */}
+            {syncStatus && (
+              <div className="rounded-md border p-2 text-xs text-muted-foreground">
+                <div className="flex items-center justify-between">
+                  <Tooltip>
+                    <TooltipTrigger className="flex items-center gap-1">
+                      <Zap className="h-3 w-3" />
+                      {syncStatus.sync_tier ?? "pending"}
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      {syncTierDescription(syncStatus.sync_tier)}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                {syncStatus.error_count > 0 && (
+                  <div className="mt-1 flex items-center gap-1 text-destructive">
+                    <AlertCircle className="h-3 w-3" />
+                    {syncStatus.error_count} errors — {syncStatus.last_error}
+                  </div>
+                )}
+                <div className="mt-1 text-[10px] opacity-70">
+                  Real-time sync via IMAP IDLE &bull; Periodic fallback every 60s
+                </div>
               </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
+            )}
 
-          <Collapsible.Root>
-            <SectionTrigger icon={Layers} label="Unified View Names" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <UnifiedNames accountId={account.id} />
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
+            {/* Per-account settings sections */}
+            <div className="mt-2 flex flex-col gap-1 border-t pt-3">
+              <Collapsible.Root>
+                <SectionTrigger icon={GripVertical} label="Folder Order & Visibility" />
+                <Collapsible.Panel className="overflow-hidden">
+                  <div className="px-1 pt-2">
+                    <FolderOrder accountId={account.id} />
+                  </div>
+                </Collapsible.Panel>
+              </Collapsible.Root>
 
-          <Collapsible.Root>
-            <SectionTrigger icon={AtSign} label="Sending Identities" />
-            <Collapsible.Panel className="overflow-hidden">
-              <div className="px-1 pt-2">
-                <IdentitiesSection accountId={account.id} />
-              </div>
-            </Collapsible.Panel>
-          </Collapsible.Root>
-        </div>
-      </CardContent>
+              <Collapsible.Root>
+                <SectionTrigger icon={ImageOff} label="Image Exceptions" />
+                <Collapsible.Panel className="overflow-hidden">
+                  <div className="px-1 pt-2">
+                    <ImageExceptionsList accountId={account.id} />
+                  </div>
+                </Collapsible.Panel>
+              </Collapsible.Root>
+
+              <Collapsible.Root>
+                <SectionTrigger icon={Layers} label="Unified View Names" />
+                <Collapsible.Panel className="overflow-hidden">
+                  <div className="px-1 pt-2">
+                    <UnifiedNames accountId={account.id} />
+                  </div>
+                </Collapsible.Panel>
+              </Collapsible.Root>
+
+              <Collapsible.Root>
+                <SectionTrigger icon={AtSign} label="Sending Identities" />
+                <Collapsible.Panel className="overflow-hidden">
+                  <div className="px-1 pt-2">
+                    <IdentitiesSection accountId={account.id} />
+                  </div>
+                </Collapsible.Panel>
+              </Collapsible.Root>
+            </div>
+          </CardContent>
+        </Collapsible.Panel>
+      </Collapsible.Root>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Delete "${account.name}"?`}
+        description="This removes the account and its entire locally mirrored mailbox. It cannot be undone. Nothing is touched on the mail server itself — re-adding the account re-syncs everything from scratch."
+        isConfirming={deleteAccount.isPending}
+        onConfirm={() =>
+          deleteAccount.mutate(account.id, {
+            onSuccess: () => setConfirmDelete(false),
+          })
+        }
+      />
     </Card>
   );
 }

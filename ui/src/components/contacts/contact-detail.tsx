@@ -115,7 +115,9 @@ export function ContactDetail({ contactId }: { contactId: string }) {
             </span>
             {contact.phones.map((p, i) => (
               <span key={i} className="text-sm">
-                {p.number}
+                <a href={`tel:${p.number.replace(/[^+\d]/g, "")}`} className="hover:underline">
+                  {p.number}
+                </a>
                 {p.type && <span className="ml-1.5 text-xs text-muted-foreground">{p.type}</span>}
               </span>
             ))}
@@ -201,7 +203,7 @@ export function ContactDetail({ contactId }: { contactId: string }) {
 
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <UserRound className="h-3.5 w-3.5" />
-          {contact.addressbook_name}
+          Address book: {contact.addressbook_name}
         </div>
       </div>
 
