@@ -284,6 +284,16 @@ class TestUnifiedViewAutoSelectsAFolder:
         inbox = wait_for_folder(api_client, account["id"], "INBOX")
         unified_name = f"Unified Inbox {uuid.uuid4().hex[:8]}"
         _set_unified_name(api_client, inbox["id"], unified_name)
+        # The first view in sidebar order is the one selected, and other
+        # tests in this module leave views of their own behind -- put this
+        # one first rather than depend on how the names happen to sort.
+        order = api_client.get("/api/unified/folder-order")
+        assert order.status_code == 200, order.text
+        rest = [name for name in order.json()["order"] if name != unified_name]
+        reordered = api_client.put(
+            "/api/unified/folder-order", json={"order": [unified_name, *rest]},
+        )
+        assert reordered.status_code == 200, reordered.text
 
         msg = _deliver(
             dovecot_endpoint, api_client, account["id"], inbox["id"],
