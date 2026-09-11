@@ -52,40 +52,8 @@ export function EventChip({
   };
   (chipStyle as Record<string, string>)["--cal-color"] = effectiveColor;
 
-  return (
-    <div
-      data-testid="event"
-      data-event-id={event.object_id}
-      data-recurrence-id={event.recurrence_id ?? ""}
-      role="button"
-      tabIndex={0}
-      onClick={onClick}
-      onPointerDown={onPointerDown}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") onClick?.(e as unknown as MouseEvent);
-      }}
-      style={chipStyle}
-      className={cn(
-        "group/chip flex min-w-0 cursor-pointer items-center gap-1 overflow-hidden rounded px-1 text-xs leading-tight outline-none transition-opacity",
-        "focus-visible:ring-2 focus-visible:ring-ring",
-        variant === "month" && "h-[18px]",
-        variant === "grid" && "absolute h-full rounded-md px-1.5 py-0.5 text-left",
-        variant === "agenda" && "h-8 rounded-md px-2 py-1",
-        variant === "allday" && "h-[18px] rounded",
-        look.presence === "solid" &&
-          "border-l-2 bg-[color-mix(in_oklab,var(--cal-color)_18%,transparent)]",
-        look.presence === "hatched" &&
-          "border-l-2 bg-[repeating-linear-gradient(135deg,color-mix(in_oklab,var(--cal-color)_22%,transparent)_0,color-mix(in_oklab,var(--cal-color)_22%,transparent)_4px,transparent_4px,transparent_8px)]",
-        look.presence === "hollow" && "border bg-transparent",
-        look.presence === "declined" &&
-          "border-l-2 bg-[color-mix(in_oklab,var(--cal-color)_8%,transparent)] line-through opacity-50",
-        look.cancelled && "text-muted-foreground line-through",
-        look.pending && "opacity-60",
-        look.failed && "border-l-2 border-destructive",
-        selected && "ring-2 ring-ring",
-        className,
-      )}
-    >
+  const label = (
+    <>
       {look.pending && <Loader2 className="h-3 w-3 shrink-0 animate-spin" />}
       {look.failed && !look.pending && (
         <AlertTriangle className="h-3 w-3 shrink-0 text-destructive" />
@@ -101,6 +69,57 @@ export function EventChip({
         <span className="shrink-0 font-medium opacity-80">{timeLabel}</span>
       )}
       <Truncate text={event.summary || "(no title)"} />
+    </>
+  );
+
+  return (
+    <div
+      data-testid="event"
+      data-event-id={event.object_id}
+      data-recurrence-id={event.recurrence_id ?? ""}
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onClick?.(e as unknown as MouseEvent);
+      }}
+      style={chipStyle}
+      className={cn(
+        "group/chip flex min-w-0 cursor-pointer items-center gap-1 rounded px-1 text-xs leading-tight outline-none transition-opacity",
+        "focus-visible:ring-2 focus-visible:ring-ring",
+        variant === "month" && "h-[18px] overflow-hidden",
+        // No overflow-hidden here: it would make this element its own
+        // scroll container, which stops the label wrapper below from
+        // finding the time grid's real scrollport and pins it to the
+        // chip's own top instead of tracking the page scroll.
+        variant === "grid" && "absolute h-full items-start rounded-md px-1.5 py-0.5 text-left",
+        variant === "agenda" && "h-8 overflow-hidden rounded-md px-2 py-1",
+        variant === "allday" && "h-[18px] overflow-hidden rounded",
+        look.presence === "solid" &&
+          "border-l-2 bg-[color-mix(in_oklab,var(--cal-color)_18%,transparent)]",
+        look.presence === "hatched" &&
+          "border-l-2 bg-[repeating-linear-gradient(135deg,color-mix(in_oklab,var(--cal-color)_22%,transparent)_0,color-mix(in_oklab,var(--cal-color)_22%,transparent)_4px,transparent_4px,transparent_8px)]",
+        look.presence === "hollow" && "border bg-transparent",
+        look.presence === "declined" &&
+          "border-l-2 bg-[color-mix(in_oklab,var(--cal-color)_8%,transparent)] line-through opacity-50",
+        look.cancelled && "text-muted-foreground line-through",
+        look.pending && "opacity-60",
+        look.failed && "border-l-2 border-destructive",
+        selected && "ring-2 ring-ring",
+        className,
+      )}
+    >
+      {variant === "grid" ? (
+        // Sticky within the chip's own bounds: as a tall event scrolls up,
+        // the label holds at the top of the visible portion instead of
+        // scrolling out with the part of the chip that started off-screen.
+        <div className="sticky top-0 flex min-w-0 items-center gap-1 overflow-hidden py-0.5">
+          {label}
+        </div>
+      ) : (
+        label
+      )}
     </div>
   );
 }

@@ -90,7 +90,7 @@ export function QueueCard({ queue }: { queue: QueueResponse }) {
             >
               <Minus className="h-3 w-3" />
             </Button>
-            <span className="w-16 text-center tabular-nums">
+            <span className="whitespace-nowrap tabular-nums">
               {queue.concurrency.actual}/{queue.concurrency.target}
               <span className="text-muted-foreground"> (max {queue.concurrency.max_allowed})</span>
             </span>

@@ -9,13 +9,14 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
-import { Loader2, Search, UserRound, X } from "lucide-react";
+import { Loader2, Lock, Search, UserRound, X } from "lucide-react";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   useAddressbooks,
   useContactGroups,
@@ -26,6 +27,12 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Contact } from "@/types/api";
+
+// Select requires a non-empty item value, so "every address book" / "every
+// group" needs its own sentinel rather than the natural `undefined` --
+// same convention search-page.tsx uses for "All accounts".
+const ALL_ADDRESSBOOKS_VALUE = "__all__";
+const ALL_GROUPS_VALUE = "__all__";
 
 type Row = { kind: "letter"; letter: string } | { kind: "contact"; contact: Contact };
 
@@ -187,66 +194,76 @@ export function ContactList() {
               className="pl-7"
             />
           </div>
-          {addressbooks && addressbooks.length > 1 && (
-            <div className="flex flex-wrap gap-1">
-              <button
-                type="button"
-                onClick={() => handleAddressbookChange(undefined)}
-                className={cn(
-                  "rounded-full border px-2 py-0.5 text-xs",
-                  !addressbookId && "border-primary bg-primary/10",
-                )}
-              >
-                All
-              </button>
-              {addressbooks.map((ab) => (
-                <button
-                  key={ab.id}
-                  type="button"
-                  onClick={() => handleAddressbookChange(ab.id)}
-                  className={cn(
-                    "flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs",
-                    addressbookId === ab.id && "border-primary bg-primary/10",
-                  )}
+          {(addressbooks && addressbooks.length > 1) || groups.length > 0 ? (
+            <div className="flex gap-1.5">
+              {addressbooks && addressbooks.length > 1 && (
+                <Select
+                  value={addressbookId ?? ALL_ADDRESSBOOKS_VALUE}
+                  onValueChange={(v) =>
+                    handleAddressbookChange(!v || v === ALL_ADDRESSBOOKS_VALUE ? undefined : v)
+                  }
                 >
-                  {ab.display_name}
-                  {ab.read_only && <Badge variant="outline" className="h-3.5 px-1 text-[9px]">RO</Badge>}
-                </button>
-              ))}
-            </div>
-          )}
-          {groups.length > 0 && (
-            // A card's own CATEGORIES and a KIND:group card's own members
-            // are the two ways an address book groups people, and a real
-            // one uses both -- so both kinds render here, undistinguished,
-            // rather than one being offered as the only kind that exists.
-            <div className="flex flex-wrap gap-1" data-slot="contact-group-filter">
-              <button
-                type="button"
-                onClick={() => setGroupId(undefined)}
-                className={cn(
-                  "rounded-full border px-2 py-0.5 text-xs text-muted-foreground",
-                  !groupId && "border-primary bg-primary/10 text-foreground",
-                )}
-              >
-                All groups
-              </button>
-              {groups.map((g) => (
-                <button
-                  key={g.id}
-                  type="button"
-                  onClick={() => setGroupId(g.id)}
-                  className={cn(
-                    "rounded-full border px-2 py-0.5 text-xs text-muted-foreground",
-                    groupId === g.id && "border-primary bg-primary/10 text-foreground",
-                  )}
+                  <SelectTrigger size="sm" className="min-w-0 flex-1">
+                    <SelectValue placeholder="All address books">
+                      {(v: string) =>
+                        v === ALL_ADDRESSBOOKS_VALUE
+                          ? "All address books"
+                          : (addressbooks.find((ab) => ab.id === v)?.display_name ??
+                            "All address books")
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_ADDRESSBOOKS_VALUE}>All address books</SelectItem>
+                    {addressbooks.map((ab) => (
+                      <SelectItem key={ab.id} value={ab.id}>
+                        <span className="flex items-center gap-1.5">
+                          {ab.display_name}
+                          {ab.read_only && (
+                            // A styled Tooltip renders a focusable trigger,
+                            // which has no business nesting inside a listbox
+                            // option -- the native title is enough here.
+                            <Lock className="h-3 w-3 shrink-0 text-muted-foreground">
+                              <title>Read-only</title>
+                            </Lock>
+                          )}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {groups.length > 0 && (
+                // A card's own CATEGORIES and a KIND:group card's own members
+                // are the two ways an address book groups people, and a real
+                // one uses both -- so both kinds render here, undistinguished,
+                // rather than one being offered as the only kind that exists.
+                <Select
+                  value={groupId ?? ALL_GROUPS_VALUE}
+                  onValueChange={(v) => setGroupId(!v || v === ALL_GROUPS_VALUE ? undefined : v)}
                 >
-                  {g.name}
-                  <span className="ml-1 opacity-60">{g.count}</span>
-                </button>
-              ))}
+                  <SelectTrigger size="sm" className="min-w-0 flex-1">
+                    <SelectValue placeholder="All groups">
+                      {(v: string) =>
+                        v === ALL_GROUPS_VALUE
+                          ? "All groups"
+                          : (groups.find((g) => g.id === v)?.name ?? "All groups")
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ALL_GROUPS_VALUE}>All groups</SelectItem>
+                    {groups.map((g) => (
+                      <SelectItem key={g.id} value={g.id}>
+                        {g.name}
+                        <span className="ml-1 opacity-60">{g.count}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -335,9 +352,12 @@ export function ContactList() {
                   </span>
                 </div>
                 {row.contact.read_only && (
-                  <Badge variant="outline" className="ml-auto text-[9px]">
-                    RO
-                  </Badge>
+                  <Tooltip>
+                    <TooltipTrigger className="ml-auto flex shrink-0 items-center">
+                      <Lock className="h-3.5 w-3.5 text-muted-foreground" />
+                    </TooltipTrigger>
+                    <TooltipContent side="left">Read-only</TooltipContent>
+                  </Tooltip>
                 )}
               </div>
             ),

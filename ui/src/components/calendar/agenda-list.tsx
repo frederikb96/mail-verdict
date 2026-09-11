@@ -3,28 +3,99 @@
 /**
  * A VList of day-header rows and event rows -- the phone's landing view,
  * and optionally the desktop's list alternative. Uniform row heights (32px
- * header, 56px event), so this is exactly the "library handles it" case the
+ * header, 32px event), so this is exactly the "library handles it" case the
  * scrolling skill describes, unlike the month view.
  */
 
 import { useMemo, useRef } from "react";
 import { useAtomValue } from "jotai";
 import { VList, type VListHandle } from "virtua";
-import { CalendarX2 } from "lucide-react";
-import { EventChip } from "@/components/calendar/event-chip";
-import { allDayInstant, type SelectEventHandler } from "@/components/calendar/layout";
+import { AlertTriangle, Ban, CalendarX2, Loader2, Repeat } from "lucide-react";
+import { resolveCalendarColor } from "@/components/calendar/colors";
+import { allDayInstant, deriveEventLook, type SelectEventHandler } from "@/components/calendar/layout";
+import { Truncate } from "@/components/ui/truncate";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useEventsForRange } from "@/hooks/use-events";
 import { calendarDateAtom } from "@/lib/atoms";
 import { addDays, format, isToday } from "@/lib/dates";
+import { cn } from "@/lib/utils";
+import type { Calendar, EventInstance } from "@/types/api";
 
 const AGENDA_RANGE_DAYS = 60;
 const HEADER_HEIGHT = 32;
-const EVENT_HEIGHT = 56;
+const EVENT_HEIGHT = 32;
+
+/** One dense list row: time | colour dot | title | muted location and
+ * calendar -- deliberately not the shared EventChip's pill look, which
+ * reads as a full-width tinted block at this row height. State (pending,
+ * failed, cancelled, recurring) still comes from deriveEventLook, so the
+ * agenda cannot disagree with any other view about what an event means. */
+function AgendaEventRow({
+  event,
+  calendar,
+  timeLabel,
+  onClick,
+}: {
+  event: EventInstance;
+  calendar: Calendar | undefined;
+  timeLabel: string;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  const look = deriveEventLook(event);
+  const color = calendar ? resolveCalendarColor(calendar) : "var(--muted-foreground)";
+  const secondary = [event.location, calendar?.display_name].filter(Boolean).join(" · ");
+
+  return (
+    <div
+      data-testid="event"
+      data-event-id={event.object_id}
+      data-recurrence-id={event.recurrence_id ?? ""}
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") onClick(e as unknown as React.MouseEvent);
+      }}
+      className="flex h-full min-w-0 cursor-pointer items-center gap-2 rounded px-1 outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <span className="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+        {timeLabel}
+      </span>
+      <span
+        className="h-2 w-2 shrink-0 rounded-full"
+        style={{ backgroundColor: look.cancelled ? "var(--muted-foreground)" : color }}
+      />
+      {look.pending && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />}
+      {look.failed && !look.pending && (
+        <AlertTriangle className="h-3 w-3 shrink-0 text-destructive" />
+      )}
+      {look.replyNotSent && !look.failed && (
+        <AlertTriangle className="h-3 w-3 shrink-0 text-amber-500" />
+      )}
+      {look.cancelled && <Ban className="h-3 w-3 shrink-0 text-muted-foreground" />}
+      {look.recurring && !look.cancelled && (
+        <Repeat className="h-2.5 w-2.5 shrink-0 text-muted-foreground opacity-70" />
+      )}
+      <span
+        className={cn(
+          "min-w-0 flex-1 text-sm",
+          look.cancelled && "text-muted-foreground line-through",
+        )}
+      >
+        <Truncate text={event.summary || "(no title)"} />
+      </span>
+      {secondary && (
+        <span className="hidden shrink-0 truncate text-xs text-muted-foreground sm:inline sm:max-w-[40%]">
+          {secondary}
+        </span>
+      )}
+    </div>
+  );
+}
 
 type AgendaRow =
   | { kind: "header"; date: Date }
-  | { kind: "event"; date: Date; event: import("@/types/api").EventInstance };
+  | { kind: "event"; date: Date; event: EventInstance };
 
 interface AgendaListProps {
   onSelectEvent: SelectEventHandler;
@@ -100,14 +171,12 @@ export function AgendaList({ onSelectEvent }: AgendaListProps) {
             )}
           </div>
         ) : (
-          <div key={`${row.event.object_id}:${row.event.recurrence_id ?? "master"}-${i}`} style={{ height: EVENT_HEIGHT }} className="px-3 py-1.5">
-            <EventChip
+          <div key={`${row.event.object_id}:${row.event.recurrence_id ?? "master"}-${i}`} style={{ height: EVENT_HEIGHT }} className="px-3">
+            <AgendaEventRow
               event={row.event}
               calendar={calendarById.get(row.event.calendar_id)}
-              variant="agenda"
               timeLabel={row.event.all_day ? "All day" : format(new Date(row.event.dtstart), "HH:mm")}
               onClick={(ev) => onSelectEvent(row.event.object_id, row.event.recurrence_id, ev)}
-              className="h-full"
             />
           </div>
         ),
