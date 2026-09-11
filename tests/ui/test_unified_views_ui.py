@@ -132,6 +132,15 @@ def _seed_alert(
     return _run(_go())
 
 
+def _goto(page: Page, url: str) -> None:
+    """Navigate and wait for the sidebar to hold a folder -- it only does
+    once the static page has hydrated and loaded its data, so a click on
+    the sidebar's own controls straight after load lands on live markup
+    rather than on inert HTML."""
+    page.goto(url)
+    expect(page.locator('[data-testid="folder"]').first).to_be_visible(timeout=30_000)
+
+
 def _open_alert(page: Page, alert_id: str) -> None:
     page.get_by_title("Notifications", exact=True).click()
     row = page.locator(f'[data-alert-id="{alert_id}"]')
@@ -226,7 +235,7 @@ class TestUnifiedViewToolbar:
         _move(api_client, answer["id"], elsewhere_a["id"])
         _wait_for_view(api_client, view, 3)
 
-        page.goto(app_server)
+        _goto(page, app_server)
         _select_unified_view(page)
         _open_unified_folder(page, view)
 
@@ -266,7 +275,7 @@ class TestUnreadOnly:
         add_folder_to_unified_view(api_client, inbox["id"], view)
         _wait_for_view(api_client, view, 1)
 
-        page.goto(app_server)
+        _goto(page, app_server)
         select_account(page, account)
 
         def _check_toggle() -> None:
@@ -326,7 +335,7 @@ class TestOneFolderInSeveralViews:
         wait_for(_both_assigned, timeout_s=15.0, description="INBOX in both views")
         expect(folder_row.get_by_test_id("folder-view-chip")).to_have_count(2)
 
-        page.goto(app_server)
+        _goto(page, app_server)
         _select_unified_view(page)
         for view in views:
             sidebar_row = page.locator('[data-testid="folder"]').filter(has_text=view["name"])
@@ -353,7 +362,7 @@ class TestRows:
         add_folder_to_unified_view(api_client, inbox["id"], view)
         _wait_for_view(api_client, view, 1)
 
-        page.goto(app_server)
+        _goto(page, app_server)
         _select_unified_view(page)
         _open_unified_folder(page, view)
         row = mail_row(page, message["id"])
@@ -388,7 +397,7 @@ class TestRows:
         context = browser.new_context(color_scheme=scheme, viewport={"width": 1440, "height": 900})
         try:
             page = context.new_page()
-            page.goto(app_server)
+            _goto(page, app_server)
             html = page.locator("html")
             if scheme == "dark":
                 expect(html).to_have_class(re.compile(r"\bdark\b"))
@@ -444,7 +453,7 @@ class TestAlertOpensTheMessageWhereItIsNow:
         alert_id = _seed_alert(postgres_url, account["id"], message["id"], inbox["id"], subject)
         _move(api_client, message["id"], elsewhere["id"])
 
-        page.goto(app_server)
+        _goto(page, app_server)
         select_account(page, account)
         _open_alert(page, alert_id)
 
@@ -477,7 +486,7 @@ class TestAlertOpensTheMessageWhereItIsNow:
         alert_id = _seed_alert(postgres_url, account["id"], message["id"], inbox["id"], subject)
         _move(api_client, message["id"], elsewhere["id"])
 
-        page.goto(app_server)
+        _goto(page, app_server)
         _select_unified_view(page)
         _open_unified_folder(page, holding)
         expect(mail_row(page, message["id"])).to_be_visible(timeout=15_000)
