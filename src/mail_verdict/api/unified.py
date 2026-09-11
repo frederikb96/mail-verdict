@@ -1,15 +1,21 @@
 """
 Unified view API endpoints.
 
-Multi-account folder merging and cross-account message listing.
+A unified view merges any set of folders, across accounts, into one mail
+list. Views live in unified_views; which folders each one shows lives in
+unified_view_folders, and one folder may belong to several views.
 
 PUT /api/accounts/:id/emoji — set account emoji (via AccountPrefs)
-GET /api/unified/folders — merged folder list across all accounts
-GET /api/unified/mails — merged message list sorted by date
-GET /api/unified/folder-order — unified folder display order
-PUT /api/unified/folder-order — save unified folder display order
+GET /api/unified/folders — every view with its member folders and counts
+POST /api/unified/views — create a view
+PATCH /api/unified/views/:id — rename a view, or set or clear its emoji
+DELETE /api/unified/views/:id — delete a view (its folders and mail are untouched)
+GET /api/unified/mails — one view's messages, paged, threaded and filtered
+  exactly as an account's own list is
+GET /api/unified/folder-order — view display order, by name
+PUT /api/unified/folder-order — save view display order
 
-A folder's unified_name is set via PATCH /folders/{folder_id}/prefs
+A folder's own memberships are set via PATCH /folders/{folder_id}/prefs
 (folder_management.py) -- one write surface for every folder preference.
 """
 
@@ -17,25 +23,30 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from collections.abc import Sequence
+from datetime import datetime
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import case, desc, select, update
+from sqlalchemy import Select, case, delete, insert, select
 from sqlalchemy import func as sa_func
-from sqlalchemy.orm import defer
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.deps import get_account_prefs_repo
 from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.mails import list_message_page
 from mail_verdict.api.schemas import (
     EmojiUpdate,
+    MessageListResponse,
     UnifiedFolderOrderResponse,
     UnifiedFolderOrderUpdate,
     UnifiedFolderResponse,
     UnifiedFolderSource,
-    UnifiedMessageListResponse,
-    UnifiedMessageSummary,
+    UnifiedViewCreate,
+    UnifiedViewResponse,
+    UnifiedViewUpdate,
 )
-from mail_verdict.core.cursor import after_cursor
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -43,12 +54,11 @@ from mail_verdict.database.models import (
     Folder,
     FolderPrefs,
     Message,
-    Setting,
+    UnifiedView,
+    UnifiedViewFolder,
 )
 
 logger = logging.getLogger(__name__)
-
-UNIFIED_VIEW_CATEGORY = "unified_view"
 
 # Account-scoped endpoint for emoji
 account_router = APIRouter(prefix="/accounts/{account_id}", tags=["unified-view"])
@@ -87,23 +97,109 @@ async def set_account_emoji(
     return {"emoji": request.emoji}
 
 
-# --- Unified data queries ---
+# --- Membership, shared with folder_management.py and accounts.py ---
+
+
+def member_folder_ids(view_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
+    """The folders a view actually shows: its members on an active account
+    that have not been deleted. The one definition every read of a view's
+    contents goes through."""
+    return (
+        select(UnifiedViewFolder.folder_id)
+        .join(Folder, Folder.id == UnifiedViewFolder.folder_id)
+        .join(Account, Account.id == Folder.account_id)
+        .where(
+            UnifiedViewFolder.view_id == view_id,
+            Folder.deleted_at.is_(None),
+            Account.is_active.is_(True),
+        )
+    )
+
+
+async def view_ids_by_folder(
+    session: AsyncSession, folder_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, list[uuid.UUID]]:
+    """Every view each of these folders belongs to, in sidebar order."""
+    if not folder_ids:
+        return {}
+    result = await session.execute(
+        select(UnifiedViewFolder.folder_id, UnifiedViewFolder.view_id)
+        .join(UnifiedView, UnifiedView.id == UnifiedViewFolder.view_id)
+        .where(UnifiedViewFolder.folder_id.in_(folder_ids))
+        .order_by(UnifiedView.position, UnifiedView.name)
+    )
+    by_folder: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for folder_id, view_id in result.all():
+        by_folder.setdefault(folder_id, []).append(view_id)
+    return by_folder
+
+
+async def set_folder_views(
+    session: AsyncSession, folder_id: uuid.UUID, view_ids: Sequence[uuid.UUID],
+) -> None:
+    """Make view_ids the complete set of views this folder belongs to.
+
+    404 for a folder that does not exist (or was deleted) or a view id
+    that names no view -- checked before anything is written, so a bad
+    request changes nothing."""
+    folder_exists = await session.scalar(
+        select(Folder.id).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
+    )
+    if folder_exists is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    wanted = list(dict.fromkeys(view_ids))
+    if wanted:
+        found = set(
+            (await session.execute(
+                select(UnifiedView.id).where(UnifiedView.id.in_(wanted))
+            )).scalars()
+        )
+        missing = [v for v in wanted if v not in found]
+        if missing:
+            raise HTTPException(status_code=404, detail=f"Unified view {missing[0]} not found")
+
+    await session.execute(
+        delete(UnifiedViewFolder).where(UnifiedViewFolder.folder_id == folder_id)
+    )
+    if wanted:
+        await session.execute(
+            insert(UnifiedViewFolder),
+            [{"view_id": v, "folder_id": folder_id} for v in wanted],
+        )
+
+
+async def announce_views_changed() -> None:
+    """Views are not account-scoped, so there is no single account to key
+    the event on -- broadcast to every account's ring (see
+    broadcast_event). folder.changed, since the client already refreshes
+    every folder-related cache, the unified ones included, on it."""
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await broadcast_event(get_db_connection(), event_ring, "folder.changed", {})
+
+
+# --- Views ---
 
 
 @unified_router.get("/folders", response_model=list[UnifiedFolderResponse])
 async def list_unified_folders() -> list[UnifiedFolderResponse]:
     """
-    List merged folders across all active accounts.
-
-    Groups folders by unified_name (from FolderPrefs) and aggregates counts.
-    Ordered by stored folder order, with unordered folders appended.
+    Every unified view, in sidebar order, with its member folders and their
+    summed counts. A folder belonging to two views counts in both.
     """
     db = get_db_connection()
     async with db.session() as session:
+        views = list(
+            (await session.execute(
+                select(UnifiedView).order_by(UnifiedView.position, UnifiedView.name)
+            )).scalars().all()
+        )
         stmt = (
             select(
+                UnifiedViewFolder.view_id,
                 Folder,
-                FolderPrefs,
+                FolderPrefs.special_use_override,
                 Account.name.label("account_name"),
                 AccountPrefs.emoji.label("account_emoji"),
                 sa_func.count(Message.id).label("total_count"),
@@ -111,216 +207,227 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                     case((Message.is_seen.is_(False), Message.id))
                 ).label("unread_count"),
             )
+            .select_from(UnifiedViewFolder)
+            .join(Folder, Folder.id == UnifiedViewFolder.folder_id)
             .join(Account, Folder.account_id == Account.id)
-            .join(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+            .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
             .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
             .outerjoin(
                 Message,
                 (Message.folder_id == Folder.id) & Message.expunged_at.is_(None),
             )
-            .where(
-                FolderPrefs.unified_name.isnot(None),
-                FolderPrefs.unified_name != "",
-                Account.is_active.is_(True),
-                Folder.deleted_at.is_(None),
-            )
+            .where(Account.is_active.is_(True), Folder.deleted_at.is_(None))
             .group_by(
-                Folder.id, FolderPrefs.folder_id,
+                UnifiedViewFolder.view_id, Folder.id, FolderPrefs.special_use_override,
                 Account.name, AccountPrefs.emoji,
             )
+            .order_by(Account.name, Folder.imap_name)
         )
-        result = await session.execute(stmt)
-        rows = list(result.all())
+        rows = list((await session.execute(stmt)).all())
 
-    # Group by unified_name
-    groups: dict[str, dict[str, Any]] = {}
-    for folder, fp, account_name, account_emoji, total, unread in rows:
-        name = fp.unified_name
-        if name not in groups:
-            groups[name] = {
-                "unified_name": name,
-                "folders": [],
-                "unread_count": 0,
-                "total_count": 0,
-            }
-        groups[name]["folders"].append(
+    members: dict[uuid.UUID, list[tuple[UnifiedFolderSource, int, int]]] = {}
+    for view_id, folder, override, account_name, account_emoji, total, unread in rows:
+        members.setdefault(view_id, []).append((
             UnifiedFolderSource(
                 account_id=folder.account_id,
                 account_name=account_name,
                 account_emoji=account_emoji,
                 folder_id=folder.id,
                 imap_name=folder.imap_name,
-            )
+                special_use=override or folder.special_use,
+            ),
+            total,
+            unread,
+        ))
+
+    return [
+        UnifiedFolderResponse(
+            id=view.id,
+            unified_name=view.name,
+            emoji=view.emoji,
+            folders=[source for source, _, _ in members.get(view.id, [])],
+            total_count=sum(total for _, total, _ in members.get(view.id, [])),
+            unread_count=sum(unread for _, _, unread in members.get(view.id, [])),
         )
-        groups[name]["unread_count"] += unread
-        groups[name]["total_count"] += total
-
-    # Apply stored order
-    order = await _get_folder_order()
-    result_list: list[UnifiedFolderResponse] = []
-    seen: set[str] = set()
-
-    for name in order:
-        if name in groups:
-            result_list.append(UnifiedFolderResponse(**groups[name]))
-            seen.add(name)
-
-    # Append remaining folders alphabetically
-    for name in sorted(groups.keys()):
-        if name not in seen:
-            result_list.append(UnifiedFolderResponse(**groups[name]))
-
-    return result_list
-
-
-@unified_router.get("/mails", response_model=UnifiedMessageListResponse)
-async def list_unified_messages(
-    folder_name: str = Query(description="Unified folder name to list messages from"),
-    before: uuid.UUID | None = Query(
-        default=None,
-        description="Cursor: UUID of last message in previous page",
-    ),
-    limit: int = Query(default=50, ge=1, le=200),
-) -> UnifiedMessageListResponse:
-    """
-    List messages from all folders matching a unified name, sorted by date.
-
-    Cross-account cursor-based pagination.
-    """
-    db = get_db_connection()
-    async with db.session() as session:
-        stmt = (
-            select(Message, AccountPrefs.emoji.label("account_emoji"))
-            .options(
-                defer(Message.raw_source), defer(Message.raw_headers), defer(Message.body_html),
-            )
-            .join(Folder, Message.folder_id == Folder.id)
-            .join(FolderPrefs, Folder.id == FolderPrefs.folder_id)
-            .join(Account, Message.account_id == Account.id)
-            .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
-            .where(
-                FolderPrefs.unified_name == folder_name,
-                Account.is_active.is_(True),
-                Message.expunged_at.is_(None),
-            )
-            .order_by(desc(Message.received_at), desc(Message.id))
-        )
-
-        # Cursor-based pagination
-        if before is not None:
-            cursor_result = await session.execute(
-                select(Message.received_at, Message.id).where(Message.id == before)
-            )
-            cursor_row = cursor_result.one_or_none()
-            if cursor_row is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Invalid cursor: message {before} not found",
-                )
-            cursor_received_at, cursor_id = cursor_row
-            stmt = stmt.where(
-                after_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
-            )
-
-        stmt = stmt.limit(limit + 1)
-        result = await session.execute(stmt)
-        rows = list(result.all())
-
-    has_more = len(rows) > limit
-    if has_more:
-        rows = rows[:limit]
-
-    next_cursor = str(rows[-1][0].id) if has_more and rows else None
-
-    messages = [
-        UnifiedMessageSummary(
-            id=msg.id,
-            account_id=msg.account_id,
-            account_emoji=account_emoji,
-            folder_id=msg.folder_id,
-            thread_id=msg.thread_id,
-            subject=msg.subject,
-            from_addr=msg.from_addr,
-            to_addrs=msg.to_addrs,
-            received_at=msg.received_at,
-            is_seen=msg.is_seen,
-            is_flagged=msg.is_flagged,
-            is_answered=msg.is_answered,
-            is_draft=msg.is_draft,
-            is_truncated=msg.is_truncated,
-            pending_sync=msg.imap_uid is None,
-            snippet=msg.body_text[:120] if msg.body_text else None,
-        )
-        for msg, account_emoji in rows
+        for view in views
     ]
 
-    return UnifiedMessageListResponse(
-        messages=messages,
-        has_more=has_more,
-        next_cursor=next_cursor,
+
+def _view_response(view: UnifiedView) -> UnifiedViewResponse:
+    return UnifiedViewResponse(
+        id=view.id, name=view.name, emoji=view.emoji, position=view.position,
     )
 
 
-# --- Unified folder order ---
+def _clean_emoji(emoji: str | None) -> str | None:
+    return emoji.strip() or None if emoji is not None else None
 
 
-async def _get_folder_order() -> list[str]:
-    """Read unified folder order from the settings table."""
+@unified_router.post("/views", response_model=UnifiedViewResponse, status_code=201)
+async def create_unified_view(request: UnifiedViewCreate) -> UnifiedViewResponse:
+    """Create an empty view, placed last in the sidebar. 409 if the name is
+    already taken -- a view is addressed by its name in the mail URL."""
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="A unified view needs a name")
+
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(
-            select(Setting).where(Setting.category == UNIFIED_VIEW_CATEGORY)
+        last = await session.scalar(select(sa_func.max(UnifiedView.position)))
+        view = UnifiedView(
+            id=uuid.uuid4(), name=name, emoji=_clean_emoji(request.emoji),
+            position=(last + 1) if last is not None else 0,
         )
-        setting = result.scalar_one_or_none()
+        session.add(view)
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409, detail=f"A unified view named {name!r} already exists",
+            ) from exc
+        response = _view_response(view)
 
-    if setting and isinstance(setting.data, dict):
-        order: list[str] = setting.data.get("folder_order", [])
-        return order
-    return []
+    await announce_views_changed()
+    return response
+
+
+@unified_router.patch("/views/{view_id}", response_model=UnifiedViewResponse)
+async def update_unified_view(
+    view_id: uuid.UUID, request: UnifiedViewUpdate,
+) -> UnifiedViewResponse:
+    """Rename a view, or set or clear its emoji (an explicit null)."""
+    values = request.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    if "name" in values:
+        name = (values["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="A unified view needs a name")
+        values["name"] = name
+    if "emoji" in values:
+        values["emoji"] = _clean_emoji(values["emoji"])
+
+    db = get_db_connection()
+    async with db.session() as session:
+        view = await session.get(UnifiedView, view_id)
+        if view is None:
+            raise HTTPException(status_code=404, detail="Unified view not found")
+        for key, value in values.items():
+            setattr(view, key, value)
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A unified view named {values.get('name')!r} already exists",
+            ) from exc
+        response = _view_response(view)
+
+    await announce_views_changed()
+    return response
+
+
+@unified_router.delete("/views/{view_id}", status_code=204)
+async def delete_unified_view(view_id: uuid.UUID) -> None:
+    """Delete a view. Only the grouping goes: its folders and every message
+    in them are untouched, as is their membership of any other view."""
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(delete(UnifiedView).where(UnifiedView.id == view_id))
+        if result.rowcount == 0:  # type: ignore[attr-defined]
+            raise HTTPException(status_code=404, detail="Unified view not found")
+
+    await announce_views_changed()
+
+
+# --- Messages ---
+
+
+@unified_router.get("/mails", response_model=MessageListResponse)
+async def list_unified_messages(
+    folder_name: str = Query(description="Name of the unified view to list"),
+    before: uuid.UUID | None = Query(
+        default=None,
+        description="Cursor: UUID of last message in previous page -- fetches older",
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    # Annotated, not `= Query(default=...)` -- tests in tests/pg call this
+    # function directly, where a bare Query default would arrive as a
+    # truthy descriptor object rather than its default value.
+    threaded: Annotated[bool, Query(description="One row per conversation")] = False,
+    is_seen: Annotated[bool | None, Query(description="Only read, or only unread")] = None,
+    after: Annotated[
+        uuid.UUID | None,
+        Query(description="Cursor: UUID of first message in previous page -- fetches newer"),
+    ] = None,
+    around: Annotated[
+        uuid.UUID | None,
+        Query(description="Centre a fresh page on this message -- see the account list"),
+    ] = None,
+    since: Annotated[datetime | None, Query()] = None,
+) -> MessageListResponse:
+    """
+    One view's messages, newest first, across every member folder and
+    account. Pages, threads (a conversation spanning two member folders is
+    one row) and filters exactly as GET /accounts/{id}/messages does --
+    both go through the same list code. 404 for a view name that does not
+    exist.
+    """
+    db = get_db_connection()
+    async with db.session() as session:
+        view_id = await session.scalar(
+            select(UnifiedView.id).where(UnifiedView.name == folder_name)
+        )
+        if view_id is None:
+            raise HTTPException(status_code=404, detail="Unified view not found")
+        return await list_message_page(
+            session, account_id=None, folder_id=None,
+            folder_scope=member_folder_ids(view_id),
+            threaded=threaded, is_seen=is_seen, since=since,
+            before=before, after=after, around=around, limit=limit,
+        )
+
+
+# --- View order ---
+
+
+async def _names_in_order(session: AsyncSession) -> list[str]:
+    result = await session.execute(
+        select(UnifiedView.name).order_by(UnifiedView.position, UnifiedView.name)
+    )
+    return list(result.scalars().all())
 
 
 @unified_router.get("/folder-order", response_model=UnifiedFolderOrderResponse)
 async def get_unified_folder_order() -> UnifiedFolderOrderResponse:
-    """Get the unified folder display order."""
-    order = await _get_folder_order()
-    return UnifiedFolderOrderResponse(order=order)
+    """The views' sidebar order, by name."""
+    db = get_db_connection()
+    async with db.session() as session:
+        return UnifiedFolderOrderResponse(order=await _names_in_order(session))
 
 
 @unified_router.put("/folder-order", response_model=UnifiedFolderOrderResponse)
 async def set_unified_folder_order(
     request: UnifiedFolderOrderUpdate,
 ) -> UnifiedFolderOrderResponse:
-    """Save the unified folder display order."""
+    """Save the views' sidebar order. Names that match no view are ignored;
+    a view the request leaves out keeps its relative place after the ones
+    it names."""
     db = get_db_connection()
     async with db.session() as session:
-        result = await session.execute(
-            select(Setting).where(Setting.category == UNIFIED_VIEW_CATEGORY)
-        )
-        existing = result.scalar_one_or_none()
+        views = {
+            v.name: v
+            for v in (await session.execute(
+                select(UnifiedView).order_by(UnifiedView.position, UnifiedView.name)
+            )).scalars().all()
+        }
+        named = [n for n in dict.fromkeys(request.order) if n in views]
+        rest = [n for n in views if n not in set(named)]
+        ordered: list[Any] = [*named, *rest]
+        for position, name in enumerate(ordered):
+            views[name].position = position
+        await session.flush()
+        order = await _names_in_order(session)
 
-        if existing:
-            data = dict(existing.data) if existing.data else {}
-            data["folder_order"] = request.order
-            await session.execute(
-                update(Setting)
-                .where(Setting.category == UNIFIED_VIEW_CATEGORY)
-                .values(data=data)
-            )
-        else:
-            session.add(
-                Setting(
-                    category=UNIFIED_VIEW_CATEGORY,
-                    data={"folder_order": request.order},
-                )
-            )
-
-    # This Setting row is not account-scoped, so there is no single
-    # account_id to key the event on -- broadcast to every account's ring
-    # instead (see broadcast_event). Reuses folder.changed since the
-    # client already invalidates every folder-related cache, including
-    # the unified one, on it.
-    event_ring = get_event_ring()
-    if event_ring is not None:
-        await broadcast_event(db, event_ring, "folder.changed", {})
-
-    return UnifiedFolderOrderResponse(order=request.order)
+    await announce_views_changed()
+    return UnifiedFolderOrderResponse(order=order)

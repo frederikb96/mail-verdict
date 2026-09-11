@@ -154,12 +154,18 @@ async def test_unified_pagination_stable_with_a_null_received_at(
             ),
             {"id": account_id},
         )
+        view_name = f"Inbox {uuid.uuid4().hex[:8]}"
+        view_id = uuid.uuid4()
+        await session.execute(
+            text("INSERT INTO unified_views (id, name) VALUES (:id, :name)"),
+            {"id": view_id, "name": view_name},
+        )
         await session.execute(
             text(
-                "INSERT INTO folder_prefs (folder_id, unified_name) "
-                "VALUES (:folder_id, 'Inbox')"
+                "INSERT INTO unified_view_folders (view_id, folder_id) "
+                "VALUES (:view_id, :folder_id)"
             ),
-            {"folder_id": inbox_id},
+            {"view_id": view_id, "folder_id": inbox_id},
         )
         expected_ids = set()
         expected_ids.add(
@@ -178,7 +184,10 @@ async def test_unified_pagination_stable_with_a_null_received_at(
     seen: list[uuid.UUID] = []
     cursor: uuid.UUID | None = None
     for _ in range(20):
-        page = await list_unified_messages(folder_name="Inbox", before=cursor, limit=1)
+        page = await list_unified_messages(
+            folder_name=view_name, before=cursor, limit=1,
+            threaded=False, is_seen=None, after=None, around=None, since=None,
+        )
         seen.extend(m.id for m in page.messages)
         if not page.has_more:
             break

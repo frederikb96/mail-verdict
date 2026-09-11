@@ -34,6 +34,7 @@ from mail_verdict.api.schemas import (
     FolderResponse,
     SyncStatusResponse,
 )
+from mail_verdict.api.unified import view_ids_by_folder
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import (
     Account,
@@ -282,6 +283,7 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
         )
         result = await session.execute(stmt)
         rows = list(result.all())
+        views = await view_ids_by_folder(session, [f.id for f, _, _, _ in rows])
 
     return [
         FolderResponse(
@@ -298,7 +300,7 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
             last_synced_at=f.last_synced_at,
             sync_error=f.sync_error,
             created_at=f.created_at,
-            unified_name=fp.unified_name if fp else None,
+            unified_view_ids=views.get(f.id, []),
             is_visible=fp.is_visible if fp else True,
             total_count=total,
             unread_count=unread,

@@ -231,8 +231,8 @@ class FolderPrefsRepository:
 
         Args:
             folder_id: Folder UUID
-            **kwargs: Fields to update (unified_name, is_visible,
-                      display_name, special_use_override)
+            **kwargs: Fields to update (is_visible, display_name,
+                      special_use_override)
 
         Returns:
             Updated FolderPrefs
@@ -431,6 +431,7 @@ def _build_candidate_query(
     *,
     received_after: datetime | None = None,
     received_before: datetime | None = None,
+    is_seen: bool | None = None,
 ) -> tuple[Any, Any] | None:
     """The primary-recall candidate set: tsquery-matched rows (subject,
     from_addr and body_text -- what search_vector covers) UNIONed with an
@@ -468,6 +469,8 @@ def _build_candidate_query(
         base = base.where(Message.received_at >= received_after)
     if received_before is not None:
         base = base.where(Message.received_at <= received_before)
+    if is_seen is not None:
+        base = base.where(Message.is_seen == is_seen)
 
     candidate_stmt: Any = base.where(primary)
     if "to" in fields:
@@ -821,6 +824,7 @@ class MessageRepository:
         fields: frozenset[str] = SEARCH_FIELDS,
         received_after: datetime | None = None,
         received_before: datetime | None = None,
+        is_seen: bool | None = None,
     ) -> int:
         """
         An exact count over the same candidate predicate search_messages
@@ -831,7 +835,7 @@ class MessageRepository:
 
         Args:
             account_id, tokens, folder_ids, fields: As in search_messages
-            received_after, received_before: As in search_messages
+            received_after, received_before, is_seen: As in search_messages
 
         Returns:
             0 when tokens has no lexemes at all
@@ -839,6 +843,7 @@ class MessageRepository:
         built = _build_candidate_query(
             account_id, tokens, folder_ids, fields,
             received_after=received_after, received_before=received_before,
+            is_seen=is_seen,
         )
         if built is None:
             return 0
@@ -858,6 +863,7 @@ class MessageRepository:
         sort: SearchSort = "relevance",
         received_after: datetime | None = None,
         received_before: datetime | None = None,
+        is_seen: bool | None = None,
         cursor_received_at: datetime | None = None,
         cursor_id: uuid.UUID | None = None,
         cursor_tier: int | None = None,
@@ -914,6 +920,7 @@ class MessageRepository:
             received_after, received_before: Inclusive bounds on
                 received_at; a message with no Date header matches
                 neither and is excluded once either bound is given
+            is_seen: Only read (True) or only unread (False) messages
             cursor_received_at, cursor_id, cursor_tier: Keyset cursor, from
                 resolve_search_cursor under the same sort mode
             limit: Max rows
@@ -929,6 +936,7 @@ class MessageRepository:
         built = _build_candidate_query(
             account_id, tokens, folder_ids, fields,
             received_after=received_after, received_before=received_before,
+            is_seen=is_seen,
         )
         if built is None:
             return []
@@ -981,6 +989,7 @@ class MessageRepository:
         folder_ids: Sequence[uuid.UUID] | None = None,
         received_after: datetime | None = None,
         received_before: datetime | None = None,
+        is_seen: bool | None = None,
         limit: int = 50,
     ) -> list[tuple[Message, str | None]]:
         """
@@ -997,7 +1006,7 @@ class MessageRepository:
             account_id: Account scope, or None to search across every account
             tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
-            received_after, received_before: As in search_messages
+            received_after, received_before, is_seen: As in search_messages
             limit: Max rows
 
         Returns:
@@ -1023,6 +1032,8 @@ class MessageRepository:
                 stmt = stmt.where(Message.received_at >= received_after)
             if received_before is not None:
                 stmt = stmt.where(Message.received_at <= received_before)
+            if is_seen is not None:
+                stmt = stmt.where(Message.is_seen == is_seen)
             stmt = (
                 stmt.where(*[_fallback_token_predicate(t) for t in tokens])
                 .order_by(desc(Message.received_at).nulls_last(), desc(Message.id))

@@ -34,6 +34,7 @@ from mail_verdict.api.schemas import (
     FolderPrefsUpdate,
     FolderResponse,
 )
+from mail_verdict.api.unified import set_folder_views, view_ids_by_folder
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, Folder, FolderPrefs, Message, SyncNotification
 from mail_verdict.postimap.actions import create_folder as postimap_create_folder
@@ -197,6 +198,7 @@ async def _fetch_folder_response(
         return None
 
     f, fp, total, unread = row
+    views = await view_ids_by_folder(session, [f.id])
     return FolderResponse(
         id=f.id,
         account_id=f.account_id,
@@ -211,7 +213,7 @@ async def _fetch_folder_response(
         last_synced_at=f.last_synced_at,
         sync_error=f.sync_error,
         created_at=f.created_at,
-        unified_name=fp.unified_name if fp else None,
+        unified_view_ids=views.get(f.id, []),
         is_visible=fp.is_visible if fp else True,
         total_count=total,
         unread_count=unread,
@@ -511,8 +513,8 @@ async def update_folder_prefs(
     """
     Partially update a folder's preferences.
 
-    Visibility, display name, unified name and special-use override are
-    MailVerdict's own. real_time is PostIMAP's: it asks for an IMAP
+    Visibility, display name, unified view membership and special-use
+    override are MailVerdict's own. real_time is PostIMAP's: it asks for an IMAP
     connection held open on this folder, so changes arrive in seconds
     rather than on the sync interval.
 
@@ -529,6 +531,13 @@ async def update_folder_prefs(
 
     db = get_db_connection()
     real_time = values.pop("real_time", None)
+    unified_view_ids = values.pop("unified_view_ids", None)
+
+    # First, so an unknown folder or view is refused before anything
+    # else in the request is written.
+    if unified_view_ids is not None:
+        async with db.session() as session:
+            await set_folder_views(session, folder_id, unified_view_ids)
 
     if real_time is not None:
         async with db.session() as session:
@@ -554,12 +563,13 @@ async def update_folder_prefs(
     if response is None:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    # FolderPrefs is MailVerdict's own table, so a patch touching only
-    # visibility/display_name/unified_name/special_use_override writes
+    # FolderPrefs and unified_view_folders are MailVerdict's own tables,
+    # so a patch touching only
+    # visibility/display_name/membership/special_use_override writes
     # nothing PostIMAP would fire a "folder" event for -- real_time is
     # already covered, since set_folder_idle above writes a PostIMAP-owned
     # column on the folders table itself.
-    if values:
+    if values or unified_view_ids is not None:
         event_ring = get_event_ring()
         if event_ring is not None:
             await event_ring.add(

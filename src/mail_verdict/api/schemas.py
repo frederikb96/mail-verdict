@@ -114,6 +114,15 @@ class MessageListResponse(BaseModel):
     prev_cursor: str | None = None
 
 
+class MessageLocation(BaseModel):
+    """Where a message is now -- see GET /messages/{id}/location."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID
+    folder_id: uuid.UUID
+    thread_id: uuid.UUID
+
+
 class MessageDetail(BaseModel):
     """Full message detail view."""
 
@@ -467,8 +476,9 @@ class FolderResponse(BaseModel):
     unread_count: int = 0
     total_count: int = 0
     # FolderPrefs fields (from folder_prefs table)
-    unified_name: str | None = None
     is_visible: bool = True
+    # Every unified view this folder belongs to (unified_view_folders).
+    unified_view_ids: list[uuid.UUID] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -476,15 +486,18 @@ class FolderResponse(BaseModel):
 class FolderPrefsUpdate(BaseModel):
     """Partial update to a folder's preferences.
 
-    Visibility, display name, unified name and special-use override are
-    MailVerdict's own. real_time asks PostIMAP to hold an IMAP connection
-    open for this folder so changes arrive in seconds rather than on the
-    sync interval; it is the one PostIMAP-owned column a consumer may set.
+    Visibility, display name, unified view membership and special-use
+    override are MailVerdict's own. real_time asks PostIMAP to hold an IMAP
+    connection open for this folder so changes arrive in seconds rather
+    than on the sync interval; it is the one PostIMAP-owned column a
+    consumer may set.
     """
 
     is_visible: bool | None = None
     display_name: str | None = None
-    unified_name: str | None = None
+    # The complete set of unified views this folder belongs to -- replaces
+    # whatever it belonged to before; an empty list removes it from all.
+    unified_view_ids: list[uuid.UUID] | None = None
     special_use_override: str | None = None
     real_time: bool | None = None
 
@@ -783,53 +796,51 @@ class FolderOrderUpdate(BaseModel):
 
 
 class UnifiedFolderSource(BaseModel):
-    """Source folder within a unified folder grouping."""
+    """One member folder of a unified view."""
 
     account_id: uuid.UUID
     account_name: str
     account_emoji: str | None
     folder_id: uuid.UUID
     imap_name: str
+    # The folder's effective special use (its override, else the server's).
+    special_use: str | None = None
 
 
 class UnifiedFolderResponse(BaseModel):
-    """Merged folder across accounts sharing the same unified_name."""
+    """A unified view with its member folders (active accounts, undeleted
+    folders only) and their summed counts. A view with no such member
+    still appears, with an empty folders list."""
 
+    id: uuid.UUID
     unified_name: str
+    emoji: str | None = None
     folders: list[UnifiedFolderSource]
     unread_count: int
     total_count: int
 
 
-class UnifiedMessageSummary(BaseModel):
-    """Message list item with account emoji for unified view."""
+class UnifiedViewCreate(BaseModel):
+    """Request to create a unified view."""
+
+    name: str = Field(min_length=1, max_length=255)
+    emoji: str | None = Field(default=None, max_length=16)
+
+
+class UnifiedViewUpdate(BaseModel):
+    """Partial update to a unified view. An explicit null emoji clears it."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    emoji: str | None = Field(default=None, max_length=16)
+
+
+class UnifiedViewResponse(BaseModel):
+    """A unified view's own fields, as written."""
 
     id: uuid.UUID
-    account_id: uuid.UUID
-    account_emoji: str | None = None
-    folder_id: uuid.UUID
-    thread_id: uuid.UUID
-    subject: str | None = None
-    from_addr: str | None = None
-    to_addrs: Any | None = None
-    received_at: datetime | None = None
-    is_seen: bool = False
-    is_flagged: bool = False
-    is_answered: bool = False
-    is_draft: bool = False
-    snippet: str | None = None
-    pending_sync: bool = False
-    is_truncated: bool = False
-
-    model_config = {"from_attributes": True}
-
-
-class UnifiedMessageListResponse(BaseModel):
-    """Paginated unified message list."""
-
-    messages: list[UnifiedMessageSummary]
-    has_more: bool
-    next_cursor: str | None = None
+    name: str
+    emoji: str | None = None
+    position: int
 
 
 class EmojiUpdate(BaseModel):
