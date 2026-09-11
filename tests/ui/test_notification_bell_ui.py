@@ -17,7 +17,7 @@ from playwright.sync_api import Browser, Locator, Page, expect
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tests.ui.helpers import mail_row, select_account, unique_email
+from tests.ui.helpers import mail_row, select_account, select_unified_view, unique_email
 
 # Stubs navigator.serviceWorker and Notification.permission before any
 # page script runs, so registering push here never reaches a real
@@ -298,26 +298,6 @@ def _open_bell(page: Page) -> Locator:
     return bell
 
 
-def _select_unified_view(page: Page) -> None:
-    """Drives the same account switcher select_account() uses, picking
-    the always-present first entry instead of a named account -- with
-    the same mobile-sheet handling, since a phone-viewport caller needs
-    it too."""
-    trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-    opened_sheet = trigger.is_hidden()
-    if opened_sheet:
-        page.locator('[data-slot="sidebar-trigger"]').click()
-        expect(trigger).to_be_visible(timeout=10_000)
-    trigger.click()
-    item = page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
-        "Unified View", exact=True,
-    )
-    expect(item).to_be_visible(timeout=15_000)
-    item.click(timeout=15_000)
-    if opened_sheet:
-        sheet = page.locator('[data-slot="sheet-portal"]')
-        page.keyboard.press("Escape")
-        expect(sheet).to_have_count(0, timeout=10_000)
 
 
 class TestNotificationBell:
@@ -406,7 +386,7 @@ class TestNotificationBell:
         _, error_text = _seed_second_account_with_a_notification(postgres_url)
 
         page.goto(app_server_with_encryption_key)
-        _select_unified_view(page)
+        select_unified_view(page)
 
         _open_bell(page)
         popover = _popover(page)

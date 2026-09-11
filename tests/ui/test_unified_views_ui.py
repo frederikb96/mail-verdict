@@ -26,13 +26,13 @@ from tests.ui.helpers import (
     create_account,
     mail_row,
     select_account,
+    select_unified_view,
     wait_for,
     wait_for_folder,
 )
 from tests.ui.test_mail_selection_unified_ui import (
     _create_folder,
     _open_unified_folder,
-    _select_unified_view,
 )
 
 
@@ -236,7 +236,7 @@ class TestUnifiedViewToolbar:
         _wait_for_view(api_client, view, 3)
 
         _goto(page, app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, view)
 
         # Grouped (the default): one row for the conversation, counting both.
@@ -294,7 +294,7 @@ class TestUnreadOnly:
 
         _check_toggle()
 
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, view)
         _check_toggle()
 
@@ -336,7 +336,7 @@ class TestOneFolderInSeveralViews:
         expect(folder_row.get_by_test_id("folder-view-chip")).to_have_count(2)
 
         _goto(page, app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         for view in views:
             sidebar_row = page.locator('[data-testid="folder"]').filter(has_text=view["name"])
             expect(sidebar_row.get_by_test_id("unified-view-emoji")).to_have_text(view["emoji"])
@@ -363,7 +363,7 @@ class TestRows:
         _wait_for_view(api_client, view, 1)
 
         _goto(page, app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, view)
         row = mail_row(page, message["id"])
         expect(row).to_be_visible(timeout=15_000)
@@ -487,7 +487,7 @@ class TestAlertOpensTheMessageWhereItIsNow:
         _move(api_client, message["id"], elsewhere["id"])
 
         _goto(page, app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, holding)
         expect(mail_row(page, message["id"])).to_be_visible(timeout=15_000)
         # The reader moves on to another view -- one that does not hold the
