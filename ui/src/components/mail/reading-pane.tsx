@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
   Mail,
@@ -50,7 +50,14 @@ export function ReadingPane() {
   const verdictFeedback = useVerdictFeedback();
   const { data: alerts } = useAlerts();
   const dismissAlert = useDismissAlert();
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Expansion belongs to the message that was opened: a different one
+  // starts from the default below rather than inheriting it.
+  const [expansion, setExpansion] = useState<{ mailId: string | null; ids: Set<string> }>({
+    mailId: null,
+    ids: new Set(),
+  });
+  const threadScrollRef = useRef<HTMLDivElement>(null);
+  const scrolledForMailIdRef = useRef<string | null>(null);
   const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
   const [confirmExpunge, setConfirmExpunge] = useState(false);
   // The id of the message someone explicitly marked unread, written by
@@ -77,17 +84,23 @@ export function ReadingPane() {
   const isInJunk =
     folders?.find((f) => f.id === primary?.folder_id)?.special_use === "junk";
 
-  // Reset expansion state per opened mail: last message expanded, plus
-  // whichever message the user actually clicked in the list.
-  useEffect(() => {
-    if (messages.length === 0) return;
-    const next = new Set<string>();
-    const last = messages[messages.length - 1];
-    next.add(last.id);
-    if (mailId) next.add(mailId);
-    setExpandedIds(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mailId, messages.length > 0 ? messages[0].id : null]);
+  // A conversation reads newest first. Only the opened message starts
+  // expanded -- the newest one unless an older one was opened -- so every
+  // message above it is a collapsed row of fixed height, and the one
+  // scroll to it below lands where it stays.
+  const newestFirst = [...messages].reverse();
+  const expandedIds =
+    expansion.mailId === mailId ? expansion.ids : new Set(primary ? [primary.id] : []);
+
+  useLayoutEffect(() => {
+    const container = threadScrollRef.current;
+    if (!container || !primary || scrolledForMailIdRef.current === mailId) return;
+    const target = container.querySelector(`[data-message-id="${primary.id}"]`);
+    if (!target) return;
+    scrolledForMailIdRef.current = mailId;
+    const offset = target.getBoundingClientRect().top - container.getBoundingClientRect().top;
+    container.scrollTop = container.scrollTop + offset;
+  });
 
   // Auto mark-as-read the specific message the user opened -- skipped for a
   // draft (about to be edited or replaced rather than read) and skipped for
@@ -184,12 +197,10 @@ export function ReadingPane() {
   };
 
   const toggle = (id: string) => {
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    const next = new Set(expandedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setExpansion({ mailId, ids: next });
   };
 
   // More than one message selected replaces the reading pane with the
@@ -505,8 +516,8 @@ export function ReadingPane() {
             </Button>
           </div>
         )}
-        <div className="h-full overflow-auto">
-          {messages.map((m) => (
+        <div ref={threadScrollRef} className="h-full overflow-auto">
+          {newestFirst.map((m) => (
             <ThreadMessage
               key={m.id}
               mail={m}
