@@ -12,7 +12,7 @@ import re
 
 import nh3
 import tinycss2
-from tinycss2.ast import Declaration, Node
+from tinycss2.ast import Declaration, Node, StringToken
 
 ALLOWED_TAGS = {
     "a", "abbr", "b", "blockquote", "br", "code", "dd", "del", "div",
@@ -113,10 +113,33 @@ _STYLE_SINGLE_RE = re.compile(r"\bstyle\s*=\s*'([^']*)'", re.IGNORECASE)
 _LOCAL_URL_PREFIXES = ("cid:", "data:", "about:", "#")
 
 # CSS functions besides url() whose string argument can also name a remote
-# resource -- src() (a proposed general-purpose alternative to url()) and
-# image() (CSS Images level 4) both take a plain string, so a check keyed
-# on url tokens alone misses them entirely.
-_URL_STRING_FUNCTIONS = frozenset({"url", "src", "image"})
+# resource -- src() (a proposed general-purpose alternative to url()),
+# image() (CSS Images level 4) and image-set() all take a plain string, so a
+# check keyed on url tokens alone misses them entirely. image-set() is the
+# one every current browser actually fetches from, prefixed or not;
+# compared after _canonical_property_name has folded the prefix away.
+_URL_STRING_FUNCTIONS = frozenset({"url", "src", "image", "image-set"})
+
+# Inside one of the functions above, a substitution is a string the browser
+# fills in only at computed-value time -- a custom property declared
+# anywhere in the stylesheet, or an attribute of the element. Nothing here
+# can tell what it resolves to, so it counts as remote whatever it holds.
+_SUBSTITUTION_FUNCTIONS = frozenset({"var", "attr"})
+
+_BLOCKED_URL_STRING = "about:blank"
+
+
+def _is_url_string_function(node: Node) -> bool:
+    return node.type == "function" and (
+        _canonical_property_name(node.lower_name) in _URL_STRING_FUNCTIONS
+    )
+
+
+def _is_remote_argument(arg: Node) -> bool:
+    """Whether one argument of a url-string function reaches the network."""
+    if arg.type == "string":
+        return _is_remote(arg.value)
+    return arg.type == "function" and arg.lower_name in _SUBSTITUTION_FUNCTIONS
 
 # Positioning, stacking and transforms are how content leaves the box it was
 # rendered into. Nothing in an email needs them. Compared against a name
@@ -300,8 +323,8 @@ def _find_remote_url(nodes: list[Node]) -> bool:
             if _is_remote(node.value):
                 return True
         elif node.type == "function":
-            if node.lower_name in _URL_STRING_FUNCTIONS and any(
-                arg.type == "string" and _is_remote(arg.value) for arg in node.arguments
+            if _is_url_string_function(node) and any(
+                _is_remote_argument(arg) for arg in node.arguments
             ):
                 return True
             if _find_remote_url(node.arguments):
@@ -313,18 +336,25 @@ def _find_remote_url(nodes: list[Node]) -> bool:
 
 
 def _neutralize_remote_urls(nodes: list[Node]) -> None:
-    """Replace every url() reaching the network with url(about:blank), in place."""
+    """Replace every url() reaching the network with url(about:blank), in place.
+
+    A substitution inside a url-string function is replaced by the same
+    blank string rather than edited, since what it would resolve to is
+    not in this value at all.
+    """
     for node in nodes:
         if node.type == "url":
             if _is_remote(node.value):
-                node.value = "about:blank"
-                node.representation = "url(about:blank)"
+                node.value = _BLOCKED_URL_STRING
+                node.representation = f"url({_BLOCKED_URL_STRING})"
         elif node.type == "function":
-            if node.lower_name in _URL_STRING_FUNCTIONS:
-                for arg in node.arguments:
-                    if arg.type == "string" and _is_remote(arg.value):
-                        arg.value = "about:blank"
-                        arg.representation = '"about:blank"'
+            if _is_url_string_function(node):
+                for i, arg in enumerate(node.arguments):
+                    if _is_remote_argument(arg):
+                        node.arguments[i] = StringToken(
+                            arg.source_line, arg.source_column,
+                            _BLOCKED_URL_STRING, f'"{_BLOCKED_URL_STRING}"',
+                        )
             _neutralize_remote_urls(node.arguments)
         elif node.type in ("() block", "[] block", "{} block"):
             _neutralize_remote_urls(node.content)

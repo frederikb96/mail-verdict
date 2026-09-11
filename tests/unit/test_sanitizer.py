@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.sanitizer import ALLOWED_TAGS, sanitize_email_html
 
 
@@ -526,6 +527,56 @@ class TestUrlStringFunctionsCannotEvadeDetection:
         out = sanitize_email_html(f'<div style="background:{fn}(&quot;cid:logo&quot;)">x</div>')
         assert "cid:logo" in out
         assert "data-x-style" not in out
+
+    @pytest.mark.parametrize("fn", ["image-set", "-webkit-image-set"])
+    def test_an_image_set_string_is_neutralised(self, fn: str) -> None:
+        """image-set() takes a bare string as well as a url() -- every
+        current browser fetches it, so it is a tracking pixel exactly like
+        a url() is."""
+        out = sanitize_email_html(
+            f'<div style="background-image:{fn}(&quot;https://evil.test/p.gif&quot; 1x)">x</div>'
+        )
+        assert "evil.test" not in out.split("data-x-")[0]
+        assert "evil.test" in restore_remote_images(out)
+
+    def test_an_image_set_string_in_a_stylesheet_is_neutralised(self) -> None:
+        out = sanitize_email_html(
+            '<style>.a{background-image:image-set("https://evil.test/p.gif" 1x)}</style>'
+            '<div class="a">x</div>'
+        )
+        assert "evil.test" not in _rendered_stylesheet(out)
+        assert "evil.test" in _rendered_stylesheet(restore_remote_images(out))
+
+    @pytest.mark.parametrize("ref", ["var(--u)", "attr(title)"])
+    def test_a_substituted_value_cannot_carry_a_url_in(self, ref: str) -> None:
+        """A custom property holding a plain string is not a url() anywhere
+        a check could see one, until the browser substitutes it into
+        image-set() -- so a substitution there counts as a remote reference
+        whatever it would resolve to."""
+        out = sanitize_email_html(
+            '<style>.a{--u:"https://evil.test/p.gif";'
+            f"background-image:image-set({ref} 1x)}}</style>"
+            '<div class="a" title="https://evil.test/t.gif">x</div>'
+        )
+        assert ref not in _rendered_stylesheet(out)
+        assert ref in _rendered_stylesheet(restore_remote_images(out))
+
+    def test_a_substituted_value_in_an_inline_style_is_neutralised_too(self) -> None:
+        out = sanitize_email_html(
+            "<div style=\"--u:'https://evil.test/p.gif';"
+            'background-image:image-set(var(--u) 1x)">x</div>'
+        )
+        assert "var(--u) 1x" not in out.split("data-x-")[0]
+        assert "var(--u) 1x" in restore_remote_images(out)
+
+
+def _rendered_stylesheet(html: str) -> str:
+    """The text a browser would actually apply from a message's <style>
+    block -- its content, never the preserved original parked in its
+    data-x-stylesheet attribute."""
+    match = re.search(r"<style[^>]*>(.*?)</style>", html, re.DOTALL)
+    assert match is not None, html
+    return match.group(1)
 
 
 class TestStructuralTagsDoNotLeakTheirTextAsCopy:

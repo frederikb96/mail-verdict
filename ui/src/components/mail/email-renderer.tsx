@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import DOMPurify from "dompurify";
 import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -103,15 +104,15 @@ function isDarkSafeMessage(html: string): boolean {
  * The canvas a given HTML message body renders on by default, before any
  * per-message choice is applied.
  *
- * A message that declares its own dark-mode support opens dark: it has
- * told us it restyles itself for a dark canvas, and the same declaration
- * survives sanitisation now (see sanitizer.py) rather than being stripped
- * before this component ever sees it. Everything else -- most mail, which
- * carries only inline styling -- falls back to judging the colours that
- * survive: dark only when the message's own root-level styling reads
- * safely on either canvas, light otherwise. Failing towards light is
- * deliberate: light is the canvas mail is written for, so a wrong guess
- * there is mildly disappointing, while the reverse guess is unreadable.
+ * In the light theme that is always light -- the canvas mail is written
+ * for. In the dark theme, a message that declares its own dark-mode support
+ * opens dark: it has told us it restyles itself for a dark canvas, and
+ * alignColorSchemeQueries below makes sure its own dark rules are the ones
+ * that apply there. Everything else -- most mail, which carries only inline
+ * styling -- falls back to judging the colours that survive: dark only when
+ * the message's own root-level styling reads safely on either canvas, light
+ * otherwise. Failing towards light is deliberate: a wrong guess there is
+ * mildly disappointing, while the reverse guess is unreadable.
  *
  * The reader can always override this default with the per-message toggle
  * below, and the plain-text wrapper this component generates itself
@@ -119,9 +120,50 @@ function isDarkSafeMessage(html: string): boolean {
  * instead of going through any of this.
  */
 function pickCanvas(html: string | null | undefined, theme: Canvas): Canvas {
-  if (!html) return theme;
+  if (!html || theme === "light") return theme;
   if (declaresDarkModeSupport(html)) return "dark";
   return isDarkSafeMessage(html) ? "dark" : "light";
+}
+
+const COLOR_SCHEME_FEATURE_RE = /\(\s*prefers-color-scheme\s*:\s*(dark|light)\s*\)/gi;
+// Media features whose answer never changes while a message is on screen,
+// standing in for a colour-scheme query once the canvas has answered it.
+const ALWAYS_MATCHING_FEATURE = "(min-width: 0px)";
+const NEVER_MATCHING_FEATURE = "(max-width: 0px)";
+
+function alignMediaList(media: MediaList, canvas: Canvas): void {
+  const text = media.mediaText;
+  if (!/prefers-color-scheme/i.test(text)) return;
+  media.mediaText = text.replace(COLOR_SCHEME_FEATURE_RE, (_, scheme: string) =>
+    scheme.toLowerCase() === canvas ? ALWAYS_MATCHING_FEATURE : NEVER_MATCHING_FEATURE,
+  );
+}
+
+function alignRules(rules: CSSRuleList, canvas: Canvas): void {
+  for (const rule of Array.from(rules)) {
+    if (rule instanceof CSSMediaRule) alignMediaList(rule.media, canvas);
+    if (rule instanceof CSSGroupingRule) alignRules(rule.cssRules, canvas);
+  }
+}
+
+/**
+ * Make a message's own `prefers-color-scheme` rules answer to the canvas it
+ * is drawn on rather than to the operating system.
+ *
+ * The media query inside a shadow root reads the system's preference, which
+ * says nothing about the canvas this component chose -- a dark application
+ * on a light system leaves a message's dark rules off while it sits on a
+ * dark canvas, its dark text on black, and a light canvas on a dark system
+ * switches them on, its light text on white. Rewriting each query through
+ * the browser's own parsed stylesheet, after it has resolved comments and
+ * escapes, replaces only the colour-scheme feature and leaves the rest of
+ * the query to mean what the sender wrote.
+ */
+function alignColorSchemeQueries(root: ShadowRoot, canvas: Canvas): void {
+  for (const sheet of Array.from(root.styleSheets)) {
+    alignMediaList(sheet.media, canvas);
+    alignRules(sheet.cssRules, canvas);
+  }
 }
 
 const DARK_MODE_STORAGE_KEY = "mail-verdict:message-dark-mode";
@@ -476,6 +518,7 @@ export function EmailRenderer({
   }, [html, resolvedTheme]);
 
   const canvas = manualCanvas ?? autoCanvas;
+  const [hoveredHref, setHoveredHref] = useState<string | null>(null);
 
   const toggleCanvas = useCallback(() => {
     if (!messageId) return;
@@ -528,7 +571,10 @@ export function EmailRenderer({
           "tfoot", "th", "thead", "tr", "u", "ul", "wbr",
         ],
         ALLOWED_ATTR: [
-          "align", "alt", "border", "cellpadding", "cellspacing", "class",
+          // background only ever arrives as an http(s) URL the server
+          // restored for an allowlisted sender -- anyone else's is parked
+          // under a data-x-bg attribute this list does not name.
+          "align", "alt", "background", "border", "cellpadding", "cellspacing", "class",
           "color", "colspan", "dir", "face", "height", "href", "hspace",
           "id", "lang", "media", "role", "rowspan", "size", "src", "style",
           "summary", "target", "title", "type", "valign", "vspace", "width",
@@ -557,6 +603,7 @@ export function EmailRenderer({
 
     const styles = getEmailStyles(canvas);
     shadowRootRef.current.innerHTML = `<style>${styles}</style>${content}`;
+    alignColorSchemeQueries(shadowRootRef.current, canvas);
   }, [html, plainText, canvas]);
 
   // Handle link clicks to open in new tab
@@ -599,13 +646,34 @@ export function EmailRenderer({
       }
     };
 
+    // Where a link leads is shown the way a browser's own status bar shows
+    // it -- which never happens by itself here: the content sits in a shadow
+    // root, and an installed application has no status bar at all.
+    const showLinkTarget = (e: Event) => {
+      const anchor = (e.target as Element).closest?.("a[href]");
+      setHoveredHref(anchor?.getAttribute("href") ?? null);
+    };
+    const hideLinkTarget = (e: Event) => {
+      const next = (e as MouseEvent | FocusEvent).relatedTarget as Node | null;
+      if (!next || !root.contains(next)) setHoveredHref(null);
+    };
+
     root.addEventListener("click", handleClick);
     root.addEventListener("error", handleImageError, true);
+    root.addEventListener("mouseover", showLinkTarget);
+    root.addEventListener("mouseout", hideLinkTarget);
+    root.addEventListener("focusin", showLinkTarget);
+    root.addEventListener("focusout", hideLinkTarget);
     wireQuotedReplyToggles(root);
 
     return () => {
       root.removeEventListener("click", handleClick);
       root.removeEventListener("error", handleImageError, true);
+      root.removeEventListener("mouseover", showLinkTarget);
+      root.removeEventListener("mouseout", hideLinkTarget);
+      root.removeEventListener("focusin", showLinkTarget);
+      root.removeEventListener("focusout", hideLinkTarget);
+      setHoveredHref(null);
     };
   }, [html, plainText]);
 
@@ -682,6 +750,16 @@ export function EmailRenderer({
         data-testid="email-body"
         className="min-h-0 flex-1 overflow-auto px-4 py-2"
       />
+      {hoveredHref &&
+        createPortal(
+          <div
+            data-testid="link-status"
+            className="pointer-events-none fixed bottom-2 left-2 z-50 max-w-[min(48rem,80vw)] truncate rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md"
+          >
+            {hoveredHref}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
