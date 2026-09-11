@@ -14,6 +14,7 @@ import {
   Eye,
   ChevronRight,
   ChevronDown,
+  Copy,
   Loader2,
 } from "lucide-react";
 
@@ -25,11 +26,11 @@ import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
 import { InvitationCard } from "@/components/mail/invitation-card";
 import { useContactByEmail } from "@/hooks/use-contacts";
+import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import {
   extractSenderName,
   extractEmail,
-  formatAddresses,
   formatFullDate,
   formatRelativeDate,
   formatSize,
@@ -41,6 +42,78 @@ const CALENDAR_CONTENT_TYPES = ["text/calendar", "application/ics"];
 function hasCalendarAttachment(mail: MessageDetail): boolean {
   return mail.attachments.some(
     (att) => att.content_type && CALENDAR_CONTENT_TYPES.includes(att.content_type),
+  );
+}
+
+/** Copies one bare address -- the shape a compose recipient field accepts
+ * pasted -- and keeps the click from reaching the header's fold. */
+function CopyableAddress({
+  address,
+  onCopy,
+  testId,
+  children,
+}: {
+  address: string;
+  onCopy: (text: string) => void;
+  testId: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      title={`Copy ${address}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onCopy(address);
+      }}
+      className="rounded-sm text-left hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** One header line of recipients: each copies on its own, and the trailing
+ * control copies the whole line comma-separated, ready to paste into a
+ * recipient field. */
+function RecipientLine({
+  label,
+  name,
+  addrs,
+  onCopy,
+}: {
+  label: string;
+  name: string;
+  addrs: string[] | null;
+  onCopy: (text: string) => void;
+}) {
+  if (!addrs || addrs.length === 0) return null;
+  const emails = addrs.map(extractEmail);
+  return (
+    <div className="text-xs text-muted-foreground">
+      {label}{" "}
+      {addrs.map((addr, i) => (
+        <span key={`${addr}-${i}`}>
+          {i > 0 && ", "}
+          <CopyableAddress address={emails[i]} onCopy={onCopy} testId="thread-message-recipient">
+            {addr}
+          </CopyableAddress>
+        </span>
+      ))}
+      <button
+        type="button"
+        aria-label={`Copy all ${name} addresses`}
+        title={`Copy all ${name} addresses`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onCopy(emails.join(", "));
+        }}
+        className="ml-1 inline-flex rounded-sm align-middle hover:text-foreground"
+      >
+        <Copy className="h-3 w-3" />
+      </button>
+    </div>
   );
 }
 
@@ -67,6 +140,7 @@ export function ThreadMessage({
   onMatchCountChange?: (count: number) => void;
 }) {
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentSummary | null>(null);
+  const { push: pushToast } = useToast();
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
 
@@ -84,8 +158,17 @@ export function ThreadMessage({
         ? senderContact.photo.url
         : null;
 
+  const copy = (text: string) => {
+    const written = navigator.clipboard?.writeText(text) ?? Promise.reject();
+    written.then(
+      () => pushToast(`Copied ${text}`, "info", 2000),
+      () => pushToast("Could not copy to the clipboard", "error"),
+    );
+  };
+
   if (!expanded) {
     return (
+      <div data-testid="thread-message" data-message-id={mail.id}>
       <button
         type="button"
         data-testid="thread-message-header"
@@ -109,50 +192,82 @@ export function ThreadMessage({
           {formatRelativeDate(mail.received_at)}
         </span>
       </button>
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col border-b">
-      <div className="flex flex-col gap-2 px-4 py-3">
-        <button
-          type="button"
-          data-testid="thread-message-header"
-          onClick={onToggle}
-          className="flex items-start justify-between gap-4 text-left"
-        >
-          <div className="flex items-start gap-2">
+    <div
+      data-testid="thread-message"
+      data-message-id={mail.id}
+      className="flex flex-col border-b"
+    >
+      {/* Only the header's blank area folds the message: the sender and
+          each recipient copy their address, and the avatar and date do
+          nothing, so reaching for an address never collapses what is being
+          read. Selecting text is not a fold either. The chevron is the
+          keyboard's way to the same toggle. */}
+      <div
+        data-testid="thread-message-header"
+        onClick={() => {
+          if (window.getSelection()?.toString()) return;
+          onToggle();
+        }}
+        className="flex cursor-pointer items-start justify-between gap-4 px-4 pb-2 pt-3"
+      >
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="cursor-default" onClick={(e) => e.stopPropagation()}>
             <InitialsAvatar name={senderName} photoUrl={senderPhotoUrl} />
-            <div className="flex flex-col gap-0.5">
-              <span className="font-medium">{senderName}</span>
-              <span className="text-xs text-muted-foreground">
-                &lt;{senderEmail}&gt; to {formatAddresses(mail.to_addrs)}
-              </span>
-              {mail.cc_addrs && mail.cc_addrs.length > 0 && (
-                <span className="text-xs text-muted-foreground">
-                  Cc: {formatAddresses(mail.cc_addrs)}
-                </span>
-              )}
-            </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-            {mail.pending_sync && <Loader2 className="h-3 w-3 animate-spin" />}
-            {formatFullDate(mail.received_at)}
-            <ChevronDown className="h-3.5 w-3.5" />
-          </div>
-        </button>
-
-        {mail.verdict && (
-          <div className="flex items-center gap-2 text-xs">
-            <Badge variant={mail.verdict.is_spam ? "destructive" : "outline"}>
-              {mail.verdict.is_spam ? "Flagged as spam" : "Not spam"}
-            </Badge>
-            <span className="text-muted-foreground">
-              {mail.verdict.reasoning}
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span>
+              <CopyableAddress
+                address={senderEmail}
+                onCopy={copy}
+                testId="thread-message-sender"
+              >
+                <span className="font-medium">{senderName}</span>{" "}
+                <span className="text-xs text-muted-foreground">&lt;{senderEmail}&gt;</span>
+              </CopyableAddress>
             </span>
+            <RecipientLine label="to" name="To" addrs={mail.to_addrs} onCopy={copy} />
+            <RecipientLine label="Cc:" name="Cc" addrs={mail.cc_addrs} onCopy={copy} />
           </div>
-        )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+          {mail.pending_sync && <Loader2 className="h-3 w-3 animate-spin" />}
+          <span
+            data-testid="thread-message-date"
+            className="cursor-text"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {formatFullDate(mail.received_at)}
+          </span>
+          <button
+            type="button"
+            aria-label="Collapse message"
+            aria-expanded
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            className="rounded-sm hover:text-foreground"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
+
+      {mail.verdict && (
+        <div className="flex items-center gap-2 px-4 pb-3 text-xs">
+          <Badge variant={mail.verdict.is_spam ? "destructive" : "outline"}>
+            {mail.verdict.is_spam ? "Flagged as spam" : "Not spam"}
+          </Badge>
+          <span className="text-muted-foreground">
+            {mail.verdict.reasoning}
+          </span>
+        </div>
+      )}
 
       {hasCalendarAttachment(mail) && <InvitationCard messageId={mail.id} />}
 
