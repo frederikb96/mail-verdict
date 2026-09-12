@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-09-12
+
 ### Mail
 
 - A message dated after today shows its date in the list rather than a weekday. The date is the
