@@ -735,6 +735,25 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
 
     app.mount("/mcp", mcp_app)
 
+    from mail_verdict.api.events import sse_endpoint
+
+    # Registered before the /api mount, because Starlette matches routes in
+    # order and a Mount claims every path beneath it: appended afterwards,
+    # this route is unreachable and the endpoint answers 404.
+    app.router.routes.append(Route("/api/events", sse_endpoint))
+
+    app.mount("/api", build_api_app())
+
+    return app
+
+
+def build_api_app() -> FastAPI:
+    """
+    Build the app mounted at /api: every router plus the readiness route.
+
+    Needs no loaded config and no database, so the OpenAPI document can be
+    exported without a running server (scripts/export_api_contract.py).
+    """
     from mail_verdict.api.routes import all_routers
 
     # Read from the installed distribution rather than restated here, so the
@@ -759,7 +778,7 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
         """
         global _contract_ok
 
-        timeout = config.server.readiness_timeout_seconds
+        timeout = get_config().server.readiness_timeout_seconds
         db_state = "ok"
 
         try:
@@ -786,19 +805,11 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
                 "status": "ready" if ready else "not_ready",
                 "postimap_contract": "ok" if _contract_ok else "not confirmed",
                 "database": db_state,
+                "version": __version__,
             },
         )
 
-    from mail_verdict.api.events import sse_endpoint
-
-    # Registered before the /api mount, because Starlette matches routes in
-    # order and a Mount claims every path beneath it: appended afterwards,
-    # this route is unreachable and the endpoint answers 404.
-    app.router.routes.append(Route("/api/events", sse_endpoint))
-
-    app.mount("/api", api_router)
-
-    return app
+    return api_router
 
 
 def create_app() -> ASGIApp:

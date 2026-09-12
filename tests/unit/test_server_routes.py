@@ -88,6 +88,22 @@ class TestStaticMediaTypes:
         assert response.headers["content-type"].startswith("text/javascript")
 
 
+class TestHealthVersion:
+    """A native client's connection check reads the server version from the
+    readiness route, including while the server is not ready -- that is when
+    "update your server" is the answer a person needs."""
+
+    def test_health_names_the_package_version_even_when_not_ready(
+        self, app_routes: TestClient,
+    ) -> None:
+        from mail_verdict import __version__
+
+        response = app_routes.get("/api/health")
+
+        assert response.status_code == 503
+        assert response.json()["version"] == __version__
+
+
 class TestOpenApiVersion:
     """The served document must name the version of the package serving it."""
 

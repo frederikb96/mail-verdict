@@ -206,6 +206,7 @@ calendar does.
 ```bash
 ruff check .
 mypy src/
+python scripts/export_api_contract.py --check
 pytest tests/unit && pytest tests/pg && pytest tests/e2e
 for f in tests/ui/test_*.py; do pytest "$f" || break; done
 cd ui && npx tsc --noEmit && npm run build
@@ -226,6 +227,24 @@ last.
 CI runs these as parallel jobs, so a local failure is a CI failure. Check exit codes rather than
 reading the last few lines of output — linters print their error count above the final lines, and
 reading the tail is how a red run gets mistaken for a green one.
+
+## The API contract snapshot
+
+`docs/api-contract/` holds the `/api` OpenAPI document and the list of SSE event names, generated
+from the code. Any change to a schema, a route or an event name changes it:
+
+```bash
+python scripts/export_api_contract.py           # regenerate, then commit the result
+python scripts/export_api_contract.py --check   # what CI runs: a diff and exit 1 if stale
+```
+
+The package version is written as `0.0.0`, so a release bump alone leaves it unchanged. A
+FastAPI or Pydantic upgrade can change how the document is rendered with no code change here;
+regenerate and read the diff before committing it. Changing the snapshot is also the trigger for
+[IOS_PARITY.md](IOS_PARITY.md).
+
+A new SSE event name goes into `SSE_EVENT_TYPES` (`api/events.py`) first; `EventRing.add` refuses
+anything else.
 
 ## A note on what you can and cannot write
 

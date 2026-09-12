@@ -16,6 +16,8 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
+from mail_verdict.api.events import SSE_EVENT_TYPES
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_RING_SIZE = 500
@@ -83,7 +85,12 @@ class EventRing:
 
         Returns:
             Sequence ID assigned to this event
+
+        Raises:
+            ValueError: event_type is not in SSE_EVENT_TYPES
         """
+        if event_type not in SSE_EVENT_TYPES:
+            raise ValueError(f"Unregistered SSE event type: {event_type!r}")
         async with self._lock:
             self._seq += 1
             seq_id = self._seq

@@ -147,7 +147,7 @@ async def test_acknowledging_one_announces_itself(migrated_db: DatabaseConnectio
         notification_id = await _seed_notification(session, account_id=account_id)
 
     event_ring = EventRing()
-    await event_ring.add(account_id, "test.seed", {})
+    await event_ring.add(account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     with patch(_NOTIFICATIONS_EVENT_RING_TARGET, return_value=event_ring):
@@ -166,7 +166,7 @@ async def test_acknowledging_all_announces_itself(migrated_db: DatabaseConnectio
         await _seed_notification(session, account_id=account_id)
 
     event_ring = EventRing()
-    await event_ring.add(account_id, "test.seed", {})
+    await event_ring.add(account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     with patch(_NOTIFICATIONS_EVENT_RING_TARGET, return_value=event_ring):

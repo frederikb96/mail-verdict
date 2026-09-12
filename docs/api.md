@@ -214,7 +214,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Unified view | `/unified`, `/accounts/{id}/emoji` | Views merging any set of folders across accounts. `/unified/views` creates, renames (the name is how the mail URL and `GET /unified/mails?folder_name=` address a view, so it is unique -- 409 otherwise), sets or clears an emoji on, and deletes a view; deleting one touches no folder or message. `/unified/folders` lists every view in sidebar order with its member folders and counts (an active account's undeleted folders only), and `/unified/folder-order` reads and writes that order by name. Which views a folder belongs to is `unified_view_ids` on the folder itself, set as a complete list through `PATCH /folders/{id}/prefs` -- one folder may sit in several views. `/unified/mails` lists one view's messages and pages, threads and filters (`threaded`, `is_seen`, `before`/`after`/`around`) exactly as `/accounts/{id}/messages` does, a conversation spanning two member folders being one row |
 | Stats | `/stats` | Dashboard aggregates: spam metrics, accuracy trend, per-account sync summary |
 | Events | `/events` | Server-Sent Events stream — see below |
-| Health | `/health` | Readiness — PostIMAP contract version confirmed. Liveness is a separate, unauthenticated probe endpoint on its own port, not part of this API — see the chart README |
+| Health | `/health` | Readiness — PostIMAP contract version confirmed. The body names the server's `version` either way. Liveness is a separate, unauthenticated probe endpoint on its own port, not part of this API — see the chart README |
 
 ## Live updates
 
@@ -231,7 +231,16 @@ are deliberately not evented); the two things a client integrating against it ne
   the in-memory ring sends a `resync` event instead of the missed ones — treat it as "invalidate
   everything you cached from this stream," not as one more event to interpret.
 
+Every event name the stream can carry is listed in
+[`api-contract/sse-events.json`](api-contract/sse-events.json).
+
 ## Building a client against this API
+
+A client mirroring the API by hand can check itself against the committed snapshot in
+[`api-contract/`](api-contract/) — the same OpenAPI document `/api/openapi.json` serves (with its
+version written as `0.0.0`) and the SSE event names. It changes only through a reviewed commit, so
+pinning a client to a commit sha of it gives a fixed contract to test against. SSE payload shapes
+are not in it; they are described here and in [architecture.md](architecture.md).
 
 The MCP server at `/mcp` (FastMCP, streamable-http transport) wraps a curated subset of this
 same functionality — search, read, organise, send, spam feedback, semantic search, and reading,

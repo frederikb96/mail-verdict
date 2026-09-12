@@ -261,7 +261,7 @@ class TestCalendars:
             # this account yet, so a real baseline needs a seed event
             # first, the same way a real client's own baseline is always
             # an id it actually received rather than a bare 0.
-            client.portal.call(event_ring.add, dav_account_id, "test.seed", {})
+            client.portal.call(event_ring.add, dav_account_id, "connected", {})
             seq_before = event_ring.get_latest_seq()
 
             updated = client.patch(

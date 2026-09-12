@@ -203,7 +203,7 @@ class TestUndoClearsTheStalledAlert:
         with the cancel itself rather than on the stalled pass's next tick."""
         account_id, pending_id = client.portal.call(_stall_a_staged_send, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (

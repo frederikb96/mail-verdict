@@ -63,7 +63,7 @@ async def test_a_recorded_ai_verdict_announces_itself_over_the_event_stream(
     # evict. A harmless seed event gives the account a real oldest id to
     # measure a baseline against, the same way a real client's baseline is
     # always an id it actually received rather than a bare 0.
-    await event_ring.add(account_id, "test.seed", {})
+    await event_ring.add(account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     _, applied = await apply_effects(
@@ -122,7 +122,7 @@ async def test_a_tag_that_actually_changes_announces_itself(
     account_id = uuid.uuid4()
     view = _view(message_id, account_id)
     event_ring = EventRing()
-    await event_ring.add(account_id, "test.seed", {})
+    await event_ring.add(account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     _, applied = await apply_effects(
@@ -152,7 +152,7 @@ async def test_a_tag_effect_that_changes_nothing_announces_nothing(
     account_id = uuid.uuid4()
     view = _view(message_id, account_id)
     event_ring = EventRing()
-    await event_ring.add(account_id, "test.seed", {})
+    await event_ring.add(account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     _, applied = await apply_effects(

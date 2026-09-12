@@ -19,8 +19,8 @@ class TestEventRingAdd:
         ring = EventRing()
         account_id = uuid.uuid4()
 
-        id1 = await ring.add(account_id, "sync.state", {"phase": "idle"})
-        id2 = await ring.add(account_id, "sync.progress", {"synced": 10})
+        id1 = await ring.add(account_id, "calendar.account", {"phase": "idle"})
+        id2 = await ring.add(account_id, "calendar.links_changed", {"synced": 10})
 
         assert id1 == 1
         assert id2 == 2
@@ -32,13 +32,13 @@ class TestEventRingAdd:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        await ring.add(account_id, "sync.state", {"phase": "syncing"})
+        await ring.add(account_id, "calendar.account", {"phase": "syncing"})
 
         # Direct access to ring internals for verification
         assert acct_str in ring._rings
         assert len(ring._rings[acct_str]) == 1
         event = ring._rings[acct_str][0]
-        assert event["event_type"] == "sync.state"
+        assert event["event_type"] == "calendar.account"
         assert event["data"]["phase"] == "syncing"
         assert event["id"] == 1
         assert "timestamp" in event
@@ -51,7 +51,7 @@ class TestEventRingAdd:
         acct_str = str(account_id)
 
         for i in range(5):
-            await ring.add(account_id, "sync.progress", {"synced": i})
+            await ring.add(account_id, "calendar.links_changed", {"synced": i})
 
         assert len(ring._rings[acct_str]) == 3
         # Oldest remaining should be ID 3
@@ -64,8 +64,8 @@ class TestEventRingAdd:
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        await ring.add(acct1, "sync.state", {"phase": "idle"})
-        await ring.add(acct2, "sync.state", {"phase": "syncing"})
+        await ring.add(acct1, "calendar.account", {"phase": "idle"})
+        await ring.add(acct2, "calendar.account", {"phase": "syncing"})
 
         assert len(ring._rings[str(acct1)]) == 1
         assert len(ring._rings[str(acct2)]) == 1
@@ -77,8 +77,8 @@ class TestEventRingAdd:
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        id1 = await ring.add(acct1, "sync.state", {"phase": "idle"})
-        id2 = await ring.add(acct2, "sync.state", {"phase": "syncing"})
+        id1 = await ring.add(acct1, "calendar.account", {"phase": "idle"})
+        id2 = await ring.add(acct2, "calendar.account", {"phase": "syncing"})
 
         assert id1 == 1
         assert id2 == 2
@@ -94,9 +94,9 @@ class TestEventRingReplay:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        await ring.add(account_id, "sync.state", {"phase": "idle"})
-        await ring.add(account_id, "sync.progress", {"synced": 10})
-        await ring.add(account_id, "sync.progress", {"synced": 20})
+        await ring.add(account_id, "calendar.account", {"phase": "idle"})
+        await ring.add(account_id, "calendar.links_changed", {"synced": 10})
+        await ring.add(account_id, "calendar.links_changed", {"synced": 20})
 
         events = await ring.replay_from(1, acct_str)
         assert len(events) == 2
@@ -111,7 +111,7 @@ class TestEventRingReplay:
         acct_str = str(account_id)
 
         for i in range(5):
-            await ring.add(account_id, "sync.progress", {"synced": i})
+            await ring.add(account_id, "calendar.links_changed", {"synced": i})
 
         # ID 1 is no longer in the ring (evicted)
         events = await ring.replay_from(1, acct_str)
@@ -131,9 +131,9 @@ class TestEventRingReplay:
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        await ring.add(acct1, "sync.state", {"phase": "idle"})
-        await ring.add(acct2, "sync.state", {"phase": "syncing"})
-        await ring.add(acct1, "sync.progress", {"synced": 10})
+        await ring.add(acct1, "calendar.account", {"phase": "idle"})
+        await ring.add(acct2, "calendar.account", {"phase": "syncing"})
+        await ring.add(acct1, "calendar.links_changed", {"synced": 10})
 
         events = await ring.replay_from(0)
         assert len(events) == 3
@@ -153,8 +153,8 @@ class TestEventRingHasEventsAfter:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        await ring.add(account_id, "sync.state", {"phase": "idle"})
-        await ring.add(account_id, "sync.progress", {"synced": 10})
+        await ring.add(account_id, "calendar.account", {"phase": "idle"})
+        await ring.add(account_id, "calendar.links_changed", {"synced": 10})
 
         assert ring.has_events_after(1, acct_str) is True
 
@@ -165,9 +165,9 @@ class TestEventRingHasEventsAfter:
         account_id = uuid.uuid4()
         acct_str = str(account_id)
 
-        await ring.add(account_id, "sync.state", {"phase": "idle"})
-        await ring.add(account_id, "sync.progress", {"synced": 10})
-        await ring.add(account_id, "sync.progress", {"synced": 20})
+        await ring.add(account_id, "calendar.account", {"phase": "idle"})
+        await ring.add(account_id, "calendar.links_changed", {"synced": 10})
+        await ring.add(account_id, "calendar.links_changed", {"synced": 20})
 
         # ID 1 evicted, oldest is ID 2
         assert ring.has_events_after(1, acct_str) is False
@@ -187,13 +187,13 @@ class TestEventRingHasEventsAfter:
         quiet, busy = uuid.uuid4(), uuid.uuid4()
 
         # Client's last-seen id, from back when both accounts were quiet.
-        await ring.add(quiet, "sync.state", {"n": 1})  # id 1
-        last_event_id = await ring.add(busy, "sync.state", {"n": 1})  # id 2
+        await ring.add(quiet, "calendar.account", {"n": 1})  # id 1
+        last_event_id = await ring.add(busy, "calendar.account", {"n": 1})  # id 2
 
         # The busy account then evicts ids 2 through the ring's whole
         # capacity while the quiet one produces nothing further.
         for i in range(2, 6):
-            await ring.add(busy, "sync.progress", {"n": i})  # ids 3..6
+            await ring.add(busy, "calendar.links_changed", {"n": i})  # ids 3..6
 
         # The quiet account's ring alone would still say "safe to replay"
         # (its oldest id, 1, is <= last_event_id) -- that is exactly the
@@ -208,9 +208,9 @@ class TestEventRingHasEventsAfter:
         ring = EventRing()
         acct_a, acct_b = uuid.uuid4(), uuid.uuid4()
 
-        await ring.add(acct_a, "sync.state", {"n": 1})  # id 1
-        last_event_id = await ring.add(acct_b, "sync.state", {"n": 1})  # id 2
-        await ring.add(acct_a, "sync.progress", {"n": 2})  # id 3, after last_event_id
+        await ring.add(acct_a, "calendar.account", {"n": 1})  # id 1
+        last_event_id = await ring.add(acct_b, "calendar.account", {"n": 1})  # id 2
+        await ring.add(acct_a, "calendar.links_changed", {"n": 2})  # id 3, after last_event_id
 
         assert ring.has_events_after(last_event_id, None) is True
 
@@ -228,7 +228,7 @@ class TestEventRingWaiters:
         waiter = ring.register_waiter(acct_str)
         assert not waiter.is_set()
 
-        await ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "calendar.account", {"phase": "idle"})
         assert waiter.is_set()
 
     @pytest.mark.asyncio
@@ -240,7 +240,7 @@ class TestEventRingWaiters:
         waiter = ring.register_waiter()
         assert not waiter.is_set()
 
-        await ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "calendar.account", {"phase": "idle"})
         assert waiter.is_set()
 
     @pytest.mark.asyncio
@@ -253,7 +253,7 @@ class TestEventRingWaiters:
         waiter = ring.register_waiter(acct_str)
         ring.unregister_waiter(waiter, acct_str)
 
-        await ring.add(account_id, "sync.state", {"phase": "idle"})
+        await ring.add(account_id, "calendar.account", {"phase": "idle"})
         assert not waiter.is_set()
 
     @pytest.mark.asyncio
@@ -274,8 +274,8 @@ class TestEventRingClearAccount:
         acct1 = uuid.uuid4()
         acct2 = uuid.uuid4()
 
-        await ring.add(acct1, "sync.state", {"phase": "idle"})
-        await ring.add(acct2, "sync.state", {"phase": "idle"})
+        await ring.add(acct1, "calendar.account", {"phase": "idle"})
+        await ring.add(acct2, "calendar.account", {"phase": "idle"})
 
         ring.clear_account(str(acct1))
         assert str(acct1) not in ring._rings
@@ -299,9 +299,9 @@ class TestEventRingLatestSeq:
     async def test_latest_seq_increases(self) -> None:
         """Latest seq increases with each add."""
         ring = EventRing()
-        await ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
+        await ring.add(uuid.uuid4(), "calendar.account", {"phase": "idle"})
         assert ring.get_latest_seq() == 1
-        await ring.add(uuid.uuid4(), "sync.state", {"phase": "idle"})
+        await ring.add(uuid.uuid4(), "calendar.account", {"phase": "idle"})
 
 
 class TestEventRingAccountIsolation:

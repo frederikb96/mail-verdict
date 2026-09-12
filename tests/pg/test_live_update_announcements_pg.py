@@ -101,7 +101,7 @@ class TestAccountPrefsAnnouncesItself:
     ) -> None:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -120,7 +120,7 @@ class TestAccountPrefsAnnouncesItself:
     ) -> None:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -144,7 +144,7 @@ class TestAccountOrderAnnouncesItself:
     ) -> None:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -169,7 +169,7 @@ class TestFolderPrefsAnnouncesItself:
     ) -> None:
         account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -190,7 +190,7 @@ class TestFolderPrefsAnnouncesItself:
     ) -> None:
         account_id, folder_id = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -211,7 +211,7 @@ class TestFolderPrefsAnnouncesItself:
         # broadcast_event reaches every account's ring, this one included.
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -245,7 +245,7 @@ class TestSettingsAnnouncesItself:
         account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
         client.portal.call(init_settings_service, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -267,7 +267,7 @@ class TestSettingsAnnouncesItself:
         client.portal.call(init_settings_service, migrated_db)
         client.portal.call(init_provider_credential_repo, migrated_db, "")
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (

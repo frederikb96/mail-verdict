@@ -383,7 +383,7 @@ class TestIdentityChangeAnnouncesItself:
     ) -> None:
         account_id, _ = client.portal.call(_seed_two_accounts, migrated_db)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -414,7 +414,7 @@ class TestIdentityChangeAnnouncesItself:
         identity_id = created.json()["id"]
 
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -444,7 +444,7 @@ class TestIdentityChangeAnnouncesItself:
         identity_id = created.json()["id"]
 
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (

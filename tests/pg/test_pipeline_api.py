@@ -574,7 +574,7 @@ def test_replacing_the_document_announces_itself(
     to it rather than finding out only from their own next save's 409."""
     account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
     event_ring = EventRing()
-    client.portal.call(event_ring.add, account_id, "test.seed", {})
+    client.portal.call(event_ring.add, account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     with (
@@ -595,7 +595,7 @@ def test_adding_a_stage_announces_itself(
     account_id, _ = client.portal.call(_seed_account_and_folder, migrated_db)
     _put(client, migrated_db, {"enabled": True, "stages": []})
     event_ring = EventRing()
-    client.portal.call(event_ring.add, account_id, "test.seed", {})
+    client.portal.call(event_ring.add, account_id, "connected", {})
     seq_before = event_ring.get_latest_seq()
 
     with (

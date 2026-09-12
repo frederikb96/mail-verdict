@@ -28,13 +28,44 @@ from sqlalchemy import select
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
-from mail_verdict.api.event_ring import EventRing
 from mail_verdict.database.models import Account
 
 if TYPE_CHECKING:
+    from mail_verdict.api.event_ring import EventRing
     from mail_verdict.database.connection import DatabaseConnection
 
 logger = logging.getLogger(__name__)
+
+# Every event name this stream can carry. EventRing.add refuses any other, and
+# tests/unit/test_sse_event_types.py checks every name the source emits against
+# it, so a new event is a registry entry -- and a diff of the exported contract
+# (docs/api-contract/sse-events.json) -- before it can reach a client.
+SSE_EVENT_TYPES: frozenset[str] = frozenset({
+    "account.changed",
+    "alert.dismissed",
+    "alert.new",
+    "calendar.account",
+    "calendar.collection",
+    "calendar.links_changed",
+    "calendar.object",
+    "connected",
+    "contact.collection",
+    "contact.object",
+    "folder.changed",
+    "folder.synced",
+    "identity.changed",
+    "mail.deleted",
+    "mail.new",
+    "mail.updated",
+    "notification.new",
+    "outbox.updated",
+    "pipeline.document_changed",
+    "pipeline.notify",
+    "pipeline.run_finished",
+    "resync",
+    "settings.changed",
+    "verdict.issued",
+})
 
 # Global EventRing instance (set during lifespan)
 _event_ring: EventRing | None = None

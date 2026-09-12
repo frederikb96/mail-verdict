@@ -359,7 +359,7 @@ class TestPendingSendAnnouncesItself:
     ) -> None:
         account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (
@@ -393,7 +393,7 @@ class TestPendingSendAnnouncesItself:
             ).json()
 
         event_ring = EventRing()
-        client.portal.call(event_ring.add, account_id, "test.seed", {})
+        client.portal.call(event_ring.add, account_id, "connected", {})
         seq_before = event_ring.get_latest_seq()
 
         with (

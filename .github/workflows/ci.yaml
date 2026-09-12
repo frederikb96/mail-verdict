@@ -46,6 +46,8 @@ jobs:
               - 'alembic/**'
               - 'alembic.ini'
               - 'config/**'
+              - 'scripts/export_api_contract.py'
+              - 'docs/api-contract/**'
               - '.github/workflows/ci.yaml'
             ui:
               - 'ui/**'
@@ -82,6 +84,11 @@ jobs:
 
       - name: Type check
         run: mypy src/
+
+      # docs/api-contract/ is what hand-written clients check themselves
+      # against; a stale snapshot means an API change nobody reviewed as one.
+      - name: API contract snapshot is current
+        run: python scripts/export_api_contract.py --check
 
   unit:
     name: Unit tests

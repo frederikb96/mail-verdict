@@ -302,7 +302,7 @@ class TestImmediateDelivery:
         # account a real oldest id to measure a baseline against, the
         # same idiom test_effects_events.py already uses.
         ring = EventRing()
-        await ring.add(account_id, "test.seed", {})
+        await ring.add(account_id, "connected", {})
         seq_before = ring.get_latest_seq()
         settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
@@ -444,7 +444,7 @@ class TestStagedArrival:
             await session.commit()
 
         ring = EventRing()
-        await ring.add(account_id, "test.seed", {})
+        await ring.add(account_id, "connected", {})
         seq_before = ring.get_latest_seq()
         settings_service = await _settings(migrated_db)
         await create_mail_alert_for_arrival(
@@ -670,7 +670,7 @@ class TestFinalizePendingMailAlerts:
             await session.commit()
 
         ring = EventRing()
-        await ring.add(account_id, "test.seed", {})
+        await ring.add(account_id, "connected", {})
         seq_before = ring.get_latest_seq()
         settings_service = await _settings(migrated_db, notify_wait_seconds=0.0)
         await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
@@ -700,7 +700,7 @@ class TestFinalizePendingMailAlerts:
         ring = EventRing()
         await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
 
-        await ring.add(account_id, "test.seed", {})
+        await ring.add(account_id, "connected", {})
         seq_before = ring.get_latest_seq()
         await _finalize_pending_mail_alerts_once(migrated_db, ring, None, settings_service)
 
