@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-09-12
+
 ### Mail transport
 
 - Runs against PostIMAP 1.10.0, which no longer ends the whole transport service on a single
