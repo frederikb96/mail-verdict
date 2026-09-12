@@ -30,6 +30,9 @@ export interface MessageSummary {
   pending_sync: boolean;
   /** True when the server never fetched the body because it exceeded the size limit. */
   is_truncated: boolean;
+  has_attachments: boolean;
+  /** The latest spam verdict; null if the message was never classified. */
+  verdict_is_spam: boolean | null;
   /** Only present when the list was fetched with threaded=true. */
   thread_count?: number;
   unread_in_thread?: number;

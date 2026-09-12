@@ -4375,6 +4375,11 @@
             ],
             "title": "From Addr"
           },
+          "has_attachments": {
+            "description": "The message has at least one attachment",
+            "title": "Has Attachments",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -4487,6 +4492,18 @@
             ],
             "description": "Unread message count in the thread, only present when threaded=true",
             "title": "Unread In Thread"
+          },
+          "verdict_is_spam": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest spam verdict for this message; null if never classified",
+            "title": "Verdict Is Spam"
           }
         },
         "required": [
@@ -4494,6 +4511,8 @@
           "account_id",
           "folder_id",
           "thread_id",
+          "has_attachments",
+          "verdict_is_spam",
           "mirrored_at"
         ],
         "title": "MessageSummary",
@@ -5964,6 +5983,11 @@
             ],
             "title": "From Addr"
           },
+          "has_attachments": {
+            "description": "The message has at least one attachment",
+            "title": "Has Attachments",
+            "type": "boolean"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -6092,6 +6116,18 @@
             ],
             "description": "Unread message count in the thread, only present when threaded=true",
             "title": "Unread In Thread"
+          },
+          "verdict_is_spam": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest spam verdict for this message; null if never classified",
+            "title": "Verdict Is Spam"
           }
         },
         "required": [
@@ -6099,6 +6135,8 @@
           "account_id",
           "folder_id",
           "thread_id",
+          "has_attachments",
+          "verdict_is_spam",
           "mirrored_at"
         ],
         "title": "SearchResult",

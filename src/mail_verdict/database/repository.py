@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from sqlalchemy import (
     Text,
@@ -1428,6 +1428,50 @@ class FolderRepository:
                 .limit(1)
             )
             return result.scalar_one_or_none()
+
+
+class RowMarks(NamedTuple):
+    """What a list row shows beside its sender and subject."""
+
+    has_attachments: bool
+    verdict_is_spam: bool | None
+
+
+async def list_row_marks(
+    session: AsyncSession, message_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, RowMarks]:
+    """
+    The paperclip and spam marks for a page of list rows, in two reads
+    for the whole page rather than two per row.
+
+    has_attachments counts every attachment row, the same set the reading
+    pane lists. verdict_is_spam is the latest verdict by created_at, the
+    one the reading pane shows (VerdictRepository.get_latest_for_mail);
+    None when the message has never been classified.
+
+    Returns:
+        A mark for every id given
+    """
+    ids = list(message_ids)
+    if not ids:
+        return {}
+    attached = set(
+        (
+            await session.execute(
+                select(Attachment.message_id).where(Attachment.message_id.in_(ids)).distinct()
+            )
+        ).scalars()
+    )
+    latest_rows = (
+        await session.execute(
+            select(Verdict.mail_id, Verdict.is_spam)
+            .where(Verdict.mail_id.in_(ids))
+            .order_by(Verdict.mail_id, desc(Verdict.created_at))
+            .distinct(Verdict.mail_id)
+        )
+    ).all()
+    latest = {mail_id: is_spam for mail_id, is_spam in latest_rows}
+    return {mid: RowMarks(mid in attached, latest.get(mid)) for mid in ids}
 
 
 class SyncNotificationRepository:

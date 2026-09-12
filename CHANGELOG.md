@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `GET /api/alerts/badge` returns the notification badge for a device or a folder scope, and
   `POST /api/alerts/lookup` says which of a set of alerts still exist.
 - `GET /api/notifications` lists every account's write failures in one request.
+- List and search rows carry `has_attachments` and `verdict_is_spam` (the latest verdict, `null`
+  if the message was never classified).
+
+### Calendar
+
+- Retry on an invitation that failed to import can be pressed again; it was disabled for good.
 
 - `GET /api/health` names the server's `version`, whether or not it is ready.
 - `docs/api-contract/` holds the OpenAPI document and every SSE event name as a committed

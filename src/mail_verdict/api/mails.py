@@ -64,7 +64,7 @@ from mail_verdict.core.sanitizer import (
 from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Attachment, Folder, Message
-from mail_verdict.database.repository import FolderRepository
+from mail_verdict.database.repository import FolderRepository, RowMarks, list_row_marks
 from mail_verdict.postimap.actions import (
     expunge,
     expunge_bulk,
@@ -109,8 +109,10 @@ _DETAIL_DEFERRED_COLUMNS = (
 )
 
 
-def _flat_summary(m: Message) -> MessageSummary:
+def _flat_summary(m: Message, marks: dict[uuid.UUID, RowMarks]) -> MessageSummary:
     return MessageSummary(
+        has_attachments=marks[m.id].has_attachments,
+        verdict_is_spam=marks[m.id].verdict_is_spam,
         id=m.id,
         account_id=m.account_id,
         folder_id=m.folder_id,
@@ -130,8 +132,12 @@ def _flat_summary(m: Message) -> MessageSummary:
     )
 
 
-def _threaded_summary(m: Message, thread_count: int, unread_in_thread: int) -> MessageSummary:
+def _threaded_summary(
+    m: Message, thread_count: int, unread_in_thread: int, marks: dict[uuid.UUID, RowMarks],
+) -> MessageSummary:
     return MessageSummary(
+        has_attachments=marks[m.id].has_attachments,
+        verdict_is_spam=marks[m.id].verdict_is_spam,
         id=m.id,
         account_id=m.account_id,
         folder_id=m.folder_id,
@@ -270,7 +276,8 @@ async def list_message_page(
         page = rows[:limit]
         if direction == "newer":
             page = list(reversed(page))
-        messages = [_threaded_summary(m, tc, uc) for m, tc, uc in page]
+        marks = await list_row_marks(session, [m.id for m, _tc, _uc in page])
+        messages = [_threaded_summary(m, tc, uc, marks) for m, tc, uc in page]
     else:
         all_msgs = await _list_messages_flat_page(
             session, account_id, folder_id, is_seen, since,
@@ -281,7 +288,8 @@ async def list_message_page(
         page_msgs = all_msgs[:limit]
         if direction == "newer":
             page_msgs = list(reversed(page_msgs))
-        messages = [_flat_summary(m) for m in page_msgs]
+        marks = await list_row_marks(session, [m.id for m in page_msgs])
+        messages = [_flat_summary(m, marks) for m in page_msgs]
 
     # Only the direction actually explored by this fetch is a genuinely
     # open question; the other stays at its safe default (nothing more)
@@ -379,7 +387,8 @@ async def _list_messages_around(
             (target, target_thread_count, target_unread_in_thread),
             *older_rows[:half_older],
         ]
-        messages = [_threaded_summary(m, tc, uc) for m, tc, uc in combined]
+        marks = await list_row_marks(session, [m.id for m, _tc, _uc in combined])
+        messages = [_threaded_summary(m, tc, uc, marks) for m, tc, uc in combined]
     else:
         older_msgs = await _list_messages_flat_page(
             session, account_id, folder_id, is_seen, since,
@@ -394,7 +403,8 @@ async def _list_messages_around(
         has_more = len(older_msgs) > half_older
         has_more_newer = len(newer_msgs) > half_newer
         combined_msgs = [*reversed(newer_msgs[:half_newer]), target, *older_msgs[:half_older]]
-        messages = [_flat_summary(m) for m in combined_msgs]
+        marks = await list_row_marks(session, [m.id for m in combined_msgs])
+        messages = [_flat_summary(m, marks) for m in combined_msgs]
 
     next_cursor = str(messages[-1].id) if has_more and messages else None
     prev_cursor = str(messages[0].id) if has_more_newer and messages else None

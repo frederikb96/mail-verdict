@@ -81,6 +81,10 @@ class MessageSummary(BaseModel):
     snippet: str | None = None
     pending_sync: bool = False
     is_truncated: bool = False
+    has_attachments: bool = Field(description="The message has at least one attachment")
+    verdict_is_spam: bool | None = Field(
+        description="The latest spam verdict for this message; null if never classified",
+    )
     thread_count: int | None = Field(
         default=None,
         description="Number of messages in the thread, only present when threaded=true",

@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Query
 from mail_verdict.api.schemas import EmbeddingStatusResponse, SearchResult, SemanticSearchResponse
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
+from mail_verdict.database.repository import list_row_marks
 from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL, resolve_embedding_provider
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.search import SemanticSort, Strictness, semantic_search
@@ -163,9 +164,13 @@ async def search(
         account_id=account_id, folder_ids=folder_ids, strictness=resolved_strictness,
         sort=sort, received_after=received_after, received_before=received_before,
     )
+    async with get_db_connection().session() as session:
+        marks = await list_row_marks(session, [hit.message.id for hit in outcome.results])
     return SemanticSearchResponse(
         results=[
             SearchResult(
+                has_attachments=marks[hit.message.id].has_attachments,
+                verdict_is_spam=marks[hit.message.id].verdict_is_spam,
                 id=hit.message.id, account_id=hit.message.account_id,
                 folder_id=hit.message.folder_id, thread_id=hit.message.thread_id,
                 subject=hit.message.subject, from_addr=hit.message.from_addr,

@@ -28,12 +28,15 @@ from mail_verdict.api.schemas import (
     SearchResponse,
     SearchResult,
 )
+from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Message
 from mail_verdict.database.repository import (
     FALLBACK_MATCH_TIER,
     SEARCH_FIELDS,
     MessageRepository,
+    RowMarks,
     SearchSort,
+    list_row_marks,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,10 +44,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/search", tags=["search"])
 
 
-def _to_search_result(msg: Message, snippet: str | None, tier: int) -> SearchResult:
+def _to_search_result(
+    msg: Message, snippet: str | None, tier: int, marks: dict[uuid.UUID, RowMarks],
+) -> SearchResult:
     """A search hit is a MessageSummary plus how the query matched it --
     see SearchResult's docstring for why the two are one shape."""
     return SearchResult(
+        has_attachments=marks[msg.id].has_attachments,
+        verdict_is_spam=marks[msg.id].verdict_is_spam,
         id=msg.id,
         account_id=msg.account_id,
         folder_id=msg.folder_id,
@@ -63,6 +70,11 @@ def _to_search_result(msg: Message, snippet: str | None, tier: int) -> SearchRes
         mirrored_at=msg.created_at,
         match_tier=tier,
     )
+
+
+async def _row_marks(message_ids: list[uuid.UUID]) -> dict[uuid.UUID, RowMarks]:
+    async with get_db_connection().session() as session:
+        return await list_row_marks(session, message_ids)
 
 
 @router.get("/date-bounds", response_model=SearchDateBoundsResponse)
@@ -190,8 +202,9 @@ async def search_messages(
             received_after=received_after, received_before=received_before,
             is_seen=is_seen, limit=limit,
         )
+        fallback_marks = await _row_marks([msg.id for msg, _snippet in fallback_rows])
         results = [
-            _to_search_result(msg, snippet, FALLBACK_MATCH_TIER)
+            _to_search_result(msg, snippet, FALLBACK_MATCH_TIER, fallback_marks)
             for msg, snippet in fallback_rows
         ]
         # The fallback is a single, unpaginated page -- its own count is
@@ -200,7 +213,8 @@ async def search_messages(
             results=results, has_more=False, next_cursor=None, query=q, total=len(results),
         )
 
-    results = [_to_search_result(msg, snippet, tier) for msg, snippet, tier in rows]
+    marks = await _row_marks([msg.id for msg, _snippet, _tier in rows])
+    results = [_to_search_result(msg, snippet, tier, marks) for msg, snippet, tier in rows]
     next_cursor = str(results[-1].id) if has_more and results else None
 
     return SearchResponse(
