@@ -18,6 +18,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { composeIntentAtom, requestSelectMailAtom, selectedMailIdAtom } from "@/lib/atoms";
 import { ArrowLeft, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export default function MailPage() {
   return (
@@ -43,53 +44,60 @@ function MailView() {
   const setComposeIntent = useSetAtom(composeIntentAtom);
   const { count: selectionCount } = useSelection();
 
-  // Mobile: show either mail list or reading pane (not both)
+  // Mobile: show either mail list or reading pane (not both). The list
+  // stays mounted and laid out underneath an open message, only made
+  // invisible, so going back finds it exactly where the reader left it --
+  // scroll position, loaded pages, filter and unread-only toggle included.
+  // Unmounting it would restart the virtualized list at the top.
   if (isMobile) {
-    if (selectedMailId) {
-      return (
-        <div className="flex h-full flex-col overflow-hidden">
-          <div className="flex items-center border-b px-2 py-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => requestSelectMail(null)}
-              className="gap-1"
-            >
-              <ArrowLeft className="h-4 w-4" />
-              Back
-            </Button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <ReadingPane />
-          </div>
-        </div>
-      );
-    }
     // A phone has no reading pane to put the bulk panel in, and no hover
     // controls on a row either -- without this a selection made by long
     // press is a dead end.
     return (
-      <div className="relative flex h-full flex-col overflow-hidden">
-        <MobileMailHeader />
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <MailList />
+      <div className="relative h-full overflow-hidden">
+        <div
+          className={cn("relative flex h-full flex-col overflow-hidden", selectedMailId && "invisible")}
+          aria-hidden={selectedMailId ? true : undefined}
+        >
+          <MobileMailHeader />
+          <div className="min-h-0 flex-1 overflow-hidden">
+            <MailList />
+          </div>
+          {selectionCount > 0 ? (
+            <BulkPanel compact />
+          ) : (
+            // Compose exists only inside the sidebar sheet otherwise, on a
+            // screen with no reading pane to carry a "New message" affordance
+            // anywhere else. Hidden rather than overlapping while a
+            // selection bar is showing at the same corner of the screen.
+            <Button
+              size="icon"
+              className="absolute bottom-4 right-4 h-12 w-12 rounded-full shadow-lg"
+              onClick={() => setComposeIntent({})}
+              aria-label="Compose"
+              title="Compose"
+            >
+              <Pencil className="h-5 w-5" />
+            </Button>
+          )}
         </div>
-        {selectionCount > 0 ? (
-          <BulkPanel compact />
-        ) : (
-          // Compose exists only inside the sidebar sheet otherwise, on a
-          // screen with no reading pane to carry a "New message" affordance
-          // anywhere else. Hidden rather than overlapping while a
-          // selection bar is showing at the same corner of the screen.
-          <Button
-            size="icon"
-            className="absolute bottom-4 right-4 h-12 w-12 rounded-full shadow-lg"
-            onClick={() => setComposeIntent({})}
-            aria-label="Compose"
-            title="Compose"
-          >
-            <Pencil className="h-5 w-5" />
-          </Button>
+        {selectedMailId && (
+          <div className="absolute inset-0 z-20 flex flex-col overflow-hidden bg-background">
+            <div className="flex items-center border-b px-2 py-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => requestSelectMail(null)}
+                className="gap-1"
+              >
+                <ArrowLeft className="h-4 w-4" />
+                Back
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+              <ReadingPane />
+            </div>
+          </div>
         )}
       </div>
     );

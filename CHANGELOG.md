@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A message dated after today shows its date in the list rather than a weekday. The date is the
   sender's own, and spam often dates itself days ahead to stay at the top of a folder; a bare
   "Mon" read as last Monday and hid that.
+- On a phone, going back from an open message returns to the list exactly where it was left --
+  scroll position, filter and unread-only toggle included -- rather than starting again at the
+  top.
 
 ## [6.0.0] - 2026-09-12
 

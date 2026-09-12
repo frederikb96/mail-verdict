@@ -1146,6 +1146,10 @@ class TestMailActionsUi:
         select_account(page, ui_account)
         row = mail_row(page, target["id"])
         expect(row).to_be_visible(timeout=15_000)
+        # Marks this exact DOM node: a list that stays mounted behind the
+        # open message still carries it on return, and with it the scroll
+        # position; a remounted list is a new node starting at the top.
+        row.evaluate("el => { el.dataset.keptAcrossOpen = 'yes' }")
 
         row.click()
         back = page.get_by_role("button", name="Back")
@@ -1155,6 +1159,7 @@ class TestMailActionsUi:
         back.click()
         expect(row).to_be_visible(timeout=10_000)
         expect(back).not_to_be_visible()
+        expect(row).to_have_attribute("data-kept-across-open", "yes")
 
     def test_folder_hover_menu_marks_every_message_read(
         self,
