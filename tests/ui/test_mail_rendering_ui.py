@@ -335,6 +335,43 @@ class TestStructuralMarkupDoesNotLeakAsVisibleCopy:
             expect(body.get_by_text("Leaked newsletter title")).to_be_visible(timeout=1_000)
 
 
+class TestLoadImagesForThisMessage:
+    """The blocked-images banner's own per-message override, for a sender
+    nothing has allowlisted -- distinct from the allowlist flow above,
+    which trusts the sender going forward rather than for one message."""
+
+    def test_clicking_load_for_this_message_restores_the_image_and_hides_the_banner(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        rendering_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        sender = "newsletter@untrusted.example.com"
+        target = _deliver_html(
+            api_client, dovecot_endpoint, rendering_account["id"], rendering_account["email"],
+            inbox_folder["id"], "UI load images for this message test",
+            '<p>Hello</p><img src="https://tracker.example.com/pixel.png" alt="">',
+            sender=sender,
+        )
+
+        page.goto(app_server)
+        select_account(page, rendering_account)
+        mail_row(page, target["id"]).click()
+
+        banner = page.get_by_text("Remote images blocked for privacy", exact=True)
+        expect(banner).to_be_visible(timeout=15_000)
+        body = page.locator('[data-testid="email-body"]')
+        expect(body.locator('img[src*="tracker.example.com"]')).to_have_count(0)
+
+        page.get_by_role("button", name="Load for this message", exact=True).click()
+
+        expect(banner).not_to_be_visible(timeout=15_000)
+        expect(body.locator('img[src*="tracker.example.com"]')).to_have_count(1)
+
+
 class TestPerMessageDarkMode:
     """A message renders on a light canvas by default -- correct, since mail
     is written assuming one -- unless it declares its own dark-mode support,

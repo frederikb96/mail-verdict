@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   refresh themselves.
 - Reply now honours a message's Reply-To address (or addresses) instead of always replying to
   From; Reply All adds the original To and Cc on top of that, minus the account's own address.
+- "Load for this message" on the remote-images banner now actually loads the images, for a
+  sender that isn't allowlisted too -- it used to only hide the banner.
 
 ## [6.2.0] - 2026-09-12
 

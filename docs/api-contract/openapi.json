@@ -11469,7 +11469,7 @@
     },
     "/messages/{message_id}": {
       "get": {
-        "description": "Get full message detail by ID.\n\nReturns the message with attachments, tags, the current verdict (if\nany), and image privacy controls. HTML is sanitized here at read time\n-- PostIMAP owns the insert, so body_html is untrusted until this pass.",
+        "description": "Get full message detail by ID.\n\nReturns the message with attachments, tags, the current verdict (if\nany), and image privacy controls. HTML is sanitized here at read time\n-- PostIMAP owns the insert, so body_html is untrusted until this pass.\n\nload_images defaults to false, so a caller passing true has already\nmade a deliberate choice -- \"Load for this message\" restores images\nfor that one response whether or not the sender is allowlisted.\nimages_allowed in the response still reports the sender's own,\nunchanged allowlist status; only body_html and has_blocked_images\nreflect the override.",
         "operationId": "get_message_messages__message_id__get",
         "parameters": [
           {

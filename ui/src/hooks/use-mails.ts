@@ -35,6 +35,7 @@ import type {
   FolderOrderResponse,
   FolderResponse,
   MessageActionRequest,
+  MessageDetail,
   MessageListResponse,
   MessageQuoteResponse,
   MessageSummary,
@@ -592,7 +593,7 @@ export function updateMailInCache(
 export function updateMailInThreadCaches(
   qc: QueryClient,
   mailId: string,
-  updates: Partial<MessageSummary>,
+  updates: Partial<MessageDetail>,
 ) {
   qc.setQueriesData<ThreadResponse>({ queryKey: ["thread"] }, (old) => {
     if (!old || !old.messages.some((m) => m.id === mailId)) return old;
@@ -602,6 +603,27 @@ export function updateMailInThreadCaches(
         m.id === mailId ? { ...m, ...updates } : m,
       ),
     };
+  });
+}
+
+/**
+ * "Load for this message": re-fetches one message with the allowlist
+ * override on and patches just its body into every ["thread", *] cache
+ * holding it. GET /messages/{id}'s own images_allowed keeps reporting the
+ * sender's real, unchanged allowlist status -- only body_html and
+ * has_blocked_images reflect this one-off load, so the banner hides and
+ * the images show without quietly marking the sender trusted.
+ */
+export function useLoadMessageImages() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) => api.mails.get(messageId, true),
+    onSuccess: (detail) => {
+      updateMailInThreadCaches(qc, detail.id, {
+        body_html: detail.body_html,
+        has_blocked_images: detail.has_blocked_images,
+      });
+    },
   });
 }
 

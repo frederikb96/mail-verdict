@@ -34,7 +34,7 @@ import { ThreadMessage } from "@/components/mail/thread-message";
 import { BulkPanel } from "@/components/mail/bulk-panel";
 import { MoveToFolderPopover } from "@/components/mail/move-to-folder-popover";
 import { api } from "@/lib/api";
-import { useMailAction, useThread } from "@/hooks/use-mails";
+import { useLoadMessageImages, useMailAction, useThread } from "@/hooks/use-mails";
 import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
@@ -55,6 +55,7 @@ export function ReadingPane() {
   const { count: selectionCount } = useSelection();
   const { data: thread, isLoading } = useThread(mailId);
   const mailAction = useMailAction();
+  const loadMessageImages = useLoadMessageImages();
   const isMobile = useIsMobile();
   const verdictFeedback = useVerdictFeedback();
   const { data: alerts } = useAlerts();
@@ -67,7 +68,6 @@ export function ReadingPane() {
   });
   const threadScrollRef = useRef<HTMLDivElement>(null);
   const scrolledForMailIdRef = useRef<string | null>(null);
-  const [imageOverrides, setImageOverrides] = useState<Set<string>>(new Set());
   const [confirmExpunge, setConfirmExpunge] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   // The `v` shortcut's route to the same picker the toolbar button opens --
@@ -582,10 +582,7 @@ export function ReadingPane() {
               mail={m}
               expanded={expandedIds.has(m.id)}
               onToggle={() => toggle(m.id)}
-              imagesAllowedOverride={imageOverrides.has(m.id)}
-              onLoadImages={() =>
-                setImageOverrides((prev) => new Set(prev).add(m.id))
-              }
+              onLoadImages={() => loadMessageImages.mutate(m.id)}
               searchQuery={findOpen && m.id === primary.id ? findQuery : undefined}
               activeMatchIndex={findOpen && m.id === primary.id ? activeMatchIndex : undefined}
               onMatchCountChange={m.id === primary.id ? setMatchCount : undefined}

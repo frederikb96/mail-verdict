@@ -676,6 +676,13 @@ async def get_message(
     Returns the message with attachments, tags, the current verdict (if
     any), and image privacy controls. HTML is sanitized here at read time
     -- PostIMAP owns the insert, so body_html is untrusted until this pass.
+
+    load_images defaults to false, so a caller passing true has already
+    made a deliberate choice -- "Load for this message" restores images
+    for that one response whether or not the sender is allowlisted.
+    images_allowed in the response still reports the sender's own,
+    unchanged allowlist status; only body_html and has_blocked_images
+    reflect the override.
     """
     db = get_db_connection()
     async with db.session() as session:
@@ -704,7 +711,14 @@ async def get_message(
 
         images_allowed = await is_sender_image_allowed(msg.account_id, msg.from_addr)
 
-        if images_allowed and load_images:
+        # load_images defaults to false here, unlike get_thread's own
+        # default of true (see its own docstring) -- so a caller of this
+        # endpoint passing true has always made a deliberate, one-off ask,
+        # whether or not the sender happens to be allowlisted. Gating it
+        # on images_allowed too, the way get_thread's own default call
+        # must, would make the override a no-op for exactly the senders
+        # it exists to help with.
+        if load_images:
             body_html = restore_remote_images(body_html)
             has_blocked_images = False
         else:

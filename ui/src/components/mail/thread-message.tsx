@@ -121,7 +121,6 @@ export function ThreadMessage({
   mail,
   expanded,
   onToggle,
-  imagesAllowedOverride,
   onLoadImages,
   searchQuery,
   activeMatchIndex,
@@ -130,7 +129,6 @@ export function ThreadMessage({
   mail: MessageDetail;
   expanded: boolean;
   onToggle: () => void;
-  imagesAllowedOverride: boolean;
   onLoadImages: () => void;
   /** The reading pane's own in-message find -- see ReadingPane, which
    * scopes these to whichever message is actually open rather than
@@ -149,8 +147,11 @@ export function ThreadMessage({
   // render. A URL photo is a third party's address, exactly like a
   // remote image in the message body, so it only renders once this
   // sender is on the same allowlist that gates the body's own images --
-  // never fetched unconditionally.
-  const imagesAllowed = mail.images_allowed || imagesAllowedOverride;
+  // never fetched unconditionally. "Load for this message" below is
+  // deliberately not one of these triggers: it restores the body's own
+  // already-fetched content for one viewing, not a new fetch against a
+  // sender nothing vouches for.
+  const imagesAllowed = mail.images_allowed;
   const senderPhotoUrl =
     senderContact?.photo?.kind === "embedded"
       ? senderContact.photo.url
