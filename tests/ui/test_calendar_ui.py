@@ -1743,7 +1743,7 @@ class TestCalendarNavigation:
             "return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') "
             "+ '-' + String(d.getDate()).padStart(2, '0'); }"
         )
-        day_cell = page.locator(f'button[data-date="{today_iso}"]')
+        day_cell = page.locator(f'div[data-date="{today_iso}"]')
         expect(day_cell).to_be_visible(timeout=15_000)
         expect(day_cell.locator('[data-testid="event"]').first).to_be_visible(timeout=15_000)
         # Not a plain .click() -- that lands at the cell's centre, which

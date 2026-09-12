@@ -394,6 +394,7 @@ function SectionNav() {
         <a
           key={id}
           href={`#${id}`}
+          aria-label={`Jump to ${label} settings`}
           className="rounded-md px-2.5 py-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
         >
           {label}

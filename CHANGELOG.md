@@ -127,10 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Settings
 
-- The page has a section-jump nav at the top (Appearance, Mail, Calendar, AI & automation), and
-  every field in the generic settings form now has a human label with its unit ("Wait before
-  notifying (seconds)") instead of the raw key mechanically capitalised. The "AI & automation"
-  intro no longer reads like a changelog note.
+- The page has a section-jump nav at the top (Appearance, Mail, Calendar, AI & automation), each
+  link named "Jump to … settings" for a screen reader rather than sharing a name with the sidebar's
+  own link to the same section, and every field in the generic settings form now has a human label
+  with its unit ("Wait before notifying (seconds)") instead of the raw key mechanically
+  capitalised. The "AI & automation" intro no longer reads like a changelog note.
 - Calendar invitations' raw-JSON toggle is now a labelled "Edit as JSON" item in an overflow menu
   instead of a bare icon button, and its two per-identity controls are labelled "Linked calendars"
   and "New invitations go to".

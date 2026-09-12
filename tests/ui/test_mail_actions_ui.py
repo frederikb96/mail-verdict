@@ -273,8 +273,14 @@ class TestMailActionsUi:
             timeout_s=10.0, description=f"INBOX badge drops from {before} to {before - 1}",
         )
 
-        detail = api_client.get(f"/api/messages/{target['id']}").json()
-        assert detail["is_seen"] is True
+        # The badge drops optimistically, in onMutate, before the POST that
+        # backs it has landed -- reading the server right after it changes
+        # races that write rather than proving it. Poll for the same
+        # outcome instead of reading once.
+        wait_for(
+            lambda: api_client.get(f"/api/messages/{target['id']}").json()["is_seen"] or None,
+            timeout_s=10.0, description=f"message {target['id']} is marked read on the server",
+        )
 
     def test_mark_unread_from_the_header_agrees_with_the_row_immediately(
         self,
@@ -969,8 +975,10 @@ class TestMailActionsUi:
         self,
         page: Page,
         app_server: str,
+        api_client: httpx.Client,
         dovecot_endpoint: tuple[str, int, int],
         ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
     ) -> None:
         page.goto(app_server)
         # A fresh load auto-selects whichever account sorts first by name
@@ -995,7 +1003,36 @@ class TestMailActionsUi:
             message, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
         )
 
-        expect(page.get_by_text(subject)).to_be_visible(timeout=45_000)
+        try:
+            # 45s was observed to be too tight deep into this module under
+            # host load: the except branch's own DB check confirmed the
+            # mirror itself had not seen the message yet, not that the
+            # live push failed to render it. Doubled, rather than tuned to
+            # one observation, since the margin this needs scales with
+            # whatever else is contending for the host at the time.
+            expect(page.get_by_text(subject)).to_be_visible(timeout=90_000)
+        except AssertionError:
+            # Tells apart the two things a timeout here can mean: the
+            # mirror itself never saw the message in time -- PostIMAP sync
+            # latency, worse on a loaded host deep into a long module, and
+            # not a defect in the live-list push this test exists to guard
+            # -- versus the mirror already holding it while the SSE push
+            # into the open list simply never rendered it, which would be
+            # the actual regression.
+            synced = any(
+                m["subject"] == subject
+                for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+            )
+            if synced:
+                raise AssertionError(
+                    f"{subject!r} reached the mirror but never appeared in the "
+                    "open list -- the live push itself is broken, not sync latency"
+                ) from None
+            raise AssertionError(
+                f"{subject!r} never reached the mirror within 90s of delivery -- "
+                "PostIMAP sync latency, not a defect in the live-list push this "
+                "test guards"
+            ) from None
 
     def test_connection_indicator_is_absent_while_healthy(
         self, page: Page, app_server: str, ui_account: dict[str, Any],
@@ -1011,6 +1048,88 @@ class TestMailActionsUi:
             expect(
                 page.get_by_role("button", name=re.compile("Connection status")),
             ).to_be_visible(timeout=3_000)
+
+    def test_move_to_a_folder_via_the_toolbar_button_and_the_v_shortcut(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        scratch_folder: dict[str, Any],
+    ) -> None:
+        """The reading pane's own "Move to..." picker (MoveToFolderPopover),
+        reachable from its toolbar button and from the `v` shortcut alike --
+        both open the same type-to-filter list over the message's account."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Move via toolbar {uuid.uuid4()}", f"Move via v {uuid.uuid4()}"]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(_find_all, description="both move-test messages synced into INBOX")
+        by_subject = {m["subject"]: m for m in targets}
+
+        def _moved_to_scratch(mail_id: str) -> bool | None:
+            detail = api_client.get(f"/api/messages/{mail_id}").json()
+            return True if detail["folder_id"] == scratch_folder["id"] else None
+
+        page.goto(app_server)
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier modules in the same session have created accounts of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+
+        # The toolbar button.
+        toolbar_target = by_subject[subjects[0]]
+        row = mail_row(page, toolbar_target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+        page.get_by_role("button", name="Move to…", exact=True).click()
+        filter_input = page.get_by_role(
+            "textbox", name="Filter folders to move to", exact=True,
+        )
+        expect(filter_input).to_be_visible(timeout=10_000)
+        filter_input.fill(scratch_folder["imap_name"])
+        page.get_by_role("option", name=scratch_folder["imap_name"], exact=True).click()
+        wait_for(
+            lambda: _moved_to_scratch(toolbar_target["id"]),
+            description=f"{subjects[0]!r} moved to the scratch folder via the toolbar button",
+        )
+
+        # The `v` shortcut, on the second message -- reaches the same
+        # picker, confirmed with Enter rather than a click.
+        shortcut_target = by_subject[subjects[1]]
+        row = mail_row(page, shortcut_target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+        page.keyboard.press("v")
+        filter_input = page.get_by_role(
+            "textbox", name="Filter folders to move to", exact=True,
+        )
+        expect(filter_input).to_be_visible(timeout=10_000)
+        filter_input.fill(scratch_folder["imap_name"])
+        page.keyboard.press("Enter")
+        wait_for(
+            lambda: _moved_to_scratch(shortcut_target["id"]),
+            description=f"{subjects[1]!r} moved to the scratch folder via the v shortcut",
+        )
 
     def test_mobile_list_to_reading_pane_and_back(
         self, page: Page, app_server: str, api_client: httpx.Client,
@@ -1288,15 +1407,17 @@ class TestMailActionsUi:
         dialog = page.get_by_role("dialog", name="Manage folders")
         expect(dialog).to_be_visible(timeout=15_000)
 
+        # Scoped to each special-use folder's own row, not a dialog-wide
+        # count of zero -- an earlier test in this module (or a later run
+        # of this same suite) can leave a hand-made folder on this account,
+        # which would carry a Delete button of its own without that being
+        # a regression in the guard this test is for.
         for special_folder in (junk_folder, trash_folder, drafts_folder):
             label = special_folder["display_name"] or special_folder["imap_name"]
-            expect(dialog.get_by_text(label, exact=True)).to_be_visible(timeout=10_000)
-
-        # Every folder this account has is special-use (INBOX isn't listed
-        # here at all, and none of the others were created by hand) -- so
-        # the whole dialog offers no Delete button, not just the three
-        # checked by name above.
-        expect(dialog.get_by_role("button", name="Delete folder")).to_have_count(0)
+            row = dialog.get_by_text(label, exact=True).locator("..")
+            expect(row).to_be_visible(timeout=10_000)
+            expect(row.get_by_role("button", name="Delete folder")).to_have_count(0)
+            expect(row.get_by_text("Cannot be deleted", exact=True)).to_be_visible()
 
     def test_manage_folders_parent_select_names_the_folder_not_its_id(
         self,

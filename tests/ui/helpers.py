@@ -178,13 +178,24 @@ def _choose_in_account_switcher(page: Page, entry: str) -> None:
     On a mobile viewport the switcher lives inside the sidebar's own sheet,
     closed by default -- the same hamburger trigger a phone user taps opens
     it first, and picking an entry leaves it open covering the page, so
-    it's closed again the same way a person would dismiss it."""
+    it's closed again the same way a person would dismiss it.
+
+    Whether we're on that mobile layout is decided from the viewport
+    itself (use-mobile.ts's own MOBILE_BREAKPOINT), not from probing the
+    switcher's hydration state first: useIsMobile() starts undefined, so
+    the very first paint is always the desktop branch, with the switcher
+    mounted directly in the page rather than inside the (closed, unmounted)
+    sheet -- a hydration wait issued before opening the sheet can end up
+    waiting on that transient desktop node instead, right up until it is
+    torn down under it."""
     trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-    expect(trigger).not_to_have_text(_SWITCHER_UNHYDRATED_LABEL, timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
-    opened_sheet = trigger.is_hidden()
+    is_mobile = page.evaluate("window.innerWidth < 768")
+    opened_sheet = bool(is_mobile)
     if opened_sheet:
         page.locator('[data-slot="sidebar-trigger"]').click()
         expect(trigger).to_be_visible(timeout=10_000)
+
+    expect(trigger).not_to_have_text(_SWITCHER_UNHYDRATED_LABEL, timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
 
     menu = page.locator('[data-slot="dropdown-menu-content"]')
     for _ in range(_SWITCHER_OPEN_ATTEMPTS):

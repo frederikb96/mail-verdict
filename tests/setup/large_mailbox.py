@@ -74,9 +74,16 @@ async def seed_large_mailbox_account(
     Every pg test file seeds its own account inline rather than sharing one
     helper (see test_bulk_actions_and_outbox.py's _seed_account_two_folders
     for the two-folder version); this one only ever needs a single folder.
+
+    `special_use` is set whenever `imap_name` names a role IMAP servers
+    universally special-case (INBOX above all) -- PostIMAP always mirrors
+    that role, so a seed leaving it NULL renders under the raw server name
+    (folderDisplayName in ui/src/lib/folders.ts) rather than "Inbox", unlike
+    every real account.
     """
     account_id = uuid.uuid4()
     folder_id = uuid.uuid4()
+    special_use = "inbox" if imap_name.upper() == "INBOX" else None
     await session.execute(
         text(
             "INSERT INTO accounts (id, name, imap_host, imap_port, imap_user, imap_password) "
@@ -86,8 +93,14 @@ async def seed_large_mailbox_account(
         {"id": account_id, "name": f"large-mailbox-{account_id}"},
     )
     await session.execute(
-        text("INSERT INTO folders (id, account_id, imap_name) VALUES (:id, :account_id, :name)"),
-        {"id": folder_id, "account_id": account_id, "name": imap_name},
+        text(
+            "INSERT INTO folders (id, account_id, imap_name, special_use) "
+            "VALUES (:id, :account_id, :name, :special_use)"
+        ),
+        {
+            "id": folder_id, "account_id": account_id, "name": imap_name,
+            "special_use": special_use,
+        },
     )
     return account_id, folder_id
 

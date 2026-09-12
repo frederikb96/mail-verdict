@@ -5,6 +5,8 @@ rail's own way back to the mail view once another page has taken it away.
 
 from __future__ import annotations
 
+import re
+import uuid
 from typing import Any
 
 import httpx
@@ -137,7 +139,12 @@ class TestNavigationShellUi:
         expect(page.get_by_role("heading", name="Settings")).to_be_visible(timeout=15_000)
         select_account(page, ui_account)
 
-        page.get_by_role("link", name="Mail", exact=True).click()
+        # Scoped to the sidebar: the Settings page's own section-jump nav
+        # (SectionNav in settings-page.tsx) carries an identically-named
+        # "Mail" anchor to its own #mail heading.
+        page.locator('[data-slot="sidebar-footer"]').get_by_role(
+            "link", name="Mail", exact=True,
+        ).click()
         expect(folder(page, inbox_folder["id"])).to_be_visible(timeout=15_000)
 
     def test_collapsing_the_rail_hides_the_calendar_mini_month_instead_of_squeezing_it(
@@ -159,3 +166,51 @@ class TestNavigationShellUi:
 
         toggle.click()
         expect(mini_month_title).to_be_visible(timeout=8_000)
+
+    def test_slash_focuses_the_header_search_and_enter_jumps_to_results(
+        self, page: Page, app_server: str, ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The header search field (app-header.tsx): `/` focuses it from
+        anywhere, and Enter jumps to the full search page with the query
+        already applied."""
+        page.goto(f"{app_server}/")
+        # A fresh load auto-selects whichever account sorts first by name
+        # across the shared test database, not necessarily ui_account --
+        # earlier tests in this module have created a second account of
+        # their own by the time this one runs.
+        select_account(page, ui_account)
+        expect(folder(page, inbox_folder["id"])).to_be_visible(timeout=15_000)
+
+        search_input = page.get_by_role("textbox", name="Search mail", exact=True)
+        expect(search_input).not_to_be_focused()
+
+        page.keyboard.press("/")
+        expect(search_input).to_be_focused()
+
+        query = f"header-search-{uuid.uuid4().hex[:8]}"
+        search_input.fill(query)
+        page.keyboard.press("Enter")
+
+        expect(page).to_have_url(re.compile(rf"/search\?q={query}"))
+        expect(page.get_by_placeholder("Search messages…")).to_have_value(
+            query, timeout=10_000,
+        )
+
+    def test_question_mark_opens_the_shortcuts_overlay(
+        self, page: Page, app_server: str, ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The `?` cheat sheet (ShortcutsOverlay, layout.tsx), reachable
+        from any page and toggled by the same key that opens it."""
+        page.goto(f"{app_server}/")
+        select_account(page, ui_account)
+        expect(folder(page, inbox_folder["id"])).to_be_visible(timeout=15_000)
+
+        page.keyboard.press("?")
+        dialog = page.get_by_role("dialog", name="Keyboard shortcuts")
+        expect(dialog).to_be_visible(timeout=10_000)
+        expect(dialog.get_by_text("Focus search", exact=True)).to_be_visible()
+
+        page.keyboard.press("Escape")
+        expect(dialog).not_to_be_visible(timeout=10_000)
