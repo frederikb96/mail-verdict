@@ -38,7 +38,7 @@ from sqlalchemy import ColumnElement, Text, cast, exists, func, select, text
 
 from mail_verdict.alerts.dispatch import deliver_alert
 from mail_verdict.alerts.resolve import announce_alerts_dismissed
-from mail_verdict.database.models import Alert, Outbox, PendingSend
+from mail_verdict.database.models import Account, Alert, Outbox, PendingSend, SyncState
 from mail_verdict.database.repository import AlertRepository
 from mail_verdict.queue.notify import ReconciliationTimer
 
@@ -70,19 +70,32 @@ class _Stalled(NamedTuple):
     kind: str
     subject: str | None
     waiting_since: datetime
+    # The account's own health, None where the account row is gone.
+    is_active: bool | None
+    state: str | None
+    last_full_sync: datetime | None
 
 
 def _not_alerted(row_id: Any) -> ColumnElement[bool]:
     return ~exists().where(Alert.dedupe_key == func.concat(DEDUPE_PREFIX, cast(row_id, Text)))
 
 
+_ACCOUNT_HEALTH = (Account.is_active, Account.state, SyncState.last_full_sync)
+
+
 async def _find_stalled(db: DatabaseConnection, threshold: timedelta) -> list[_Stalled]:
     """Outbox rows PostIMAP has not finished with, and staged sends past
-    their window, waiting longer than `threshold` and not yet alerted."""
+    their window, waiting longer than `threshold` and not yet alerted --
+    each with its account's health, which is usually why it is waiting."""
     cutoff = func.now() - threshold
     async with db.session() as session:
         queued = await session.execute(
-            select(Outbox.id, Outbox.account_id, Outbox.kind, Outbox.subject, Outbox.created_at)
+            select(
+                Outbox.id, Outbox.account_id, Outbox.kind, Outbox.subject, Outbox.created_at,
+                *_ACCOUNT_HEALTH,
+            )
+            .outerjoin(Account, Account.id == Outbox.account_id)
+            .outerjoin(SyncState, SyncState.account_id == Outbox.account_id)
             .where(
                 Outbox.status.in_(("pending", "processing")),
                 Outbox.created_at < cutoff,
@@ -93,8 +106,10 @@ async def _find_stalled(db: DatabaseConnection, threshold: timedelta) -> list[_S
         staged = await session.execute(
             select(
                 PendingSend.id, PendingSend.account_id, PendingSend.subject,
-                PendingSend.send_after,
+                PendingSend.send_after, *_ACCOUNT_HEALTH,
             )
+            .outerjoin(Account, Account.id == PendingSend.account_id)
+            .outerjoin(SyncState, SyncState.account_id == PendingSend.account_id)
             .where(
                 PendingSend.cancelled_at.is_(None),
                 PendingSend.send_after < cutoff,
@@ -103,9 +118,38 @@ async def _find_stalled(db: DatabaseConnection, threshold: timedelta) -> list[_S
             .limit(_BATCH_SIZE)
         )
         return [
-            *(_Stalled(r.id, r.account_id, r.kind, r.subject, r.created_at) for r in queued),
-            *(_Stalled(r.id, r.account_id, "send", r.subject, r.send_after) for r in staged),
+            *(
+                _Stalled(
+                    r.id, r.account_id, r.kind, r.subject, r.created_at,
+                    r.is_active, r.state, r.last_full_sync,
+                )
+                for r in queued
+            ),
+            *(
+                _Stalled(
+                    r.id, r.account_id, "send", r.subject, r.send_after,
+                    r.is_active, r.state, r.last_full_sync,
+                )
+                for r in staged
+            ),
         ]
+
+
+def _connection_note(row: _Stalled) -> str | None:
+    """Why the account cannot send right now, when that is the case --
+    PostIMAP holds an outbox row pending while its account has no
+    connection. Follows the consumer contract's reading of account health:
+    `error` is retried without end, and last_full_sync separates an account
+    that has worked before from one that has never connected."""
+    if row.is_active is False:
+        return "the account is paused, and it goes out once the account is resumed"
+    if row.state == "disabled":
+        return "the account is disabled, so nothing is sent from it"
+    if row.state == "error":
+        if row.last_full_sync is None:
+            return "the account has never connected -- check its server settings"
+        return "the account is disconnected and being retried, and it goes out once it reconnects"
+    return None
 
 
 def _describe(row: _Stalled) -> tuple[str, str]:
@@ -113,7 +157,9 @@ def _describe(row: _Stalled) -> tuple[str, str]:
     are, rather than by every reader of the list."""
     minutes = int((datetime.now(timezone.utc) - row.waiting_since).total_seconds() // 60)
     title = "Draft not saved yet" if row.kind == "draft" else "Message not sent yet"
-    return title, f"{row.subject or '(no subject)'} -- still waiting after {minutes} min"
+    body = f"{row.subject or '(no subject)'} -- still waiting after {minutes} min"
+    note = _connection_note(row)
+    return title, f"{body}: {note}" if note else body
 
 
 def _settled_sql(scope: str) -> str:

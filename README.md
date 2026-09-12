@@ -39,7 +39,8 @@ mirror, which is what keeps it simple.
   composer at once and sends it exactly once -- the server refuses a repeat whatever the browser
   does -- and a failure brings the composer back as it was. A send can be undone for a few seconds
   after pressing Send, held durably on the server rather than in the browser, and Undo reopens the
-  composer with everything that was written rather than only cancelling the send. Any message can
+  composer with everything that was written, attachments and pasted images included, rather than
+  only cancelling the send. Any message can
   be downloaded as a raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a

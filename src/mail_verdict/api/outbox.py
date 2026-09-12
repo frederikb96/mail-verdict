@@ -43,8 +43,11 @@ GET /api/outbox — list outbox rows, for the outbox/status view. A send
   finds it here whether or not the window has passed yet, and sees it
   turn into an ordinary sent/failed/dead row once it has (see
   outbox/pending.py).
-GET /api/outbox/pending — list not-yet-sent, not-yet-cancelled staged sends
+GET /api/outbox/pending — list not-yet-sent, not-yet-cancelled staged sends,
+  each with its attachments listed (no content)
 POST /api/outbox/pending/{id}/cancel — cancel one before its window passes
+GET /api/outbox/pending/{id}/attachments/{attachment_id} — one staged
+  attachment's content, for Undo to re-attach to the composer it reopens
 """
 
 from __future__ import annotations
@@ -52,10 +55,10 @@ from __future__ import annotations
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.datastructures import UploadFile
 
@@ -66,9 +69,11 @@ from mail_verdict.api.schemas import (
     OutboxAttachmentSummary,
     OutboxCreateRequest,
     OutboxResponse,
+    PendingSendAttachmentSummary,
     PendingSendResponse,
 )
 from mail_verdict.config import get_config
+from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
@@ -269,17 +274,9 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
         # time: a repeat whose draft has since been superseded by the first
         # one's own send is still that same request, not a 404.
         if payload.idempotency_key is not None:
-            previous = await find_submission(session, payload.idempotency_key)
-            if previous is not None:
-                if previous.kind != payload.kind:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            f"idempotency_key was already used for a {previous.kind}; "
-                            "a different kind needs a key of its own."
-                        ),
-                    )
-                return await _replay(session, previous.target_id)
+            repeat = await replay_submission(session, payload.idempotency_key, payload.kind)
+            if repeat is not None:
+                return repeat
 
         info = await read_postimap_info(session)
         # An inline image needs a matching outbox_attachments.content_id,
@@ -400,7 +397,7 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
                 await event_ring.add(
                     payload.account_id, "outbox.updated", {"id": str(pending.id)},
                 )
-            return _pending_send_to_response(pending)
+            return (await _pending_send_responses(session, [pending]))[0]
 
         outbox = await insert_outbox(
             session,
@@ -426,41 +423,94 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
         return _to_response(outbox, list(att_result.scalars().all()))
 
 
-def _pending_send_to_response(pending: PendingSend) -> PendingSendResponse:
-    """Everything a client needs to reopen a composer on this row -- the
-    undo banner's own reopen action reads these fields straight off the
-    response rather than re-deriving them anywhere else."""
-    return PendingSendResponse(
-        id=pending.id,
-        account_id=pending.account_id,
-        send_after=pending.send_after,
-        created_at=pending.created_at,
-        from_addr=pending.from_addr,
-        to=list(pending.to_addrs) if pending.to_addrs else [],
-        cc=list(pending.cc_addrs) if pending.cc_addrs else None,
-        bcc=list(pending.bcc_addrs) if pending.bcc_addrs else None,
-        subject=pending.subject,
-        body_html=pending.body_html,
-        in_reply_to=pending.in_reply_to,
-        references=list(pending.msg_references) if pending.msg_references else None,
-        replaces_message_id=pending.replaces_message_id,
-    )
-
-
-async def _replay(
-    session: AsyncSession, target_id: uuid.UUID,
-) -> OutboxResponse | PendingSendResponse:
+async def _pending_send_responses(
+    session: AsyncSession, rows: list[PendingSend],
+) -> list[PendingSendResponse]:
     """
-    Answer a repeated request with the row the first one created, in
-    whichever shape it has now -- still staged, or already in outbox under
-    the same id (see outbox/pending.py).
+    Everything a client needs to reopen a composer on each row -- the undo
+    banner's own reopen action reads these fields straight off the response
+    rather than re-deriving them anywhere else.
+
+    Attachments are listed without their bytes: the banner polls this list
+    every second while a send is staged, and fetches each attachment's
+    content (get_pending_attachment below) only when Undo actually reopens.
+    """
+    summaries: dict[uuid.UUID, list[PendingSendAttachmentSummary]] = {}
+    if rows:
+        result = await session.execute(
+            select(
+                PendingSendAttachment.id,
+                PendingSendAttachment.pending_send_id,
+                PendingSendAttachment.filename,
+                PendingSendAttachment.content_type,
+                PendingSendAttachment.content_id,
+                func.octet_length(PendingSendAttachment.data).label("size_bytes"),
+            ).where(PendingSendAttachment.pending_send_id.in_([r.id for r in rows]))
+        )
+        for att in result:
+            summaries.setdefault(att.pending_send_id, []).append(
+                PendingSendAttachmentSummary(
+                    id=att.id, filename=att.filename, content_type=att.content_type,
+                    size_bytes=att.size_bytes, content_id=att.content_id,
+                )
+            )
+    return [
+        PendingSendResponse(
+            id=pending.id,
+            account_id=pending.account_id,
+            send_after=pending.send_after,
+            created_at=pending.created_at,
+            from_addr=pending.from_addr,
+            to=list(pending.to_addrs) if pending.to_addrs else [],
+            cc=list(pending.cc_addrs) if pending.cc_addrs else None,
+            bcc=list(pending.bcc_addrs) if pending.bcc_addrs else None,
+            subject=pending.subject,
+            body_html=pending.body_html,
+            in_reply_to=pending.in_reply_to,
+            references=list(pending.msg_references) if pending.msg_references else None,
+            replaces_message_id=pending.replaces_message_id,
+            attachments=summaries.get(pending.id, []),
+        )
+        for pending in rows
+    ]
+
+
+async def replay_submission(
+    session: AsyncSession, idempotency_key: uuid.UUID, kind: str,
+) -> OutboxResponse | PendingSendResponse | None:
+    """
+    The answer to a request repeating an earlier one's idempotency key: the
+    row that one created, in whichever shape it has now -- still staged, or
+    already in outbox under the same id (see outbox/pending.py). None when
+    the key is new. The MCP send tool answers repeats through this too.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        idempotency_key: The caller's key for this composed message
+        kind: "send" or "draft", what this request asks for
+
+    Returns:
+        The earlier request's row, or None if there was none
 
     Raises:
-        HTTPException: 409 if that row no longer exists in either place
+        HTTPException: 409 if the key was used for a different kind, or the
+            row it created no longer exists in either place
     """
+    previous = await find_submission(session, idempotency_key)
+    if previous is None:
+        return None
+    if previous.kind != kind:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"idempotency_key was already used for a {previous.kind}; "
+                "a different kind needs a key of its own."
+            ),
+        )
+    target_id = previous.target_id
     pending = await session.scalar(select(PendingSend).where(PendingSend.id == target_id))
     if pending is not None:
-        return _pending_send_to_response(pending)
+        return (await _pending_send_responses(session, [pending]))[0]
     outbox = await session.scalar(select(Outbox).where(Outbox.id == target_id))
     if outbox is None:
         raise HTTPException(
@@ -541,7 +591,35 @@ async def list_outbox_pending(account_id: uuid.UUID | None = None) -> list[Pendi
     db = get_db_connection()
     async with db.session() as session:
         rows = await list_pending_sends(session, account_id)
-    return [_pending_send_to_response(r) for r in rows]
+        return await _pending_send_responses(session, rows)
+
+
+@router.get("/pending/{pending_send_id}/attachments/{attachment_id}")
+async def get_pending_attachment(pending_send_id: uuid.UUID, attachment_id: uuid.UUID) -> Response:
+    """One staged send's attachment content -- what Undo re-attaches to the
+    composer it reopens. Answers for a cancelled send too, since that is
+    when it is asked for; gone once the send has moved into outbox."""
+    db = get_db_connection()
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                select(
+                    PendingSendAttachment.filename,
+                    PendingSendAttachment.content_type,
+                    PendingSendAttachment.data,
+                ).where(
+                    PendingSendAttachment.id == attachment_id,
+                    PendingSendAttachment.pending_send_id == pending_send_id,
+                )
+            )
+        ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such staged attachment")
+    return Response(
+        content=row.data,
+        media_type=row.content_type or "application/octet-stream",
+        headers={"Content-Disposition": content_disposition(row.filename or "attachment")},
+    )
 
 
 @router.post("/pending/{pending_send_id}/cancel", status_code=204)

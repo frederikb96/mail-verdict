@@ -146,6 +146,31 @@ export function convertDataUriImages(html: string): {
   return { html: doc.body.innerHTML, entries };
 }
 
+/** Put a restored message's pasted images back into editable HTML: every
+ * `<img src="cid:<id>">` whose id has a File here gets a fresh `blob:` src
+ * and its `data-cid` back -- the shape a freshly pasted image has -- so the
+ * editor shows it and a re-send uploads it again as the same inline
+ * attachment. The server's sanitizer keeps the `cid:` src and drops
+ * `data-cid`, which is why the match is on the src. */
+export function restoreInlineImages(
+  html: string,
+  images: ReadonlyArray<{ contentId: string; file: File }>,
+): { html: string; entries: InlineImageEntry[] } {
+  if (images.length === 0) return { html, entries: [] };
+  const entries = images.map(({ contentId, file }) => ({
+    contentId, file, blobUrl: URL.createObjectURL(file),
+  }));
+  const byId = new Map(entries.map((entry) => [entry.contentId, entry]));
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll('img[src^="cid:"]').forEach((img) => {
+    const entry = byId.get(img.getAttribute("src")!.slice("cid:".length));
+    if (!entry) return;
+    img.setAttribute("src", entry.blobUrl);
+    img.setAttribute("data-cid", entry.contentId);
+  });
+  return { html: doc.body.innerHTML, entries };
+}
+
 /** Rewrite every inline image's display-only `blob:` src to the
  * `cid:<value>` reference the recipient's mail client actually resolves
  * -- the last step before this HTML reaches the outbox API. */

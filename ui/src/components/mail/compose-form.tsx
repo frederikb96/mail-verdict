@@ -101,6 +101,13 @@ interface ComposeFormProps {
   replacesMessageId?: string;
   /** Pre-attached files, e.g. a forward carrying the original's attachments. */
   initialAttachments?: File[];
+  /** Pasted images `defaultBodyHtml` references by content id -- see
+   * MailEditor's own prop of the same name. */
+  initialInlineImages?: ReadonlyArray<{ contentId: string; file: File }>;
+  /** Attachments this composer should have carried and could not be given
+   * back -- named in an alert so the composer never looks complete while
+   * it is not. */
+  unrestoredAttachments?: string[];
   /** Inline reply box styling instead of a standalone dialog form. */
   compact?: boolean;
   onDone: () => void;
@@ -144,6 +151,8 @@ export function ComposeForm({
   references,
   replacesMessageId,
   initialAttachments = [],
+  initialInlineImages,
+  unrestoredAttachments = [],
   compact = false,
   onDone,
   onDirtyChange,
@@ -410,6 +419,12 @@ export function ComposeForm({
         phase === "sending" && "invisible",
       )}
     >
+      {unrestoredAttachments.length > 0 && (
+        <p role="alert" className="text-sm text-destructive">
+          Not restored: {unrestoredAttachments.join(", ")}. Attach{" "}
+          {unrestoredAttachments.length === 1 ? "it" : "them"} again before sending.
+        </p>
+      )}
       {!compact && <RecipientField value={to} onChange={setTo} placeholder="To" />}
       {compact && (
         <div className="grid grid-cols-[auto_1fr] items-center gap-2">
@@ -480,6 +495,7 @@ export function ComposeForm({
       <MailEditorLazy
         key={initialHtml}
         initialHtml={initialHtml}
+        initialInlineImages={initialInlineImages}
         autoFocus={compact}
         compact={compact}
         heightPx={resize.isMaximized ? undefined : resize.heightPx}

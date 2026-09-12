@@ -17,7 +17,7 @@ from sqlalchemy import select, text
 from mail_verdict.api.event_ring import EventRing
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Alert
-from mail_verdict.outbox.stalled import raise_stalled_outbox_alerts_once
+from mail_verdict.outbox.stalled import _find_stalled, raise_stalled_outbox_alerts_once
 
 _THRESHOLD = timedelta(minutes=10)
 
@@ -205,3 +205,86 @@ class TestStalledOutbox:
         ]
         assert len(events) == 1
         assert events[0]["data"]["kind"] == "outbox_stalled"
+
+
+async def _seed_inactive_account_in_state(
+    db: DatabaseConnection, *, state: str, synced_before: bool,
+) -> uuid.UUID:
+    """Inactive, so the PostIMAP this layer runs leaves it alone -- an
+    active account is picked up and synced, and from then on its state is
+    PostIMAP's to change rather than the test's."""
+    account_id = await _seed_inactive_account(db)
+    async with db.session() as session:
+        if synced_before:
+            await session.execute(
+                text(
+                    "INSERT INTO sync_state (account_id, last_full_sync, folders_synced, "
+                    "folders_total, messages_synced, error_count, updated_at) "
+                    "VALUES (:id, now() - interval '1 day', 0, 0, 0, 3, now())"
+                ),
+                {"id": account_id},
+            )
+        await session.execute(
+            text("UPDATE accounts SET state = :state WHERE id = :id"),
+            {"id": account_id, "state": state},
+        )
+        await session.commit()
+    return account_id
+
+
+async def _alert_body_for_a_stuck_send(
+    db: DatabaseConnection, account_id: uuid.UUID,
+) -> str:
+    await _seed_outbox_row(
+        db, account_id, kind="send", status="pending", age=timedelta(hours=1),
+        subject="Held send",
+    )
+    await raise_stalled_outbox_alerts_once(db, None, None, threshold=_THRESHOLD)
+    alerts = await _alerts_for(db, account_id)
+    assert len(alerts) == 1
+    assert alerts[0].body is not None and "Held send" in alerts[0].body
+    return alerts[0].body
+
+
+class TestStalledAlertNamesTheAccountState:
+    """PostIMAP holds an outbox row pending while its account has no
+    connection, so "still waiting" alone hides the usual reason. The alert
+    says which of the account-health cases applies, using the contract's
+    own reading: `error` is retried, and last_full_sync tells an account
+    that worked before from one that never connected."""
+
+    @pytest.mark.asyncio
+    async def test_the_pass_reads_each_stuck_rows_account_health(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """Both places a message waits carry the account's health into the
+        wording (tests/unit/test_outbox_stalled_describe.py covers that)."""
+        account_id = await _seed_inactive_account_in_state(
+            migrated_db, state="error", synced_before=True,
+        )
+        await _seed_outbox_row(
+            migrated_db, account_id, kind="send", status="pending",
+            age=timedelta(hours=1), subject="Queued while disconnected",
+        )
+        await _seed_pending_send(
+            migrated_db, account_id, overdue_by=timedelta(hours=1),
+            subject="Staged while disconnected",
+        )
+
+        rows = [
+            r for r in await _find_stalled(migrated_db, _THRESHOLD)
+            if r.account_id == account_id
+        ]
+
+        assert len(rows) == 2, rows
+        for row in rows:
+            assert (row.is_active, row.state) == (False, "error"), row
+            assert row.last_full_sync is not None, row
+
+    @pytest.mark.asyncio
+    async def test_a_paused_account_says_it_is_paused(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = await _seed_inactive_account(migrated_db)
+        body = await _alert_body_for_a_stuck_send(migrated_db, account_id)
+        assert "paused" in body, body

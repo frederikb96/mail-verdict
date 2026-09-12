@@ -234,6 +234,9 @@ export function ComposeDialog() {
             inReplyTo={composeIntent?.inReplyTo}
             references={composeIntent?.references}
             replacesMessageId={composeIntent?.replacesMessageId}
+            initialAttachments={composeIntent?.attachments}
+            initialInlineImages={composeIntent?.inlineImages}
+            unrestoredAttachments={composeIntent?.unrestoredAttachments}
             onDone={closeAndClearIntent}
             onDirtyChange={setIsDirty}
             onMaximizedChange={setMaximized}

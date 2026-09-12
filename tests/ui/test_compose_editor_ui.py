@@ -781,6 +781,192 @@ class TestUndoReopensTheComposer:
         assert sends == [], f"expected nothing sent, got {sends}"
 
 
+_ONE_PIXEL_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def _paste_image(locator, name: str) -> None:
+    """A pasted screenshot, in the shape a clipboard image arrives: one
+    file item and no HTML flavour, handled by the editor's own paste path."""
+    locator.evaluate(
+        """(el, { b64, name }) => {
+            const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+            const dt = new DataTransfer();
+            dt.items.add(new File([bytes], name, { type: 'image/png' }));
+            el.dispatchEvent(new ClipboardEvent('paste', {
+                clipboardData: dt, bubbles: true, cancelable: true,
+            }));
+        }""",
+        {"b64": _ONE_PIXEL_PNG_B64, "name": name},
+    )
+
+
+def _attach(scope, name: str) -> None:
+    scope.locator('input[type="file"]').set_input_files(
+        files=[{"name": name, "mimeType": "text/plain", "buffer": f"content of {name}".encode()}],
+    )
+
+
+def _mailpit_message(mailpit_http_url: str, subject: str) -> dict[str, Any]:
+    summary = wait_for_mailpit_message(mailpit_http_url, subject, timeout_s=60.0)
+    resp = httpx.get(f"{mailpit_http_url}/api/v1/message/{summary['ID']}", timeout=10.0)
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _compose_with_attachment(
+    page: Page, app_server: str, account: dict[str, Any], subject: str,
+) -> Any:
+    page.goto(app_server)
+    select_account(page, account)
+    page.get_by_role("button", name="Compose", exact=True).click()
+    dialog = page.get_by_role("dialog", name="New Message")
+    expect(dialog).to_be_visible(timeout=15_000)
+    dialog.get_by_role("combobox", name="To", exact=True).fill("attachments-target@example.com")
+    page.keyboard.press("Enter")
+    dialog.get_by_role("textbox", name="Subject", exact=True).fill(subject)
+    dialog.get_by_test_id("mail-editor-body").fill("Attachments ride along.")
+    _attach(dialog, "notes.txt")
+    expect(dialog.get_by_title("notes.txt", exact=True)).to_be_visible()
+    return dialog
+
+
+class TestUndoRestoresAttachments:
+    """Undo reopens the composer from the staged send, and one that comes
+    back without its attachments looks complete while it is not -- the
+    re-send then goes out without them, with nothing said. Attachments and
+    pasted images come back with the rest; one that cannot be brought back
+    is named in the composer instead."""
+
+    def test_undo_brings_back_attachments_and_pasted_images_and_a_resend_carries_them(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        mailpit_http_url: str,
+        editor_account: dict[str, Any],
+    ) -> None:
+        subject = f"undo attachments test {uuid.uuid4()}"
+        dialog = _compose_with_attachment(page, app_server, editor_account, subject)
+        body = dialog.get_by_test_id("mail-editor-body")
+        _paste_image(body, "screenshot.png")
+        expect(body.locator("img[data-cid]")).to_have_count(1)
+
+        dialog.get_by_role("button", name="Send", exact=True).click()
+        expect(dialog).not_to_be_visible(timeout=10_000)
+        page.get_by_role("button", name="Undo", exact=True).click()
+
+        reopened = page.get_by_role("dialog", name="New Message")
+        expect(reopened).to_be_visible(timeout=10_000)
+        expect(reopened.get_by_role("textbox", name="Subject", exact=True)).to_have_value(subject)
+        expect(reopened.get_by_title("notes.txt", exact=True)).to_be_visible(timeout=10_000)
+        restored_image = reopened.get_by_test_id("mail-editor-body").locator("img[data-cid]")
+        expect(restored_image).to_have_count(1)
+        # A live image, not a dangling cid: reference the browser cannot load.
+        wait_for(
+            lambda: restored_image.evaluate("(img) => img.complete && img.naturalWidth > 0")
+            or None,
+            timeout_s=10.0, description="restored pasted image painted",
+        )
+
+        reopened.get_by_role("button", name="Send", exact=True).click()
+        expect(reopened).not_to_be_visible(timeout=10_000)
+
+        sent = _mailpit_message(mailpit_http_url, subject)
+        assert [a["FileName"] for a in sent["Attachments"]] == ["notes.txt"], sent["Attachments"]
+        assert len(sent["Inline"]) == 1, sent["Inline"]
+        # The body's reference resolves against that inline part.
+        assert f"cid:{sent['Inline'][0]['ContentID'].strip('<>')}" in sent["HTML"], sent["HTML"]
+        assert len(_sends_for(api_client, editor_account["id"], subject)) == 1
+
+    def test_undo_of_a_reply_reopens_it_threaded_with_its_attachment(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        mailpit_http_url: str,
+        editor_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        original_subject = f"UI undo reply original {uuid.uuid4()}"
+        original_message_id = f"<undo-reply-{uuid.uuid4()}@example.com>"
+        message = build_eml(
+            sender="sender@example.com", recipient=editor_account["email"],
+            subject=original_subject, message_id=original_message_id,
+            body="Body for the undo-reply test.",
+        )
+        deliver_message(
+            message, host, lmtp_port,
+            sender="sender@example.com", recipient=editor_account["email"],
+        )
+        original = wait_for(
+            lambda: next(
+                (m for m in _list_folder(api_client, editor_account["id"], inbox_folder["id"])
+                 if m["subject"] == original_subject), None,
+            ),
+            description=f"{original_subject!r} synced into INBOX",
+        )
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        mail_row(page, original["id"]).click()
+        page.get_by_role("button", name="Reply", exact=True).click()
+        body = page.get_by_test_id("mail-editor-body")
+        body.click()
+        body.type("A reply carrying a file.")
+        _attach(page, "reply-notes.txt")
+        expect(page.get_by_title("reply-notes.txt", exact=True)).to_be_visible()
+
+        page.get_by_role("button", name="Send", exact=True).click()
+        page.get_by_role("button", name="Undo", exact=True).click()
+
+        reopened = page.get_by_role("dialog", name="New Message")
+        expect(reopened).to_be_visible(timeout=10_000)
+        expect(reopened.get_by_role("textbox", name="Subject", exact=True)).to_have_value(
+            f"Re: {original_subject}",
+        )
+        expect(reopened.get_by_test_id("mail-editor-body")).to_contain_text(
+            "A reply carrying a file.",
+        )
+        expect(reopened.get_by_title("reply-notes.txt", exact=True)).to_be_visible(
+            timeout=10_000,
+        )
+
+        reopened.get_by_role("button", name="Send", exact=True).click()
+        expect(reopened).not_to_be_visible(timeout=10_000)
+
+        sent = _mailpit_message(mailpit_http_url, f"Re: {original_subject}")
+        assert [a["FileName"] for a in sent["Attachments"]] == ["reply-notes.txt"]
+        raw = httpx.get(f"{mailpit_http_url}/api/v1/message/{sent['ID']}/raw", timeout=10.0)
+        assert raw.status_code == 200, raw.text
+        assert f"In-Reply-To: {original_message_id}" in raw.text, raw.text
+
+    def test_an_attachment_that_cannot_be_brought_back_is_named(
+        self,
+        page: Page,
+        app_server: str,
+        editor_account: dict[str, Any],
+    ) -> None:
+        subject = f"undo unrestored test {uuid.uuid4()}"
+        page.route(
+            lambda url: "/api/outbox/pending/" in url and "/attachments/" in url,
+            lambda route: route.fulfill(status=500, body="unavailable"),
+        )
+        dialog = _compose_with_attachment(page, app_server, editor_account, subject)
+
+        dialog.get_by_role("button", name="Send", exact=True).click()
+        expect(dialog).not_to_be_visible(timeout=10_000)
+        page.get_by_role("button", name="Undo", exact=True).click()
+
+        reopened = page.get_by_role("dialog", name="New Message")
+        expect(reopened).to_be_visible(timeout=10_000)
+        expect(reopened.get_by_role("alert")).to_contain_text("notes.txt", timeout=10_000)
+        page.unroute_all()
+
+
 class TestSendingStateIsImmediate:
     def test_send_shows_sending_at_once_and_a_failure_restores_the_composer(
         self,
@@ -1123,10 +1309,17 @@ class TestDoubleSubmitGuard:
         api_client: httpx.Client,
         editor_account: dict[str, Any],
     ) -> None:
-        """Nothing guarded the mutation itself, only the button's disabled
-        attribute -- react-query's own isPending is the state as of the
-        last render, so two clicks landing before React re-renders both
-        read it as false and both fire."""
+        """react-query's own isPending, and the disabled attribute it drives,
+        are the state as of the last render -- two clicks landing before
+        React re-renders both read it as false and both fire. Both clicks
+        are therefore issued inside one task, where no render can come
+        between them; a Playwright double click cannot reach that race, as
+        the re-render after the first click lands before the second.
+
+        The requests are counted as they leave the browser as well as on
+        the server: the server collapses a repeat carrying the composer's
+        idempotency key into one send, so a server count alone would stay
+        at one with the composer's own guard gone."""
         subject = f"UI double-send test {uuid.uuid4()}"
         page.goto(app_server)
         select_account(page, editor_account)
@@ -1136,12 +1329,24 @@ class TestDoubleSubmitGuard:
         dialog.get_by_role("textbox", name="Subject").fill(subject)
         dialog.get_by_test_id("mail-editor-body").fill("Sent from a double-click.")
 
-        dialog.get_by_role("button", name="Send", exact=True).dblclick()
+        send_requests: list[str] = []
+        page.on(
+            "request",
+            lambda request: send_requests.append(request.url)
+            if request.method == "POST" and request.url.split("?")[0].endswith("/api/outbox")
+            else None,
+        )
+        dialog.get_by_role("button", name="Send", exact=True).evaluate(
+            "(button) => { button.click(); button.click(); }",
+        )
         # A staged send reports itself through the undo banner rather than
         # a toast -- the two would say the same thing twice, and the banner
         # is where cancelling lives. Waiting on the banner is what says the
-        # send was accepted; the count below is what this test is about.
-        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
+        # send was accepted; the counts below are what this test is about,
+        # so a second banner (a second send) must not end it here first.
+        expect(page.get_by_role("button", name="Undo", exact=True).first).to_be_visible(
+            timeout=10_000,
+        )
 
         def _outbox_rows() -> list[dict[str, Any]] | None:
             resp = api_client.get("/api/outbox", params={"account_id": editor_account["id"]})
@@ -1154,6 +1359,9 @@ class TestDoubleSubmitGuard:
         # first one settles -- give it the same window rather than checking
         # the instant the first row appears.
         page.wait_for_timeout(1500)
+        assert len(send_requests) == 1, (
+            f"the composer issued {len(send_requests)} send requests for one message"
+        )
         rows = _outbox_rows() or []
         assert len(rows) == 1, f"expected exactly one outbox row for {subject!r}, got {rows}"
 
