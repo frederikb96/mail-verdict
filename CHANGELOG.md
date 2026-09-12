@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail transport
+
+- Runs against PostIMAP 1.10.0, which no longer ends the whole transport service on a single
+  dropped database connection, a socket error on an account's IMAP connection, or a batch that
+  stalls in the outbox or the outbound processor -- each now recovers on its own and every other
+  account keeps working. A send to a server that also files its own Sent copy (Zoho among them)
+  no longer arrives there twice.
+
 ### Notifications
 
 - A new setting, "Bell badge counts new mail", leaves new-mail alerts out of the bell's badge, so
