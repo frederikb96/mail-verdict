@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.2.0] - 2026-09-12
+
 ### Notifications
 
 - Notifications on the iPhone app. A phone registers as a push device like a browser does and gets
