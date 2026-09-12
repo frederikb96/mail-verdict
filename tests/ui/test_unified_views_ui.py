@@ -514,7 +514,7 @@ class TestKeyboardActionInUnifiedView:
         _wait_for_view(api_client, view, 2)
 
         _goto(page, app_server)
-        _select_unified_view(page)
+        select_unified_view(page)
         _open_unified_folder(page, view)
         row = mail_row(page, target["id"])
         expect(row).to_be_visible(timeout=15_000)
