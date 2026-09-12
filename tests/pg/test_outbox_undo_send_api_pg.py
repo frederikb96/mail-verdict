@@ -223,6 +223,77 @@ class TestUndoSendWindow:
         assert "send_after" not in resp.json()
 
 
+class TestPendingSendCarriesReopenableContent:
+    """A pending send is the one durable copy of what was written between
+    pressing Send and the undo window passing -- everything a reopened
+    composer needs has to survive staging, listing, and an idempotent
+    replay of the same request, not just cancellation."""
+
+    _BODY = {
+        "to": ["them@example.com"],
+        "cc": ["cc@example.com"],
+        "subject": "hi",
+        "body_text": "hi",
+        "body_html": "<p>hi</p>",
+        "in_reply_to": "<orig@example.com>",
+        "references": ["<orig@example.com>"],
+    }
+
+    def test_staging_a_send_returns_everything_a_composer_needs(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox", json={"account_id": str(account_id), "kind": "send", **self._BODY},
+            )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["to"] == self._BODY["to"]
+        assert body["cc"] == self._BODY["cc"]
+        assert body["subject"] == self._BODY["subject"]
+        assert body["body_html"] == self._BODY["body_html"]
+        assert body["in_reply_to"] == self._BODY["in_reply_to"]
+        assert body["references"] == self._BODY["references"]
+        assert body["replaces_message_id"] is None
+
+    def test_the_pending_list_carries_the_same_fields(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            created = client.post(
+                "/outbox", json={"account_id": str(account_id), "kind": "send", **self._BODY},
+            ).json()
+            listed = client.get(f"/outbox/pending?account_id={account_id}").json()
+        assert len(listed) == 1
+        assert listed[0]["id"] == created["id"]
+        assert listed[0]["body_html"] == self._BODY["body_html"]
+        assert listed[0]["in_reply_to"] == self._BODY["in_reply_to"]
+        assert listed[0]["references"] == self._BODY["references"]
+
+    def test_an_idempotent_replay_carries_the_same_fields(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A repeated request (the same idempotency_key, a doubled network
+        request rather than a person pressing Send twice) answers with the
+        original row's content, not just its id -- _replay() has its own
+        conversion path, easy to leave behind a widening of the other two."""
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            payload = {
+                "account_id": str(account_id), "kind": "send",
+                "idempotency_key": str(uuid.uuid4()), **self._BODY,
+            }
+            first = client.post("/outbox", json=payload)
+            second = client.post("/outbox", json=payload)
+        assert first.status_code == 201, first.text
+        assert second.status_code == 201, second.text
+        assert second.json()["id"] == first.json()["id"]
+        assert second.json()["body_html"] == self._BODY["body_html"]
+        assert second.json()["references"] == self._BODY["references"]
+
+
 class TestPendingSendAnnouncesItself:
     """PendingSend is MailVerdict's own staging table -- it does not exist
     in outbox at all yet, so PostIMAP's own outbox trigger has nothing to

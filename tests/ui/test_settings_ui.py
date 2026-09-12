@@ -15,7 +15,13 @@ from playwright.sync_api import Page, expect
 
 from tests.e2e.helpers import wait_for_dav_account_active, wait_for_dav_collection
 from tests.setup.dav_helpers import create_calendar, discover
-from tests.ui.helpers import unique_email, wait_for, wait_for_account_active
+from tests.ui.helpers import (
+    create_account,
+    unique_email,
+    wait_for,
+    wait_for_account_active,
+    wait_for_folder,
+)
 
 from tests.setup.containers import (  # isort: skip
     DOVECOT_ALIAS,
@@ -62,7 +68,11 @@ class TestSettingsCategoriesUi:
             )
 
         tablist.get_by_role("tab", name="Pipeline", exact=True).click()
-        expect(page.get_by_text("Lease seconds", exact=True)).to_be_visible(timeout=8_000)
+        # Hand-authored label, not the mechanical humanizer's own "Lease
+        # seconds" -- see SETTING_LABELS in settings-page.tsx.
+        expect(page.get_by_text("Worker lease (seconds)", exact=True)).to_be_visible(
+            timeout=8_000,
+        )
 
 
 class TestProviderKeyFormUi:
@@ -251,3 +261,114 @@ class TestCalendarLinksPickerUi:
 
         row = wait_for(_linked, description="Calendar link saved for the identity")
         assert row["receives_invitations_calendar_id"] == settings_calendar["id"]
+
+    def test_the_invitation_controls_are_labelled(
+        self,
+        page: Page,
+        app_server: str,
+        settings_identity: dict[str, Any],
+    ) -> None:
+        """The regression this guards: the calendar picker and the "which
+        one receives invitations" select were both unlabelled -- two
+        unexplained controls per identity."""
+        page.goto(f"{app_server}/settings")
+
+        identity_row = page.get_by_text(settings_identity["address"], exact=True).locator("..")
+        expect(identity_row.get_by_text("Linked calendars", exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        expect(
+            identity_row.get_by_text("New invitations go to", exact=True)
+        ).to_be_visible()
+
+    def test_edit_as_json_is_labelled_and_tucked_into_an_overflow(
+        self, page: Page, app_server: str, settings_identity: dict[str, Any],
+    ) -> None:
+        """The regression this guards: an unlabelled `<>` icon button sat
+        directly in the card header -- nothing said what it did."""
+        page.goto(f"{app_server}/settings")
+
+        expect(page.get_by_text(settings_identity["address"], exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        with pytest.raises(AssertionError):
+            expect(
+                page.get_by_role("button", name="Edit as JSON", exact=True)
+            ).to_be_visible(timeout=3_000)
+
+        page.get_by_role("button", name="Calendar invitations options", exact=True).click()
+        json_item = page.get_by_role("menuitem", name="Edit as JSON", exact=True)
+        expect(json_item).to_be_visible(timeout=8_000)
+        json_item.click()
+        # The raw-JSON textarea's own class, not a generic role query -- the
+        # AI/Retry/Semantic tabs render their own text fields elsewhere on
+        # this same page.
+        expect(page.locator("textarea.font-mono")).to_be_visible(timeout=8_000)
+
+
+class TestSectionNavigationUi:
+    def test_a_nav_link_jumps_to_its_section(self, page: Page, app_server: str) -> None:
+        """The regression this guards: Settings was one long undifferentiated
+        scroll with no way to jump to a section."""
+        page.goto(f"{app_server}/settings")
+
+        nav = page.get_by_role("navigation")
+        expect(nav.get_by_role("link", name="AI & automation", exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        ai_heading = page.get_by_role("heading", name="AI & automation", exact=True)
+        expect(ai_heading).not_to_be_in_viewport()
+
+        nav.get_by_role("link", name="AI & automation", exact=True).click()
+        expect(ai_heading).to_be_in_viewport(timeout=8_000)
+        expect(page).to_have_url(f"{app_server}/settings#ai")
+
+
+class TestNotifyForFoldersRespectsVisibilityUi:
+    def test_a_hidden_folder_is_absent_from_the_notify_list(
+        self, page: Page, app_server: str, api_client: httpx.Client,
+    ) -> None:
+        """The regression this guards: the notify-folder checklist listed
+        every server folder, including ones the mail sidebar itself hides
+        (an Exchange account's non-mail folders among them) -- the
+        folder-visibility preference existed and simply wasn't reused
+        here."""
+        account = create_account(api_client, "settings-notify")
+        suffix = uuid.uuid4().hex[:8]
+        visible_name = f"NotifyVisible-{suffix}"
+        hidden_name = f"NotifyHidden-{suffix}"
+
+        resp = api_client.post(
+            f"/api/accounts/{account['id']}/folders", json={"name": visible_name},
+        )
+        assert resp.status_code == 201, resp.text
+        wait_for_folder(api_client, account["id"], resp.json()["imap_name"])
+
+        resp = api_client.post(
+            f"/api/accounts/{account['id']}/folders", json={"name": hidden_name},
+        )
+        assert resp.status_code == 201, resp.text
+        hidden_folder = wait_for_folder(api_client, account["id"], resp.json()["imap_name"])
+
+        prefs_resp = api_client.patch(
+            f"/api/folders/{hidden_folder['id']}/prefs", json={"is_visible": False},
+        )
+        assert prefs_resp.status_code == 200, prefs_resp.text
+
+        page.goto(f"{app_server}/settings")
+
+        # Two levels up: the immediate parent only wraps the "Notify for
+        # these folders" label and its "Select all" button; the folder
+        # list itself is a sibling of that pair, one level further out.
+        notify_section = page.get_by_text("Notify for these folders", exact=True).locator("../..")
+        # Both names are unique to this test run, so neither can collide
+        # with another account's own folders -- no need to scope further
+        # by account, which the account-name header does not even render
+        # when this is the only account (a module run in isolation, -k).
+        expect(notify_section.get_by_text(visible_name, exact=True)).to_be_visible(
+            timeout=15_000,
+        )
+        with pytest.raises(AssertionError):
+            expect(notify_section.get_by_text(hidden_name, exact=True)).to_be_visible(
+                timeout=3_000,
+            )

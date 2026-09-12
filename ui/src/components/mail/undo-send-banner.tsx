@@ -1,24 +1,34 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Mail, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useCancelPendingSend, usePendingSends } from "@/hooks/use-outbox";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
-import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
-import type { PendingSendResponse } from "@/types/api";
+import { composeIntentAtom, selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
+import type { Identity, PendingSendResponse } from "@/types/api";
 
 function secondsRemaining(sendAfter: string): number {
   return Math.max(0, Math.ceil((new Date(sendAfter).getTime() - Date.now()) / 1000));
 }
 
-function PendingSendRow({ row, accountName }: { row: PendingSendResponse; accountName: string | null }) {
+function PendingSendRow({
+  row,
+  accountName,
+  identities,
+}: {
+  row: PendingSendResponse;
+  accountName: string | null;
+  identities: Identity[] | undefined;
+}) {
   const [remaining, setRemaining] = useState(() => secondsRemaining(row.send_after));
   const cancel = useCancelPendingSend();
   const { push: pushToast } = useToast();
+  const setComposeIntent = useSetAtom(composeIntentAtom);
 
   useEffect(() => {
     const id = setInterval(() => setRemaining(secondsRemaining(row.send_after)), 250);
@@ -41,7 +51,29 @@ function PendingSendRow({ row, accountName }: { row: PendingSendResponse; accoun
         disabled={cancel.isPending}
         onClick={() =>
           cancel.mutate(row.id, {
-            onSuccess: () => pushToast("Send cancelled", "success"),
+            onSuccess: () => {
+              pushToast("Send cancelled", "success");
+              // Reopens with everything that was staged -- to/cc/bcc,
+              // subject, the composed body (quote included, since it was
+              // already part of body_html) and, for a reply or a
+              // draft-resend, the headers that thread or supersede
+              // correctly on a second Send. The row is the one durable
+              // copy of all of it once the original composer unmounted.
+              setComposeIntent({
+                accountId: row.account_id,
+                identityId: (identities ?? []).find(
+                  (i) => i.account_id === row.account_id && i.address === row.from_addr,
+                )?.id,
+                to: row.to,
+                cc: row.cc ?? undefined,
+                bcc: row.bcc ?? undefined,
+                subject: row.subject ?? undefined,
+                bodyHtml: row.body_html ?? undefined,
+                inReplyTo: row.in_reply_to ?? undefined,
+                references: row.references ?? undefined,
+                replacesMessageId: row.replaces_message_id ?? undefined,
+              });
+            },
             onError: () => pushToast("Too late — the message already sent", "warning"),
           })
         }
@@ -69,6 +101,7 @@ export function UndoSendBanner() {
   // scoped to one (unified view, or no account selected yet) -- worth
   // saying only once more than one account exists to tell apart.
   const { data: accounts } = useAccounts();
+  const { data: identities } = useIdentities();
   const showAccount = (isUnified || !accountId) && (accounts?.length ?? 0) > 1;
 
   if (!pending || pending.length === 0) return null;
@@ -79,6 +112,7 @@ export function UndoSendBanner() {
         <PendingSendRow
           key={row.id}
           row={row}
+          identities={identities}
           accountName={
             showAccount ? (accounts?.find((a) => a.id === row.account_id)?.name ?? null) : null
           }

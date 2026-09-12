@@ -730,6 +730,57 @@ class TestSendingAReopenedDraft:
         assert len(sends) == 1, f"expected exactly one send, got {sends}"
 
 
+class TestUndoReopensTheComposer:
+    """Pressing Undo on a send used to only cancel it -- for a fresh
+    compose, the text was then simply gone, since nothing kept a copy of
+    it once the composer had already unmounted. The pending send's own
+    row is the durable copy: everything staged for it survives the length
+    of the undo window server-side, which is what a reopened composer is
+    built from."""
+
+    def test_undo_reopens_a_fresh_compose_with_everything_intact(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        editor_account: dict[str, Any],
+    ) -> None:
+        subject = f"undo reopen test {uuid.uuid4()}"
+        recipient = "reopen-target@example.com"
+        body_text = "Everything should still be here."
+
+        page.goto(app_server)
+        select_account(page, editor_account)
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        expect(dialog).to_be_visible(timeout=15_000)
+
+        dialog.get_by_role("combobox", name="To", exact=True).fill(recipient)
+        page.keyboard.press("Enter")
+        dialog.get_by_role("textbox", name="Subject", exact=True).fill(subject)
+        dialog.get_by_test_id("mail-editor-body").fill(body_text)
+
+        dialog.get_by_role("button", name="Send", exact=True).click()
+        expect(dialog).not_to_be_visible(timeout=10_000)
+
+        page.get_by_role("button", name="Undo", exact=True).click()
+
+        reopened = page.get_by_role("dialog", name="New Message")
+        expect(reopened).to_be_visible(timeout=10_000)
+        expect(reopened.get_by_text(recipient, exact=False)).to_be_visible(timeout=10_000)
+        expect(reopened.get_by_role("textbox", name="Subject", exact=True)).to_have_value(
+            subject,
+        )
+        expect(reopened.get_by_test_id("mail-editor-body")).to_contain_text(body_text)
+
+        # Nothing sent -- Undo actually cancelled the staged send, the
+        # reopened composer did not resubmit anything on its own, and
+        # this test never presses Send again.
+        page.wait_for_timeout(_PAST_THE_UNDO_WINDOW_MS)
+        sends = _sends_for(api_client, editor_account["id"], subject)
+        assert sends == [], f"expected nothing sent, got {sends}"
+
+
 class TestSendingStateIsImmediate:
     def test_send_shows_sending_at_once_and_a_failure_restores_the_composer(
         self,

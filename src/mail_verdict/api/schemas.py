@@ -1017,12 +1017,25 @@ class PendingSendResponse(BaseModel):
     Not an outbox row -- inserting into outbox is irreversible, so a send
     with a nonzero undo window is held here first and moved into outbox
     only once send_after passes uncancelled. See outbox/pending.py.
+
+    Carries everything Undo needs to reopen a composer with what was
+    written -- the pending row is the one durable copy of it between
+    pressing Send and the window passing.
     """
 
     id: uuid.UUID
     account_id: uuid.UUID
     send_after: datetime
     created_at: datetime
+    from_addr: str | None = None
+    to: list[str] = Field(default_factory=list)
+    cc: list[str] | None = None
+    bcc: list[str] | None = None
+    subject: str | None = None
+    body_html: str | None = None
+    in_reply_to: str | None = None
+    references: list[str] | None = None
+    replaces_message_id: uuid.UUID | None = None
 
     model_config = {"from_attributes": True}
 

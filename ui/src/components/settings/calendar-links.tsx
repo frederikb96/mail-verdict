@@ -16,10 +16,11 @@
  */
 
 import { useEffect, useState } from "react";
-import { Code, Loader2, Save, Table2 } from "lucide-react";
+import { Code, Loader2, MoreVertical, Save, Table2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Truncate } from "@/components/ui/truncate";
+import { Label } from "@/components/ui/label";
 import {
   Combobox,
   ComboboxChip,
@@ -30,6 +31,12 @@ import {
   ComboboxInput,
   ComboboxItem,
 } from "@/components/ui/combobox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Select,
   SelectContent,
@@ -82,6 +89,7 @@ function IdentityLinkRow({
     >
       <Truncate text={row.identity_address} tail={12} className="text-sm font-medium" />
 
+      <Label className="text-xs text-muted-foreground">Linked calendars</Label>
       <Combobox
         multiple
         items={pickableCalendars.map((c) => c.id)}
@@ -114,6 +122,7 @@ function IdentityLinkRow({
         </ComboboxContent>
       </Combobox>
 
+      <Label className="text-xs text-muted-foreground">New invitations go to</Label>
       <Select
         value={row.receives_invitations_calendar_id ?? ""}
         onValueChange={(v) => v && onReceivingChange(v)}
@@ -268,9 +277,24 @@ export function CalendarLinksCard() {
     <Card>
       <CardHeader className="flex-row items-center justify-between pb-3">
         <CardTitle className="text-base">Calendar invitations</CardTitle>
-        <Button variant="ghost" size="icon-sm" onClick={() => setRawMode(!rawMode)}>
-          {rawMode ? <Table2 className="h-4 w-4" /> : <Code className="h-4 w-4" />}
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={<Button variant="ghost" size="icon-sm" />}
+            aria-label="Calendar invitations options"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setRawMode(!rawMode)}>
+              {rawMode ? (
+                <Table2 className="mr-2 h-3.5 w-3.5" />
+              ) : (
+                <Code className="mr-2 h-3.5 w-3.5" />
+              )}
+              {rawMode ? "Edit as table" : "Edit as JSON"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {!rawMode ? (

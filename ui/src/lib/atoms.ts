@@ -123,15 +123,23 @@ export const threadedViewAtom = atomWithStorage<boolean>(
 );
 
 /** A compose dialog can be asked to open from anywhere (a contact's email,
- * an event's "email the attendees", a `mailto:` link the browser routes here)
- * without owning its own trigger. */
+ * an event's "email the attendees", a `mailto:` link the browser routes
+ * here, an undone send's own reopen) without owning its own trigger.
+ * identityId/inReplyTo/references/replacesMessageId only matter for the
+ * last of those -- reopening what was staged for a reply, forward or
+ * draft-resend the same way it was about to be sent, rather than as a
+ * disconnected fresh message. */
 export const composeIntentAtom = atom<{
   accountId?: string;
+  identityId?: string;
   to?: string[];
   cc?: string[];
   bcc?: string[];
   subject?: string;
   bodyHtml?: string;
+  inReplyTo?: string;
+  references?: string[];
+  replacesMessageId?: string;
 } | null>(null);
 
 // --- Calendar ---
