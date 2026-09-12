@@ -34,7 +34,17 @@ import {
   writeComposeRecovery,
 } from "@/lib/compose-recovery";
 import { cn } from "@/lib/utils";
-import type { OutboxCreateRequest } from "@/types/api";
+import type { Identity, OutboxCreateRequest } from "@/types/api";
+
+/** "Frederik Berg <frederik.berg@posteo.net>", or the bare address when
+ * there's no display name. Several identities sharing one display name
+ * are only told apart by the address, so the address is never dropped --
+ * the whole point of showing this instead of the display name alone. */
+export function formatIdentityLabel(identity: Identity): string {
+  return identity.display_name
+    ? `${identity.display_name} <${identity.address}>`
+    : identity.address;
+}
 
 /** A message quoted or forwarded into the composer -- see reply-box.tsx,
  * which is what fetches messages/:id/quote and builds this. */
@@ -67,6 +77,12 @@ interface ComposeFormProps {
    * starred default, the same way the API itself does when no
    * identity_id is sent at all. */
   defaultIdentityId?: string;
+  /** The host renders its own From control (grouped across every account,
+   * for a fresh message that isn't tied to one account yet) and drives
+   * this composer's identity purely through `defaultIdentityId` -- see
+   * compose-dialog.tsx. Without this, a reply or forward's own From
+   * control (one account's identities) renders as usual. */
+  hideIdentityPicker?: boolean;
   /** A previously-saved draft's full HTML body, reopened as-is --
    * mutually exclusive with `quote` (a draft that itself quoted
    * something already has that quote embedded in this HTML). */
@@ -120,6 +136,7 @@ export function ComposeForm({
   defaultBcc = [],
   defaultSubject = "",
   defaultIdentityId,
+  hideIdentityPicker = false,
   defaultBodyHtml,
   quote,
   quotedText = "",
@@ -436,7 +453,7 @@ export function ComposeForm({
         </div>
       )}
 
-      {identities && identities.length > 1 && (
+      {!hideIdentityPicker && identities && identities.length > 1 && (
         <div className="grid grid-cols-[auto_1fr] items-center gap-2">
           <span className="text-xs text-muted-foreground">From</span>
           <Select value={effectiveIdentityId} onValueChange={(v) => setIdentityId(v ?? "")}>
@@ -444,14 +461,14 @@ export function ComposeForm({
               <SelectValue placeholder="From address">
                 {(v: string) => {
                   const found = identities.find((i) => i.id === v);
-                  return found ? (found.display_name || found.address) : "From address";
+                  return found ? formatIdentityLabel(found) : "From address";
                 }}
               </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {identities.map((identity) => (
                 <SelectItem key={identity.id} value={identity.id}>
-                  {identity.display_name || identity.address}
+                  {formatIdentityLabel(identity)}
                 </SelectItem>
               ))}
             </SelectContent>

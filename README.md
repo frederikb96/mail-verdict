@@ -31,12 +31,15 @@ mirror, which is what keeps it simple.
   images, send, reply, reply-all, forward and drafts, with attachments. The panel resizes by
   dragging its top edge or expanding to fill the window. A reply or forward embeds the original as
   a collapsible quote, replies thread correctly, and a sending identity is chosen for you —
-  whichever address the original arrived at, or the account's starred default for a fresh message.
-  Reopening a draft continues editing it in place, and sending one leaves no draft behind. Pressing
-  Send takes the message out of the composer at once and sends it exactly once -- the server
-  refuses a repeat whatever the browser does -- and a failure brings the composer back as it was.
-  A send can be undone for a few seconds after pressing Send, held durably on the server rather
-  than in the browser. Any message can be downloaded as a raw `.eml` file.
+  whichever address the original arrived at, or the account's starred default for a fresh message
+  — shown, and changeable, in one From control spanning every account that always names the
+  exact address (`Name <address>`), not just the account. Reopening a draft continues editing it
+  in place, and sending one leaves no draft behind. Pressing Send takes the message out of the
+  composer at once and sends it exactly once -- the server refuses a repeat whatever the browser
+  does -- and a failure brings the composer back as it was. A send can be undone for a few seconds
+  after pressing Send, held durably on the server rather than in the browser, and Undo reopens the
+  composer with everything that was written rather than only cancelling the send. Any message can
+  be downloaded as a raw `.eml` file.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
   touch device) or a type-to-filter "Move to..." picker in the reading pane, and bulk actions over

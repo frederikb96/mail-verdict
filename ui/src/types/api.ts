@@ -624,6 +624,15 @@ export interface PendingSendResponse {
   account_id: string;
   send_after: string;
   created_at: string;
+  from_addr: string | null;
+  to: string[];
+  cc: string[] | null;
+  bcc: string[] | null;
+  subject: string | null;
+  body_html: string | null;
+  in_reply_to: string | null;
+  references: string[] | null;
+  replaces_message_id: string | null;
 }
 
 export type OutboxCreateResult = OutboxResponse | PendingSendResponse;

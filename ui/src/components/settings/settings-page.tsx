@@ -64,13 +64,51 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
   calendar: ["default_calendar_id"],
 };
 
+/** A hand-authored label for a settings field whose raw key doesn't
+ * already read as a sentence with its unit attached -- "notify_wait_
+ * seconds" as "Wait before notifying (seconds)" rather than "Notify wait
+ * seconds". Several categories share a field name with the same meaning
+ * (base_delay_seconds, max_attempts, provider, model, ...), so this is
+ * one map for all of them rather than one per category. Anything not
+ * listed falls back to humanizeSettingKey() below, so a newly added
+ * setting still renders as something readable rather than nothing. */
+const SETTING_LABELS: Record<string, string> = {
+  provider: "Provider",
+  model: "Model",
+  reasoning_effort: "Reasoning effort",
+  max_tokens: "Max tokens",
+  max_retries: "Max retries",
+  base_delay_seconds: "Base retry delay (seconds)",
+  max_delay_seconds: "Max retry delay (seconds)",
+  exponential_base: "Retry backoff multiplier",
+  lease_seconds: "Worker lease (seconds)",
+  poll_interval_seconds: "Poll interval (seconds)",
+  max_attempts: "Max attempts",
+  unavailable_probe_seconds: "Retry after unavailable (seconds)",
+  live_max_age_days: "Ignore mail older than (days)",
+  enabled: "Enabled",
+  content_chars: "Characters embedded per message",
+  batch_size: "Backfill batch size",
+  neighbor_k: "Similar past messages consulted",
+  neighbor_min_similarity: "Minimum similarity",
+  default_strictness: "Default strictness",
+  default_event_duration_minutes: "Default event duration (minutes)",
+  default_reminder_minutes: "Default reminder (minutes)",
+  undo_send_seconds: "Undo window after Send (seconds)",
+  mark_read_on_file_to_archive_or_junk: "Mark read when filed to Archive or Junk",
+  bell_badge_counts_new_mail: "Bell badge counts new mail",
+  notify_wait_seconds: "Wait before notifying (seconds)",
+};
+
 /** A raw settings key read as a sentence rather than the key itself --
- * "default_event_duration_minutes" reads as "Default event duration
- * minutes". Display only, in the generic renderer that draws whatever
- * fields a category's GET happens to return; onChange still keys by the
- * real name. The raw key stays reachable as the label's title attribute,
- * for cross-referencing against the API/config docs, which use it. */
+ * SETTING_LABELS above wins when it names the key; this is the fallback
+ * for anything it doesn't. Display only, in the generic renderer that
+ * draws whatever fields a category's GET happens to return; onChange
+ * still keys by the real name. The raw key stays reachable as the
+ * label's title attribute, for cross-referencing against the API/config
+ * docs, which use it. */
 function humanizeSettingKey(key: string): string {
+  if (SETTING_LABELS[key]) return SETTING_LABELS[key];
   const [first, ...rest] = key.split("_");
   return [first.charAt(0).toUpperCase() + first.slice(1), ...rest].join(" ");
 }
@@ -337,6 +375,34 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
   return <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">{children}</h2>;
 }
 
+const SECTIONS = [
+  { id: "appearance", label: "Appearance" },
+  { id: "mail", label: "Mail" },
+  { id: "calendar", label: "Calendar" },
+  { id: "ai", label: "AI & automation" },
+] as const;
+
+/** A settings page with several long cards under it is otherwise one
+ * undifferentiated scroll -- this jumps straight to a section instead of
+ * making every visit start with the same scroll. Plain anchor links, not
+ * a router push: nothing here is a distinct route worth its own history
+ * entry. */
+function SectionNav() {
+  return (
+    <nav className="flex flex-wrap gap-1.5 border-b pb-3 text-sm">
+      {SECTIONS.map(({ id, label }) => (
+        <a
+          key={id}
+          href={`#${id}`}
+          className="rounded-md px-2.5 py-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        >
+          {label}
+        </a>
+      ))}
+    </nav>
+  );
+}
+
 export function SettingsPage() {
   const { data: allSettings, isLoading } = useAllSettings();
 
@@ -352,8 +418,9 @@ export function SettingsPage() {
   return (
     <div className="flex flex-col gap-8 p-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
+      <SectionNav />
 
-      <div className="flex flex-col gap-3">
+      <div id="appearance" className="flex scroll-mt-16 flex-col gap-3">
         <SectionHeading>Appearance</SectionHeading>
         <Card>
           <CardContent className="pt-6">
@@ -362,7 +429,7 @@ export function SettingsPage() {
         </Card>
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div id="mail" className="flex scroll-mt-16 flex-col gap-3">
         <SectionHeading>Mail</SectionHeading>
         <AccountOrder />
         <UnifiedViewsSettings />
@@ -387,7 +454,7 @@ export function SettingsPage() {
         </Card>
       </div>
 
-      <div id="calendar" className="flex flex-col gap-3">
+      <div id="calendar" className="flex scroll-mt-16 flex-col gap-3">
         <SectionHeading>Calendar</SectionHeading>
         <CalendarLinksCard />
         <Card>
@@ -419,21 +486,20 @@ export function SettingsPage() {
         </Card>
       </div>
 
-      <div className="flex flex-col gap-3">
+      <div id="ai" className="flex scroll-mt-16 flex-col gap-3">
         <SectionHeading>AI &amp; automation</SectionHeading>
         <div className="flex items-start gap-2 rounded-md border bg-muted/30 p-3 text-sm">
           <Workflow className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           <div>
-            Whether spam detection runs, and what happens to a message it flags, are stages in
-            the{" "}
+            Whether spam detection runs, and what happens to a message it flags, are{" "}
             <Link href="/pipeline" className="underline">
               pipeline
             </Link>{" "}
-            now, not a setting here -- a <span className="font-mono">classify</span> stage
-            produces the verdict, a <span className="font-mono">match</span> stage decides what
-            happens to it. The categories below are the model that stage calls (AI), how it
-            finds similar past messages (Semantic search), how a failed step is retried
-            (Retry), and the worker mechanics behind the queue (Pipeline).
+            stages: a <span className="font-mono">classify</span> stage produces the verdict, a{" "}
+            <span className="font-mono">match</span> stage decides what happens to it. The
+            categories below are the model that stage calls (AI), how it finds similar past
+            messages (Semantic search), how a failed step is retried (Retry), and the worker
+            mechanics behind the queue (Pipeline).
           </div>
         </div>
         <Tabs defaultValue="ai">

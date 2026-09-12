@@ -36,7 +36,12 @@ export function AlertSettings() {
   const [localFolderIds, setLocalFolderIds] = useAtom(alertEnabledFolderIdsAtom);
   const { subscription: mySubscription, isStale } = useMyPushSubscription();
   const { data: allSubscriptions } = usePushSubscriptions();
-  const { options, isLoading } = useSearchFolders();
+  const { options: everyFolder, isLoading } = useSearchFolders();
+  // The same folder-visibility preference the sidebar hides Exchange's
+  // non-mail folders (Kalender, Kontakte, Journal, Aufgaben, ...) with --
+  // a folder nobody sees in the mail view is not one anyone means to pick
+  // here either.
+  const options = everyFolder.filter((o) => o.folder.is_visible);
 
   const enablePush = useEnablePush();
   const disablePush = useDisablePush();
@@ -192,7 +197,7 @@ export function AlertSettings() {
           {!isLoading && options.length === 0 && (
             <div className="text-xs text-muted-foreground">No folders yet</div>
           )}
-          <div className="max-h-56 overflow-y-auto rounded-md border p-1">
+          <div className="rounded-md border p-1">
             {Array.from(groups.values()).map((group) => (
               <div key={group.accountName}>
                 {groups.size > 1 && (

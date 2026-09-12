@@ -85,6 +85,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   moves there. The move is reacted to as it happens, and a periodic pass catches anything missed
   while reading only a bounded slice of each folder, however large the archive. Archive follows
   the existing "mark read on file to archive or junk" setting; Trash is always read.
+- The composer has one From control spanning every account, showing exactly which address a
+  message will send from (`Name <address>`) -- replacing the separate account picker and the
+  composer's own, second identity picker, which together could name an account without saying
+  which of its addresses would actually send.
+- Pressing Undo on a send reopens the composer with everything that was written -- recipients,
+  subject and body intact, for a fresh message, a reply, a forward or a draft resend -- instead
+  of only cancelling the send and losing the text.
 - A single message can be moved to any folder from the reading pane, or with the `v` shortcut, via
   a type-to-filter picker listing recently used folders first.
 - A global search field now sits in the top header on every page; `/` focuses it and Enter opens
@@ -116,6 +123,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   than yanking the row out from under you.
 - A system notification already shown on a device closes itself once its alert resolves -- read
   elsewhere, archived, or dismissed -- rather than sitting there until dismissed by hand.
+
+### Settings
+
+- The page has a section-jump nav at the top (Appearance, Mail, Calendar, AI & automation), and
+  every field in the generic settings form now has a human label with its unit ("Wait before
+  notifying (seconds)") instead of the raw key mechanically capitalised. The "AI & automation"
+  intro no longer reads like a changelog note.
+- Calendar invitations' raw-JSON toggle is now a labelled "Edit as JSON" item in an overflow menu
+  instead of a bare icon button, and its two per-identity controls are labelled "Linked calendars"
+  and "New invitations go to".
+- "Notify for these folders" now reuses the same folder-visibility preference the sidebar does, so
+  a folder hidden there (an Exchange account's non-mail folders among them) is no longer offered,
+  and the list no longer scrolls inside its own box nested in the already-scrolling page.
 
 ### Privacy
 

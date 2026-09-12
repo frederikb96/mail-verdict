@@ -400,7 +400,7 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
                 await event_ring.add(
                     payload.account_id, "outbox.updated", {"id": str(pending.id)},
                 )
-            return PendingSendResponse.model_validate(pending)
+            return _pending_send_to_response(pending)
 
         outbox = await insert_outbox(
             session,
@@ -426,6 +426,27 @@ async def create_outbox(request: Request) -> OutboxResponse | PendingSendRespons
         return _to_response(outbox, list(att_result.scalars().all()))
 
 
+def _pending_send_to_response(pending: PendingSend) -> PendingSendResponse:
+    """Everything a client needs to reopen a composer on this row -- the
+    undo banner's own reopen action reads these fields straight off the
+    response rather than re-deriving them anywhere else."""
+    return PendingSendResponse(
+        id=pending.id,
+        account_id=pending.account_id,
+        send_after=pending.send_after,
+        created_at=pending.created_at,
+        from_addr=pending.from_addr,
+        to=list(pending.to_addrs) if pending.to_addrs else [],
+        cc=list(pending.cc_addrs) if pending.cc_addrs else None,
+        bcc=list(pending.bcc_addrs) if pending.bcc_addrs else None,
+        subject=pending.subject,
+        body_html=pending.body_html,
+        in_reply_to=pending.in_reply_to,
+        references=list(pending.msg_references) if pending.msg_references else None,
+        replaces_message_id=pending.replaces_message_id,
+    )
+
+
 async def _replay(
     session: AsyncSession, target_id: uuid.UUID,
 ) -> OutboxResponse | PendingSendResponse:
@@ -439,7 +460,7 @@ async def _replay(
     """
     pending = await session.scalar(select(PendingSend).where(PendingSend.id == target_id))
     if pending is not None:
-        return PendingSendResponse.model_validate(pending)
+        return _pending_send_to_response(pending)
     outbox = await session.scalar(select(Outbox).where(Outbox.id == target_id))
     if outbox is None:
         raise HTTPException(
@@ -520,7 +541,7 @@ async def list_outbox_pending(account_id: uuid.UUID | None = None) -> list[Pendi
     db = get_db_connection()
     async with db.session() as session:
         rows = await list_pending_sends(session, account_id)
-    return [PendingSendResponse.model_validate(r) for r in rows]
+    return [_pending_send_to_response(r) for r in rows]
 
 
 @router.post("/pending/{pending_send_id}/cancel", status_code=204)
