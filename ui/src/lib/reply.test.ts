@@ -44,13 +44,13 @@ function makeMessage(overrides: Partial<MessageDetail>): MessageDetail {
 
 test("buildReply: with no Reply-To, a reply goes to From", () => {
   const message = makeMessage({});
-  const draft = buildReply(message, "me@example.com", "reply");
+  const draft = buildReply(message, ["me@example.com"], "reply");
   assert.deepEqual(draft.to, ["alice@example.com"]);
 });
 
 test("buildReply: a Reply-To header overrides From", () => {
   const message = makeMessage({ reply_to: "Alice Support <support@example.com>" });
-  const draft = buildReply(message, "me@example.com", "reply");
+  const draft = buildReply(message, ["me@example.com"], "reply");
   assert.deepEqual(draft.to, ["support@example.com"]);
 });
 
@@ -58,7 +58,7 @@ test("buildReply: every address in a multi-address Reply-To is targeted", () => 
   const message = makeMessage({
     reply_to: "Bob <bob@example.com>, Carol <carol@example.com>",
   });
-  const draft = buildReply(message, "me@example.com", "reply");
+  const draft = buildReply(message, ["me@example.com"], "reply");
   assert.deepEqual(draft.to, ["bob@example.com", "carol@example.com"]);
 });
 
@@ -66,7 +66,7 @@ test("buildReply: a comma inside a quoted display name does not split the entry"
   const message = makeMessage({
     reply_to: '"Doe, Jane" <jane@example.com>, Bob <bob@example.com>',
   });
-  const draft = buildReply(message, "me@example.com", "reply");
+  const draft = buildReply(message, ["me@example.com"], "reply");
   assert.deepEqual(draft.to, ["jane@example.com", "bob@example.com"]);
 });
 
@@ -76,7 +76,18 @@ test("buildReply: reply-all adds the original To and Cc, minus the account's own
     to_addrs: ["me@example.com", "Bob <bob@example.com>"],
     cc_addrs: ["Carol <carol@example.com>"],
   });
-  const draft = buildReply(message, "me@example.com", "reply-all");
+  const draft = buildReply(message, ["me@example.com"], "reply-all");
   assert.deepEqual(draft.to, ["bob@example.com"]);
+  assert.deepEqual(draft.cc, ["carol@example.com"]);
+});
+
+test("buildReply: reply-all excludes every identity address of the account, not only its login address", () => {
+  const message = makeMessage({
+    to_addrs: ["me@example.com", "team-alias@example.com"],
+    cc_addrs: ["Carol <carol@example.com>"],
+  });
+  const draft = buildReply(
+    message, ["me@example.com", "team-alias@example.com"], "reply-all",
+  );
   assert.deepEqual(draft.cc, ["carol@example.com"]);
 });

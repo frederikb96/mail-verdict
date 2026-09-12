@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   event now marks a reply row with `itip: "reply"` so the invitation card and calendar event
   refresh themselves.
 - Reply now honours a message's Reply-To address (or addresses) instead of always replying to
-  From; Reply All adds the original To and Cc on top of that, minus the account's own address.
+  From; Reply All adds the original To and Cc on top of that, minus every address the account
+  sends as -- not only its login address.
 - "Load for this message" on the remote-images banner now actually loads the images, for a
   sender that isn't allowlisted too -- it used to only hide the banner.
 

@@ -241,7 +241,8 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
     return common([], [], draft.subject, draft.quotedText, draft.attribution, undefined, undefined);
   }
 
-  const draft = buildReply(source, ownEmail, mode);
+  const ownAddresses = [ownEmail, ...(identities ?? []).map((i) => i.address)];
+  const draft = buildReply(source, ownAddresses, mode);
   return common(
     draft.to,
     draft.cc,

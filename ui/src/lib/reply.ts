@@ -118,10 +118,13 @@ export function buildForward(source: MessageDetail): ForwardDraft {
 }
 
 /** Build the prefilled recipients, subject, threading headers and quote
- * for a reply. */
+ * for a reply. `ownAddresses` are left out of a reply-all's Cc: the
+ * account's own login address and every identity it sends as, since a
+ * reply to a message that reached one of them should not copy the
+ * person writing it. */
 export function buildReply(
   source: MessageDetail,
-  ownEmail: string,
+  ownAddresses: string[],
   mode: "reply" | "reply-all",
 ): ReplyDraft {
   // RFC 5322: a reply goes to Reply-To when the message names one,
@@ -140,7 +143,10 @@ export function buildReply(
     const others = [...(source.to_addrs ?? []), ...(source.cc_addrs ?? [])].map(
       (a) => extractEmail(a),
     );
-    const exclude = new Set([ownEmail.toLowerCase(), ...to.map((a) => a.toLowerCase())]);
+    const exclude = new Set([
+      ...ownAddresses.map((a) => extractEmail(a).toLowerCase()),
+      ...to.map((a) => a.toLowerCase()),
+    ]);
     cc = dedupeExcluding(others, exclude);
   }
 
