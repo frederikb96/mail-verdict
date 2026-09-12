@@ -241,6 +241,16 @@ class BulkActionRequest(BaseModel):
     )
     ids: list[uuid.UUID] | None = None
     scope: BulkActionScope | None = None
+    expand_threads: bool = Field(
+        default=False,
+        description=(
+            "Treat each id in `ids` as a conversation row: also act on every "
+            "other message of its conversation sitting in the same folder, "
+            "the way a list grouped by conversation shows them as one row. "
+            "Ignored for expunge, whose confirmation names a count of rows "
+            "the user saw."
+        ),
+    )
     confirm_message_count: int | None = Field(
         default=None,
         description=(
@@ -281,6 +291,13 @@ class BulkActionRequest(BaseModel):
         return self
 
 
+class BulkActionSource(BaseModel):
+    """A message a bulk action acted on, and the folder it was in before."""
+
+    id: uuid.UUID
+    folder_id: uuid.UUID
+
+
 class BulkActionResponse(BaseModel):
     """Result of a bulk action."""
 
@@ -288,6 +305,14 @@ class BulkActionResponse(BaseModel):
     action: str
     affected_count: int
     errors: list[str] = Field(default_factory=list)
+    sources: list[BulkActionSource] = Field(
+        default_factory=list,
+        description=(
+            "With expand_threads: every message acted on and its folder "
+            "before the action, so a caller can undo a move of messages it "
+            "never listed itself. Empty otherwise."
+        ),
+    )
 
 
 class SelectionSnapshotResponse(BaseModel):

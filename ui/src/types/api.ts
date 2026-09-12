@@ -475,11 +475,14 @@ export interface BulkActionScope {
 }
 
 /** ids and scope may be given together (a predicate plus rows ticked on top of it); at least one is required. */
-export type BulkActionTarget = { ids?: string[]; scope?: BulkActionScope };
+export type BulkActionTarget = { ids?: string[]; scope?: BulkActionScope; expand_threads?: boolean };
 
 export type BulkActionRequest = BulkActionTarget & {
   action: BulkActionType;
   target_folder_id?: string;
+  /** Each id stands for its whole conversation within its folder -- what a
+   * row in a list grouped by conversation is. Ignored for expunge. */
+  expand_threads?: boolean;
   /** Repeats back a count already shown to the user before this request
    * was sent -- the server 409s naming the current count if it disagrees,
    * rather than acting on a number nobody actually confirmed. */
@@ -491,6 +494,8 @@ export interface BulkActionResponse {
   action: string;
   affected_count: number;
   errors: string[];
+  /** With expand_threads: every message acted on and its folder before. */
+  sources: Array<{ id: string; folder_id: string }>;
 }
 
 /** GET .../messages/selection -- an instant and a count from one statement. */

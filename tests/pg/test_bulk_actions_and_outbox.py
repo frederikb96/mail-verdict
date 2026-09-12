@@ -12,7 +12,12 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.api.mails import BulkActionScope, _resolve_explicit_ids, _resolve_scope_ids
+from mail_verdict.api.mails import (
+    BulkActionScope,
+    _expand_to_conversations,
+    _resolve_explicit_ids,
+    _resolve_scope_ids,
+)
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Message, Outbox, OutboxAttachment
 from mail_verdict.postimap.actions import (
@@ -402,6 +407,32 @@ class TestBulkActionScopeResolution:
 
         assert set(resolved) == set(before_ids)
         assert not set(after_ids) & set(resolved)
+
+
+class TestConversationExpansion:
+    """A ticked conversation row stands for every message of it in that folder."""
+
+    @pytest.mark.asyncio
+    async def test_expands_to_the_conversation_within_the_row_folder_only(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            account_id, inbox_id, junk_id = await _seed_account_two_folders(session)
+            conversation = await _seed_messages(session, account_id, inbox_id, 3)
+            elsewhere = await _seed_messages(session, account_id, junk_id, 1)
+            unrelated = await _seed_messages(session, account_id, inbox_id, 1, uid_start=10)
+            thread_id = uuid.uuid4()
+            await session.execute(
+                text("UPDATE messages SET thread_id = :t WHERE id = ANY(:ids)"),
+                {"t": thread_id, "ids": conversation + elsewhere},
+            )
+            await session.commit()
+
+        async with migrated_db.session() as session:
+            members = await _expand_to_conversations(session, account_id, [conversation[0]])
+
+        assert dict(members) == {mid: inbox_id for mid in conversation}
+        assert not {m for m, _ in members} & set(elsewhere + unrelated)
 
 
 class TestInsertOutbox:

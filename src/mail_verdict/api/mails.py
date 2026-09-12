@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select
+from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, defer
 
@@ -40,6 +40,7 @@ from mail_verdict.api.schemas import (
     BulkActionRequest,
     BulkActionResponse,
     BulkActionScope,
+    BulkActionSource,
     MessageActionRequest,
     MessageActionResponse,
     MessageDetail,
@@ -1251,6 +1252,7 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
     """
     db = get_db_connection()
 
+    sources: list[BulkActionSource] = []
     async with db.session() as session:
         resolved: set[uuid.UUID] = set()
         if request.scope is not None:
@@ -1260,7 +1262,13 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
             # checked against the path's account_id -- narrowed to the
             # ids that actually belong here (and still exist) the same
             # way a scope already is, rather than trusting the list.
-            resolved.update(await _resolve_explicit_ids(session, account_id, request.ids))
+            explicit = await _resolve_explicit_ids(session, account_id, request.ids)
+            if request.expand_threads and request.action != "expunge":
+                members = await _expand_to_conversations(session, account_id, explicit)
+                sources = [BulkActionSource(id=mid, folder_id=fid) for mid, fid in members]
+                resolved.update(mid for mid, _ in members)
+            else:
+                resolved.update(explicit)
         message_ids = list(resolved)
 
     # A caller that showed a count to a user before sending this request
@@ -1364,7 +1372,53 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
 
     return BulkActionResponse(
         success=not errors, action=action, affected_count=affected, errors=errors,
+        sources=sources,
     )
+
+
+async def _expand_to_conversations(
+    session: AsyncSession, account_id: uuid.UUID, ids: list[uuid.UUID],
+) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    """
+    Every live message sharing a conversation with one of `ids` and sitting
+    in that id's own folder, with the folder it is in -- what a
+    conversation row in a grouped list stands for. The ids themselves are
+    included. Messages of the same conversation in other folders (the
+    reader's own replies in Sent, say) are left where they are.
+    """
+    if not ids:
+        return []
+    anchors = (
+        await session.execute(
+            select(Message.thread_id, Message.folder_id).where(
+                Message.id == any_(ids), Message.account_id == account_id,  # type: ignore[arg-type]
+            )
+        )
+    ).all()
+    pairs = {(t, f) for t, f in anchors if t is not None}
+    members: dict[uuid.UUID, uuid.UUID] = {}
+    if pairs:
+        rows = (
+            await session.execute(
+                select(Message.id, Message.folder_id).where(
+                    Message.account_id == account_id,
+                    Message.expunged_at.is_(None),
+                    tuple_(Message.thread_id, Message.folder_id).in_(list(pairs)),
+                )
+            )
+        ).all()
+        members.update({mid: fid for mid, fid in rows})
+    # A message with no conversation still stands for itself.
+    for mid, fid in (
+        await session.execute(
+            select(Message.id, Message.folder_id).where(
+                Message.id == any_(ids), Message.account_id == account_id,  # type: ignore[arg-type]
+                Message.expunged_at.is_(None),
+            )
+        )
+    ).all():
+        members.setdefault(mid, fid)
+    return list(members.items())
 
 
 async def _resolve_explicit_ids(

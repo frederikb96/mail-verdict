@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - On a phone, going back from an open message returns to the list exactly where it was left --
   scroll position, filter and unread-only toggle included -- rather than starting again at the
   top.
+- Ticking a row in a list grouped by conversation selects the whole conversation: archiving,
+  moving, trashing or marking it acts on every message of it in that folder, not just the newest
+  one the row shows, and Undo brings all of them back. Permanent deletion still acts on the rows
+  as ticked, since its confirmation names that count.
+
+### API
+
+- `POST .../messages/bulk-action` takes `expand_threads`, acting on every message of each named
+  id's conversation within its folder, and answers with `sources` -- each message acted on and
+  the folder it was in -- so a caller can undo a move it never listed itself.
 
 ## [6.0.0] - 2026-09-12
 

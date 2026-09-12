@@ -201,8 +201,11 @@ function buildBulkRequests(
     bucket.push(id);
     grouped.set(accountId, bucket);
   }
+  // A ticked row in a list grouped by conversation is the whole
+  // conversation, so an action on it leaves nothing of it behind.
+  const expandThreads = state.scope?.threaded === true;
   return Array.from(grouped.entries()).map(([accountId, ids]) => ({
-    accountId, target: { ids },
+    accountId, target: expandThreads ? { ids, expand_threads: true } : { ids },
   }));
 }
 
@@ -236,7 +239,7 @@ export function useBulkAction() {
   const mutation = useMutation({
     mutationFn: async ({ action, requests }: BulkActionVars) => {
       if (requests.length === 0) {
-        return { success: true, action, affected_count: 0, errors: [] };
+        return { success: true, action, affected_count: 0, errors: [], sources: [] };
       }
       const results = await Promise.all(
         requests.map(({ accountId, target, targetFolderId }) =>
@@ -246,13 +249,19 @@ export function useBulkAction() {
       const affected_count = results.reduce((n, r) => n + r.affected_count, 0);
       const errors = results.flatMap((r) => r.errors);
       const success = results.every((r) => r.success);
+      // Every message a conversation row stood for, with its folder and
+      // account -- what Undo has to move back, most of which no list row
+      // ever showed.
+      const sources = results.flatMap((r, i) =>
+        (r.sources ?? []).map((s) => ({ ...s, accountId: requests[i].accountId })),
+      );
       // The endpoint answers 200 even when it did nothing, carrying the
       // reason in `errors` -- throw so this reaches onError exactly like
       // the single-row action's HTTPException does, rollback included.
       if (!success) {
         throw new Error(errors.join("; ") || `Could not ${action}`);
       }
-      return { success, action, affected_count, errors };
+      return { success, action, affected_count, errors, sources };
     },
 
     onMutate: async ({ action }) => {
@@ -330,8 +339,16 @@ export function useBulkAction() {
     },
 
     onSuccess: (data, { action }, ctx) => {
-      if (!UNDOABLE_ACTIONS.includes(action) || ctx.mailIdsByFolder.size === 0) return;
-      const mailIdsByFolder = ctx.mailIdsByFolder;
+      let mailIdsByFolder = ctx.mailIdsByFolder;
+      if (data.sources.length > 0) {
+        mailIdsByFolder = new Map();
+        for (const { id, folder_id, accountId } of data.sources) {
+          const ids = mailIdsByFolder.get(folder_id) ?? [];
+          ids.push({ id, accountId });
+          mailIdsByFolder.set(folder_id, ids);
+        }
+      }
+      if (!UNDOABLE_ACTIONS.includes(action) || mailIdsByFolder.size === 0) return;
       const requested = [...mailIdsByFolder.values()].reduce((n, ids) => n + ids.length, 0);
       // affected_count can fall short of what was requested (an id already
       // gone, for instance) without the response counting as a failure --
