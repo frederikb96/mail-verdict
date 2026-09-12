@@ -4,6 +4,7 @@ import { Trash2, ImageOff, Mail, Globe } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatRelativeDate } from "@/lib/format";
 import {
   useImageExceptions,
   useDeleteImageException,
@@ -83,7 +84,7 @@ export function ImageExceptionsList({ accountId }: ImageExceptionsListProps) {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground">
-                    {new Date(exc.created_at).toLocaleDateString()}
+                    {formatRelativeDate(exc.created_at)}
                   </span>
                   <Button
                     variant="ghost"

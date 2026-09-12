@@ -39,6 +39,7 @@ import {
   useUpdateFolderOrder,
   useToggleFolderVisibility,
 } from "@/hooks/use-folder-order";
+import { folderDisplayName } from "@/lib/folders";
 import type { FolderOrderItem } from "@/types/api";
 
 const SPECIAL_USE_ICONS: Record<string, typeof Inbox> = {
@@ -98,7 +99,7 @@ function SortableFolder({
       <span
         className={`flex-1 text-sm ${!folder.is_visible ? "text-muted-foreground line-through" : ""}`}
       >
-        {folder.imap_name}
+        {folderDisplayName(folder)}
       </span>
       {folder.unread_count > 0 && (
         <span className="text-xs text-muted-foreground">

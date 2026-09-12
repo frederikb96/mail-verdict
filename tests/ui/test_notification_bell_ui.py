@@ -32,6 +32,16 @@ from tests.ui.helpers import mail_row, select_account, select_unified_view, uniq
 # tests/pg/test_push_pg.py; what a browser test can prove and that one
 # cannot is that clicking Enable actually calls PushManager.subscribe and
 # registers the result with the server.
+#
+# The real ServiceWorkerContainer is an EventTarget with its own
+# startMessages() -- ServiceWorkerNavigation (mounted on every page, not
+# just this one) calls addEventListener("message", ...) and
+# startMessages() unconditionally once "serviceWorker" in navigator is
+# true, which this stub satisfies by definition. A plain object standing
+# in for the container crashes every page load under this stub with
+# "addEventListener is not a function", which reads like the settings
+# page itself being broken rather than an incomplete fake. Built on a
+# real EventTarget so it behaves like the interface it is impersonating.
 _STUB_SERVICE_WORKER_SCRIPT = """
 (() => {
   Object.defineProperty(Notification, "permission", {
@@ -52,11 +62,12 @@ _STUB_SERVICE_WORKER_SCRIPT = """
       subscribe: async () => { current = fakeSubscription; return fakeSubscription; },
     },
   };
-  const fakeServiceWorker = {
+  const fakeServiceWorker = Object.assign(new EventTarget(), {
     register: async () => registration,
     getRegistration: async () => (current ? registration : null),
     ready: Promise.resolve(registration),
-  };
+    startMessages: () => {},
+  });
   Object.defineProperty(navigator, "serviceWorker", {
     value: fakeServiceWorker, configurable: true,
   });

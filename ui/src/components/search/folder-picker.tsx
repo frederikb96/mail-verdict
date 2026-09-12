@@ -16,6 +16,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Truncate } from "@/components/ui/truncate";
 import { useSearchFolders } from "@/hooks/use-search-folders";
+import { folderDisplayName } from "@/lib/folders";
 
 interface FolderPickerProps {
   /** null means every folder -- see search-prefs.ts. */
@@ -121,7 +122,7 @@ export function FolderPicker({ selectedIds, onChange, accountId }: FolderPickerP
                     checked={selectedSet.has(folder.id)}
                     onCheckedChange={(checked) => toggleFolder(folder.id, checked === true)}
                   />
-                  <Truncate text={folder.display_name ?? folder.imap_name} className="min-w-0" />
+                  <Truncate text={folderDisplayName(folder)} className="min-w-0" />
                 </label>
               ))}
             </div>

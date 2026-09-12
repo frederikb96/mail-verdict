@@ -51,6 +51,7 @@ import {
 } from "@/hooks/use-unified-view";
 import { ApiError } from "@/lib/api";
 import { selectedUnifiedFolderAtom } from "@/lib/atoms";
+import { folderDisplayName } from "@/lib/folders";
 import type { AccountResponse, FolderResponse, UnifiedFolderResponse } from "@/types/api";
 
 const COMMON_EMOJIS = [
@@ -414,7 +415,7 @@ function AccountFolders({
         <span className="truncate">{account.name}</span>
       </div>
       {ordered.map((folder) => {
-        const label = folder.display_name || folder.imap_name;
+        const label = folderDisplayName(folder);
         return (
           <div
             key={folder.id}

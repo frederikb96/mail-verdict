@@ -24,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 
 import { useFolders, useCreateFolder, useDeleteFolder } from "@/hooks/use-folders";
 import { useToast } from "@/hooks/use-toast";
+import { folderDisplayName } from "@/lib/folders";
 import type { FolderResponse } from "@/types/api";
 
 const TOP_LEVEL = "__top_level__";
@@ -70,7 +71,7 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
   const handleDelete = (folder: FolderResponse) => {
     deleteFolder.mutate({ folderId: folder.id, messageCount: folder.total_count }, {
       onSuccess: () => {
-        pushToast(`Folder "${folder.display_name || folder.imap_name}" deleted`, "success");
+        pushToast(`Folder "${folderDisplayName(folder)}" deleted`, "success");
         setPendingDelete(null);
       },
       onError: (err) => pushToast(`Could not delete folder: ${err.message}`, "error", 0),
@@ -108,20 +109,18 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
                       given an item list, which nothing here passes -- without
                       this it renders the folder's raw id. */}
                   <SelectValue placeholder="Top level">
-                    {(v: string) =>
-                      v === TOP_LEVEL
-                        ? "Top level"
-                        : (liveFolders.find((f) => f.id === v)?.display_name ??
-                          liveFolders.find((f) => f.id === v)?.imap_name ??
-                          "Top level")
-                    }
+                    {(v: string) => {
+                      if (v === TOP_LEVEL) return "Top level";
+                      const found = liveFolders.find((f) => f.id === v);
+                      return found ? folderDisplayName(found) : "Top level";
+                    }}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={TOP_LEVEL}>Top level</SelectItem>
                   {liveFolders.map((f) => (
                     <SelectItem key={f.id} value={f.id}>
-                      {f.display_name || f.imap_name}
+                      {folderDisplayName(f)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -152,7 +151,7 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
                 key={f.id}
                 className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
               >
-                <span className="truncate">{f.display_name || f.imap_name}</span>
+                <span className="truncate">{folderDisplayName(f)}</span>
                 {f.special_use ? (
                   <span className="shrink-0 text-xs text-muted-foreground">Cannot be deleted</span>
                 ) : (
@@ -175,7 +174,7 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
       <ConfirmDialog
         open={pendingDelete !== null}
         onOpenChange={(next) => !next && setPendingDelete(null)}
-        title={`Delete "${pendingDelete?.display_name || pendingDelete?.imap_name}"?`}
+        title={`Delete "${pendingDelete ? folderDisplayName(pendingDelete) : ""}"?`}
         description={
           `This destroys ${pendingDelete?.total_count ?? 0} message` +
           `${pendingDelete?.total_count === 1 ? "" : "s"} on the mail server. ` +

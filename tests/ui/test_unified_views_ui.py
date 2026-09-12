@@ -324,7 +324,9 @@ class TestOneFolderInSeveralViews:
         folder_row = page.locator(
             f'[data-testid="unified-folder-row"][data-folder-id="{inbox["id"]}"]'
         )
-        folder_row.get_by_role("button", name="Unified views for INBOX", exact=True).click()
+        # "Inbox", not the raw "INBOX" -- unified-setup.tsx now names a
+        # special-use folder by its role, the same as the sidebar.
+        folder_row.get_by_role("button", name="Unified views for Inbox", exact=True).click()
         for view in views:
             # The multi-select stays open between ticks.
             page.get_by_role("menuitemcheckbox", name=view["name"], exact=True).click()

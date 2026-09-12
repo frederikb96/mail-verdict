@@ -137,6 +137,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - "Notify for these folders" now reuses the same folder-visibility preference the sidebar does, so
   a folder hidden there (an Exchange account's non-mail folders among them) is no longer offered,
   and the list no longer scrolls inside its own box nested in the already-scrolling page.
+- A special-use folder displays by its role (Inbox, Drafts, Sent, Archive, Junk, Trash) rather
+  than its raw server name in every remaining place that still showed the raw one: unified views'
+  folder list, an account's folder order in Settings, the manage-folders dialog and search's
+  folder picker -- matching the sidebar and mail list already.
+- The image-loading exceptions list now dates each entry with the app's one date/time convention
+  instead of the browser's own locale format.
 
 ### Privacy
 
