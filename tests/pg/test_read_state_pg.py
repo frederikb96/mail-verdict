@@ -504,16 +504,68 @@ async def _explain(session: AsyncSession, sql: str, params: dict[str, Any]) -> d
     return (json.loads(raw) if isinstance(raw, str) else raw)[0]["Plan"]
 
 
+# A block near the top expunged in place, the way PostIMAP mirrors mail
+# another client moved out of the folder. PostIMAP's unique (folder_id,
+# imap_uid) index still carries these rows; idx_msg_folder_uid_live does not.
+_EXPUNGED_UIDS = (15_001, 19_900)
+
+
+async def _leading_columns(session: AsyncSession, index_name: str) -> list[str]:
+    """An index's key columns, in order, from the catalog."""
+    result = await session.execute(
+        text(
+            "SELECT a.attname FROM pg_class c JOIN pg_index x ON x.indexrelid = c.oid "
+            "CROSS JOIN LATERAL unnest(x.indkey) WITH ORDINALITY AS k(attnum, position) "
+            "JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = k.attnum "
+            "WHERE c.relname = :name ORDER BY k.position"
+        ),
+        {"name": index_name},
+    )
+    return list(result.scalars().all())
+
+
+async def _assert_bounded(
+    session: AsyncSession, sql: str, params: dict[str, Any], label: str,
+) -> list[str]:
+    """No sequential scan, every index read led by (folder_id, imap_uid),
+    no node reading more than one window of rows -- counting the ones a
+    filter threw away -- and the whole statement a handful of pages.
+
+    Returns:
+        The names of the indexes the plan used
+    """
+    plan = await _explain(session, sql, params)
+    nodes = _plan_nodes(plan)
+    assert "Seq Scan" not in {n["Node Type"] for n in nodes}, (label, nodes)
+    indexes = [n["Index Name"] for n in nodes if "Index Name" in n]
+    assert indexes, (label, nodes)
+    for name in indexes:
+        assert (await _leading_columns(session, name))[:2] == ["folder_id", "imap_uid"], (
+            label, name,
+        )
+    for node in nodes:
+        read = (
+            node["Actual Rows"] + node.get("Rows Removed by Filter", 0)
+            + node.get("Rows Removed by Index Recheck", 0)
+        )
+        assert read <= read_state._WINDOW, (label, node["Node Type"], read)
+    blocks = plan["Shared Hit Blocks"] + plan["Shared Read Blocks"]
+    # One window's heap pages plus the index path, not the folder's
+    # several hundred pages.
+    assert blocks < 100, (label, blocks)
+    return indexes
+
+
 class TestReconcileCostOnALargeArchive:
     @pytest.mark.asyncio
     async def test_each_step_reads_a_bounded_slice_through_existing_indexes(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """The reconcile's statements, planned against an archive far
-        larger than any real one: the gate is a primary-key read, and a
-        window -- from the top or below a cursor -- is a backward walk of
-        PostIMAP's own (folder_id, imap_uid) index that stops after one
-        window, never a scan of the folder."""
+        """The reconcile's statements against an archive larger than any
+        real one, with a block of expunged rows near the top. The gate is
+        a primary-key read, and whichever of PostIMAP's two (folder_id,
+        imap_uid) indexes the planner picks, no statement scans the folder
+        and none reads more than one window of rows."""
         account_id, _inbox, _junk, archive_id, _trash = await _seed_account_with_archive(
             migrated_db,
         )
@@ -534,10 +586,43 @@ class TestReconcileCostOnALargeArchive:
                         "tag": uuid.uuid4().hex, "rows": _LARGE_ARCHIVE_ROWS,
                     },
                 )
+            async with migrated_db.session() as session:
+                # PostIMAP's own write, so nothing is queued for the server.
+                await session.execute(text("SET LOCAL postimap.writer = 'sync'"))
+                await session.execute(text("SET LOCAL postimap.backfill = 'on'"))
+                await session.execute(
+                    text(
+                        "UPDATE messages SET expunged_at = now() WHERE folder_id = :folder_id "
+                        "AND imap_uid BETWEEN :first AND :last"
+                    ),
+                    {"folder_id": archive_id, "first": _EXPUNGED_UIDS[0],
+                     "last": _EXPUNGED_UIDS[1]},
+                )
             async with migrated_db.engine.connect() as conn:
                 await conn.execution_options(isolation_level="AUTOCOMMIT")
-                await conn.execute(text("ANALYZE messages"))
+                # VACUUM too: the expunging UPDATE leaves a dead index entry
+                # behind every expunged row in every index until vacuum runs,
+                # which any query would read -- a question of when vacuum last
+                # ran, not of the statement under test.
+                await conn.execute(text("VACUUM ANALYZE messages"))
                 await conn.execute(text("ANALYZE folders"))
+
+            window = read_state._WINDOW
+            middle = _LARGE_ARCHIVE_ROWS // 2
+            statements: dict[str, tuple[str, dict[str, Any]]] = {
+                # The top window straddles the expunged block.
+                "top window": (read_state.WINDOW_SQL, {
+                    "folder_id": archive_id, "low_uid": _LARGE_ARCHIVE_ROWS - window + 1,
+                    "high_uid": _LARGE_ARCHIVE_ROWS + 1,
+                }),
+                "deep window": (read_state.WINDOW_SQL, {
+                    "folder_id": archive_id, "low_uid": middle - window, "high_uid": middle,
+                }),
+                "rows with no UID yet": (read_state.PENDING_SQL, {
+                    "folder_id": archive_id, "window": window,
+                }),
+                "top UID": (read_state.TOP_UID_SQL, {"folder_id": archive_id}),
+            }
 
             async with migrated_db.session() as session:
                 gate = await _explain(
@@ -547,22 +632,26 @@ class TestReconcileCostOnALargeArchive:
                 assert "Seq Scan" not in {n["Node Type"] for n in gate_nodes}, gate_nodes
                 assert "folders_pkey" in {n.get("Index Name") for n in gate_nodes}, gate_nodes
 
-                for below_uid in (None, _LARGE_ARCHIVE_ROWS // 2):
-                    plan = await _explain(
-                        session, read_state.window_sql(below=below_uid is not None),
-                        {"folder_id": archive_id, "below_uid": below_uid,
-                         "window": read_state._WINDOW},
-                    )
-                    nodes = _plan_nodes(plan)
-                    scans = [n for n in nodes if "Scan" in n["Node Type"]]
-                    assert [n["Node Type"] for n in scans] == ["Index Scan"], nodes
-                    assert scans[0]["Index Name"] == "idx_msg_folder_uid_live"
-                    assert scans[0]["Scan Direction"] == "Backward"
-                    assert scans[0]["Actual Rows"] <= read_state._WINDOW
-                    blocks = plan["Shared Hit Blocks"] + plan["Shared Read Blocks"]
-                    # One window's heap pages plus the index path, not the
-                    # folder's several thousand pages.
-                    assert blocks < 100, blocks
+                for label, (sql, params) in statements.items():
+                    await _assert_bounded(session, sql, params, f"planner's choice: {label}")
+
+            async with migrated_db.session() as session:
+                # The other index the planner may pick, the one still holding
+                # expunged rows: made the only choice for this transaction.
+                await session.execute(text("DROP INDEX idx_msg_folder_uid_live"))
+                try:
+                    used: list[str] = []
+                    for label, (sql, params) in statements.items():
+                        used += await _assert_bounded(
+                            session, sql, params, f"unique index only: {label}",
+                        )
+                    assert "messages_folder_id_imap_uid_unique" in used, used
+                finally:
+                    await session.rollback()
+            async with migrated_db.session() as session:
+                assert (
+                    await session.execute(text("SELECT to_regclass('idx_msg_folder_uid_live')"))
+                ).scalar_one() is not None
 
             # A whole tick against it walks exactly two windows down from the
             # top and leaves the cursor there, however much folder remains.

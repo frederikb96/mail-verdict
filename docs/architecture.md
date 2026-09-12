@@ -378,9 +378,11 @@ in a folder — an insert, or an update whose `changed` includes `folder_id` —
 place, `filing/landing.py`, for anything else that needs to react to mail arriving somewhere. A
 periodic, advisory-locked pass is the net under the event path. It cannot rely on an index of its
 own on `messages` (DDL on a PostIMAP-owned table needs ownership), so it reads what exists: the
-trigger-maintained `folders.unread_count` gates each folder, and otherwise PostIMAP's
-`idx_msg_folder_uid_live` is walked backwards a bounded window at a time, top first, where a
-message another client just moved in lands.
+trigger-maintained `folders.unread_count` gates each folder, and otherwise the folder is read one
+range of `imap_uid` values at a time, top first, where a message another client just moved in
+lands. A range rather than "the next N live rows", because PostIMAP has two `(folder_id,
+imap_uid)` indexes and the planner may use either — its unique constraint's index still holds
+expunged rows, so a count of live rows through it would read every expunged row in between.
 
 ## Folders
 

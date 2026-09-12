@@ -20,14 +20,15 @@ and this application cannot add an index to PostIMAP's messages table
   change, move and expunge, gates each folder. A folder with nothing
   unread costs one primary-key read and nothing more, which is every
   folder on every tick once caught up.
-- Otherwise idx_msg_folder_uid_live -- (folder_id, imap_uid) over live
-  rows -- is walked backwards one bounded window at a time. The top window
-  comes first on every tick: a message another client moves in gets the
-  folder's next UID, and one moved here has no UID yet, which sorts first
-  descending. Only while the count says unread mail remains below that
-  does a cursor walk one more window per tick further down, starting over
-  from the top once it reaches the bottom. No tick examines more than two
-  windows per folder, whatever the folder's size.
+- Otherwise the folder is read one window of UIDs at a time, through
+  whichever of PostIMAP's two (folder_id, imap_uid) indexes the planner
+  picks (see WINDOW_SQL for why a window is a UID range). The top window
+  comes first on every tick, since a message another client moves in gets
+  the folder's next UID, along with the rows moved here that have no UID
+  yet. Only while the count says unread mail remains below that does a
+  cursor walk one more window per tick further down, starting over from
+  the top once it reaches UID 1. No tick reads more than two windows of
+  UIDs per folder, whatever the folder's size.
 """
 
 from __future__ import annotations
@@ -103,27 +104,36 @@ async def mark_read_on_landing(
         return await mark_seen_if_live(session, [landing.message_id])
 
 
-def window_sql(*, below: bool) -> str:
-    """One window of a folder's live rows, highest imap_uid first -- bound
-    as :folder_id, :window and, with below, :below_uid. Without it the
-    window starts at the top, where rows with no UID yet sort first."""
-    below_clause = "AND imap_uid < :below_uid" if below else ""
-    return f"""
-        SELECT id, imap_uid, is_seen FROM messages
-        WHERE folder_id = :folder_id AND expunged_at IS NULL {below_clause}
-        ORDER BY imap_uid DESC
-        LIMIT :window
-    """
+# One window: a folder's live rows whose imap_uid lies in [:low_uid,
+# :high_uid). A range of UIDs rather than a count of live rows, because
+# PostIMAP has two (folder_id, imap_uid) indexes and the planner may pick
+# either: its unique constraint's index still carries expunged rows, so
+# "the next N live rows" through it would read every expunged row in
+# between. A UID is unique within a folder, so a range reads at most its own
+# width in index entries, live or expunged, through either index.
+WINDOW_SQL = """
+    SELECT id, imap_uid, is_seen FROM messages
+    WHERE folder_id = :folder_id AND expunged_at IS NULL
+      AND imap_uid >= :low_uid AND imap_uid < :high_uid
+"""
+
+# Rows moved here that have no UID yet -- none of the UID ranges above
+# ever contains them.
+PENDING_SQL = """
+    SELECT id, imap_uid, is_seen FROM messages
+    WHERE folder_id = :folder_id AND imap_uid IS NULL AND expunged_at IS NULL
+    LIMIT :window
+"""
+
+# Where the top window ends: one index lookup on either index.
+TOP_UID_SQL = "SELECT max(imap_uid) FROM messages WHERE folder_id = :folder_id"
 
 
-async def _window(
-    session: AsyncSession, folder_id: uuid.UUID, below_uid: int | None,
+async def _rows(
+    session: AsyncSession, sql: str, params: dict[str, object],
 ) -> list[tuple[uuid.UUID, int | None, bool]]:
-    """window_sql's rows as (id, imap_uid, is_seen)."""
-    result = await session.execute(
-        text(window_sql(below=below_uid is not None)),
-        {"folder_id": folder_id, "below_uid": below_uid, "window": _WINDOW},
-    )
+    """A window query's rows as (id, imap_uid, is_seen)."""
+    result = await session.execute(text(sql), params)
     return [(row.id, row.imap_uid, row.is_seen) for row in result]
 
 
@@ -140,20 +150,32 @@ async def _reconcile_folder(db: DatabaseConnection, folder_id: uuid.UUID, cursor
             cursors.pop(folder_id, None)
             return 0
 
-        top = await _window(session, folder_id, None)
-        to_mark = [message_id for message_id, _uid, seen in top if not seen]
-        top_uids = [uid for _id, uid, _seen in top if uid is not None]
-        if len(top) == _WINDOW and unread > len(to_mark) and top_uids:
-            below = min(cursors.get(folder_id, min(top_uids)), min(top_uids))
-            deep = await _window(session, folder_id, below)
-            to_mark += [message_id for message_id, _uid, seen in deep if not seen]
-            deep_last_uid = deep[-1][1] if len(deep) == _WINDOW else None
-            if deep_last_uid is not None:
-                cursors[folder_id] = deep_last_uid
-            else:
-                cursors.pop(folder_id, None)
+        rows = await _rows(session, PENDING_SQL, {"folder_id": folder_id, "window": _WINDOW})
+        top_uid = (
+            await session.execute(text(TOP_UID_SQL), {"folder_id": folder_id})
+        ).scalar_one_or_none()
+        if top_uid is not None:
+            high = top_uid + 1
+            low = max(high - _WINDOW, 1)
+            rows += await _rows(
+                session, WINDOW_SQL, {"folder_id": folder_id, "low_uid": low, "high_uid": high},
+            )
+            found = sum(1 for _id, _uid, seen in rows if not seen)
+            if low > 1 and unread > found:
+                deep_high = min(cursors.get(folder_id, low), low)
+                deep_low = max(deep_high - _WINDOW, 1)
+                rows += await _rows(
+                    session, WINDOW_SQL,
+                    {"folder_id": folder_id, "low_uid": deep_low, "high_uid": deep_high},
+                )
+                if deep_low > 1:
+                    cursors[folder_id] = deep_low
+                else:
+                    cursors.pop(folder_id, None)
 
-        return await mark_seen_if_live(session, to_mark)
+        return await mark_seen_if_live(
+            session, [message_id for message_id, _uid, seen in rows if not seen],
+        )
 
 
 async def reconcile_read_state_once(
