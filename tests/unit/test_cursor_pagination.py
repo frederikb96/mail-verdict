@@ -72,9 +72,12 @@ class TestMessageSummarySchema:
             folder_id=uuid.uuid4(),
             thread_id=uuid.uuid4(),
             mirrored_at=datetime.now(timezone.utc),
+            has_attachments=False,
+            verdict_is_spam=None,
         )
         assert summary.subject is None
         assert summary.is_seen is False
+        assert summary.verdict_is_spam is None
 
     def test_message_summary_full(self) -> None:
         """MessageSummary with all fields populated."""
@@ -93,9 +96,12 @@ class TestMessageSummarySchema:
             mirrored_at=now,
             is_seen=True,
             is_flagged=True,
+            has_attachments=True,
+            verdict_is_spam=True,
         )
         assert summary.subject == "Test Subject"
         assert summary.is_seen is True
+        assert summary.has_attachments is True
 
 
 class TestUnifiedMessageListCursorPagination:
