@@ -581,7 +581,21 @@ class TestPushSubscriptionSettings:
         page = context.new_page()
         try:
             page.add_init_script(_STUB_SERVICE_WORKER_SCRIPT)
-            page.goto(f"{app_server_with_encryption_key}/settings")
+
+            # The Enable button's markup is static-exported, so it's in the
+            # DOM (and passes Playwright's own actionability checks) before
+            # React has hydrated and attached its onClick -- a click landing
+            # in that window is swallowed, with nothing to show for it but
+            # the POST below timing out; `expect(enable).to_be_visible()`
+            # alone doesn't rule that window out, since the button is
+            # already visible pre-hydration. usePushSubscriptions()'s own
+            # GET only fires once the component has mounted, so waiting for
+            # it is a real hydration signal rather than a fixed settle.
+            with page.expect_response(
+                lambda resp: "/api/alerts/subscriptions" in resp.url
+                and resp.request.method == "GET",
+            ):
+                page.goto(f"{app_server_with_encryption_key}/settings")
 
             enable = page.get_by_role("button", name="Enable", exact=True)
             expect(enable).to_be_visible(timeout=15_000)
@@ -632,7 +646,19 @@ class TestPushSubscriptionSettings:
         page = context.new_page()
         try:
             page.add_init_script(_STUB_SERVICE_WORKER_SCRIPT)
-            page.goto(f"{app_server_with_encryption_key}/settings")
+
+            # The Enable button's markup is static-exported, so it's in the
+            # DOM (and clickable, by Playwright's own actionability checks)
+            # before React has hydrated and attached its onClick -- a click
+            # landing in that window is swallowed, with nothing to show for
+            # it but the POST below timing out. usePushSubscriptions()'s own
+            # GET only fires once the component has mounted, so waiting for
+            # it is a real hydration signal rather than a fixed settle.
+            with page.expect_response(
+                lambda resp: "/api/alerts/subscriptions" in resp.url
+                and resp.request.method == "GET",
+            ):
+                page.goto(f"{app_server_with_encryption_key}/settings")
 
             # Waits on the registration response itself rather than
             # polling the DOM for the "Disable" button it eventually
