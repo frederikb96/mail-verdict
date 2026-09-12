@@ -25,6 +25,34 @@ export interface ForwardDraft {
   attribution: string;
 }
 
+/** One address per entry of a header that may list several. A comma or
+ * semicolon inside a quoted display name (`"Doe, Jane" <jane@x.test>`) or
+ * inside angle brackets separates nothing -- unlike `parseAddressList`,
+ * which a person typing into a field never has reason to quote a name in. */
+function splitAddressHeader(header: string | null): string[] {
+  if (!header) return [];
+  const entries: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  let inAngle = false;
+  for (const char of header) {
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === "<" && !inQuotes) {
+      inAngle = true;
+    } else if (char === ">" && !inQuotes) {
+      inAngle = false;
+    } else if ((char === "," || char === ";") && !inQuotes && !inAngle) {
+      entries.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  entries.push(current);
+  return entries.map((e) => e.trim()).filter(Boolean);
+}
+
 function dedupeExcluding(addrs: string[], exclude: Set<string>): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -96,16 +124,23 @@ export function buildReply(
   ownEmail: string,
   mode: "reply" | "reply-all",
 ): ReplyDraft {
+  // RFC 5322: a reply goes to Reply-To when the message names one,
+  // otherwise to From.
   const senderEmail = extractEmail(source.from_addr);
-  const exclude = new Set([ownEmail.toLowerCase()]);
-  const to = dedupeExcluding(senderEmail ? [senderEmail] : [], new Set());
+  const replyTo = splitAddressHeader(source.reply_to)
+    .map((a) => extractEmail(a))
+    .filter(Boolean);
+  const to = dedupeExcluding(
+    replyTo.length > 0 ? replyTo : senderEmail ? [senderEmail] : [],
+    new Set(),
+  );
 
   let cc: string[] = [];
   if (mode === "reply-all") {
     const others = [...(source.to_addrs ?? []), ...(source.cc_addrs ?? [])].map(
       (a) => extractEmail(a),
     );
-    exclude.add(senderEmail.toLowerCase());
+    const exclude = new Set([ownEmail.toLowerCase(), ...to.map((a) => a.toLowerCase())]);
     cc = dedupeExcluding(others, exclude);
   }
 

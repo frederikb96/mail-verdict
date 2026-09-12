@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   actually finishes sending, instead of staying on the spinner forever: the `outbox.updated`
   event now marks a reply row with `itip: "reply"` so the invitation card and calendar event
   refresh themselves.
+- Reply now honours a message's Reply-To address (or addresses) instead of always replying to
+  From; Reply All adds the original To and Cc on top of that, minus the account's own address.
 
 ## [6.2.0] - 2026-09-12
 
