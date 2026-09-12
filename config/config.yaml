@@ -47,6 +47,21 @@ outbox:
   # A healthy send takes seconds; this catches the one that stopped.
   stalled_alert_after_seconds: 600
 
+# Native (iPhone) push. The app registers its device with a push relay, and
+# this server sends each notification through that relay sealed with a key
+# only the phone holds: the relay sees the device token, the caller's
+# address and an encrypted blob, never a subject, a sender or an account.
+# Needs security.encryption_key, which protects the stored relay tickets.
+push:
+  # Relays a native app may register this server against. An empty list
+  # disables native push and stops every send to a relay.
+  apns_relay_urls: ["https://mailverdict-push.frederikberg.net"]
+  # Minimum gap between two silent "something was read" pushes to phones;
+  # a change inside the gap is sent once at its end.
+  read_sync_min_interval_seconds: 600
+  # How long one request to a relay may take before it counts as failed.
+  relay_timeout_seconds: 10
+
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10

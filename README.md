@@ -172,6 +172,26 @@ key on any endpoint. Put an authenticating proxy in front of it (OIDC, basic aut
 SSO) and let that handle sign-in — people never touch application credentials, and the application
 stays free of session management. The chart README has a worked example.
 
+## iPhone app
+
+[mail-verdict-ios](https://github.com/frederikb96/mail-verdict-ios) is a native iPhone client for
+this server. It talks to the same API as the browser, sending whatever credential the proxy in front
+of it expects (a bearer token or basic auth).
+
+Notifications on the phone go through a push relay run by the app's publisher, because only the
+publisher can sign pushes for the app. Each notification is sealed on this server with a key only
+the phone holds, so the relay forwards ciphertext:
+
+- **The relay sees** the phone's device token, this server's IP address, and the size and timing
+  of each push.
+- **The relay never sees** a subject, a sender, an account, a message or a badge count, and it
+  stores nothing.
+
+Native push needs `ENCRYPTION_KEY`. The relays a phone may use are listed in
+`push.apns_relay_urls` in [`config/config.yaml`](config/config.yaml). Set it to `[]` to turn native
+push off; nothing is then sent to any relay. With the chart's network policy enabled, allow egress
+to those relays.
+
 ## API
 
 MailVerdict is built to be driven by an agent as much as by the browser UI. [docs/api.md](docs/api.md)

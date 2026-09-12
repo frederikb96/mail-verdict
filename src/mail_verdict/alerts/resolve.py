@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import text
 
 from mail_verdict.api.events import broadcast_event
+from mail_verdict.push.relay import get_relay_client_if_ready
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,9 +128,14 @@ async def resolve_all(session: AsyncSession) -> list[uuid.UUID]:
 
 async def announce_alerts_dismissed(db: DatabaseConnection, event_ring: EventRing | None) -> None:
     """alert.dismissed to every open page, so a bell showing an alert that
-    was just dismissed or resolved drops it without polling."""
+    was just dismissed or resolved drops it without polling -- and a
+    throttled silent push to every native device, which has no open
+    stream to hear it on (push/relay.py's read-sync)."""
     if event_ring is not None:
         await broadcast_event(db, event_ring, "alert.dismissed", {})
+    relay = get_relay_client_if_ready()
+    if relay is not None:
+        relay.schedule_read_sync(db)
 
 
 async def resolve_for_message_event(

@@ -289,6 +289,14 @@ class SearchConfig(BaseModel):
     exact_scan_row_ceiling: int
 
 
+class PushConfig(BaseModel):
+    """Native push through a relay (push/relay.py) -- see config.yaml."""
+
+    apns_relay_urls: list[str]
+    read_sync_min_interval_seconds: float
+    relay_timeout_seconds: float
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -307,6 +315,7 @@ class InfraConfig(BaseModel):
     outbox: OutboxConfig
     database: DatabaseConfig
     search: SearchConfig
+    push: PushConfig
 
 
 _config_instance: InfraConfig | None = None
@@ -337,6 +346,7 @@ def get_config() -> InfraConfig:
                 outbox=OutboxConfig(**(cfg.get("outbox") or {})),
                 database=DatabaseConfig(**database_cfg),
                 search=SearchConfig(**(cfg.get("search") or {})),
+                push=PushConfig(**(cfg.get("push") or {})),
             )
         except ValidationError as exc:
             raise ConfigError(f"Invalid configuration: {exc}") from exc

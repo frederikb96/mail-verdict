@@ -47,6 +47,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -1513,10 +1514,21 @@ class Alert(Base):
 
 
 class PushSubscription(Base):
-    """One browser's Web Push registration -- also where its own,
-    per-device preferences live, since a subscription row is the only
-    genuinely per-device thing a system with no login has to hang them
-    on. endpoint is personal; never logged.
+    """One device's push registration -- also where its own, per-device
+    preferences live, since a subscription row is the only genuinely
+    per-device thing a system with no login has to hang them on.
+
+    transport is which sender reaches it. A "webpush" row is a browser:
+    endpoint/p256dh/auth, as PushManager.subscribe() returned them. An
+    "apns" row is a native app reached through a push relay (push/relay.py):
+    relay_url, the sealed ticket that relay issued for the device, and the
+    content key its notification extension decrypts with, both encrypted
+    under ENCRYPTION_KEY; installation_id is what the app re-registers
+    under. One CHECK per transport keeps each row carrying what its own
+    sender needs. endpoint is personal; never logged.
+
+    muted_channels opts the device out of a channel (push/channels.py);
+    empty means everything, so a channel added later arrives switched on.
 
     alert_folder_ids NULL means "nobody has narrowed this down yet" --
     the same convention calendar_prefs uses -- resolved at delivery time
@@ -1532,9 +1544,19 @@ class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
-    endpoint: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    p256dh: Mapped[str] = mapped_column(Text, nullable=False)
-    auth: Mapped[str] = mapped_column(Text, nullable=False)
+    transport: Mapped[str] = mapped_column(
+        Text, nullable=False, default="webpush", server_default="webpush",
+    )
+    endpoint: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
+    p256dh: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auth: Mapped[str | None] = mapped_column(Text, nullable=True)
+    installation_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    relay_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encrypted_relay_ticket: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    encrypted_content_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    muted_channels: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), nullable=False, default=list, server_default=text("'{}'"),
+    )
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     alert_folder_ids: Mapped[list[uuid.UUID] | None] = mapped_column(
         ARRAY(Uuid), nullable=True,
@@ -1545,6 +1567,24 @@ class PushSubscription(Base):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("transport IN ('webpush', 'apns')", name="ck_push_subscriptions_transport"),
+        CheckConstraint(
+            "transport <> 'webpush' OR "
+            "(endpoint IS NOT NULL AND p256dh IS NOT NULL AND auth IS NOT NULL)",
+            name="ck_push_subscriptions_webpush_fields",
+        ),
+        CheckConstraint(
+            "transport <> 'apns' OR (installation_id IS NOT NULL AND relay_url IS NOT NULL "
+            "AND encrypted_relay_ticket IS NOT NULL AND encrypted_content_key IS NOT NULL)",
+            name="ck_push_subscriptions_apns_fields",
+        ),
+        Index(
+            "uq_push_subscriptions_installation_id", "installation_id", unique=True,
+            postgresql_where=installation_id.is_not(None),
+        ),
+    )
 
 
 class VapidKeypair(Base):

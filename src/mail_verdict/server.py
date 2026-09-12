@@ -183,6 +183,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else "No ENCRYPTION_KEY set -- push notifications unavailable",
     )
 
+    from mail_verdict.push.relay import init_relay_client
+
+    relay_client = init_relay_client(config.security.encryption_key, config.push)
+    native_push_off = relay_client.unavailable_reason()
+    if native_push_off:
+        logger.info("Native push unavailable: %s", native_push_off)
+    else:
+        logger.info("Native push available through %s", ", ".join(relay_client.relay_urls))
+
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.api.events import init_event_ring
 
@@ -487,12 +496,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from mail_verdict.core.anthropic_provider import reset_anthropic_provider
     from mail_verdict.core.openai_provider import reset_openai_provider
+    from mail_verdict.push.relay import reset_relay_client
     from mail_verdict.push.vapid import reset_vapid_key_repo
 
     reset_anthropic_provider()
     reset_openai_provider()
     reset_provider_credential_repo()
     reset_vapid_key_repo()
+    reset_relay_client()
     reset_settings_service()
     await close_database()
     logger.info("Database connection closed")

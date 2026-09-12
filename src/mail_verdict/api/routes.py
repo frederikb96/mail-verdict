@@ -25,6 +25,7 @@ from mail_verdict.api.image_exceptions import router as image_exceptions_router
 from mail_verdict.api.invitations import router as invitations_router
 from mail_verdict.api.mails import account_router as mails_account_router
 from mail_verdict.api.mails import router as mails_router
+from mail_verdict.api.notifications import all_accounts_router as all_notifications_router
 from mail_verdict.api.notifications import router as notifications_router
 from mail_verdict.api.outbox import router as outbox_router
 from mail_verdict.api.pipeline import router as pipeline_router
@@ -42,6 +43,7 @@ all_routers: list[APIRouter] = [
     mails_router,
     mails_account_router,
     notifications_router,
+    all_notifications_router,
     outbox_router,
     search_router,
     accounts_router,

@@ -75,6 +75,11 @@ _UNANNOUNCED: dict[str, str] = {
         "No browser surface calls this or watches it -- it is driven by an operator, and "
         "what it produces is read by search."
     ),
+    "POST /alerts/subscriptions/{subscription_id}/test": (
+        "The only write is the send's outcome on the device's own row (last seen, failed, "
+        "or removed when gone) -- the same write every alert push makes, read by the device "
+        "list when it next refetches."
+    ),
 }
 
 

@@ -318,8 +318,8 @@ way folder CRUD is.
 ## Alerts and push notifications
 
 An alert is something meant to interrupt the reader on their device, distinct from a notification
-(above), which is PostIMAP's own record of a write that failed. The only kind an alert is created
-for today is new mail. `dedupe_key`'s unique index — embedding `msg_key` rather than
+(above), which is PostIMAP's own record of a write that failed. Alerts are created for new mail and
+for a send stuck on its way out (`outbox/stalled.py`). `dedupe_key`'s unique index — embedding `msg_key` rather than
 `messages.id`, since a UIDVALIDITY resync replaces every id in a folder — is the entire
 fires-exactly-once mechanism, the same `ON CONFLICT DO NOTHING` discipline `Verdict` and
 `CalendarIntake` already use, whether the row lands delivered immediately or staged. `alert.new` on
@@ -346,10 +346,12 @@ predicate: the alert's own message row, or a live row in the same account with t
 header, is read. The header half is what follows a move made in another client, which PostIMAP
 mirrors as an expunge plus a fresh row. It is checked on every message insert and read-state
 event, before an immediate alert is announced, before a staged one is delivered, and by the
-periodic read-state pass below as the net for a lost event. What the bell's badge counts is decided
-in one place too, `ui/src/lib/bell-badge.ts`: system notifications always — a failed write, and
-every alert kind that is not new mail — and new-mail alerts only while
-`settings.mail.bell_badge_counts_new_mail` is on. The same file decides which kinds the bell lists
+periodic read-state pass below as the net for a lost event. What a badge counts is decided in one
+place too, server-side in `alerts/badge.py`: system notifications always — a failed write on any
+account, inactive ones included, and every alert kind that is not new mail — and new-mail alerts
+only while `settings.mail.bell_badge_counts_new_mail` is on, scoped to the device's folders. The web
+bell reads it from `GET /api/alerts/badge` and every native push carries it, so a phone asleep and a
+browser open show the same number. `ui/src/lib/bell-badge.ts` decides which kinds the bell lists
 under Mail and which under System.
 
 `object_id`, `recurrence_id` and a per-subscription `reminders_enabled` flag are what a
@@ -369,6 +371,35 @@ background task off the postimap event listener (`push/send.py`, `pywebpush`): a
 the push service is its own protocol-level unsubscribe signal and deletes the row, anything else
 is stamped `failed_at` and left for the next alert to try again — an outbound push is never
 awaited inline in the listener, which would delay every event still queued behind it.
+
+The iPhone app is a second transport on the same table: a `push_subscriptions` row with
+`transport = 'apns'`, so every rule above — folder scope, staging, exactly-once, resolution —
+applies to it unchanged. Only the app's publisher can sign pushes for the app, so a server never
+talks to Apple itself; it goes through a stateless push relay
+([`mail-verdict-ios/relay`](https://github.com/frederikb96/mail-verdict-ios/blob/main/relay/README.md)).
+
+```
+phone ──register──► relay ──ticket──► phone ──ticket + content key──► this server
+this server ──sealed envelope + ticket──► relay ──► APNs ──► phone's notification extension
+```
+
+- **Registration.** The phone registers its device token with the relay, which returns a sealed,
+  expiring ticket only the relay can open. The phone hands that ticket and a content key it
+  generated to this server (`POST /api/alerts/subscriptions/native`); both are stored encrypted
+  under `ENCRYPTION_KEY`, never returned, and refreshed by the app at least daily.
+- **Sending.** `push/send.py` branches per row: a browser gets Web Push, a phone gets an envelope
+  (`push/envelope.py`) sealed with its content key, posted to its relay by `push/relay.py`. The
+  envelope carries the alert, the device's badge and the ids of mail alerts resolved in the last
+  day, so the phone withdraws those banners. The relay forwards ciphertext; it never sees subject,
+  sender or account. `401`/`410` from the relay delete the row, anything else stamps `failed_at`.
+- **Channels.** `muted_channels` (`mail`, `system`, see `push/channels.py`) is a per-device
+  opt-out, filtered in `list_for_alert` alongside the folder scope.
+- **Clearing.** A phone learns that mail was read elsewhere three ways: on opening the app
+  (`POST /api/alerts/lookup` for the notifications it still shows), in the `resolved` list of the
+  next push, and through a silent push that `announce_alerts_dismissed` schedules to every phone,
+  at most once per `push.read_sync_min_interval_seconds`.
+- **Opting out.** Only relays listed in `push.apns_relay_urls` are registered against or sent to;
+  an empty list turns native push off entirely.
 
 ## Read state in Archive and Trash
 

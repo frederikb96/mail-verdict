@@ -562,6 +562,39 @@
         "title": "AddressbookSummaryResponse",
         "type": "object"
       },
+      "AlertBadgeResponse": {
+        "description": "The notification badge -- see alerts/badge.py for what it counts.",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "AlertBadgeResponse",
+        "type": "object"
+      },
+      "AlertLookupRequest": {
+        "description": "Alert ids a device is still showing.",
+        "properties": {
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "title": "AlertLookupRequest",
+        "type": "object"
+      },
       "AlertResponse": {
         "description": "One alerts row -- a delivered \"something happened\" record: a new\nmessage today, a calendar reminder in a later feature. Distinct from\nNotificationResponse above, which is PostIMAP's own durable record of\na write that never reached the server; the two names are deliberately\nnot interchangeable (see the architecture doc).",
         "properties": {
@@ -4466,6 +4499,105 @@
         "title": "MessageSummary",
         "type": "object"
       },
+      "NativePushConfigResponse": {
+        "description": "Whether a native app can register this server for push, and through\nwhich relays. `reason` says why not when `available` is false.",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "relay_urls": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Relay Urls",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available",
+          "relay_urls",
+          "reason"
+        ],
+        "title": "NativePushConfigResponse",
+        "type": "object"
+      },
+      "NativeSubscriptionCreate": {
+        "description": "A native app registering, or refreshing, itself: the ticket its\npush relay issued for the device and the key the device decrypts\nnotifications with, generated on the device. Both are stored encrypted\nand never returned. label and muted_channels of null leave an already\nregistered device's own values alone.",
+        "properties": {
+          "content_key": {
+            "description": "Standard base64 of exactly 32 random bytes",
+            "title": "Content Key",
+            "type": "string"
+          },
+          "installation_id": {
+            "format": "uuid",
+            "title": "Installation Id",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "muted_channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "mail",
+                    "system"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Channels"
+          },
+          "relay_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Relay Url",
+            "type": "string"
+          },
+          "ticket": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Ticket",
+            "type": "string"
+          }
+        },
+        "required": [
+          "installation_id",
+          "relay_url",
+          "ticket",
+          "content_key"
+        ],
+        "title": "NativeSubscriptionCreate",
+        "type": "object"
+      },
       "NotificationCountResponse": {
         "description": "Unacknowledged count for an account -- what a bell badge renders.",
         "properties": {
@@ -5432,7 +5564,7 @@
         "type": "object"
       },
       "PushSubscriptionResponse": {
-        "description": "One registered device. The endpoint and keys are never returned --\nwrite-only through POST, the same discipline a provider API key\nfollows (settings/credentials.py) -- since nothing here needs to read\nthem back, and an endpoint is personal (see the design's own note).",
+        "description": "One registered device. The endpoint and keys, a native device's\nrelay ticket and content key are never returned -- write-only through\nPOST, the same discipline a provider API key follows\n(settings/credentials.py) -- since nothing here needs to read them\nback, and an endpoint is personal.",
         "properties": {
           "alert_folder_ids": {
             "anyOf": [
@@ -5494,16 +5626,33 @@
             ],
             "title": "Last Seen At"
           },
+          "muted_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Muted Channels",
+            "type": "array"
+          },
           "reminders_enabled": {
             "title": "Reminders Enabled",
             "type": "boolean"
+          },
+          "transport": {
+            "enum": [
+              "webpush",
+              "apns"
+            ],
+            "title": "Transport",
+            "type": "string"
           }
         },
         "required": [
           "id",
+          "transport",
           "label",
           "alert_folder_ids",
           "reminders_enabled",
+          "muted_channels",
           "created_at",
           "last_seen_at",
           "failed_at"
@@ -5539,6 +5688,24 @@
               }
             ],
             "title": "Label"
+          },
+          "muted_channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "mail",
+                    "system"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Muted Channels"
           },
           "reminders_enabled": {
             "anyOf": [
@@ -8535,6 +8702,85 @@
         ]
       }
     },
+    "/alerts/badge": {
+      "get": {
+        "description": "The notification badge -- alerts/badge.py decides what it counts.",
+        "operationId": "get_badge_alerts_badge_get",
+        "parameters": [
+          {
+            "description": "A registered device; its own folder scope applies",
+            "in": "query",
+            "name": "subscription_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A registered device; its own folder scope applies",
+              "title": "Subscription Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "folder_ids",
+            "required": false,
+            "schema": {
+              "default": [],
+              "items": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": "Folder Ids",
+              "type": "array"
+            }
+          },
+          {
+            "description": "Apply folder_ids -- as on GET /alerts. Ignored with subscription_id.",
+            "in": "query",
+            "name": "folder_scoped",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Apply folder_ids -- as on GET /alerts. Ignored with subscription_id.",
+              "title": "Folder Scoped",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertBadgeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Badge",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
     "/alerts/dismiss-all": {
       "post": {
         "description": "Dismiss every currently-undismissed alert, or only those of the\ngiven kinds -- the bell dismisses its Mail and System tabs apart.",
@@ -8570,6 +8816,74 @@
           }
         },
         "summary": "Dismiss All Alerts",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/alerts/lookup": {
+      "post": {
+        "description": "The alerts among these ids that still exist, dismissed or not -- a\ndevice drops a shown notification that is missing or dismissed here.",
+        "operationId": "lookup_alerts_alerts_lookup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AlertLookupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AlertResponse"
+                  },
+                  "title": "Response Lookup Alerts Alerts Lookup Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Lookup Alerts",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/alerts/native-push": {
+      "get": {
+        "description": "Whether a native app can register for push here, and through which\nrelays -- what the app checks before asking for notification\npermission.",
+        "operationId": "get_native_push_config_alerts_native_push_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativePushConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Native Push Config",
         "tags": [
           "alerts"
         ]
@@ -8636,6 +8950,48 @@
           }
         },
         "summary": "Register Push Subscription",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/alerts/subscriptions/native": {
+      "post": {
+        "description": "Register a native device, or refresh the one registered under this\ninstallation_id (see PushSubscriptionRepository.upsert_native). 400 if\nrelay_url is not one push.apns_relay_urls allows, 503 if native push\nis unavailable here.",
+        "operationId": "register_native_subscription_alerts_subscriptions_native_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeSubscriptionCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushSubscriptionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Native Subscription",
         "tags": [
           "alerts"
         ]
@@ -8725,6 +9081,43 @@
           }
         },
         "summary": "Update Push Subscription",
+        "tags": [
+          "alerts"
+        ]
+      }
+    },
+    "/alerts/subscriptions/{subscription_id}/test": {
+      "post": {
+        "description": "Send \"Notifications are working\" to one device through its own\ntransport, without creating an alert. 404 if the device is unknown,\n503 if its transport is unavailable here, 410 if the push service or\nrelay says the device is gone (its row is removed), 502 if the send\nwas refused for any other reason.",
+        "operationId": "send_test_push_alerts_subscriptions__subscription_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "subscription_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Subscription Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Test Push",
         "tags": [
           "alerts"
         ]
@@ -11381,6 +11774,66 @@
         "summary": "Get Thread",
         "tags": [
           "messages"
+        ]
+      }
+    },
+    "/notifications": {
+      "get": {
+        "description": "Every account's notifications in one list, newest first -- inactive\naccounts included (see SyncNotificationRepository.list_all).",
+        "operationId": "list_all_notifications_notifications_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "unacknowledged_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Unacknowledged Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NotificationResponse"
+                  },
+                  "title": "Response List All Notifications Notifications Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List All Notifications",
+        "tags": [
+          "notifications"
         ]
       }
     },

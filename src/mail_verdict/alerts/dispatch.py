@@ -52,6 +52,7 @@ from mail_verdict.database.models import Alert, Message
 from mail_verdict.database.msg_key import compute_msg_key
 from mail_verdict.database.repository import AlertRepository
 from mail_verdict.pipeline.enqueue import is_live_pipeline_possible
+from mail_verdict.push.relay import get_relay_client_if_ready
 from mail_verdict.push.send import dispatch_push_for_alert
 from mail_verdict.queue.notify import ReconciliationTimer
 
@@ -266,7 +267,9 @@ async def _dispatch_push_safe(
     uncaught exception would otherwise only ever surface as an "exception
     was never retrieved" log line with no context."""
     try:
-        await dispatch_push_for_alert(db, vapid_repo, alert, folder_id=folder_id)
+        await dispatch_push_for_alert(
+            db, vapid_repo, alert, folder_id=folder_id, relay=get_relay_client_if_ready(),
+        )
     except Exception:
         logger.exception("Push dispatch failed for alert %s", alert.id)
 

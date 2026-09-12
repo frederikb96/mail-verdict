@@ -170,7 +170,9 @@ networkPolicy:
   # alongside custom egress rules below.
   allowDNS: true
   # -- Egress rules, `NetworkPolicySpec.egress` syntax. Narrow this to your
-  # PostgreSQL destination and the Anthropic API.
+  # PostgreSQL destination and the Anthropic API -- and, for notifications
+  # on the iPhone app, to every push relay in `config.push.apns_relay_urls`
+  # (HTTPS, port 443).
   egress: []
   # - to:
   #     - podSelector:

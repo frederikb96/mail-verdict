@@ -10,11 +10,15 @@ preferences tables (account_prefs, folder_prefs).
 
 from __future__ import annotations
 
+import base64
 import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from mail_verdict.push.channels import PushChannel
+from mail_verdict.push.envelope import CONTENT_KEY_BYTES
 
 # --- Tag / Attachment schemas (referenced by MessageDetail) ---
 
@@ -687,23 +691,80 @@ class PushSubscriptionUpdate(BaseModel):
     alert_folder_ids: list[uuid.UUID] | None = None
     reminders_enabled: bool | None = None
     label: str | None = None
+    # null or omitted leaves them untouched; [] unmutes every channel.
+    muted_channels: list[PushChannel] | None = None
 
 
 class PushSubscriptionResponse(BaseModel):
-    """One registered device. The endpoint and keys are never returned --
-    write-only through POST, the same discipline a provider API key
-    follows (settings/credentials.py) -- since nothing here needs to read
-    them back, and an endpoint is personal (see the design's own note)."""
+    """One registered device. The endpoint and keys, a native device's
+    relay ticket and content key are never returned -- write-only through
+    POST, the same discipline a provider API key follows
+    (settings/credentials.py) -- since nothing here needs to read them
+    back, and an endpoint is personal."""
 
     id: uuid.UUID
+    transport: Literal["webpush", "apns"]
     label: str | None
     alert_folder_ids: list[uuid.UUID] | None
     reminders_enabled: bool
+    muted_channels: list[str]
     created_at: datetime
     last_seen_at: datetime | None
     failed_at: datetime | None
 
     model_config = {"from_attributes": True}
+
+
+class NativePushConfigResponse(BaseModel):
+    """Whether a native app can register this server for push, and through
+    which relays. `reason` says why not when `available` is false."""
+
+    available: bool
+    relay_urls: list[str]
+    reason: str | None
+
+
+class NativeSubscriptionCreate(BaseModel):
+    """A native app registering, or refreshing, itself: the ticket its
+    push relay issued for the device and the key the device decrypts
+    notifications with, generated on the device. Both are stored encrypted
+    and never returned. label and muted_channels of null leave an already
+    registered device's own values alone."""
+
+    installation_id: uuid.UUID
+    relay_url: str = Field(min_length=1, max_length=2048)
+    ticket: str = Field(min_length=1, max_length=4096)
+    content_key: str = Field(description="Standard base64 of exactly 32 random bytes")
+    label: str | None = Field(default=None, max_length=200)
+    muted_channels: list[PushChannel] | None = None
+
+    @field_validator("content_key")
+    @classmethod
+    def _content_key_is_32_bytes(cls, value: str) -> str:
+        """Refuse anything but base64 of a 32-byte key."""
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except ValueError as exc:
+            raise ValueError("content_key is not base64") from exc
+        if len(raw) != CONTENT_KEY_BYTES:
+            raise ValueError(f"content_key must decode to {CONTENT_KEY_BYTES} bytes")
+        return value
+
+    def content_key_bytes(self) -> bytes:
+        """The decoded content key."""
+        return base64.b64decode(self.content_key)
+
+
+class AlertLookupRequest(BaseModel):
+    """Alert ids a device is still showing."""
+
+    ids: list[uuid.UUID] = Field(max_length=200)
+
+
+class AlertBadgeResponse(BaseModel):
+    """The notification badge -- see alerts/badge.py for what it counts."""
+
+    count: int
 
 
 # --- Pipeline run schemas ---

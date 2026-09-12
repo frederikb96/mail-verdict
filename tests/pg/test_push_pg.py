@@ -287,7 +287,9 @@ class TestDispatchPushForAlert:
             "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
         )
 
-        await dispatch_push_for_alert(migrated_db, vapid_repo, _fake_alert(), folder_id=None)
+        await dispatch_push_for_alert(
+            migrated_db, vapid_repo, _fake_alert(), folder_id=None, relay=None,
+        )
 
         # Not asserted as the only send: the migrated_db fixture is shared
         # across this whole test file's session, and every "every folder"
@@ -321,7 +323,9 @@ class TestDispatchPushForAlert:
             "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
         )
 
-        await dispatch_push_for_alert(migrated_db, vapid_repo, _fake_alert(), folder_id=None)
+        await dispatch_push_for_alert(
+            migrated_db, vapid_repo, _fake_alert(), folder_id=None, relay=None,
+        )
 
         assert await repo.get(sub.id) is None
 
@@ -347,7 +351,9 @@ class TestDispatchPushForAlert:
             "mail_verdict.push.send.webpush_async", AsyncMock(side_effect=fake_webpush),
         )
 
-        await dispatch_push_for_alert(migrated_db, vapid_repo, _fake_alert(), folder_id=None)
+        await dispatch_push_for_alert(
+            migrated_db, vapid_repo, _fake_alert(), folder_id=None, relay=None,
+        )
 
         row = await repo.get(sub.id)
         assert row is not None
@@ -365,7 +371,9 @@ class TestDispatchPushForAlert:
         monkeypatch.setattr("mail_verdict.push.send.webpush_async", never_called)
 
         no_key_repo = VapidKeyRepository(migrated_db, "")
-        await dispatch_push_for_alert(migrated_db, no_key_repo, _fake_alert(), folder_id=None)
+        await dispatch_push_for_alert(
+            migrated_db, no_key_repo, _fake_alert(), folder_id=None, relay=None,
+        )
 
         never_called.assert_not_called()
 
@@ -398,6 +406,7 @@ class TestDispatchPushForAlert:
         target_folder = uuid.uuid4()
         await dispatch_push_for_alert(
             migrated_db, vapid_repo, _fake_alert(kind="mail"), folder_id=target_folder,
+            relay=None,
         )
 
         assert sub.endpoint not in called_endpoints

@@ -10,10 +10,23 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import Text, and_, case, cast, delete, desc, func, or_, select, text, update
+from sqlalchemy import (
+    Text,
+    and_,
+    case,
+    cast,
+    delete,
+    desc,
+    func,
+    not_,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -35,6 +48,7 @@ from mail_verdict.database.models import (
     VerdictSource,
 )
 from mail_verdict.database.msg_key import compute_msg_key
+from mail_verdict.push.channels import channel_for_kind
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -1474,6 +1488,42 @@ class SyncNotificationRepository:
             )
             return result.scalar_one()
 
+    async def list_all(
+        self, *, unacknowledged_only: bool = False, limit: int = 100,
+    ) -> list[SyncNotification]:
+        """
+        Every account's notifications in one list, newest first -- inactive
+        accounts included, since the folder-delete guard a notification
+        can block is account-wide whether the account is active or not.
+
+        Args:
+            unacknowledged_only: Only rows with acknowledged_at IS NULL
+            limit: Maximum rows to return
+
+        Returns:
+            SyncNotification rows, newest first
+        """
+        async with self._db.session() as session:
+            stmt = (
+                select(SyncNotification)
+                .order_by(desc(SyncNotification.created_at), desc(SyncNotification.id))
+                .limit(limit)
+            )
+            if unacknowledged_only:
+                stmt = stmt.where(SyncNotification.acknowledged_at.is_(None))
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def unacknowledged_count_all(self) -> int:
+        """Unacknowledged notifications across every account, inactive ones included."""
+        async with self._db.session() as session:
+            result = await session.execute(
+                select(func.count(SyncNotification.id)).where(
+                    SyncNotification.acknowledged_at.is_(None),
+                )
+            )
+            return result.scalar_one()
+
 
 class AttachmentRepository:
     """Repository for Attachment read operations."""
@@ -1753,7 +1803,7 @@ class AlertRepository:
             return list(result.scalars().all())
 
     async def unseen_counts_by_kind(
-        self, *, folder_ids: list[uuid.UUID] | None = None,
+        self, *, folder_ids: list[uuid.UUID] | None = None, arrival_folders_only: bool = False,
     ) -> dict[str, int]:
         """
         How many delivered alerts of each kind have not been dismissed yet
@@ -1761,6 +1811,12 @@ class AlertRepository:
         kind is new mail. folder_ids is the same filter list_recent takes,
         for the same reason: the badge and the list it counts must agree
         on what's in scope.
+
+        arrival_folders_only scopes to the folders mail arrives in instead
+        -- what a push subscription with no alert_folder_ids of its own is
+        pushed for (PushSubscriptionRepository.list_for_alert), so a device
+        badge counts what that device was notified about. A row with no
+        folder_id always passes either filter.
         """
         async with self._db.session() as session:
             stmt = (
@@ -1772,7 +1828,41 @@ class AlertRepository:
                 stmt = stmt.where(
                     or_(Alert.folder_id.is_(None), Alert.folder_id.in_(folder_ids)),
                 )
+            if arrival_folders_only:
+                stmt = stmt.where(
+                    or_(Alert.folder_id.is_(None), _is_arrival_folder(Alert.folder_id)),
+                )
             return {kind: count for kind, count in (await session.execute(stmt)).all()}
+
+    async def lookup(self, alert_ids: Sequence[uuid.UUID]) -> list[Alert]:
+        """The alerts among these ids that still exist, in any state -- a
+        device holding shown notifications asks which of them are still
+        worth showing."""
+        if not alert_ids:
+            return []
+        async with self._db.session() as session:
+            stmt = select(Alert).where(Alert.id.in_(list(alert_ids)))
+            return list((await session.execute(stmt)).scalars().all())
+
+    async def recently_resolved_mail(
+        self, *, limit: int, within: timedelta,
+    ) -> list[uuid.UUID]:
+        """
+        Mail alerts dismissed or resolved within the given window, newest
+        first -- what a native push carries so a phone withdraws banners
+        for mail already read elsewhere.
+        """
+        async with self._db.session() as session:
+            stmt = (
+                select(Alert.id)
+                .where(
+                    Alert.kind == "mail",
+                    Alert.dismissed_at > func.now() - within,
+                )
+                .order_by(desc(Alert.dismissed_at), desc(Alert.id))
+                .limit(limit)
+            )
+            return list((await session.execute(stmt)).scalars().all())
 
     async def unseen_count(self, *, folder_ids: list[uuid.UUID] | None = None) -> int:
         """Every kind's unseen_counts_by_kind, added up."""
@@ -1818,10 +1908,25 @@ class AlertRepository:
             return int(result.rowcount)  # type: ignore[attr-defined]
 
 
+def _is_arrival_folder(folder_id: Any) -> Any:
+    """SQL: the folder is one mail arrives in -- its effective special use
+    unset or "inbox" (a folder no longer mirrored counts, since nothing
+    says otherwise). The default scope of a device that never narrowed
+    its own, the same as isArrivalFolder in the web's alert-prefs.ts."""
+    effective_special_use = (
+        select(func.coalesce(FolderPrefs.special_use_override, Folder.special_use))
+        .select_from(Folder)
+        .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
+        .where(Folder.id == folder_id)
+        .scalar_subquery()
+    )
+    return or_(effective_special_use.is_(None), effective_special_use == "inbox")
+
+
 class PushSubscriptionRepository:
-    """Repository for push_subscriptions -- one browser's Web Push
-    registration, and the per-device preferences that ride along on the
-    same row (see the model's own docstring for why)."""
+    """Repository for push_subscriptions -- one device's push registration,
+    browser or native app, and the per-device preferences that ride along
+    on the same row (see the model's own docstring for why)."""
 
     def __init__(self, db: DatabaseConnection) -> None:
         self._db = db
@@ -1865,6 +1970,65 @@ class PushSubscriptionRepository:
             result = await session.execute(stmt)
             return result.scalar_one()
 
+    async def upsert_native(
+        self,
+        *,
+        installation_id: uuid.UUID,
+        relay_url: str,
+        encrypted_relay_ticket: bytes,
+        encrypted_content_key: bytes,
+        label: str | None,
+        muted_channels: list[str] | None,
+    ) -> PushSubscription:
+        """
+        Register a native device, or refresh the one already registered
+        under this installation id -- the app re-registers whenever its
+        device token or relay ticket changes, and at least daily.
+
+        The relay address, ticket and key always take the new values. A
+        label or muted_channels of None leaves a registered device's own
+        value alone (a new device starts with no label and nothing muted),
+        so a refresh never undoes a change made from another client.
+
+        Returns:
+            The subscription row, existing or newly inserted
+        """
+        refreshed: dict[str, Any] = {
+            "relay_url": relay_url,
+            "encrypted_relay_ticket": encrypted_relay_ticket,
+            "encrypted_content_key": encrypted_content_key,
+            "failed_at": None,
+            "last_seen_at": func.now(),
+        }
+        if label is not None:
+            refreshed["label"] = label
+        if muted_channels is not None:
+            refreshed["muted_channels"] = muted_channels
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(PushSubscription)
+                .values(
+                    transport="apns", installation_id=installation_id, relay_url=relay_url,
+                    encrypted_relay_ticket=encrypted_relay_ticket,
+                    encrypted_content_key=encrypted_content_key, label=label,
+                    muted_channels=muted_channels or [], last_seen_at=func.now(),
+                )
+                .on_conflict_do_update(
+                    index_elements=["installation_id"],
+                    index_where=PushSubscription.installation_id.is_not(None),
+                    set_=refreshed,
+                )
+                .returning(PushSubscription)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one()
+
+    async def list_native(self) -> list[PushSubscription]:
+        """Every native (apns) device -- what a read-sync push goes to."""
+        async with self._db.session() as session:
+            stmt = select(PushSubscription).where(PushSubscription.transport == "apns")
+            return list((await session.execute(stmt)).scalars().all())
+
     async def list_all(self) -> list[PushSubscription]:
         """Every registered device, newest first -- the Settings page's
         own device list."""
@@ -1885,6 +2049,7 @@ class PushSubscriptionRepository:
         alert_folder_ids: list[uuid.UUID] | None | Literal["unset"] = "unset",
         reminders_enabled: bool | None = None,
         label: str | None | Literal["unset"] = "unset",
+        muted_channels: list[str] | None = None,
     ) -> PushSubscription | None:
         """
         Update one device's own preferences. Every argument defaults to
@@ -1903,6 +2068,8 @@ class PushSubscriptionRepository:
             values["reminders_enabled"] = reminders_enabled
         if label != "unset":
             values["label"] = label
+        if muted_channels is not None:
+            values["muted_channels"] = muted_channels
         if not values:
             return await self.get(subscription_id)
         async with self._db.session() as session:
@@ -1975,26 +2142,22 @@ class PushSubscriptionRepository:
                 subscription cannot confirm a folder it was never told,
                 and neither can a null-scoped one confirm an unknown
                 folder is an arrival folder.
+
+        A device that muted the alert's channel (push/channels.py) is left
+        out whatever the kind.
         """
         async with self._db.session() as session:
-            stmt = select(PushSubscription)
+            stmt = select(PushSubscription).where(
+                not_(PushSubscription.muted_channels.any(channel_for_kind(kind))),  # type: ignore[arg-type]
+            )
             if kind == "mail":
                 if folder_id is not None:
-                    effective_special_use = (
-                        select(func.coalesce(FolderPrefs.special_use_override, Folder.special_use))
-                        .select_from(Folder)
-                        .outerjoin(FolderPrefs, Folder.id == FolderPrefs.folder_id)
-                        .where(Folder.id == folder_id)
-                        .scalar_subquery()
-                    )
-                    is_arrival_folder = or_(
-                        effective_special_use.is_(None), effective_special_use == "inbox",
-                    )
                     stmt = stmt.where(
                         or_(
                             PushSubscription.alert_folder_ids.any(folder_id),  # type: ignore[arg-type]
                             and_(
-                                PushSubscription.alert_folder_ids.is_(None), is_arrival_folder,
+                                PushSubscription.alert_folder_ids.is_(None),
+                                _is_arrival_folder(folder_id),
                             ),
                         )
                     )
