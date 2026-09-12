@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Mail
+
+- A message dated after today shows its date in the list rather than a weekday. The date is the
+  sender's own, and spam often dates itself days ahead to stay at the top of a folder; a bare
+  "Mon" read as last Monday and hid that.
+
 ## [6.0.0] - 2026-09-12
 
 ### Mail transport

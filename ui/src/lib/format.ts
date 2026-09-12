@@ -25,6 +25,11 @@ import {
  * one. Never a relative duration ("2h", "3d"): those drift as the clock
  * moves on without the row re-rendering, so a message read minutes ago
  * looks identical to one read yesterday until the next paint.
+ *
+ * A date after today is always the plain date. The timestamp comes from
+ * the sender's own Date header, and spam routinely dates itself days
+ * ahead to sit at the top of the list; a bare weekday would pass for one
+ * in the past week.
  */
 export function formatRelativeDate(dateStr: string | null): string {
   if (!dateStr) return "";
@@ -33,7 +38,8 @@ export function formatRelativeDate(dateStr: string | null): string {
 
   if (dfIsToday(date)) return formatDate(date, "HH:mm");
   if (dfIsYesterday(date)) return "Yesterday";
-  if (differenceInCalendarDays(now, date) < 7) return formatDate(date, "EEE");
+  const daysAgo = differenceInCalendarDays(now, date);
+  if (daysAgo > 0 && daysAgo < 7) return formatDate(date, "EEE");
 
   return formatDate(date, date.getFullYear() === now.getFullYear() ? "d MMM" : "d MMM yyyy");
 }

@@ -36,6 +36,13 @@ test("formatRelativeDate: within the last week reads as a weekday name", () => {
   });
 });
 
+test("formatRelativeDate: a date after today reads as the date, never a weekday", () => {
+  withFrozenClock(() => {
+    const nextMonday = new Date(2026, 8, 7, 8, 0).toISOString();
+    assert.equal(formatRelativeDate(nextMonday), "7 Sep");
+  });
+});
+
 test("formatRelativeDate: older than a week reads as a day-first date, same year", () => {
   withFrozenClock(() => {
     const threeWeeksAgo = new Date(2026, 7, 12, 8, 0).toISOString();
