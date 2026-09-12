@@ -9,6 +9,9 @@ notifications, neither of which a seeded row ever reaches.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -18,6 +21,8 @@ from typing import Any
 import httpx
 import pytest
 from playwright.sync_api import Page, expect
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.e2e.helpers import (
     unique_email,
@@ -28,7 +33,7 @@ from tests.e2e.helpers import (
 )
 from tests.setup.dav_helpers import create_calendar, discover
 from tests.setup.mail_delivery import deliver_message
-from tests.ui.helpers import mail_row, wait_for_account_active, wait_for_folder
+from tests.ui.helpers import mail_row, select_account, wait_for_account_active, wait_for_folder
 
 from tests.setup.containers import (  # isort: skip
     DOVECOT_ALIAS,
@@ -117,6 +122,22 @@ def _find_message_by_subject(
     resp = api_client.get(f"/api/accounts/{account_id}/messages", params={"folder_id": folder_id})
     assert resp.status_code == 200, resp.text
     return next((m for m in resp.json()["messages"] if m["subject"] == subject), None)
+
+
+def _mark_intake_failed(postgres_url: str, account_id: str) -> None:
+    """Mark every intake record of this (test-owned) mail account failed."""
+
+    async def _run() -> None:
+        engine = create_async_engine(postgres_url)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE calendar_intake SET status = 'failed' WHERE account_id = :a"),
+                {"a": uuid.UUID(account_id)},
+            )
+        await engine.dispose()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, _run()).result()
 
 
 @pytest.fixture(scope="module")
@@ -262,6 +283,71 @@ class TestCalendarInvitationsUi:
             return event if event["partstat"] == "accepted" else None
 
         wait_for(_accepted, description="Stored object carries the accepted participation status")
+
+    def test_a_failed_invitation_can_be_retried_into_its_own_calendar(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        calendar_collection: dict[str, Any],
+        postgres_url: str,
+    ) -> None:
+        """A failed invitation names the calendar it was going into; Retry
+        imports into that calendar, so it must be pressable without the
+        calendar picker the unlinked states show and this one does not."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        account, _identity = _create_attendee_identity(
+            api_client, dovecot_endpoint, "attendee-retry",
+        )
+        summary = f"Retry invite {uuid.uuid4()}"
+        eml = _build_invitation_eml(
+            organizer_email="bob@example.com", attendee_email=account["email"],
+            summary=summary, uid=f"invite-{uuid.uuid4()}@example.com",
+        )
+        deliver_message(eml, host, lmtp_port, sender="bob@example.com", recipient=account["email"])
+        inbox = wait_for_folder(api_client, str(account["id"]), "INBOX")
+        message = wait_for(
+            lambda: _find_message_by_subject(
+                api_client, account["id"], inbox["id"], f"Invitation: {summary}",
+            ),
+            description="Invitation mail synced into INBOX",
+        )
+
+        # Imported through the API, then the intake record is marked failed --
+        # the state a DAV write that gave up leaves behind.
+        resp = api_client.post(
+            f"/api/calendar/invitations/{message['id']}/import",
+            json={"calendar_id": calendar_collection["id"]},
+        )
+        assert resp.status_code == 200, resp.text
+        _mark_intake_failed(postgres_url, account["id"])
+        wait_for(
+            lambda: (
+                body if (body := api_client.get(
+                    f"/api/calendar/invitations/{message['id']}"
+                ).json())["status"] == "failed" else None
+            ),
+            description="Invitation reads as failed",
+        )
+
+        # The list opens on the first account by name, which is another
+        # test's in this module.
+        page.goto(app_server)
+        select_account(page, {"name": account["email"]})
+        mail_row(page, message["id"]).click()
+
+        retry = page.get_by_role("button", name="Retry", exact=True)
+        expect(retry).to_be_enabled(timeout=15_000)
+        with page.expect_request(
+            lambda req: req.url.endswith(f"/api/calendar/invitations/{message['id']}/import")
+            and req.method == "POST",
+            timeout=10_000,
+        ) as request_info:
+            retry.click()
+        assert json.loads(request_info.value.post_data or "{}")["calendar_id"] == (
+            calendar_collection["id"]
+        )
 
     def test_invitation_intake_automatic_imports_with_no_interaction(
         self,

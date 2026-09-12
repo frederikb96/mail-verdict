@@ -294,7 +294,7 @@ export function InvitationCard({ messageId }: InvitationCardProps) {
             variant="outline"
             size="sm"
             className="h-6 px-2 text-xs"
-            disabled={!chosenCalendarId || importInvitation.isPending}
+            disabled={!invitation.calendar_id || importInvitation.isPending}
             onClick={() =>
               invitation.calendar_id &&
               importInvitation.mutate({ messageId, data: { calendar_id: invitation.calendar_id } })
