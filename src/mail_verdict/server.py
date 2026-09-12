@@ -564,17 +564,23 @@ async def _outbox_event_payload(db: Any, event: Any) -> dict[str, Any]:
     -- the UI's send/fail/dead toasts and the Sent-folder refresh all key
     off the current status, so it's re-read here rather than forwarded raw.
 
+    itip="reply" marks a row calendar_events.py's respond_to_event inserted
+    for an RSVP send -- calendar_replies.outbox_id is the one place that
+    link is recorded. The UI reads this to refresh the invitation card and
+    the calendar event instead of showing a mail send toast for a message
+    the person never composed.
+
     Args:
         db: The initialized DatabaseConnection
         event: The parsed outbox PostimapEvent
 
     Returns:
         SSE payload with id and changed, plus status and kind when the row
-        still exists
+        still exists, plus itip="reply" when it is an RSVP reply's own send
     """
     from sqlalchemy import select
 
-    from mail_verdict.database.models import Outbox
+    from mail_verdict.database.models import CalendarReply, Outbox
 
     data: dict[str, Any] = {"id": event.id, "changed": list(event.changed)}
     try:
@@ -587,9 +593,14 @@ async def _outbox_event_payload(db: Any, event: Any) -> dict[str, Any]:
             select(Outbox.status, Outbox.kind).where(Outbox.id == outbox_id)
         )
         row = result.one_or_none()
+        is_itip_reply = await session.scalar(
+            select(CalendarReply.id).where(CalendarReply.outbox_id == outbox_id).limit(1)
+        )
     if row is not None:
         data["status"] = row.status
         data["kind"] = row.kind
+    if is_itip_reply is not None:
+        data["itip"] = "reply"
     return data
 
 

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- An accepted, tentative or declined invitation now shows "Reply sent" once the RSVP reply
+  actually finishes sending, instead of staying on the spinner forever: the `outbox.updated`
+  event now marks a reply row with `itip: "reply"` so the invitation card and calendar event
+  refresh themselves.
+
 ## [6.2.0] - 2026-09-12
 
 ### Notifications

@@ -20,10 +20,13 @@ os.environ.setdefault(
 )
 
 
-def _make_db(row: object | None) -> MagicMock:
-    """A fake DatabaseConnection whose session().execute() returns one row (or none)."""
+def _make_db(row: object | None, *, reply_id: uuid.UUID | None = None) -> MagicMock:
+    """A fake DatabaseConnection whose session().execute() returns one row (or none),
+    and whose session().scalar() reports whether the outbox row is linked from
+    calendar_replies (reply_id) or not (None)."""
     session = AsyncMock()
     session.execute = AsyncMock(return_value=MagicMock(one_or_none=MagicMock(return_value=row)))
+    session.scalar = AsyncMock(return_value=reply_id)
     db = MagicMock()
     db.session.return_value.__aenter__ = AsyncMock(return_value=session)
     db.session.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -59,3 +62,36 @@ async def test_outbox_payload_omits_status_when_the_row_is_gone() -> None:
 
     assert "status" not in payload
     assert "kind" not in payload
+
+
+@pytest.mark.asyncio
+async def test_outbox_payload_marks_an_rsvp_reply_row_as_itip_reply() -> None:
+    """A send row calendar_replies.outbox_id points at gets itip="reply", so
+    the frontend refreshes the invitation card and the calendar event instead
+    of showing a mail-send toast for a message nobody composed."""
+    from mail_verdict.server import _outbox_event_payload
+
+    outbox_id = uuid.uuid4()
+    row = SimpleNamespace(status="sent", kind="send")
+    db = _make_db(row, reply_id=uuid.uuid4())
+    event = SimpleNamespace(id=str(outbox_id), changed=("status",))
+
+    payload = await _outbox_event_payload(db, event)
+
+    assert payload["itip"] == "reply"
+
+
+@pytest.mark.asyncio
+async def test_outbox_payload_omits_itip_for_an_ordinary_send() -> None:
+    """A send no calendar_replies row points at (an ordinary mail, or an
+    itip REQUEST/CANCEL the organizer side sends) carries no itip field."""
+    from mail_verdict.server import _outbox_event_payload
+
+    outbox_id = uuid.uuid4()
+    row = SimpleNamespace(status="sent", kind="send")
+    db = _make_db(row, reply_id=None)
+    event = SimpleNamespace(id=str(outbox_id), changed=("status",))
+
+    payload = await _outbox_event_payload(db, event)
+
+    assert "itip" not in payload
