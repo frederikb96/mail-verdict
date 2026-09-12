@@ -32,6 +32,25 @@ export function windowRefreshLimit(loadedRows: number): number {
 }
 
 /**
+ * Ids an unread-only window keeps showing after they stop being unread,
+ * until the reader navigates away or the toggle turns off and back on --
+ * Gmail's own behaviour for its unread filter, and mail-list.tsx's own
+ * useEffect clears this on exactly the same identity change that already
+ * clears the selection. A plain module-level set rather than React state:
+ * nothing here ever needs to trigger a render on its own, only to be
+ * consulted the next time a window refresh runs.
+ */
+export const keptWhileUnreadIds = new Set<string>();
+
+export function markKeptWhileUnread(id: string): void {
+  keptWhileUnreadIds.add(id);
+}
+
+export function clearKeptWhileUnread(): void {
+  keptWhileUnreadIds.clear();
+}
+
+/**
  * Whether `a` sits above `b` in a newest-first list -- the server's own
  * `ORDER BY received_at DESC, id DESC`, where PostgreSQL places a NULL
  * received_at first.
@@ -60,29 +79,49 @@ function sitsAbove(a: WindowRow, b: WindowRow): boolean {
  * @param fresh rows just read from the newest edge, newest first
  * @param freshHasMore whether the server holds rows past `fresh`
  * @param currentHasMore whether the cached window could page further
+ * @param preserveIds rows in `current` that a genuinely fresh read would
+ *   have dropped (an unread-only window's own filter, once the reader has
+ *   read one of its rows) but that must stay visible regardless -- see
+ *   `keptWhileUnreadIds` below. Ignored for a row `fresh` already covers,
+ *   which is authoritative.
  */
 export function mergeRefreshedWindow<T extends WindowRow>(
   current: T[],
   fresh: T[],
   freshHasMore: boolean,
   currentHasMore: boolean,
+  preserveIds?: ReadonlySet<string>,
 ): { rows: T[]; hasMore: boolean } {
   if (current.length === 0) return { rows: fresh, hasMore: freshHasMore };
+
+  const freshIds = new Set(fresh.map((row) => row.id));
+  const preserved = preserveIds
+    ? current.filter((row) => preserveIds.has(row.id) && !freshIds.has(row.id))
+    : [];
+  // Merged back into fresh, in the same newest-first order the server
+  // itself would return them in, before any of the windowing below sees
+  // them -- otherwise a preserved row sitting above the fresh read's own
+  // last row would be treated as "not reached yet" and dropped anyway.
+  const effectiveFresh =
+    preserved.length === 0
+      ? fresh
+      : [...fresh, ...preserved].sort((a, b) => (sitsAbove(a, b) ? -1 : sitsAbove(b, a) ? 1 : 0));
+
   const oldLast = current[current.length - 1];
-  const freshLast = fresh[fresh.length - 1];
+  const freshLast = effectiveFresh[effectiveFresh.length - 1];
 
   const reachedOldLast =
     !freshHasMore || (freshLast !== undefined && !sitsAbove(freshLast, oldLast));
   if (reachedOldLast) {
-    const rows = fresh.filter((row) => row.id === oldLast.id || sitsAbove(row, oldLast));
-    return { rows, hasMore: freshHasMore || rows.length < fresh.length };
+    const rows = effectiveFresh.filter((row) => row.id === oldLast.id || sitsAbove(row, oldLast));
+    return { rows, hasMore: freshHasMore || rows.length < effectiveFresh.length };
   }
 
   // The fresh read stopped above the old last row: everything it covers is
   // authoritative, everything below where it stopped is kept as it was.
-  const freshIds = new Set(fresh.map((row) => row.id));
-  const kept = current.filter((row) => !freshIds.has(row.id) && sitsAbove(freshLast, row));
-  return { rows: [...fresh, ...kept], hasMore: currentHasMore };
+  const effectiveFreshIds = new Set(effectiveFresh.map((row) => row.id));
+  const kept = current.filter((row) => !effectiveFreshIds.has(row.id) && sitsAbove(freshLast, row));
+  return { rows: [...effectiveFresh, ...kept], hasMore: currentHasMore };
 }
 
 /** Cut rows into consecutive pages of `WINDOW_PAGE_SIZE` -- at least one

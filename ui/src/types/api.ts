@@ -398,6 +398,9 @@ export interface AlertResponse {
 
 export interface AlertUnseenCountResponse {
   unseen: number;
+  /** The same count per alert kind -- lib/bell-badge.ts decides which
+   * kinds the badge counts. */
+  by_kind: Record<string, number>;
 }
 
 /** See VapidPublicKeyResponse in the backend schema. */

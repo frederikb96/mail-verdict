@@ -34,6 +34,7 @@ from tests.ui.helpers import (
     folder_button,
     mail_row,
     select_account,
+    select_unified_view,
 )
 
 # Six pages of fifty -- comfortably past any page-count threshold a list
@@ -211,16 +212,7 @@ def _settled_unified_badge(item: Locator, api_client: httpx.Client, unified_name
 
 def _open_inbox(page: Page, app_server: str, account_id: str, folder_id: str) -> None:
     page.goto(app_server)
-    account_name = f"large-mailbox-{account_id}"
-    # This module's account is usually the only one, so it is selected on its
-    # own; switching through the dropdown only when it is not.
-    selected = page.locator('[data-slot="sidebar-header"]').get_by_role(
-        "button", name=account_name, exact=True
-    )
-    try:
-        expect(selected).to_be_visible(timeout=15_000)
-    except AssertionError:
-        select_account(page, {"name": account_name})
+    select_account(page, {"name": f"large-mailbox-{account_id}"})
     folder_button(page, folder_id).click()
     expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)
 
@@ -421,23 +413,7 @@ class TestMailListLiveUi:
         add_folder_to_unified_view(api_client, folder_id, unified_name)
 
         page.goto(app_server)
-        # The account switcher only opens once the page has hydrated; the
-        # auto-selected account appearing in it is the sign that it has.
-        trigger = page.locator('[data-slot="sidebar-header"]').get_by_role(
-            "button", name=f"large-mailbox-{account_id}", exact=True
-        )
-        expect(trigger).to_be_visible(timeout=15_000)
-        unified_entry = page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
-            "Unified View", exact=True
-        )
-        for _ in range(3):
-            trigger.click()
-            try:
-                expect(unified_entry).to_be_visible(timeout=5_000)
-                break
-            except AssertionError:
-                page.keyboard.press("Escape")
-        unified_entry.click()
+        select_unified_view(page)
         unified_item = page.locator('[data-testid="folder"]').filter(has_text=unified_name)
         unified_item.get_by_role("button").first.click()
         expect(page.locator('[data-testid="mail-row"]').first).to_be_visible(timeout=15_000)

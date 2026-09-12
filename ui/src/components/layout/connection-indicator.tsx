@@ -5,15 +5,21 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip
 import { sseConnectionStateAtom, type ConnectionState } from "@/store/connection-atom";
 import { cn } from "@/lib/utils";
 
-const STATE_CONFIG: Record<ConnectionState, { color: string; label: string }> = {
-  connected: { color: "bg-green-500", label: "Connected" },
+const STATE_CONFIG: Record<Exclude<ConnectionState, "connected">, { color: string; label: string }> = {
   reconnecting: { color: "bg-yellow-500 animate-pulse", label: "Reconnecting..." },
   disconnected: { color: "bg-red-500", label: "Disconnected" },
 };
 
-/** Small dot indicator showing SSE connection health. */
+/**
+ * Small dot indicator showing SSE connection health -- absent while
+ * healthy. A permanent "Connected" said nothing actionable and occupied
+ * the header's most valuable strip of screen on every page and every
+ * viewport; the header now only ever shows this when there is something
+ * for the reader to notice.
+ */
 export function ConnectionIndicator() {
   const state = useAtomValue(sseConnectionStateAtom);
+  if (state === "connected") return null;
   const { color, label } = STATE_CONFIG[state];
 
   return (

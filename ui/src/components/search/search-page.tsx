@@ -53,10 +53,27 @@ const STRICTNESS_LABELS: Record<SearchStrictness, string> = {
 
 const LOAD_MORE_SENTINEL_KEY = "__search-load-more__";
 
-export function SearchPage() {
+interface SearchPageProps {
+  /** From the global header's search field (`?q=` on navigating here) --
+   * applied once, on mount, over whatever the atom already held. Typing
+   * afterward is the reader's own, and must not be overwritten by it
+   * again if the atom happens to change for an unrelated reason. */
+  initialQuery?: string | null;
+}
+
+export function SearchPage({ initialQuery }: SearchPageProps = {}) {
   const [rawQuery, setRawQuery] = useAtom(searchQueryAtom);
   const [query, setQuery] = useState(rawQuery);
   const router = useRouter();
+
+  useEffect(() => {
+    if (initialQuery) {
+      setRawQuery(initialQuery);
+      setQuery(initialQuery);
+    }
+    // Once, on mount -- see the prop's own doc comment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [fields, setFields] = useAtom(searchFieldsAtom);
   const [folderIds, setFolderIds] = useAtom(searchFolderIdsAtom);

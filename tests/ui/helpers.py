@@ -11,6 +11,7 @@ directly rather than duplicated here.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -156,6 +157,65 @@ def drag_row_to_folder(page: Page, row: Locator, target: Locator) -> None:
 _SELECT_ACCOUNT_TIMEOUT_MS = 60_000
 
 
+# The switcher's label in the static markup, before the client has rendered
+# anything; once hydrated it names an account or the unified view instead.
+# A click landing before hydration opens nothing, silently.
+_SWITCHER_UNHYDRATED_LABEL = re.compile(r"Select Account")
+# One attempt at opening the switcher's menu waits this long before the
+# next; a click that raced a re-render is retried rather than waited on.
+_SWITCHER_OPEN_TIMEOUT_MS = 5_000
+_SWITCHER_OPEN_ATTEMPTS = 4
+
+
+def _choose_in_account_switcher(page: Page, entry: str) -> None:
+    """Pick one entry -- an account's name or "Unified View" -- from the
+    sidebar's account switcher.
+
+    Waits for the switcher to have hydrated, then opens its menu, retrying
+    an open that does not take, and fails naming which of the two never
+    happened: the menu not opening at all, or opening without the entry.
+
+    On a mobile viewport the switcher lives inside the sidebar's own sheet,
+    closed by default -- the same hamburger trigger a phone user taps opens
+    it first, and picking an entry leaves it open covering the page, so
+    it's closed again the same way a person would dismiss it."""
+    trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
+    expect(trigger).not_to_have_text(_SWITCHER_UNHYDRATED_LABEL, timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
+    opened_sheet = trigger.is_hidden()
+    if opened_sheet:
+        page.locator('[data-slot="sidebar-trigger"]').click()
+        expect(trigger).to_be_visible(timeout=10_000)
+
+    menu = page.locator('[data-slot="dropdown-menu-content"]')
+    for _ in range(_SWITCHER_OPEN_ATTEMPTS):
+        trigger.click()
+        try:
+            expect(menu).to_be_visible(timeout=_SWITCHER_OPEN_TIMEOUT_MS)
+            break
+        except AssertionError:
+            page.keyboard.press("Escape")
+    else:
+        raise AssertionError(
+            f"the account switcher's menu never opened in {_SWITCHER_OPEN_ATTEMPTS} "
+            f"attempts (switcher reads {trigger.inner_text()!r}), so {entry!r} could "
+            f"not be chosen"
+        )
+
+    item = menu.locator('[data-slot="dropdown-menu-item"]').get_by_text(entry, exact=True)
+    try:
+        expect(item).to_be_visible(timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"the account switcher opened but never listed {entry!r}; it lists "
+            f"{menu.locator('[data-slot=\"dropdown-menu-item\"]').all_inner_texts()!r}"
+        ) from exc
+    item.click(timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
+    if opened_sheet:
+        sheet = page.locator('[data-slot="sheet-portal"]')
+        page.keyboard.press("Escape")
+        expect(sheet).to_have_count(0, timeout=10_000)
+
+
 def select_account(page: Page, account: dict[str, Any]) -> None:
     """Explicitly choose an account through the sidebar's own switcher.
 
@@ -164,27 +224,14 @@ def select_account(page: Page, account: dict[str, Any]) -> None:
     necessarily this test's own account, once other modules running in the
     same session have created accounts of their own. This drives the
     identical control a real multi-account user reaches for, rather than
-    assuming the default lands on the right one.
+    assuming the default lands on the right one."""
+    _choose_in_account_switcher(page, account["name"])
 
-    On a mobile viewport the switcher lives inside the sidebar's own sheet,
-    closed by default -- the same hamburger trigger a phone user taps opens
-    it first, and picking an account leaves it open covering the page, so
-    it's closed again the same way a person would dismiss it."""
-    trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-    opened_sheet = trigger.is_hidden()
-    if opened_sheet:
-        page.locator('[data-slot="sidebar-trigger"]').click()
-        expect(trigger).to_be_visible(timeout=10_000)
-    trigger.click()
-    item = page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
-        account["name"], exact=True,
-    )
-    expect(item).to_be_visible(timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
-    item.click(timeout=_SELECT_ACCOUNT_TIMEOUT_MS)
-    if opened_sheet:
-        sheet = page.locator('[data-slot="sheet-portal"]')
-        page.keyboard.press("Escape")
-        expect(sheet).to_have_count(0, timeout=10_000)
+
+def select_unified_view(page: Page) -> None:
+    """Switch the sidebar to the unified views, through the same switcher
+    select_account() drives."""
+    _choose_in_account_switcher(page, "Unified View")
 
 
 def wait_for_account_active(

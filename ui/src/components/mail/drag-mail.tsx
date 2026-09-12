@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef, useState } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { useAtomValue } from "jotai";
 import { isRowSelected, selectionSize, type SelectableRow } from "@/lib/selection";
@@ -29,6 +30,19 @@ export function DragMail({ row, accountId, folderId, children }: DragMailProps) 
   const selection = useAtomValue(effectiveSelectionAtom);
   const size = selectionSize(selection);
   const isInSelection = size > 1 && isRowSelected(selection, row);
+
+  // A hand-rolled equivalent of :focus-visible, scoped to exactly this
+  // question: was this focus caused by a pointer press, or something
+  // else (a real Tab press, or a program calling .focus() directly, e.g.
+  // an accessibility test)? CSS :focus-visible cannot answer that for a
+  // *programmatic* .focus() call the way this row's own test suite
+  // exercises it -- Chromium's own heuristic there generally does not
+  // grant focus-visible, which silently broke keyboard-reachability
+  // coverage the one time this was tried. Capture phase, a distinct prop
+  // name from dnd-kit's own `onPointerDown` in `listeners` below, so
+  // nothing here overrides its drag handling.
+  const pointerDownRef = useRef(false);
+  const [keyboardFocused, setKeyboardFocused] = useState(false);
 
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `mail-${row.id}`,
@@ -63,6 +77,21 @@ export function DragMail({ row, accountId, folderId, children }: DragMailProps) 
       // before the one that does.
       className="group/row relative"
       style={{ opacity: isDragging ? 0.5 : 1 }}
+      data-kbd-focus={keyboardFocused ? "" : undefined}
+      onPointerDownCapture={() => {
+        pointerDownRef.current = true;
+        // Only suppresses the focus event this same press causes,
+        // synchronously right after -- a later, unrelated focus (a real
+        // Tab press, say) must not read a stale flag from an earlier click
+        // that never actually focused this row.
+        window.setTimeout(() => {
+          pointerDownRef.current = false;
+        }, 0);
+      }}
+      onFocus={() => {
+        if (!pointerDownRef.current) setKeyboardFocused(true);
+      }}
+      onBlur={() => setKeyboardFocused(false)}
     >
       {children}
       {/* Drag count badge */}

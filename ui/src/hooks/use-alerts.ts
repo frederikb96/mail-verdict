@@ -55,7 +55,7 @@ export function useDismissAlert() {
 export function useDismissAllAlerts() {
   const invalidate = useInvalidateAlerts();
   return useMutation({
-    mutationFn: () => api.alerts.dismissAll(),
+    mutationFn: (kinds?: string[]) => api.alerts.dismissAll(kinds),
     onSuccess: invalidate,
   });
 }

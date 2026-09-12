@@ -9,7 +9,13 @@
 import { useEffect, useCallback } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
-import { selectedMailIdAtom, requestSelectMailAtom } from "@/lib/atoms";
+import {
+  composeIntentAtom,
+  requestMoveDialogAtom,
+  requestReplyModeAtom,
+  selectedMailIdAtom,
+  requestSelectMailAtom,
+} from "@/lib/atoms";
 import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { isEditableElement } from "@/lib/utils";
 import { isRowUnread } from "@/lib/mail-unread";
@@ -41,10 +47,22 @@ interface UseKeyboardShortcutsOptions {
  * - r: toggle read/unread
  * - u: mark as unread
  * - s: toggle star
+ * - c: compose a new message
+ * - a: reply all (the open message only -- there is no row form of this)
+ * - f: forward (the open message only)
+ * - v: move to folder (the open message only)
  *
  * Every one of them acts on the open message when there is one, and on the
  * focused row otherwise -- so a shortcut and a click on the same message's
- * own control do the same thing, auto-advance included.
+ * own control do the same thing, auto-advance included. c/a/f/v are the
+ * exception: reply, forward and move exist only for an open message (there
+ * is no equivalent row control), so they act only while the reading pane
+ * actually has one, not merely a keyboard-focused row.
+ *
+ * `/` (focus the global search field) and `?` (the shortcuts overlay) are
+ * not here -- they are not specific to a mail list, so they are registered
+ * once, globally, in components/layout/shortcuts-overlay.tsx and
+ * app-header.tsx respectively.
  */
 export function useKeyboardShortcuts({
   mails,
@@ -57,6 +75,9 @@ export function useKeyboardShortcuts({
   const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const { toggle: toggleSelection } = useSelectionGestures();
   const clearSelection = useClearSelection();
+  const setComposeIntent = useSetAtom(composeIntentAtom);
+  const setRequestReplyMode = useSetAtom(requestReplyModeAtom);
+  const setRequestMoveDialog = useSetAtom(requestMoveDialogAtom);
 
   const openIndex = selectedMailId
     ? mails.findIndex((m) => m.id === selectedMailId)
@@ -160,6 +181,31 @@ export function useKeyboardShortcuts({
           if (mail) act(mail.is_flagged ? "unflag" : "flag");
           break;
         }
+        case "c": {
+          e.preventDefault();
+          setComposeIntent({});
+          break;
+        }
+        case "a": {
+          // Acts on the open reading pane, not merely a focused row --
+          // openIndex, not currentIndex, is "something is actually open".
+          if (openIndex < 0) return;
+          e.preventDefault();
+          setRequestReplyMode({ mode: "reply-all", nonce: Date.now() });
+          break;
+        }
+        case "f": {
+          if (openIndex < 0) return;
+          e.preventDefault();
+          setRequestReplyMode({ mode: "forward", nonce: Date.now() });
+          break;
+        }
+        case "v": {
+          if (openIndex < 0) return;
+          e.preventDefault();
+          setRequestMoveDialog({ nonce: Date.now() });
+          break;
+        }
       }
     }
 
@@ -173,6 +219,9 @@ export function useKeyboardShortcuts({
     requestSelectMail,
     getCurrentMail,
     onOpen,
+    setComposeIntent,
+    setRequestReplyMode,
+    setRequestMoveDialog,
     onAction,
     toggleSelection,
     clearSelection,

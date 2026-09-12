@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   marked read here or in another mail client, or archived. Mail that is already read by the time
   its alert would go out -- read on another device while the alert was still waiting on the
   pipeline, or arriving straight into Archive or Trash -- no longer raises a system notification.
+- An alert that is not about new mail -- a message stuck on its way out -- is a system
+  notification: it always counts on the bell, whatever "Bell badge counts new mail" says, and it
+  is listed under System rather than Mail. Each tab's "Dismiss all" now dismisses only what that
+  tab lists.
+- A stuck-message alert clears itself once the message is sent or its send is undone. One whose
+  message went dead stays, since that message never went out.
 
 ### Mail
 
@@ -86,6 +92,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Pressing Undo on a send reopens the composer with everything that was written -- recipients,
   subject and body intact, for a fresh message, a reply, a forward or a draft resend -- instead
   of only cancelling the send and losing the text.
+- A single message can be moved to any folder from the reading pane, or with the `v` shortcut, via
+  a type-to-filter picker listing recently used folders first.
+- A global search field now sits in the top header on every page; `/` focuses it and Enter opens
+  the full search page with the query already applied. The header's connection indicator is shown
+  only while reconnecting or disconnected, not for an ordinary healthy connection.
+- New shortcuts: `c` composes, `a` replies all, `f` forwards and `v` moves the open message; `?`
+  shows an overlay listing every shortcut, mail, calendar and the section jumps included.
+- The phone mail list has a floating compose button and a top bar naming the open account and
+  folder, tapping which opens the same sidebar sheet the hamburger button does. The phone reading
+  view gives the subject its own full-width line instead of squeezing it beside the action icons;
+  the desktop toolbar groups its icons (tools, state, triage) with dividers.
+- An opened row no longer looks stuck mid-selection after a mouse click -- the checkbox-for-avatar
+  and pinned-open-actions reveal is now keyboard-focus only. The row's hover actions (archive,
+  junk, trash) moved into the header line itself, so they can never sit on top of the subject or
+  snippet text below.
+- One shared, locale-independent formatter (day-first, 24-hour) is now used for every timestamp in
+  the app: the list column reads a bare time for today, "Yesterday", a weekday name within the
+  last week, and a day-first date beyond that.
+- List and search-result snippets skip separator lines, a forwarded or quoted message's own header
+  block, "view in browser" lines and bare URLs, so a reply's boilerplate no longer crowds out the
+  one line worth reading.
+- A special-use folder (Inbox, Drafts, Sent, Archive, Junk, Trash) displays by that role rather
+  than its raw server name, with the server's own name in a tooltip. Initials avatars get a
+  stable colour derived from the sender, and a search result's recipient line shows full
+  addresses rather than display names, which could be ambiguous across several of the reader's
+  own identities.
+- In unread-only mode, a message read while it is on screen stays listed until you navigate away
+  or turn the toggle off and back on -- matching how an unread filter is expected to behave rather
+  than yanking the row out from under you.
+- A system notification already shown on a device closes itself once its alert resolves -- read
+  elsewhere, archived, or dismissed -- rather than sitting there until dismissed by hand.
 
 ### Settings
 

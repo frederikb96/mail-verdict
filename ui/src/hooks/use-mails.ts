@@ -19,6 +19,8 @@ import { useToast } from "@/hooks/use-toast";
 import {
   type WindowRow,
   chunkIntoPages,
+  keptWhileUnreadIds,
+  markKeptWhileUnread,
   mergeRefreshedWindow,
   windowRefreshLimit,
 } from "@/lib/mail-list-window";
@@ -197,6 +199,11 @@ async function refreshWindowOnce(
     fresh.rows,
     fresh.hasMore,
     current.pages[current.pages.length - 1]?.has_more ?? false,
+    // Only an unread-only window's own filter can be why a row the reader
+    // is looking at drops out of a fresh read -- an ordinary window has
+    // nothing to preserve it against, since a row it no longer returns
+    // has genuinely left the folder.
+    source.unreadOnly ? keptWhileUnreadIds : undefined,
   );
   qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore));
 }
@@ -645,8 +652,17 @@ export function useMarkConversationRead() {
       const ids = toRead.map((m) => m.id);
       if (ids.length === 0) return;
 
-      for (const id of ids) updateMailInThreadCaches(qc, id, { is_seen: true });
-      if (includeRow) updateMailInCache(qc, row.id, { is_seen: true });
+      for (const id of ids) {
+        updateMailInThreadCaches(qc, id, { is_seen: true });
+        markKeptWhileUnread(id);
+      }
+      if (includeRow) {
+        updateMailInCache(qc, row.id, { is_seen: true });
+        // The row's own message just left this branch's "unread" set the
+        // same way the ids above did -- an unread-only window keeps
+        // showing it until the reader navigates away.
+        markKeptWhileUnread(row.id);
+      }
       // What stays unread afterwards is at most the row's own message, read
       // from the cache now rather than from `row` -- the reading pane may
       // have marked it read meanwhile.
@@ -743,7 +759,12 @@ export function useMailAction() {
       // effect sees it in the same render as the unread flip that effect
       // reacts to.
       if (act === "mark_unread") setExplicitlyUnread(mailId);
-      if (act === "mark_read") setExplicitlyUnread((cur) => (cur === mailId ? null : cur));
+      if (act === "mark_read") {
+        setExplicitlyUnread((cur) => (cur === mailId ? null : cur));
+        // An unread-only window keeps showing this row until the reader
+        // navigates away -- see keptWhileUnreadIds' own doc comment.
+        markKeptWhileUnread(mailId);
+      }
       const removesFromList = LEAVES_FOLDER_ACTIONS.includes(act);
       const mailInfo = findMailInCache(qc, mailId);
       // A reply or forward in progress against this message's thread must

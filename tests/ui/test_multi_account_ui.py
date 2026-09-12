@@ -28,6 +28,7 @@ from tests.ui.helpers import (
     folder_button,
     mail_row,
     select_account,
+    select_unified_view,
     wait_for,
     wait_for_folder,
 )
@@ -144,11 +145,7 @@ class TestUnifiedViewIdentifiesEachAccount:
         create_account(api_client, "unified-empty")
 
         page.goto(app_server)
-        trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-        trigger.click()
-        page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
-            "Unified View", exact=True,
-        ).click()
+        select_unified_view(page)
 
         expect(page.get_by_text("No unified views yet.", exact=False)).to_be_visible(
             timeout=15_000,
@@ -193,11 +190,7 @@ class TestUnifiedViewIdentifiesEachAccount:
         wait_for(_group_ready, timeout_s=30.0, description="the unified folder group merged")
 
         page.goto(app_server)
-        trigger = page.locator('[data-slot="sidebar-header"]').get_by_role("button").first
-        trigger.click()
-        page.locator('[data-slot="dropdown-menu-item"]').get_by_text(
-            "Unified View", exact=True,
-        ).click()
+        select_unified_view(page)
 
         folder_row = page.locator('[data-testid="folder"]').filter(has_text=unified_name)
         expect(folder_row).to_be_visible(timeout=15_000)

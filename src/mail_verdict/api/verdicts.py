@@ -25,6 +25,7 @@ from mail_verdict.api.schemas import (
     SpamReviewListResponse,
     VerdictResponse,
 )
+from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Folder, Message, Verdict, VerdictSource
 
@@ -152,7 +153,7 @@ async def list_spam_review(
             subject=m.subject,
             from_addr=m.from_addr,
             received_at=m.received_at,
-            snippet=m.body_text[:120] if m.body_text else None,
+            snippet=build_snippet(m.body_text),
             verdict_id=v.id,
             model_used=v.model_used,
             reasoning=v.reasoning,

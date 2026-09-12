@@ -3,11 +3,11 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers";
 import { ThemeProvider } from "@/components/theme-provider";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/app-sidebar";
+import { AppHeader } from "@/components/layout/app-header";
 import { SSEConnector } from "@/components/layout/sse-connector";
 import { MailDndProvider } from "@/components/mail/dnd-provider";
-import { ConnectionIndicator } from "@/components/layout/connection-indicator";
 import { ErrorBoundary } from "@/components/error/error-boundary";
 import { OutboxDeadBanner } from "@/components/mail/outbox-dead-banner";
 import { UndoSendBanner } from "@/components/mail/undo-send-banner";
@@ -15,6 +15,7 @@ import { ToastContainer } from "@/components/common/toast-container";
 import { ProtocolHandler } from "@/components/layout/protocol-handler";
 import { SectionShortcuts } from "@/components/layout/section-shortcuts";
 import { ServiceWorkerNavigation } from "@/components/layout/service-worker-navigation";
+import { ShortcutsOverlay } from "@/components/layout/shortcuts-overlay";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -78,18 +79,14 @@ export default function RootLayout({
               <SSEConnector />
               <ProtocolHandler />
               <SectionShortcuts />
+              <ShortcutsOverlay />
               <ServiceWorkerNavigation />
               <MailDndProvider>
                 <ErrorBoundary section="sidebar">
                   <AppSidebar />
                 </ErrorBoundary>
                 <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                  <div className="flex items-center border-b px-2 py-0.5">
-                    <SidebarTrigger />
-                    <div className="ml-auto">
-                      <ConnectionIndicator />
-                    </div>
-                  </div>
+                  <AppHeader />
                   <OutboxDeadBanner />
                   <UndoSendBanner />
                   <ErrorBoundary section="content">
