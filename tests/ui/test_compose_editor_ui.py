@@ -1342,8 +1342,11 @@ class TestDoubleSubmitGuard:
         # A staged send reports itself through the undo banner rather than
         # a toast -- the two would say the same thing twice, and the banner
         # is where cancelling lives. Waiting on the banner is what says the
-        # send was accepted; the count below is what this test is about.
-        expect(page.get_by_role("button", name="Undo", exact=True)).to_be_visible(timeout=10_000)
+        # send was accepted; the counts below are what this test is about,
+        # so a second banner (a second send) must not end it here first.
+        expect(page.get_by_role("button", name="Undo", exact=True).first).to_be_visible(
+            timeout=10_000,
+        )
 
         def _outbox_rows() -> list[dict[str, Any]] | None:
             resp = api_client.get("/api/outbox", params={"account_id": editor_account["id"]})
