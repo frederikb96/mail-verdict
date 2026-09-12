@@ -88,7 +88,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The composer has one From control spanning every account, showing exactly which address a
   message will send from (`Name <address>`) -- replacing the separate account picker and the
   composer's own, second identity picker, which together could name an account without saying
-  which of its addresses would actually send.
+  which of its addresses would actually send. The mailbox behind the composer is no longer
+  blurred, so it stays readable while writing.
 - Pressing Undo on a send reopens the composer with everything that was written -- recipients,
   subject and body intact, for a fresh message, a reply, a forward or a draft resend -- instead
   of only cancelling the send and losing the text.

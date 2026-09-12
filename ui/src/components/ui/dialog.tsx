@@ -25,13 +25,23 @@ function DialogClose({ ...props }: DialogPrimitive.Close.Props) {
 
 function DialogOverlay({
   className,
+  blur = true,
   ...props
-}: DialogPrimitive.Backdrop.Props) {
+}: DialogPrimitive.Backdrop.Props & {
+  /** A composer over the mailbox wants to stay legible behind it -- the
+    * dim tint alone still marks the page as inert, but blurring it away
+    * entirely is what actually blocks reading another message while
+    * writing one. A discrete prop, not a className override: the same
+    * responsive-variant ordering quirk DIALOG_SIZES works around below
+    * would otherwise make a caller's own override unreliable here too. */
+  blur?: boolean
+}) {
   return (
     <DialogPrimitive.Backdrop
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        "fixed inset-0 isolate z-50 bg-black/10 duration-100 data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0",
+        blur && "supports-backdrop-filter:backdrop-blur-xs",
         className
       )}
       {...props}
@@ -63,14 +73,16 @@ function DialogContent({
   children,
   showCloseButton = true,
   size = "sm",
+  overlayBlur = true,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
   size?: keyof typeof DIALOG_SIZES
+  overlayBlur?: boolean
 }) {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      <DialogOverlay blur={overlayBlur} />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(

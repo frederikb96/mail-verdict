@@ -172,6 +172,9 @@ export function ComposeDialog() {
       </DialogTrigger>
       <DialogContent
         size="lg"
+        // Composing is not a blocking task -- the mailbox behind it should
+        // stay legible while writing, not just dimmed.
+        overlayBlur={false}
         className={cn(maximized && "flex flex-col")}
         // Inline rather than a class: the maximized size is viewport-relative and has
         // to override the size prop's own max-width, which no utility class can do

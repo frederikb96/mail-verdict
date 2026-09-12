@@ -140,3 +140,32 @@ class TestComposeFromControl:
             return match["from_addr"] if match else None
 
         assert wait_for(_sent_from, description=f"Outbox row for {subject!r}") == second_addr
+
+    def test_the_composer_does_not_blur_the_mailbox_behind_it(
+        self, page: Page, app_server: str, two_accounts: list[dict[str, Any]],
+    ) -> None:
+        """The regression this guards: the composer was a centred dialog
+        over a blurred page, so the mailbox behind it was unreadable while
+        writing. An ordinary dialog elsewhere in the app (Accounts' own
+        "Add Account") is the control -- opting the composer's overlay out
+        of blur must not turn it off everywhere."""
+        page.goto(app_server)
+        select_account(page, two_accounts[0])
+        page.get_by_role("button", name="Compose", exact=True).click()
+        dialog = page.get_by_role("dialog", name="New Message")
+        expect(dialog).to_be_visible(timeout=15_000)
+
+        compose_overlay = page.locator('[data-slot="dialog-overlay"]')
+        expect(compose_overlay).to_be_visible(timeout=10_000)
+        assert "blur" not in (compose_overlay.get_attribute("class") or "")
+
+        page.keyboard.press("Escape")
+        expect(dialog).not_to_be_visible(timeout=10_000)
+
+        page.goto(f"{app_server}/accounts")
+        page.get_by_role("button", name="Add Account", exact=True).click()
+        add_account_dialog = page.get_by_role("dialog", name="Add Account")
+        expect(add_account_dialog).to_be_visible(timeout=10_000)
+        add_account_overlay = page.locator('[data-slot="dialog-overlay"]')
+        expect(add_account_overlay).to_be_visible(timeout=10_000)
+        assert "blur" in (add_account_overlay.get_attribute("class") or "")

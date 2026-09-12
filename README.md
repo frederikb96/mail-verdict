@@ -33,7 +33,8 @@ mirror, which is what keeps it simple.
   a collapsible quote, replies thread correctly, and a sending identity is chosen for you —
   whichever address the original arrived at, or the account's starred default for a fresh message
   — shown, and changeable, in one From control spanning every account that always names the
-  exact address (`Name <address>`), not just the account. Reopening a draft continues editing it
+  exact address (`Name <address>`), not just the account, over a mailbox that stays readable
+  rather than blurred behind it. Reopening a draft continues editing it
   in place, and sending one leaves no draft behind. Pressing Send takes the message out of the
   composer at once and sends it exactly once -- the server refuses a repeat whatever the browser
   does -- and a failure brings the composer back as it was. A send can be undone for a few seconds
