@@ -10,12 +10,18 @@
  */
 
 import { useAtom } from "jotai";
-import { Bell, BellOff, Loader2, Smartphone, X } from "lucide-react";
+import { Bell, BellOff, Loader2, Monitor, Smartphone, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { alertEnabledFolderIdsAtom, isArrivalFolder } from "@/lib/alert-prefs";
+import {
+  PUSH_CHANNELS,
+  type PushChannel,
+  alertEnabledFolderIdsAtom,
+  isArrivalFolder,
+} from "@/lib/alert-prefs";
+import type { PushSubscriptionResponse } from "@/types/api";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import {
   usePushSupported,
@@ -28,6 +34,8 @@ import {
   useUpdatePushSubscription,
 } from "@/hooks/use-push";
 import { formatRelativeDate } from "@/lib/format";
+
+const CHANNEL_LABELS: Record<PushChannel, string> = { mail: "New mail", system: "System" };
 
 export function AlertSettings() {
   const { permission } = useNotificationPermission();
@@ -99,6 +107,17 @@ export function AlertSettings() {
   };
 
   const otherDevices = (allSubscriptions ?? []).filter((s) => s.id !== mySubscription?.id);
+
+  // A phone mutes a whole channel rather than folders -- its folder scope
+  // is set on the phone itself.
+  const setChannelMuted = (
+    device: PushSubscriptionResponse, channel: PushChannel, muted: boolean,
+  ) => {
+    const next = new Set(device.muted_channels);
+    if (muted) next.add(channel);
+    else next.delete(channel);
+    updatePrefs.mutate({ subscriptionId: device.id, data: { muted_channels: Array.from(next) } });
+  };
 
   const statusText = (() => {
     if (permission === "unsupported") return "This browser does not support notifications.";
@@ -226,33 +245,65 @@ export function AlertSettings() {
           <div className="flex flex-col gap-2">
             <span className="text-xs font-medium text-muted-foreground">Other devices</span>
             <div className="flex flex-col gap-1">
-              {otherDevices.map((device) => (
-                <div
-                  key={device.id}
-                  className="flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-sm"
-                >
-                  <span className="flex min-w-0 items-center gap-2">
-                    <Smartphone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{device.label ?? "Unnamed device"}</span>
-                    {device.failed_at && (
-                      <span className="shrink-0 text-xs text-destructive">unreachable</span>
+              {otherDevices.map((device) => {
+                const isPhone = device.transport === "apns";
+                return (
+                  <div
+                    key={device.id}
+                    data-testid="push-device"
+                    className="flex flex-col gap-1 rounded-md border px-2 py-1.5 text-sm"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="flex min-w-0 items-center gap-2">
+                        {isPhone ? (
+                          <Smartphone className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <Monitor className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        )}
+                        <span className="truncate">
+                          {device.label ?? (isPhone ? "iPhone" : "Unnamed device")}
+                        </span>
+                        {isPhone && (
+                          <span className="shrink-0 rounded-full border px-1.5 text-[10px] text-muted-foreground">
+                            Phone
+                          </span>
+                        )}
+                        {device.failed_at && (
+                          <span className="shrink-0 text-xs text-destructive">unreachable</span>
+                        )}
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          {device.last_seen_at ? formatRelativeDate(device.last_seen_at) : "never"}
+                        </span>
+                        <button
+                          type="button"
+                          title="Remove device"
+                          className="text-muted-foreground hover:text-destructive"
+                          onClick={() => removeDevice.mutate(device.id)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    </div>
+                    {isPhone && (
+                      <div className="flex items-center gap-4 pl-5 text-xs">
+                        {PUSH_CHANNELS.map((channel) => (
+                          <label key={channel} className="flex cursor-pointer items-center gap-1.5">
+                            <Checkbox
+                              checked={!device.muted_channels.includes(channel)}
+                              onCheckedChange={(checked) =>
+                                setChannelMuted(device, channel, checked !== true)
+                              }
+                            />
+                            {CHANNEL_LABELS[channel]}
+                          </label>
+                        ))}
+                      </div>
                     )}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-2">
-                    <span className="text-xs text-muted-foreground">
-                      {device.last_seen_at ? formatRelativeDate(device.last_seen_at) : "never"}
-                    </span>
-                    <button
-                      type="button"
-                      title="Remove device"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => removeDevice.mutate(device.id)}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </span>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import uuid
 
 import httpx
@@ -314,6 +315,27 @@ def _seed_stalled_alert(postgres_url: str) -> str:
     return _run_seed(_run())
 
 
+def _seed_native_device(postgres_url: str, label: str) -> None:
+    """A registered iPhone, as the app's own registration leaves it -- the
+    relay ticket and content key are opaque bytes to everything here."""
+
+    async def _run() -> None:
+        engine = create_async_engine(postgres_url)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO push_subscriptions (transport, installation_id, relay_url, "
+                    "encrypted_relay_ticket, encrypted_content_key, label, last_seen_at) "
+                    "VALUES ('apns', :installation, 'https://relay.example', '\\x01'::bytea, "
+                    "'\\x01'::bytea, :label, now())"
+                ),
+                {"installation": uuid.uuid4(), "label": label},
+            )
+        await engine.dispose()
+
+    _run_seed(_run())
+
+
 def _put_mail_settings(base_url: str, data: dict[str, object]) -> None:
     httpx.put(
         f"{base_url}/api/settings/mail", json={"data": data}, timeout=30.0,
@@ -445,7 +467,12 @@ class TestBadgeSetting:
             _seed_alerts_and_a_notification(postgres_url)
             stalled_title = _seed_stalled_alert(postgres_url)
 
-            page.goto(base)
+            # The number is the server's (GET /api/alerts/badge, the count a
+            # phone's badge carries too), not one the page adds up itself.
+            with page.expect_response(
+                lambda resp: "/api/alerts/badge" in resp.url and resp.ok, timeout=15_000,
+            ):
+                page.goto(base)
             expect(page.get_by_test_id("bell-badge")).to_have_text("4", timeout=15_000)
 
             page.goto(f"{base}/settings")
@@ -649,6 +676,36 @@ class TestPushSubscriptionSettings:
                 timeout=10_000,
             ):
                 folder_checkbox.click()
+        finally:
+            context.close()
+
+    def test_a_phone_is_listed_as_one_and_muting_a_channel_writes_it(
+        self, browser: Browser, app_server_with_encryption_key: str, postgres_url: str,
+    ) -> None:
+        label = f"iPhone {uuid.uuid4().hex[:6]}"
+        _seed_native_device(postgres_url, label)
+
+        context = browser.new_context()
+        page = context.new_page()
+        try:
+            page.goto(f"{app_server_with_encryption_key}/settings")
+            row = page.get_by_test_id("push-device").filter(has_text=label)
+            expect(row).to_be_visible(timeout=15_000)
+            expect(row.get_by_text("Phone", exact=True)).to_be_visible()
+
+            system = row.locator("label", has_text="System").get_by_role("checkbox")
+            mail = row.locator("label", has_text="New mail").get_by_role("checkbox")
+            expect(system).to_be_checked()
+            expect(mail).to_be_checked()
+
+            with page.expect_request(
+                lambda req: "/api/alerts/subscriptions/" in req.url and req.method == "PATCH",
+                timeout=10_000,
+            ) as patch:
+                system.click()
+            assert json.loads(patch.value.post_data or "{}") == {"muted_channels": ["system"]}
+            expect(system).not_to_be_checked(timeout=10_000)
+            expect(mail).to_be_checked()
         finally:
             context.close()
 

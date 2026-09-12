@@ -414,12 +414,22 @@ export interface VapidPublicKeyResponse {
  * provider API key follows. */
 export interface PushSubscriptionResponse {
   id: string;
+  /** "webpush" is a browser, "apns" the iPhone app. */
+  transport: "webpush" | "apns";
   label: string | null;
   alert_folder_ids: string[] | null;
   reminders_enabled: boolean;
+  /** Channels this device is not pushed on -- see PUSH_CHANNELS. */
+  muted_channels: string[];
   created_at: string;
   last_seen_at: string | null;
   failed_at: string | null;
+}
+
+/** The notification badge -- the server decides what it counts
+ * (alerts/badge.py). */
+export interface AlertBadgeResponse {
+  count: number;
 }
 
 export interface ImageExceptionResponse {

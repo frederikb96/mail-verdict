@@ -16,11 +16,11 @@
  * notifications, a folder-delete guard) disagreed -- see both hooks'
  * own comments.
  *
- * The badge and both tabs all read the same two counts computed below --
- * nowhere else re-derives "how many are unread". Which of them the badge
- * adds up, and which alert kinds are new mail rather than system
- * notifications (listed under System with the write failures), is
- * lib/bell-badge.ts's decision alone.
+ * The badge is the server's own count (GET /api/alerts/badge, see
+ * useBellBadge) -- the same number a phone's badge shows, so it is not
+ * re-derived here. Which alert kinds are new mail rather than system
+ * notifications (listed under System with the write failures) is
+ * lib/bell-badge.ts's decision.
  */
 
 import { useState } from "react";
@@ -33,6 +33,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   useAlerts,
+  useBellBadge,
   useDismissAlert,
   useDismissAllAlerts,
   useUnseenAlertCount,
@@ -44,8 +45,7 @@ import {
 } from "@/hooks/use-notifications";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useOpenMessage } from "@/hooks/use-open-message";
-import { useSettings } from "@/hooks/use-settings";
-import { MAIL_ALERT_KIND, bellBadgeCount, isMailAlertKind } from "@/lib/bell-badge";
+import { MAIL_ALERT_KIND, isMailAlertKind } from "@/lib/bell-badge";
 import { formatRelativeDate } from "@/lib/format";
 import type { AlertResponse, NotificationResponse } from "@/types/api";
 
@@ -185,13 +185,14 @@ export function NotificationBell() {
   const [open, setOpen] = useState(false);
   const { openMessageById } = useOpenMessage();
 
+  const { data: badge } = useBellBadge();
   const { data: alertCount } = useUnseenAlertCount();
   const { data: alerts, isLoading: alertsLoading } = useAlerts(200, { unseenOnly: true });
   const dismissAlert = useDismissAlert();
   const dismissAllAlerts = useDismissAllAlerts();
 
   const {
-    notifications: unacknowledged, isLoading: notificationsLoading, unacknowledgedCount,
+    notifications: unacknowledged, isLoading: notificationsLoading,
   } = useAllAccountsNotifications();
   const acknowledge = useAcknowledgeNotification();
   const acknowledgeAllEverywhere = useAcknowledgeAllNotificationsEverywhere();
@@ -201,19 +202,8 @@ export function NotificationBell() {
   const accountName = (accountId: string | null) =>
     showAccount && accountId ? (accounts?.find((a) => a.id === accountId)?.name ?? null) : null;
 
-  const { data: mailSettings } = useSettings("mail");
-
-  // unacknowledgedCount is the account-wide server count (matching the
-  // folder-delete guard's own predicate exactly), not unacknowledged's
-  // own length -- see useAllAccountsNotifications for why the two can
-  // differ.
-  const countsNewMail = mailSettings?.bell_badge_counts_new_mail;
+  const badgeCount = badge?.count ?? 0;
   const unseenAlertsByKind = alertCount?.by_kind ?? {};
-  const badgeCount = bellBadgeCount({
-    unseenAlertsByKind,
-    unacknowledgedNotifications: unacknowledgedCount,
-    countsNewMail: typeof countsNewMail === "boolean" ? countsNewMail : undefined,
-  });
   const mailAlerts = (alerts ?? []).filter((a) => isMailAlertKind(a.kind));
   const systemAlerts = (alerts ?? []).filter((a) => !isMailAlertKind(a.kind));
   const systemAlertKinds = Object.keys(unseenAlertsByKind).filter((k) => !isMailAlertKind(k));

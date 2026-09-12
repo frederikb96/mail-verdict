@@ -1,7 +1,14 @@
 /** TanStack Query hooks for the notification centre. */
 
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { alertKeys } from "@/hooks/use-alerts";
 import { useAccounts } from "@/hooks/use-accounts";
 import type { NotificationCountResponse, NotificationResponse } from "@/types/api";
 
@@ -87,6 +94,15 @@ export function useAllAccountsNotifications() {
   return { notifications, isLoading, unacknowledgedCount };
 }
 
+/** An acknowledgement moves the bell's badge as well as the lists
+ * (useBellBadge counts write failures). */
+function invalidateNotificationsAndBadge(qc: QueryClient) {
+  return () => {
+    qc.invalidateQueries({ queryKey: ["notifications"] });
+    qc.invalidateQueries({ queryKey: alertKeys.count });
+  };
+}
+
 export function useAcknowledgeNotification() {
   const qc = useQueryClient();
   return useMutation({
@@ -97,7 +113,7 @@ export function useAcknowledgeNotification() {
       accountId: string;
       notificationId: number;
     }) => api.notifications.acknowledge(accountId, notificationId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
+    onSuccess: invalidateNotificationsAndBadge(qc),
   });
 }
 
@@ -105,7 +121,7 @@ export function useAcknowledgeAllNotifications() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (accountId: string) => api.notifications.acknowledgeAll(accountId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
+    onSuccess: invalidateNotificationsAndBadge(qc),
   });
 }
 
@@ -117,6 +133,6 @@ export function useAcknowledgeAllNotificationsEverywhere() {
   return useMutation({
     mutationFn: (accountIds: string[]) =>
       Promise.all(accountIds.map((id) => api.notifications.acknowledgeAll(id))),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["notifications"] }),
+    onSuccess: invalidateNotificationsAndBadge(qc),
   });
 }

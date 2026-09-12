@@ -8,6 +8,7 @@ import type {
   AccountCreateRequest,
   AccountOrderResponse,
   AccountResponse,
+  AlertBadgeResponse,
   AlertResponse,
   AlertUnseenCountResponse,
   AccountUpdateRequest,
@@ -604,6 +605,20 @@ export const api = {
         `/alerts/unseen-count${qs({ folder_ids: folderIds ?? undefined, folder_scoped: folderIds !== null })}`,
       );
     },
+    // A registered device's badge follows its own folder scope; otherwise
+    // folderIds is sent the same way list() sends it.
+    badge(
+      scope: { subscriptionId: string } | { folderIds: string[] | null },
+    ): Promise<AlertBadgeResponse> {
+      if ("subscriptionId" in scope) {
+        return request(`/alerts/badge${qs({ subscription_id: scope.subscriptionId })}`);
+      }
+      return request(
+        `/alerts/badge${qs({
+          folder_ids: scope.folderIds ?? undefined, folder_scoped: scope.folderIds !== null,
+        })}`,
+      );
+    },
     dismiss(alertId: string): Promise<void> {
       return request(`/alerts/${alertId}/dismiss`, { method: "POST" });
     },
@@ -633,6 +648,7 @@ export const api = {
         alert_folder_ids?: string[] | null;
         reminders_enabled?: boolean;
         label?: string | null;
+        muted_channels?: string[];
       },
     ): Promise<PushSubscriptionResponse> {
       return request(`/alerts/subscriptions/${subscriptionId}`, {

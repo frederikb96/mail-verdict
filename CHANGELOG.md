@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Notifications
+
+- Notifications on the iPhone app. A phone registers as a push device like a browser does and gets
+  every alert a browser gets, sealed so the push relay in between only forwards ciphertext. A banner
+  for mail read elsewhere is withdrawn, and the app badge matches the bell. Native push needs
+  `ENCRYPTION_KEY`; `push.apns_relay_urls` lists the relays a phone may use, and an empty list turns
+  it off.
+- The bell's badge is counted by the server, the same number a phone shows.
+- Settings lists a registered phone as a phone, with its own switches for new mail and system
+  notifications.
+
 ### API
+
+- `GET /api/alerts/native-push`, `POST /api/alerts/subscriptions/native` and
+  `POST /api/alerts/subscriptions/{id}/test` for native devices; subscriptions carry `transport`
+  and `muted_channels`, and `PATCH` takes `muted_channels`.
+- `GET /api/alerts/badge` returns the notification badge for a device or a folder scope, and
+  `POST /api/alerts/lookup` says which of a set of alerts still exist.
+- `GET /api/notifications` lists every account's write failures in one request.
 
 - `GET /api/health` names the server's `version`, whether or not it is ready.
 - `docs/api-contract/` holds the OpenAPI document and every SSE event name as a committed

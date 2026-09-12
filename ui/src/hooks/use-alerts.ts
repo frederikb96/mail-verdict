@@ -9,8 +9,12 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
-import type { AlertResponse, AlertUnseenCountResponse } from "@/types/api";
+import { useEffectiveAlertFolderIds, useMyPushSubscription } from "@/hooks/use-push";
+import type {
+  AlertBadgeResponse,
+  AlertResponse,
+  AlertUnseenCountResponse,
+} from "@/types/api";
 
 export const alertKeys = {
   list: ["alerts", "list"] as const,
@@ -32,6 +36,21 @@ export function useUnseenAlertCount() {
   return useQuery<AlertUnseenCountResponse>({
     queryKey: [...alertKeys.count, folderIds],
     queryFn: () => api.alerts.unseenCount(folderIds),
+    staleTime: 10_000,
+  });
+}
+
+/** The bell's badge, counted server-side (alerts/badge.py) -- the same
+ * number a phone's badge shows. This browser's own subscription scopes
+ * it when there is one, its effective folder scope otherwise. Keyed
+ * under alertKeys.count, so whatever refreshes the count refreshes this. */
+export function useBellBadge() {
+  const { subscription } = useMyPushSubscription();
+  const folderIds = useEffectiveAlertFolderIds();
+  const scope = subscription ? { subscriptionId: subscription.id } : { folderIds };
+  return useQuery<AlertBadgeResponse>({
+    queryKey: [...alertKeys.count, "badge", scope],
+    queryFn: () => api.alerts.badge(scope),
     staleTime: 10_000,
   });
 }

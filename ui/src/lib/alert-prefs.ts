@@ -30,6 +30,11 @@ export const alertEnabledFolderIdsAtom = atomWithStorage<string[] | null>(
  * ever leaves through or lands in as a side effect of something else you
  * did -- Sent, Drafts, Trash, Junk. What an unset alert preference
  * defaults to, so pressing Send doesn't notify you about your own mail. */
+/** What a device can mute (push_subscriptions.muted_channels): new mail,
+ * and every other alert kind. */
+export const PUSH_CHANNELS = ["mail", "system"] as const;
+export type PushChannel = (typeof PUSH_CHANNELS)[number];
+
 export function isArrivalFolder(specialUse: string | null | undefined): boolean {
   return specialUse == null || specialUse === "inbox";
 }

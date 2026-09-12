@@ -251,10 +251,16 @@ export function useUpdatePushSubscription() {
       data,
     }: {
       subscriptionId: string;
-      data: { alert_folder_ids?: string[] | null; reminders_enabled?: boolean };
+      data: {
+        alert_folder_ids?: string[] | null;
+        reminders_enabled?: boolean;
+        muted_channels?: string[];
+      };
     }) => api.alerts.updateSubscription(subscriptionId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: pushSubscriptionKeys.list });
+      // A device's folder scope is its badge's scope too (useBellBadge).
+      queryClient.invalidateQueries({ queryKey: ["alerts", "count"] });
     },
   });
 }

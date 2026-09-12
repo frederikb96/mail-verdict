@@ -393,6 +393,8 @@ export function useSSE(accountId?: string) {
       source.addEventListener("notification.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["notifications"] });
+        // The bell's badge counts write failures too (useBellBadge).
+        queryClient.invalidateQueries({ queryKey: alertKeys.count });
       });
 
       // Account state events
@@ -514,6 +516,8 @@ export function useSSE(accountId?: string) {
       source.addEventListener("settings.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["settings"] });
+        // bell_badge_counts_new_mail decides what the server badge counts.
+        queryClient.invalidateQueries({ queryKey: alertKeys.count });
       });
 
       // Identities are MailVerdict's own table too -- the compose "from"
