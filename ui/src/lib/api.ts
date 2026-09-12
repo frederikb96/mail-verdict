@@ -408,6 +408,16 @@ export const api = {
     cancelPending(id: string): Promise<void> {
       return request(`/outbox/pending/${id}/cancel`, { method: "POST" });
     },
+
+    /** One staged send's attachment content -- still served after the
+     * send is cancelled, which is when Undo fetches it to reopen with. */
+    async pendingAttachment(pendingId: string, attachmentId: string): Promise<Blob> {
+      const res = await fetch(
+        `${BASE_URL}/outbox/pending/${pendingId}/attachments/${attachmentId}`,
+      );
+      if (!res.ok) throw new ApiError(res.status, res.statusText);
+      return res.blob();
+    },
   },
 
   stats: {

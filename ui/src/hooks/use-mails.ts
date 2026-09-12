@@ -446,6 +446,19 @@ function findMailInCache(qc: QueryClient, mailId: string) {
   return null;
 }
 
+/** The open message's folder and thread, read first from the ["thread", id]
+ * query the reading pane itself renders from -- always filled while the
+ * message is on screen -- and then from the loaded list pages. The
+ * ["mail", id] detail query is no source for this: nothing mounts it for
+ * the reading pane, so a guard reading it sees nothing and never holds. */
+export function openMailInCache(qc: QueryClient, mailId: string) {
+  const own = qc
+    .getQueryData<ThreadResponse>(mailKeys.thread(mailId))
+    ?.messages.find((m) => m.id === mailId);
+  if (own) return { folderId: own.folder_id, threadId: own.thread_id };
+  return findMailInCache(qc, mailId);
+}
+
 /**
  * The message that should take the reader's place when `mailId` leaves the
  * list: its neighbour in `direction`, or the one on the other side when

@@ -140,3 +140,86 @@ class TestGetMailTool:
 
         result = await mcp_client.call_tool("get_mail", {"mail_id": str(message_id)})
         assert result.data["attachments"] == []
+
+
+async def _seed_account(migrated_db: DatabaseConnection) -> uuid.UUID:
+    account_id = uuid.uuid4()
+    async with migrated_db.session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO accounts (id, name, imap_host, imap_port, imap_user, imap_password) "
+                "VALUES (:id, :name, 'imap.example.com', 993, 'user@example.com', "
+                "'\\x00' || convert_to('pw', 'UTF8'))"
+            ),
+            {"id": account_id, "name": f"acct-{account_id}"},
+        )
+        await session.commit()
+    return account_id
+
+
+async def _sends_with_subject(migrated_db: DatabaseConnection, subject: str) -> int:
+    async with migrated_db.session() as session:
+        count = await session.scalar(
+            text("SELECT count(*) FROM outbox WHERE kind = 'send' AND subject = :s"),
+            {"s": subject},
+        )
+    return int(count or 0)
+
+
+class TestSendMailIdempotencyKey:
+    """An agent whose call timed out cannot tell whether the send went
+    through, and send_mail goes at once -- a retry without a key sends the
+    message a second time."""
+
+    @pytest.mark.asyncio
+    async def test_the_same_key_twice_sends_once(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = await _seed_account(migrated_db)
+        subject = f"Keyed send {uuid.uuid4()}"
+        args = {
+            "account_id": str(account_id), "to": ["them@example.com"], "subject": subject,
+            "body_text": "hi", "idempotency_key": str(uuid.uuid4()),
+        }
+
+        first = await mcp_client.call_tool("send_mail", args)
+        second = await mcp_client.call_tool("send_mail", args)
+
+        assert first.data["success"] is True, first.data
+        assert second.data["success"] is True, second.data
+        assert second.data["outbox_id"] == first.data["outbox_id"]
+        assert await _sends_with_subject(migrated_db, subject) == 1
+
+    @pytest.mark.asyncio
+    async def test_without_a_key_every_call_sends(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = await _seed_account(migrated_db)
+        subject = f"Unkeyed send {uuid.uuid4()}"
+        args = {
+            "account_id": str(account_id), "to": ["them@example.com"], "subject": subject,
+            "body_text": "hi",
+        }
+
+        first = await mcp_client.call_tool("send_mail", args)
+        second = await mcp_client.call_tool("send_mail", args)
+
+        assert first.data["outbox_id"] != second.data["outbox_id"]
+        assert await _sends_with_subject(migrated_db, subject) == 2
+
+    @pytest.mark.asyncio
+    async def test_different_keys_send_separately(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id = await _seed_account(migrated_db)
+        subject = f"Two keys {uuid.uuid4()}"
+        for _ in range(2):
+            await mcp_client.call_tool(
+                "send_mail",
+                {
+                    "account_id": str(account_id), "to": ["them@example.com"],
+                    "subject": subject, "body_text": "hi",
+                    "idempotency_key": str(uuid.uuid4()),
+                },
+            )
+        assert await _sends_with_subject(migrated_db, subject) == 2

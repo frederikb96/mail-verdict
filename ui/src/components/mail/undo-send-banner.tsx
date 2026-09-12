@@ -9,11 +9,37 @@ import { useCancelPendingSend, usePendingSends } from "@/hooks/use-outbox";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useIdentities } from "@/hooks/use-identities";
 import { useToast } from "@/hooks/use-toast";
+import { api } from "@/lib/api";
 import { composeIntentAtom, selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 import type { Identity, PendingSendResponse } from "@/types/api";
 
 function secondsRemaining(sendAfter: string): number {
   return Math.max(0, Math.ceil((new Date(sendAfter).getTime() - Date.now()) / 1000));
+}
+
+/** A cancelled send's staged attachments, fetched back as Files -- pasted
+ * images (the ones carrying a content id) apart from the rest, since they
+ * go back into the body rather than the attachment list. Any that could
+ * not be fetched are named in `missing`. */
+async function restoreAttachments(row: PendingSendResponse) {
+  const attachments: File[] = [];
+  const inlineImages: Array<{ contentId: string; file: File }> = [];
+  const missing: string[] = [];
+  const results = await Promise.allSettled(
+    row.attachments.map(async (att) => {
+      const blob = await api.outbox.pendingAttachment(row.id, att.id);
+      return new File([blob], att.filename ?? "attachment", {
+        type: att.content_type ?? blob.type,
+      });
+    }),
+  );
+  results.forEach((result, i) => {
+    const att = row.attachments[i];
+    if (result.status === "rejected") missing.push(att.filename ?? "attachment");
+    else if (att.content_id) inlineImages.push({ contentId: att.content_id, file: result.value });
+    else attachments.push(result.value);
+  });
+  return { attachments, inlineImages, missing };
 }
 
 function PendingSendRow({
@@ -51,15 +77,20 @@ function PendingSendRow({
         disabled={cancel.isPending}
         onClick={() =>
           cancel.mutate(row.id, {
-            onSuccess: () => {
+            onSuccess: async () => {
               pushToast("Send cancelled", "success");
               // Reopens with everything that was staged -- to/cc/bcc,
               // subject, the composed body (quote included, since it was
-              // already part of body_html) and, for a reply or a
-              // draft-resend, the headers that thread or supersede
-              // correctly on a second Send. The row is the one durable
-              // copy of all of it once the original composer unmounted.
+              // already part of body_html), its attachments and pasted
+              // images and, for a reply or a draft-resend, the headers
+              // that thread or supersede correctly on a second Send. The
+              // row is the one durable copy of all of it once the
+              // original composer unmounted.
+              const restored = await restoreAttachments(row);
               setComposeIntent({
+                attachments: restored.attachments,
+                inlineImages: restored.inlineImages,
+                unrestoredAttachments: restored.missing,
                 accountId: row.account_id,
                 identityId: (identities ?? []).find(
                   (i) => i.account_id === row.account_id && i.address === row.from_addr,

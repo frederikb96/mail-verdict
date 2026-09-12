@@ -71,7 +71,7 @@ from mail_verdict.api.contacts import (
     update_contact as _update_contact,
 )
 from mail_verdict.api.identities import resolve_send_from_addr
-from mail_verdict.api.outbox import require_recipients
+from mail_verdict.api.outbox import replay_submission, require_recipients
 from mail_verdict.api.schemas import (
     ContactAddressIO,
     ContactCreateRequest,
@@ -83,6 +83,7 @@ from mail_verdict.api.schemas import (
     EventDeleteRequest,
     EventReminder,
     EventUpdateRequest,
+    OutboxResponse,
     RespondRequest,
 )
 from mail_verdict.database.connection import get_db_connection
@@ -93,6 +94,7 @@ from mail_verdict.database.repository import (
     TagRepository,
     VerdictRepository,
 )
+from mail_verdict.outbox.submissions import record_submission
 from mail_verdict.postimap.actions import insert_outbox, move_message, set_flags
 
 mcp = FastMCP(
@@ -577,13 +579,22 @@ async def _create_outbox_row(
     in_reply_to: str | None,
     references: list[str] | None,
     identity_id: str | None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """Shared insert path for send_mail and draft_mail."""
+    """Shared insert path for send_mail and draft_mail. A key already
+    used answers with the row it created -- the same record POST /outbox
+    keeps, so a key means the same thing on both surfaces."""
     if kind == "send":
         require_recipients(to, cc, bcc)
     db = get_db_connection()
     account_uuid = uuid.UUID(account_id)
+    key = uuid.UUID(idempotency_key) if idempotency_key else None
     async with db.session() as session:
+        if key is not None:
+            repeat = await replay_submission(session, key, kind)
+            if repeat is not None:
+                status = repeat.status if isinstance(repeat, OutboxResponse) else "pending"
+                return {"success": True, "outbox_id": str(repeat.id), "status": status}
         from_addr = await resolve_send_from_addr(
             session, account_uuid, uuid.UUID(identity_id) if identity_id else None,
         )
@@ -600,6 +611,8 @@ async def _create_outbox_row(
             in_reply_to=in_reply_to,
             references=references,
         )
+        if key is not None:
+            await record_submission(session, key, kind, outbox.id)
         return {"success": True, "outbox_id": str(outbox.id), "status": outbox.status}
 
 
@@ -623,6 +636,7 @@ async def send_mail(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     identity_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Send an email through the given account's SMTP settings.
@@ -633,6 +647,10 @@ async def send_mail(
     It also goes at once. The undo window the REST POST /outbox offers a
     person is not applied here and cannot be cancelled from here -- there
     is nobody watching a grace period on an agent's behalf.
+
+    Pass an idempotency_key whenever a call might be retried: a call that
+    timed out may still have sent, and the same key again returns the row
+    the first call created instead of sending a second time.
 
     Args:
         account_id: Account UUID to send from (must have smtp_host/smtp_port set)
@@ -648,6 +666,9 @@ async def send_mail(
             account's default identity, or its imap_user if it has none.
             Identities are managed via the REST API's /identities endpoints,
             not exposed as an MCP tool
+        idempotency_key: A UUID generated once per message, optional --
+            repeating it returns the first call's row rather than sending
+            again
 
     Returns:
         {"success": bool, "outbox_id": str, "status": str} -- status starts
@@ -656,6 +677,7 @@ async def send_mail(
     """
     return await _create_outbox_row(
         account_id, "send", to, subject, body_text, cc, bcc, in_reply_to, references, identity_id,
+        idempotency_key=idempotency_key,
     )
 
 

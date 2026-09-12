@@ -18,6 +18,7 @@ import { invalidateAllFolderCaches } from "@/hooks/use-folders";
 import {
   ACTION_LABELS,
   UNDOABLE_ACTIONS,
+  openMailInCache,
   refreshMailViews,
   updateFolderCounts,
 } from "@/hooks/use-mails";
@@ -269,19 +270,16 @@ export function useBulkAction() {
       // Matched on the thread rather than requiring the open message
       // itself to be the reply's source -- same reasoning useMailAction's
       // own hasDirtyReply carries.
-      const selectedThreadId = selectedMailId
-        ? qc.getQueryData<{ thread_id?: string }>(["mail", selectedMailId])?.thread_id
-        : undefined;
+      const openMail = selectedMailId ? openMailInCache(qc, selectedMailId) : null;
       const hasDirtyReply =
-        selectedThreadId != null && selectedThreadId === activeReplyDirtyForThreadId;
+        openMail != null && openMail.threadId === activeReplyDirtyForThreadId;
 
       const wasSelected =
         removesFromList &&
         !hasDirtyReply &&
         selectedMailId != null &&
         (state.predicate
-          ? qc.getQueryData<{ folder_id?: string }>(["mail", selectedMailId])?.folder_id ===
-            state.predicate.folderId
+          ? openMail?.folderId === state.predicate.folderId
           : explicitIds?.has(selectedMailId));
       if (wasSelected) setSelectedMailId(null);
 

@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - A message that waits on its way out far longer than it should -- not yet picked up by PostIMAP,
   or held after its undo window -- now raises an alert in the bell, once, rather than sitting
   there silently. The threshold is `outbox.stalled_alert_after_seconds` in `config/config.yaml`.
+  When the account is why it waits, the alert says so: paused, disabled, disconnected and being
+  retried, or never connected at all.
 - New mail always reaches the open list, and every unread count agrees with it. A list scrolled
   more than a few pages deep used to skip its refresh on arriving mail while the folder count
   still went up, so the count showed mail the list did not; every open list now re-reads all the
@@ -91,8 +93,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   which of its addresses would actually send. The mailbox behind the composer is no longer
   blurred, so it stays readable while writing.
 - Pressing Undo on a send reopens the composer with everything that was written -- recipients,
-  subject and body intact, for a fresh message, a reply, a forward or a draft resend -- instead
-  of only cancelling the send and losing the text.
+  subject, body, attachments and pasted images intact, for a fresh message, a reply, a forward or
+  a draft resend -- instead of only cancelling the send and losing the text. An attachment that
+  cannot be brought back is named in the reopened composer rather than silently missing.
 - A single message can be moved to any folder from the reading pane, or with the `v` shortcut, via
   a type-to-filter picker listing recently used folders first.
 - A global search field now sits in the top header on every page; `/` focuses it and Enter opens
@@ -198,7 +201,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `POST /outbox` takes an optional `idempotency_key`. A repeat carrying the same key returns the
   row the first request created instead of creating a second; reusing a key for a different kind
   is refused with 409. A send naming a draft that another send is already carrying is refused
-  with 409.
+  with 409. The MCP `send_mail` tool takes the same optional `idempotency_key`, so an agent
+  retrying after a timeout cannot send twice.
+- A pending send lists its attachments (`attachments`, without content), and `GET
+  /outbox/pending/{id}/attachments/{attachment_id}` serves one's content, a cancelled send's
+  included.
 
 ## [5.6.1] - 2026-09-10
 

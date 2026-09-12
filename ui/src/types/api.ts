@@ -619,6 +619,16 @@ export interface OutboxResponse {
 
 /** A send still held in its undo window -- not yet an outbox row at all.
  * Distinguished from OutboxResponse by the presence of send_after. */
+/** A staged send's attachment, without its bytes. content_id is set for a
+ * pasted image the body references as `cid:<content_id>`. */
+export interface PendingSendAttachmentSummary {
+  id: string;
+  filename: string | null;
+  content_type: string | null;
+  size_bytes: number | null;
+  content_id: string | null;
+}
+
 export interface PendingSendResponse {
   id: string;
   account_id: string;
@@ -633,6 +643,7 @@ export interface PendingSendResponse {
   in_reply_to: string | null;
   references: string[] | null;
   replaces_message_id: string | null;
+  attachments: PendingSendAttachmentSummary[];
 }
 
 export type OutboxCreateResult = OutboxResponse | PendingSendResponse;

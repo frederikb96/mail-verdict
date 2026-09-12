@@ -7,6 +7,7 @@ zero-second window (or a draft) behaves exactly as it always did.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Iterator
 from unittest.mock import patch
@@ -292,6 +293,58 @@ class TestPendingSendCarriesReopenableContent:
         assert second.json()["id"] == first.json()["id"]
         assert second.json()["body_html"] == self._BODY["body_html"]
         assert second.json()["references"] == self._BODY["references"]
+
+
+class TestPendingSendKeepsItsAttachments:
+    """Undo reopens a composer from the staged row, and a composer reopened
+    without the attachments looks complete while it is not -- the re-send
+    would silently go out without them. The staged row lists each one, and
+    its content stays fetchable after the cancel, which is the moment Undo
+    asks for it."""
+
+    def _stage_with_attachment(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> tuple[uuid.UUID, dict]:
+        account_id = client.portal.call(_seed_account_and_settings, migrated_db, 30.0)
+        data = {
+            "account_id": str(account_id), "kind": "send",
+            "to": ["them@example.com"], "subject": "hi", "body_text": "hi",
+        }
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            resp = client.post(
+                "/outbox",
+                data={"data": json.dumps(data)},
+                files=[("attachments", ("notes.txt", b"attached content", "text/plain"))],
+            )
+        assert resp.status_code == 201, resp.text
+        return account_id, resp.json()
+
+    def test_staging_and_listing_name_each_attachment(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        account_id, created = self._stage_with_attachment(client, migrated_db)
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            listed = client.get(f"/outbox/pending?account_id={account_id}").json()
+
+        for row in (created, listed[0]):
+            assert [
+                (a["filename"], a["content_type"], a["size_bytes"]) for a in row["attachments"]
+            ] == [("notes.txt", "text/plain", len(b"attached content"))]
+
+    def test_a_cancelled_sends_attachment_content_is_still_served(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        _account_id, created = self._stage_with_attachment(client, migrated_db)
+        attachment_id = created["attachments"][0]["id"]
+        with patch(_OUTBOX_TARGET, return_value=migrated_db):
+            assert client.post(f"/outbox/pending/{created['id']}/cancel").status_code == 204
+            resp = client.get(f"/outbox/pending/{created['id']}/attachments/{attachment_id}")
+            elsewhere = client.get(f"/outbox/pending/{uuid.uuid4()}/attachments/{attachment_id}")
+        assert resp.status_code == 200, resp.text
+        assert resp.content == b"attached content"
+        assert resp.headers["content-type"].startswith("text/plain")
+        # Scoped to its own send: the attachment id alone does not reach it.
+        assert elsewhere.status_code == 404
 
 
 class TestPendingSendAnnouncesItself:

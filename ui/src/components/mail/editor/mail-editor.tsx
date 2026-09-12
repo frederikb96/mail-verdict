@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type Editor, EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
@@ -17,6 +17,7 @@ import {
   convertDataUriImages,
   extractReferencedContentIds,
   registerInlineImage,
+  restoreInlineImages,
 } from "@/components/mail/editor/inline-image";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +46,10 @@ interface MailEditorProps {
    * embedded quote (see quoted-message-node.ts's parseHTML), or a whole
    * previously-saved draft body. */
   initialHtml?: string;
+  /** Pasted images `initialHtml` references as `cid:<contentId>` -- a
+   * reopened staged send's -- put back as live inline images, so they
+   * show and are sent again. Read once, when the editor is created. */
+  initialInlineImages?: ReadonlyArray<{ contentId: string; file: File }>;
   autoFocus?: boolean;
   /** Compact (reply box) vs a full dialog -- only the available height
    * differs; everything else about the editor is the same surface. */
@@ -74,6 +79,7 @@ interface MailEditorProps {
  */
 export function MailEditor({
   initialHtml = "",
+  initialInlineImages = [],
   autoFocus = false,
   compact = false,
   onDirtyChange,
@@ -81,6 +87,9 @@ export function MailEditor({
   heightPx,
   fillHeight = false,
 }: MailEditorProps) {
+  // Once, alongside the editor itself -- the restored images' blob URLs
+  // are revoked with the rest on unmount, below.
+  const [seed] = useState(() => restoreInlineImages(initialHtml, initialInlineImages));
   const initialJson = useRef<string | null>(null);
   // handlePaste is captured once by useEditor's own initial options, so a
   // stale closure over `editor` (always undefined at that point, since
@@ -92,7 +101,9 @@ export function MailEditor({
   // survives independently of however the node is later moved, resized
   // or removed. getInlineImages() below is what makes "removed from the
   // document" and "no longer uploaded" the same predicate.
-  const inlineImagesRef = useRef<Map<string, InlineImageEntry>>(new Map());
+  const inlineImagesRef = useRef<Map<string, InlineImageEntry>>(
+    new Map(seed.entries.map((entry) => [entry.contentId, entry])),
+  );
 
   useEffect(
     () => () => {
@@ -129,7 +140,7 @@ export function MailEditor({
       InlineImage,
       CutLine,
     ],
-    content: initialHtml,
+    content: seed.html,
     editorProps: {
       attributes: {
         "aria-label": "Message body",

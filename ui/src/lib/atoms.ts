@@ -125,10 +125,12 @@ export const threadedViewAtom = atomWithStorage<boolean>(
 /** A compose dialog can be asked to open from anywhere (a contact's email,
  * an event's "email the attendees", a `mailto:` link the browser routes
  * here, an undone send's own reopen) without owning its own trigger.
- * identityId/inReplyTo/references/replacesMessageId only matter for the
- * last of those -- reopening what was staged for a reply, forward or
- * draft-resend the same way it was about to be sent, rather than as a
- * disconnected fresh message. */
+ * Everything after bodyHtml only matters for the last of those --
+ * reopening what was staged for a reply, forward or draft-resend the same
+ * way it was about to be sent, attachments and pasted images included,
+ * rather than as a disconnected fresh message. unrestoredAttachments names
+ * any attachment that could not be brought back, so the reopened composer
+ * says so instead of looking complete. */
 export const composeIntentAtom = atom<{
   accountId?: string;
   identityId?: string;
@@ -140,6 +142,9 @@ export const composeIntentAtom = atom<{
   inReplyTo?: string;
   references?: string[];
   replacesMessageId?: string;
+  attachments?: File[];
+  inlineImages?: Array<{ contentId: string; file: File }>;
+  unrestoredAttachments?: string[];
 } | null>(null);
 
 /** Asks the currently open message's own ReplyBox to start a reply-all or
@@ -156,11 +161,6 @@ export const requestReplyModeAtom = atom<{ mode: "reply-all" | "forward"; nonce:
  * currently open -- the `v` shortcut's counterpart to the toolbar button
  * that does the same thing. Same nonce reasoning as requestReplyModeAtom. */
 export const requestMoveDialogAtom = atom<{ nonce: number } | null>(null);
-
-/** Focuses the global search field in the top header -- the `/` shortcut,
- * consumed by the one component that owns that field regardless of which
- * page is on screen. */
-export const requestFocusSearchAtom = atom<number>(0);
 
 // --- Calendar ---
 

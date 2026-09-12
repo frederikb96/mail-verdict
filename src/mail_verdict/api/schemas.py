@@ -1013,6 +1013,18 @@ class OutboxResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PendingSendAttachmentSummary(BaseModel):
+    """A staged send's attachment, without its bytes -- fetched separately
+    at GET /outbox/pending/{id}/attachments/{attachment_id}. content_id is
+    set for a pasted image the body references as `cid:<content_id>`."""
+
+    id: uuid.UUID
+    filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    content_id: str | None = None
+
+
 class PendingSendResponse(BaseModel):
     """A send held in MailVerdict's own staging table for its undo window.
 
@@ -1022,7 +1034,8 @@ class PendingSendResponse(BaseModel):
 
     Carries everything Undo needs to reopen a composer with what was
     written -- the pending row is the one durable copy of it between
-    pressing Send and the window passing.
+    pressing Send and the window passing. Attachments included, pasted
+    images among them.
     """
 
     id: uuid.UUID
@@ -1038,6 +1051,7 @@ class PendingSendResponse(BaseModel):
     in_reply_to: str | None = None
     references: list[str] | None = None
     replaces_message_id: uuid.UUID | None = None
+    attachments: list[PendingSendAttachmentSummary] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
