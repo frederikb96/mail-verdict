@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- `GET /messages/{id}/thread` and `GET /messages/{id}` now batch their tags, attachments, latest
+  verdict and image-allowlist lookups into a handful of queries for the whole request instead of
+  several per message in the conversation -- a long thread used to pay for its length on every
+  open.
+
 ## [6.2.1] - 2026-09-12
 
 - An accepted, tentative or declined invitation now shows "Reply sent" once the RSVP reply

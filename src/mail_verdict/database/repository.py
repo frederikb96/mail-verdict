@@ -1474,6 +1474,62 @@ async def list_row_marks(
     return {mid: RowMarks(mid in attached, latest.get(mid)) for mid in ids}
 
 
+async def list_tags_for_mails(
+    session: AsyncSession, mail_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, list[MailTag]]:
+    """
+    Every tag for a set of messages, in one query rather than one per
+    message -- get_thread's and get_message's own shape, the same
+    reasoning as list_row_marks above.
+
+    Returns:
+        A (possibly empty) list for every id given
+    """
+    ids = list(mail_ids)
+    if not ids:
+        return {}
+    result = await session.execute(select(MailTag).where(MailTag.mail_id.in_(ids)))
+    grouped: dict[uuid.UUID, list[MailTag]] = {mid: [] for mid in ids}
+    for tag in result.scalars().all():
+        grouped[tag.mail_id].append(tag)
+    return grouped
+
+
+async def list_attachments_for_mails(
+    session: AsyncSession, message_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, list[Attachment]]:
+    """Every attachment for a set of messages, in one query. See
+    list_tags_for_mails for why this exists alongside AttachmentRepository's
+    own per-message get_by_message_id."""
+    ids = list(message_ids)
+    if not ids:
+        return {}
+    result = await session.execute(select(Attachment).where(Attachment.message_id.in_(ids)))
+    grouped: dict[uuid.UUID, list[Attachment]] = {mid: [] for mid in ids}
+    for attachment in result.scalars().all():
+        grouped[attachment.message_id].append(attachment)
+    return grouped
+
+
+async def list_latest_verdicts_for_mails(
+    session: AsyncSession, mail_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, Verdict]:
+    """The latest verdict per message for a set of messages, in one query --
+    same DISTINCT ON shape as list_row_marks's own verdict half, but
+    returning the full row rather than just is_spam. Messages never
+    classified are simply absent from the result."""
+    ids = list(mail_ids)
+    if not ids:
+        return {}
+    result = await session.execute(
+        select(Verdict)
+        .where(Verdict.mail_id.in_(ids))
+        .order_by(Verdict.mail_id, desc(Verdict.created_at))
+        .distinct(Verdict.mail_id)
+    )
+    return {verdict.mail_id: verdict for verdict in result.scalars().all()}
+
+
 class SyncNotificationRepository:
     """Repository for sync_notifications read operations.
 

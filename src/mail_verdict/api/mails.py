@@ -29,12 +29,11 @@ from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, tupl
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, defer
 
-from mail_verdict.api.deps import (
-    get_attachment_repo,
-    get_tag_repo,
-    get_verdict_repo,
+from mail_verdict.api.image_exceptions import (
+    ImageAllowlist,
+    is_sender_image_allowed,
+    load_image_allowlist,
 )
-from mail_verdict.api.image_exceptions import is_sender_image_allowed
 from mail_verdict.api.schemas import (
     AttachmentSummary,
     BulkActionRequest,
@@ -63,8 +62,15 @@ from mail_verdict.core.sanitizer import (
 )
 from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Attachment, Folder, Message
-from mail_verdict.database.repository import FolderRepository, RowMarks, list_row_marks
+from mail_verdict.database.models import Attachment, Folder, MailTag, Message, Verdict
+from mail_verdict.database.repository import (
+    FolderRepository,
+    RowMarks,
+    list_attachments_for_mails,
+    list_latest_verdicts_for_mails,
+    list_row_marks,
+    list_tags_for_mails,
+)
 from mail_verdict.postimap.actions import (
     expunge,
     expunge_bulk,
@@ -665,6 +671,72 @@ async def locate_message(message_id: uuid.UUID) -> MessageLocation:
     )
 
 
+def _to_message_detail(
+    m: Message,
+    *,
+    body_html: str | None,
+    has_blocked_images: bool,
+    images_allowed: bool,
+    tags: list[MailTag],
+    attachments: list[Attachment],
+    verdict: Verdict | None,
+) -> MessageDetail:
+    """
+    Assemble a MessageDetail from a message row plus its tags, attachments
+    and latest verdict -- the one place get_message and get_thread agree
+    on the response shape, so the fields either endpoint returns cannot
+    silently drift apart from the other. Callers own sanitizing body_html
+    and deciding has_blocked_images/images_allowed, since get_message and
+    get_thread apply load_images differently -- see each one's docstring.
+    """
+    return MessageDetail(
+        id=m.id,
+        account_id=m.account_id,
+        folder_id=m.folder_id,
+        thread_id=m.thread_id,
+        pending_sync=m.imap_uid is None,
+        is_truncated=m.is_truncated,
+        message_id=m.message_id,
+        subject=m.subject,
+        from_addr=m.from_addr,
+        to_addrs=m.to_addrs,
+        cc_addrs=m.cc_addrs,
+        bcc_addrs=m.bcc_addrs,
+        reply_to=m.reply_to,
+        in_reply_to=m.in_reply_to,
+        references=m.msg_references,
+        body_text=m.body_text,
+        body_html=body_html,
+        received_at=m.received_at,
+        size_bytes=m.size_bytes,
+        is_seen=m.is_seen,
+        is_flagged=m.is_flagged,
+        is_answered=m.is_answered,
+        is_draft=m.is_draft,
+        keywords=m.keywords or [],
+        snippet=build_snippet(m.body_text),
+        created_at=m.created_at,
+        has_blocked_images=has_blocked_images,
+        images_allowed=images_allowed,
+        tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
+        attachments=[
+            AttachmentSummary(
+                id=a.id, filename=a.filename, content_type=a.content_type, size_bytes=a.size_bytes,
+            )
+            for a in attachments
+        ],
+        verdict=(
+            VerdictResponse(
+                id=verdict.id, message_id=verdict.mail_id, is_spam=verdict.is_spam,
+                model_used=verdict.model_used, reasoning=verdict.reasoning,
+                source=verdict.source.value, created_at=verdict.created_at,
+            )
+            if verdict
+            else None
+        ),
+    )
+
+
 @router.get("/{message_id}", response_model=MessageDetail)
 async def get_message(
     message_id: uuid.UUID,
@@ -690,86 +762,45 @@ async def get_message(
             select(Message).options(*_DETAIL_DEFERRED_COLUMNS).where(Message.id == message_id)
         )
         msg = result.scalar_one_or_none()
-    if msg is None:
-        raise HTTPException(status_code=404, detail="Message not found")
+        if msg is None:
+            raise HTTPException(status_code=404, detail="Message not found")
 
-    tag_repo = get_tag_repo()
-    tags = await tag_repo.get_tags_for_mail(message_id)
+        tags = (await list_tags_for_mails(session, [message_id]))[message_id]
+        attachments = (await list_attachments_for_mails(session, [message_id]))[message_id]
+        verdict = (await list_latest_verdicts_for_mails(session, [message_id])).get(message_id)
 
-    attachment_repo = get_attachment_repo()
-    attachments = await attachment_repo.get_by_message_id(message_id)
+        body_html = msg.body_html
+        images_allowed = False
+        has_blocked_images = False
+        if body_html:
+            body_html = sanitize_email_html(body_html)
+            body_html = _rewrite_cid_references(body_html, message_id, attachments)
 
-    verdict_repo = get_verdict_repo()
-    verdict = await verdict_repo.get_latest_for_mail(message_id)
+            allowlist = await load_image_allowlist(session, msg.account_id)
+            images_allowed = allowlist.allows(msg.from_addr)
 
-    body_html = msg.body_html
-    images_allowed = False
-    has_blocked_images = False
-    if body_html:
-        body_html = sanitize_email_html(body_html)
-        body_html = _rewrite_cid_references(body_html, message_id, attachments)
+            # load_images defaults to false here, unlike get_thread's own
+            # default of true (see its own docstring) -- so a caller of this
+            # endpoint passing true has always made a deliberate, one-off ask,
+            # whether or not the sender happens to be allowlisted. Gating it
+            # on images_allowed too, the way get_thread's own default call
+            # must, would make the override a no-op for exactly the senders
+            # it exists to help with.
+            if load_images:
+                body_html = restore_remote_images(body_html)
+                has_blocked_images = False
+            else:
+                body_html, has_blocked_images = strip_remote_images(body_html)
 
-        images_allowed = await is_sender_image_allowed(msg.account_id, msg.from_addr)
-
-        # load_images defaults to false here, unlike get_thread's own
-        # default of true (see its own docstring) -- so a caller of this
-        # endpoint passing true has always made a deliberate, one-off ask,
-        # whether or not the sender happens to be allowlisted. Gating it
-        # on images_allowed too, the way get_thread's own default call
-        # must, would make the override a no-op for exactly the senders
-        # it exists to help with.
-        if load_images:
-            body_html = restore_remote_images(body_html)
-            has_blocked_images = False
-        else:
-            body_html, has_blocked_images = strip_remote_images(body_html)
-
-    return MessageDetail(
-        id=msg.id,
-        account_id=msg.account_id,
-        folder_id=msg.folder_id,
-        thread_id=msg.thread_id,
-        pending_sync=msg.imap_uid is None,
-        is_truncated=msg.is_truncated,
-        message_id=msg.message_id,
-        subject=msg.subject,
-        from_addr=msg.from_addr,
-        to_addrs=msg.to_addrs,
-        cc_addrs=msg.cc_addrs,
-        bcc_addrs=msg.bcc_addrs,
-        reply_to=msg.reply_to,
-        in_reply_to=msg.in_reply_to,
-        references=msg.msg_references,
-        body_text=msg.body_text,
-        body_html=body_html,
-        received_at=msg.received_at,
-        size_bytes=msg.size_bytes,
-        is_seen=msg.is_seen,
-        is_flagged=msg.is_flagged,
-        is_answered=msg.is_answered,
-        is_draft=msg.is_draft,
-        keywords=msg.keywords or [],
-        snippet=build_snippet(msg.body_text),
-        created_at=msg.created_at,
-        has_blocked_images=has_blocked_images,
-        images_allowed=images_allowed,
-        tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
-        attachments=[
-            AttachmentSummary(
-                id=a.id, filename=a.filename, content_type=a.content_type, size_bytes=a.size_bytes,
-            )
-            for a in attachments
-        ],
-        verdict=(
-            VerdictResponse(
-                id=verdict.id, message_id=verdict.mail_id, is_spam=verdict.is_spam,
-                model_used=verdict.model_used, reasoning=verdict.reasoning,
-                source=verdict.source.value, created_at=verdict.created_at,
-            )
-            if verdict
-            else None
-        ),
-    )
+        return _to_message_detail(
+            msg,
+            body_html=body_html,
+            has_blocked_images=has_blocked_images,
+            images_allowed=images_allowed,
+            tags=tags,
+            attachments=attachments,
+            verdict=verdict,
+        )
 
 
 def _rewrite_cid_references(
@@ -834,22 +865,35 @@ async def get_thread(
             .order_by(Message.received_at)
         )
         thread_messages = list(result.scalars().all())
+        mail_ids = [m.id for m in thread_messages]
 
-        tag_repo = get_tag_repo()
-        attachment_repo = get_attachment_repo()
-        verdict_repo = get_verdict_repo()
+        # Four queries total for the whole conversation rather than four
+        # per message: batching tags/attachments/verdicts here is what
+        # keeps get_thread's own cost from scaling with thread length.
+        tags_by_mail = await list_tags_for_mails(session, mail_ids)
+        attachments_by_mail = await list_attachments_for_mails(session, mail_ids)
+        verdicts_by_mail = await list_latest_verdicts_for_mails(session, mail_ids)
+
+        # A thread never spans accounts (thread_id is resolved and indexed
+        # per account -- see postimap/actions.py's own note on how a Sent
+        # reply resolves onto it), so one allowlist load covers every
+        # sender in the conversation.
+        allowlist = (
+            await load_image_allowlist(session, thread_messages[0].account_id)
+            if thread_messages
+            else ImageAllowlist(frozenset(), frozenset())
+        )
 
         details: list[MessageDetail] = []
         for m in thread_messages:
-            tags = await tag_repo.get_tags_for_mail(m.id)
-            attachments = await attachment_repo.get_by_message_id(m.id)
-            verdict = await verdict_repo.get_latest_for_mail(m.id)
+            attachments = attachments_by_mail[m.id]
+            verdict = verdicts_by_mail.get(m.id)
 
             body_html = m.body_html
             if body_html:
                 body_html = sanitize_email_html(body_html)
                 body_html = _rewrite_cid_references(body_html, m.id, attachments)
-                images_allowed = await is_sender_image_allowed(m.account_id, m.from_addr)
+                images_allowed = allowlist.allows(m.from_addr)
                 body_html, has_blocked = (
                     (restore_remote_images(body_html), False)
                     if images_allowed and load_images
@@ -859,37 +903,14 @@ async def get_thread(
                 images_allowed, has_blocked = False, False
 
             details.append(
-                MessageDetail(
-                    id=m.id, account_id=m.account_id, folder_id=m.folder_id,
-                    thread_id=m.thread_id, pending_sync=m.imap_uid is None,
-                    is_truncated=m.is_truncated, message_id=m.message_id,
-                    subject=m.subject, from_addr=m.from_addr, to_addrs=m.to_addrs,
-                    cc_addrs=m.cc_addrs, bcc_addrs=m.bcc_addrs, reply_to=m.reply_to,
-                    in_reply_to=m.in_reply_to, references=m.msg_references,
-                    body_text=m.body_text, body_html=body_html,
-                    received_at=m.received_at, size_bytes=m.size_bytes,
-                    is_seen=m.is_seen, is_flagged=m.is_flagged, is_answered=m.is_answered,
-                    is_draft=m.is_draft, keywords=m.keywords or [],
-                    snippet=build_snippet(m.body_text),
-                    created_at=m.created_at, has_blocked_images=has_blocked,
+                _to_message_detail(
+                    m,
+                    body_html=body_html,
+                    has_blocked_images=has_blocked,
                     images_allowed=images_allowed,
-                    tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
-                    attachments=[
-                        AttachmentSummary(
-                            id=a.id, filename=a.filename,
-                            content_type=a.content_type, size_bytes=a.size_bytes,
-                        )
-                        for a in attachments
-                    ],
-                    verdict=(
-                        VerdictResponse(
-                            id=verdict.id, message_id=verdict.mail_id, is_spam=verdict.is_spam,
-                            model_used=verdict.model_used, reasoning=verdict.reasoning,
-                            source=verdict.source.value, created_at=verdict.created_at,
-                        )
-                        if verdict
-                        else None
-                    ),
+                    tags=tags_by_mail[m.id],
+                    attachments=attachments,
+                    verdict=verdict,
                 )
             )
         return ThreadResponse(messages=details)

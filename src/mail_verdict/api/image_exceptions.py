@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import NamedTuple
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import delete, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.schemas import (
     ImageExceptionCreate,
@@ -24,6 +26,49 @@ from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Account, ImageException, ImageExceptionType
 
 logger = logging.getLogger(__name__)
+
+
+class ImageAllowlist(NamedTuple):
+    """An account's whole image-exception allowlist, for a caller checking
+    many senders against it at once (get_thread) rather than paying one
+    query per sender via is_sender_image_allowed."""
+
+    senders: frozenset[str]
+    domains: frozenset[str]
+
+    def allows(self, from_addr: str | None) -> bool:
+        """Same predicate as is_sender_image_allowed, against an already
+        loaded allowlist rather than a fresh query."""
+        if not from_addr:
+            return False
+        email = extract_sender_email(from_addr)
+        domain = extract_sender_domain(from_addr)
+        return bool((email and email in self.senders) or (domain and domain in self.domains))
+
+
+async def load_image_allowlist(session: AsyncSession, account_id: uuid.UUID) -> ImageAllowlist:
+    """
+    An account's whole sender/domain allowlist in one query.
+
+    Args:
+        session: Active AsyncSession
+        account_id: Account to load exceptions for
+
+    Returns:
+        The allowlist, ready for repeated ImageAllowlist.allows() checks
+    """
+    result = await session.execute(
+        select(ImageException.exception_type, ImageException.value)
+        .where(ImageException.account_id == account_id)
+    )
+    senders: set[str] = set()
+    domains: set[str] = set()
+    for exception_type, value in result.all():
+        if exception_type == ImageExceptionType.SENDER:
+            senders.add(value)
+        else:
+            domains.add(value)
+    return ImageAllowlist(frozenset(senders), frozenset(domains))
 
 
 async def is_sender_image_allowed(account_id: uuid.UUID, from_addr: str | None) -> bool:
