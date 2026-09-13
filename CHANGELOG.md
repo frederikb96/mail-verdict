@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.2.2] - 2026-09-13
+
 - `GET /messages/{id}/thread` and `GET /messages/{id}` now batch their tags, attachments, latest
   verdict and image-allowlist lookups into a handful of queries for the whole request instead of
   several per message in the conversation -- a long thread used to pay for its length on every
