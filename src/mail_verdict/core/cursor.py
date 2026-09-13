@@ -31,8 +31,8 @@ from sqlalchemy.orm import InstrumentedAttribute
 
 
 def after_cursor(
-    received_at_col: InstrumentedAttribute[datetime | None],
-    id_col: InstrumentedAttribute[uuid.UUID],
+    received_at_col: ColumnElement[datetime | None] | InstrumentedAttribute[datetime | None],
+    id_col: ColumnElement[uuid.UUID] | InstrumentedAttribute[uuid.UUID],
     cursor_received_at: datetime | None,
     cursor_id: uuid.UUID,
     *,
@@ -83,8 +83,8 @@ def after_cursor(
 
 
 def before_cursor(
-    received_at_col: InstrumentedAttribute[datetime | None],
-    id_col: InstrumentedAttribute[uuid.UUID],
+    received_at_col: ColumnElement[datetime | None] | InstrumentedAttribute[datetime | None],
+    id_col: ColumnElement[uuid.UUID] | InstrumentedAttribute[uuid.UUID],
     cursor_received_at: datetime | None,
     cursor_id: uuid.UUID,
 ) -> ColumnElement[bool]:
@@ -125,8 +125,8 @@ def before_cursor(
 
 def after_tier_cursor(
     tier_col: ColumnElement[int],
-    received_at_col: InstrumentedAttribute[datetime | None],
-    id_col: InstrumentedAttribute[uuid.UUID],
+    received_at_col: ColumnElement[datetime | None] | InstrumentedAttribute[datetime | None],
+    id_col: ColumnElement[uuid.UUID] | InstrumentedAttribute[uuid.UUID],
     cursor_tier: int,
     cursor_received_at: datetime | None,
     cursor_id: uuid.UUID,

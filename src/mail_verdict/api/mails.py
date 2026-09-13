@@ -27,7 +27,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased, defer
+from sqlalchemy.orm import defer
 
 from mail_verdict.api.image_exceptions import (
     ImageAllowlist,
@@ -577,17 +577,28 @@ async def _list_messages_threaded(
     direction: see _list_messages_flat_page's own docstring -- the same
     "older" default / "newer" mirror, and the same reversal obligation on
     the caller.
+
+    Both subqueries below scan every message the filter matches, not only
+    the page eventually returned -- unlike the flat page's own query,
+    which a LIMIT-friendly index lets Postgres satisfy without visiting
+    rows outside the page at all. So this selects only the columns the
+    pick and the join actually need (id, thread_id, received_at) rather
+    than the full row, and fetches the handful of actual Message rows the
+    page resolves to -- deferred the same way the flat page already is --
+    in a second, id-scoped query once the page is known. A version of this
+    selecting the full row up front carried body_html/raw_source/
+    raw_headers through the sort for every candidate message in the
+    folder, not just the ones returned.
     """
     filters = _list_filters(account_id, folder_id, is_seen, since, folder_scope)
 
     latest_per_thread = (
-        select(Message)
+        select(Message.id, Message.thread_id, Message.received_at)
         .where(*filters)
         .distinct(Message.thread_id)
         .order_by(Message.thread_id, desc(Message.received_at), desc(Message.id))
         .subquery("latest_per_thread")
     )
-    latest = aliased(Message, latest_per_thread)
 
     thread_stats = (
         select(
@@ -601,25 +612,39 @@ async def _list_messages_threaded(
     )
 
     stmt = (
-        select(latest, thread_stats.c.thread_count, thread_stats.c.unread_in_thread)
-        .join(thread_stats, thread_stats.c.thread_id == latest.thread_id)
+        select(
+            latest_per_thread.c.id,
+            thread_stats.c.thread_count,
+            thread_stats.c.unread_in_thread,
+        )
+        .join(thread_stats, thread_stats.c.thread_id == latest_per_thread.c.thread_id)
     )
+    received_at_col, id_col = latest_per_thread.c.received_at, latest_per_thread.c.id
     if direction == "older":
-        stmt = stmt.order_by(desc(latest.received_at), desc(latest.id))
+        stmt = stmt.order_by(desc(received_at_col), desc(id_col))
         if cursor_id is not None:
-            stmt = stmt.where(
-                after_cursor(latest.received_at, latest.id, cursor_received_at, cursor_id)
-            )
+            stmt = stmt.where(after_cursor(received_at_col, id_col, cursor_received_at, cursor_id))
     else:
-        stmt = stmt.order_by(latest.received_at.asc(), latest.id.asc())
+        stmt = stmt.order_by(received_at_col.asc(), id_col.asc())
         if cursor_id is not None:
-            stmt = stmt.where(
-                before_cursor(latest.received_at, latest.id, cursor_received_at, cursor_id)
-            )
+            stmt = stmt.where(before_cursor(received_at_col, id_col, cursor_received_at, cursor_id))
     stmt = stmt.limit(limit + 1)
 
-    result = await session.execute(stmt)
-    return [(row[0], row.thread_count, row.unread_in_thread) for row in result.all()]
+    page = (await session.execute(stmt)).all()
+    if not page:
+        return []
+
+    messages_by_id = {
+        m.id: m
+        for m in (
+            await session.execute(
+                select(Message)
+                .options(*_LIST_DEFERRED_COLUMNS)
+                .where(Message.id.in_([row.id for row in page]))
+            )
+        ).scalars()
+    }
+    return [(messages_by_id[row.id], row.thread_count, row.unread_in_thread) for row in page]
 
 
 @router.get("/{message_id}/location", response_model=MessageLocation)

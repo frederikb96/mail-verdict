@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   verdict and image-allowlist lookups into a handful of queries for the whole request instead of
   several per message in the conversation -- a long thread used to pay for its length on every
   open.
+- The threaded account/unified list (`threaded=true`) picks each thread's latest message and its
+  counts from a narrow, id-only query first, then fetches the resulting page's message rows in one
+  targeted follow-up -- instead of carrying every candidate message's full body through the sort
+  twice over, once per thread pick and once per count.
 
 ## [6.2.1] - 2026-09-12
 
