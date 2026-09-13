@@ -36,6 +36,7 @@ from typing import Any, NamedTuple
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, RedirectResponse
 from starlette.routing import Mount, Route
@@ -744,6 +745,17 @@ def _build_fastapi(ui_build_dir: Path) -> FastAPI:
         SecurityHeadersMiddleware,
         content_security_policy=build_content_security_policy(script_hashes),
     )
+
+    # Outermost of the app's own middleware (added last, so it wraps every
+    # other one -- see Starlette's own add_middleware/build_middleware_stack:
+    # each call prepends, and the stack is built by wrapping in reverse).
+    # Starlette's own default exclude list already carries text/event-stream,
+    # so /api/events -- and any streaming response FastMCP's own transport
+    # sets that media type on -- passes through unbuffered and uncompressed;
+    # nothing here needs to name that route itself. A message body in the
+    # 30-40 KB range is the ordinary case for a thread's JSON, not the
+    # exception, so the default 500-byte floor is kept rather than raised.
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
     # Registered before the mount, because a Mount claims every path at and
     # below its prefix and a route added afterwards is simply unreachable.

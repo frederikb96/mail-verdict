@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   counts from a narrow, id-only query first, then fetches the resulting page's message rows in one
   targeted follow-up -- instead of carrying every candidate message's full body through the sort
   twice over, once per thread pick and once per count.
+- Responses compress with gzip when the client accepts it -- a thread's or a folder's JSON used to
+  go out uncompressed. The SSE stream (`GET /api/events`) is untouched, since a buffered or
+  compressed live stream would sit on events instead of delivering them as they happen.
 
 ## [6.2.1] - 2026-09-12
 
