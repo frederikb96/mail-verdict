@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Opening a message no longer fetches anything but the conversation itself: the mail view writes
+  its URL through the History API instead of a router navigation, which re-read the page payload on
+  every click -- and right after a deploy, reloaded the whole page on the next message opened.
+- An open conversation updates live: a reply arriving, or the sent copy of your own reply reaching
+  Sent, appears in it without leaving and reopening it, and the message you have open stays open.
+  A change to any message of the conversation (read state, flags, a verdict) shows the same way,
+  whichever of its messages it was opened from.
+- A conversation starts loading when a row is pressed rather than when the click completes, the
+  next one in the direction you are reading is fetched in the background, and one opened moments
+  ago is no longer fetched again on every reopen.
 - Pressing `a` or `f` no longer leaves a request behind that opened reply-all or forward on its own
   on every message opened afterwards.
 - Opening a message of the thread (or a search hit) while a reply is being written no longer

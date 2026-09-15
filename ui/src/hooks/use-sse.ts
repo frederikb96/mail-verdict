@@ -18,6 +18,7 @@ import {
   mailKeys,
   refreshMailLists,
   refreshMailViews,
+  refreshThreads,
   removeMailFromAllListCaches,
 } from "@/hooks/use-mails";
 import { alertKeys } from "@/hooks/use-alerts";
@@ -109,6 +110,7 @@ export function useSSE(accountId?: string) {
       // deep it is scrolled, so the list and the counts never disagree.
       for (const id of removed) removeMailFromAllListCaches(queryClient, id);
       for (const id of updated) queryClient.invalidateQueries({ queryKey: mailKeys.detail(id) });
+      refreshThreads(queryClient, new Set([...updated, ...removed]), hadNewOrMoved);
       if (hadFolderCounts || hadNewOrMoved || removed.size > 0 || updated.size > 0) {
         refreshMailViews(queryClient);
       }
@@ -261,14 +263,10 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           // Message events carry the row's id as `id`, not `message_id`
-          // (that name is verdict.issued's own convention). Thread
-          // invalidation stays immediate -- it targets one specific
-          // cached query key and only ever costs a real fetch if that
-          // exact thread happens to be the one open, so it never fans out
-          // into the kind of storm the list/detail paths below guard
-          // against.
+          // (that name is verdict.issued's own convention). The
+          // conversations holding it are refreshed at flush time, with
+          // the rest of the burst (refreshThreads).
           if (data.id) {
-            queryClient.invalidateQueries({ queryKey: mailKeys.thread(data.id) });
             if (data.changed?.includes("folder_id")) {
               // Moved out of whatever folder cache held it; the folder it
               // moved into (if currently viewed) catches up via the
@@ -318,9 +316,7 @@ export function useSSE(accountId?: string) {
             queryClient.invalidateQueries({
               queryKey: ["mail", data.message_id],
             });
-            queryClient.invalidateQueries({
-              queryKey: ["thread", data.message_id],
-            });
+            refreshThreads(queryClient, new Set([data.message_id]), false);
           }
         } catch {
           // Ignore

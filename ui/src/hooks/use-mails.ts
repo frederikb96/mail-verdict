@@ -7,6 +7,7 @@ import {
   type QueryClient,
   infiniteQueryOptions,
   keepPreviousData,
+  queryOptions,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -88,6 +89,7 @@ export const mailKeys = {
     ].filter(Boolean) as string[],
   detail: (id: string) => ["mail", id] as const,
   thread: (id: string) => ["thread", id] as const,
+  allThreads: () => ["thread"] as const,
   quote: (id: string) => ["mail-quote", id] as const,
 };
 
@@ -401,13 +403,55 @@ export function useMailDetail(mailId: string | null) {
   });
 }
 
-/** All messages in a mail's conversation across folders, ascending by date. */
-export function useThread(mailId: string | null) {
-  return useQuery<ThreadResponse>({
+/**
+ * All messages in a mail's conversation across folders, ascending by date --
+ * one definition for the reading pane, the list's open-row lookup and the
+ * prefetches, so all of them share one cache entry. Refetched on mount only
+ * once stale: the app-wide "always" would re-read a conversation opened a
+ * moment ago, or prefetched by the very press that opened it.
+ */
+export function threadQueryOptions(mailId: string | null) {
+  return queryOptions<ThreadResponse>({
     queryKey: mailKeys.thread(mailId!),
     queryFn: () => api.mails.thread(mailId!),
     enabled: !!mailId,
     staleTime: 30_000,
+    refetchOnMount: true,
+  });
+}
+
+export function useThread(mailId: string | null) {
+  return useQuery(threadQueryOptions(mailId));
+}
+
+/** Starts fetching a conversation ahead of its opening; a no-op while fresh. */
+export function prefetchThread(qc: QueryClient, mailId: string): void {
+  void qc.prefetchQuery(threadQueryOptions(mailId));
+}
+
+/**
+ * Brings cached conversations up to date after mail changed. A conversation
+ * is cached under whichever of its messages opened it, so one holding a
+ * changed message is found by its contents rather than its key. mail.new
+ * names no thread, so an arrival re-reads the conversation on screen -- a
+ * reply landing, or the sent copy of one's own reply reaching Sent; only an
+ * observed query refetches, and the reading pane holds at most one.
+ */
+export function refreshThreads(
+  qc: QueryClient,
+  changedIds: ReadonlySet<string>,
+  arrived: boolean,
+): void {
+  if (arrived) {
+    qc.invalidateQueries({ queryKey: mailKeys.allThreads() });
+    return;
+  }
+  if (changedIds.size === 0) return;
+  qc.invalidateQueries({
+    queryKey: mailKeys.allThreads(),
+    predicate: (query) =>
+      changedIds.has(query.queryKey[1] as string) ||
+      !!(query.state.data as ThreadResponse | undefined)?.messages.some((m) => changedIds.has(m.id)),
   });
 }
 

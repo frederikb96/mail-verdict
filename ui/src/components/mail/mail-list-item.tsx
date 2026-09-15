@@ -46,6 +46,9 @@ interface MailListItemProps {
    * the tooltip says so rather than leaving it ambiguous. */
   isThreaded?: boolean;
   onOpen: (mailId: string) => void;
+  /** A primary press on the row -- the click that opens it follows a
+   * hundred milliseconds or so later, time enough to start fetching. */
+  onPressStart?: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (mailId: string, action: MailRowAction, mailAccountId?: string) => void;
 }
@@ -71,6 +74,7 @@ export function MailListItem({
   isJunk,
   isThreaded,
   onOpen,
+  onPressStart,
   onCheckToggle,
   onAction,
 }: MailListItemProps) {
@@ -118,6 +122,9 @@ export function MailListItem({
         mail.pending_sync && "opacity-60",
       )}
       onClick={handleRowClick}
+      onPointerDown={(e) => {
+        if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) onPressStart?.(mail.id);
+      }}
     >
       {/* The unread marker's own column: the row's left padding, centred on
           the sender line. */}

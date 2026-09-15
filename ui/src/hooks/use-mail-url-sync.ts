@@ -3,8 +3,8 @@
 /**
  * The mail view's own URL, `/?account=&folder=&message=` -- read on a
  * cold load or a back/forward navigation, written whenever the selection
- * changes. This hook is the ONLY thing that calls router.push/replace for
- * this route, the same single-writer discipline
+ * changes. This hook is the ONLY thing that writes this route's URL, the
+ * same single-writer discipline
  * use-calendar-navigate.ts/use-calendar-url-sync.ts already established:
  * a second writer racing this one is what silently downgrades a push to
  * a replace and leaves the back button with nothing to return to.
@@ -41,7 +41,7 @@
 
 import { useEffect, useRef } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import {
   selectedAccountIdAtom,
   selectedFolderIdAtom,
@@ -52,7 +52,6 @@ import { buildMailUrl } from "@/lib/mail-url";
 import { useOpenMessage } from "@/hooks/use-open-message";
 
 export function useMailUrlSync(): void {
-  const router = useRouter();
   const searchParams = useSearchParams();
 
   const [accountId, setAccountId] = useAtom(selectedAccountIdAtom);
@@ -190,13 +189,20 @@ export function useMailUrlSync(): void {
     // a starved renderer delays the close and the frame together, so a
     // bare frame does not reliably run after it. Neither is observable
     // as a delay in the URL itself.
+    //
+    // Written through the History API, not router.push/replace: Next keeps
+    // useSearchParams in step with a native pushState/replaceState (its own
+    // patch dispatches a restore, no fetch), while a router navigation
+    // fetches the page's RSC payload for every message opened -- a request
+    // per click, and after a deploy a full page reload, since a payload
+    // from a newer build makes the router fall back to a browser navigation.
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const frame = requestAnimationFrame(() => {
       timeout = setTimeout(() => {
         if (opensNewMessage) {
-          router.push(target, { scroll: false });
+          window.history.pushState(null, "", target);
         } else {
-          router.replace(target, { scroll: false });
+          window.history.replaceState(null, "", target);
         }
       }, 0);
     });

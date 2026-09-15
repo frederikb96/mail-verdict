@@ -13,7 +13,14 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useMailList, useMailAction, useMarkConversationRead, useThread } from "@/hooks/use-mails";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  prefetchThread,
+  threadQueryOptions,
+  useMailList,
+  useMailAction,
+  useMarkConversationRead,
+} from "@/hooks/use-mails";
 import { clearKeptWhileUnread } from "@/lib/mail-list-window";
 import { useFolders } from "@/hooks/use-folders";
 import { useAccount, useAccounts } from "@/hooks/use-accounts";
@@ -92,7 +99,8 @@ export function MailList() {
   const selectedMailId = useAtomValue(selectedMailIdAtom);
   const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const focusedIndex = useAtomValue(focusedMailIndexAtom);
-  const setNavDirection = useSetAtom(mailNavDirectionAtom);
+  const [navDirection, setNavDirection] = useAtom(mailNavDirectionAtom);
+  const queryClient = useQueryClient();
   const selectionMode = useAtomValue(selectionModeAtom);
   const [threaded, setThreaded] = useAtom(threadedViewAtom);
   const { isSelected } = useSelection();
@@ -308,8 +316,13 @@ export function MailList() {
   // The row standing for the open message: the message itself, or -- in a
   // threaded list, where a row is its conversation's newest message here --
   // that conversation's row while an older message of it is open.
-  const { data: openThread } = useThread(selectedMailId);
-  const openThreadId = openThread?.messages.find((m) => m.id === selectedMailId)?.thread_id;
+  // The reading pane's own thread query, narrowed to the one value needed
+  // here, so its fetches never re-render the list.
+  const { data: openThreadId } = useQuery({
+    ...threadQueryOptions(selectedMailId),
+    select: (thread) => thread.messages.find((m) => m.id === selectedMailId)?.thread_id ?? null,
+    notifyOnChangeProps: ["data"],
+  });
   const openRowId =
     selectedMailId && openThreadId && threaded && !isFiltering && !allMailIds.includes(selectedMailId)
       ? ((allMails as MessageSummary[]).find((m) => m.thread_id === openThreadId)?.id ?? selectedMailId)
@@ -587,6 +600,24 @@ export function MailList() {
     [selectionMode, clearSelection, requestSelectMail, openRowId, allMailIds, setNavDirection],
   );
 
+  const handlePressStart = useCallback(
+    (mailId: string) => prefetchThread(queryClient, mailId),
+    [queryClient],
+  );
+
+  // The row the reader most likely opens next -- the neighbour in the
+  // direction they are travelling -- is fetched once the open one has had
+  // its turn, so an arrow key lands on a conversation already cached.
+  useEffect(() => {
+    if (!openRowId) return;
+    const index = allMailIds.indexOf(openRowId);
+    const next = index < 0 ? undefined : allMailIds[navDirection === "newer" ? index - 1 : index + 1];
+    if (!next) return;
+    const timer = setTimeout(() => prefetchThread(queryClient, next), 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRowId, navDirection]);
+
   const handleCheckToggle = useCallback(
     (mailId: string, shiftKey: boolean) => {
       if (shiftKey) {
@@ -791,6 +822,7 @@ export function MailList() {
                 isJunk={isUnifiedView ? viewJunkFolderIds.has(mail.folder_id) : isJunkFolder}
                 isThreaded={!isFiltering && threaded}
                 onOpen={handleOpen}
+                onPressStart={handlePressStart}
                 onCheckToggle={handleCheckToggle}
                 onAction={handleAction}
               />
