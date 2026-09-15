@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.2.3] - 2026-09-15
+
 - Any message in an open conversation can be made the open one from an icon in its header: the
   toolbar, the reply/reply-all/forward box and the selected folder then follow that message, the
   way a search hit lands, while the newer messages stay collapsed above it. Reply used to answer
