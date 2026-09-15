@@ -243,22 +243,30 @@ pinning a client to a commit sha of it gives a fixed contract to test against. S
 are not in it; they are described here and in [architecture.md](architecture.md).
 
 The MCP server at `/mcp` (FastMCP, streamable-http transport) wraps a curated subset of this
-same functionality — search, read, organise, send, spam feedback, semantic search, and reading,
-creating, editing and deleting calendar events and contacts — as typed tools for an MCP client,
-and is very often the better fit for an agent than calling REST directly. Each event tool takes a
-raw `RRULE` value where recurrence applies, the same full RFC 5545 vocabulary the REST API
+same functionality — search, read, organise, send, reply, spam feedback, semantic search, and
+reading, creating, editing and deleting calendar events and contacts — as typed tools for an MCP
+client, and is very often the better fit for an agent than calling REST directly. Each event tool
+takes a raw `RRULE` value where recurrence applies, the same full RFC 5545 vocabulary the REST API
 accepts, not a fixed preset. Reach for the REST API when the MCP surface does not cover what's
 needed (folder or pipeline management, queue control, settings, or creating/deleting a calendar
 or address book itself) or when building the browser UI.
 
+The `reply_mail` tool derives recipients, subject, threading headers and the quoted original from
+the message it is replying to or forwarding, the same rules the web UI's own Reply/Reply All/
+Forward buttons apply — an agent otherwise has no browser to derive them the way the UI does.
+It defaults to saving a draft rather than sending, which is the recommended flow: compose the
+reply, then let a person review and press Send themselves in the web UI's Drafts, where it
+reopens as an ordinary threaded reply with the quote intact. Attachments travel as base64, since
+the MCP server is reached over HTTP with no access to the caller's filesystem.
+
 One behaviour differs deliberately between the two surfaces: the undo-send window applies to
-`POST /outbox` only. The MCP `send_mail` tool, and the calendar's own invitation and RSVP
-messages, insert an outbox row directly and go at once — the window exists so a person can take
-a send back in the seconds after pressing Send, and nothing is watching one on an agent's
-behalf. Since a call that timed out may still have sent, `send_mail` takes the same optional
-`idempotency_key` `POST /outbox` does: the same key again returns the first call's row instead of
-sending a second time. A send with no recipient at all is refused where it is offered on both surfaces, rather
-than accepted and failed afterwards.
+`POST /outbox` only. The MCP `send_mail` and `reply_mail` (with `send=True`) tools, and the
+calendar's own invitation and RSVP messages, insert an outbox row directly and go at once — the
+window exists so a person can take a send back in the seconds after pressing Send, and nothing is
+watching one on an agent's behalf. Since a call that timed out may still have sent, both tools take
+the same optional `idempotency_key` `POST /outbox` does: the same key again returns the first
+call's row instead of sending a second time. A send with no recipient at all is refused where it
+is offered on both surfaces, rather than accepted and failed afterwards.
 
 Anything reading mail through this server puts sender-controlled text — subject, body, an
 attachment's content — into whatever is reading it, on the same connection that can also send,

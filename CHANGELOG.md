@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   response as the file.
 - Collapsed messages of a conversation are no longer parsed for their light/dark choice until
   expanded.
+- New MCP tool `reply_mail`: reply, reply-all or forward a message by naming it, instead of
+  hand-assembling threading headers, recipients, subject and the quoted original. Defaults to
+  saving a draft, so the recommended flow is composing here and reviewing/sending from the web
+  UI's Drafts, where it reopens as an ordinary threaded reply with the original quoted. Also adds
+  attachment support (base64, since the MCP server has no access to the caller's filesystem) to
+  `send_mail`/`draft_mail`/`reply_mail` alike; `reply_mail` carries a forwarded message's own
+  attachments along automatically.
 
 ## [6.2.3] - 2026-09-15
 

@@ -4,8 +4,8 @@ MCP server tools for MailVerdict.
 Reads from Postgres, writes through postimap/actions.py -- never touches
 IMAP/SMTP directly. Mail tools: search_mail, list_mails, get_mail,
 get_thread, list_folders, list_accounts, move_mail, mark_mail, tag_mail,
-get_verdict, submit_spam_feedback, send_mail, draft_mail, get_stats,
-semantic_search_mail, get_semantic_status. Calendar and contact tools:
+get_verdict, submit_spam_feedback, send_mail, draft_mail, reply_mail,
+get_stats, semantic_search_mail, get_semantic_status. Calendar and contact tools:
 list_calendars, list_events, get_event, create_event, update_event,
 delete_event, respond_to_event, list_addressbooks, list_contacts,
 search_contacts, get_contact, create_contact, update_contact,
@@ -21,7 +21,10 @@ instead of raising.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from fastapi import HTTPException
@@ -71,6 +74,17 @@ from mail_verdict.api.contacts import (
     update_contact as _update_contact,
 )
 from mail_verdict.api.identities import resolve_send_from_addr
+from mail_verdict.api.mails import get_message_quote as _get_message_quote
+from mail_verdict.api.mcp_reply import (
+    ForwardDraft,
+    ReplyDraft,
+    authored_body_html,
+    build_quote_wrapper_html,
+    derive_forward,
+    derive_reply,
+    match_identity,
+    merge_addresses,
+)
 from mail_verdict.api.outbox import replay_submission, require_recipients
 from mail_verdict.api.schemas import (
     ContactAddressIO,
@@ -86,8 +100,11 @@ from mail_verdict.api.schemas import (
     OutboxResponse,
     RespondRequest,
 )
+from mail_verdict.config import get_config
+from mail_verdict.core.image_sanitizer import restore_remote_images
+from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, Message, TagSource
+from mail_verdict.database.models import Account, Folder, Identity, Message, TagSource
 from mail_verdict.database.repository import (
     FolderRepository,
     MessageRepository,
@@ -569,21 +586,28 @@ async def submit_spam_feedback(mail_id: str, account_id: str, is_spam: bool) -> 
 
 
 async def _create_outbox_row(
+    *,
     account_id: str,
     kind: str,
     to: list[str],
     subject: str,
     body_text: str,
-    cc: list[str] | None,
-    bcc: list[str] | None,
-    in_reply_to: str | None,
-    references: list[str] | None,
-    identity_id: str | None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    body_html: str | None = None,
+    in_reply_to: str | None = None,
+    references: list[str] | None = None,
+    identity_id: str | None = None,
+    attachments: Sequence[tuple[str, str | None, bytes]] | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
-    """Shared insert path for send_mail and draft_mail. A key already
-    used answers with the row it created -- the same record POST /outbox
-    keeps, so a key means the same thing on both surfaces."""
+    """Shared insert path for send_mail, draft_mail and reply_mail. A key
+    already used answers with the row it created -- the same record POST
+    /outbox keeps, so a key means the same thing on both surfaces.
+    Keyword-only throughout: an endpoint reassigning a positional argument
+    when a new parameter lands in the middle is a real defect class in
+    this file (see mcp_tools.py's own module docstring reference in
+    CLAUDE.md), and every caller here is already internal to this module."""
     if kind == "send":
         require_recipients(to, cc, bcc)
     db = get_db_connection()
@@ -608,8 +632,10 @@ async def _create_outbox_row(
             bcc_addrs=bcc,
             subject=subject,
             body_text=body_text,
+            body_html=body_html,
             in_reply_to=in_reply_to,
             references=references,
+            attachments=attachments,
         )
         if key is not None:
             await record_submission(session, key, kind, outbox.id)
@@ -636,6 +662,7 @@ async def send_mail(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     identity_id: str | None = None,
+    attachments: list[dict[str, str]] | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -666,6 +693,10 @@ async def send_mail(
             account's default identity, or its imap_user if it has none.
             Identities are managed via the REST API's /identities endpoints,
             not exposed as an MCP tool
+        attachments: [{"filename": str, "content_type": str | None,
+            "data_base64": str}, ...], optional -- the MCP server is
+            reached over HTTP with no access to the caller's filesystem,
+            so content travels as base64 rather than a path
         idempotency_key: A UUID generated once per message, optional --
             repeating it returns the first call's row rather than sending
             again
@@ -673,11 +704,19 @@ async def send_mail(
     Returns:
         {"success": bool, "outbox_id": str, "status": str} -- status starts
         "pending"; poll get_stats or list_mails, or watch outbox.updated SSE,
-        to see it transition to sent/failed/dead
+        to see it transition to sent/failed/dead. {"success": False,
+        "error": str} on a bad attachment.
     """
+    decoded_attachments = _decode_attachments(attachments)
+    if isinstance(decoded_attachments, dict):
+        return {"success": False, **decoded_attachments}
+    limit_error = _check_attachment_limits(decoded_attachments)
+    if limit_error is not None:
+        return {"success": False, **limit_error}
     return await _create_outbox_row(
-        account_id, "send", to, subject, body_text, cc, bcc, in_reply_to, references, identity_id,
-        idempotency_key=idempotency_key,
+        account_id=account_id, kind="send", to=to, subject=subject, body_text=body_text,
+        cc=cc, bcc=bcc, in_reply_to=in_reply_to, references=references, identity_id=identity_id,
+        attachments=decoded_attachments or None, idempotency_key=idempotency_key,
     )
 
 
@@ -701,6 +740,7 @@ async def draft_mail(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     identity_id: str | None = None,
+    attachments: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Save a draft to the account's Drafts folder without sending it.
@@ -716,12 +756,216 @@ async def draft_mail(
         references: Full References chain for threading, optional
         identity_id: Identity UUID to draft as, optional -- falls back to the
             account's default identity, or its imap_user if it has none
+        attachments: [{"filename": str, "content_type": str | None,
+            "data_base64": str}, ...], optional -- see send_mail
 
     Returns:
-        {"success": bool, "outbox_id": str, "status": str}
+        {"success": bool, "outbox_id": str, "status": str}, or
+        {"success": False, "error": str} on a bad attachment
     """
+    decoded_attachments = _decode_attachments(attachments)
+    if isinstance(decoded_attachments, dict):
+        return {"success": False, **decoded_attachments}
+    limit_error = _check_attachment_limits(decoded_attachments)
+    if limit_error is not None:
+        return {"success": False, **limit_error}
     return await _create_outbox_row(
-        account_id, "draft", to, subject, body_text, cc, bcc, in_reply_to, references, identity_id,
+        account_id=account_id, kind="draft", to=to, subject=subject, body_text=body_text,
+        cc=cc, bcc=bcc, in_reply_to=in_reply_to, references=references, identity_id=identity_id,
+        attachments=decoded_attachments or None,
+    )
+
+
+def _decode_attachments(
+    attachments: list[dict[str, str]] | None,
+) -> list[tuple[str, str | None, bytes]] | dict[str, Any]:
+    """Base64-decode a caller's attachment list into insert_outbox's own
+    tuple shape, or an {"error": ...} dict on the first bad entry -- the
+    MCP server is reached over HTTP with no access to the caller's
+    filesystem, so content travels as base64 rather than a path the way
+    the REST outbox endpoint's own multipart upload does."""
+    decoded: list[tuple[str, str | None, bytes]] = []
+    for att in attachments or []:
+        try:
+            data = base64.b64decode(att["data_base64"], validate=True)
+        except (KeyError, binascii.Error) as exc:
+            return {"error": f"Invalid attachment: {exc}"}
+        decoded.append((att.get("filename") or "attachment", att.get("content_type"), data))
+    return decoded
+
+
+def _check_attachment_limits(
+    attachments: Sequence[tuple[str, str | None, bytes]],
+) -> dict[str, Any] | None:
+    """The same caps config/config.yaml's outbox section documents and
+    the REST outbox endpoint enforces while reading its upload -- applied
+    here in one pass since these attachments are already fully in memory
+    by the time reply_mail sees them, rather than streamed."""
+    limits = get_config().outbox
+    if len(attachments) > limits.max_attachments:
+        return {
+            "error": (
+                f"{len(attachments)} attachments exceeds the limit of {limits.max_attachments}"
+            ),
+        }
+    total = 0
+    for filename, _content_type, data in attachments:
+        if len(data) > limits.max_attachment_bytes:
+            return {"error": f"Attachment '{filename}' exceeds the size limit"}
+        total += len(data)
+    if total > limits.max_attachments_total_bytes:
+        return {"error": "Attachments exceed the total size limit for one message"}
+    return None
+
+
+@mcp.tool(
+    name="reply_mail",
+    annotations={
+        "title": "Reply To Mail",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def reply_mail(
+    mail_id: str,
+    mode: str,
+    body_text: str,
+    to: list[str] | None = None,
+    cc: list[str] | None = None,
+    attachments: list[dict[str, str]] | None = None,
+    send: bool = False,
+    identity_id: str | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """
+    Reply, reply-all or forward, without hand-assembling threading
+    headers, recipients, subject or the quoted original -- send_mail and
+    draft_mail's account_id/to/subject/in_reply_to/references still exist
+    for a message that isn't a reply to anything; this derives all of
+    that from the message being replied to instead.
+
+    Defaults to a draft (send=False): the recommended flow is to compose
+    the reply here and let the person review and press Send themselves in
+    the web UI's Drafts, where this reopens as an ordinary reply --
+    threaded, with the original quoted the same way a reply built in the
+    browser is. Pass send=True to send it immediately instead, exactly
+    like send_mail (irreversible once accepted, goes at once).
+
+    mode="forward" carries the original message's own attachments along
+    automatically, the same as the web UI's Forward button; reply and
+    reply_all never do, since nothing about replying implies resending
+    whatever arrived with the original.
+
+    Args:
+        mail_id: The message UUID being replied to or forwarded
+        mode: "reply" (to the sender/Reply-To only), "reply_all" (that
+            plus every other To/Cc recipient, this account's own
+            addresses excluded), or "forward" (no recipients derived at
+            all -- pass to)
+        body_text: The reply's own plain-text body, written above the
+            quoted original
+        to: Recipients. For reply/reply_all, added to whatever the
+            original's own headers already derive (deduplicated) rather
+            than replacing them; for forward, nothing is derived, so this
+            is the whole recipient list
+        cc: Cc addresses, added the same way as to -- reply_all's own
+            derived Cc already covers the original's other recipients;
+            reply and forward derive none
+        attachments: [{"filename": str, "content_type": str | None,
+            "data_base64": str}, ...], optional, in addition to whatever
+            mode="forward" already carries along
+        send: Send immediately (default False -- saves to Drafts instead)
+        identity_id: Identity UUID to send/draft as, optional -- falls
+            back to whichever of the account's identities the original
+            was addressed to, then the account's default identity, then
+            its imap_user
+        idempotency_key: A UUID generated once per message, optional --
+            only meaningful with send=True; see send_mail
+
+    Returns:
+        {"success": bool, "outbox_id": str, "status": str}, or
+        {"success": False, "error": str} on a bad mail_id, mode or
+        attachment
+    """
+    if mode not in ("reply", "reply_all", "forward"):
+        return {"success": False, "error": "mode must be one of: reply, reply_all, forward"}
+
+    decoded_attachments = _decode_attachments(attachments)
+    if isinstance(decoded_attachments, dict):
+        return {"success": False, **decoded_attachments}
+
+    db = get_db_connection()
+    async with db.session() as session:
+        source = await session.get(Message, uuid.UUID(mail_id))
+        if source is None:
+            return {"success": False, "error": "Message not found"}
+        account = await session.get(Account, source.account_id)
+        identities = list(
+            (
+                await session.execute(
+                    select(Identity).where(Identity.account_id == source.account_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    quote = await _get_message_quote(source.id)
+
+    draft: ReplyDraft | ForwardDraft
+    if mode == "forward":
+        from mail_verdict.api.deps import get_attachment_repo
+
+        draft = derive_forward(source)
+        recipients_to = list(to or [])
+        recipients_cc = list(cc or [])
+        source_attachments = await get_attachment_repo().get_by_message_id(source.id)
+        outbox_attachments = [
+            (a.filename or "attachment", a.content_type, a.data or b"") for a in source_attachments
+        ] + decoded_attachments
+        in_reply_to: str | None = None
+        references: list[str] | None = None
+    else:
+        own_addresses = [account.imap_user, *[i.email for i in identities]] if account else []
+        reply_draft = derive_reply(source, own_addresses, mode)  # type: ignore[arg-type]
+        draft = reply_draft
+        recipients_to = merge_addresses(reply_draft.to, to)
+        recipients_cc = merge_addresses(reply_draft.cc, cc)
+        outbox_attachments = decoded_attachments
+        in_reply_to = reply_draft.in_reply_to
+        references = reply_draft.references
+
+    limit_error = _check_attachment_limits(outbox_attachments)
+    if limit_error is not None:
+        return {"success": False, **limit_error}
+
+    resolved_identity_id = identity_id
+    if resolved_identity_id is None:
+        matched = match_identity(
+            [*(source.to_addrs or []), *(source.cc_addrs or [])], identities,
+        )
+        resolved_identity_id = str(matched) if matched else None
+
+    quote_wrapper = build_quote_wrapper_html(quote.html, draft.attribution)
+    body_html = sanitize_outbound_html(
+        restore_remote_images(f"{authored_body_html(body_text)}{quote_wrapper}")
+    )
+
+    return await _create_outbox_row(
+        account_id=str(source.account_id),
+        kind="send" if send else "draft",
+        to=recipients_to,
+        subject=draft.subject,
+        body_text=f"{body_text}{draft.quoted_text}",
+        cc=recipients_cc or None,
+        body_html=body_html,
+        in_reply_to=in_reply_to,
+        references=references,
+        identity_id=resolved_identity_id,
+        attachments=outbox_attachments or None,
+        idempotency_key=idempotency_key,
     )
 
 
