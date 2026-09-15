@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   every click -- and right after a deploy, reloaded the whole page on the next message opened.
 - An open conversation updates live: a reply arriving, or the sent copy of your own reply reaching
   Sent, appears in it without leaving and reopening it, and the message you have open stays open.
+  Once a message is sent (or a draft saved), the account is synced at once rather than on its
+  next periodic cycle, so the Sent or Drafts copy -- and with it the conversation -- shows up in
+  seconds.
   A change to any message of the conversation (read state, flags, a verdict) shows the same way,
   whichever of its messages it was opened from.
 - A conversation starts loading when a row is pressed rather than when the click completes, the

@@ -8,8 +8,12 @@
 
 import { createSyncStoragePersister } from "@tanstack/query-sync-storage-persister";
 
-/** Queries matching these key prefixes are not persisted. */
-const EPHEMERAL_PREFIXES = ["sse", "selection"];
+/** Queries matching these key prefixes are not persisted. A conversation
+ * ("thread") carries every message's body and is also fetched ahead of
+ * opening, so persisting them grows the stored cache with mail nobody
+ * opened -- the same quota failure the mail list is excluded for below --
+ * and the reading pane refetches a stale one anyway. */
+const EPHEMERAL_PREFIXES = ["sse", "selection", "thread"];
 
 /**
  * The mail list's own infinite queries -- ["mails", ...] for a single

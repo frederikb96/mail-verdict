@@ -49,6 +49,14 @@ const MAX_RECONNECT_DELAY_MS = 30000;
  */
 const FLUSH_INTERVAL_MS = 500;
 
+/**
+ * An arrival re-reads the open conversation whole (refreshThreads), since
+ * mail.new names no thread -- so a sync or bulk move producing arrivals on
+ * every flush would re-download it twice a second. One re-read per window,
+ * the last one trailing, still catches the message that belongs to it.
+ */
+const THREAD_ARRIVAL_WINDOW_MS = 5000;
+
 const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" | "warning" | "error" } | null> = {
   pending: null,
   processing: null,
@@ -82,6 +90,8 @@ export function useSSE(accountId?: string) {
   const pendingUpdatedIdsRef = useRef<Set<string>>(new Set());
   const pendingRemovedIdsRef = useRef<Set<string>>(new Set());
   const pendingFolderCountsRef = useRef(false);
+  const threadArrivalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const threadArrivalPendingRef = useRef(false);
 
   // Buffered calendar.object state -- calendar sync is polling-based on the
   // backend (60s), but a single poll landing several changes still fires
@@ -110,7 +120,8 @@ export function useSSE(accountId?: string) {
       // deep it is scrolled, so the list and the counts never disagree.
       for (const id of removed) removeMailFromAllListCaches(queryClient, id);
       for (const id of updated) queryClient.invalidateQueries({ queryKey: mailKeys.detail(id) });
-      refreshThreads(queryClient, new Set([...updated, ...removed]), hadNewOrMoved);
+      refreshThreads(queryClient, new Set([...updated, ...removed]), false);
+      if (hadNewOrMoved) scheduleThreadArrivalRefresh();
       if (hadFolderCounts || hadNewOrMoved || removed.size > 0 || updated.size > 0) {
         refreshMailViews(queryClient);
       }
@@ -119,6 +130,20 @@ export function useSSE(accountId?: string) {
     function scheduleFlush() {
       if (flushTimerRef.current) return;
       flushTimerRef.current = setTimeout(flushPending, FLUSH_INTERVAL_MS);
+    }
+
+    function scheduleThreadArrivalRefresh() {
+      if (threadArrivalTimerRef.current) {
+        threadArrivalPendingRef.current = true;
+        return;
+      }
+      refreshThreads(queryClient, new Set(), true);
+      threadArrivalTimerRef.current = setTimeout(() => {
+        threadArrivalTimerRef.current = null;
+        if (!threadArrivalPendingRef.current) return;
+        threadArrivalPendingRef.current = false;
+        scheduleThreadArrivalRefresh();
+      }, THREAD_ARRIVAL_WINDOW_MS);
     }
 
     function flushCalendarPending() {
@@ -557,6 +582,11 @@ export function useSSE(accountId?: string) {
         clearTimeout(calFlushTimerRef.current);
         calFlushTimerRef.current = null;
       }
+      if (threadArrivalTimerRef.current) {
+        clearTimeout(threadArrivalTimerRef.current);
+        threadArrivalTimerRef.current = null;
+      }
+      threadArrivalPendingRef.current = false;
       setConnectionState("disconnected");
     };
   }, [accountId, setConnectionState, setMailArrived, queryClient, pushToast]);

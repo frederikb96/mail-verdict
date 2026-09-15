@@ -52,6 +52,7 @@ from mail_verdict.api.security_headers import (
 )
 from mail_verdict.config import MCP_TRANSPORT, get_config
 from mail_verdict.database import close_database, get_db_connection, init_database
+from mail_verdict.postimap.commands import request_sync_now
 from mail_verdict.postimap.contract import (
     ContractMismatchError,
     assert_contract_version,
@@ -405,6 +406,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await event_ring.add(account_uuid, "outbox.updated", outbox_data)
             if outbox_data.get("status") == "sent":
                 await resolve_stalled_for_outbox_event(db, event_ring, event.id)
+                # The copy PostIMAP appended to Sent (or Drafts) reaches the
+                # mirror only on that folder's next sync, a periodic cycle
+                # away for anything but the inbox. Asking for one now lands
+                # it -- and the open conversation's refresh with it -- in
+                # seconds.
+                await request_sync_now(db, account_uuid)
 
         elif event.type == "notification":
             await event_ring.add(

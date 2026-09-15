@@ -123,7 +123,13 @@ export function MailListItem({
       )}
       onClick={handleRowClick}
       onPointerDown={(e) => {
-        if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) onPressStart?.(mail.id);
+        // A mouse press only: a touch pointerdown also starts every scroll
+        // that begins on a row, and a press on one of the row's own
+        // controls opens nothing.
+        if (e.pointerType !== "mouse" || e.button !== 0) return;
+        if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if ((e.target as HTMLElement).closest("button, a, input, [role='checkbox']")) return;
+        onPressStart?.(mail.id);
       }}
     >
       {/* The unread marker's own column: the row's left padding, centred on
