@@ -16,12 +16,17 @@ import {
   ChevronDown,
   Copy,
   Loader2,
+  LocateFixed,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { InitialsAvatar } from "@/components/common/initials-avatar";
 import { AttachmentPreviewDialog } from "@/components/mail/attachment-preview-dialog";
-import { EmailRenderer } from "@/components/mail/email-renderer";
+import {
+  EmailRenderer,
+  MessageCanvasToggle,
+  useMessageCanvas,
+} from "@/components/mail/email-renderer";
 import { ImageBanner } from "@/components/mail/image-banner";
 import { TruncatedBanner } from "@/components/mail/truncated-banner";
 import { InvitationCard } from "@/components/mail/invitation-card";
@@ -120,7 +125,9 @@ function RecipientLine({
 export function ThreadMessage({
   mail,
   expanded,
+  isOpened,
   onToggle,
+  onOpen,
   onLoadImages,
   searchQuery,
   activeMatchIndex,
@@ -128,7 +135,13 @@ export function ThreadMessage({
 }: {
   mail: MessageDetail;
   expanded: boolean;
+  /** Whether this is the reading pane's open message -- the one its
+   * toolbar and reply box act on. */
+  isOpened: boolean;
   onToggle: () => void;
+  /** Makes this message the open one, in its own folder. Expanding a
+   * message only reveals it; this is the explicit switch. */
+  onOpen: () => void;
   onLoadImages: () => void;
   /** The reading pane's own in-message find -- see ReadingPane, which
    * scopes these to whichever message is actually open rather than
@@ -138,6 +151,7 @@ export function ThreadMessage({
   onMatchCountChange?: (count: number) => void;
 }) {
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentSummary | null>(null);
+  const { canvas, toggleCanvas } = useMessageCanvas(mail.body_html, mail.id);
   const { push: pushToast } = useToast();
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
@@ -237,6 +251,23 @@ export function ThreadMessage({
         </div>
         <div className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
           {mail.pending_sync && <Loader2 className="h-3 w-3 animate-spin" />}
+          {!isOpened && (
+            <button
+              type="button"
+              aria-label="Open this message"
+              title="Open this message -- reply, actions and folder follow it"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpen();
+              }}
+              className="inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-accent hover:text-foreground"
+            >
+              <LocateFixed className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {mail.body_html && !mail.is_truncated && (
+            <MessageCanvasToggle canvas={canvas} onToggle={toggleCanvas} />
+          )}
           <span
             data-testid="thread-message-date"
             className="cursor-text"
@@ -290,7 +321,7 @@ export function ThreadMessage({
           <EmailRenderer
             html={mail.body_html}
             plainText={mail.body_text}
-            messageId={mail.id}
+            canvas={canvas}
             searchQuery={searchQuery}
             activeMatchIndex={activeMatchIndex}
             onMatchCountChange={onMatchCountChange}

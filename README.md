@@ -17,7 +17,8 @@ mirror, which is what keeps it simple.
 - **Mail** — multiple accounts, folder tree with live counts, conversation threading, a virtualized
   list that stays smooth on large mailboxes, and unified views: any set of folders, across
   accounts, merged into one list with an icon of its own in the sidebar -- one folder can sit in
-  several. A conversation reads newest first, and a message header's sender and recipients copy
+  several. A conversation reads newest first; any earlier message in it can be made the open one,
+  so the toolbar and the reply act on that message instead of the newest. A message header's sender and recipients copy
   their addresses on a click, each alone or a whole line comma-separated. Folders can be created
   and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick filter
   narrows the open folder or view by subject, sender or recipient, its rows carrying the same

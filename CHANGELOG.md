@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Any message in an open conversation can be made the open one from an icon in its header: the
+  toolbar, the reply/reply-all/forward box and the selected folder then follow that message, the
+  way a search hit lands, while the newer messages stay collapsed above it. Reply used to answer
+  the newest message in the conversation whichever one was open; it now answers the open one --
+  including a message opened from a folder or a search hit that is not the newest in its thread.
+- A message's light/dark switch is an icon beside its date rather than a labelled button above
+  the body.
+
 ## [6.2.2] - 2026-09-13
 
 - `GET /messages/{id}/thread` and `GET /messages/{id}` now batch their tags, attachments, latest

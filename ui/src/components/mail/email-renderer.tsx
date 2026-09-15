@@ -12,10 +12,9 @@ interface EmailRendererProps {
   html?: string | null;
   /** Plain text fallback. */
   plainText?: string | null;
-  /** Identifies the message for remembering its dark-mode choice; the
-   * toggle is not offered without one, since there is nothing to key the
-   * memory on. */
-  messageId?: string;
+  /** The canvas to draw an HTML body on -- from useMessageCanvas, whose
+   * toggle lives in the message header rather than here. */
+  canvas: Canvas;
   /** Highlights every occurrence of this text in the rendered message --
    * the reading pane's own in-message find, since the browser's own find
    * cannot reach content inside this component's shadow root. Absent or
@@ -30,7 +29,7 @@ interface EmailRendererProps {
 }
 
 /** Which canvas a message body renders on -- see pickCanvas below. */
-type Canvas = "light" | "dark";
+export type Canvas = "light" | "dark";
 
 /** A stylesheet's own dark-mode media query, or a color-scheme declaration
  * naming dark support -- both live in a message's own (now sanitised
@@ -474,22 +473,13 @@ export function linkifyText(escaped: string): string {
 }
 
 /**
- * Renders email HTML content in an isolated Shadow DOM.
- *
- * Uses Shadow DOM for complete CSS isolation (same approach as mail0).
- * Falls back to linkified plain text when no HTML is available.
+ * The canvas one message's HTML body renders on, and the reader's toggle
+ * for it -- remembered per message.
  */
-export function EmailRenderer({
-  html,
-  plainText,
-  messageId,
-  searchQuery,
-  activeMatchIndex,
-  onMatchCountChange,
-}: EmailRendererProps) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const shadowRootRef = useRef<ShadowRoot | null>(null);
-  const searchMatchesRef = useRef<HTMLElement[]>([]);
+export function useMessageCanvas(
+  html: string | null | undefined,
+  messageId: string,
+): { canvas: Canvas; toggleCanvas: () => void } {
   const { resolvedTheme } = useTheme();
   // The reader's explicit choice for this message, overriding both the
   // light default and a sender's own dark declaration. Starts unset -- it
@@ -499,10 +489,6 @@ export function EmailRenderer({
   const [manualCanvas, setManualCanvas] = useState<Canvas | null>(null);
 
   useEffect(() => {
-    if (!messageId) {
-      setManualCanvas(null);
-      return;
-    }
     setManualCanvas(readStoredCanvasChoice(messageId));
   }, [messageId]);
 
@@ -518,14 +504,64 @@ export function EmailRenderer({
   }, [html, resolvedTheme]);
 
   const canvas = manualCanvas ?? autoCanvas;
-  const [hoveredHref, setHoveredHref] = useState<string | null>(null);
 
   const toggleCanvas = useCallback(() => {
-    if (!messageId) return;
     const next: Canvas = canvas === "dark" ? "light" : "dark";
     setManualCanvas(next);
     writeStoredCanvasChoice(messageId, next);
   }, [canvas, messageId]);
+
+  return { canvas, toggleCanvas };
+}
+
+/** The per-message light/dark switch. html messages render on their own
+ * fixed canvas rather than the app's theme (see pickCanvas), so the choice
+ * needs a control of its own -- plain text already follows the theme and
+ * gets none. */
+export function MessageCanvasToggle({
+  canvas,
+  onToggle,
+}: {
+  canvas: Canvas;
+  onToggle: () => void;
+}) {
+  const label =
+    canvas === "dark" ? "Switch this message to light mode" : "Enable dark message mode";
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-6 w-6 text-muted-foreground"
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      title={label}
+      aria-label={label}
+    >
+      {canvas === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+    </Button>
+  );
+}
+
+/**
+ * Renders email HTML content in an isolated Shadow DOM.
+ *
+ * Uses Shadow DOM for complete CSS isolation (same approach as mail0).
+ * Falls back to linkified plain text when no HTML is available.
+ */
+export function EmailRenderer({
+  html,
+  plainText,
+  canvas,
+  searchQuery,
+  activeMatchIndex,
+  onMatchCountChange,
+}: EmailRendererProps) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const shadowRootRef = useRef<ShadowRoot | null>(null);
+  const searchMatchesRef = useRef<HTMLElement[]>([]);
+  const [hoveredHref, setHoveredHref] = useState<string | null>(null);
 
   // Attach Shadow DOM once
   useEffect(() => {
@@ -715,36 +751,6 @@ export function EmailRenderer({
       {/* The blocked-images notice a reader actually sees is ImageBanner,
           driven by the server's own has_blocked_images -- this component
           never decides that itself. */}
-      {/* html messages render on their own fixed canvas rather than the
-          app's theme (see pickCanvas), so the choice needs a control of
-          its own -- plain text already follows the theme and gets none. */}
-      {html && messageId && (
-        <div className="flex justify-end px-4 pt-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 gap-1.5 px-2 text-xs text-muted-foreground"
-            onClick={toggleCanvas}
-            title={
-              canvas === "dark"
-                ? "Switch this message to light mode"
-                : "Enable dark message mode"
-            }
-            aria-label={
-              canvas === "dark"
-                ? "Switch this message to light mode"
-                : "Enable dark message mode"
-            }
-          >
-            {canvas === "dark" ? (
-              <Sun className="h-3 w-3" />
-            ) : (
-              <Moon className="h-3 w-3" />
-            )}
-            {canvas === "dark" ? "Light mode" : "Dark mode"}
-          </Button>
-        </div>
-      )}
       <div
         ref={hostRef}
         data-testid="email-body"

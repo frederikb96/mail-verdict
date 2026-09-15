@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Mail,
   ShieldAlert,
@@ -34,7 +35,8 @@ import { ThreadMessage } from "@/components/mail/thread-message";
 import { BulkPanel } from "@/components/mail/bulk-panel";
 import { MoveToFolderPopover } from "@/components/mail/move-to-folder-popover";
 import { api } from "@/lib/api";
-import { useLoadMessageImages, useMailAction, useThread } from "@/hooks/use-mails";
+import { mailKeys, useLoadMessageImages, useMailAction, useThread } from "@/hooks/use-mails";
+import { useOpenMessage } from "@/hooks/use-open-message";
 import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
@@ -54,6 +56,8 @@ export function ReadingPane() {
   const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const { count: selectionCount } = useSelection();
   const { data: thread, isLoading } = useThread(mailId);
+  const qc = useQueryClient();
+  const { openMessageById } = useOpenMessage();
   const mailAction = useMailAction();
   const loadMessageImages = useLoadMessageImages();
   const isMobile = useIsMobile();
@@ -222,6 +226,17 @@ export function ReadingPane() {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setExpansion({ mailId, ids: next });
+  };
+
+  // Switches the open message to another one of this same thread, landing
+  // in its folder the way a search hit does. The thread is already on
+  // screen, so it seeds the new selection's thread query rather than
+  // flashing a skeleton while the same messages are fetched again.
+  const openInThread = (id: string) => {
+    if (thread && !qc.getQueryData(mailKeys.thread(id))) {
+      qc.setQueryData(mailKeys.thread(id), thread);
+    }
+    void openMessageById(id);
   };
 
   // More than one message selected replaces the reading pane with the
@@ -581,7 +596,9 @@ export function ReadingPane() {
               key={m.id}
               mail={m}
               expanded={expandedIds.has(m.id)}
+              isOpened={m.id === primary.id}
               onToggle={() => toggle(m.id)}
+              onOpen={() => openInThread(m.id)}
               onLoadImages={() => loadMessageImages.mutate(m.id)}
               searchQuery={findOpen && m.id === primary.id ? findQuery : undefined}
               activeMatchIndex={findOpen && m.id === primary.id ? activeMatchIndex : undefined}
@@ -591,12 +608,12 @@ export function ReadingPane() {
         </div>
       </div>
 
-      {messages.length > 0 && (
-        <ReplyBox
-          source={messages[messages.length - 1]}
-          ownEmail={account.data?.imap_user ?? ""}
-        />
-      )}
+      <ReplyBox
+        key={primary.id}
+        source={primary}
+        ownEmail={account.data?.imap_user ?? ""}
+      />
+
     </div>
   );
 }
