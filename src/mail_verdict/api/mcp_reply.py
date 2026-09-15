@@ -87,16 +87,22 @@ def _dedupe_excluding(addrs: list[str], exclude: set[str]) -> list[str]:
     return result
 
 
-def merge_addresses(base: list[str], extra: list[str] | None) -> list[str]:
-    """base plus whatever addresses in extra aren't already in it,
-    case-insensitively -- reply_mail's to/cc are additions to the derived
-    recipients, never a replacement of them."""
+def merge_addresses(
+    base: list[str], extra: list[str] | None, *, exclude: list[str] | None = None,
+) -> list[str]:
+    """base plus whatever addresses in extra aren't already in it or in
+    exclude -- reply_mail's to/cc are additions to the derived recipients,
+    never a replacement of them, and its Cc is deduped against its own To
+    (pass exclude=to) so an address named in both is not addressed twice.
+    Matched on the bare email address, case-insensitively, so "Bob
+    <bob@x>" and a bare "bob@x" count as the one address they are."""
     if not extra:
         return base
-    seen = {a.lower() for a in base}
+    exclude_keys = {_extract_email(a).lower() for a in (exclude or [])}
+    seen = {_extract_email(a).lower() for a in base} | exclude_keys
     combined = list(base)
     for addr in extra:
-        key = addr.lower()
+        key = _extract_email(addr).lower()
         if addr and key not in seen:
             seen.add(key)
             combined.append(addr)
@@ -185,20 +191,28 @@ def derive_reply(
 ) -> ReplyDraft:
     """Recipients, subject and threading headers for a reply or
     reply-all, mirroring reply.ts's buildReply. own_addresses are left out
-    of a reply-all's Cc, the same reasoning buildReply documents."""
+    of a reply-all's Cc, the same reasoning buildReply documents.
+
+    A message this account sent itself (found in Sent, say) is a special
+    case reply.ts does not need to handle -- the web UI only ever reaches
+    this from an inbound message -- but an MCP caller can name any
+    message. Replying to your own mail goes back to whoever you sent it
+    to, not to yourself, the same rule Gmail applies."""
+    own_set = {a.lower() for a in own_addresses if a}
     sender_email = _extract_email(source.from_addr)
-    reply_to = [
-        e for e in (_extract_email(a) for a in _split_address_header(source.reply_to)) if e
-    ]
-    fallback = [sender_email] if sender_email else []
-    to = _dedupe_excluding(reply_to if reply_to else fallback, set())
+    if sender_email and sender_email.lower() in own_set:
+        candidates = [_extract_email(a) for a in (source.to_addrs or [])]
+    else:
+        reply_to = [_extract_email(a) for a in _split_address_header(source.reply_to)]
+        candidates = reply_to if reply_to else ([sender_email] if sender_email else [])
+    to = _dedupe_excluding([e for e in candidates if e], own_set)
 
     cc: list[str] = []
     if mode == "reply_all":
         others = [
             _extract_email(a) for a in [*(source.to_addrs or []), *(source.cc_addrs or [])]
         ]
-        exclude = {a.lower() for a in own_addresses if a} | {a.lower() for a in to}
+        exclude = own_set | {a.lower() for a in to}
         cc = _dedupe_excluding(others, exclude)
 
     references = list(source.msg_references or [])

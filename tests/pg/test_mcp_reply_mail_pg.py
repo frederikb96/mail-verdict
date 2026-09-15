@@ -54,9 +54,13 @@ async def _seed_message(
     body_text: str = "original body",
     body_html: str | None = None,
     message_id_header: str | None = None,
+    is_truncated: bool = False,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     """Returns (account_id, message_id). accounts/folders/messages are
-    PostIMAP-owned tables -- raw SQL, the same as every other pg test."""
+    PostIMAP-owned tables -- raw SQL, the same as every other pg test.
+    The seeded account's own imap_user is me@example.com throughout, so
+    from_addr="me@example.com" is how a test builds a message this
+    account sent itself."""
     account_id = uuid.uuid4()
     folder_id = uuid.uuid4()
     message_id = uuid.uuid4()
@@ -79,9 +83,9 @@ async def _seed_message(
         text(
             "INSERT INTO messages "
             "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
-            "from_addr, to_addrs, cc_addrs, body_text, body_html) "
+            "from_addr, to_addrs, cc_addrs, body_text, body_html, is_truncated) "
             "VALUES (:id, :account_id, :folder_id, 1, :thread_id, :message_id, :subject, "
-            ":from_addr, :to_addrs, :cc_addrs, :body_text, :body_html)"
+            ":from_addr, :to_addrs, :cc_addrs, :body_text, :body_html, :is_truncated)"
         ),
         {
             "id": message_id, "account_id": account_id, "folder_id": folder_id,
@@ -90,7 +94,7 @@ async def _seed_message(
             "subject": subject, "from_addr": from_addr,
             "to_addrs": json.dumps(to_addrs) if to_addrs is not None else None,
             "cc_addrs": json.dumps(cc_addrs) if cc_addrs is not None else None,
-            "body_text": body_text, "body_html": body_html,
+            "body_text": body_text, "body_html": body_html, "is_truncated": is_truncated,
         },
     )
     return account_id, message_id
@@ -148,6 +152,13 @@ class TestReplyMode:
         assert 'class="gmail_quote"' in (outbox.body_html or "")
         assert "line one" in (outbox.body_html or "")
 
+        # The caller gave none of to/cc/subject -- what was actually
+        # derived and used comes back in the result, since that is the
+        # only way to know who a draft ends up addressed to.
+        assert data["to"] == ["sender@example.com"]
+        assert data["cc"] == []
+        assert data["subject"] == "Re: Hello"
+
     @pytest.mark.asyncio
     async def test_reply_to_addresses_are_additions_not_a_replacement(
         self, mcp_client: Client, migrated_db: DatabaseConnection,
@@ -191,6 +202,52 @@ class TestReplyAllMode:
         assert outbox.to_addrs == ["sender@example.com"]
         assert set(outbox.cc_addrs or []) == {"other@example.com", "third@example.com"}
         assert "me@example.com" not in (outbox.cc_addrs or [])
+
+    @pytest.mark.asyncio
+    async def test_reply_all_to_your_own_sent_message_goes_to_its_recipients(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A message found in Sent (from_addr is this account's own
+        imap_user) has nobody to reply "to the sender" -- Gmail's rule,
+        and this tool's, is to go back to whoever it was originally sent
+        to instead of to yourself."""
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(
+                session,
+                from_addr="me@example.com",
+                to_addrs=["them@example.com"],
+                cc_addrs=["other@example.com"],
+            )
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {"mail_id": str(message_id), "mode": "reply_all", "body_text": "hi"},
+        )
+        outbox = await _outbox_row(migrated_db, uuid.UUID(result.data["outbox_id"]))
+        assert outbox.to_addrs == ["them@example.com"]
+        assert outbox.cc_addrs == ["other@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_an_address_named_in_the_callers_cc_is_not_repeated_from_to(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(session, from_addr="sender@example.com")
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {
+                "mail_id": str(message_id), "mode": "reply", "body_text": "hi",
+                # sender@example.com is already the derived To -- naming
+                # it again in cc must not address it twice.
+                "cc": ["sender@example.com", "extra@example.com"],
+            },
+        )
+        outbox = await _outbox_row(migrated_db, uuid.UUID(result.data["outbox_id"]))
+        assert outbox.to_addrs == ["sender@example.com"]
+        assert outbox.cc_addrs == ["extra@example.com"]
 
 
 class TestForwardMode:
@@ -338,3 +395,118 @@ class TestReplyMailErrors:
         )
         assert result.data["success"] is False
         assert "not found" in result.data["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_mail_id_is_reported_not_raised(
+        self, mcp_client: Client,
+    ) -> None:
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {"mail_id": "not-a-uuid", "mode": "reply", "body_text": "hi"},
+        )
+        assert result.data["success"] is False
+        assert "error" in result.data
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_identity_id_is_reported_not_raised(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(session)
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {
+                "mail_id": str(message_id), "mode": "reply", "body_text": "hi",
+                "identity_id": "not-a-uuid",
+            },
+        )
+        assert result.data["success"] is False
+        assert "error" in result.data
+
+    @pytest.mark.asyncio
+    async def test_a_foreign_identity_id_is_reported_not_raised(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        """resolve_send_from_addr raises HTTPException(400) for an
+        identity that exists but belongs to a different account."""
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(session)
+            other_account_id, _other_message_id = await _seed_message(session)
+            foreign_identity = Identity(account_id=other_account_id, email="x@example.com")
+            session.add(foreign_identity)
+            await session.commit()
+            foreign_identity_id = foreign_identity.id
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {
+                "mail_id": str(message_id), "mode": "reply", "body_text": "hi",
+                "identity_id": str(foreign_identity_id),
+            },
+        )
+        assert result.data["success"] is False
+        assert "error" in result.data
+
+    @pytest.mark.asyncio
+    async def test_forwarding_with_send_and_no_recipient_is_reported_not_raised(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        """forward derives no recipients of its own; require_recipients
+        (called for kind="send") used to raise HTTPException straight
+        through this tool rather than answering with the documented
+        error shape."""
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(session)
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {
+                "mail_id": str(message_id), "mode": "forward", "body_text": "fyi",
+                "send": True,
+            },
+        )
+        assert result.data["success"] is False
+        assert "error" in result.data
+
+
+class TestTruncatedSourceMessage:
+    """Per the consumer contract, is_truncated means body_text/body_html
+    and every attachment were never fetched and stay NULL/empty forever
+    -- replying would quote nothing, and forwarding would silently carry
+    along zero-byte attachments while reporting success."""
+
+    @pytest.mark.asyncio
+    async def test_replying_to_a_truncated_message_is_refused(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(session, is_truncated=True)
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {"mail_id": str(message_id), "mode": "reply", "body_text": "hi"},
+        )
+        assert result.data["success"] is False
+        assert "truncated" in result.data["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_forwarding_a_truncated_message_is_refused(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            _account_id, message_id = await _seed_message(session, is_truncated=True)
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "reply_mail",
+            {
+                "mail_id": str(message_id), "mode": "forward", "body_text": "fyi",
+                "to": ["someone@example.com"],
+            },
+        )
+        assert result.data["success"] is False
+        assert "truncated" in result.data["error"].lower()

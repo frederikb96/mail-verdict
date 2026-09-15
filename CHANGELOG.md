@@ -31,10 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - New MCP tool `reply_mail`: reply, reply-all or forward a message by naming it, instead of
   hand-assembling threading headers, recipients, subject and the quoted original. Defaults to
   saving a draft, so the recommended flow is composing here and reviewing/sending from the web
-  UI's Drafts, where it reopens as an ordinary threaded reply with the original quoted. Also adds
-  attachment support (base64, since the MCP server has no access to the caller's filesystem) to
-  `send_mail`/`draft_mail`/`reply_mail` alike; `reply_mail` carries a forwarded message's own
-  attachments along automatically.
+  UI's Drafts, where it reopens as an ordinary threaded reply with the original quoted. Replying
+  to a message this account sent itself goes back to its original recipients rather than to
+  itself, and its `to`/`cc` are additions to what a reply derives, deduped against each other on
+  the bare address regardless of display name. Refuses a truncated source message (its body and
+  attachments were never fetched, so nothing to quote or forward). Also adds attachment support
+  (base64, since the MCP server has no access to the caller's filesystem) to
+  `send_mail`/`draft_mail`/`reply_mail` alike, tolerant of the line-wrapped base64 a shell's own
+  `base64` command produces; `reply_mail` carries a forwarded message's own attachments along
+  automatically. A bad recipient, identity or attachment on any of the three now comes back as
+  `{"success": false, "error": ...}` rather than a raised error, and a successful `reply_mail`
+  call reports the `to`/`cc`/`subject` it actually used.
 
 ## [6.2.3] - 2026-09-15
 

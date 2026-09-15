@@ -140,6 +140,13 @@ def _message_summary(msg: Message) -> dict[str, Any]:
     }
 
 
+def _endpoint_error(exc: HTTPException | ValueError) -> dict[str, Any]:
+    """An api/ router's HTTPException, or a bad uuid.UUID(...)
+    (ValueError), in the {"error": ...} shape these tools return instead
+    of letting it surface as a raised exception."""
+    return {"error": str(exc.detail) if isinstance(exc, HTTPException) else str(exc)}
+
+
 @mcp.tool(
     name="search_mail",
     annotations={
@@ -607,39 +614,50 @@ async def _create_outbox_row(
     Keyword-only throughout: a positional call silently reassigns every
     argument after wherever a new parameter lands, and every caller here
     is already internal to this module, so there is no positional caller
-    to preserve."""
-    if kind == "send":
-        require_recipients(to, cc, bcc)
-    db = get_db_connection()
-    account_uuid = uuid.UUID(account_id)
-    key = uuid.UUID(idempotency_key) if idempotency_key else None
-    async with db.session() as session:
-        if key is not None:
-            repeat = await replay_submission(session, key, kind)
-            if repeat is not None:
-                status = repeat.status if isinstance(repeat, OutboxResponse) else "pending"
-                return {"success": True, "outbox_id": str(repeat.id), "status": status}
-        from_addr = await resolve_send_from_addr(
-            session, account_uuid, uuid.UUID(identity_id) if identity_id else None,
-        )
-        outbox = await insert_outbox(
-            session,
-            account_id=account_uuid,
-            kind=kind,
-            from_addr=from_addr,
-            to_addrs=to,
-            cc_addrs=cc,
-            bcc_addrs=bcc,
-            subject=subject,
-            body_text=body_text,
-            body_html=body_html,
-            in_reply_to=in_reply_to,
-            references=references,
-            attachments=attachments,
-        )
-        if key is not None:
-            await record_submission(session, key, kind, outbox.id)
-        return {"success": True, "outbox_id": str(outbox.id), "status": outbox.status}
+    to preserve.
+
+    require_recipients, replay_submission and resolve_send_from_addr are
+    REST endpoint helpers that raise HTTPException -- a missing
+    recipient on a send, a key reused for a different kind, a bad or
+    foreign identity_id -- and a malformed id string raises ValueError.
+    Both are caught here rather than left to surface as a raised
+    exception, so every caller of this function gets the same
+    {"success": False, "error": ...} shape on any of them."""
+    try:
+        if kind == "send":
+            require_recipients(to, cc, bcc)
+        db = get_db_connection()
+        account_uuid = uuid.UUID(account_id)
+        key = uuid.UUID(idempotency_key) if idempotency_key else None
+        async with db.session() as session:
+            if key is not None:
+                repeat = await replay_submission(session, key, kind)
+                if repeat is not None:
+                    status = repeat.status if isinstance(repeat, OutboxResponse) else "pending"
+                    return {"success": True, "outbox_id": str(repeat.id), "status": status}
+            from_addr = await resolve_send_from_addr(
+                session, account_uuid, uuid.UUID(identity_id) if identity_id else None,
+            )
+            outbox = await insert_outbox(
+                session,
+                account_id=account_uuid,
+                kind=kind,
+                from_addr=from_addr,
+                to_addrs=to,
+                cc_addrs=cc,
+                bcc_addrs=bcc,
+                subject=subject,
+                body_text=body_text,
+                body_html=body_html,
+                in_reply_to=in_reply_to,
+                references=references,
+                attachments=attachments,
+            )
+            if key is not None:
+                await record_submission(session, key, kind, outbox.id)
+            return {"success": True, "outbox_id": str(outbox.id), "status": outbox.status}
+    except (HTTPException, ValueError) as exc:
+        return {"success": False, **_endpoint_error(exc)}
 
 
 @mcp.tool(
@@ -662,7 +680,7 @@ async def send_mail(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     identity_id: str | None = None,
-    attachments: list[dict[str, str]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -705,7 +723,8 @@ async def send_mail(
         {"success": bool, "outbox_id": str, "status": str} -- status starts
         "pending"; poll get_stats or list_mails, or watch outbox.updated SSE,
         to see it transition to sent/failed/dead. {"success": False,
-        "error": str} on a bad attachment.
+        "error": str} on a bad attachment, a bad identity_id, or a send
+        with no recipient at all.
     """
     decoded_attachments = _decode_attachments(attachments)
     if isinstance(decoded_attachments, dict):
@@ -740,7 +759,7 @@ async def draft_mail(
     in_reply_to: str | None = None,
     references: list[str] | None = None,
     identity_id: str | None = None,
-    attachments: list[dict[str, str]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """
     Save a draft to the account's Drafts folder without sending it.
@@ -761,7 +780,7 @@ async def draft_mail(
 
     Returns:
         {"success": bool, "outbox_id": str, "status": str}, or
-        {"success": False, "error": str} on a bad attachment
+        {"success": False, "error": str} on a bad attachment or identity_id
     """
     decoded_attachments = _decode_attachments(attachments)
     if isinstance(decoded_attachments, dict):
@@ -777,20 +796,43 @@ async def draft_mail(
 
 
 def _decode_attachments(
-    attachments: list[dict[str, str]] | None,
+    attachments: list[dict[str, Any]] | None,
 ) -> list[tuple[str, str | None, bytes]] | dict[str, Any]:
     """Base64-decode a caller's attachment list into insert_outbox's own
     tuple shape, or an {"error": ...} dict on the first bad entry -- the
     MCP server is reached over HTTP with no access to the caller's
     filesystem, so content travels as base64 rather than a path the way
-    the REST outbox endpoint's own multipart upload does."""
+    the REST outbox endpoint's own multipart upload does.
+
+    Whitespace is stripped before decoding: coreutils' own `base64` and
+    Python's `base64.encodebytes` both wrap their output at 76 columns,
+    and validate=True rejects a newline as "invalid" rather than as the
+    line wrapping it is. The size limit is checked on the encoded length,
+    before decoding -- base64 expands the original by ~4/3, so this is
+    what actually bounds the buffer decoding would otherwise allocate,
+    the same reasoning _read_capped_attachment in api/outbox.py applies
+    to its own streamed upload."""
+    limits = get_config().outbox
     decoded: list[tuple[str, str | None, bytes]] = []
     for att in attachments or []:
+        filename = att.get("filename") or "attachment"
         try:
-            data = base64.b64decode(att["data_base64"], validate=True)
-        except (KeyError, binascii.Error) as exc:
+            raw = att["data_base64"]
+        except KeyError as exc:
             return {"error": f"Invalid attachment: {exc}"}
-        decoded.append((att.get("filename") or "attachment", att.get("content_type"), data))
+        if not isinstance(raw, str):
+            return {"error": f"Attachment '{filename}': data_base64 must be a string"}
+        stripped = "".join(raw.split())
+        if len(stripped) * 3 // 4 > limits.max_attachment_bytes:
+            return {"error": f"Attachment '{filename}' exceeds the size limit"}
+        try:
+            data = base64.b64decode(stripped, validate=True)
+        except binascii.Error as exc:
+            return {"error": f"Invalid attachment: {exc}"}
+        content_type = att.get("content_type")
+        if content_type is not None and not isinstance(content_type, str):
+            return {"error": f"Attachment '{filename}': content_type must be a string or null"}
+        decoded.append((filename, content_type, data))
     return decoded
 
 
@@ -834,7 +876,7 @@ async def reply_mail(
     body_text: str,
     to: list[str] | None = None,
     cc: list[str] | None = None,
-    attachments: list[dict[str, str]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     send: bool = False,
     identity_id: str | None = None,
     idempotency_key: str | None = None,
@@ -885,12 +927,21 @@ async def reply_mail(
             only meaningful with send=True; see send_mail
 
     Returns:
-        {"success": bool, "outbox_id": str, "status": str}, or
-        {"success": False, "error": str} on a bad mail_id, mode or
-        attachment
+        On success, {"success": bool, "outbox_id": str, "status": str,
+        "to": list[str], "cc": list[str], "subject": str} -- to/cc/subject
+        are what was actually derived and sent/drafted, since most of
+        them were never given by the caller. {"success": False, "error":
+        str} on a bad mail_id, mode, identity_id or attachment, a
+        truncated source message (see below), or a send with no
+        recipient at all.
     """
     if mode not in ("reply", "reply_all", "forward"):
         return {"success": False, "error": "mode must be one of: reply, reply_all, forward"}
+
+    try:
+        mail_uuid = uuid.UUID(mail_id)
+    except ValueError as exc:
+        return {"success": False, **_endpoint_error(exc)}
 
     decoded_attachments = _decode_attachments(attachments)
     if isinstance(decoded_attachments, dict):
@@ -898,9 +949,24 @@ async def reply_mail(
 
     db = get_db_connection()
     async with db.session() as session:
-        source = await session.get(Message, uuid.UUID(mail_id))
+        source = await session.get(Message, mail_uuid)
         if source is None:
             return {"success": False, "error": "Message not found"}
+        if source.is_truncated:
+            # Per the consumer contract: body_text/body_html and every
+            # attachment were never fetched from IMAP at all for a
+            # message this large, and stay NULL/empty forever -- not
+            # "not yet fetched". Replying would quote nothing, and
+            # forwarding would carry along empty, zero-byte attachments
+            # while reporting success.
+            return {
+                "success": False,
+                "error": (
+                    "This message was too large to fetch in full (is_truncated) -- its body "
+                    "and attachments were never retrieved, so it cannot be replied to or "
+                    "forwarded."
+                ),
+            }
         account = await session.get(Account, source.account_id)
         identities = list(
             (
@@ -912,15 +978,18 @@ async def reply_mail(
             .all()
         )
 
-    quote = await _get_message_quote(source.id)
+    try:
+        quote = await _get_message_quote(source.id)
+    except HTTPException as exc:
+        return {"success": False, **_endpoint_error(exc)}
 
     draft: ReplyDraft | ForwardDraft
     if mode == "forward":
         from mail_verdict.api.deps import get_attachment_repo
 
         draft = derive_forward(source)
-        recipients_to = list(to or [])
-        recipients_cc = list(cc or [])
+        recipients_to = merge_addresses([], to)
+        recipients_cc = merge_addresses([], cc, exclude=recipients_to)
         source_attachments = await get_attachment_repo().get_by_message_id(source.id)
         outbox_attachments = [
             (a.filename or "attachment", a.content_type, a.data or b"") for a in source_attachments
@@ -932,7 +1001,7 @@ async def reply_mail(
         reply_draft = derive_reply(source, own_addresses, mode)  # type: ignore[arg-type]
         draft = reply_draft
         recipients_to = merge_addresses(reply_draft.to, to)
-        recipients_cc = merge_addresses(reply_draft.cc, cc)
+        recipients_cc = merge_addresses(reply_draft.cc, cc, exclude=recipients_to)
         outbox_attachments = decoded_attachments
         in_reply_to = reply_draft.in_reply_to
         references = reply_draft.references
@@ -953,7 +1022,7 @@ async def reply_mail(
         restore_remote_images(f"{authored_body_html(body_text)}{quote_wrapper}")
     )
 
-    return await _create_outbox_row(
+    result = await _create_outbox_row(
         account_id=str(source.account_id),
         kind="send" if send else "draft",
         to=recipients_to,
@@ -967,6 +1036,9 @@ async def reply_mail(
         attachments=outbox_attachments or None,
         idempotency_key=idempotency_key,
     )
+    if result.get("success"):
+        result = {**result, "to": recipients_to, "cc": recipients_cc, "subject": draft.subject}
+    return result
 
 
 @mcp.tool(
@@ -1130,12 +1202,6 @@ async def get_semantic_status(account_id: str | None = None) -> dict[str, Any]:
         "model": status.model, "in_scope": status.in_scope, "encoded": status.encoded,
         "pending": status.pending, "failed": status.failed, "coverage": status.coverage,
     }
-
-
-def _endpoint_error(exc: HTTPException) -> dict[str, Any]:
-    """An api/ router's HTTPException, in the {"error": ...} shape these
-    tools return instead of letting it surface as a raised exception."""
-    return {"error": str(exc.detail)}
 
 
 @mcp.tool(

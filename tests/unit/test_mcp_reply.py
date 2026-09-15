@@ -90,6 +90,27 @@ class TestDeriveReply:
         assert "> line one" in draft.quoted_text
         assert "> line two" in draft.quoted_text
 
+    def test_replying_to_your_own_message_goes_back_to_its_recipients(self) -> None:
+        """A message found in Sent has from_addr == one of the account's
+        own addresses -- the web UI never reaches this (it only replies to
+        inbound mail), but an MCP caller can name any message, and
+        replying to yourself would otherwise be a no-op nobody wants."""
+        msg = _message(
+            from_addr="me@example.com", to_addrs=["them@example.com", "other@example.com"],
+        )
+        draft = derive_reply(msg, ["me@example.com"], "reply")
+        assert set(draft.to) == {"them@example.com", "other@example.com"}
+
+    def test_replying_to_your_own_message_still_excludes_your_own_address(self) -> None:
+        msg = _message(from_addr="Me <me@example.com>", to_addrs=["me@example.com"])
+        draft = derive_reply(msg, ["me@example.com"], "reply")
+        assert draft.to == []
+
+    def test_own_message_match_is_case_insensitive(self) -> None:
+        msg = _message(from_addr="ME@Example.com", to_addrs=["them@example.com"])
+        draft = derive_reply(msg, ["me@example.com"], "reply")
+        assert draft.to == ["them@example.com"]
+
 
 class TestDeriveForward:
     def test_subject_gets_an_fwd_prefix_once(self) -> None:
@@ -154,8 +175,25 @@ class TestMergeAddresses:
             "a@example.com", "b@example.com",
         ]
 
+    def test_dedupes_on_the_bare_email_not_the_whole_string(self) -> None:
+        assert merge_addresses(["Bob <bob@example.com>"], ["bob@example.com"]) == [
+            "Bob <bob@example.com>",
+        ]
+
     def test_none_leaves_the_base_list_untouched(self) -> None:
         assert merge_addresses(["a@example.com"], None) == ["a@example.com"]
+
+    def test_exclude_drops_addresses_already_used_elsewhere(self) -> None:
+        """reply_mail dedupes a derived Cc against its own To this way, so
+        nobody named in both ends up addressed twice."""
+        merged = merge_addresses(
+            [], ["a@example.com", "b@example.com"], exclude=["A@Example.com"],
+        )
+        assert merged == ["b@example.com"]
+
+    def test_exclude_matches_on_the_bare_email_too(self) -> None:
+        merged = merge_addresses([], ["bob@example.com"], exclude=["Bob <bob@example.com>"])
+        assert merged == []
 
 
 def test_reply_draft_and_forward_draft_are_plain_dataclasses() -> None:
