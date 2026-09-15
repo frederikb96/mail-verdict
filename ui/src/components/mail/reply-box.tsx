@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import type { MessageDetail } from "@/types/api";
 
 interface ReplyBoxProps {
-  /** The message being replied to — normally the last one in the thread. */
+  /** The message being replied to — the reading pane's open message. */
   source: MessageDetail;
   ownEmail: string;
 }

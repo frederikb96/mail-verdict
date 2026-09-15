@@ -13,7 +13,6 @@ import {
   composeIntentAtom,
   requestMoveDialogAtom,
   requestReplyModeAtom,
-  selectedMailIdAtom,
   requestSelectMailAtom,
 } from "@/lib/atoms";
 import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
@@ -24,6 +23,8 @@ import type { MailRowAction, MessageSummary } from "@/types/api";
 interface UseKeyboardShortcutsOptions {
   /** Current visible mail list. */
   mails: MessageSummary[];
+  /** The row standing for the open message -- see MailList's openRowId. */
+  openMailId: string | null;
   /** Callback to scroll the VList to a given index. */
   scrollToIndex?: (index: number) => void;
   /** Opens a message, the same way clicking its row does. */
@@ -66,12 +67,12 @@ interface UseKeyboardShortcutsOptions {
  */
 export function useKeyboardShortcuts({
   mails,
+  openMailId,
   scrollToIndex,
   onOpen,
   onAction,
 }: UseKeyboardShortcutsOptions) {
   const [focusedIndex, setFocusedIndex] = useAtom(focusedMailIndexAtom);
-  const selectedMailId = useAtomValue(selectedMailIdAtom);
   const requestSelectMail = useSetAtom(requestSelectMailAtom);
   const { toggle: toggleSelection } = useSelectionGestures();
   const clearSelection = useClearSelection();
@@ -79,8 +80,8 @@ export function useKeyboardShortcuts({
   const setRequestReplyMode = useSetAtom(requestReplyModeAtom);
   const setRequestMoveDialog = useSetAtom(requestMoveDialogAtom);
 
-  const openIndex = selectedMailId
-    ? mails.findIndex((m) => m.id === selectedMailId)
+  const openIndex = openMailId
+    ? mails.findIndex((m) => m.id === openMailId)
     : -1;
   const currentIndex = openIndex >= 0 ? openIndex : focusedIndex;
 

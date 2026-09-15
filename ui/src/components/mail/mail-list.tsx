@@ -13,7 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useMailList, useMailAction, useMarkConversationRead } from "@/hooks/use-mails";
+import { useMailList, useMailAction, useMarkConversationRead, useThread } from "@/hooks/use-mails";
 import { clearKeptWhileUnread } from "@/lib/mail-list-window";
 import { useFolders } from "@/hooks/use-folders";
 import { useAccount, useAccounts } from "@/hooks/use-accounts";
@@ -305,6 +305,15 @@ export function MailList() {
     ? (filterResult.data?.pages.flatMap((p) => p.items) ?? [])
     : (result.data?.pages.flatMap((p) => p.messages) ?? []);
   const allMailIds = allMails.map((m) => m.id);
+  // The row standing for the open message: the message itself, or -- in a
+  // threaded list, where a row is its conversation's newest message here --
+  // that conversation's row while an older message of it is open.
+  const { data: openThread } = useThread(selectedMailId);
+  const openThreadId = openThread?.messages.find((m) => m.id === selectedMailId)?.thread_id;
+  const openRowId =
+    selectedMailId && openThreadId && threaded && !isFiltering && !allMailIds.includes(selectedMailId)
+      ? ((allMails as MessageSummary[]).find((m) => m.thread_id === openThreadId)?.id ?? selectedMailId)
+      : selectedMailId;
   const rowsById = useMemo(() => {
     const map = new Map<string, SelectableRow>();
     for (const m of allMails) map.set(m.id, m);
@@ -568,14 +577,14 @@ export function MailList() {
   const handleOpen = useCallback(
     (mailId: string) => {
       if (selectionMode) clearSelection();
-      const from = selectedMailId ? allMailIds.indexOf(selectedMailId) : -1;
+      const from = openRowId ? allMailIds.indexOf(openRowId) : -1;
       const to = allMailIds.indexOf(mailId);
       if (from >= 0 && to >= 0 && to !== from) {
         setNavDirection(to > from ? "older" : "newer");
       }
       requestSelectMail(mailId);
     },
-    [selectionMode, clearSelection, requestSelectMail, selectedMailId, allMailIds, setNavDirection],
+    [selectionMode, clearSelection, requestSelectMail, openRowId, allMailIds, setNavDirection],
   );
 
   const handleCheckToggle = useCallback(
@@ -592,6 +601,7 @@ export function MailList() {
 
   useKeyboardShortcuts({
     mails: allMails as MessageSummary[],
+    openMailId: openRowId,
     scrollToIndex,
     onOpen: handleOpen,
     onAction: handleAction,
@@ -774,7 +784,7 @@ export function MailList() {
                 mail={mail as MessageSummary}
                 accountEmoji={isUnifiedView ? accountsById.get(mail.account_id)?.emoji : undefined}
                 accountName={isUnifiedView ? accountsById.get(mail.account_id)?.name : undefined}
-                isSelected={mail.id === selectedMailId}
+                isSelected={mail.id === openRowId}
                 isFocused={index === focusedIndex}
                 isChecked={isSelected(mail)}
                 selectionMode={selectionMode}
