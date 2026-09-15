@@ -604,10 +604,10 @@ async def _create_outbox_row(
     """Shared insert path for send_mail, draft_mail and reply_mail. A key
     already used answers with the row it created -- the same record POST
     /outbox keeps, so a key means the same thing on both surfaces.
-    Keyword-only throughout: an endpoint reassigning a positional argument
-    when a new parameter lands in the middle is a real defect class in
-    this file (see mcp_tools.py's own module docstring reference in
-    CLAUDE.md), and every caller here is already internal to this module."""
+    Keyword-only throughout: a positional call silently reassigns every
+    argument after wherever a new parameter lands, and every caller here
+    is already internal to this module, so there is no positional caller
+    to preserve."""
     if kind == "send":
         require_recipients(to, cc, bcc)
     db = get_db_connection()
