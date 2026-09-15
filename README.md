@@ -18,7 +18,9 @@ mirror, which is what keeps it simple.
   list that stays smooth on large mailboxes, and unified views: any set of folders, across
   accounts, merged into one list with an icon of its own in the sidebar -- one folder can sit in
   several. A conversation reads newest first; any earlier message in it can be made the open one,
-  so the toolbar and the reply act on that message instead of the newest. A message header's sender and recipients copy
+  so the toolbar and the reply act on that message instead of the newest. An open conversation
+  updates live, a reply arriving or your own sent reply showing up in it without reopening it. A
+  message header's sender and recipients copy
   their addresses on a click, each alone or a whole line comma-separated. Folders can be created
   and deleted (renaming and re-nesting are an IMAP limitation, not implemented). A quick filter
   narrows the open folder or view by subject, sender or recipient, its rows carrying the same
@@ -110,7 +112,9 @@ mirror, which is what keeps it simple.
   truncated body go to the configured model provider twice, once for spam classification and once
   for the embedding that powers semantic search — a deliberate design choice, not something a
   setting turns off.
-- **MCP server** — connect an MCP client and let it search, read, organise and send mail, and
+- **MCP server** — connect an MCP client and let it search, read, organise and send mail —
+  including replying to or forwarding a message by its id, saved as a draft for you to review and
+  send, with attachments — and
   read, create, edit and delete calendar events and contacts.
 - **Installable** — a browser that supports it offers to install the site, which then runs in its
   own window with its own icon. The installed application registers as a `mailto:` handler, so it
