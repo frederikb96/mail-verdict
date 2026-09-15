@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Pressing `a` or `f` no longer leaves a request behind that opened reply-all or forward on its own
+  on every message opened afterwards.
+- Opening a message of the thread (or a search hit) while a reply is being written no longer
+  switches the folder under it before the save/discard prompt is answered.
+- A forward whose original attachment cannot be downloaded says so instead of attaching the error
+  response as the file.
+- Collapsed messages of a conversation are no longer parsed for their light/dark choice until
+  expanded.
+
 ## [6.2.3] - 2026-09-15
 
 - Any message in an open conversation can be made the open one from an icon in its header: the

@@ -151,7 +151,9 @@ export function ThreadMessage({
   onMatchCountChange?: (count: number) => void;
 }) {
   const [previewAttachment, setPreviewAttachment] = useState<AttachmentSummary | null>(null);
-  const { canvas, toggleCanvas } = useMessageCanvas(mail.body_html, mail.id);
+  // Judged only once expanded: pickCanvas parses the whole body, and a
+  // collapsed row shows none of it.
+  const { canvas, toggleCanvas } = useMessageCanvas(expanded ? mail.body_html : null, mail.id);
   const { push: pushToast } = useToast();
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);

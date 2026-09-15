@@ -77,11 +77,9 @@ export const mailArrivedAtom = atom<{
  * box, discarding whatever was typed with no prompt at all.
  *
  * Keyed by thread id rather than by the single message either side would
- * otherwise have to agree on: a reply always targets the thread's newest
- * message, while the reading pane's own "open" message can be an older
- * one the reader expanded within the same thread -- matching on the
- * message alone would still let trashing that older one discard a reply
- * against the newest. */
+ * otherwise have to agree on: a reply targets the reading pane's open
+ * message, and matching on that message alone would still let trashing
+ * another message of the same thread discard it. */
 export const activeReplyDirtyForThreadIdAtom = atom<string | null>(null);
 
 /** A pending selection that a dirty composer is currently holding up -- set

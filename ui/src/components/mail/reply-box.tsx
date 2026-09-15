@@ -14,6 +14,7 @@ import { DiscardChangesDialog } from "@/components/mail/discard-changes-dialog";
 import { buildForward, buildReply } from "@/lib/reply";
 import { matchIdentity } from "@/lib/identities";
 import { useIdentities } from "@/hooks/use-identities";
+import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import {
   activeReplyDirtyForThreadIdAtom,
@@ -37,6 +38,7 @@ async function fetchAttachmentsAsFiles(source: MessageDetail): Promise<File[]> {
   const files = await Promise.all(
     source.attachments.map(async (att) => {
       const res = await fetch(api.mails.attachmentUrl(source.id, att.id));
+      if (!res.ok) throw new Error(`Could not download ${att.filename ?? "an attachment"}`);
       const blob = await res.blob();
       return new File([blob], att.filename ?? "attachment", {
         type: att.content_type ?? blob.type,
@@ -55,6 +57,7 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   const [isDirty, setIsDirty] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const controlsRef = useRef<ComposeFormControls | null>(null);
+  const { push: pushToast } = useToast();
   const setActiveReplyDirtyForThreadId = useSetAtom(activeReplyDirtyForThreadIdAtom);
   // Set by requestSelectMailAtom (lib/atoms.ts) when this box's own dirty
   // flag blocked a navigation elsewhere -- the dialog below resolves it,
@@ -70,9 +73,8 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   // bulk selection covering it) must not clear the open selection --
   // that would leave the reading pane pointed at nothing once whatever
   // unmounted this box goes away again. Keyed by thread rather than by
-  // source.id: the reading pane's own "open" message can be an older one
-  // the reader expanded within this thread, and trashing that one must
-  // not discard a reply against the newest either.
+  // source.id: trashing another message of the same thread must not
+  // discard a reply against the open one either.
   //
   // Deliberately no cleanup clearing this on unmount: checking a second
   // row replaces the reading pane with the bulk panel, unmounting this
@@ -120,6 +122,10 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
         setForwardAttachments(files);
         setQuoteHtml(quote.html);
       })
+      .catch((err: unknown) => {
+        pushToast(err instanceof Error ? err.message : "Could not prepare the reply", "error");
+        setMode(null);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -130,10 +136,14 @@ export function ReplyBox({ source, ownEmail }: ReplyBoxProps) {
   // the atom when this one mounts) is never replayed, and a mode already
   // open is left alone rather than restarted underneath the reader.
   const requestReplyMode = useAtomValue(requestReplyModeAtom);
+  const setRequestReplyMode = useSetAtom(requestReplyModeAtom);
   const consumedReplyModeNonceRef = useRef(0);
   useEffect(() => {
     if (!requestReplyMode || requestReplyMode.nonce === consumedReplyModeNonceRef.current) return;
     consumedReplyModeNonceRef.current = requestReplyMode.nonce;
+    // Cleared once consumed: a box mounted later starts its ref at 0 and
+    // would otherwise replay this request on every message opened after it.
+    setRequestReplyMode(null);
     if (mode === null) start(requestReplyMode.mode);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestReplyMode]);

@@ -27,6 +27,7 @@ import { buildMailUrl } from "@/lib/mail-url";
 import { unifiedKeys } from "@/hooks/use-unified-view";
 import { useToast } from "@/hooks/use-toast";
 import {
+  activeReplyDirtyForThreadIdAtom,
   isUnifiedViewAtom,
   lastMailViewWasUnifiedAtom,
   pendingAroundMailIdAtom,
@@ -105,6 +106,13 @@ export function useOpenMessage() {
 
   const apply = useCallback(
     ({ location, unifiedView }: MessagePlace) => {
+      // A dirty reply holds the selection until it is saved or discarded
+      // (requestSelectMailAtom); moving the list now would leave that reply
+      // beside a folder its thread is not in.
+      if (store.get(activeReplyDirtyForThreadIdAtom) !== null) {
+        requestSelectMail(location.id);
+        return;
+      }
       const alreadyHere = unifiedView
         ? store.get(isUnifiedViewAtom) && store.get(selectedUnifiedFolderAtom) === unifiedView
         : store.get(selectedAccountIdAtom) === location.account_id &&
