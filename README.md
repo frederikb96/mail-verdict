@@ -56,6 +56,8 @@ mirror, which is what keeps it simple.
   in the direction you were already going. Every action shows at once and survives a flaky or
   absent connection: it waits, retries and is sent exactly once, even across a reload, with a
   marker on the row while the server has not confirmed it and a Retry when the server refuses.
+  Sent late, or undone, an action never pulls a message out of a folder it was filed into
+  meanwhile, and one left unsent for an hour asks before it is sent at all.
   Archiving a message, or filing it as spam, marks it read as it moves, and mail in Archive or
   Trash stays read even when another client put it there — a setting turns this off for Archive
   and Junk.

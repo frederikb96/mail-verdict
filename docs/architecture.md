@@ -114,37 +114,51 @@ Two deliberate details:
 ## Acting on mail from the browser
 
 The browser never patches a cache to show what the reader just did. Every action -- archive,
-trash, move, spam, read state, star, and the same over an explicit selection -- becomes an
-*intent* (`ui/src/lib/mail-intents.ts`) in a ledger kept in local storage
-(`ui/src/lib/intent-ledger.ts`), and everything on screen is the server's last answer with the
-intents projected over it: the list rows of any folder, unified view or filter, the open
-conversation, and every folder count. A new cache cannot be forgotten, and a list read that lands
-while an action is still on its way cannot put an archived row back.
+trash, move, spam (including the verdict thumbs and spam review), read state, star, and the same
+over an explicit selection -- becomes an *intent* (`ui/src/lib/mail-intents.ts`) in a ledger kept
+in local storage (`ui/src/lib/intent-ledger.ts`), and everything on screen is the server's last
+answer with the intents projected over it: the list rows of any folder, unified view or filter,
+the open conversation, spam review, and every folder count. A new cache cannot be forgotten, and
+a list read that lands while an action is still on its way cannot put an archived row back.
 
-- **Until when an intent applies.** Data read before the intent's request succeeded is
-  projected; data read after it already holds the change and is shown as it is. A window refresh
-  is dated from when its read began, not when it landed, so a refresh racing the action counts as
-  older. That makes the server authoritative again the moment it could be -- a spam ruling on a
-  message already in Junk shows the row once a later read keeps it there -- and retiring an
-  intent a matter of time only.
-- **Sending.** A drainer (`ui/src/lib/intent-drainer.ts`) sends one request per account at a
-  time, never one overtaking an earlier unsettled intent on the same message, each with the
-  intent's id as `idempotency_key` and a timeout. A network error or timeout waits for the network
-  with backoff and resumes when the browser reports being online or the event stream reconnects;
-  a 408, 429 or 5xx retries; a 404 retires the intent; any other refusal marks it failed, shown on
-  its row and in the header with Retry and Discard. Only the tab holding a Web Lock sends; other
-  tabs project the same ledger. A reload resends what never got an answer, and the server
-  (`mail_actions/submissions.py`) answers a repeated key with the first response instead of
-  acting again.
+- **Until when an intent applies.** Every query the projection reads records when its request
+  *left* (`ui/src/lib/read-clock.ts`); a page appended later keeps the older time. Data read
+  before the intent's request succeeded is projected, data read after it is shown as the server
+  has it. Counts are stricter: they take an intent only into data read before its first request
+  left, since a request whose answer was lost may already be counted. Once an intent is answered,
+  cached lists and conversations nobody is looking at that still predate it are dropped, so one
+  opened later loads afresh rather than showing the change undone.
+- **Moves made elsewhere** arrive as `mail.updated` / `mail.deleted` events and are projected the
+  same way (`ui/src/lib/observed-changes.ts`), so a row another client filed leaves every list at
+  once.
+- **Sending.** A drainer (`ui/src/lib/intent-drainer.ts`) sends one request per account at a time,
+  never one overtaking an earlier unsettled intent on the same message, each with the intent's id
+  as `idempotency_key`, a timeout, and the folder each message was seen in (`expected_folder_id`,
+  `expected_folder_ids`, `expand_threads_through`). The server leaves a message that has moved
+  since alone (`applied: false`, `skipped_ids`), and the reader is told. A network error or timeout
+  waits for the network with backoff and resumes when the browser reports being online or the event
+  stream reconnects; a 408, 425, 429 or 5xx retries a bounded number of times; a 404 ends the intent
+  quietly; any other refusal marks it failed, shown on its row and in the header with Retry (a new
+  generation, which outranks every stored copy of the refused one) and Discard. An intent still
+  unsent after an hour is held and the header asks to Send or Discard it: a guard sees where a
+  message is, not everything that happened to the mailbox meanwhile. A reload resends what never
+  got an answer, and the server (`mail_actions/submissions.py`) answers a repeated key with the
+  first response instead of acting again.
+- **Tabs.** Only the tab holding a Web Lock sends, or where Web Locks do not exist (plain HTTP) the
+  one holding a short lease in local storage. Every tab projects the same ledger, re-reads what an
+  answered intent touched, and tells its own reader the outcome of what they did there.
 - **Undo.** A user action is one undo step (Ctrl+Z / Cmd+Z, or the toast), kept for a while and
-  across reloads. An intent never sent is simply dropped. One already applied is reversed by new
-  intents: each message moved back to the folder it was in, and marked unread again if it was, or
-  its flag set back. One whose answer has not arrived yet is reversed once it arrives. A message
-  that has since disappeared (moved by another client, which mirrors as a new row) leaves nothing
-  to move back, and the reader is told so. Undo is by message id and restores where the message
-  was when the action was taken, whatever moved it meanwhile.
+  across reloads; the keys take back only steps taken in the same tab. Undoing records a request
+  that the sending tab carries out once every intent in the step has an answer: one never sent is
+  dropped, one applied is reversed by new intents guarded to where the server filed each message
+  (`folder_id`, `target_folder_id`) -- moved back to the folder it came from and marked unread
+  again if it was, or its flag set back. A message filed somewhere else since is left there, and
+  the reader is told there was nothing to undo.
+- **Destroying a folder** confirms the server's own count, never a projected one, and is refused
+  while an unanswered action involves that folder: a move still in the browser is invisible to the
+  server's guards.
 - **Select-all.** A predicate selection is resolved by the server and cannot be projected or
-  undone; it stays a plain request that resets the list afterwards.
+  undone; it stays a plain request that resets the lists afterwards.
 
 ## Owned tables carry no foreign keys onto PostIMAP's
 

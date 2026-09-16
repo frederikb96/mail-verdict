@@ -14,10 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   them, retried with backoff (and at once when the connection returns), sent exactly once even
   across a reload, marked on the row while unconfirmed and in the header while waiting for the
   network. An action the server refuses stays on its row with Retry and Discard.
-- Ctrl+Z (Cmd+Z) undoes the last mail action -- archive, trash, move, spam, read/unread, star, or
-  one over a selection -- repeatedly, and never while typing or in a dialog. The Undo in the toast
+- An action sent late -- after a reconnect or a reload -- and an undo leave a message alone if it
+  was filed somewhere else meanwhile, and say so. An action still unsent after an hour waits for
+  Send or Discard instead of being replayed. A server that keeps failing ends in a visible failure
+  with Retry, and Retry now actually sends again.
+- Undo taken in one tab reaches the server even when another tab is the one sending, and each
+  tab tells its own reader what came of their actions.
+- The spam verdict thumbs and the spam review screen show their ruling at once and survive a bad
+  connection like every other action. Deleting or emptying a folder waits for actions on it that
+  are still being sent.
+- Ctrl+Z (Cmd+Z) undoes the last mail action taken in that tab -- archive, trash, move, spam,
+  read/unread, star, or one over a selection -- one step per press, never while typing, with a
+  composer open or in a dialog. The Undo in the toast
   is the same undo. Undoing an archive also restores unread.
-- Requests give up after a timeout instead of hanging on a stalled connection.
+- Mail action requests give up after a timeout instead of hanging on a stalled connection.
 - A mail event re-reads only the lists showing the folders it touched; a reconnect re-reads what
   is on screen a few queries at a time.
 - `POST /api/messages/{id}/action` and `POST /api/accounts/{id}/messages/bulk-action` accept an
