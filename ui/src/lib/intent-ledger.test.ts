@@ -90,6 +90,26 @@ test("what the server answered reaches the undo copy", () => {
   assert.deepEqual(entry.intents[0].sources, [{ id: "m-b1", folderId: "inbox" }]);
 });
 
+test("another tab's answer reaches this tab's undo copy", () => {
+  reset();
+  const entry = ledger.addIntents([intent("w1")], "Archived")!;
+  // The sending tab recorded the answer, and has since retired the intent.
+  const answered = {
+    ...intent("w1"), state: "done" as const, doneAt: 7, landedFolderId: "archive",
+    updatedAt: Date.now() + 1000,
+  };
+  const { messages: _rows, ...withoutRows } = answered;
+  localStorage.data.set(STORAGE_KEY, JSON.stringify({
+    v: 1, intents: [], retired: { w1: Date.now() },
+    undo: [{ ...entry, intents: [{ ...withoutRows, messages: [{ ...answered.messages[0], row: undefined }] }] }],
+  }));
+  ledger.addIntents([intent("w2")]);
+  const [copy] = ledger.getLedgerSnapshot().undo[0].intents;
+  assert.equal(copy.state, "done");
+  assert.equal(copy.landedFolderId, "archive");
+  assert.ok(copy.messages[0].row, "the row snapshot this tab kept survives");
+});
+
 test("an undo asked for stops its intents showing until it is carried out", () => {
   reset();
   const entry = ledger.addIntents([intent("u1")], "Archived")!;

@@ -22,6 +22,7 @@ import {
   FAILED_RETENTION_MS,
   PENDING_MARKER_DELAY_MS,
   mergeIntents,
+  mergeUndoEntry,
   pruneUndo,
   validIntents,
   type MailIntent,
@@ -115,6 +116,15 @@ function mergeById<T extends { id: string }>(ours: readonly T[], theirs: readonl
   return [...byId.values()];
 }
 
+function mergeUndo(ours: readonly UndoEntry[], theirs: readonly UndoEntry[]): UndoEntry[] {
+  const mine = new Map(ours.map((e) => [e.id, e]));
+  return mergeById(ours, theirs).map((entry) => {
+    const copy = theirs.find((e) => e.id === entry.id);
+    const own = mine.get(entry.id);
+    return copy && own ? mergeUndoEntry(own, copy) : entry;
+  });
+}
+
 /** Fold another tab's copy into ours. */
 function absorb(stored: StoredLedger | null): LedgerSnapshot {
   if (!stored) return snapshot;
@@ -129,7 +139,7 @@ function absorb(stored: StoredLedger | null): LedgerSnapshot {
     ...snapshot,
     intents: mergeIntents(snapshot.intents, stored.intents, retiredIds),
     undo: pruneUndo(
-      mergeById(snapshot.undo, stored.undo).sort((a, b) => a.createdAt - b.createdAt), now,
+      mergeUndo(snapshot.undo, stored.undo).sort((a, b) => a.createdAt - b.createdAt), now,
     ),
     undoRequests: mergeById(snapshot.undoRequests, stored.undoRequests ?? []),
   };
@@ -252,7 +262,8 @@ export function updateIntent(id: string, patch: Partial<MailIntent>): MailIntent
   const carried: Partial<MailIntent> = {
     state: updated.state, doneAt: updated.doneAt, sources: updated.sources,
     landedFolderId: updated.landedFolderId, skippedIds: updated.skippedIds,
-    notApplied: updated.notApplied,
+    notApplied: updated.notApplied, generation: updated.generation, attempts: updated.attempts,
+    firstSentAt: updated.firstSentAt, updatedAt: updated.updatedAt,
   };
   commit({
     intents: snapshot.intents.map((i) => (i.id === id ? updated : i)),

@@ -778,6 +778,23 @@ export function mergeIntents(
   return [...merged.values()].sort(byCreation);
 }
 
+/**
+ * Two tabs' copies of one undo step: each intent's more advanced copy, which
+ * the tab that sends keeps current, with whichever copy's row snapshots
+ * survived storage.
+ */
+export function mergeUndoEntry(ours: UndoEntry, theirs: UndoEntry): UndoEntry {
+  const other = new Map(theirs.intents.map((i) => [i.id, i]));
+  const intents = ours.intents.map((mine) => {
+    const copy = other.get(mine.id);
+    if (!copy) return mine;
+    const winner = outranks(copy, mine) ? copy : mine;
+    const withRows = mine.messages.some((m) => m.row) ? mine : copy;
+    return { ...winner, messages: withRows.messages };
+  });
+  return { ...ours, intents };
+}
+
 function outranks(a: MailIntent, b: MailIntent): boolean {
   const generation = (a.generation ?? 0) - (b.generation ?? 0);
   if (generation !== 0) return generation > 0;
