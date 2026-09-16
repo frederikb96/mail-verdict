@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 
 from mail_verdict.database.models import VerdictSource
 from mail_verdict.database.repository import FolderRepository
-from mail_verdict.postimap.actions import move_message, set_flags
+from mail_verdict.postimap.actions import move_message, move_messages_from, set_flags
 from mail_verdict.settings.service import get_settings_service
 
 if TYPE_CHECKING:
@@ -117,6 +117,7 @@ class SpamFeedbackHandler:
 
     async def apply_human_ruling(
         self, mail_id: uuid.UUID, account_id: uuid.UUID, *, is_spam: bool,
+        expected_folder_id: uuid.UUID | None = None,
     ) -> bool:
         """
         Record an explicit ruling and move the message to match.
@@ -150,6 +151,9 @@ class SpamFeedbackHandler:
             mail_id: Mail UUID
             account_id: Account UUID
             is_spam: The ruling
+            expected_folder_id: Move only if the message is still in this
+                folder (a client's queued action); the ruling is recorded
+                either way
 
         Returns:
             True if the verdict was recorded successfully. A message
@@ -187,7 +191,12 @@ class SpamFeedbackHandler:
             if folder_id is None:
                 raise FolderResolutionError(role, account_id)
             async with self._db.session() as session:
-                await move_message(session, mail_id, folder_id)
+                if expected_folder_id is None:
+                    await move_message(session, mail_id, folder_id)
+                elif expected_folder_id != folder_id and not await move_messages_from(
+                    session, [mail_id], expected_folder_id, folder_id,
+                ):
+                    return ok
                 if _should_mark_read_on_file(role):
                     await set_flags(session, mail_id, is_seen=True)
         return ok

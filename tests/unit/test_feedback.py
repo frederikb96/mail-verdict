@@ -97,6 +97,34 @@ class TestApplyHumanRuling:
         assert move_message.call_args.args[1:] == (mail_id, junk_folder_id)
 
     @pytest.mark.asyncio
+    async def test_a_guarded_ruling_moves_only_from_the_folder_it_was_seen_in(self) -> None:
+        """A queued ruling carries the folder the reader saw the message in;
+        its move is guarded in the statement itself, and the ruling is still
+        recorded when the message has moved on."""
+        handler, verdict_repo = _make_handler()
+        junk_folder_id, seen_in = uuid.uuid4(), uuid.uuid4()
+        mail_id, account_id = uuid.uuid4(), uuid.uuid4()
+
+        with (
+            patch("mail_verdict.spam.feedback.FolderRepository") as folder_repo_cls,
+            patch("mail_verdict.spam.feedback.move_message", new=AsyncMock()) as move_message,
+            patch(
+                "mail_verdict.spam.feedback.move_messages_from", new=AsyncMock(return_value=[]),
+            ) as move_from,
+        ):
+            folder_repo_cls.return_value.resolve_special_folder = AsyncMock(
+                return_value=junk_folder_id,
+            )
+            result = await handler.apply_human_ruling(
+                mail_id, account_id, is_spam=True, expected_folder_id=seen_in,
+            )
+
+        assert result is True
+        verdict_repo.create_verdict.assert_awaited_once()
+        move_message.assert_not_awaited()
+        assert move_from.call_args.args[1:] == ([mail_id], seen_in, junk_folder_id)
+
+    @pytest.mark.asyncio
     async def test_a_not_spam_ruling_reversing_spam_moves_to_inbox(self) -> None:
         """The rescue case: the prior verdict said spam, this ruling says
         otherwise, so it moves back -- always to the inbox, since nothing

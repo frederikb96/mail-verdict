@@ -155,14 +155,15 @@ async def run_once(
                 )
             )
 
-    heartbeat = asyncio.create_task(_beat(db, idempotency_key, token))
+    stopped = asyncio.Event()
+    heartbeat = asyncio.create_task(_beat(db, idempotency_key, token, stopped))
     try:
         response = await apply()
     except BaseException:
-        await _stop(heartbeat)
+        await _stop(heartbeat, stopped)
         await _release(db, idempotency_key, token)
         raise
-    await _stop(heartbeat)
+    await _stop(heartbeat, stopped)
     if not _succeeded(response):
         await _release(db, idempotency_key, token)
         return response
@@ -179,25 +180,42 @@ async def run_once(
     return response
 
 
-async def _beat(db: DatabaseConnection, idempotency_key: uuid.UUID, token: uuid.UUID) -> None:
-    """Keep a claim visibly alive for as long as its action runs."""
+async def _beat(
+    db: DatabaseConnection, idempotency_key: uuid.UUID, token: uuid.UUID, stopped: asyncio.Event,
+) -> None:
+    """Keep a claim visibly alive for as long as its action runs.
+
+    Stopped by `stopped` between beats rather than cancelled, so a beat's
+    own statement is never interrupted halfway and its connection goes back
+    to the pool clean. A beat that fails is logged and retried at the next
+    one: a claim whose beats keep failing will be taken over, and that has
+    to be visible.
+    """
     while True:
-        await asyncio.sleep(_HEARTBEAT_SECONDS)
-        async with db.session() as session:
-            await session.execute(
-                update(MessageActionSubmission)
-                .where(
-                    MessageActionSubmission.idempotency_key == idempotency_key,
-                    MessageActionSubmission.claim_token == token,
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stopped.wait(), timeout=_HEARTBEAT_SECONDS)
+            return
+        try:
+            async with db.session() as session:
+                await session.execute(
+                    update(MessageActionSubmission)
+                    .where(
+                        MessageActionSubmission.idempotency_key == idempotency_key,
+                        MessageActionSubmission.claim_token == token,
+                    )
+                    .values(heartbeat_at=func.now())
                 )
-                .values(heartbeat_at=func.now())
+        except Exception:
+            logger.exception(
+                "Could not refresh a message action claim",
+                extra={"idempotency_key": str(idempotency_key)},
             )
 
 
-async def _stop(task: asyncio.Task[None]) -> None:
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError, Exception):
-        await task
+async def _stop(task: asyncio.Task[None], stopped: asyncio.Event) -> None:
+    """Stop a heartbeat, letting a beat already under way finish."""
+    stopped.set()
+    await task
 
 
 def _succeeded(response: Any) -> bool:

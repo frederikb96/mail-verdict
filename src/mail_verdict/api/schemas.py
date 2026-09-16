@@ -120,6 +120,12 @@ class MessageListResponse(BaseModel):
     next_cursor: str | None = None
     has_more_newer: bool = False
     prev_cursor: str | None = None
+    as_of: datetime | None = Field(
+        default=None,
+        description="The server's clock once the page was read: every message it "
+        "could show was mirrored at or before this. What a bulk action over its "
+        "conversation rows sends as expand_threads_through.",
+    )
 
 
 class MessageLocation(BaseModel):
@@ -316,9 +322,12 @@ class BulkActionRequest(BaseModel):
     expand_threads_through: datetime | None = Field(
         default=None,
         description="With expand_threads: only conversation members mirrored "
-        "at or before this instant (a row's mirrored_at, the server's clock) "
-        "are included -- so a reply that arrived after the caller looked is "
-        "not swept along when the request is sent late.",
+        "at or before this instant are included -- so a reply that arrived "
+        "after the caller looked is not swept along when the request is sent "
+        "late. Send the as_of of the list page the rows came from (the "
+        "newest, for rows from several); a row's own mirrored_at is too early, "
+        "since a conversation's older messages can be mirrored after its "
+        "newest.",
     )
 
     @model_validator(mode="after")

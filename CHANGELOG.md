@@ -38,7 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `expand_threads_through` (bulk, with `skipped_ids` in the response). A message filed elsewhere
   meanwhile is left alone instead of being pulled back. The single action answers 404 for an
   expunged message. Responses name the folder the messages ended up in (`folder_id`,
-  `target_folder_id`).
+  `target_folder_id`). List pages carry `as_of`, the bound a conversation-wide action sends, so
+  archiving a conversation takes all of its messages, including older ones mirrored later.
 - Marking read on landing in Archive or Trash no longer reaches a message that has already left
   that folder again.
 

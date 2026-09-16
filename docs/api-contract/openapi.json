@@ -839,7 +839,7 @@
                 "type": "null"
               }
             ],
-            "description": "With expand_threads: only conversation members mirrored at or before this instant (a row's mirrored_at, the server's clock) are included -- so a reply that arrived after the caller looked is not swept along when the request is sent late.",
+            "description": "With expand_threads: only conversation members mirrored at or before this instant are included -- so a reply that arrived after the caller looked is not swept along when the request is sent late. Send the as_of of the list page the rows came from (the newest, for rows from several); a row's own mirrored_at is too early, since a conversation's older messages can be mirrored after its newest.",
             "title": "Expand Threads Through"
           },
           "expected_folder_ids": {
@@ -4370,6 +4370,19 @@
       "MessageListResponse": {
         "description": "Paginated message list response with cursor-based pagination.\n\nhas_more/next_cursor continue OLDER, as they always have. A page\nfetched with `around` (see /accounts/{id}/messages) is not anchored\nat the newest edge, so it can also have more content in the other\ndirection -- has_more_newer/prev_cursor continue NEWER from this\npage's own first (newest) row. An ordinary page never sets these,\nsince it always starts at the newest edge already.",
         "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The server's clock once the page was read: every message it could show was mirrored at or before this. What a bulk action over its conversation rows sends as expand_threads_through.",
+            "title": "As Of"
+          },
           "has_more": {
             "title": "Has More",
             "type": "boolean"

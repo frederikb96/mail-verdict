@@ -348,25 +348,119 @@ class TestExpectedFolder:
         assert client.portal.call(_folder_of, migrated_db, ids["message"]) == ids["target"]
         assert client.portal.call(_folder_of, migrated_db, other) == ids["source"]
 
-    def test_a_conversation_leaves_out_replies_mirrored_after_it_was_seen(
+    def test_a_conversation_moves_whole_up_to_when_its_list_was_read(
         self, client: TestClient, migrated_db: DatabaseConnection,
     ) -> None:
+        """The bound is the list's own read time, never a row's mirror time:
+        a conversation's older messages can be mirrored after its newest
+        (delayed delivery, a message filed there by another client), and
+        they belong to the row the reader archived. A reply mirrored after
+        the list was read does not."""
         ids = client.portal.call(_setup, migrated_db)
-        seen_at = client.portal.call(_mirrored_at, migrated_db, ids["message"])
-        reply = client.portal.call(
-            _add_message, migrated_db, ids, ids["source"], ids["message"], True,
+        older = client.portal.call(
+            _add_message, migrated_db, ids, ids["source"], ids["message"], "older-mirrored-later",
         )
-        path = f"/accounts/{ids['account']}/messages/bulk-action"
+        path = f"/accounts/{ids['account']}/messages"
         with patch(_MAILS_TARGET, return_value=migrated_db):
-            resp = client.post(path, json={
+            listed = client.get(path, params={"folder_id": str(ids["source"]), "threaded": True})
+            assert listed.status_code == 200, listed.text
+            page = listed.json()
+            [row] = page["messages"]
+            assert row["id"] == str(ids["message"]) and row["thread_count"] == 2
+            reply = client.portal.call(
+                _add_message, migrated_db, ids, ids["source"], ids["message"], "after-read",
+            )
+            resp = client.post(f"{path}/bulk-action", json={
                 "action": "move", "target_folder_id": str(ids["target"]),
-                "ids": [str(ids["message"])], "expand_threads": True,
-                "expand_threads_through": seen_at.isoformat(),
+                "ids": [row["id"]], "expand_threads": True,
+                "expected_folder_ids": {row["id"]: str(ids["source"])},
+                "expand_threads_through": page["as_of"],
             })
 
         assert resp.status_code == 200, resp.text
         assert client.portal.call(_folder_of, migrated_db, ids["message"]) == ids["target"]
+        assert client.portal.call(_folder_of, migrated_db, older) == ids["target"], (
+            "an older message mirrored after the conversation's newest was left behind"
+        )
         assert client.portal.call(_folder_of, migrated_db, reply) == ids["source"]
+
+    def test_a_retry_finding_its_action_already_applied_answers_applied(
+        self, client: TestClient, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A claim taken over after the first run committed its move but died
+        before answering: the message is already where the action files it,
+        which is the action done -- not a message that moved elsewhere."""
+        ids = client.portal.call(_setup, migrated_db)
+        client.portal.call(_put_back, migrated_db, ids["message"], ids["target"])
+        path = f"/accounts/{ids['account']}/messages/bulk-action"
+        with patch(_MAILS_TARGET, return_value=migrated_db):
+            single = client.post(f"/messages/{ids['message']}/action", json={
+                "action": "move", "target_folder_id": str(ids["target"]),
+                "expected_folder_id": str(ids["source"]),
+            })
+            bulk = client.post(path, json={
+                "action": "move", "target_folder_id": str(ids["target"]),
+                "ids": [str(ids["message"])],
+                "expected_folder_ids": {str(ids["message"]): str(ids["source"])},
+            })
+
+        assert single.json()["applied"] is True
+        assert single.json()["folder_id"] == str(ids["target"])
+        assert bulk.json()["skipped_ids"] == []
+
+
+class TestGuardedWrites:
+    """The guards inside the write statements themselves -- what holds when a
+    message moves between the endpoint's read and its write, which no request
+    through the endpoint can reach."""
+
+    @pytest.mark.asyncio
+    async def test_a_move_from_a_folder_leaves_a_message_that_is_elsewhere(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        from mail_verdict.postimap.actions import move_messages_from
+
+        async with migrated_db.session() as session:
+            ids = await _seed(session)
+        async with migrated_db.session() as session:
+            moved = await move_messages_from(
+                session, [ids["message"]], ids["target"], ids["archive"],
+            )
+        assert moved == []
+        assert await _folder_of(migrated_db, ids["message"]) == ids["source"]
+
+    @pytest.mark.asyncio
+    async def test_flags_guarded_to_a_folder_leave_a_message_that_is_elsewhere(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        from mail_verdict.postimap.actions import set_flags_bulk
+
+        async with migrated_db.session() as session:
+            ids = await _seed(session)
+        async with migrated_db.session() as session:
+            changed = await set_flags_bulk(
+                session, [ids["message"]], expected_folder_id=ids["target"], is_flagged=True,
+            )
+        assert changed == 0
+        assert await _flags_of(migrated_db, ids["message"]) == (False, False)
+
+    @pytest.mark.asyncio
+    async def test_an_expunge_guarded_to_a_folder_leaves_a_message_that_is_elsewhere(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        from mail_verdict.postimap.actions import expunge_bulk
+
+        async with migrated_db.session() as session:
+            ids = await _seed(session)
+        async with migrated_db.session() as session:
+            expunged = await expunge_bulk(
+                session, [ids["message"]], expected_folder_id=ids["target"],
+            )
+        async with migrated_db.session() as session:
+            gone = await session.scalar(
+                select(Message.expunged_at).where(Message.id == ids["message"])
+            )
+        assert (expunged, gone) == (0, None)
 
 
 async def _flags_of(migrated_db: DatabaseConnection, message_id: uuid.UUID) -> tuple[bool, bool]:
@@ -391,9 +485,18 @@ async def _mirrored_at(migrated_db: DatabaseConnection, message_id: uuid.UUID) -
 
 async def _add_message(
     migrated_db: DatabaseConnection, ids: dict[str, uuid.UUID], folder_id: uuid.UUID,
-    thread_of: uuid.UUID | None = None, mirrored_later: bool = False,
+    thread_of: uuid.UUID | None = None, shape: str = "plain",
 ) -> uuid.UUID:
+    """Another message, in `thread_of`'s conversation when given. `shape`:
+    "older-mirrored-later" -- dated before the conversation's newest message
+    yet mirrored after it; "after-read" -- dated and mirrored after it, at
+    the database's clock now."""
     message_id = uuid.uuid4()
+    received, created = {
+        "plain": ("now()", "now()"),
+        "older-mirrored-later": ("now() - interval '1 day'", "clock_timestamp()"),
+        "after-read": ("clock_timestamp()", "clock_timestamp()"),
+    }[shape]
     async with migrated_db.session() as session:
         thread_id = (
             await session.scalar(select(Message.thread_id).where(Message.id == thread_of))
@@ -406,9 +509,8 @@ async def _add_message(
         await session.execute(
             text(
                 "INSERT INTO messages (id, account_id, folder_id, imap_uid, thread_id, message_id, "
-                "subject, received_at, created_at) VALUES (:id, :account_id, :folder_id, :uid, "
-                ":thread_id, :msg_id, 'Another', now(), now() + "
-                + ("interval '1 minute'" if mirrored_later else "interval '0'") + ")"
+                f"subject, received_at, created_at) VALUES (:id, :account_id, :folder_id, :uid, "
+                f":thread_id, :msg_id, 'Another', {received}, {created})"
             ),
             {
                 "id": message_id, "account_id": ids["account"], "folder_id": folder_id,

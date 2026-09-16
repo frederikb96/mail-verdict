@@ -246,7 +246,35 @@ async def list_message_page(
     """One page of a message list -- an account's own (account_id, and
     optionally folder_id) or a unified view's (folder_scope, see
     _list_filters). list_messages's docstring describes the paging and
-    threading; a unified view's list pages and threads the same way."""
+    threading; a unified view's list pages and threads the same way.
+
+    `as_of` is taken after the rows are read, from the clock rather than
+    the transaction start (`now()`), so it is never earlier than the
+    mirror time of anything the page could see."""
+    page = await _read_message_page(
+        session, account_id=account_id, folder_id=folder_id, folder_scope=folder_scope,
+        threaded=threaded, is_seen=is_seen, since=since, before=before, after=after,
+        around=around, limit=limit,
+    )
+    page.as_of = await session.scalar(select(func.clock_timestamp()))
+    return page
+
+
+async def _read_message_page(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID | None,
+    folder_id: uuid.UUID | None,
+    folder_scope: Any | None,
+    threaded: bool,
+    is_seen: bool | None,
+    since: datetime | None,
+    before: uuid.UUID | None,
+    after: uuid.UUID | None,
+    around: uuid.UUID | None,
+    limit: int,
+) -> MessageListResponse:
+    """list_message_page without its as_of."""
     if around is not None and (before is not None or after is not None):
         raise HTTPException(
             status_code=400, detail="around is mutually exclusive with before/after",
@@ -1137,6 +1165,13 @@ async def _apply_message_action(
     account_id = msg.account_id
     expected = request.expected_folder_id
     if expected is not None and msg.folder_id != expected:
+        # Already where the action files it -- the same request applied by
+        # a run that died before answering, or the same filing made
+        # elsewhere -- is the action done, not a guard miss.
+        if msg.folder_id == await _action_target(account_id, action, request.target_folder_id):
+            return MessageActionResponse(
+                success=True, action=action, message_id=message_id, folder_id=msg.folder_id,
+            )
         return _not_applied(action, message_id)
 
     if action in ("mark_read", "mark_unread", "flag", "unflag"):
@@ -1207,9 +1242,22 @@ async def _apply_message_action(
         )
 
     if action in ("spam", "not_spam"):
-        return await _handle_spam_action(message_id, account_id, is_spam=action == "spam")
+        return await _handle_spam_action(
+            message_id, account_id, is_spam=action == "spam", expected_folder_id=expected,
+        )
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+async def _action_target(
+    account_id: uuid.UUID, action: str, target_folder_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """The folder an action files messages into, if it files them anywhere:
+    the named target of a move, the account's role folder otherwise."""
+    if action == "move":
+        return target_folder_id
+    role = {"archive": "archive", "trash": "trash", "spam": "junk", "not_spam": "inbox"}.get(action)
+    return await _resolve_special_folder(account_id, role) if role else None
 
 
 _FLAG_ACTIONS = frozenset({"mark_read", "mark_unread", "flag", "unflag", "expunge"})
@@ -1227,6 +1275,7 @@ def _not_applied(action: str, message_id: uuid.UUID) -> MessageActionResponse:
 
 async def _handle_spam_action(
     message_id: uuid.UUID, account_id: uuid.UUID, *, is_spam: bool,
+    expected_folder_id: uuid.UUID | None = None,
 ) -> MessageActionResponse:
     """
     Record the user's ruling and move the message to match, in one call
@@ -1245,7 +1294,9 @@ async def _handle_spam_action(
     if processor is None:
         raise HTTPException(status_code=503, detail="Spam feedback handler not available")
     try:
-        ok = await processor.feedback.apply_human_ruling(message_id, account_id, is_spam=is_spam)
+        ok = await processor.feedback.apply_human_ruling(
+            message_id, account_id, is_spam=is_spam, expected_folder_id=expected_folder_id,
+        )
     except FolderResolutionError as exc:
         raise HTTPException(
             status_code=400, detail=f"No {exc.role} folder found for this account",
@@ -1418,25 +1469,30 @@ async def _apply_bulk_action(
             # way a scope already is, rather than trusting the list.
             live = await _resolve_explicit_ids(session, account_id, request.ids)
             guards = request.expected_folder_ids or {}
+            target = (
+                await _action_target(account_id, request.action, request.target_folder_id)
+                if guards else None
+            )
             explicit: list[uuid.UUID] = []
             for mid in dict.fromkeys(request.ids):
                 folder = live.get(mid)
-                if folder is None or (mid in guards and guards[mid] != folder):
+                if folder is not None and mid in guards and guards[mid] != folder:
+                    # Already where the action files it: done, not a miss
+                    # (see _apply_message_action).
+                    if folder != target:
+                        skipped.append(mid)
+                elif folder is None:
                     skipped.append(mid)
                 else:
                     explicit.append(mid)
+            members: list[tuple[uuid.UUID, uuid.UUID]] | None = None
             if request.expand_threads and request.action != "expunge":
                 members = await _expand_to_conversations(
                     session, account_id, explicit, request.expand_threads_through,
                 )
                 sources = [BulkActionSource(id=mid, folder_id=fid) for mid, fid in members]
-                guarded_folders = {live[mid] for mid in explicit if mid in guards}
-                for mid, fid in members:
-                    # A member shares its anchor's folder, the one checked above.
-                    expected_of.setdefault(mid, fid if fid in guarded_folders else None)
-            else:
-                for mid in explicit:
-                    expected_of.setdefault(mid, live[mid] if mid in guards else None)
+            for mid, expected in _write_guards(explicit, live, guards, members).items():
+                expected_of.setdefault(mid, expected)
         message_ids = list(expected_of)
 
     # A caller that showed a count to a user before sending this request
@@ -1469,7 +1525,7 @@ async def _apply_bulk_action(
     action = request.action
     errors: list[str] = []
     affected = 0
-    target: uuid.UUID | None = None
+    target = None
 
     async def move_groups(session: AsyncSession, target: uuid.UUID) -> list[uuid.UUID]:
         """Move every group into `target`; the ids that moved or were
@@ -1550,6 +1606,7 @@ async def _apply_bulk_action(
                 try:
                     ok = await processor.feedback.apply_human_ruling(
                         mid, account_id, is_spam=(action == "spam"),
+                        expected_folder_id=expected_of[mid],
                     )
                 except FolderResolutionError as exc:
                     missing_role = exc.role
@@ -1567,6 +1624,34 @@ async def _apply_bulk_action(
         sources=sources, skipped_ids=skipped,
         target_folder_id=target if action not in _FLAG_ACTIONS else None,
     )
+
+
+def _write_guards(
+    explicit: list[uuid.UUID],
+    live: dict[uuid.UUID, uuid.UUID],
+    guards: dict[uuid.UUID, uuid.UUID],
+    members: list[tuple[uuid.UUID, uuid.UUID]] | None,
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """
+    The folder each message's write is guarded to, None for unguarded.
+
+    Args:
+        explicit: The named ids that passed the read-time check
+        live: Each named id's folder as just read
+        guards: The caller's expected_folder_ids
+        members: With expand_threads, every conversation member and its
+            folder; None otherwise
+
+    Returns:
+        message id -> the folder its write must still find it in. A
+        conversation member is guarded to its anchor's folder -- it shares
+        that folder, and a member moved away between the read and the write
+        must be left there as much as the anchor.
+    """
+    if members is None:
+        return {mid: (live[mid] if mid in guards else None) for mid in explicit}
+    guarded_folders = {live[mid] for mid in explicit if mid in guards}
+    return {mid: (fid if fid in guarded_folders else None) for mid, fid in members}
 
 
 async def _expand_to_conversations(
