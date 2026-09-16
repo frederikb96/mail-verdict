@@ -51,10 +51,14 @@ mirror, which is what keeps it simple.
   a selection or a whole folder, threaded or not. A folder can be worked through from the keyboard
   alone: the arrow keys move the reading pane between messages, `c` composes, `a` replies all, `f`
   forwards, `v` moves the open message, `e` archives, `Delete` trashes, `r` toggles read and
-  unread, `/` focuses search, `?` lists every shortcut, and whatever takes the open message out of
-  the list opens the next one in the direction you were already going. Archiving a message, or
-  filing it as spam, marks it read as it moves, and mail in Archive or Trash stays read even when
-  another client put it there — a setting turns this off for Archive and Junk.
+  unread, `/` focuses search, `?` lists every shortcut, Ctrl+Z (Cmd+Z on a Mac) takes back the last
+  few actions one by one, and whatever takes the open message out of the list opens the next one
+  in the direction you were already going. Every action shows at once and survives a flaky or
+  absent connection: it waits, retries and is sent exactly once, even across a reload, with a
+  marker on the row while the server has not confirmed it and a Retry when the server refuses.
+  Archiving a message, or filing it as spam, marks it read as it moves, and mail in Archive or
+  Trash stays read even when another client put it there — a setting turns this off for Archive
+  and Junk.
   An account can also be given a Trash retention and a Junk retention, each in days and set
   independently, so mail sitting in either long enough is permanently removed on its own.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail

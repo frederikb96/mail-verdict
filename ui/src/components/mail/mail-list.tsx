@@ -389,6 +389,7 @@ export function MailList() {
   // page prepended there as the reader scrolls up is still compensated, or
   // the rows they are reading would drop by a page.
   const prevDataRef = useRef(data);
+  const prevListIdentityRef = useRef(listIdentity);
   const prevMailIdsRef = useRef<string[]>([]);
   const prevAtNewestEdgeRef = useRef(!hasPreviousPage);
   const [shiftForPrepend, setShiftForPrepend] = useState(false);
@@ -399,7 +400,12 @@ export function MailList() {
   } | null>(null);
   if (data !== prevDataRef.current) {
     const prevIds = prevMailIdsRef.current;
-    const handle = vlistRef.current;
+    // A different list starts at the top (VList's key) -- even when it
+    // shares rows with the one before, as a folder the reader just moved
+    // messages into does, or shows the previous list's rows as a
+    // placeholder while its own load.
+    const sameList = prevListIdentityRef.current === listIdentity;
+    const handle = sameList ? vlistRef.current : null;
     const followsNewest = prevAtNewestEdgeRef.current && (!handle || handle.scrollOffset < 1);
     const isPrepend = !followsNewest && countPrepended(prevIds, allMailIds) > 0;
     if (!followsNewest && !isPrepend && handle && prevIds.length > 0) {
@@ -415,6 +421,7 @@ export function MailList() {
       }
     }
     prevDataRef.current = data;
+    prevListIdentityRef.current = listIdentity;
     prevMailIdsRef.current = allMailIds;
     prevAtNewestEdgeRef.current = !hasPreviousPage;
     if (isPrepend !== shiftForPrepend) setShiftForPrepend(isPrepend);

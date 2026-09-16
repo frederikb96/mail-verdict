@@ -345,10 +345,15 @@ class TestMailActionsUi:
         finally:
             page.unroute("**/api/messages/*/action", _delay_action)
 
-        # Give the delayed request room to actually settle before moving on.
+        # The header shows the change before the server has it, so it says
+        # nothing about the delayed request having settled -- the server does.
         expect(toolbar.get_by_title("Mark as read")).to_be_visible(timeout=5_000)
-        detail = api_client.get(f"/api/messages/{target['id']}").json()
-        assert detail["is_seen"] is False
+        wait_for(
+            lambda: True if api_client.get(
+                f"/api/messages/{target['id']}",
+            ).json()["is_seen"] is False else None,
+            timeout_s=10.0, description=f"{target['id']} marked unread on the server",
+        )
 
         # Closing and reopening the message is a fresh look at it -- the
         # explicit-unread override only protects it while it stays open.

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Archiving, trashing, moving, spam, read state and stars show at once everywhere the message
+  appears -- including unified views, which used to keep an archived row until the next refresh
+  -- and a refresh arriving meanwhile can no longer put it back. Folder and view counts follow.
+- Mail actions survive a bad connection: they are kept in the browser until the server confirms
+  them, retried with backoff (and at once when the connection returns), sent exactly once even
+  across a reload, marked on the row while unconfirmed and in the header while waiting for the
+  network. An action the server refuses stays on its row with Retry and Discard.
+- Ctrl+Z (Cmd+Z) undoes the last mail action -- archive, trash, move, spam, read/unread, star, or
+  one over a selection -- repeatedly, and never while typing or in a dialog. The Undo in the toast
+  is the same undo. Undoing an archive also restores unread.
+- Requests give up after a timeout instead of hanging on a stalled connection.
+- A mail event re-reads only the lists showing the folders it touched; a reconnect re-reads what
+  is on screen a few queries at a time.
 - `POST /api/messages/{id}/action` and `POST /api/accounts/{id}/messages/bulk-action` accept an
   optional `idempotency_key`. A client retrying an action after a lost response is answered with
   the first response instead of acting twice; see `docs/api.md`.

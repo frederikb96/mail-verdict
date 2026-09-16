@@ -91,7 +91,9 @@ Two deliberate details:
   action settling, a resync -- goes through `refreshMailViews` (`ui/src/hooks/use-mails.ts`),
   which re-reads each open list's whole loaded window from the newest message in one request
   and invalidates the counts in the same pass, so neither can be refreshed without the other.
-  The list endpoints' `limit` ceiling is what makes one request enough for a deep list.
+  The list endpoints' `limit` ceiling is what makes one request enough for a deep list. Only the
+  lists showing a folder the change touched are re-read: message events name their folder, and
+  `mail.updated` for a move also names the folder it left (`old_folder_id`).
 - **A listener reconnect emits a resync event.** Notifications sent while the connection was down
   are gone for good, so clients are told once to invalidate everything rather than silently
   holding stale data.
@@ -108,6 +110,41 @@ Two deliberate details:
   document and a still-staged send all live here rather than under PostIMAP's own triggers, so
   each of those write paths pushes its own event by hand. A table with no PostIMAP trigger and
   no such push simply never reaches a second open browser.
+
+## Acting on mail from the browser
+
+The browser never patches a cache to show what the reader just did. Every action -- archive,
+trash, move, spam, read state, star, and the same over an explicit selection -- becomes an
+*intent* (`ui/src/lib/mail-intents.ts`) in a ledger kept in local storage
+(`ui/src/lib/intent-ledger.ts`), and everything on screen is the server's last answer with the
+intents projected over it: the list rows of any folder, unified view or filter, the open
+conversation, and every folder count. A new cache cannot be forgotten, and a list read that lands
+while an action is still on its way cannot put an archived row back.
+
+- **Until when an intent applies.** Data read before the intent's request succeeded is
+  projected; data read after it already holds the change and is shown as it is. A window refresh
+  is dated from when its read began, not when it landed, so a refresh racing the action counts as
+  older. That makes the server authoritative again the moment it could be -- a spam ruling on a
+  message already in Junk shows the row once a later read keeps it there -- and retiring an
+  intent a matter of time only.
+- **Sending.** A drainer (`ui/src/lib/intent-drainer.ts`) sends one request per account at a
+  time, never one overtaking an earlier unsettled intent on the same message, each with the
+  intent's id as `idempotency_key` and a timeout. A network error or timeout waits for the network
+  with backoff and resumes when the browser reports being online or the event stream reconnects;
+  a 408, 429 or 5xx retries; a 404 retires the intent; any other refusal marks it failed, shown on
+  its row and in the header with Retry and Discard. Only the tab holding a Web Lock sends; other
+  tabs project the same ledger. A reload resends what never got an answer, and the server
+  (`mail_actions/submissions.py`) answers a repeated key with the first response instead of
+  acting again.
+- **Undo.** A user action is one undo step (Ctrl+Z / Cmd+Z, or the toast), kept for a while and
+  across reloads. An intent never sent is simply dropped. One already applied is reversed by new
+  intents: each message moved back to the folder it was in, and marked unread again if it was, or
+  its flag set back. One whose answer has not arrived yet is reversed once it arrives. A message
+  that has since disappeared (moved by another client, which mirrors as a new row) leaves nothing
+  to move back, and the reader is told so. Undo is by message id and restores where the message
+  was when the action was taken, whatever moved it meanwhile.
+- **Select-all.** A predicate selection is resolved by the server and cannot be projected or
+  undone; it stays a plain request that resets the list afterwards.
 
 ## Owned tables carry no foreign keys onto PostIMAP's
 
