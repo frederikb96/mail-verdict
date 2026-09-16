@@ -16,13 +16,15 @@ const KEEP_MS = 2 * 60_000;
 let changes: MailIntent[] = [];
 const listeners = new Set<() => void>();
 
-/** A message another client moved to `toFolderId`, or removed (null). */
+/** A message another client moved to `toFolderId`, or removed (null). Only
+ * the latest change to a message is kept: events replayed on reconnect
+ * arrive in order, and all of them dated now. */
 export function recordObservedChange(
   messageId: string, fromFolderId: string | null, toFolderId: string | null,
 ): void {
   const now = Date.now();
   changes = [
-    ...changes.filter((c) => now - (c.doneAt ?? 0) < KEEP_MS),
+    ...changes.filter((c) => now - (c.doneAt ?? 0) < KEEP_MS && c.messages[0]?.id !== messageId),
     {
       id: `observed:${messageId}:${now}`, accountId: "", bulk: false, generation: 0,
       action: toFolderId ? "move" : "expunge", targetFolderId: toFolderId ?? undefined,

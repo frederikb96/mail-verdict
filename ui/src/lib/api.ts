@@ -106,33 +106,48 @@ interface RequestOptions extends RequestInit {
   timeoutMs?: number;
 }
 
-/** The caller's signal, if any, aborted early once `timeoutMs` passes. */
+/** The caller's signal, if any, aborted early once `timeoutMs` passes --
+ * and `release` to stop the clock once the response has been read. */
 function withTimeout(
   signal: AbortSignal | null | undefined, timeoutMs: number | undefined,
-): AbortSignal | undefined {
-  if (timeoutMs === undefined) return signal ?? undefined;
+): { signal: AbortSignal | undefined; release: () => void } {
+  if (timeoutMs === undefined) return { signal: signal ?? undefined, release: () => {} };
   const controller = new AbortController();
+  const forward = () => controller.abort(signal?.reason);
   const timer = setTimeout(
     () => controller.abort(new DOMException("The request timed out", "TimeoutError")),
     timeoutMs,
   );
-  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
   if (signal) {
     if (signal.aborted) controller.abort(signal.reason);
-    else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+    else signal.addEventListener("abort", forward, { once: true });
   }
-  return controller.signal;
+  return {
+    signal: controller.signal,
+    release: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", forward);
+    },
+  };
 }
 
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const { timeoutMs, ...init } = options ?? {};
+  const timeout = withTimeout(init.signal, timeoutMs);
+  try {
+    return await send<T>(path, { ...init, signal: timeout.signal });
+  } finally {
+    timeout.release();
+  }
+}
+
+async function send<T>(path: string, init: RequestInit): Promise<T> {
   const isFormData = init.body instanceof FormData;
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: isFormData
       ? init.headers
       : { "Content-Type": "application/json", ...init.headers },
     ...init,
-    signal: withTimeout(init.signal, timeoutMs),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
