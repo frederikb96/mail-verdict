@@ -18,6 +18,7 @@ import {
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { mergeEventsInRange } from "@/lib/calendar-event-merge";
+import { identity } from "@/lib/query-combine";
 import { useCalendars } from "@/hooks/use-calendars";
 import { monthChunksForWeek, monthsBetween, weekDays } from "@/lib/dates";
 import type {
@@ -112,7 +113,10 @@ export interface RangeEvents {
 export function useEventsForRange(from: Date, to: Date): RangeEvents {
   const months = monthsBetween(from, to);
   const { data: calendars } = useCalendars();
-  const results = useQueries({ queries: months.map((month) => chunkQueryOptions(month)) });
+  const results = useQueries({
+    queries: months.map((month) => chunkQueryOptions(month)),
+    combine: identity,
+  });
 
   const isLoading = results.some((r) => r.isLoading);
   const isError = results.some((r) => r.isError);
@@ -162,6 +166,7 @@ export function useWeekEvents(
   const months = monthChunksForWeek(weekIndex);
   const results = useQueries({
     queries: months.map((month) => ({ ...chunkQueryOptions(month), enabled: false })),
+    combine: identity,
   });
 
   const days = weekDays(weekIndex);
