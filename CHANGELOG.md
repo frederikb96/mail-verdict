@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fixed the week and day calendar views showing the wrong events, or none, after Next/Previous --
+  sometimes recovering after 10-30s, sometimes not until leaving and returning to the view.
+  Stepping through them now always shows the range actually on screen.
+- Week, day and agenda views now show a loading state, a retryable error, and the same "some
+  events may be missing" warning the month view already had, instead of going silently blank.
+- A month whose recurrence expansion runs out of time now returns whatever finished rather than
+  nothing, still marked as incomplete.
+- Calendar navigation (Next/Previous, switching views, the month scroller) no longer triggers a
+  full page fetch per click, the same fix already applied to the mail view.
+
 ## [6.3.0] - 2026-09-15
 
 - Opening a message no longer fetches anything but the conversation itself: the mail view writes
