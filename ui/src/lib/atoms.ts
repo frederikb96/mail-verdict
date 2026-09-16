@@ -187,6 +187,16 @@ export const calendarViewAtom = atomWithStorage<CalendarViewMode>(
  * writes it back as the reader scrolls, everyone else writes it to navigate. */
 export const calendarDateAtom = atom<Date>(new Date());
 
+/** True while the range currently on screen (week, day or agenda -- month
+ * reads its own chunk directly) came back truncated: the server's
+ * expansion budget ran out before finishing every object. Written by
+ * whichever range view is mounted (they are mutually exclusive under
+ * calendar-page.tsx, so there is never more than one writer at a time),
+ * cleared on that view's own unmount; the toolbar reads it to show the
+ * same warning the month view already carries, without needing to know
+ * which view is currently on screen. */
+export const calendarTruncatedAtom = atom<boolean>(false);
+
 /** The event the popover/editor is currently open for. */
 export const selectedEventAtom = atom<{
   objectId: string;

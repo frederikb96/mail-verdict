@@ -5,7 +5,9 @@
  * the hour-axis time grid itself. */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
+import { AlertTriangle, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { EventChip } from "@/components/calendar/event-chip";
 import { EventEditor } from "@/components/calendar/event-editor";
 import { RecurrenceScopeDialog } from "@/components/calendar/recurrence-scope-dialog";
@@ -21,7 +23,12 @@ import { useDefaultCalendarId, useDefaultEventDurationMinutes } from "@/hooks/us
 import { useEventsForRange, useUpdateEvent } from "@/hooks/use-events";
 import { useGridDrag, type GridGhost } from "@/hooks/use-grid-drag";
 import { useToast } from "@/hooks/use-toast";
-import { calendarDateAtom, calendarScrollHourAtom, calendarZoomAtom } from "@/lib/atoms";
+import {
+  calendarDateAtom,
+  calendarScrollHourAtom,
+  calendarTruncatedAtom,
+  calendarZoomAtom,
+} from "@/lib/atoms";
 import { addDays, format, isSameDay, isToday, startOfWeek } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import type { EventInstance, RecurrenceScope } from "@/types/api";
@@ -90,7 +97,16 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
 
   const rangeStart = days[0];
   const rangeEnd = new Date(days[days.length - 1].getTime() + 24 * 60 * 60 * 1000 - 1);
-  const { events } = useEventsForRange(rangeStart, rangeEnd);
+  const { events, isLoading, isError, truncated, refetch } = useEventsForRange(rangeStart, rangeEnd);
+
+  // The toolbar's truncation warning reads this rather than the range
+  // itself: it is mounted as this view's sibling, not its parent, and
+  // views are mutually exclusive, so there is never more than one writer.
+  const setTruncated = useSetAtom(calendarTruncatedAtom);
+  useEffect(() => {
+    setTruncated(truncated);
+    return () => setTruncated(false);
+  }, [truncated, setTruncated]);
 
   const { allDay, timedByColumn } = useMemo(() => {
     const spanning: AllDaySpanning[] = [];
@@ -304,8 +320,30 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
     return () => el.removeEventListener("wheel", handleWheel);
   }, [setZoom]);
 
+  // A loading/error overlay rather than replacing the grid outright: the
+  // grid's own hour labels and scroll container stay mounted underneath
+  // (needed for the mount-scroll-to-hour effect above, which only ever
+  // runs once), so a slow or failed chunk never loses the reader's
+  // scroll position once it does load.
+  const showLoadingOverlay = isLoading && events.length === 0;
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col">
+      {showLoadingOverlay && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background/60 text-sm text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin" />
+          Loading…
+        </div>
+      )}
+      {isError && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-background/95 p-8 text-muted-foreground">
+          <AlertTriangle className="h-8 w-8 text-destructive" />
+          <p className="text-sm">Could not load events for this range.</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </div>
+      )}
       <div className="flex border-b">
         <div className="w-14 shrink-0" />
         {days.map((day) => (
