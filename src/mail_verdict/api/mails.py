@@ -77,7 +77,7 @@ from mail_verdict.postimap.actions import (
     expunge_bulk,
     move_message,
     move_message_bulk,
-    move_to_trash,
+    move_messages_from,
     set_flags,
     set_flags_bulk,
     set_keywords,
@@ -1106,25 +1106,36 @@ async def message_action(
 async def _apply_message_action(
     message_id: uuid.UUID, request: MessageActionRequest,
 ) -> MessageActionResponse:
-    """Perform one message action -- message_action without its key."""
+    """Perform one message action -- message_action without its key.
+
+    An expunged message is gone: acting on it would only reach a server
+    that no longer holds it and come back as a write failure. With
+    expected_folder_id, a message no longer in that folder is left alone
+    and the response says applied=false.
+    """
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(select(Message).where(Message.id == message_id))
         msg = result.scalar_one_or_none()
-    if msg is None:
+    if msg is None or msg.expunged_at is not None:
         raise HTTPException(status_code=404, detail="Message not found")
 
     action = request.action
     account_id = msg.account_id
+    expected = request.expected_folder_id
+    if expected is not None and msg.folder_id != expected:
+        return _not_applied(action, message_id)
 
-    if action in ("mark_read", "mark_unread"):
+    if action in ("mark_read", "mark_unread", "flag", "unflag"):
+        flag = {"mark_read": ("is_seen", True), "mark_unread": ("is_seen", False),
+                "flag": ("is_flagged", True), "unflag": ("is_flagged", False)}[action]
         async with db.session() as session:
-            await set_flags(session, message_id, is_seen=(action == "mark_read"))
-        return MessageActionResponse(success=True, action=action, message_id=message_id)
-
-    if action in ("flag", "unflag"):
-        async with db.session() as session:
-            await set_flags(session, message_id, is_flagged=(action == "flag"))
+            if expected is None:
+                await set_flags(session, message_id, **{flag[0]: flag[1]})
+            else:
+                await set_flags_bulk(
+                    session, [message_id], expected_folder_id=expected, **{flag[0]: flag[1]},
+                )
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
     if action == "keyword_add" or action == "keyword_remove":
@@ -1138,51 +1149,64 @@ async def _apply_message_action(
             await set_keywords(session, message_id, sorted(current))
         return MessageActionResponse(success=True, action=action, message_id=message_id)
 
-    if action == "trash":
-        trash_folder_id = await _resolve_special_folder(account_id, "trash")
-        if trash_folder_id is None:
-            raise HTTPException(status_code=400, detail="No trash folder found for this account")
-        async with db.session() as session:
-            await move_to_trash(session, message_id, trash_folder_id)
-        return MessageActionResponse(
-            success=True, action=action, message_id=message_id, message="Moved to trash",
-        )
-
     if action == "expunge":
         async with db.session() as session:
-            await expunge(session, message_id)
+            if expected is None:
+                await expunge(session, message_id)
+            elif not await expunge_bulk(session, [message_id], expected_folder_id=expected):
+                return _not_applied(action, message_id)
         return MessageActionResponse(
             success=True, action=action, message_id=message_id, message="Permanently deleted",
         )
 
-    if action == "move":
-        if not request.target_folder_id:
-            raise HTTPException(status_code=400, detail="target_folder_id required for move")
-        target_role = await FolderRepository(db).get_effective_special_use(request.target_folder_id)
+    if action in ("move", "archive", "trash"):
+        if action == "move":
+            if not request.target_folder_id:
+                raise HTTPException(status_code=400, detail="target_folder_id required for move")
+            target_folder_id: uuid.UUID = request.target_folder_id
+            target_role = await FolderRepository(db).get_effective_special_use(target_folder_id)
+        else:
+            resolved_target = await _resolve_special_folder(account_id, action)
+            if resolved_target is None:
+                raise HTTPException(
+                    status_code=400, detail=f"No {action} folder found for this account",
+                )
+            target_folder_id = resolved_target
+            target_role = action
         async with db.session() as session:
-            if not await _folder_belongs_to_account(session, account_id, request.target_folder_id):
+            if action == "move" and not await _folder_belongs_to_account(
+                session, account_id, target_folder_id,
+            ):
                 raise HTTPException(
                     status_code=400, detail="target_folder_id does not belong to this account",
                 )
-            await move_message(session, message_id, request.target_folder_id)
+            if expected is None:
+                await move_message(session, message_id, target_folder_id)
+            elif expected != target_folder_id and not await move_messages_from(
+                session, [message_id], expected, target_folder_id,
+            ):
+                return _not_applied(action, message_id)
             if _should_mark_read_on_file(target_role):
                 await set_flags(session, message_id, is_seen=True)
-        return MessageActionResponse(success=True, action=action, message_id=message_id)
-
-    if action == "archive":
-        target_folder_id = await _resolve_special_folder(account_id, "archive")
-        if target_folder_id is None:
-            raise HTTPException(status_code=400, detail="No archive folder found for this account")
-        async with db.session() as session:
-            await move_message(session, message_id, target_folder_id)
-            if _should_mark_read_on_file("archive"):
-                await set_flags(session, message_id, is_seen=True)
-        return MessageActionResponse(success=True, action=action, message_id=message_id)
+        return MessageActionResponse(
+            success=True, action=action, message_id=message_id,
+            message="Moved to trash" if action == "trash" else None,
+        )
 
     if action in ("spam", "not_spam"):
         return await _handle_spam_action(message_id, account_id, is_spam=action == "spam")
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+def _not_applied(action: str, message_id: uuid.UUID) -> MessageActionResponse:
+    """The answer to a guarded action whose message is no longer where the
+    caller saw it -- a success, since nothing is wrong and nothing should be
+    retried, that wrote nothing."""
+    return MessageActionResponse(
+        success=True, action=action, message_id=message_id, applied=False,
+        message="Not applied: the message is no longer in the expected folder",
+    )
 
 
 async def _handle_spam_action(
@@ -1353,27 +1377,51 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
 async def _apply_bulk_action(
     account_id: uuid.UUID, request: BulkActionRequest,
 ) -> BulkActionResponse:
-    """Apply one bulk action -- bulk_action without its key."""
+    """Apply one bulk action -- bulk_action without its key.
+
+    Every write is made per group of messages sharing the folder the caller
+    expected them in (expected_folder_ids), guarded to that folder, so a
+    message moved elsewhere between the check and the write is still left
+    alone. Messages with no expectation (a scope, or ids not named there)
+    form one unguarded group.
+    """
     db = get_db_connection()
 
     sources: list[BulkActionSource] = []
+    skipped: list[uuid.UUID] = []
+    # message id -> the folder its write is guarded to, None for unguarded
+    expected_of: dict[uuid.UUID, uuid.UUID | None] = {}
     async with db.session() as session:
-        resolved: set[uuid.UUID] = set()
         if request.scope is not None:
-            resolved.update(await _resolve_scope_ids(session, account_id, request.scope))
+            for mid in await _resolve_scope_ids(session, account_id, request.scope):
+                expected_of[mid] = None
         if request.ids:
             # An explicit id list is client-supplied and otherwise never
             # checked against the path's account_id -- narrowed to the
             # ids that actually belong here (and still exist) the same
             # way a scope already is, rather than trusting the list.
-            explicit = await _resolve_explicit_ids(session, account_id, request.ids)
+            live = await _resolve_explicit_ids(session, account_id, request.ids)
+            guards = request.expected_folder_ids or {}
+            explicit: list[uuid.UUID] = []
+            for mid in dict.fromkeys(request.ids):
+                folder = live.get(mid)
+                if folder is None or (mid in guards and guards[mid] != folder):
+                    skipped.append(mid)
+                else:
+                    explicit.append(mid)
             if request.expand_threads and request.action != "expunge":
-                members = await _expand_to_conversations(session, account_id, explicit)
+                members = await _expand_to_conversations(
+                    session, account_id, explicit, request.expand_threads_through,
+                )
                 sources = [BulkActionSource(id=mid, folder_id=fid) for mid, fid in members]
-                resolved.update(mid for mid, _ in members)
+                guarded_folders = {live[mid] for mid in explicit if mid in guards}
+                for mid, fid in members:
+                    # A member shares its anchor's folder, the one checked above.
+                    expected_of.setdefault(mid, fid if fid in guarded_folders else None)
             else:
-                resolved.update(explicit)
-        message_ids = list(resolved)
+                for mid in explicit:
+                    expected_of.setdefault(mid, live[mid] if mid in guards else None)
+        message_ids = list(expected_of)
 
     # A caller that showed a count to a user before sending this request
     # (an "empty this folder" confirmation, most concretely) repeats it
@@ -1394,51 +1442,73 @@ async def _apply_bulk_action(
         )
 
     if not message_ids:
-        return BulkActionResponse(success=True, action=request.action, affected_count=0)
+        return BulkActionResponse(
+            success=True, action=request.action, affected_count=0, skipped_ids=skipped,
+        )
+
+    groups: dict[uuid.UUID | None, list[uuid.UUID]] = {}
+    for mid, expected in expected_of.items():
+        groups.setdefault(expected, []).append(mid)
 
     action = request.action
     errors: list[str] = []
     affected = 0
 
-    if action in ("mark_read", "mark_unread"):
+    async def move_groups(session: AsyncSession, target: uuid.UUID) -> list[uuid.UUID]:
+        """Move every group into `target`; the ids that moved or were
+        already there."""
+        nonlocal affected
+        landed: list[uuid.UUID] = []
+        for expected, ids in groups.items():
+            if expected is None:
+                affected += await move_message_bulk(session, ids, target)
+                landed.extend(ids)
+            elif expected == target:
+                landed.extend(ids)
+            else:
+                moved = await move_messages_from(session, ids, expected, target)
+                affected += len(moved)
+                landed.extend(moved)
+                moved_set = set(moved)
+                skipped.extend(mid for mid in ids if mid not in moved_set)
+        return landed
+
+    if action in ("mark_read", "mark_unread", "flag", "unflag"):
+        column = "is_seen" if action in ("mark_read", "mark_unread") else "is_flagged"
+        value = action in ("mark_read", "flag")
         async with db.session() as session:
-            affected = await set_flags_bulk(session, message_ids, is_seen=(action == "mark_read"))
-    elif action in ("flag", "unflag"):
-        async with db.session() as session:
-            affected = await set_flags_bulk(
-                session, message_ids, is_flagged=(action == "flag"),
-            )
-    elif action == "trash":
-        trash_folder_id = await _resolve_special_folder(account_id, "trash")
-        if trash_folder_id is None:
-            errors.append("No trash folder found for this account")
-        else:
-            async with db.session() as session:
-                affected = await move_message_bulk(session, message_ids, trash_folder_id)
+            for expected, ids in groups.items():
+                affected += await set_flags_bulk(
+                    session, ids, expected_folder_id=expected, **{column: value},
+                )
     elif action == "expunge":
         async with db.session() as session:
-            affected = await expunge_bulk(session, message_ids)
-    elif action == "move":
-        if not request.target_folder_id:
-            raise HTTPException(status_code=400, detail="target_folder_id required for move")
-        target_role = await FolderRepository(db).get_effective_special_use(request.target_folder_id)
-        async with db.session() as session:
-            if not await _folder_belongs_to_account(session, account_id, request.target_folder_id):
-                raise HTTPException(
-                    status_code=400, detail="target_folder_id does not belong to this account",
-                )
-            affected = await move_message_bulk(session, message_ids, request.target_folder_id)
-            if _should_mark_read_on_file(target_role):
-                await set_flags_bulk(session, message_ids, is_seen=True)
-    elif action == "archive":
-        folder_id = await _resolve_special_folder(account_id, "archive")
-        if folder_id is None:
-            errors.append("No archive folder found for this account")
+            for expected, ids in groups.items():
+                affected += await expunge_bulk(session, ids, expected_folder_id=expected)
+    elif action in ("move", "archive", "trash"):
+        if action == "move":
+            if not request.target_folder_id:
+                raise HTTPException(status_code=400, detail="target_folder_id required for move")
+            target: uuid.UUID | None = request.target_folder_id
+            target_role = await FolderRepository(db).get_effective_special_use(
+                request.target_folder_id,
+            )
         else:
+            target_role = action
+            target = await _resolve_special_folder(account_id, action)
+            if target is None:
+                errors.append(f"No {action} folder found for this account")
+        if target is not None:
             async with db.session() as session:
-                affected = await move_message_bulk(session, message_ids, folder_id)
-                if _should_mark_read_on_file("archive"):
-                    await set_flags_bulk(session, message_ids, is_seen=True)
+                if action == "move" and not await _folder_belongs_to_account(
+                    session, account_id, target,
+                ):
+                    raise HTTPException(
+                        status_code=400, detail="target_folder_id does not belong to this account",
+                    )
+                landed = await move_groups(session, target)
+                if landed and _should_mark_read_on_file(target_role):
+                    await set_flags_bulk(session, landed, is_seen=True)
     elif action in ("spam", "not_spam"):
         from mail_verdict.server import get_spam_processor
         from mail_verdict.spam.feedback import FolderResolutionError
@@ -1476,19 +1546,23 @@ async def _apply_bulk_action(
 
     return BulkActionResponse(
         success=not errors, action=action, affected_count=affected, errors=errors,
-        sources=sources,
+        sources=sources, skipped_ids=skipped,
     )
 
 
 async def _expand_to_conversations(
-    session: AsyncSession, account_id: uuid.UUID, ids: list[uuid.UUID],
+    session: AsyncSession,
+    account_id: uuid.UUID,
+    ids: list[uuid.UUID],
+    mirrored_through: datetime | None = None,
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
     """
     Every live message sharing a conversation with one of `ids` and sitting
     in that id's own folder, with the folder it is in -- what a
     conversation row in a grouped list stands for. The ids themselves are
     included. Messages of the same conversation in other folders (the
-    reader's own replies in Sent, say) are left where they are.
+    reader's own replies in Sent, say) are left where they are, and so is
+    any member mirrored after `mirrored_through` when one is given.
     """
     if not ids:
         return []
@@ -1502,15 +1576,14 @@ async def _expand_to_conversations(
     pairs = {(t, f) for t, f in anchors if t is not None}
     members: dict[uuid.UUID, uuid.UUID] = {}
     if pairs:
-        rows = (
-            await session.execute(
-                select(Message.id, Message.folder_id).where(
-                    Message.account_id == account_id,
-                    Message.expunged_at.is_(None),
-                    tuple_(Message.thread_id, Message.folder_id).in_(list(pairs)),
-                )
-            )
-        ).all()
+        stmt = select(Message.id, Message.folder_id).where(
+            Message.account_id == account_id,
+            Message.expunged_at.is_(None),
+            tuple_(Message.thread_id, Message.folder_id).in_(list(pairs)),
+        )
+        if mirrored_through is not None:
+            stmt = stmt.where(Message.created_at <= mirrored_through)
+        rows = (await session.execute(stmt)).all()
         members.update({mid: fid for mid, fid in rows})
     # A message with no conversation still stands for itself.
     for mid, fid in (
@@ -1527,10 +1600,10 @@ async def _expand_to_conversations(
 
 async def _resolve_explicit_ids(
     session: AsyncSession, account_id: uuid.UUID, ids: list[uuid.UUID],
-) -> list[uuid.UUID]:
+) -> dict[uuid.UUID, uuid.UUID]:
     """
     Narrow a client-supplied id list to the ones that actually belong to
-    this account and still exist.
+    this account and still exist, with the folder each is in.
 
     Without this, a bulk action's explicit-id path (unlike its scope
     path, which is already account-scoped by construction) acts on
@@ -1545,14 +1618,14 @@ async def _resolve_explicit_ids(
     can send. ANY binds the whole list as a single array parameter.
     """
     if not ids:
-        return []
+        return {}
     result = await session.execute(
-        select(Message.id).where(
+        select(Message.id, Message.folder_id).where(
             Message.id == any_(ids), Message.account_id == account_id,  # type: ignore[arg-type]
             Message.expunged_at.is_(None),
         )
     )
-    return list(result.scalars().all())
+    return {mid: fid for mid, fid in result.all()}
 
 
 async def _resolve_scope_ids(

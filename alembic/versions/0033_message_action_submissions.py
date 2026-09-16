@@ -31,6 +31,11 @@ def upgrade() -> None:
             server_default=sa.func.now(),
         ),
         sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("claim_token", sa.Uuid(), nullable=False),
+        sa.Column(
+            "heartbeat_at", sa.DateTime(timezone=True), nullable=False,
+            server_default=sa.func.now(),
+        ),
     )
     op.create_index(
         "idx_message_action_submissions_created_at",

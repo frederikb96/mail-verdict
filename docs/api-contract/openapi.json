@@ -829,6 +829,38 @@
             "title": "Expand Threads",
             "type": "boolean"
           },
+          "expand_threads_through": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With expand_threads: only conversation members mirrored at or before this instant (a row's mirrored_at, the server's clock) are included -- so a reply that arrived after the caller looked is not swept along when the request is sent late.",
+            "title": "Expand Threads Through"
+          },
+          "expected_folder_ids": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "propertyNames": {
+                  "format": "uuid"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per id in `ids`, the folder the caller saw it in. A message no longer live in its folder is left alone and listed in the response's skipped_ids. Ids not named here are not checked.",
+            "title": "Expected Folder Ids"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -903,6 +935,15 @@
               "type": "string"
             },
             "title": "Errors",
+            "type": "array"
+          },
+          "skipped_ids": {
+            "description": "Ids from `ids` that were not acted on: gone, or no longer in the folder expected_folder_ids named for them.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Skipped Ids",
             "type": "array"
           },
           "sources": {
@@ -3938,6 +3979,19 @@
             "title": "Action",
             "type": "string"
           },
+          "expected_folder_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The folder the caller saw the message in. The action is applied only if the message is still there; otherwise nothing is written and the response says applied=false. For an action queued on a device and sent later, which must not undo what happened to the message meanwhile.",
+            "title": "Expected Folder Id"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -3989,6 +4043,12 @@
           "action": {
             "title": "Action",
             "type": "string"
+          },
+          "applied": {
+            "default": true,
+            "description": "False when expected_folder_id no longer matched and nothing was written.",
+            "title": "Applied",
+            "type": "boolean"
           },
           "message": {
             "anyOf": [

@@ -50,9 +50,9 @@ outbox:
 mail_actions:
   # How long the idempotency key of a message action or bulk action is
   # remembered. A client retrying within this window is answered with the
-  # first response instead of acting again; one retrying later (a device
-  # that queued actions offline and reconnects days after) applies them
-  # afresh, which for a move or a flag change lands in the same state.
+  # first response instead of acting again; one retrying later is applied
+  # afresh. A request carrying expected_folder_id(s) is still safe then: a
+  # message no longer where the client saw it is left alone.
   submission_retention_hours: 168
 
 # Native (iPhone) push. The app registers its device with a push relay, and

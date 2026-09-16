@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `POST /api/messages/{id}/action` and `POST /api/accounts/{id}/messages/bulk-action` accept an
   optional `idempotency_key`. A client retrying an action after a lost response is answered with
   the first response instead of acting twice; see `docs/api.md`.
+- The same endpoints take optional guards for an action sent long after it was decided on:
+  `expected_folder_id` (single, answered `applied: false`), `expected_folder_ids` and
+  `expand_threads_through` (bulk, with `skipped_ids` in the response). A message filed elsewhere
+  meanwhile is left alone instead of being pulled back. The single action answers 404 for an
+  expunged message.
+- Marking read on landing in Archive or Trash no longer reaches a message that has already left
+  that folder again.
 
 ## [6.3.1] - 2026-09-16
 

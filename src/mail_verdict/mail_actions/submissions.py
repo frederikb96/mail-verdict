@@ -17,17 +17,25 @@ transaction-scoped advisory lock, the action runs, and the response is
 written afterwards:
 
 - A repeat arriving while the first is still running finds the claim and
-  is told to retry shortly (503), never acted on twice.
+  is told to retry shortly (503), never acted on twice. The running
+  request refreshes the claim's heartbeat, so however long the action
+  takes, a repeat never mistakes it for abandoned.
 - An action that raises, or answers success=false, releases its claim, so
   retrying it once whatever failed is fixed still works -- the same rule
-  outbox/submissions.py applies to a send.
-- A claim left behind by a process killed mid-action is taken over once it
-  is older than _ABANDONED_CLAIM_SECONDS.
-- A key reused for a different request is refused with 409.
+  outbox/submissions.py applies to a send. It releases only its own claim
+  (claim_token), never one another request has since taken over.
+- A claim whose heartbeat stopped -- the process was killed mid-action --
+  is taken over once it is _ABANDONED_AFTER_SECONDS old.
+- A key reused for a different request is refused with 409. The request
+  is compared without its defaulted fields, so a field added with a
+  default in a later release does not turn a retry across the upgrade
+  into a refusal.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -48,9 +56,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Longer than any single action takes, even a spam ruling over a large bulk
-# selection; a claim this old belongs to a request that is no longer running.
-_ABANDONED_CLAIM_SECONDS = 300
+# A running request refreshes its claim this often...
+_HEARTBEAT_SECONDS = 15.0
+# ...so a claim silent for this long belongs to a request that is gone.
+_ABANDONED_AFTER_SECONDS = 90
 
 # Distinct from every other ReconciliationTimer's lock key in the process
 # (tests/unit/test_lock_keys.py checks them all).
@@ -74,7 +83,7 @@ def request_fingerprint(endpoint: str, target_id: uuid.UUID, request: BaseModel)
     Returns:
         A hex digest equal for two requests asking for the same thing
     """
-    body = request.model_dump(mode="json", exclude={"idempotency_key"})
+    body = request.model_dump(mode="json", exclude={"idempotency_key"}, exclude_defaults=True)
     canonical = json.dumps([endpoint, str(target_id), body], sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -103,6 +112,7 @@ async def run_once(
         HTTPException: 409 if the key was used for a different request, 503
             if a request with this key is still being applied
     """
+    token = uuid.uuid4()
     async with db.session() as session:
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:name, 0))"),
@@ -123,8 +133,8 @@ async def run_once(
                 return response_model.model_validate(previous.response)
             abandoned = await session.scalar(
                 select(
-                    MessageActionSubmission.created_at
-                    < func.now() - timedelta(seconds=_ABANDONED_CLAIM_SECONDS)
+                    MessageActionSubmission.heartbeat_at
+                    < func.now() - timedelta(seconds=_ABANDONED_AFTER_SECONDS)
                 ).where(MessageActionSubmission.idempotency_key == idempotency_key)
             )
             if not abandoned:
@@ -136,29 +146,58 @@ async def run_once(
             await session.execute(
                 update(MessageActionSubmission)
                 .where(MessageActionSubmission.idempotency_key == idempotency_key)
-                .values(created_at=func.now())
+                .values(created_at=func.now(), heartbeat_at=func.now(), claim_token=token)
             )
         else:
             session.add(
-                MessageActionSubmission(idempotency_key=idempotency_key, fingerprint=fingerprint)
+                MessageActionSubmission(
+                    idempotency_key=idempotency_key, fingerprint=fingerprint, claim_token=token,
+                )
             )
 
+    heartbeat = asyncio.create_task(_beat(db, idempotency_key, token))
     try:
         response = await apply()
     except BaseException:
-        await _release(db, idempotency_key)
+        await _stop(heartbeat)
+        await _release(db, idempotency_key, token)
         raise
+    await _stop(heartbeat)
     if not _succeeded(response):
-        await _release(db, idempotency_key)
+        await _release(db, idempotency_key, token)
         return response
 
     async with db.session() as session:
         await session.execute(
             update(MessageActionSubmission)
-            .where(MessageActionSubmission.idempotency_key == idempotency_key)
+            .where(
+                MessageActionSubmission.idempotency_key == idempotency_key,
+                MessageActionSubmission.claim_token == token,
+            )
             .values(response=response.model_dump(mode="json"), completed_at=func.now())
         )
     return response
+
+
+async def _beat(db: DatabaseConnection, idempotency_key: uuid.UUID, token: uuid.UUID) -> None:
+    """Keep a claim visibly alive for as long as its action runs."""
+    while True:
+        await asyncio.sleep(_HEARTBEAT_SECONDS)
+        async with db.session() as session:
+            await session.execute(
+                update(MessageActionSubmission)
+                .where(
+                    MessageActionSubmission.idempotency_key == idempotency_key,
+                    MessageActionSubmission.claim_token == token,
+                )
+                .values(heartbeat_at=func.now())
+            )
+
+
+async def _stop(task: asyncio.Task[None]) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
 
 
 def _succeeded(response: Any) -> bool:
@@ -167,12 +206,13 @@ def _succeeded(response: Any) -> bool:
     return bool(getattr(response, "success", True))
 
 
-async def _release(db: DatabaseConnection, idempotency_key: uuid.UUID) -> None:
-    """Drop an unfinished claim, so the key can be used again."""
+async def _release(db: DatabaseConnection, idempotency_key: uuid.UUID, token: uuid.UUID) -> None:
+    """Drop this request's own unfinished claim, so the key can be used again."""
     async with db.session() as session:
         await session.execute(
             delete(MessageActionSubmission).where(
                 MessageActionSubmission.idempotency_key == idempotency_key,
+                MessageActionSubmission.claim_token == token,
                 MessageActionSubmission.response.is_(None),
             )
         )

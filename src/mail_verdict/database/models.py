@@ -1458,7 +1458,9 @@ class MessageActionSubmission(Base):
     running, or died before finishing (see mail_actions/submissions.py).
     `fingerprint` is a digest of the request itself, so a key reused for a
     different request is refused rather than answered with the wrong
-    result. Pruned after config.mail_actions.submission_retention_hours.
+    result. `claim_token` names the request holding an unfinished claim and
+    `heartbeat_at` shows it is still running. Pruned after
+    config.mail_actions.submission_retention_hours.
     """
 
     __tablename__ = "message_action_submissions"
@@ -1470,6 +1472,10 @@ class MessageActionSubmission(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(),
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_token: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
 
 
 class Alert(Base):

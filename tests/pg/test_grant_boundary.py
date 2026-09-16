@@ -50,6 +50,7 @@ from mail_verdict.postimap.actions import (
     move_message,
     move_message_bulk,
     move_message_guarded,
+    move_messages_from,
     move_object,
     move_to_trash,
     replace_object_data,
@@ -455,8 +456,20 @@ async def test_every_contract_write_survives_the_restricted_grant(
         ("set_flags", lambda s: set_flags(s, message_id, is_seen=True)),
         ("set_keywords", lambda s: set_keywords(s, message_id, ["sweep"])),
         ("set_flags_bulk", lambda s: set_flags_bulk(s, [message_id], is_flagged=True)),
+        ("set_flags_bulk_in_folder", lambda s: set_flags_bulk(
+            s, [message_id], expected_folder_id=folder_id, is_flagged=False,
+        )),
         ("mark_seen_if_live", lambda s: mark_seen_if_live(s, [message_id])),
+        ("mark_seen_if_live_in_folder", lambda s: mark_seen_if_live(
+            s, [message_id], in_folder_id=folder_id,
+        )),
         ("move_message", lambda s: move_message(s, message_id, folder_id)),
+        ("move_messages_from", lambda s: move_messages_from(
+            s, [message_id], folder_id, trash_folder_id,
+        )),
+        ("move_messages_back", lambda s: move_messages_from(
+            s, [message_id], trash_folder_id, folder_id,
+        )),
         ("move_message_guarded", lambda s: move_message_guarded(
             s, message_id, folder_id, expected_folder_id=folder_id,
         )),
@@ -477,6 +490,9 @@ async def test_every_contract_write_survives_the_restricted_grant(
             s, [doomed_message_id], folder_id,
         )),
         ("expunge", lambda s: expunge(s, doomed_message_id)),
+        ("expunge_bulk_in_folder", lambda s: expunge_bulk(
+            s, [doomed_message_id], expected_folder_id=doomed_folder_id,
+        )),
         ("expunge_bulk", lambda s: expunge_bulk(s, [doomed_message_id])),
         ("acknowledge_notification", lambda s: acknowledge_notification(s, notification_id)),
         ("acknowledge_all_notifications", lambda s: acknowledge_all_notifications(s, account_id)),

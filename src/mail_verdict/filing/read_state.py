@@ -101,7 +101,9 @@ async def mark_read_on_landing(
     if await landing_role(db, landing, always_read_roles(settings_service)) is None:
         return 0
     async with db.session() as session:
-        return await mark_seen_if_live(session, [landing.message_id])
+        return await mark_seen_if_live(
+            session, [landing.message_id], in_folder_id=landing.folder_id,
+        )
 
 
 # One window: a folder's live rows whose imap_uid lies in [:low_uid,
@@ -175,6 +177,7 @@ async def _reconcile_folder(db: DatabaseConnection, folder_id: uuid.UUID, cursor
 
         return await mark_seen_if_live(
             session, [message_id for message_id, _uid, seen in rows if not seen],
+            in_folder_id=folder_id,
         )
 
 

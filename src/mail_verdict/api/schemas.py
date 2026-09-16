@@ -212,6 +212,14 @@ class MessageActionRequest(BaseModel):
         "request that failed, or answered success=false, leaves the key unused. "
         "Reusing a key for a different request is refused with 409.",
     )
+    expected_folder_id: uuid.UUID | None = Field(
+        default=None,
+        description="The folder the caller saw the message in. The action is "
+        "applied only if the message is still there; otherwise nothing is "
+        "written and the response says applied=false. For an action queued on "
+        "a device and sent later, which must not undo what happened to the "
+        "message meanwhile.",
+    )
 
 
 class MessageActionResponse(BaseModel):
@@ -221,6 +229,11 @@ class MessageActionResponse(BaseModel):
     action: str
     message_id: uuid.UUID
     message: str | None = None
+    applied: bool = Field(
+        default=True,
+        description="False when expected_folder_id no longer matched and "
+        "nothing was written.",
+    )
 
 
 # --- Bulk action schemas (client-held selection, server-side scope) ---
@@ -289,6 +302,19 @@ class BulkActionRequest(BaseModel):
         "request that failed, or answered success=false, leaves the key unused. "
         "Reusing a key for a different request is refused with 409.",
     )
+    expected_folder_ids: dict[uuid.UUID, uuid.UUID] | None = Field(
+        default=None,
+        description="Per id in `ids`, the folder the caller saw it in. A "
+        "message no longer live in its folder is left alone and listed in "
+        "the response's skipped_ids. Ids not named here are not checked.",
+    )
+    expand_threads_through: datetime | None = Field(
+        default=None,
+        description="With expand_threads: only conversation members mirrored "
+        "at or before this instant (a row's mirrored_at, the server's clock) "
+        "are included -- so a reply that arrived after the caller looked is "
+        "not swept along when the request is sent late.",
+    )
 
     @model_validator(mode="after")
     def _at_least_one_of_ids_or_scope(self) -> BulkActionRequest:
@@ -337,6 +363,13 @@ class BulkActionResponse(BaseModel):
             "With expand_threads: every message acted on and its folder "
             "before the action, so a caller can undo a move of messages it "
             "never listed itself. Empty otherwise."
+        ),
+    )
+    skipped_ids: list[uuid.UUID] = Field(
+        default_factory=list,
+        description=(
+            "Ids from `ids` that were not acted on: gone, or no longer in the "
+            "folder expected_folder_ids named for them."
         ),
     )
 

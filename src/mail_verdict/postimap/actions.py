@@ -340,6 +340,8 @@ async def expunge(session: AsyncSession, message_id: uuid.UUID) -> int:
 async def set_flags_bulk(
     session: AsyncSession,
     message_ids: list[uuid.UUID],
+    *,
+    expected_folder_id: uuid.UUID | None = None,
     **flags: bool,
 ) -> int:
     """
@@ -362,6 +364,9 @@ async def set_flags_bulk(
     Args:
         session: Active AsyncSession (caller commits)
         message_ids: Messages to update
+        expected_folder_id: Only update messages still live in this folder --
+            for a write that was decided on while looking at that folder and
+            may arrive long after (a client's queued action)
         **flags: Any of is_seen, is_flagged, is_answered, is_draft, is_deleted
 
     Returns:
@@ -374,15 +379,21 @@ async def set_flags_bulk(
     actually_different = or_(
         *(getattr(Message, column).is_not(value) for column, value in flags.items())
     )
-    result = await session.execute(
-        update(Message)
-        .where(Message.id == any_(message_ids), actually_different)  # type: ignore[arg-type]
-        .values(**flags)
+    stmt = update(Message).where(
+        Message.id == any_(message_ids), actually_different,  # type: ignore[arg-type]
     )
+    if expected_folder_id is not None:
+        stmt = stmt.where(Message.folder_id == expected_folder_id, Message.expunged_at.is_(None))
+    result = await session.execute(stmt.values(**flags))
     return result.rowcount or 0  # type: ignore[attr-defined]
 
 
-async def mark_seen_if_live(session: AsyncSession, message_ids: list[uuid.UUID]) -> int:
+async def mark_seen_if_live(
+    session: AsyncSession,
+    message_ids: list[uuid.UUID],
+    *,
+    in_folder_id: uuid.UUID | None = None,
+) -> int:
     """
     Mark messages read, skipping any already read or already expunged.
 
@@ -394,21 +405,23 @@ async def mark_seen_if_live(session: AsyncSession, message_ids: list[uuid.UUID])
     Args:
         session: Active AsyncSession (caller commits)
         message_ids: Messages to mark read
+        in_folder_id: Only messages still in this folder -- a reaction to a
+            message landing somewhere must not reach it once it has left
+            again (an undo moving it back and marking it unread)
 
     Returns:
         The number of rows actually updated
     """
     if not message_ids:
         return 0
-    result = await session.execute(
-        update(Message)
-        .where(
-            Message.id == any_(message_ids),  # type: ignore[arg-type]
-            Message.expunged_at.is_(None),
-            Message.is_seen.is_(False),
-        )
-        .values(is_seen=True)
+    stmt = update(Message).where(
+        Message.id == any_(message_ids),  # type: ignore[arg-type]
+        Message.expunged_at.is_(None),
+        Message.is_seen.is_(False),
     )
+    if in_folder_id is not None:
+        stmt = stmt.where(Message.folder_id == in_folder_id)
+    result = await session.execute(stmt.values(is_seen=True))
     return result.rowcount or 0  # type: ignore[attr-defined]
 
 
@@ -448,7 +461,51 @@ async def move_message_bulk(
     return result.rowcount or 0  # type: ignore[attr-defined]
 
 
-async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> int:
+async def move_messages_from(
+    session: AsyncSession,
+    message_ids: list[uuid.UUID],
+    source_folder_id: uuid.UUID,
+    target_folder_id: uuid.UUID,
+) -> list[uuid.UUID]:
+    """
+    Move messages to a folder, only those still live in `source_folder_id`.
+
+    For a move decided on while looking at the source folder that may be
+    applied long after (a client's queued action, an undo): a message
+    filed elsewhere, or expunged, in the meantime is left alone rather than
+    pulled back. Same optimistic folder_id + imap_uid=NULL shape as
+    move_message_bulk().
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_ids: Messages to move
+        source_folder_id: The folder each must still be in
+        target_folder_id: Destination folder
+
+    Returns:
+        The ids actually moved. A source equal to the target moves nothing.
+    """
+    if not message_ids or source_folder_id == target_folder_id:
+        return []
+    result = await session.execute(
+        update(Message)
+        .where(
+            Message.id == any_(message_ids),  # type: ignore[arg-type]
+            Message.folder_id == source_folder_id,
+            Message.expunged_at.is_(None),
+        )
+        .values(folder_id=target_folder_id, imap_uid=None)
+        .returning(Message.id)
+    )
+    return list(result.scalars().all())
+
+
+async def expunge_bulk(
+    session: AsyncSession,
+    message_ids: list[uuid.UUID],
+    *,
+    expected_folder_id: uuid.UUID | None = None,
+) -> int:
     """
     Permanently remove many messages at once -- see expunge() and
     set_flags_bulk() for the ANY-array batching.
@@ -456,6 +513,8 @@ async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> i
     Args:
         session: Active AsyncSession (caller commits)
         message_ids: Messages to expunge
+        expected_folder_id: Only messages still live in this folder -- see
+            set_flags_bulk()
 
     Returns:
         The number of rows actually updated -- may be fewer than
@@ -463,9 +522,10 @@ async def expunge_bulk(session: AsyncSession, message_ids: list[uuid.UUID]) -> i
     """
     if not message_ids:
         return 0
-    result = await session.execute(
-        update(Message).where(Message.id == any_(message_ids)).values(expunged_at=text("now()"))  # type: ignore[arg-type]
-    )
+    stmt = update(Message).where(Message.id == any_(message_ids))  # type: ignore[arg-type]
+    if expected_folder_id is not None:
+        stmt = stmt.where(Message.folder_id == expected_folder_id, Message.expunged_at.is_(None))
+    result = await session.execute(stmt.values(expunged_at=text("now()")))
     return result.rowcount or 0  # type: ignore[attr-defined]
 
 
