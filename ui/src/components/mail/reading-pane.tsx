@@ -21,6 +21,7 @@ import {
   ChevronUp,
   ChevronDown,
   X,
+  Loader2,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -35,7 +36,9 @@ import { ThreadMessage } from "@/components/mail/thread-message";
 import { BulkPanel } from "@/components/mail/bulk-panel";
 import { MoveToFolderPopover } from "@/components/mail/move-to-folder-popover";
 import { api } from "@/lib/api";
-import { mailKeys, useLoadMessageImages, useMailAction, useThread } from "@/hooks/use-mails";
+import { mailKeys, useLoadMessageImages, useThread } from "@/hooks/use-mails";
+import { useMailAction } from "@/hooks/use-mail-intents";
+import { PENDING_MARKER_DELAY_MS } from "@/lib/mail-intents";
 import { useOpenMessage } from "@/hooks/use-open-message";
 import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
@@ -133,11 +136,10 @@ export function ReadingPane() {
       !primary.is_seen &&
       primary.id !== explicitlyUnreadMailId
     ) {
-      mailAction.mutate({
-        mailId: primary.id,
-        accountId: primary.account_id,
-        action: { action: "mark_read" },
-      });
+      mailAction.perform(
+        { accountId: primary.account_id, mailIds: [primary.id], action: "mark_read" },
+        { undoable: false },
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primary?.id, primary?.is_seen, isDraft, explicitlyUnreadMailId]);
@@ -295,6 +297,14 @@ export function ReadingPane() {
       >
         <h2 className="text-lg font-semibold leading-tight">
           {primary.subject ?? "(no subject)"}
+          {primary.pendingSince !== undefined &&
+            Date.now() - primary.pendingSince >= PENDING_MARKER_DELAY_MS && (
+              <Loader2
+                data-testid="reader-action-pending"
+                aria-label="Waiting for the server"
+                className="ml-2 inline h-3.5 w-3.5 animate-spin align-middle text-muted-foreground"
+              />
+            )}
         </h2>
         <div
           role="toolbar"
@@ -324,10 +334,9 @@ export function ReadingPane() {
             size="icon"
             className="h-8 w-8"
             onClick={() =>
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: primary.is_flagged ? "unflag" : "flag" },
+              mailAction.perform({
+                accountId: primary.account_id, mailIds: [primary.id],
+                action: primary.is_flagged ? "unflag" : "flag",
               })
             }
             title={primary.is_flagged ? "Unstar" : "Star"}
@@ -356,10 +365,9 @@ export function ReadingPane() {
             size="icon"
             className="h-8 w-8"
             onClick={() => {
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: primary.is_seen ? "mark_unread" : "mark_read" },
+              mailAction.perform({
+                accountId: primary.account_id, mailIds: [primary.id],
+                action: primary.is_seen ? "mark_unread" : "mark_read",
               });
             }}
             title={primary.is_seen ? "Mark as unread" : "Mark as read"}
@@ -373,10 +381,9 @@ export function ReadingPane() {
             size="icon"
             className="h-8 w-8"
             onClick={() =>
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: "archive" },
+              mailAction.perform({
+                accountId: primary.account_id, mailIds: [primary.id],
+                action: "archive",
               })
             }
             title="Archive"
@@ -390,10 +397,9 @@ export function ReadingPane() {
             open={moveOpen}
             onOpenChange={setMoveOpen}
             onMove={(targetFolderId) =>
-              mailAction.mutate({
-                mailId: primary.id,
-                accountId: primary.account_id,
-                action: { action: "move", target_folder_id: targetFolderId },
+              mailAction.perform({
+                accountId: primary.account_id, mailIds: [primary.id],
+                action: "move", targetFolderId,
               })
             }
             trigger={
@@ -447,10 +453,9 @@ export function ReadingPane() {
               size="icon"
               className="h-8 w-8"
               onClick={() =>
-                mailAction.mutate({
-                  mailId: primary.id,
-                  accountId: primary.account_id,
-                  action: { action: "not_spam" },
+                mailAction.perform({
+                  accountId: primary.account_id, mailIds: [primary.id],
+                  action: "not_spam",
                 })
               }
               title="Remove from Junk"
@@ -464,10 +469,9 @@ export function ReadingPane() {
               size="icon"
               className="h-8 w-8"
               onClick={() =>
-                mailAction.mutate({
-                  mailId: primary.id,
-                  accountId: primary.account_id,
-                  action: { action: "spam" },
+                mailAction.perform({
+                  accountId: primary.account_id, mailIds: [primary.id],
+                  action: "spam",
                 })
               }
               title="Move to Junk"
@@ -493,10 +497,9 @@ export function ReadingPane() {
               size="icon"
               className="h-8 w-8"
               onClick={() =>
-                mailAction.mutate({
-                  mailId: primary.id,
-                  accountId: primary.account_id,
-                  action: { action: "trash" },
+                mailAction.perform({
+                  accountId: primary.account_id, mailIds: [primary.id],
+                  action: "trash",
                 })
               }
               title="Move to trash"
@@ -513,17 +516,12 @@ export function ReadingPane() {
         onOpenChange={setConfirmExpunge}
         title="Delete this message forever?"
         description="This removes it from the mail server. It cannot be undone."
-        isConfirming={mailAction.isPending}
-        onConfirm={() =>
-          mailAction.mutate(
-            {
-              mailId: primary.id,
-              accountId: primary.account_id,
-              action: { action: "expunge" },
-            },
-            { onSuccess: () => setConfirmExpunge(false) },
-          )
-        }
+        onConfirm={() => {
+          mailAction.perform({
+            accountId: primary.account_id, mailIds: [primary.id], action: "expunge",
+          });
+          setConfirmExpunge(false);
+        }}
       />
 
       <div className="relative min-h-0 flex-1">

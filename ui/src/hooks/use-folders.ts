@@ -8,20 +8,25 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useProjectedCounts } from "@/hooks/use-intent-ledger";
 import type { FolderCreateRequest } from "@/types/api";
 
 export const folderKeys = {
   list: (accountId: string) => ["folders", accountId] as const,
 };
 
+/** An account's folders, their counts including mail actions the server
+ * has not counted yet (mail-intents.ts). */
 export function useFolders(accountId: string | null) {
-  return useQuery({
+  const query = useQuery({
     queryKey: folderKeys.list(accountId!),
     queryFn: () => api.folders.list(accountId!),
     enabled: !!accountId,
     staleTime: 5_000,
     placeholderData: keepPreviousData,
   });
+  const data = useProjectedCounts(query.data, (f) => [f.id], query.dataUpdatedAt);
+  return { ...query, data };
 }
 
 export function useCreateFolder() {

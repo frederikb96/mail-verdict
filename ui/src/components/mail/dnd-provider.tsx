@@ -19,7 +19,7 @@ import { useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { useMailAction } from "@/hooks/use-mails";
+import { useMailAction } from "@/hooks/use-mail-intents";
 import { useBulkAction, useSelectionGestures } from "@/hooks/use-selection";
 import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 
@@ -151,10 +151,8 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
       : dropFolderId;
     if (!effectiveAccountId || !targetFolderId) return;
 
-    mailAction.mutate({
-      mailId,
-      accountId: effectiveAccountId,
-      action: { action: "move", target_folder_id: targetFolderId },
+    mailAction.perform({
+      accountId: effectiveAccountId, mailIds: [mailId], action: "move", targetFolderId,
     });
   }
 

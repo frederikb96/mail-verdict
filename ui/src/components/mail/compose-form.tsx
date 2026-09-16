@@ -33,6 +33,7 @@ import {
   readComposeRecovery,
   writeComposeRecovery,
 } from "@/lib/compose-recovery";
+import { newIdempotencyKey } from "@/lib/idempotency-key";
 import { cn } from "@/lib/utils";
 import type { Identity, OutboxCreateRequest } from "@/types/api";
 
@@ -121,18 +122,6 @@ interface ComposeFormProps {
    * panel anchored at the bottom of the reading pane, so each host
    * decides what its own maximized layout looks like. */
   onMaximizedChange?: (maximized: boolean) => void;
-}
-
-/** A random v4 UUID. crypto.randomUUID() exists only in a secure context,
- * and a self-hosted instance reached over plain HTTP is not one -- there
- * it is undefined, and every Send would throw. getRandomValues() is
- * available either way. */
-function newIdempotencyKey(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 /** Shared body for the new-mail dialog, the inline reply box, and the draft editor. */
@@ -585,7 +574,10 @@ export function ComposeForm({
   );
 
   return (
-    <div className={cn("relative flex flex-col", resize.isMaximized && "h-full min-h-0 flex-1")}>
+    <div
+      data-slot="compose-form"
+      className={cn("relative flex flex-col", resize.isMaximized && "h-full min-h-0 flex-1")}
+    >
       {form}
       {phase === "sending" && (
         <div

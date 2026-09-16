@@ -37,16 +37,20 @@ export function ToastContainer() {
           )}
         >
           <span className="max-w-80">{toast.message}</span>
-          {toast.action && (
-            <button
-              onClick={() => {
-                toast.action!.onClick();
-                dismiss(toast.id);
-              }}
-              className="shrink-0 font-medium underline underline-offset-2"
-            >
-              {toast.action.label}
-            </button>
+          {[toast.action, toast.secondaryAction].map(
+            (action) =>
+              action && (
+                <button
+                  key={action.label}
+                  onClick={() => {
+                    action.onClick();
+                    dismiss(toast.id);
+                  }}
+                  className="shrink-0 font-medium underline underline-offset-2"
+                >
+                  {action.label}
+                </button>
+              ),
           )}
           <button
             onClick={() => dismiss(toast.id)}

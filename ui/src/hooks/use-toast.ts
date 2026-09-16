@@ -15,9 +15,10 @@ export function useToast() {
       variant: ToastItem["variant"] = "info",
       durationMs = 5000,
       action?: ToastItem["action"],
+      secondaryAction?: ToastItem["secondaryAction"],
     ) => {
       const id = `toast-${Date.now()}-${counter++}`;
-      setToasts((prev) => [...prev, { id, message, variant, action }]);
+      setToasts((prev) => [...prev, { id, message, variant, action, secondaryAction }]);
       if (durationMs > 0) {
         setTimeout(() => {
           setToasts((prev) => prev.filter((t) => t.id !== id));

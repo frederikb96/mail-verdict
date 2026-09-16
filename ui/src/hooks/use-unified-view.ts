@@ -7,6 +7,7 @@
 
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useProjectedCounts } from "@/hooks/use-intent-ledger";
 import {
   type MailListWindow,
   mailListQueryOptions,
@@ -25,12 +26,17 @@ export const unifiedKeys = {
     ].filter(Boolean) as string[],
 };
 
-/** Every unified view, in sidebar order, with its member folders. */
+/** Every unified view, in sidebar order, with its member folders -- its
+ * counts projected like useFolders'. */
 export function useUnifiedFolders() {
-  return useQuery<UnifiedFolderResponse[]>({
+  const query = useQuery<UnifiedFolderResponse[]>({
     queryKey: unifiedKeys.folders,
     queryFn: () => api.unified.folders(),
   });
+  const data = useProjectedCounts(
+    query.data, (view) => view.folders.map((f) => f.folder_id), query.dataUpdatedAt,
+  );
+  return { ...query, data };
 }
 
 /** One view's mail -- paged, threaded, filtered, centred on a message and

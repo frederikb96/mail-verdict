@@ -14,13 +14,12 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  prefetchThread,
-  threadQueryOptions,
-  useMailList,
-  useMailAction,
-  useMarkConversationRead,
-} from "@/hooks/use-mails";
+import { prefetchThread, threadQueryOptions, useMailList } from "@/hooks/use-mails";
+import { useIntentLedger } from "@/hooks/use-intent-ledger";
+import { useMailAction, useMarkConversationRead } from "@/hooks/use-mail-intents";
+import { retryIntent } from "@/lib/intent-drainer";
+import { retireIntents } from "@/lib/intent-ledger";
+import { projectRows, type RowIntentMarks } from "@/lib/mail-intents";
 import { clearKeptWhileUnread } from "@/lib/mail-list-window";
 import { useFolders } from "@/hooks/use-folders";
 import { useAccount, useAccounts } from "@/hooks/use-accounts";
@@ -91,6 +90,10 @@ function nearestSurvivor(
   return null;
 }
 
+function discardIntent(intentId: string): void {
+  retireIntents([intentId]);
+}
+
 export function MailList() {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const folderId = useAtomValue(selectedFolderIdAtom);
@@ -107,7 +110,7 @@ export function MailList() {
   const { toggle, shiftRange } = useSelectionGestures();
   const clearSelection = useClearSelection();
   const { selectFolderScope } = useSelectAll();
-  const mailAction = useMailAction();
+  const { perform } = useMailAction();
   const markConversationRead = useMarkConversationRead();
   const vlistRef = useRef<VListHandle>(null);
 
@@ -303,16 +306,31 @@ export function MailList() {
   // window or live tail of its own to grow.
   const { hasPreviousPage, isFetchingPreviousPage, fetchPreviousPage } = result;
 
-  // One reference to whichever query is actually driving the view --
-  // used below to detect "the underlying data object changed" the same
-  // way regardless of source, since allMails/allMailIds are freshly
-  // derived arrays every render and can never serve as that signal
-  // themselves.
-  const data = isFiltering ? filterResult.data : result.data;
-  const allMails: (MessageSummary | SearchResultItem)[] = isFiltering
-    ? (filterResult.data?.pages.flatMap((p) => p.items) ?? [])
-    : (result.data?.pages.flatMap((p) => p.messages) ?? []);
-  const allMailIds = allMails.map((m) => m.id);
+  // The rows shown: whichever query drives the view, with every mail
+  // action the server may not have applied yet on top (mail-intents.ts).
+  // Memoized to the one reference that changes exactly when the rows do --
+  // what the scroll anchoring below keys on.
+  const { intents } = useIntentLedger();
+  const listQuery = isFiltering ? filterResult : result;
+  const scopeFolderIds = useMemo(
+    () => new Set(isUnifiedView ? viewFolderIds : folderId ? [folderId] : []),
+    [isUnifiedView, viewFolderIds, folderId],
+  );
+  const listData = listQuery.data;
+  const listUpdatedAt = listQuery.dataUpdatedAt;
+  const allMails: Array<(MessageSummary | SearchResultItem) & RowIntentMarks> = useMemo(() => {
+    const rows: (MessageSummary | SearchResultItem)[] = isFiltering
+      ? ((listData as typeof filterResult.data)?.pages.flatMap((p) => p.items) ?? [])
+      : ((listData as typeof result.data)?.pages.flatMap((p) => p.messages) ?? []);
+    return projectRows(rows, intents, {
+      dataUpdatedAt: listUpdatedAt,
+      scopeFolderIds,
+      threaded: threaded && !isFiltering,
+      hasMore: !!hasNextPage,
+    });
+  }, [listData, listUpdatedAt, intents, scopeFolderIds, threaded, isFiltering, hasNextPage]);
+  const data = allMails;
+  const allMailIds = useMemo(() => allMails.map((m) => m.id), [allMails]);
   // The row standing for the open message: the message itself, or -- in a
   // threaded list, where a row is its conversation's newest message here --
   // that conversation's row while an older message of it is open.
@@ -562,13 +580,9 @@ export function MailList() {
         void markConversationRead(conversation, true, conversationScope);
         return;
       }
-      mailAction.mutate({
-        mailId,
-        accountId: account,
-        action: { action },
-      });
+      perform({ accountId: account, mailIds: [mailId], action });
     },
-    [accountId, mailAction, conversationWithOtherUnread, markConversationRead, conversationScope],
+    [accountId, perform, conversationWithOtherUnread, markConversationRead, conversationScope],
   );
 
   // Keyed on the opened message, however it was opened -- a click, keyboard
@@ -825,6 +839,8 @@ export function MailList() {
                 onPressStart={handlePressStart}
                 onCheckToggle={handleCheckToggle}
                 onAction={handleAction}
+                onRetryIntent={retryIntent}
+                onDiscardIntent={discardIntent}
               />
             </DragMail>
           ))}

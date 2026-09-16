@@ -384,9 +384,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 # a move another client made after reading it.
                 await resolve_for_message_event(db, event_ring, event.id)
             elif event.op == "update":
-                await event_ring.add(
-                    account_uuid, "mail.updated", {**sse_data, "changed": list(event.changed)},
-                )
+                updated: dict[str, Any] = {**sse_data, "changed": list(event.changed)}
+                if event.old_folder_id:
+                    # A move names both ends, so a client re-reads only the
+                    # lists showing either folder.
+                    updated["old_folder_id"] = event.old_folder_id
+                await event_ring.add(account_uuid, "mail.updated", updated)
                 if "folder_id" in event.changed:
                     await mark_read_on_landing(db, settings_service, event)
                 if "is_seen" in event.changed:

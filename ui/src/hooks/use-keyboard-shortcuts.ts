@@ -16,6 +16,7 @@ import {
   requestSelectMailAtom,
 } from "@/lib/atoms";
 import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
+import { useUndoMailAction } from "@/hooks/use-mail-intents";
 import { isEditableElement } from "@/lib/utils";
 import { isRowUnread } from "@/lib/mail-unread";
 import type { MailRowAction, MessageSummary } from "@/types/api";
@@ -31,6 +32,21 @@ interface UseKeyboardShortcutsOptions {
   onOpen: (mailId: string) => void;
   /** Runs an action on a message, the same way its row control does. */
   onAction: (mailId: string, action: MailRowAction, accountId?: string) => void;
+}
+
+/** Whether an undo keystroke belongs to what has focus rather than to the
+ * mail actions: text being edited, a composer, or a dialog. */
+function ownsUndo(target: EventTarget | null): boolean {
+  if (isEditableElement(target)) return true;
+  return (
+    target instanceof Element &&
+    target.closest('[role="dialog"], [role="alertdialog"], [data-slot="compose-form"]') !== null
+  );
+}
+
+/** Ctrl+Z, or Cmd+Z on macOS -- shift held is redo, and left alone. */
+function isUndoKey(e: KeyboardEvent): boolean {
+  return (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z";
 }
 
 /**
@@ -52,6 +68,9 @@ interface UseKeyboardShortcutsOptions {
  * - a: reply all (the open message only -- there is no row form of this)
  * - f: forward (the open message only)
  * - v: move to folder (the open message only)
+ * - Ctrl+Z / Cmd+Z: undo the most recent mail action, repeatedly -- never
+ *   while typing, in a composer, or in a dialog, where the browser's own
+ *   undo belongs
  *
  * Every one of them acts on the open message when there is one, and on the
  * focused row otherwise -- so a shortcut and a click on the same message's
@@ -79,6 +98,7 @@ export function useKeyboardShortcuts({
   const setComposeIntent = useSetAtom(composeIntentAtom);
   const setRequestReplyMode = useSetAtom(requestReplyModeAtom);
   const setRequestMoveDialog = useSetAtom(requestMoveDialogAtom);
+  const undoMailAction = useUndoMailAction();
 
   const openIndex = openMailId
     ? mails.findIndex((m) => m.id === openMailId)
@@ -92,6 +112,11 @@ export function useKeyboardShortcuts({
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      if (isUndoKey(e)) {
+        if (ownsUndo(e.target)) return;
+        if (undoMailAction()) e.preventDefault();
+        return;
+      }
       if (isEditableElement(e.target)) return;
       // A shortcut is a bare keypress: ctrl+r reloads the page and cmd+e
       // belongs to the browser, so neither may be swallowed here.
@@ -227,5 +252,6 @@ export function useKeyboardShortcuts({
     toggleSelection,
     clearSelection,
     scrollToIndex,
+    undoMailAction,
   ]);
 }

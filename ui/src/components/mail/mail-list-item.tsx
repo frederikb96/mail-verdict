@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useContactPhotoIndex } from "@/hooks/use-contacts";
 import { isRowUnread } from "@/lib/mail-unread";
+import { ACTION_LABELS, PENDING_MARKER_DELAY_MS, type RowIntentMarks } from "@/lib/mail-intents";
 import type { MailRowAction, MessageSummary } from "@/types/api";
 
 // Opacity/pointer-events only -- these are ordinary flex children (or, for
@@ -30,7 +31,8 @@ const revealOnHoverClass =
   "opacity-0 pointer-events-none group-hover/row:opacity-100 group-hover/row:pointer-events-auto group-data-[kbd-focus]/row:opacity-100 group-data-[kbd-focus]/row:pointer-events-auto";
 
 interface MailListItemProps {
-  mail: MessageSummary;
+  /** The row as shown: the server's fields with pending mail actions on top. */
+  mail: MessageSummary & RowIntentMarks;
   /** The row's account, as the avatar's badge -- given only where rows from
    * several accounts share one list (a unified view). The avatar is the
    * one place it is shown; the sender line never repeats it. */
@@ -51,6 +53,10 @@ interface MailListItemProps {
   onPressStart?: (mailId: string) => void;
   onCheckToggle: (mailId: string, shiftKey: boolean) => void;
   onAction?: (mailId: string, action: MailRowAction, mailAccountId?: string) => void;
+  /** Send a failed action on this row again. */
+  onRetryIntent?: (intentId: string) => void;
+  /** Give up on a failed action on this row. */
+  onDiscardIntent?: (intentId: string) => void;
 }
 
 /**
@@ -77,10 +83,17 @@ export function MailListItem({
   onPressStart,
   onCheckToggle,
   onAction,
+  onRetryIntent,
+  onDiscardIntent,
 }: MailListItemProps) {
   const senderName = extractSenderName(mail.from_addr);
   const threadSuffix = isThreaded ? " (latest message in thread)" : "";
   const unread = isRowUnread(mail);
+  // An action the server has not confirmed yet shows only once it has taken
+  // long enough to notice -- the ledger re-renders the row at that moment.
+  const actionPending =
+    mail.pendingSince !== undefined && Date.now() - mail.pendingSince >= PENDING_MARKER_DELAY_MS;
+  const failed = mail.failedIntent;
 
   // One request per account rendered (deduped/cached by TanStack Query
   // across every row sharing it), never one per row -- see
@@ -199,8 +212,11 @@ export function MailListItem({
           >
             {senderName}
           </span>
-          {mail.pending_sync && (
-            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+          {(mail.pending_sync || actionPending) && (
+            <Loader2
+              data-testid={actionPending ? "row-action-pending" : undefined}
+              className="h-3 w-3 shrink-0 animate-spin text-muted-foreground"
+            />
           )}
           {/* Every button here stays in the DOM at all times -- only
               opacity/pointer-events toggle on hover or keyboard focus --
@@ -338,6 +354,37 @@ export function MailListItem({
             <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
               {mail.thread_count}
             </Badge>
+          )}
+          {/* Within the subject line's own height, so a row that fails never
+              changes size under the list's measurements. */}
+          {failed && (
+            <span
+              data-slot="row-action-failed"
+              title={failed.error}
+              className="ml-auto flex h-4 shrink-0 items-center gap-1.5 text-[11px] leading-4 text-destructive"
+            >
+              Could not {ACTION_LABELS[failed.action]}
+              <button
+                type="button"
+                className="font-medium underline underline-offset-2"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetryIntent?.(failed.id);
+                }}
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                className="font-medium underline underline-offset-2"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDiscardIntent?.(failed.id);
+                }}
+              >
+                Discard
+              </button>
+            </span>
           )}
         </div>
         {mail.snippet && (

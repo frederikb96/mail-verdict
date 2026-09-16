@@ -1,6 +1,6 @@
 /** TanStack Query hooks for mail operations. */
 
-import { useCallback, useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import {
   type InfiniteData,
   type Query,
@@ -13,70 +13,25 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import { useToast } from "@/hooks/use-toast";
+import { useIntentLedger } from "@/hooks/use-intent-ledger";
 import {
   type WindowRow,
   chunkIntoPages,
   keptWhileUnreadIds,
-  markKeptWhileUnread,
   mergeRefreshedWindow,
   windowRefreshLimit,
 } from "@/lib/mail-list-window";
+import { projectThreadMessages, type RowIntentMarks } from "@/lib/mail-intents";
 import { isMailListQuery } from "@/lib/query-persister";
-import {
-  activeReplyDirtyForThreadIdAtom,
-  explicitlyUnreadMailIdAtom,
-  selectedMailIdAtom,
-} from "@/lib/atoms";
-import { type MailNavDirection, mailNavDirectionAtom } from "@/store/mail-nav-atom";
 import type {
-  FolderOrderResponse,
-  FolderResponse,
-  MessageActionRequest,
   MessageDetail,
   MessageListResponse,
   MessageQuoteResponse,
-  MessageSummary,
   ThreadResponse,
+  UnifiedFolderResponse,
 } from "@/types/api";
-
-/** Actions that move a message out of the folder it was just shown in. */
-const LEAVES_FOLDER_ACTIONS = ["trash", "expunge", "archive", "spam", "not_spam"];
-
-/**
- * Destructive actions offered with an "Undo" toast on success -- moving the
- * message straight back to the folder it was in is the compensating action,
- * the same shape a failed mutation's own rollback already uses. `expunge`
- * has no compensating action (there is nothing left to move back) and
- * `not_spam` already is the corrective action for a wrong `spam` verdict.
- */
-export const UNDOABLE_ACTIONS = ["trash", "archive", "spam"];
-
-/** Human phrasing for a message/bulk action, used in error toasts. */
-export const ACTION_LABELS: Record<string, string> = {
-  mark_read: "mark as read",
-  mark_unread: "mark as unread",
-  flag: "star",
-  unflag: "unstar",
-  move: "move",
-  archive: "archive",
-  trash: "move to trash",
-  expunge: "delete forever",
-  spam: "mark as spam",
-  not_spam: "mark as not spam",
-  keyword_add: "add keyword",
-  keyword_remove: "remove keyword",
-};
-
-/** Human phrasing for the success toast a completed undoable action shows. */
-export const UNDO_TOAST_LABELS: Record<string, string> = {
-  trash: "Moved to trash",
-  archive: "Archived",
-  spam: "Marked as spam",
-};
 
 export const mailKeys = {
   list: (
@@ -186,6 +141,10 @@ async function refreshWindowOnce(
   const loaded = query.state.data as InfiniteData<WindowPage> | undefined;
   if (!loaded) return;
   const loadedRows = loaded.pages.reduce((n, page) => n + page.messages.length, 0);
+  // The window is dated from when the read began, not when it landed: a
+  // mail action whose request succeeded after this moment may be missing
+  // from what comes back, and must keep being shown over it (mail-intents.ts).
+  const readStartedAt = Date.now();
   let fresh: { rows: WindowRow[]; hasMore: boolean };
   try {
     fresh = await readWindow(source, windowRefreshLimit(loadedRows));
@@ -208,7 +167,9 @@ async function refreshWindowOnce(
     // has genuinely left the folder.
     source.unreadOnly ? keptWhileUnreadIds : undefined,
   );
-  qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore));
+  qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore), {
+    updatedAt: readStartedAt,
+  });
 }
 
 const windowRefreshes = new WeakMap<Query, { again: boolean }>();
@@ -244,15 +205,39 @@ function refreshWindow(qc: QueryClient, query: Query): void {
   })();
 }
 
+/** The folders a mail change touched, or null when that is not known --
+ * which refreshes every list. Folder ids are unique across accounts. */
+export type MailChangeScope = { folderIds: ReadonlySet<string> } | null;
+
+/** The folders a list shows: its own folder, or a unified view's members as
+ * last read. Null when a view's membership is not cached. */
+function listFolderIds(qc: QueryClient, query: Query): readonly string[] | null {
+  const source = windowOf(query);
+  const key = query.queryKey;
+  const folderId = source ? (source.kind === "account" ? source.folderId : null) : key[0] === "mails" ? key[2] : null;
+  if (typeof folderId === "string") return [folderId];
+  const viewName = source?.kind === "unified" ? source.folderName : key[0] === "unified" ? key[2] : null;
+  const views = qc.getQueryData<UnifiedFolderResponse[]>(["unified", "folders"]);
+  const view = views?.find((v) => v.unified_name === viewName);
+  return view ? view.folders.map((f) => f.folder_id) : null;
+}
+
+function concerns(qc: QueryClient, query: Query, scope: MailChangeScope): boolean {
+  if (scope === null) return true;
+  const folders = listFolderIds(qc, query);
+  return folders === null || folders.some((id) => scope.folderIds.has(id));
+}
+
 /**
- * Bring every open mail list up to date -- the list half of
- * refreshMailViews on its own, for a window regaining focus, where the
+ * Bring the open mail lists a change concerns up to date -- the list half
+ * of refreshMailViews on its own, for a window regaining focus, where the
  * counts already refetch through their own queries. A list nobody is
  * looking at is refreshed when it is shown again (useRefreshWindowOnMount).
  */
-export function refreshMailLists(qc: QueryClient): void {
+export function refreshMailLists(qc: QueryClient, scope: MailChangeScope = null): void {
   const lists = qc.getQueryCache().findAll({ predicate: (q) => isMailListQuery(q.queryKey) });
   for (const query of lists) {
+    if (!concerns(qc, query, scope)) continue;
     if (windowOf(query)) {
       if (query.getObserversCount() > 0) refreshWindow(qc, query);
       continue;
@@ -269,10 +254,11 @@ export function refreshMailLists(qc: QueryClient): void {
  * The one way the mail lists and every count beside them are brought up to
  * date after mail changed -- a live event, an action settling, a reconnect.
  * Both halves are refreshed by the same call at the same moment, so no path
- * can refresh the counts and leave a list behind.
+ * can refresh the counts and leave a list behind. Only the lists showing a
+ * folder the change touched are re-read; every count is.
  */
-export function refreshMailViews(qc: QueryClient): void {
-  refreshMailLists(qc);
+export function refreshMailViews(qc: QueryClient, scope: MailChangeScope = null): void {
+  refreshMailLists(qc, scope);
   invalidateAllFolderCaches(qc);
 }
 
@@ -420,8 +406,21 @@ export function threadQueryOptions(mailId: string | null) {
   });
 }
 
+export type ProjectedThread = Omit<ThreadResponse, "messages"> & {
+  messages: Array<MessageDetail & RowIntentMarks>;
+};
+
+/** A conversation, with every mail action on its messages the server may
+ * not have applied yet shown on top (mail-intents.ts). */
 export function useThread(mailId: string | null) {
-  return useQuery(threadQueryOptions(mailId));
+  const query = useQuery(threadQueryOptions(mailId));
+  const { intents } = useIntentLedger();
+  const data = useMemo((): ProjectedThread | undefined => {
+    if (!query.data) return undefined;
+    const messages = projectThreadMessages(query.data.messages, intents, query.dataUpdatedAt);
+    return messages === query.data.messages ? query.data : { ...query.data, messages };
+  }, [query.data, query.dataUpdatedAt, intents]);
+  return { ...query, data };
 }
 
 /** Starts fetching a conversation ahead of its opening; a no-op while fresh. */
@@ -470,169 +469,13 @@ export function useMessageQuote(mailId: string | null) {
   });
 }
 
-/** Find a mail's metadata from the infinite query cache. */
-function findMailInCache(qc: QueryClient, mailId: string) {
-  const queries = qc.getQueriesData<InfiniteData<MessageListResponse>>({
-    queryKey: ["mails"],
-  });
-  for (const [, data] of queries) {
-    if (!data?.pages) continue;
-    for (const page of data.pages) {
-      const mail = page.messages.find((m) => m.id === mailId);
-      if (mail)
-        return {
-          folderId: mail.folder_id,
-          isSeen: mail.is_seen,
-          isFlagged: mail.is_flagged,
-          threadId: mail.thread_id,
-        };
-    }
-  }
-  return null;
-}
-
-/** The open message's folder and thread, read first from the ["thread", id]
- * query the reading pane itself renders from -- always filled while the
- * message is on screen -- and then from the loaded list pages. The
- * ["mail", id] detail query is no source for this: nothing mounts it for
- * the reading pane, so a guard reading it sees nothing and never holds. */
-export function openMailInCache(qc: QueryClient, mailId: string) {
-  const own = qc
-    .getQueryData<ThreadResponse>(mailKeys.thread(mailId))
-    ?.messages.find((m) => m.id === mailId);
-  if (own) return { folderId: own.folder_id, threadId: own.thread_id };
-  return findMailInCache(qc, mailId);
-}
-
 /**
- * The message that should take the reader's place when `mailId` leaves the
- * list: its neighbour in `direction`, or the one on the other side when
- * there is nothing that way. Null when it was the only one loaded.
- *
- * Read out of the list caches rather than passed in, so every surface that
- * can remove the open message -- a row's own control, the reading pane's
- * toolbar, a keyboard shortcut -- lands on the same next message without
- * each deciding for itself.
- */
-function neighbourInCache(
-  qc: QueryClient,
-  mailId: string,
-  direction: MailNavDirection,
-): string | null {
-  const queries = [
-    ...qc.getQueriesData<InfiniteData<{ messages: { id: string }[] }>>({
-      queryKey: ["mails"],
-    }),
-    ...qc.getQueriesData<InfiniteData<{ messages: { id: string }[] }>>({
-      queryKey: ["unified", "mails"],
-    }),
-  ];
-  for (const [, data] of queries) {
-    if (!data?.pages) continue;
-    const ids = data.pages.flatMap((page) => page.messages.map((m) => m.id));
-    const at = ids.indexOf(mailId);
-    if (at < 0) continue;
-    const step = direction === "older" ? 1 : -1;
-    return ids[at + step] ?? ids[at - step] ?? null;
-  }
-  return null;
-}
-
-/** Remove a mail from all infinite query caches. */
-export function removeMailFromCache(qc: QueryClient, mailId: string) {
-  qc.setQueriesData<InfiniteData<MessageListResponse>>(
-    { queryKey: ["mails"] },
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.filter((m) => m.id !== mailId),
-        })),
-      };
-    },
-  );
-}
-
-/**
- * Remove a mail from every list cache, including the unified view's --
- * unlike removeMailFromCache above (single-account mutations only ever
- * need to patch their own account's lists), an SSE mail.deleted can
- * concern a message the unified view is currently showing.
- */
-export function removeMailFromAllListCaches(qc: QueryClient, mailId: string) {
-  removeMailFromCache(qc, mailId);
-  qc.setQueriesData<InfiniteData<{ messages: { id: string }[] }>>(
-    { queryKey: ["unified", "mails"] },
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.filter((m) => m.id !== mailId),
-        })),
-      };
-    },
-  );
-}
-
-/**
- * Update a mail's properties in every infinite query cache that derives
- * from it -- the per-account/folder list and the unified view's, which
- * carries its own copy of the same fields under a different query key.
- * Missing the unified branch here is the same bug as missing the thread
- * cache below: three caches hold the same fact, and a patch that only
- * reaches two of them leaves whichever screen reads the third showing
- * stale data until the next unrelated refetch settles it.
- */
-export function updateMailInCache(
-  qc: QueryClient,
-  mailId: string,
-  updates: Partial<MessageSummary>,
-) {
-  qc.setQueriesData<InfiniteData<MessageListResponse>>(
-    { queryKey: ["mails"] },
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.map((m) =>
-            m.id === mailId ? { ...m, ...updates } : m,
-          ),
-        })),
-      };
-    },
-  );
-  qc.setQueriesData<InfiniteData<{ messages: Array<{ id: string }> }>>(
-    { queryKey: ["unified", "mails"] },
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.map((m) =>
-            m.id === mailId ? { ...m, ...updates } : m,
-          ),
-        })),
-      };
-    },
-  );
-}
-
-/**
- * Update a mail's properties in every ["thread", *] cache that currently
+ * Update a message's content in every ["thread", *] cache that currently
  * holds it -- a thread is cached under the id it was first opened with,
  * so the same message can appear in more than one such cache (or in
- * none, if its thread was never opened). The reading pane's header
- * controls read from this cache; the list row reads from the caches
- * updateMailInCache above patches. Both describe the same fact and must
- * change together, or the two disagree for a full round trip after any
- * action -- this is what read as the mark-unread button "flipping back".
+ * none, if its thread was never opened). Content only: flags and folders
+ * are never patched into a cache, they are projected from the mail
+ * intent ledger (mail-intents.ts).
  */
 export function updateMailInThreadCaches(
   qc: QueryClient,
@@ -671,304 +514,3 @@ export function useLoadMessageImages() {
   });
 }
 
-/**
- * Adjust a conversation row's own unread count in every list cache holding
- * it as a conversation -- only rows fetched grouped carry the count, so a
- * flat list's row of the same message is left alone.
- */
-function updateConversationUnread(
-  qc: QueryClient,
-  rowId: string,
-  next: (unread: number) => number,
-) {
-  for (const prefix of [["mails"], ["unified", "mails"]] as const) {
-    qc.setQueriesData<InfiniteData<MessageListResponse>>({ queryKey: prefix }, (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.map((m) =>
-            m.id === rowId && m.unread_in_thread !== undefined
-              ? { ...m, unread_in_thread: Math.max(0, next(m.unread_in_thread)) }
-              : m,
-          ),
-        })),
-      };
-    });
-  }
-}
-
-/**
- * Mark read every unread message of a conversation row's thread in that
- * row's folder -- or, for a unified view's row, in any of the view's folders
- * (`folderIds`) -- what reading a row grouped by conversation means, since
- * the row counts all of them (isRowUnread). The row's own message is left
- * out unless `includeRow`: opening a row already marks it read through the
- * reading pane.
- */
-export function useMarkConversationRead() {
-  const qc = useQueryClient();
-  const { push: pushToast } = useToast();
-  return useCallback(
-    async (row: MessageSummary, includeRow: boolean, folderIds?: readonly string[]) => {
-      let thread: ThreadResponse;
-      try {
-        thread = await qc.fetchQuery({
-          queryKey: mailKeys.thread(row.id),
-          queryFn: () => api.mails.thread(row.id),
-          staleTime: 0,
-        });
-      } catch (err) {
-        pushToast(`Could not mark as read: ${(err as Error).message}`, "error", 0);
-        return;
-      }
-      const inScope = (folderId: string) =>
-        folderIds ? folderIds.includes(folderId) : folderId === row.folder_id;
-      const toRead = thread.messages
-        .filter((m) => inScope(m.folder_id) && !m.is_seen)
-        .filter((m) => includeRow || m.id !== row.id);
-      const ids = toRead.map((m) => m.id);
-      if (ids.length === 0) return;
-
-      for (const id of ids) {
-        updateMailInThreadCaches(qc, id, { is_seen: true });
-        markKeptWhileUnread(id);
-      }
-      if (includeRow) {
-        updateMailInCache(qc, row.id, { is_seen: true });
-        // The row's own message just left this branch's "unread" set the
-        // same way the ids above did -- an unread-only window keeps
-        // showing it until the reader navigates away.
-        markKeptWhileUnread(row.id);
-      }
-      // What stays unread afterwards is at most the row's own message, read
-      // from the cache now rather than from `row` -- the reading pane may
-      // have marked it read meanwhile.
-      const rowStillUnread = !includeRow && findMailInCache(qc, row.id)?.isSeen === false;
-      updateConversationUnread(qc, row.id, () => (rowStillUnread ? 1 : 0));
-      const perFolder = new Map<string, number>();
-      for (const m of toRead) perFolder.set(m.folder_id, (perFolder.get(m.folder_id) ?? 0) + 1);
-      for (const [folderId, count] of perFolder) {
-        updateFolderCounts(qc, row.account_id, folderId, 0, -count);
-      }
-      try {
-        await api.messages.bulkAction(row.account_id, { action: "mark_read", ids });
-      } catch (err) {
-        pushToast(`Could not mark as read: ${(err as Error).message}`, "error", 0);
-      } finally {
-        refreshMailViews(qc);
-      }
-    },
-    [qc, pushToast],
-  );
-}
-
-/** Adjust folder total_count and unread_count in ALL folder caches. */
-export function updateFolderCounts(
-  qc: QueryClient,
-  accountId: string,
-  folderId: string,
-  totalDelta: number,
-  unreadDelta: number,
-) {
-  const applyDelta = (total: number, unread: number) => ({
-    total_count: Math.max(0, total + totalDelta),
-    unread_count: Math.max(0, unread + unreadDelta),
-  });
-
-  qc.setQueryData<FolderResponse[]>(["folders", accountId], (old) => {
-    if (!old) return old;
-    return old.map((f) =>
-      f.id === folderId ? { ...f, ...applyDelta(f.total_count, f.unread_count) } : f,
-    );
-  });
-
-  qc.setQueryData<FolderOrderResponse>(["folder-order", accountId], (old) => {
-    if (!old) return old;
-    return {
-      ...old,
-      folders: old.folders.map((f) =>
-        f.folder_id === folderId
-          ? { ...f, ...applyDelta(f.total_count, f.unread_count) }
-          : f,
-      ),
-    };
-  });
-}
-
-export function useMailAction() {
-  const qc = useQueryClient();
-  // Selected mail lives in the same store every action initiator (list row,
-  // reading pane, bulk toolbar) reads from, so moving it on here reaches all
-  // of them: once the open message leaves its folder, nothing keeps acting
-  // on it under a reading pane that still shows its old content -- except
-  // a reply or forward in progress against its thread, which unmounting
-  // the pane would take down too. See activeReplyDirtyForThreadId below.
-  //
-  // This writes selectedMailIdAtom directly rather than through
-  // requestSelectMailAtom (lib/atoms.ts): that atom answers "is some
-  // composer dirty at all", which is the wrong question here -- an action
-  // taken elsewhere on a message must still go through even while a reply
-  // on some unrelated thread sits open, and only the neighbour-selection
-  // step below is conditional on the affected thread specifically.
-  const [selectedMailId, setSelectedMailId] = useAtom(selectedMailIdAtom);
-  const activeReplyDirtyForThreadId = useAtomValue(activeReplyDirtyForThreadIdAtom);
-  const setExplicitlyUnread = useSetAtom(explicitlyUnreadMailIdAtom);
-  const navDirection = useAtomValue(mailNavDirectionAtom);
-  const { push: pushToast } = useToast();
-
-  const mailAction = useMutation({
-    mutationFn: ({
-      mailId,
-      action,
-    }: {
-      mailId: string;
-      accountId: string;
-      action: MessageActionRequest;
-    }) => api.mails.action(mailId, action),
-
-    onMutate: async ({ mailId, accountId, action }) => {
-      await qc.cancelQueries({ queryKey: ["mails"] });
-      await qc.cancelQueries({ queryKey: ["folders"] });
-
-      const act = action.action;
-      // Recorded here rather than in each button's own handler, and before
-      // the optimistic cache write below, so the reading pane's auto-read
-      // effect sees it in the same render as the unread flip that effect
-      // reacts to.
-      if (act === "mark_unread") setExplicitlyUnread(mailId);
-      if (act === "mark_read") {
-        setExplicitlyUnread((cur) => (cur === mailId ? null : cur));
-        // An unread-only window keeps showing this row until the reader
-        // navigates away -- see keptWhileUnreadIds' own doc comment.
-        markKeptWhileUnread(mailId);
-      }
-      const removesFromList = LEAVES_FOLDER_ACTIONS.includes(act);
-      const mailInfo = findMailInCache(qc, mailId);
-      // A reply or forward in progress against this message's thread must
-      // not be discarded by unmounting the reading pane out from under it
-      // -- reply-box.tsx is what sets this atom while dirty. Matched on
-      // the thread rather than requiring mailId itself to be the reply's
-      // source: the reply always targets the thread's newest message,
-      // while the reading pane's own "open" message (mailId here) can be
-      // an older one the reader expanded, and trashing that older one
-      // must not throw the reply away either. The action itself still
-      // goes through (trashing from a row is independent of whatever is
-      // being typed below it); only the selection stays put.
-      const hasDirtyReply =
-        mailInfo != null && mailInfo.threadId === activeReplyDirtyForThreadId;
-      const wasSelected = removesFromList && mailId === selectedMailId && !hasDirtyReply;
-      // Computed before the optimistic removal below, so the neighbour is
-      // read off the list the reader was actually looking at.
-      if (wasSelected) setSelectedMailId(neighbourInCache(qc, mailId, navDirection));
-
-      if (!mailInfo) return { wasSelected, mailId };
-
-      const prevMailQueries = qc.getQueriesData({ queryKey: ["mails"] });
-      const prevThreadQueries = qc.getQueriesData({ queryKey: ["thread"] });
-      const prevFolders = qc.getQueryData(["folders", accountId]);
-      const prevMailDetail = qc.getQueryData(["mail", mailId]);
-
-      if (removesFromList) {
-        removeMailFromCache(qc, mailId);
-        updateFolderCounts(
-          qc,
-          accountId,
-          mailInfo.folderId,
-          -1,
-          mailInfo.isSeen ? 0 : -1,
-        );
-      } else {
-        // Computed once and applied to every cache that derives from the
-        // same fact -- the list row, the reading pane's thread cache, and
-        // the single-message detail cache -- rather than three places each
-        // deciding "what changed" and drifting apart. Folder unread counts
-        // and a conversation row's own unread count are derived values
-        // rather than plain field copies, so they stay their own branch
-        // below.
-        const updates: Partial<MessageSummary> = {};
-        if (act === "flag") updates.is_flagged = true;
-        if (act === "unflag") updates.is_flagged = false;
-        if (act === "mark_read") updates.is_seen = true;
-        if (act === "mark_unread") updates.is_seen = false;
-        if (act === "move") updates.pending_sync = true;
-
-        updateMailInCache(qc, mailId, updates);
-        updateMailInThreadCaches(qc, mailId, updates);
-        if (prevMailDetail) {
-          qc.setQueryData(["mail", mailId], {
-            ...(prevMailDetail as Record<string, unknown>),
-            ...updates,
-          });
-        }
-
-        if (act === "mark_read" && !mailInfo.isSeen) {
-          updateFolderCounts(qc, accountId, mailInfo.folderId, 0, -1);
-          updateConversationUnread(qc, mailId, (unread) => unread - 1);
-        }
-        if (act === "mark_unread" && mailInfo.isSeen) {
-          updateFolderCounts(qc, accountId, mailInfo.folderId, 0, 1);
-          updateConversationUnread(qc, mailId, (unread) => unread + 1);
-        }
-      }
-
-      return {
-        prevMailQueries, prevThreadQueries, prevFolders, prevMailDetail, accountId, mailId,
-        wasSelected, originalFolderId: mailInfo.folderId,
-      };
-    },
-
-    onSuccess: (_data, { action }, ctx) => {
-      if (!ctx?.originalFolderId || !UNDOABLE_ACTIONS.includes(action.action)) return;
-      const { accountId, mailId, originalFolderId } = ctx;
-      pushToast(UNDO_TOAST_LABELS[action.action], "success", 6000, {
-        label: "Undo",
-        onClick: () =>
-          mailAction.mutate({
-            mailId,
-            accountId,
-            action: { action: "move", target_folder_id: originalFolderId },
-          }),
-      });
-    },
-
-    onError: (err, vars, ctx) => {
-      const label = ACTION_LABELS[vars.action.action] ?? vars.action.action;
-      pushToast(`Could not ${label}: ${err.message}`, "error", 0);
-
-      if (!ctx) return;
-      if (ctx.prevMailQueries) {
-        for (const [key, data] of ctx.prevMailQueries as Array<
-          [readonly unknown[], unknown]
-        >) {
-          qc.setQueryData(key, data);
-        }
-      }
-      if (ctx.prevThreadQueries) {
-        for (const [key, data] of ctx.prevThreadQueries as Array<
-          [readonly unknown[], unknown]
-        >) {
-          qc.setQueryData(key, data);
-        }
-      }
-      if (ctx.prevFolders && ctx.accountId) {
-        qc.setQueryData(["folders", ctx.accountId], ctx.prevFolders);
-      }
-      if (ctx.prevMailDetail && ctx.mailId) {
-        qc.setQueryData(["mail", ctx.mailId], ctx.prevMailDetail);
-      }
-      if (ctx.wasSelected && ctx.mailId) {
-        setSelectedMailId(ctx.mailId);
-      }
-    },
-
-    onSettled: (_data, _err, { mailId }) => {
-      qc.invalidateQueries({ queryKey: ["mail"] });
-      qc.invalidateQueries({ queryKey: ["thread", mailId] });
-      refreshMailViews(qc);
-    },
-  });
-
-  return mailAction;
-}

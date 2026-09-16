@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Input } from "@/components/ui/input";
+import { ActionsIndicator } from "@/components/layout/actions-indicator";
 import { ConnectionIndicator } from "@/components/layout/connection-indicator";
 import { isEditableElement } from "@/lib/utils";
 
@@ -64,7 +65,8 @@ export function AppHeader() {
           className="h-7 pl-7 text-xs"
         />
       </div>
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-2">
+        <ActionsIndicator />
         <ConnectionIndicator />
       </div>
     </div>

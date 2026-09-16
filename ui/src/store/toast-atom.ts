@@ -8,6 +8,8 @@ export interface ToastItem {
   variant: "info" | "success" | "warning" | "error";
   /** An optional inline action, e.g. "Undo" on a calendar move/resize. */
   action?: { label: string; onClick: () => void };
+  /** A second inline action beside the first, e.g. "Discard" beside "Retry". */
+  secondaryAction?: { label: string; onClick: () => void };
 }
 
 export const toastsAtom = atom<ToastItem[]>([]);

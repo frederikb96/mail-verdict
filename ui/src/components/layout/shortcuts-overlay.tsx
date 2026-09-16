@@ -50,6 +50,7 @@ const GROUPS: ShortcutGroup[] = [
       { keys: "r", description: "Toggle read / unread" },
       { keys: "u", description: "Mark as unread" },
       { keys: "s", description: "Toggle star" },
+      { keys: "Ctrl+Z / ⌘Z", description: "Undo the last mail action" },
       { keys: "/", description: "Focus search" },
     ],
   },

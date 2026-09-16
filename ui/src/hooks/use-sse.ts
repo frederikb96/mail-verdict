@@ -9,7 +9,7 @@
 
 import { useEffect, useRef } from "react";
 import { useSetAtom } from "jotai";
-import { focusManager, useQueryClient } from "@tanstack/react-query";
+import { type Query, type QueryClient, focusManager, useQueryClient } from "@tanstack/react-query";
 import { sseConnectionStateAtom } from "@/store/connection-atom";
 import { mailArrivedAtom } from "@/lib/atoms";
 import { isMailListQuery } from "@/lib/query-persister";
@@ -19,12 +19,12 @@ import {
   refreshMailLists,
   refreshMailViews,
   refreshThreads,
-  removeMailFromAllListCaches,
 } from "@/hooks/use-mails";
 import { alertKeys } from "@/hooks/use-alerts";
 import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
+import { networkRecovered } from "@/lib/intent-drainer";
 import { folderAlertsEnabled } from "@/lib/alert-prefs";
 import { closeResolvedNotifications, trackPageNotification } from "@/lib/live-notifications";
 import {
@@ -68,6 +68,28 @@ const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" |
   },
 };
 
+/** Queries refetched at once after a resync -- the rest follow in turns. */
+const RESYNC_REFETCH_BATCH = 4;
+
+/**
+ * After a resync, mark every query other than the mail lists stale and
+ * re-read the ones on screen a few at a time. Refetching them all at once
+ * on a connection that just came back competes with the mail lists and
+ * with any mail action waiting to be sent. A query nobody is showing
+ * refetches when it is shown again.
+ */
+async function refetchStaggered(queryClient: QueryClient): Promise<void> {
+  const predicate = (query: Query) => !isMailListQuery(query.queryKey);
+  await queryClient.invalidateQueries({ predicate, refetchType: "none" });
+  const active = queryClient.getQueryCache().findAll({ predicate, type: "active" });
+  for (let i = 0; i < active.length; i += RESYNC_REFETCH_BATCH) {
+    const batch = new Set(active.slice(i, i + RESYNC_REFETCH_BATCH));
+    await queryClient
+      .refetchQueries({ predicate: (query) => batch.has(query), type: "active" })
+      .catch(() => undefined);
+  }
+}
+
 export function useSSE(accountId?: string) {
   const setConnectionState = useSetAtom(sseConnectionStateAtom);
   const setMailArrived = useSetAtom(mailArrivedAtom);
@@ -90,6 +112,9 @@ export function useSSE(accountId?: string) {
   const pendingUpdatedIdsRef = useRef<Set<string>>(new Set());
   const pendingRemovedIdsRef = useRef<Set<string>>(new Set());
   const pendingFolderCountsRef = useRef(false);
+  // The folders the buffered events touched -- null once one arrived that
+  // names none, which refreshes every open list.
+  const pendingFoldersRef = useRef<Set<string> | null>(new Set());
   const threadArrivalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const threadArrivalPendingRef = useRef(false);
 
@@ -109,22 +134,33 @@ export function useSSE(accountId?: string) {
       const updated = pendingUpdatedIdsRef.current;
       const hadNewOrMoved = pendingNewOrMovedRef.current;
       const hadFolderCounts = pendingFolderCountsRef.current;
+      const folders = pendingFoldersRef.current;
+      pendingFoldersRef.current = new Set();
       pendingRemovedIdsRef.current = new Set();
       pendingUpdatedIdsRef.current = new Set();
       pendingNewOrMovedRef.current = false;
       pendingFolderCountsRef.current = false;
 
-      // Rows that left the folder leave at once. Everything else -- rows
-      // that changed, rows that arrived, and every count -- is re-read
-      // together by refreshMailViews, one request per open list however
-      // deep it is scrolled, so the list and the counts never disagree.
-      for (const id of removed) removeMailFromAllListCaches(queryClient, id);
+      // Rows that changed, arrived or left, and every count, are re-read
+      // together by refreshMailViews -- one request per open list showing a
+      // folder the events touched, however deep it is scrolled, so the list
+      // and the counts never disagree.
       for (const id of updated) queryClient.invalidateQueries({ queryKey: mailKeys.detail(id) });
       refreshThreads(queryClient, new Set([...updated, ...removed]), false);
       if (hadNewOrMoved) scheduleThreadArrivalRefresh();
       if (hadFolderCounts || hadNewOrMoved || removed.size > 0 || updated.size > 0) {
-        refreshMailViews(queryClient);
+        refreshMailViews(queryClient, folders ? { folderIds: folders } : null);
       }
+    }
+
+    /** Remember the folders an event names, or that it named none. */
+    function noteFolders(...folderIds: Array<string | null | undefined>) {
+      const known = folderIds.filter((id): id is string => !!id);
+      if (known.length === 0) {
+        pendingFoldersRef.current = null;
+        return;
+      }
+      for (const id of known) pendingFoldersRef.current?.add(id);
     }
 
     function scheduleFlush() {
@@ -226,6 +262,8 @@ export function useSSE(accountId?: string) {
       source.onopen = () => {
         reconnectDelayRef.current = RECONNECT_DELAY_MS;
         setConnectionState("connected");
+        // Mail actions waiting out a network backoff go now.
+        networkRecovered();
       };
 
       source.onerror = () => {
@@ -257,8 +295,8 @@ export function useSSE(accountId?: string) {
       // re-read every page it has loaded, one request at a time.
       source.addEventListener("resync", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
-        queryClient.invalidateQueries({ predicate: (query) => !isMailListQuery(query.queryKey) });
         refreshMailLists(queryClient);
+        void refetchStaggered(queryClient);
       });
 
       // mail.new/mail.updated/mail.deleted are buffered rather than acted
@@ -273,12 +311,13 @@ export function useSSE(accountId?: string) {
         try {
           const data: SSEEvent = JSON.parse(e.data);
           pendingNewOrMovedRef.current = true;
+          noteFolders(data.folder_id);
           if (data.folder_id) pendingFolderCountsRef.current = true;
           if (data.id && data.account_id && data.folder_id) {
             setMailArrived({ accountId: data.account_id, folderId: data.folder_id, messageId: data.id });
           }
         } catch {
-          // Ignore
+          noteFolders();
         }
         scheduleFlush();
       });
@@ -291,12 +330,11 @@ export function useSSE(accountId?: string) {
           // (that name is verdict.issued's own convention). The
           // conversations holding it are refreshed at flush time, with
           // the rest of the burst (refreshThreads).
+          noteFolders(data.folder_id, data.old_folder_id);
           if (data.id) {
             if (data.changed?.includes("folder_id")) {
-              // Moved out of whatever folder cache held it; the folder it
-              // moved into (if currently viewed) catches up via the
-              // bounded refresh the flush issues, rather than a fetch
-              // reconstructing the row.
+              // Both ends of the move are in the event (old_folder_id), so
+              // the flush re-reads the lists showing either.
               pendingRemovedIdsRef.current.add(data.id);
               pendingNewOrMovedRef.current = true;
             } else {
@@ -305,7 +343,7 @@ export function useSSE(accountId?: string) {
           }
           pendingFolderCountsRef.current = true;
         } catch {
-          // Ignore
+          noteFolders();
         }
         scheduleFlush();
       });
@@ -314,6 +352,7 @@ export function useSSE(accountId?: string) {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
+          noteFolders(data.folder_id);
           if (data.id) {
             pendingRemovedIdsRef.current.add(data.id);
           } else {
@@ -321,6 +360,7 @@ export function useSSE(accountId?: string) {
           }
         } catch {
           pendingNewOrMovedRef.current = true;
+          noteFolders();
         }
         // invalidateAllFolderCaches (folders, folder-order, and unified
         // together) already covers this on the batched flush below --
@@ -430,7 +470,13 @@ export function useSSE(accountId?: string) {
       // can change any row, which is exactly what a window refresh re-reads.
       source.addEventListener("folder.synced", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
-        refreshMailViews(queryClient);
+        let folderId: string | undefined;
+        try {
+          folderId = (JSON.parse(e.data) as SSEEvent).folder_id ?? undefined;
+        } catch {
+          folderId = undefined;
+        }
+        refreshMailViews(queryClient, folderId ? { folderIds: new Set([folderId]) } : null);
       });
 
       source.addEventListener("folder.changed", (e: MessageEvent) => {

@@ -113,6 +113,8 @@ export interface MessageActionRequest {
   action: MessageActionType;
   target_folder_id?: string;
   keyword?: string;
+  /** Repeats of a request carrying the same key are answered once. */
+  idempotency_key?: string;
 }
 
 export interface MessageActionResponse {
@@ -500,6 +502,8 @@ export type BulkActionRequest = BulkActionTarget & {
    * was sent -- the server 409s naming the current count if it disagrees,
    * rather than acting on a number nobody actually confirmed. */
   confirm_message_count?: number;
+  /** Repeats of a request carrying the same key are answered once. */
+  idempotency_key?: string;
 };
 
 export interface BulkActionResponse {

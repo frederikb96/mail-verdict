@@ -1,19 +1,30 @@
 /** TanStack Query hooks for folder ordering and visibility. */
 
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useProjectedCounts } from "@/hooks/use-intent-ledger";
 
 export const folderOrderKeys = {
   get: (accountId: string) => ["folder-order", accountId] as const,
 };
 
+/** An account's folders in display order, counts projected like useFolders'. */
 export function useFolderOrder(accountId: string | null) {
-  return useQuery({
+  const query = useQuery({
     queryKey: folderOrderKeys.get(accountId!),
     queryFn: () => api.folderManagement.getOrder(accountId!),
     enabled: !!accountId,
     staleTime: 30_000,
   });
+  const folders = useProjectedCounts(
+    query.data?.folders, (f) => [f.folder_id], query.dataUpdatedAt,
+  );
+  const data = useMemo(
+    () => (query.data && folders !== query.data.folders ? { ...query.data, folders: folders! } : query.data),
+    [query.data, folders],
+  );
+  return { ...query, data };
 }
 
 export function useUpdateFolderOrder() {
