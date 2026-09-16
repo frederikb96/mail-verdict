@@ -135,7 +135,8 @@ a list read that lands while an action is still on its way cannot put an archive
   never one overtaking an earlier unsettled intent on the same message, each with the intent's id
   as `idempotency_key` and a timeout. An action that files or destroys messages, and every undo,
   also carries the folder each message was seen in (`expected_folder_id`, `expected_folder_ids`,
-  `expand_threads_through`): the server leaves a message that has moved since alone
+  and for a conversation the `as_of` of the list it was read from as `expand_threads_through`):
+  the server leaves a message that has moved since alone
   (`applied: false`, `skipped_ids`), and the reader is told. A read state or a star follows the
   message wherever it has been filed. A network error or timeout
   waits for the network with backoff and resumes when the browser reports being online or the event
@@ -143,7 +144,10 @@ a list read that lands while an action is still on its way cannot put an archive
   quietly; any other refusal marks it failed, shown on its row and in the header with Retry (a new
   generation, which outranks every stored copy of the refused one) and Discard. An intent still
   unsent after an hour is held and the header asks to Send or Discard it: a guard sees where a
-  message is, not everything that happened to the mailbox meanwhile. A reload resends what never
+  message is, not everything that happened to the mailbox meanwhile. An intent whose request went
+  out and never got an answer, nor a refusal, may have been applied: the header says so, and
+  undoing or discarding it sends it again under its key first and reverses what that answer
+  reports. A reload resends what never
   got an answer, and the server (`mail_actions/submissions.py`) answers a repeated key with the
   first response instead of acting again.
 - **Tabs.** Only the tab holding a Web Lock sends, or where Web Locks do not exist (plain HTTP) the
@@ -155,7 +159,12 @@ a list read that lands while an action is still on its way cannot put an archive
   dropped, one applied is reversed by new intents guarded to where the server filed each message
   (`folder_id`, `target_folder_id`) -- moved back to the folder it came from and marked unread
   again if it was, or its flag set back. A message filed somewhere else since is left there, and
-  the reader is told there was nothing to undo.
+  the reader is told there was nothing to undo. Undo copies held by a tab that does not send take
+  the sending tab's answers in the merge, so undoing from there reverses what was applied.
+- **Rulings.** A spam or not-spam ruling moves a message only as the server decides
+  (`rulingMoves`, after `spam/feedback.py`). One that leaves it where it is hides no row, keeps the
+  reader on it and offers no undo -- the opposite ruling takes it back. Undoing one that moved
+  moves the message back and leaves the ruling recorded.
 - **Destroying a folder** confirms the server's own count, never a projected one, and is refused
   while an unanswered action involves that folder: a move still in the browser is invisible to the
   server's guards.
