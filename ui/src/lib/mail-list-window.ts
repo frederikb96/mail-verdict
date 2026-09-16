@@ -124,13 +124,22 @@ export function mergeRefreshedWindow<T extends WindowRow>(
   return { rows: [...effectiveFresh, ...kept], hasMore: currentHasMore };
 }
 
-/** Cut rows into consecutive pages of `WINDOW_PAGE_SIZE` -- at least one
- * page, even for no rows, since an infinite query always holds one. */
-export function chunkIntoPages<T>(rows: T[]): T[][] {
+/** Cut rows into consecutive pages of at most `WINDOW_PAGE_SIZE` -- at
+ * least one page, even for no rows, since an infinite query always holds
+ * one. With `readOf`, a page never mixes rows from two reads. */
+export function chunkIntoPages<T>(rows: T[], readOf?: (row: T) => unknown): T[][] {
   if (rows.length === 0) return [[]];
   const pages: T[][] = [];
-  for (let i = 0; i < rows.length; i += WINDOW_PAGE_SIZE) {
-    pages.push(rows.slice(i, i + WINDOW_PAGE_SIZE));
+  for (const row of rows) {
+    const page = pages[pages.length - 1];
+    if (
+      page && page.length < WINDOW_PAGE_SIZE
+      && (!readOf || readOf(page[0]) === readOf(row))
+    ) {
+      page.push(row);
+    } else {
+      pages.push([row]);
+    }
   }
   return pages;
 }

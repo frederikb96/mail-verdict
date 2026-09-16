@@ -115,4 +115,7 @@ test("pages are cut at the list's own page size, and never zero pages", () => {
   assert.deepEqual(chunkIntoPages([]), [[]]);
   const rows = Array.from({ length: 120 }, (_, i) => i);
   assert.deepEqual(chunkIntoPages(rows).map((p) => p.length), [50, 50, 20]);
+  // Rows from an earlier read never share a page with a fresher read's.
+  const readOf = (i: number) => (i < 70 ? "fresh" : "earlier");
+  assert.deepEqual(chunkIntoPages(rows, readOf).map((p) => p.length), [50, 20, 50]);
 });

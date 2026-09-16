@@ -86,25 +86,31 @@ const undoToastByIntent = new Map<string, string>();
 interface CachedRow {
   row: MessageSummary;
   readAt: number;
+  /** The newest `as_of` of any list page holding it. */
+  listedAt: string | null;
 }
 
 /** Every row the client holds, freshest copy of each: lists, the quick
  * filter's results and conversations. */
 function cachedRows(qc: QueryClient): Map<string, CachedRow> {
   const rows = new Map<string, CachedRow>();
-  const consider = (row: MessageSummary, readAt: number) => {
+  const consider = (row: MessageSummary, readAt: number, asOf?: string | null) => {
     const held = rows.get(row.id);
-    if (!held || held.readAt < readAt) rows.set(row.id, { row, readAt });
+    let listedAt = held?.listedAt ?? null;
+    if (asOf && (listedAt === null || Date.parse(asOf) > Date.parse(listedAt))) listedAt = asOf;
+    rows.set(row.id, !held || held.readAt < readAt ? { row, readAt, listedAt } : { ...held, listedAt });
   };
   for (const query of qc.getQueryCache().getAll()) {
     const key = query.queryKey;
     const readAt = readTimeOf(key, query.state.dataUpdatedAt);
     if (isMailListQuery(key) || key[0] === "search") {
       const data = query.state.data as
-        | InfiniteData<{ messages?: MessageSummary[]; items?: MessageSummary[] }>
+        | InfiniteData<{
+            messages?: MessageSummary[]; items?: MessageSummary[]; as_of?: string | null;
+          }>
         | undefined;
       for (const page of data?.pages ?? []) {
-        for (const row of page.messages ?? page.items ?? []) consider(row, readAt);
+        for (const row of page.messages ?? page.items ?? []) consider(row, readAt, page.as_of);
       }
     } else if (key[0] === "thread") {
       for (const message of (query.state.data as ThreadResponse | undefined)?.messages ?? []) {
@@ -126,7 +132,7 @@ function snapshotMessage(
   const [seen] = projectThreadMessages([found.row], intents, found.readAt);
   return {
     id, folderId: seen.folder_id, isSeen: seen.is_seen, isFlagged: seen.is_flagged,
-    threadId: found.row.thread_id, mirroredAt: found.row.mirrored_at ?? null,
+    threadId: found.row.thread_id, listedAt: found.listedAt,
     row: keepRow ? found.row : undefined,
   };
 }

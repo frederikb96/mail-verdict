@@ -74,7 +74,7 @@ export type MailListWindow =
     }
   | { kind: "unified"; folderName: string; threaded: boolean; unreadOnly: boolean };
 
-type WindowPage = { messages: WindowRow[]; has_more: boolean };
+type WindowPage = { messages: WindowRow[]; has_more: boolean; as_of?: string | null };
 
 function windowOf(query: Query): MailListWindow | undefined {
   return query.meta?.mailListWindow as MailListWindow | undefined;
@@ -83,7 +83,7 @@ function windowOf(query: Query): MailListWindow | undefined {
 async function readWindow(
   source: MailListWindow,
   limit: number,
-): Promise<{ rows: WindowRow[]; hasMore: boolean }> {
+): Promise<{ rows: WindowRow[]; hasMore: boolean; asOf: string | null }> {
   const filters = {
     threaded: source.threaded, is_seen: source.unreadOnly ? false : undefined, limit,
   };
@@ -93,15 +93,17 @@ async function readWindow(
           account_id: source.accountId, folder_id: source.folderId, ...filters,
         })
       : await api.unified.mails({ folder_name: source.folderName, ...filters });
-  return { rows: page.messages, hasMore: page.has_more };
+  return { rows: page.messages, hasMore: page.has_more, asOf: page.as_of };
 }
 
 /** Rows back into the page shape a mail list's infinite query holds -- an
  * account's and a unified view's alike -- with the page params its own
  * paging would have produced, so the next page it fetches continues from
  * the right row. */
-function windowAsInfiniteData(rows: WindowRow[], hasMore: boolean): InfiniteData<unknown, unknown> {
-  const pages = chunkIntoPages(rows);
+function windowAsInfiniteData(
+  rows: WindowRow[], hasMore: boolean, asOfOf: (row: WindowRow) => string | null,
+): InfiniteData<unknown, unknown> {
+  const pages = chunkIntoPages(rows, asOfOf);
   const last = pages.length - 1;
   const lastIdOf = (page: WindowRow[]) => page[page.length - 1]?.id ?? null;
   const pageHasMore = (i: number) => (i < last || hasMore) && lastIdOf(pages[i]) !== null;
@@ -113,6 +115,7 @@ function windowAsInfiniteData(rows: WindowRow[], hasMore: boolean): InfiniteData
       next_cursor: nextCursor(i),
       has_more_newer: false,
       prev_cursor: null,
+      as_of: messages.length > 0 ? asOfOf(messages[0]) : null,
     })),
     pageParams: pages.map((_, i) =>
       i === 0 ? { kind: "initial" } : { kind: "before", cursor: lastIdOf(pages[i - 1]) },
@@ -146,7 +149,7 @@ async function refreshWindowOnce(
   // mail action whose request succeeded after this moment may be missing
   // from what comes back, and must keep being shown over it (mail-intents.ts).
   const readStartedAt = Date.now();
-  let fresh: { rows: WindowRow[]; hasMore: boolean };
+  let fresh: { rows: WindowRow[]; hasMore: boolean; asOf: string | null };
   try {
     fresh = await readWindow(source, windowRefreshLimit(loadedRows));
   } catch {
@@ -168,7 +171,15 @@ async function refreshWindowOnce(
     // has genuinely left the folder.
     source.unreadOnly ? keptWhileUnreadIds : undefined,
   );
-  qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore), {
+  // Each row keeps the read it came from: a kept row was never re-read.
+  const freshIds = new Set(fresh.rows.map((row) => row.id));
+  const earlierAsOf = new Map<string, string | null>();
+  for (const page of current.pages) {
+    for (const row of page.messages) earlierAsOf.set(row.id, page.as_of ?? null);
+  }
+  const asOfOf = (row: WindowRow) =>
+    freshIds.has(row.id) ? fresh.asOf : (earlierAsOf.get(row.id) ?? null);
+  qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore, asOfOf), {
     updatedAt: readStartedAt,
   });
   recordRead(query.queryKey, readStartedAt);

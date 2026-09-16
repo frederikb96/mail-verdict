@@ -60,9 +60,10 @@ export interface IntentMessage {
   isSeen: boolean;
   isFlagged: boolean;
   threadId: string | null;
-  /** When the server mirrored it (its own clock), for a conversation not to
-   * sweep in replies that arrived later. */
-  mirroredAt?: string | null;
+  /** When the newest list showing it was read (the page's `as_of`, the
+   * server's clock), for a conversation not to sweep in replies that
+   * arrived later. */
+  listedAt?: string | null;
   /** The list row itself, kept on an undo step's copy so undoing a move can
    * show it again before any list has been re-read. */
   row?: MessageSummary;
@@ -645,7 +646,8 @@ export function nextWakeAt(intents: readonly MailIntent[], now: number): number 
 
 /**
  * The request body guards for an intent: where each message was seen, and
- * how recent a conversation member may be.
+ * how recent a conversation member may be -- no later than the list it was
+ * acted on from was read.
  *
  * Only an action that files messages somewhere, or destroys them, is
  * guarded to a folder -- and every reversal, whose whole point is where the
@@ -662,8 +664,8 @@ export function requestGuards(intent: MailIntent): {
   let newest: string | null = null;
   for (const m of intent.messages) {
     if (guarded && m.folderId) expectedFolderIds[m.id] = m.folderId;
-    if (m.mirroredAt && (newest === null || Date.parse(m.mirroredAt) > Date.parse(newest))) {
-      newest = m.mirroredAt;
+    if (m.listedAt && (newest === null || Date.parse(m.listedAt) > Date.parse(newest))) {
+      newest = m.listedAt;
     }
   }
   return { expectedFolderIds, expandThreadsThrough: intent.expandThreads ? newest : null };

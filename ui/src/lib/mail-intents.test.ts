@@ -351,11 +351,11 @@ test("an intent unsent for an hour is due to be held; a confirmed one starts ove
   assert.deepEqual(projectRows([row("t", 1)], [held], folderList()).length, 1, "nor shown as done");
 });
 
-test("requests carry where each message was seen and the newest mirror time", () => {
-  const a = { ...row("a", 1), mirrored_at: "2026-09-16T10:00:00+00:00" };
+test("requests carry where each message was seen and when its newest list was read", () => {
+  const a = row("a", 1);
   const convo = intent("archive", [a, row("b", 2, { folder_id: WORK })], { expandThreads: true });
-  convo.messages[0].mirroredAt = "2026-09-16T10:00:00+00:00";
-  convo.messages[1].mirroredAt = "2026-09-16T11:00:00+00:00";
+  convo.messages[0].listedAt = "2026-09-16T10:00:00+00:00";
+  convo.messages[1].listedAt = "2026-09-16T11:00:00+00:00";
   assert.deepEqual(requestGuards(convo), {
     expectedFolderIds: { a: INBOX, b: WORK }, expandThreadsThrough: "2026-09-16T11:00:00+00:00",
   });

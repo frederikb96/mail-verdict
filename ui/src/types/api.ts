@@ -52,6 +52,9 @@ export interface MessageListResponse {
    * page always starts at the newest edge and has nothing newer. */
   has_more_newer: boolean;
   prev_cursor: string | null;
+  /** The server's clock once the page was read -- what an action over its
+   * conversation rows sends as `expand_threads_through`. */
+  as_of: string | null;
 }
 
 export interface MessageDetail extends MessageSummary {
