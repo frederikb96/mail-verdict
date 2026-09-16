@@ -408,8 +408,8 @@ class TestRulings:
         confirm.click()
         expect(page.get_by_text("Marked as not spam", exact=True)).to_be_visible(timeout=5_000)
         expect(page.get_by_role("button", name="Undo", exact=True)).to_have_count(0)
-        expect(row).to_be_visible()
-        expect(confirm).to_be_visible()
+        expect(row).to_be_visible(timeout=1_000)
+        expect(confirm).to_be_visible(timeout=1_000)
         page.wait_for_timeout(2_000)
         expect(row).to_be_visible()
         assert _folder_of(api_client, target["id"]) == account["inbox"]["id"]
