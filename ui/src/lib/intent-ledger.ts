@@ -13,6 +13,7 @@
 
 import {
   DONE_RETENTION_MS,
+  FAILED_RETENTION_MS,
   PENDING_MARKER_DELAY_MS,
   mergeIntents,
   pruneUndo,
@@ -162,11 +163,12 @@ export function addIntents(intents: MailIntent[], undoLabel?: string): UndoEntry
     intents: [...snapshot.intents, ...stored],
     undo: entry ? pruneUndo([...snapshot.undo, entry], now) : snapshot.undo,
   });
-  // A fresh snapshot once the pending marker is due, so rows showing it
-  // re-render without a clock of their own.
+  // A fresh intents array once the pending marker is due, so every
+  // projection re-runs and rows showing the marker re-render without a
+  // clock of their own.
   if (intents.length > 0 && typeof window !== "undefined") {
     window.setTimeout(() => {
-      snapshot = { ...snapshot };
+      snapshot = { ...snapshot, intents: [...snapshot.intents] };
       emit();
     }, PENDING_MARKER_DELAY_MS + 50);
   }
@@ -226,11 +228,16 @@ export function dropUndoFor(intentId: string): void {
   commit({ intents: snapshot.intents, undo: snapshot.undo.filter((e) => !doomed.includes(e)) });
 }
 
-/** Retire done intents past their retention and undo steps past their age. */
+/** Retire done intents past their retention, failed ones nobody acted on
+ * past theirs, and undo steps past their age. */
 export function sweepLedger(now: number = Date.now()): void {
   ensureLoaded();
   const expired = snapshot.intents
-    .filter((i) => i.state === "done" && now - (i.doneAt ?? now) > DONE_RETENTION_MS)
+    .filter(
+      (i) =>
+        (i.state === "done" && now - (i.doneAt ?? now) > DONE_RETENTION_MS) ||
+        (i.state === "failed" && now - i.updatedAt > FAILED_RETENTION_MS),
+    )
     .map((i) => i.id);
   const undo = pruneUndo(snapshot.undo, now);
   if (expired.length === 0 && undo.length === snapshot.undo.length) return;

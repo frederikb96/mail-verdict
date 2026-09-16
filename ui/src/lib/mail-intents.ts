@@ -117,6 +117,8 @@ export const ACTION_LABELS: Record<IntentAction, string> = {
 
 /** How long a done intent keeps projecting over caches read before it. */
 export const DONE_RETENTION_MS = 10 * 60_000;
+/** How long a refused intent stays on its row waiting for Retry or Discard. */
+export const FAILED_RETENTION_MS = 24 * 60 * 60_000;
 /** Undo steps kept, newest last. */
 export const UNDO_STACK_LIMIT = 20;
 /** An undo step older than this is dropped rather than applied. */
