@@ -76,6 +76,7 @@ _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
 _stalled_outbox_timer: Any | None = None
+_action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
 _read_state_reconciler: Any | None = None
@@ -144,7 +145,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
     global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler
-    global _stalled_outbox_timer
+    global _stalled_outbox_timer, _action_submission_pruner
 
     config = get_config()
 
@@ -320,6 +321,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     await _stalled_outbox_timer.start()
 
+    from mail_verdict.mail_actions.submissions import build_submission_prune_timer
+
+    _action_submission_pruner = build_submission_prune_timer(
+        db, timedelta(hours=config.mail_actions.submission_retention_hours),
+    )
+    await _action_submission_pruner.start()
+
     from mail_verdict.retention.sweep import build_retention_timer
 
     _retention_sweeper = build_retention_timer(db)
@@ -479,6 +487,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _mail_alert_finalizer.stop()
     if _stalled_outbox_timer:
         await _stalled_outbox_timer.stop()
+    if _action_submission_pruner:
+        await _action_submission_pruner.stop()
     if _retention_sweeper:
         await _retention_sweeper.stop()
     if _read_state_reconciler:
@@ -497,6 +507,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_reconciler = None
     _pending_send_timer = None
     _stalled_outbox_timer = None
+    _action_submission_pruner = None
     _mail_alert_finalizer = None
     _retention_sweeper = None
     _read_state_reconciler = None

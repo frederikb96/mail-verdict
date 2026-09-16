@@ -297,6 +297,13 @@ class PushConfig(BaseModel):
     relay_timeout_seconds: float
 
 
+class MailActionsConfig(BaseModel):
+    """How long a keyed message action is remembered
+    (mail_actions/submissions.py)."""
+
+    submission_retention_hours: float
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -313,6 +320,7 @@ class InfraConfig(BaseModel):
     server: ServerConfig
     security: SecurityConfig
     outbox: OutboxConfig
+    mail_actions: MailActionsConfig
     database: DatabaseConfig
     search: SearchConfig
     push: PushConfig
@@ -344,6 +352,7 @@ def get_config() -> InfraConfig:
                 server=ServerConfig(**(cfg.get("server") or {})),
                 security=SecurityConfig(**(cfg.get("security") or {})),
                 outbox=OutboxConfig(**(cfg.get("outbox") or {})),
+                mail_actions=MailActionsConfig(**(cfg.get("mail_actions") or {})),
                 database=DatabaseConfig(**database_cfg),
                 search=SearchConfig(**(cfg.get("search") or {})),
                 push=PushConfig(**(cfg.get("push") or {})),

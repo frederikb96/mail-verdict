@@ -203,6 +203,15 @@ class MessageActionRequest(BaseModel):
         default=None,
         description="Keyword value, required for keyword_add / keyword_remove",
     )
+    idempotency_key: uuid.UUID | None = Field(
+        default=None,
+        description="A key the caller generates once per user action. A repeat "
+        "carrying the same key -- a retry after a lost response -- is answered "
+        "with the first request's response instead of acting again; while the "
+        "first is still being applied it is answered 503 with Retry-After. A "
+        "request that failed, or answered success=false, leaves the key unused. "
+        "Reusing a key for a different request is refused with 409.",
+    )
 
 
 class MessageActionResponse(BaseModel):
@@ -270,6 +279,15 @@ class BulkActionRequest(BaseModel):
             "nobody agreed to. Omitted, no check runs -- most actions "
             "confirm nothing and have no count to repeat back."
         ),
+    )
+    idempotency_key: uuid.UUID | None = Field(
+        default=None,
+        description="A key the caller generates once per user action. A repeat "
+        "carrying the same key -- a retry after a lost response -- is answered "
+        "with the first request's response instead of acting again; while the "
+        "first is still being applied it is answered 503 with Retry-After. A "
+        "request that failed, or answered success=false, leaves the key unused. "
+        "Reusing a key for a different request is refused with 409.",
     )
 
     @model_validator(mode="after")

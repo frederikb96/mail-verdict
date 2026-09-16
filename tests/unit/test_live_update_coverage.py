@@ -71,6 +71,13 @@ _UNANNOUNCED: dict[str, str] = {
         "The RSVP itself is written to the DAV object PostIMAP announces; the reply row "
         "beside it records which outbox row carried the message, and is read with the event."
     ),
+    "POST /messages/{message_id}/action": (
+        "The owned write is the idempotency record of a keyed action, which no browser reads; "
+        "the action itself is a write to PostIMAP's tables and announced by its NOTIFY."
+    ),
+    "POST /accounts/{account_id}/messages/bulk-action": (
+        "The same, for a bulk action."
+    ),
     "POST /embeddings/backfill": (
         "No browser surface calls this or watches it -- it is driven by an operator, and "
         "what it produces is read by search."

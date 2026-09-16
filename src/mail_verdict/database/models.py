@@ -1448,6 +1448,30 @@ class OutboxSubmission(Base):
     )
 
 
+class MessageActionSubmission(Base):
+    """One keyed POST .../action or .../bulk-action, and what it answered.
+
+    A client retrying an action after a lost response -- a timeout on a
+    flaky network, a reload that replays what it had queued -- repeats the
+    key, and is answered with `response` instead of acting a second time.
+    A row with `response` still NULL is a claim: the first request is still
+    running, or died before finishing (see mail_actions/submissions.py).
+    `fingerprint` is a digest of the request itself, so a key reused for a
+    different request is refused rather than answered with the wrong
+    result. Pruned after config.mail_actions.submission_retention_hours.
+    """
+
+    __tablename__ = "message_action_submissions"
+
+    idempotency_key: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(Text, nullable=False)
+    response: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class Alert(Base):
     """Something meant to interrupt the reader on their device -- new mail,
     a calendar reminder, or a message stuck on its way out (kind

@@ -71,6 +71,7 @@ from mail_verdict.database.repository import (
     list_row_marks,
     list_tags_for_mails,
 )
+from mail_verdict.mail_actions.submissions import request_fingerprint, run_once
 from mail_verdict.postimap.actions import (
     expunge,
     expunge_bulk,
@@ -1087,8 +1088,25 @@ async def message_action(
 
     Updates the local DB immediately. PostIMAP's PG trigger propagates
     changes to IMAP; postimap/listener.py fans the resulting event out
-    to SSE, so this handler never emits one itself.
+    to SSE, so this handler never emits one itself. A request carrying an
+    idempotency_key is applied once however often it is repeated
+    (mail_actions/submissions.py).
     """
+    if request.idempotency_key is None:
+        return await _apply_message_action(message_id, request)
+    return await run_once(
+        get_db_connection(),
+        request.idempotency_key,
+        request_fingerprint("message", message_id, request),
+        MessageActionResponse,
+        lambda: _apply_message_action(message_id, request),
+    )
+
+
+async def _apply_message_action(
+    message_id: uuid.UUID, request: MessageActionRequest,
+) -> MessageActionResponse:
+    """Perform one message action -- message_action without its key."""
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(select(Message).where(Message.id == message_id))
@@ -1318,8 +1336,24 @@ async def bulk_action(account_id: uuid.UUID, request: BulkActionRequest) -> Bulk
 
     A scope resolves server-side ("everything unread in this folder") so a
     virtualized, never-fully-fetched list can still "select all" without
-    the client holding every id.
+    the client holding every id. A request carrying an idempotency_key is
+    applied once however often it is repeated (mail_actions/submissions.py).
     """
+    if request.idempotency_key is None:
+        return await _apply_bulk_action(account_id, request)
+    return await run_once(
+        get_db_connection(),
+        request.idempotency_key,
+        request_fingerprint("bulk", account_id, request),
+        BulkActionResponse,
+        lambda: _apply_bulk_action(account_id, request),
+    )
+
+
+async def _apply_bulk_action(
+    account_id: uuid.UUID, request: BulkActionRequest,
+) -> BulkActionResponse:
+    """Apply one bulk action -- bulk_action without its key."""
     db = get_db_connection()
 
     sources: list[BulkActionSource] = []

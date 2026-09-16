@@ -829,6 +829,19 @@
             "title": "Expand Threads",
             "type": "boolean"
           },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A key the caller generates once per user action. A repeat carrying the same key -- a retry after a lost response -- is answered with the first request's response instead of acting again; while the first is still being applied it is answered 503 with Retry-After. A request that failed, or answered success=false, leaves the key unused. Reusing a key for a different request is refused with 409.",
+            "title": "Idempotency Key"
+          },
           "ids": {
             "anyOf": [
               {
@@ -3924,6 +3937,19 @@
             ],
             "title": "Action",
             "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A key the caller generates once per user action. A repeat carrying the same key -- a retry after a lost response -- is answered with the first request's response instead of acting again; while the first is still being applied it is answered 503 with Retry-After. A request that failed, or answered success=false, leaves the key unused. Reusing a key for a different request is refused with 409.",
+            "title": "Idempotency Key"
           },
           "keyword": {
             "anyOf": [
@@ -8179,7 +8205,7 @@
     },
     "/accounts/{account_id}/messages/bulk-action": {
       "post": {
-        "description": "Apply one action to many messages, selected by an id list, a scope, or\nboth -- a predicate scope plus explicit ids added on top of it (a row\noutside the predicate the user ticked by hand).\n\nA scope resolves server-side (\"everything unread in this folder\") so a\nvirtualized, never-fully-fetched list can still \"select all\" without\nthe client holding every id.",
+        "description": "Apply one action to many messages, selected by an id list, a scope, or\nboth -- a predicate scope plus explicit ids added on top of it (a row\noutside the predicate the user ticked by hand).\n\nA scope resolves server-side (\"everything unread in this folder\") so a\nvirtualized, never-fully-fetched list can still \"select all\" without\nthe client holding every id. A request carrying an idempotency_key is\napplied once however often it is repeated (mail_actions/submissions.py).",
         "operationId": "bulk_action_accounts__account_id__messages_bulk_action_post",
         "parameters": [
           {
@@ -11525,7 +11551,7 @@
     },
     "/messages/{message_id}/action": {
       "post": {
-        "description": "Perform an action on a message.\n\nUpdates the local DB immediately. PostIMAP's PG trigger propagates\nchanges to IMAP; postimap/listener.py fans the resulting event out\nto SSE, so this handler never emits one itself.",
+        "description": "Perform an action on a message.\n\nUpdates the local DB immediately. PostIMAP's PG trigger propagates\nchanges to IMAP; postimap/listener.py fans the resulting event out\nto SSE, so this handler never emits one itself. A request carrying an\nidempotency_key is applied once however often it is repeated\n(mail_actions/submissions.py).",
         "operationId": "message_action_messages__message_id__action_post",
         "parameters": [
           {

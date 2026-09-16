@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- `POST /api/messages/{id}/action` and `POST /api/accounts/{id}/messages/bulk-action` accept an
+  optional `idempotency_key`. A client retrying an action after a lost response is answered with
+  the first response instead of acting twice; see `docs/api.md`.
+
 ## [6.3.0] - 2026-09-15
 
 - Opening a message no longer fetches anything but the conversation itself: the mail view writes
