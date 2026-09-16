@@ -19,6 +19,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useUnsettledIntentsForFolder } from "@/hooks/use-intent-ledger";
 import { useFolderBulkAction } from "@/hooks/use-selection";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
@@ -53,6 +54,7 @@ export function FolderRowMenu({
   // rather than trying to keep the row "hovered" some other way.
   const [menuOpen, setMenuOpen] = useState(false);
   const folderAction = useFolderBulkAction();
+  const unsettled = useUnsettledIntentsForFolder(folderId);
   const { push: pushToast } = useToast();
 
   // A whole-folder write is resolved as one statement over however many
@@ -134,6 +136,16 @@ export function FolderRowMenu({
         isConfirming={folderAction.isPending}
         onConfirm={() => {
           if (!confirmEmpty) return;
+          // A move out of this folder still in the browser is invisible to
+          // the server's count: emptying now would destroy those messages.
+          if (unsettled > 0) {
+            pushToast(
+              `Actions on messages in ${folderName} are still being sent — try again once they are done`,
+              "error", 0,
+            );
+            setConfirmEmpty(null);
+            return;
+          }
           warnIfSlow("Deleting", confirmEmpty.count);
           folderAction.mutate(
             { accountId, folderId, action: "expunge", confirmedSnapshot: confirmEmpty },

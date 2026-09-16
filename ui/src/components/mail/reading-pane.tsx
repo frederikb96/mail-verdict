@@ -40,7 +40,6 @@ import { mailKeys, useLoadMessageImages, useThread } from "@/hooks/use-mails";
 import { useMailAction } from "@/hooks/use-mail-intents";
 import { PENDING_MARKER_DELAY_MS } from "@/lib/mail-intents";
 import { useOpenMessage } from "@/hooks/use-open-message";
-import { useVerdictFeedback } from "@/hooks/use-verdicts";
 import { useAccount } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
@@ -64,7 +63,6 @@ export function ReadingPane() {
   const mailAction = useMailAction();
   const loadMessageImages = useLoadMessageImages();
   const isMobile = useIsMobile();
-  const verdictFeedback = useVerdictFeedback();
   const { data: alerts } = useAlerts();
   const dismissAlert = useDismissAlert();
   // Expansion belongs to the message that was opened: a different one
@@ -420,9 +418,9 @@ export function ReadingPane() {
                 size="icon"
                 className="h-8 w-8"
                 onClick={() =>
-                  verdictFeedback.mutate({
-                    mailId: primary.id, accountId: primary.account_id,
-                    isSpam: primary.verdict!.is_spam,
+                  mailAction.perform({
+                    accountId: primary.account_id, mailIds: [primary.id],
+                    action: primary.verdict!.is_spam ? "spam" : "not_spam",
                   })
                 }
                 title="Confirm this verdict"
@@ -435,9 +433,9 @@ export function ReadingPane() {
                 size="icon"
                 className="h-8 w-8"
                 onClick={() =>
-                  verdictFeedback.mutate({
-                    mailId: primary.id, accountId: primary.account_id,
-                    isSpam: !primary.verdict!.is_spam,
+                  mailAction.perform({
+                    accountId: primary.account_id, mailIds: [primary.id],
+                    action: primary.verdict!.is_spam ? "not_spam" : "spam",
                   })
                 }
                 title="Correct this verdict"

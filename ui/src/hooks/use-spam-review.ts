@@ -1,73 +1,73 @@
 /** TanStack Query hooks for the spam review screen -- every message whose
  * latest verdict calls it spam with no user ruling since, across every
- * account and folder. See use-verdicts.ts: the same ruling endpoint every
- * other surface calls, which records the correction and moves the message
- * to match in one call. */
+ * account and folder. A decision is the same spam / not-spam mail action
+ * every other surface takes (use-mail-intents.ts), which records the ruling
+ * and moves the message to match in one call. */
 
-import { useCallback } from "react";
-import { type InfiniteData, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { useVerdictFeedback } from "@/hooks/use-verdicts";
-import type { SpamReviewItem, SpamReviewListResponse } from "@/types/api";
+import { useProjectionIntents } from "@/hooks/use-intent-ledger";
+import { useMailAction } from "@/hooks/use-mail-intents";
+import { appliesTo } from "@/lib/mail-intents";
+import { readTimeOf, timedRead } from "@/lib/read-clock";
+import type { SpamReviewItem } from "@/types/api";
 
 export const spamReviewKeys = {
   list: ["spam-review"] as const,
 };
 
-/** Newest-verdict-first, paginated the same shape the mail list uses. */
+/** Newest-verdict-first, paginated the same shape the mail list uses --
+ * less every message a ruling is already on its way for. */
 export function useSpamReviewList() {
-  return useInfiniteQuery({
+  const query = useInfiniteQuery({
     queryKey: spamReviewKeys.list,
-    queryFn: ({ pageParam }: { pageParam: string | null }) =>
-      api.verdicts.spamReview({ before: pageParam ?? undefined, limit: 50 }),
+    queryFn: ({ pageParam, queryKey, signal }: {
+      pageParam: string | null; queryKey: readonly unknown[]; signal: AbortSignal;
+    }) =>
+      timedRead(queryKey, signal, pageParam !== null, () =>
+        api.verdicts.spamReview({ before: pageParam ?? undefined, limit: 50 })),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : undefined),
   });
-}
-
-function removeFromReviewCache(
-  qc: ReturnType<typeof useQueryClient>,
-  messageId: string,
-) {
-  qc.setQueriesData<InfiniteData<SpamReviewListResponse>>(
-    { queryKey: spamReviewKeys.list },
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          items: page.items.filter((item) => item.message_id !== messageId),
-        })),
-      };
-    },
-  );
+  const intents = useProjectionIntents();
+  const readAt = readTimeOf(spamReviewKeys.list, query.dataUpdatedAt);
+  const items = useMemo(() => {
+    const all = query.data?.pages.flatMap((p) => p.items) ?? [];
+    const ruled = new Set(
+      intents
+        .filter((i) => (i.action === "spam" || i.action === "not_spam") && appliesTo(i, readAt))
+        .flatMap((i) => i.messages.map((m) => m.id)),
+    );
+    return ruled.size === 0 ? all : all.filter((item) => !ruled.has(item.message_id));
+  }, [query.data, intents, readAt]);
+  return { ...query, items };
 }
 
 /**
- * Record a decision on one review item and drop it from the list. Thumb
- * up (`agree: true`) confirms the spam verdict, moving the message to
- * Junk; thumb down (`agree: false`) corrects it, moving the message back
- * to the inbox. One call does both the record and the move regardless of
- * where the message currently sits -- a message the pipeline never moved
- * (auto-move-to-junk is off) is already in the inbox, so a reject there
- * is a no-op move, not a special case to route around.
+ * Decide on review items: agreeing confirms the spam verdict and files the
+ * message in Junk, disagreeing corrects it and rescues the message from
+ * Junk when it is there. One mail action per account, however many items.
  */
 export function useSpamReviewDecision() {
-  const qc = useQueryClient();
-  const verdictFeedback = useVerdictFeedback();
-
+  const { performAll } = useMailAction();
   const decide = useCallback(
-    async (item: SpamReviewItem, agree: boolean) => {
-      await verdictFeedback.mutateAsync({
-        mailId: item.message_id,
-        accountId: item.account_id,
-        isSpam: agree,
-      });
-      removeFromReviewCache(qc, item.message_id);
+    (items: SpamReviewItem[], agree: boolean) => {
+      const byAccount = new Map<string, SpamReviewItem[]>();
+      for (const item of items) {
+        byAccount.set(item.account_id, [...(byAccount.get(item.account_id) ?? []), item]);
+      }
+      performAll(
+        [...byAccount.entries()].map(([accountId, group]) => ({
+          accountId,
+          mailIds: group.map((item) => item.message_id),
+          action: agree ? "spam" : "not_spam",
+          bulk: true,
+          seenFolderIds: Object.fromEntries(group.map((item) => [item.message_id, item.folder_id])),
+        })),
+      );
     },
-    [qc, verdictFeedback],
+    [performAll],
   );
-
-  return { decide, isPending: verdictFeedback.isPending };
+  return { decide };
 }

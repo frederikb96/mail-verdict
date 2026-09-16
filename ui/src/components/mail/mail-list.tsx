@@ -15,10 +15,13 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { prefetchThread, threadQueryOptions, useMailList } from "@/hooks/use-mails";
-import { useIntentLedger } from "@/hooks/use-intent-ledger";
-import { useMailAction, useMarkConversationRead } from "@/hooks/use-mail-intents";
-import { retryIntent } from "@/lib/intent-drainer";
-import { retireIntents } from "@/lib/intent-ledger";
+import { useProjectionIntents } from "@/hooks/use-intent-ledger";
+import {
+  discardIntent,
+  retryIntent,
+  useMailAction,
+  useMarkConversationRead,
+} from "@/hooks/use-mail-intents";
 import { projectRows, type RowIntentMarks } from "@/lib/mail-intents";
 import { clearKeptWhileUnread } from "@/lib/mail-list-window";
 import { useFolders } from "@/hooks/use-folders";
@@ -88,10 +91,6 @@ function nearestSurvivor(
     }
   }
   return null;
-}
-
-function discardIntent(intentId: string): void {
-  retireIntents([intentId]);
 }
 
 export function MailList() {
@@ -310,25 +309,25 @@ export function MailList() {
   // action the server may not have applied yet on top (mail-intents.ts).
   // Memoized to the one reference that changes exactly when the rows do --
   // what the scroll anchoring below keys on.
-  const { intents } = useIntentLedger();
+  const intents = useProjectionIntents();
   const listQuery = isFiltering ? filterResult : result;
   const scopeFolderIds = useMemo(
     () => new Set(isUnifiedView ? viewFolderIds : folderId ? [folderId] : []),
     [isUnifiedView, viewFolderIds, folderId],
   );
   const listData = listQuery.data;
-  const listUpdatedAt = listQuery.dataUpdatedAt;
+  const listReadAt = listQuery.readAt;
   const allMails: Array<(MessageSummary | SearchResultItem) & RowIntentMarks> = useMemo(() => {
     const rows: (MessageSummary | SearchResultItem)[] = isFiltering
       ? ((listData as typeof filterResult.data)?.pages.flatMap((p) => p.items) ?? [])
       : ((listData as typeof result.data)?.pages.flatMap((p) => p.messages) ?? []);
     return projectRows(rows, intents, {
-      dataUpdatedAt: listUpdatedAt,
+      readAt: listReadAt,
       scopeFolderIds,
       threaded: threaded && !isFiltering,
       hasMore: !!hasNextPage,
     });
-  }, [listData, listUpdatedAt, intents, scopeFolderIds, threaded, isFiltering, hasNextPage]);
+  }, [listData, listReadAt, intents, scopeFolderIds, threaded, isFiltering, hasNextPage]);
   const data = allMails;
   const allMailIds = useMemo(() => allMails.map((m) => m.id), [allMails]);
   // The row standing for the open message: the message itself, or -- in a

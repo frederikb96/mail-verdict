@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { VList, type VListHandle } from "virtua";
 import { Ban, CheckCheck, Loader2, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -25,14 +25,11 @@ type BulkKind = "accept" | "reject";
  * one already sitting in Junk (see use-spam-review.ts).
  */
 export function SpamReviewPage() {
-  const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useSpamReviewList();
-  const { decide, isPending } = useSpamReviewDecision();
+  const { items, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useSpamReviewList();
+  const { decide } = useSpamReviewDecision();
   const { push: pushToast } = useToast();
   const vlistRef = useRef<VListHandle>(null);
   const [pendingBulk, setPendingBulk] = useState<BulkKind | null>(null);
-  const [bulkRunning, setBulkRunning] = useState(false);
-
-  const items = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data]);
 
   const handleScroll = useCallback(
     (offset: number) => {
@@ -54,31 +51,20 @@ export function SpamReviewPage() {
   // not needed for here: verdicts are corrected one at a time server-side
   // and there is nothing like a bulk-action scope for this query.
   const runBulk = useCallback(
-    async (kind: BulkKind) => {
+    (kind: BulkKind) => {
       const batch: SpamReviewItem[] = items;
-      setBulkRunning(true);
-      try {
-        const results = await Promise.allSettled(
-          batch.map((item) => decide(item, kind === "accept")),
-        );
-        const failed = results.filter((r) => r.status === "rejected").length;
-        if (failed > 0) {
-          pushToast(
-            `${failed} of ${batch.length} could not be ${kind === "accept" ? "confirmed" : "corrected"}`,
-            "error",
-            0,
-          );
-        } else {
-          pushToast(
-            `${batch.length} message${batch.length === 1 ? "" : "s"} ${kind === "accept" ? "confirmed as spam" : "corrected"}`,
-            "success",
-          );
-        }
-      } finally {
-        setBulkRunning(false);
-      }
+      decide(batch, kind === "accept");
+      pushToast(
+        `${batch.length} message${batch.length === 1 ? "" : "s"} ${kind === "accept" ? "confirmed as spam" : "corrected"}`,
+        "success",
+      );
     },
     [items, decide, pushToast],
+  );
+
+  const decideOne = useCallback(
+    (item: SpamReviewItem, agree: boolean) => decide([item], agree),
+    [decide],
   );
 
   return (
@@ -90,7 +76,7 @@ export function SpamReviewPage() {
           <Button
             variant="outline"
             size="sm"
-            disabled={items.length === 0 || bulkRunning || isPending}
+            disabled={items.length === 0}
             onClick={() => setPendingBulk("accept")}
           >
             <CheckCheck className="h-4 w-4" />
@@ -99,7 +85,7 @@ export function SpamReviewPage() {
           <Button
             variant="outline"
             size="sm"
-            disabled={items.length === 0 || bulkRunning || isPending}
+            disabled={items.length === 0}
             onClick={() => setPendingBulk("reject")}
           >
             <Ban className="h-4 w-4" />
@@ -130,8 +116,8 @@ export function SpamReviewPage() {
               <SpamReviewRow
                 key={item.message_id}
                 item={item}
-                onDecide={decide}
-                disabled={isPending || bulkRunning}
+                onDecide={decideOne}
+                disabled={false}
               />
             ))}
           </VList>
@@ -161,11 +147,10 @@ export function SpamReviewPage() {
         }
         confirmLabel={pendingBulk === "accept" ? "Accept all" : "Reject all"}
         confirmVariant="default"
-        isConfirming={bulkRunning}
         onConfirm={() => {
           const kind = pendingBulk;
           setPendingBulk(null);
-          if (kind) void runBulk(kind);
+          if (kind) runBulk(kind);
         }}
       />
     </div>

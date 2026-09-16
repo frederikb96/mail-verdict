@@ -54,7 +54,19 @@ def account(api_client: httpx.Client) -> dict[str, Any]:
     assert resp.status_code == 200, resp.text
     created["inbox"] = wait_for_folder(api_client, created["id"], "INBOX")
     created["archive"] = archive
+    created["elsewhere"] = _create_folder(
+        api_client, created["id"], f"Elsewhere-{uuid.uuid4().hex[:6]}",
+    )
     return created
+
+
+def _move_elsewhere(api_client: httpx.Client, message_id: str, folder_id: str) -> None:
+    """Another client filing the message: a write this browser never made."""
+    resp = api_client.post(
+        f"/api/messages/{message_id}/action",
+        json={"action": "move", "target_folder_id": folder_id},
+    )
+    assert resp.status_code == 200, resp.text
 
 
 def _deliver(
@@ -366,3 +378,121 @@ class TestUndoKey:
         with pytest.raises(AssertionError):
             expect(page.get_by_text("Undone:", exact=False)).to_be_visible(timeout=3_000)
         assert _folder_of(api_client, target["id"]) == account["archive"]["id"]
+
+
+class TestNothingIsPulledBack:
+    def test_retry_sends_a_refused_action_again(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+    ) -> None:
+        """Refused for want of an Archive folder; once there is one, Retry
+        sends the same action and it lands."""
+        bare = create_account(api_client, "intents-retry")
+        bare["inbox"] = wait_for_folder(api_client, bare["id"], "INBOX")
+        target = _deliver(api_client, dovecot_endpoint, bare, f"Retried {uuid.uuid4()}")
+        _open_inbox(page, app_server, bare)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+        row.get_by_title("Archive").click()
+        chip = row.locator('[data-slot="row-action-failed"]')
+        expect(chip).to_be_visible(timeout=10_000)
+
+        archive = _create_folder(api_client, bare["id"], f"Archive-{uuid.uuid4().hex[:6]}")
+        resp = api_client.patch(
+            f"/api/folders/{archive['id']}/prefs", json={"special_use_override": "archive"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        chip.get_by_role("button", name="Retry", exact=True).click()
+        expect(row).not_to_be_visible(timeout=10_000)
+        _wait_through_page(page, api_client, target["id"], archive["id"], "archived on retry", 20.0)
+        expect(page.get_by_test_id("actions-failed")).to_have_count(0)
+
+    def test_a_late_archive_leaves_a_message_filed_elsewhere_meanwhile(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        account: dict[str, Any],
+    ) -> None:
+        """Queued offline; filed into another folder from elsewhere before the
+        connection returned. Sent late, the archive must not pull it out."""
+        target = _deliver(api_client, dovecot_endpoint, account, f"Filed meanwhile {uuid.uuid4()}")
+        _open_inbox(page, app_server, account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        page.context.set_offline(True)
+        row.hover()
+        row.get_by_title("Archive").click()
+        expect(row).not_to_be_visible(timeout=1_000)
+        _move_elsewhere(api_client, target["id"], account["elsewhere"]["id"])
+
+        page.context.set_offline(False)
+        expect(
+            page.get_by_text("Not archived — the message had already moved", exact=True)
+        ).to_be_visible(timeout=30_000)
+        assert _folder_of(api_client, target["id"]) == account["elsewhere"]["id"]
+
+    def test_undo_leaves_a_message_filed_elsewhere_since(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        account: dict[str, Any],
+    ) -> None:
+        target = _deliver(api_client, dovecot_endpoint, account, f"Undo moved on {uuid.uuid4()}")
+        _open_inbox(page, app_server, account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+        row.get_by_title("Archive").click()
+        _wait_through_page(
+            page, api_client, target["id"], account["archive"]["id"], "archived", 20.0,
+        )
+        _move_elsewhere(api_client, target["id"], account["elsewhere"]["id"])
+
+        page.locator("body").click(position={"x": 1, "y": 1})
+        page.keyboard.press("Control+z")
+        expect(
+            page.get_by_text("Nothing to undo — the message has moved since", exact=True)
+        ).to_be_visible(timeout=20_000)
+        assert _folder_of(api_client, target["id"]) == account["elsewhere"]["id"]
+
+    def test_undo_in_a_tab_that_does_not_send_still_moves_the_message_back(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        account: dict[str, Any],
+    ) -> None:
+        """Two tabs: the first opened sends for both. An archive and its undo
+        taken in the second must both reach the server through the first."""
+        target = _deliver(api_client, dovecot_endpoint, account, f"Second tab {uuid.uuid4()}")
+        _open_inbox(page, app_server, account)
+        second = page.context.new_page()
+        try:
+            _open_inbox(second, app_server, account)
+            row = mail_row(second, target["id"])
+            expect(row).to_be_visible(timeout=15_000)
+            row.hover()
+            row.get_by_title("Archive").click()
+            _wait_through_page(
+                second, api_client, target["id"], account["archive"]["id"], "archived", 20.0,
+            )
+
+            second.locator("body").click(position={"x": 1, "y": 1})
+            second.keyboard.press("Control+z")
+            expect(mail_row(second, target["id"])).to_be_visible(timeout=5_000)
+            _wait_through_page(
+                second, api_client, target["id"], account["inbox"]["id"], "moved back", 20.0,
+            )
+        finally:
+            second.close()

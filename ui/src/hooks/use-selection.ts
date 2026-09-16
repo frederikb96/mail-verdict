@@ -156,6 +156,7 @@ export function useFolderBulkAction() {
       // whole-folder action is the honest outcome: the list is either
       // empty or unrecognisably different from what they were looking at.
       qc.resetQueries({ queryKey: ["mails"] });
+      qc.resetQueries({ queryKey: ["unified", "mails"] });
       invalidateAllFolderCaches(qc);
     },
   });
@@ -264,6 +265,7 @@ export function useBulkAction() {
       // still observed; losing scroll position is the honest outcome for
       // an action that just changed the folder wholesale.
       qc.resetQueries({ queryKey: ["mails"] });
+      qc.resetQueries({ queryKey: ["unified", "mails"] });
       qc.invalidateQueries({ queryKey: ["mail"] });
       invalidateAllFolderCaches(qc);
     },
@@ -288,8 +290,19 @@ export function useBulkAction() {
         scopeMutation.mutate({ action: vars.action, requests });
         return;
       }
+      // A unified-view move names a folder by name; an account holding no
+      // folder of that name has nowhere to move its messages, and says so
+      // rather than sending a move that can only be refused.
+      const unmapped = vars.action === "move" ? requests.filter((r) => !r.targetFolderId) : [];
+      if (unmapped.length > 0) {
+        const count = unmapped.reduce((n, r) => n + (r.target.ids?.length ?? 0), 0);
+        pushToast(
+          `${count} message${count === 1 ? "" : "s"} not moved — ${count === 1 ? "its" : "their"} account has no such folder`,
+          "error", 0,
+        );
+      }
       performAll(
-        requests.map(({ accountId, target, targetFolderId }) => ({
+        requests.filter((r) => !unmapped.includes(r)).map(({ accountId, target, targetFolderId }) => ({
           accountId,
           mailIds: target.ids ?? [],
           action: vars.action,
@@ -300,7 +313,7 @@ export function useBulkAction() {
       );
       clearSelection();
     },
-    [state, scopeMutation, performAll, clearSelection],
+    [state, scopeMutation, performAll, clearSelection, pushToast],
   );
 
   return { mutate, isPending: scopeMutation.isPending };

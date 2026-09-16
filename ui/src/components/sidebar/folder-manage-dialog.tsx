@@ -22,7 +22,8 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 
-import { useFolders, useCreateFolder, useDeleteFolder } from "@/hooks/use-folders";
+import { useServerFolders, useCreateFolder, useDeleteFolder } from "@/hooks/use-folders";
+import { useUnsettledIntentsForFolder } from "@/hooks/use-intent-ledger";
 import { useToast } from "@/hooks/use-toast";
 import { folderDisplayName } from "@/lib/folders";
 import type { FolderResponse } from "@/types/api";
@@ -39,7 +40,10 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
   const [parentId, setParentId] = useState<string | undefined>(undefined);
   const [pendingDelete, setPendingDelete] = useState<FolderResponse | null>(null);
 
-  const { data: folders } = useFolders(accountId);
+  // The server's own counts, never counts adjusted for actions still on
+  // their way: the one confirmed below authorises destroying a folder.
+  const { data: folders } = useServerFolders(accountId);
+  const unsettled = useUnsettledIntentsForFolder(pendingDelete?.id ?? null);
   const createFolder = useCreateFolder();
   const deleteFolder = useDeleteFolder();
   const { push: pushToast } = useToast();
@@ -69,6 +73,13 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
   };
 
   const handleDelete = (folder: FolderResponse) => {
+    if (unsettled > 0) {
+      pushToast(
+        `Actions on messages in "${folderDisplayName(folder)}" are still being sent — try again once they are done`,
+        "error", 0,
+      );
+      return;
+    }
     deleteFolder.mutate({ folderId: folder.id, messageCount: folder.total_count }, {
       onSuccess: () => {
         pushToast(`Folder "${folderDisplayName(folder)}" deleted`, "success");

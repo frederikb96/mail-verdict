@@ -10,15 +10,20 @@
  * new cache appears, and a read that lands while an action is still on its
  * way cannot put an archived row back.
  *
- * An intent keeps applying until the server's own data has caught up with
- * it: a cached read that began after the intent's request succeeded
- * (`doneAt`) already contains the change, so the intent no longer touches
- * it. Everything older -- a list nobody has refreshed yet, a refresh that
- * started before the write committed -- is still projected. That makes
- * retiring an intent a matter of time only (DONE_RETENTION_MS).
+ * Every projection takes the moment its data was *read* (the request's
+ * start, see read-clock.ts): data read after an intent's request succeeded
+ * (`doneAt`) already holds the change and is shown as the server has it.
+ * Counts are stricter, since a count cannot absorb a change twice the way a
+ * hidden row can: they take an intent only into data read before its first
+ * request left (`firstSentAt`), because a request whose answer was lost may
+ * already have been counted by the server.
  *
- * No React, no network: the ledger store (intent-ledger.ts) holds these,
- * the drainer (use-intent-drainer.ts) sends them.
+ * Every request is guarded to the folder the person saw each message in, so
+ * an intent sent late -- after a reconnect, a reload, an hour asleep -- or an
+ * undo never pulls a message out of wherever it has been filed since.
+ *
+ * No React, no network: the ledger (intent-ledger.ts) holds these, the
+ * drainer (intent-drainer.ts) sends them.
  */
 
 import type { MessageSummary } from "@/types/api";
@@ -36,27 +41,30 @@ export type IntentAction =
   | "not_spam";
 
 /**
- * - pending: waiting to be sent (never sent, or retrying after a network
- *   error, a 5xx or a 429)
+ * - pending: waiting to be sent (never sent, or retrying)
  * - inflight: a request is out
- * - done: the server answered success
+ * - done: the server answered; see `notApplied`
  * - failed: the server refused it; nothing changed, shown until retried or
- *   dismissed
+ *   discarded
+ * - held: waited so long unsent that it is no longer sent without the
+ *   person confirming it (PENDING_TTL_MS)
  */
-export type IntentState = "pending" | "inflight" | "done" | "failed";
+export type IntentState = "pending" | "inflight" | "done" | "failed" | "held";
 
 /** One message an intent acts on, as it looked when the action was taken. */
 export interface IntentMessage {
   id: string;
-  /** Where the message was -- what a folder-leaving action takes it out of.
-   * Null when unknown (a row no loaded list held). */
+  /** Where the message was -- what the request is guarded to, and what a
+   * folder-leaving action takes it out of. Null when unknown. */
   folderId: string | null;
   isSeen: boolean;
   isFlagged: boolean;
   threadId: string | null;
-  /** The list row itself, kept so undoing a move can show it again before
-   * any list has been re-read. Only kept for the first ROW_SNAPSHOT_LIMIT
-   * messages of an intent. */
+  /** When the server mirrored it (its own clock), for a conversation not to
+   * sweep in replies that arrived later. */
+  mirroredAt?: string | null;
+  /** The list row itself, kept on an undo step's copy so undoing a move can
+   * show it again before any list has been re-read. */
   row?: MessageSummary;
 }
 
@@ -77,15 +85,27 @@ export interface MailIntent {
   /** Earliest time the next attempt may be sent. */
   notBefore: number;
   lastError?: string;
+  /** When the first request of the current generation left. */
+  firstSentAt?: number;
   doneAt?: number;
+  /** The server wrote nothing: every message had moved or was gone. */
+  notApplied?: boolean;
+  /** Messages the server left alone because they had moved or were gone. */
+  skippedIds?: string[];
+  /** Where the server filed the messages -- where an undo expects them. */
+  landedFolderId?: string;
   /** Every message a conversation-expanded bulk action acted on, from its
    * response -- what undoing it moves back. */
   sources?: Array<{ id: string; folderId: string }>;
-  /** Undo was asked for while the request was out; the intent no longer
-   * projects, and once it settles it is reversed or dropped. */
-  undoRequested?: boolean;
-  /** The intent this one reverses. Sent only once that one has settled. */
+  /** The intent this one reverses. */
   reverses?: string;
+  /** When the person confirmed sending a held intent. */
+  approvedAt?: number;
+  /** Bumped by Retry or Send: a newer generation outranks any copy of the
+   * older one another tab still holds. */
+  generation: number;
+  /** The tab that took the action, which is where its outcome is told. */
+  originTab?: string;
   /** Last change to this record, for merging copies held by two tabs. */
   updatedAt: number;
 }
@@ -93,12 +113,22 @@ export interface MailIntent {
 /** A step the person can take back: one user action, which may have been
  * sent as several intents (a selection spanning accounts). The intents are
  * copied here, since a done intent is retired from the ledger long before
- * its undo entry expires. */
+ * its undo step expires. */
 export interface UndoEntry {
   id: string;
   label: string;
   createdAt: number;
+  originTab?: string;
   intents: MailIntent[];
+}
+
+/** An undo asked for in some tab, carried out by the tab that sends --
+ * which can see whether each intent has been answered yet. */
+export interface UndoRequest {
+  id: string;
+  entry: UndoEntry;
+  requestedAt: number;
+  originTab?: string;
 }
 
 /** Human phrasing for an action, as in "Could not archive". */
@@ -117,15 +147,20 @@ export const ACTION_LABELS: Record<IntentAction, string> = {
 
 /** How long a done intent keeps projecting over caches read before it. */
 export const DONE_RETENTION_MS = 10 * 60_000;
-/** How long a refused intent stays on its row waiting for Retry or Discard. */
+/** How long a refused or held intent waits for Retry, Send or Discard. */
 export const FAILED_RETENTION_MS = 24 * 60 * 60_000;
+/** An intent unsent this long is held for the person to confirm: the
+ * mailbox may have changed in ways the request's guard cannot see. */
+export const PENDING_TTL_MS = 60 * 60_000;
+/** Attempts against a server answering 5xx/429 before giving up visibly. */
+export const MAX_RETRY_ATTEMPTS = 8;
 /** Undo steps kept, newest last. */
 export const UNDO_STACK_LIMIT = 20;
 /** An undo step older than this is dropped rather than applied. */
 export const UNDO_MAX_AGE_MS = 30 * 60_000;
 /** A pending intent shows its marker only once it is this old. */
 export const PENDING_MARKER_DELAY_MS = 800;
-/** Row snapshots kept per intent -- enough for any selection a person
+/** Row snapshots kept per undo step -- enough for any selection a person
  * looks at, bounded so a huge selection cannot fill local storage. */
 export const ROW_SNAPSHOT_LIMIT = 25;
 
@@ -147,16 +182,22 @@ export function isUndoable(action: IntentAction): boolean {
   return action !== "expunge";
 }
 
-/** Whether an intent still changes what is shown. A failed intent changed
- * nothing on the server, so the server's data is shown as it is. */
+/** Whether an intent still changes what is shown. A failed or held intent
+ * changed nothing on the server, so the server's data is shown as it is. */
 export function isProjecting(intent: MailIntent): boolean {
-  return intent.state !== "failed" && !intent.undoRequested;
+  return intent.state === "pending" || intent.state === "inflight" || intent.state === "done";
 }
 
-/** Whether an intent's effect may be missing from data read at `dataUpdatedAt`. */
-function appliesTo(intent: MailIntent, dataUpdatedAt: number): boolean {
+/** Whether an intent's effect may be missing from rows read at `readAt`. */
+export function appliesTo(intent: MailIntent, readAt: number): boolean {
   if (!isProjecting(intent)) return false;
-  return intent.state !== "done" || (intent.doneAt ?? 0) > dataUpdatedAt;
+  return intent.state !== "done" || (intent.doneAt ?? 0) > readAt;
+}
+
+/** Whether a count read at `readAt` can still be missing the intent: only
+ * if it was read before any request of it left. */
+function countsApply(intent: MailIntent, readAt: number): boolean {
+  return isProjecting(intent) && readAt < (intent.firstSentAt ?? Number.POSITIVE_INFINITY);
 }
 
 function byCreation(a: MailIntent, b: MailIntent): number {
@@ -181,25 +222,42 @@ export interface RowIntentMarks {
   failedIntent?: { id: string; action: IntentAction; error: string };
 }
 
-function findMessage(intent: MailIntent, id: string): IntentMessage | undefined {
-  return intent.messages.find((m) => m.id === id);
+/** Intents indexed for one projection pass. */
+interface IntentIndex {
+  byMessage: Map<string, { intent: MailIntent; message: IntentMessage }[]>;
+  /** Conversation-expanded leaving intents, by `thread|folder` of an anchor. */
+  byConversation: Map<string, MailIntent[]>;
 }
 
-/** Whether `intent` takes `row` out of a list that shows it. */
+function indexIntents(ordered: readonly MailIntent[]): IntentIndex {
+  const byMessage: IntentIndex["byMessage"] = new Map();
+  const byConversation: IntentIndex["byConversation"] = new Map();
+  for (const intent of ordered) {
+    for (const message of intent.messages) {
+      const list = byMessage.get(message.id);
+      if (list) list.push({ intent, message });
+      else byMessage.set(message.id, [{ intent, message }]);
+      if (intent.expandThreads && message.threadId && message.folderId) {
+        const key = `${message.threadId}|${message.folderId}`;
+        const convo = byConversation.get(key);
+        if (!convo) byConversation.set(key, [intent]);
+        else if (!convo.includes(intent)) convo.push(intent);
+      }
+    }
+  }
+  return { byMessage, byConversation };
+}
+
+/** Whether `intent` takes a row out of a list that shows it -- a row it
+ * names, however stale the folder the list holds for it, or a member of a
+ * conversation it expanded (found by thread and folder, see IntentIndex).
+ * A move leaves only lists outside its target. */
 function hidesRow(intent: MailIntent, row: RowLike): boolean {
   if (!leavesFolder(intent.action)) return false;
-  const named = findMessage(intent, row.id);
-  const conversationMember =
-    !named &&
-    intent.expandThreads === true &&
-    intent.messages.some((m) => m.threadId === row.thread_id && m.folderId === row.folder_id);
-  if (!named && !conversationMember) return false;
-  if (intent.action === "expunge") return true;
   if (intent.action === "move" && intent.targetFolderId) {
     return row.folder_id !== intent.targetFolderId;
   }
-  const origin = named ? named.folderId : row.folder_id;
-  return origin === null || row.folder_id === origin;
+  return true;
 }
 
 function flagOverride(action: IntentAction): Partial<Pick<RowLike, "is_seen" | "is_flagged">> {
@@ -231,7 +289,7 @@ function sitsAbove(a: RowLike, b: RowLike): boolean {
 
 export interface ListProjection {
   /** When the rows were read -- see the module comment. */
-  dataUpdatedAt: number;
+  readAt: number;
   /** The folders the list covers: one for a folder, several for a unified
    * view. A move back into one of them shows its row again. Null for a
    * list whose scope is unknown, which only ever loses rows. */
@@ -246,16 +304,23 @@ export interface ListProjection {
 /**
  * The rows a list shows: server rows with every applicable intent on top.
  * Returns `rows` itself when no intent touches them, so a memo keyed on
- * the result stays stable.
+ * the result stays stable. Linear in rows plus intent messages.
  */
 export function projectRows<T extends RowLike>(
   rows: readonly T[],
   intents: readonly MailIntent[],
   list: ListProjection,
 ): Array<T & RowIntentMarks> {
-  const relevant = intents.filter((i) => isProjecting(i) || i.state === "failed");
-  if (relevant.length === 0) return rows as Array<T & RowIntentMarks>;
-  const ordered = [...relevant].sort(byCreation);
+  const applying = intents.filter((i) => appliesTo(i, list.readAt)).sort(byCreation);
+  const failed = intents.filter((i) => i.state === "failed");
+  if (applying.length === 0 && failed.length === 0) return rows as Array<T & RowIntentMarks>;
+
+  const index = indexIntents(applying);
+  const failures = new Map<string, MailIntent>();
+  for (const intent of [...failed].sort(byCreation)) {
+    for (const m of intent.messages) failures.set(m.id, intent);
+  }
+  const unreadDeltas = list.threaded ? conversationUnreadDeltas(intents, list.readAt) : null;
 
   let changed = false;
   const out: Array<T & RowIntentMarks> = [];
@@ -264,32 +329,48 @@ export function projectRows<T extends RowLike>(
   for (const row of rows) {
     let next: T & RowIntentMarks = row;
     let hidden = false;
-    for (const intent of ordered) {
-      const named = findMessage(intent, row.id);
-      if (intent.state === "failed") {
-        if (named) next = { ...next, failedIntent: failureOf(intent) };
-        continue;
-      }
-      if (!appliesTo(intent, list.dataUpdatedAt)) continue;
+    for (const { intent } of index.byMessage.get(row.id) ?? []) {
       if (hidesRow(intent, next)) {
         hidden = true;
         break;
       }
-      if (named) {
-        const override = flagOverride(intent.action);
-        if (Object.keys(override).length > 0) next = { ...next, ...override };
-        if (intent.state !== "done") next = markPending(next, intent);
-      }
+      const override = flagOverride(intent.action);
+      if (Object.keys(override).length > 0) next = { ...next, ...override };
+      if (intent.state !== "done") next = markPending(next, intent);
     }
-    if (!hidden && list.threaded && next.unread_in_thread !== undefined) {
-      const delta = conversationUnreadDelta(next, ordered, list);
-      if (delta !== 0) {
-        next = { ...next, unread_in_thread: Math.max(0, next.unread_in_thread! + delta) };
+    if (!hidden) {
+      for (const intent of index.byConversation.get(`${row.thread_id}|${row.folder_id}`) ?? []) {
+        if (hidesRow(intent, next)) {
+          hidden = true;
+          break;
+        }
       }
     }
     if (hidden) {
       changed = true;
       continue;
+    }
+    const failure = failures.get(row.id);
+    if (failure) {
+      next = {
+        ...next,
+        failedIntent: { id: failure.id, action: failure.action, error: failure.lastError ?? "" },
+      };
+    }
+    if (unreadDeltas && next.unread_in_thread !== undefined) {
+      const byFolder = unreadDeltas.get(next.thread_id);
+      let delta = 0;
+      if (byFolder) {
+        for (const [folderId, d] of byFolder) {
+          const inScope = list.scopeFolderIds
+            ? list.scopeFolderIds.has(folderId)
+            : folderId === next.folder_id;
+          if (inScope) delta += d;
+        }
+      }
+      if (delta !== 0) {
+        next = { ...next, unread_in_thread: Math.max(0, next.unread_in_thread! + delta) };
+      }
     }
     if (next !== row) changed = true;
     out.push(next);
@@ -297,7 +378,7 @@ export function projectRows<T extends RowLike>(
     presentThreads.add(next.thread_id);
   }
 
-  const restored = restoredRows<T>(ordered, list, present, presentThreads);
+  const restored = restoredRows<T>(applying, list, present, presentThreads);
   if (restored.length > 0) {
     const last = out[out.length - 1];
     for (const row of restored) {
@@ -316,14 +397,10 @@ function markPending<T extends RowIntentMarks>(row: T, intent: MailIntent): T {
   return { ...row, pendingSince: intent.createdAt };
 }
 
-function failureOf(intent: MailIntent): NonNullable<RowIntentMarks["failedIntent"]> {
-  return { id: intent.id, action: intent.action, error: intent.lastError ?? "" };
-}
-
 /**
  * Rows a pending move brings into this list -- an undo moving a message back
- * into a folder the list covers -- taken from the row snapshot the original
- * action kept, and only where the list does not already hold it.
+ * into a folder the list covers -- from the row snapshot the undo step kept,
+ * and only where the list does not already hold it.
  */
 function restoredRows<T extends RowLike>(
   ordered: readonly MailIntent[],
@@ -334,8 +411,10 @@ function restoredRows<T extends RowLike>(
   if (!list.scopeFolderIds) return [];
   const restored = new Map<string, T>();
   for (const intent of ordered) {
-    if (!appliesTo(intent, list.dataUpdatedAt)) continue;
-    if (intent.action === "move" && intent.targetFolderId && list.scopeFolderIds.has(intent.targetFolderId)) {
+    if (
+      intent.action === "move" && intent.targetFolderId &&
+      list.scopeFolderIds.has(intent.targetFolderId)
+    ) {
       for (const m of intent.messages) {
         if (!m.row || present.has(m.id)) continue;
         if (list.threaded && m.threadId && presentThreads.has(m.threadId)) continue;
@@ -346,11 +425,8 @@ function restoredRows<T extends RowLike>(
     for (const m of intent.messages) {
       const row = restored.get(m.id);
       if (!row) continue;
-      if (hidesRow(intent, row)) {
-        restored.delete(m.id);
-      } else {
-        restored.set(m.id, { ...row, ...flagOverride(intent.action) });
-      }
+      if (hidesRow(intent, row)) restored.delete(m.id);
+      else restored.set(m.id, { ...row, ...flagOverride(intent.action) });
     }
   }
   return [...restored.values()];
@@ -373,9 +449,10 @@ function stepMessage(
   const { action } = intent;
   if (leavesFolder(action)) {
     if (track.folderId !== null) emit(track.folderId, -1, track.isSeen ? 0 : -1);
-    if (action === "move" && intent.targetFolderId) {
-      emit(intent.targetFolderId, 1, track.isSeen ? 0 : 1);
-      track.folderId = intent.targetFolderId;
+    const landed = action === "move" ? intent.targetFolderId : intent.landedFolderId;
+    if (landed && action !== "expunge") {
+      emit(landed, 1, track.isSeen ? 0 : 1);
+      track.folderId = landed;
     } else {
       track.folderId = null;
     }
@@ -390,13 +467,13 @@ function stepMessage(
   }
 }
 
+/** Walk every projecting intent's messages once, in the order taken. */
 function walkMessages(
-  ordered: readonly MailIntent[],
+  intents: readonly MailIntent[],
   visit: (intent: MailIntent, message: IntentMessage, track: MessageTrack) => void,
 ): void {
   const tracks = new Map<string, MessageTrack>();
-  for (const intent of ordered) {
-    if (!isProjecting(intent)) continue;
+  for (const intent of [...intents].filter(isProjecting).sort(byCreation)) {
     for (const message of intent.messages) {
       let track = tracks.get(message.id);
       if (!track) {
@@ -408,31 +485,33 @@ function walkMessages(
   }
 }
 
-function conversationUnreadDelta(
-  row: RowLike,
-  ordered: readonly MailIntent[],
-  list: ListProjection,
-): number {
-  let delta = 0;
-  const inScope = (folderId: string) =>
-    list.scopeFolderIds ? list.scopeFolderIds.has(folderId) : folderId === row.folder_id;
-  walkMessages(ordered, (intent, message, track) => {
-    const counts = message.threadId === row.thread_id && appliesTo(intent, list.dataUpdatedAt);
+/** Unread count changes per conversation and folder not yet in a list read
+ * at `readAt`. */
+function conversationUnreadDeltas(
+  intents: readonly MailIntent[],
+  readAt: number,
+): Map<string, Map<string, number>> {
+  const deltas = new Map<string, Map<string, number>>();
+  walkMessages(intents, (intent, message, track) => {
+    const counts = message.threadId !== null && countsApply(intent, readAt);
     stepMessage(intent, track, (folderId, _total, unread) => {
-      if (counts && inScope(folderId)) delta += unread;
+      if (!counts || unread === 0) return;
+      const byFolder = deltas.get(message.threadId!) ?? new Map<string, number>();
+      byFolder.set(folderId, (byFolder.get(folderId) ?? 0) + unread);
+      deltas.set(message.threadId!, byFolder);
     });
   });
-  return delta;
+  return deltas;
 }
 
-/** Count changes per folder not yet in counts read at `dataUpdatedAt`. */
+/** Count changes per folder not yet in counts read at `readAt`. */
 export function folderCountDeltas(
   intents: readonly MailIntent[],
-  dataUpdatedAt: number,
+  readAt: number,
 ): Map<string, { total: number; unread: number }> {
   const deltas = new Map<string, { total: number; unread: number }>();
-  walkMessages([...intents].sort(byCreation), (intent, message, track) => {
-    const counts = appliesTo(intent, dataUpdatedAt);
+  walkMessages(intents, (intent, _message, track) => {
+    const counts = countsApply(intent, readAt);
     stepMessage(intent, track, (folderId, total, unread) => {
       if (!counts) return;
       const d = deltas.get(folderId) ?? { total: 0, unread: 0 };
@@ -471,15 +550,15 @@ export function projectCounts<T extends { unread_count: number; total_count: num
 export function projectThreadMessages<T extends RowLike>(
   messages: readonly T[],
   intents: readonly MailIntent[],
-  dataUpdatedAt: number,
+  readAt: number,
 ): Array<T & RowIntentMarks> {
-  const ordered = intents.filter((i) => appliesTo(i, dataUpdatedAt)).sort(byCreation);
-  if (ordered.length === 0) return messages as Array<T & RowIntentMarks>;
+  const applying = intents.filter((i) => appliesTo(i, readAt)).sort(byCreation);
+  if (applying.length === 0) return messages as Array<T & RowIntentMarks>;
+  const { byMessage } = indexIntents(applying);
   let changed = false;
   const out = messages.map((message) => {
     let next: T & RowIntentMarks = message;
-    for (const intent of ordered) {
-      if (!findMessage(intent, message.id)) continue;
+    for (const { intent } of byMessage.get(message.id) ?? []) {
       next = { ...next, ...flagOverride(intent.action) };
       if (intent.action === "move" && intent.targetFolderId) {
         next = { ...next, folder_id: intent.targetFolderId };
@@ -498,14 +577,14 @@ export type FailureKind = "retry" | "network" | "terminal" | "gone";
 
 /**
  * What a failed request means for its intent: a network error or timeout
- * waits for the network, a 408/429/5xx retries with backoff, a 404 means
- * the message is gone and the intent is retired without a word, and any
- * other 4xx is a refusal shown to the person.
+ * waits for the network, a 408/425/429/5xx retries with backoff, a 404 means
+ * the message is gone and the intent ends without a word, and any other 4xx
+ * is a refusal shown to the person.
  */
 export function classifyFailure(status: number | null): FailureKind {
   if (status === null) return "network";
   if (status === 404) return "gone";
-  if (status === 408 || status === 429 || status >= 500) return "retry";
+  if (status === 408 || status === 425 || status === 429 || status >= 500) return "retry";
   return "terminal";
 }
 
@@ -514,6 +593,13 @@ export function classifyFailure(status: number | null): FailureKind {
 export function retryDelay(attempts: number, kind: "retry" | "network" = "retry"): number {
   const cap = kind === "network" ? NETWORK_RETRY_MAX_MS : RETRY_MAX_MS;
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), cap);
+}
+
+/** Pending intents unsent past PENDING_TTL_MS -- to be held. */
+export function staleIntents(intents: readonly MailIntent[], now: number): MailIntent[] {
+  return intents.filter(
+    (i) => i.state === "pending" && now - (i.approvedAt ?? i.createdAt) > PENDING_TTL_MS,
+  );
 }
 
 /**
@@ -525,15 +611,14 @@ export function retryDelay(attempts: number, kind: "retry" | "network" = "retry"
  */
 export function sendableIntents(intents: readonly MailIntent[], now: number): MailIntent[] {
   const ordered = [...intents].sort(byCreation);
+  const unsettledStates = (i: MailIntent) =>
+    i.state === "pending" || i.state === "inflight" || i.state === "held";
   const busyAccounts = new Set(ordered.filter((i) => i.state === "inflight").map((i) => i.accountId));
-  const unsettled = new Set(
-    ordered.filter((i) => i.state === "pending" || i.state === "inflight").map((i) => i.id),
-  );
+  const unsettled = new Set(ordered.filter(unsettledStates).map((i) => i.id));
   const out: MailIntent[] = [];
   const claimedMessages = new Set<string>();
   for (const intent of ordered) {
-    const unsettledHere = intent.state === "pending" || intent.state === "inflight";
-    if (!unsettledHere) continue;
+    if (!unsettledStates(intent)) continue;
     const blocked =
       intent.state !== "pending" ||
       busyAccounts.has(intent.accountId) ||
@@ -558,42 +643,70 @@ export function nextWakeAt(intents: readonly MailIntent[], now: number): number 
   return wake;
 }
 
+/** The request body guards for an intent: where each message was seen,
+ * and how recent a conversation member may be. */
+export function requestGuards(intent: MailIntent): {
+  expectedFolderIds: Record<string, string>;
+  expandThreadsThrough: string | null;
+} {
+  const expectedFolderIds: Record<string, string> = {};
+  let newest: string | null = null;
+  for (const m of intent.messages) {
+    if (m.folderId) expectedFolderIds[m.id] = m.folderId;
+    if (m.mirroredAt && (newest === null || Date.parse(m.mirroredAt) > Date.parse(newest))) {
+      newest = m.mirroredAt;
+    }
+  }
+  return { expectedFolderIds, expandThreadsThrough: intent.expandThreads ? newest : null };
+}
+
 // --- Undo ------------------------------------------------------------------
 
 type NewId = () => string;
 
 /**
- * The intents that put an already-applied intent back: a move to wherever
- * each message came from (and unread again where it was unread), or the
- * opposite flag for each message whose flag it changed.
+ * The intents that put an applied intent back, each guarded to where the
+ * original left its messages: a move back to the folder each came from (and
+ * unread again where it was unread), or the opposite flag for each message
+ * whose flag it changed. A message moved on since is left where it is.
+ *
+ * Nothing for an intent that wrote nothing, and nothing for a leaving
+ * action whose landing folder is unknown -- guessing would be the
+ * unguarded move back this exists to avoid.
  */
 export function reversalsOf(original: MailIntent, now: number, newId: NewId): MailIntent[] {
+  if (original.notApplied || original.state !== "done") return [];
   const base = {
     accountId: original.accountId, bulk: true, createdAt: now, state: "pending" as const,
-    attempts: 0, notBefore: now, reverses: original.id, updatedAt: now,
+    attempts: 0, notBefore: now, reverses: original.id, updatedAt: now, generation: 0,
+    originTab: original.originTab,
   };
+  const skipped = new Set(original.skippedIds ?? []);
   const snapshots = new Map(original.messages.map((m) => [m.id, m]));
 
   if (leavesFolder(original.action)) {
-    const sources = original.sources?.length
-      ? original.sources
-      : original.messages.flatMap((m) => (m.folderId ? [{ id: m.id, folderId: m.folderId }] : []));
+    const landed = original.action === "move" ? original.targetFolderId : original.landedFolderId;
+    if (!landed) return [];
+    const sources = (
+      original.sources?.length
+        ? original.sources
+        : original.messages.flatMap((m) => (m.folderId ? [{ id: m.id, folderId: m.folderId }] : []))
+    ).filter((s) => !skipped.has(s.id) && s.folderId !== landed);
     const byFolder = new Map<string, IntentMessage[]>();
     const unread: IntentMessage[] = [];
     for (const source of sources) {
       const snapshot = snapshots.get(source.id);
       const message: IntentMessage = {
-        id: source.id,
-        folderId: original.action === "move" ? original.targetFolderId ?? null : null,
-        isSeen: snapshot?.isSeen ?? true,
-        isFlagged: snapshot?.isFlagged ?? false,
-        threadId: snapshot?.threadId ?? null,
-        row: snapshot?.row,
+        id: source.id, folderId: landed,
+        isSeen: snapshot?.isSeen ?? true, isFlagged: snapshot?.isFlagged ?? false,
+        threadId: snapshot?.threadId ?? null, row: snapshot?.row,
       };
       const group = byFolder.get(source.folderId) ?? [];
       group.push(message);
       byFolder.set(source.folderId, group);
-      if (snapshot && !snapshot.isSeen) unread.push({ ...message, folderId: source.folderId });
+      if (snapshot && !snapshot.isSeen) {
+        unread.push({ ...message, folderId: source.folderId, row: undefined });
+      }
     }
     const moves: MailIntent[] = [...byFolder.entries()].map(([folderId, messages]) => ({
       ...base, id: newId(), action: "move", targetFolderId: folderId, messages,
@@ -614,7 +727,9 @@ export function reversalsOf(original: MailIntent, now: number, newId: NewId): Ma
   };
   const pair = inverse[original.action];
   if (!pair) return [];
-  const messages = original.messages.filter(pair[1]);
+  const messages = original.messages
+    .filter((m) => !skipped.has(m.id) && pair[1](m))
+    .map(({ row: _row, ...m }) => m);
   if (messages.length === 0) return [];
   return [{ ...base, id: newId(), action: pair[0], messages }];
 }
@@ -627,16 +742,16 @@ export function pruneUndo(entries: readonly UndoEntry[], now: number): UndoEntry
 
 // --- Two tabs --------------------------------------------------------------
 
-/** A settled intent never goes back to unsettled; between two copies at
- * the same rank the later change wins. Pending and inflight share a rank so
- * a tab taking over sending can turn an inflight copy left by a closed tab
- * back into pending. */
-const STATE_RANK: Record<IntentState, number> = { pending: 0, inflight: 0, done: 1, failed: 1 };
+/** A settled intent never goes back to unsettled within a generation; a
+ * held one outranks the pending it was. Retry and Send start a new
+ * generation, which outranks every copy of the old one. */
+const STATE_RANK: Record<IntentState, number> = {
+  pending: 0, inflight: 0, held: 1, done: 2, failed: 2,
+};
 
 /**
  * Two copies of the ledger, one per tab, merged: every intent either holds
- * that has not been retired, the more advanced copy of each winning. An undo
- * asked for in either tab sticks.
+ * that has not been retired, the more advanced copy of each winning.
  */
 export function mergeIntents(
   ours: readonly MailIntent[],
@@ -647,14 +762,35 @@ export function mergeIntents(
   for (const intent of [...ours, ...theirs]) {
     if (retired.has(intent.id)) continue;
     const held = merged.get(intent.id);
-    if (!held) {
-      merged.set(intent.id, intent);
-      continue;
-    }
-    const rank = STATE_RANK[intent.state] - STATE_RANK[held.state];
-    const winner = rank > 0 || (rank === 0 && intent.updatedAt > held.updatedAt) ? intent : held;
-    const undoRequested = held.undoRequested || intent.undoRequested;
-    merged.set(intent.id, undoRequested ? { ...winner, undoRequested } : winner);
+    if (!held || outranks(intent, held)) merged.set(intent.id, intent);
   }
   return [...merged.values()].sort(byCreation);
+}
+
+function outranks(a: MailIntent, b: MailIntent): boolean {
+  const generation = (a.generation ?? 0) - (b.generation ?? 0);
+  if (generation !== 0) return generation > 0;
+  const rank = STATE_RANK[a.state] - STATE_RANK[b.state];
+  if (rank !== 0) return rank > 0;
+  return a.updatedAt > b.updatedAt;
+}
+
+/** Drop anything in a stored ledger that is not the shape this code reads,
+ * rather than failing on it at render. */
+export function validIntents(value: unknown): MailIntent[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((i): i is MailIntent => {
+    if (!i || typeof i !== "object") return false;
+    const intent = i as Partial<MailIntent>;
+    return (
+      typeof intent.id === "string" &&
+      typeof intent.accountId === "string" &&
+      typeof intent.action === "string" && intent.action in ACTION_LABELS &&
+      typeof intent.state === "string" && intent.state in STATE_RANK &&
+      typeof intent.createdAt === "number" &&
+      typeof intent.updatedAt === "number" &&
+      Array.isArray(intent.messages) &&
+      intent.messages.every((m) => m && typeof m === "object" && typeof m.id === "string")
+    );
+  }).map((i) => ({ ...i, generation: i.generation ?? 0, attempts: i.attempts ?? 0 }));
 }

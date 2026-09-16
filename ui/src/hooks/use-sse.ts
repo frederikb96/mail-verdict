@@ -25,6 +25,7 @@ import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { networkRecovered } from "@/lib/intent-drainer";
+import { recordObservedChange } from "@/lib/observed-changes";
 import { folderAlertsEnabled } from "@/lib/alert-prefs";
 import { closeResolvedNotifications, trackPageNotification } from "@/lib/live-notifications";
 import {
@@ -337,6 +338,10 @@ export function useSSE(accountId?: string) {
               // the flush re-reads the lists showing either.
               pendingRemovedIdsRef.current.add(data.id);
               pendingNewOrMovedRef.current = true;
+              // Gone from its old folder's lists at once, not a re-read later.
+              if (data.folder_id) {
+                recordObservedChange(data.id, data.old_folder_id ?? null, data.folder_id);
+              }
             } else {
               pendingUpdatedIdsRef.current.add(data.id);
             }
@@ -355,6 +360,7 @@ export function useSSE(accountId?: string) {
           noteFolders(data.folder_id);
           if (data.id) {
             pendingRemovedIdsRef.current.add(data.id);
+            recordObservedChange(data.id, data.folder_id ?? null, null);
           } else {
             pendingNewOrMovedRef.current = true;
           }

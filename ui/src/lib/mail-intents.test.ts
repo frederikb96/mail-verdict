@@ -9,9 +9,13 @@ import {
   projectRows,
   projectThreadMessages,
   pruneUndo,
+  PENDING_TTL_MS,
+  requestGuards,
   retryDelay,
   reversalsOf,
   sendableIntents,
+  staleIntents,
+  validIntents,
   UNDO_MAX_AGE_MS,
   UNDO_STACK_LIMIT,
   type IntentAction,
@@ -46,7 +50,7 @@ function intent(
   const createdAt = extra.createdAt ?? 1000 + nextId;
   return {
     id: `i${nextId}`, accountId: "acct", action, bulk: rows.length > 1, createdAt,
-    state: "pending", attempts: 0, notBefore: createdAt, updatedAt: createdAt,
+    state: "pending", attempts: 0, notBefore: createdAt, updatedAt: createdAt, generation: 0,
     messages: rows.map((r) => ({
       id: r.id, folderId: r.folder_id, isSeen: r.is_seen, isFlagged: r.is_flagged,
       threadId: r.thread_id, row: r,
@@ -56,14 +60,14 @@ function intent(
 }
 
 const folderList = (extra: Partial<ListProjection> = {}): ListProjection => ({
-  dataUpdatedAt: 5000, scopeFolderIds: new Set([INBOX]), threaded: false, hasMore: false, ...extra,
+  readAt: 5000, scopeFolderIds: new Set([INBOX]), threaded: false, hasMore: false, ...extra,
 });
 const ids = (rows: { id: string }[]) => rows.map((r) => r.id);
 
 test("a pending archive hides its row however recently the list was read", () => {
   const rows = [row("a", 1), row("b", 2), row("c", 3)];
   const archive = intent("archive", [rows[1]], { createdAt: 100 });
-  const projected = projectRows(rows, [archive], folderList({ dataUpdatedAt: 999_999 }));
+  const projected = projectRows(rows, [archive], folderList({ readAt: 999_999 }));
   assert.deepEqual(ids(projected), ["a", "c"]);
 });
 
@@ -79,8 +83,8 @@ test("the same row leaves a unified view over several folders", () => {
 test("a done intent leaves lists read after it alone, and still hides from older ones", () => {
   const rows = [row("a", 1), row("b", 2)];
   const archive = intent("archive", [rows[1]], { state: "done", doneAt: 5000 });
-  assert.deepEqual(ids(projectRows(rows, [archive], folderList({ dataUpdatedAt: 4000 }))), ["a"]);
-  const fresh = projectRows(rows, [archive], folderList({ dataUpdatedAt: 6000 }));
+  assert.deepEqual(ids(projectRows(rows, [archive], folderList({ readAt: 4000 }))), ["a"]);
+  const fresh = projectRows(rows, [archive], folderList({ readAt: 6000 }));
   assert.equal(fresh, rows, "the server read after the write is shown as it is");
 });
 
@@ -89,8 +93,16 @@ test("a row the server kept in place reappears once a read after the action land
   const rows = [row("j", 1, { folder_id: "f-junk" })];
   const spam = intent("spam", rows, { state: "done", doneAt: 5000 });
   const list = folderList({ scopeFolderIds: new Set(["f-junk"]) });
-  assert.deepEqual(ids(projectRows(rows, [spam], { ...list, dataUpdatedAt: 4000 })), []);
-  assert.deepEqual(ids(projectRows(rows, [spam], { ...list, dataUpdatedAt: 6000 })), ["j"]);
+  assert.deepEqual(ids(projectRows(rows, [spam], { ...list, readAt: 4000 })), []);
+  assert.deepEqual(ids(projectRows(rows, [spam], { ...list, readAt: 6000 })), ["j"]);
+});
+
+test("a named row leaves every list, however stale the folder that list holds for it", () => {
+  // The list still says INBOX; the message had moved to WORK before the
+  // archive was taken from a fresher view.
+  const stale = row("s", 1);
+  const archive = intent("archive", [{ ...stale, folder_id: WORK }]);
+  assert.deepEqual(ids(projectRows([stale], [archive], folderList())), []);
 });
 
 test("a move hides the row everywhere but its target folder", () => {
@@ -130,12 +142,6 @@ test("a failed intent changes nothing but marks its row", () => {
   });
 });
 
-test("an undone intent stops projecting at once", () => {
-  const rows = [row("a", 1)];
-  const archive = intent("archive", rows, { state: "inflight", undoRequested: true });
-  assert.equal(projectRows(rows, [archive], folderList()), rows);
-});
-
 test("no intent touching the rows returns the rows themselves", () => {
   const rows = [row("a", 1)];
   const other = intent("archive", [row("z", 9)]);
@@ -153,9 +159,10 @@ test("a conversation-expanded archive hides the conversation's other row too", (
 test("moving a message back shows its row again before any list is re-read", () => {
   const rows = [row("a", 1), row("c", 3)];
   const b = row("b", 2);
-  const archive = intent("archive", [b], { state: "done", doneAt: 4000 });
+  const archive = intent("archive", [b], { state: "done", doneAt: 4000, landedFolderId: ARCHIVE });
   const [back] = reversalsOf(archive, 7000, () => "r1");
-  const projected = projectRows(rows, [archive, back], folderList({ dataUpdatedAt: 6000 }));
+  // Undoing retires the original; the reversal alone brings the row back.
+  const projected = projectRows(rows, [back], folderList({ readAt: 6000 }));
   assert.deepEqual(ids(projected), ["a", "b", "c"]);
   assert.equal(projected[1].folder_id, INBOX);
 });
@@ -163,9 +170,9 @@ test("moving a message back shows its row again before any list is re-read", () 
 test("a restored row below a window with more to load is left for paging", () => {
   const rows = [row("a", 1)];
   const old = row("old", 500);
-  const archive = intent("archive", [old], { state: "done", doneAt: 4000 });
+  const archive = intent("archive", [old], { state: "done", doneAt: 4000, landedFolderId: ARCHIVE });
   const [back] = reversalsOf(archive, 7000, () => "r1");
-  const projected = projectRows(rows, [archive, back], folderList({ dataUpdatedAt: 6000, hasMore: true }));
+  const projected = projectRows(rows, [back], folderList({ readAt: 6000, hasMore: true }));
   assert.deepEqual(ids(projected), ["a"]);
 });
 
@@ -175,7 +182,7 @@ test("a threaded row's unread count follows reading one of its messages", () => 
   const read = intent("mark_read", [olderUnread]);
   const [projected] = projectRows([conversation], [read], folderList({ threaded: true }));
   assert.equal(projected.unread_in_thread, 1);
-  const stale = { ...read, state: "done" as const, doneAt: 4000 };
+  const stale = { ...read, state: "done" as const, doneAt: 4000, firstSentAt: 3900 };
   const [fresh] = projectRows([conversation], [stale], folderList({ threaded: true }));
   assert.equal(fresh.unread_in_thread, 2, "a count read after the write already has it");
 });
@@ -183,7 +190,7 @@ test("a threaded row's unread count follows reading one of its messages", () => 
 test("folder counts lose an archived unread message until counts are re-read", () => {
   const unread = row("u", 1);
   const seen = row("s", 2, { is_seen: true });
-  const archive = intent("archive", [unread, seen], { state: "done", doneAt: 5000 });
+  const archive = intent("archive", [unread, seen], { state: "done", doneAt: 5000, firstSentAt: 4500 });
   const deltas = folderCountDeltas([archive], 4000);
   assert.deepEqual(deltas.get(INBOX), { total: -2, unread: -1 });
   assert.equal(folderCountDeltas([archive], 6000).size, 0);
@@ -200,7 +207,7 @@ test("read then archive of one message counts it once", () => {
 
 test("a count already holding the first of two intents gets only the second", () => {
   const unread = row("u", 1);
-  const read = intent("mark_read", [unread], { createdAt: 1, state: "done", doneAt: 50 });
+  const read = intent("mark_read", [unread], { createdAt: 1, state: "done", doneAt: 50, firstSentAt: 40 });
   const archive = intent("archive", [unread], { createdAt: 2 });
   assert.deepEqual(folderCountDeltas([read, archive], 100).get(INBOX), { total: -1, unread: 0 });
 });
@@ -226,6 +233,7 @@ test("failures are sorted into waiting, retrying, gone and refused", () => {
   assert.equal(classifyFailure(503), "retry");
   assert.equal(classifyFailure(429), "retry");
   assert.equal(classifyFailure(408), "retry");
+  assert.equal(classifyFailure(425), "retry");
   assert.equal(classifyFailure(404), "gone");
   assert.equal(classifyFailure(400), "terminal");
   assert.equal(classifyFailure(409), "terminal");
@@ -257,14 +265,15 @@ test("an intent waits behind an earlier one naming the same message", () => {
 
 test("a reversal waits for the intent it reverses", () => {
   const archive = intent("archive", [row("a", 1)], { state: "inflight", accountId: "x" });
-  const [back] = reversalsOf(archive, 50, () => "r");
+  const done = { ...archive, state: "done" as const, landedFolderId: ARCHIVE };
+  const [back] = reversalsOf(done, 50, () => "r");
   assert.deepEqual(ids(sendableIntents([archive, { ...back, accountId: "y" }], 100)), []);
 });
 
 test("undoing an archive moves each message back to its own folder and restores unread", () => {
   const unread = row("u", 1);
   const seenElsewhere = row("s", 2, { is_seen: true, folder_id: WORK });
-  const archive = intent("archive", [unread, seenElsewhere]);
+  const archive = intent("archive", [unread, seenElsewhere], { state: "done", landedFolderId: ARCHIVE });
   let n = 0;
   const reversals = reversalsOf(archive, 900, () => `r${++n}`);
   assert.deepEqual(
@@ -272,12 +281,18 @@ test("undoing an archive moves each message back to its own folder and restores 
     [["move", INBOX, ["u"]], ["move", WORK, ["s"]], ["mark_unread", null, ["u"]]],
   );
   assert.ok(reversals.every((r) => r.reverses === archive.id));
+  assert.deepEqual(
+    reversals.slice(0, 2).map((r) => r.messages.map((m) => m.folderId)), [[ARCHIVE], [ARCHIVE]],
+    "each move back is guarded to where the archive put the message",
+  );
+  assert.deepEqual(reversals[2].messages.map((m) => m.folderId), [INBOX]);
   assert.ok(reversals[2].createdAt > reversals[0].createdAt, "unread goes after the move");
 });
 
 test("undoing a conversation archive uses the messages the server reported", () => {
   const archive = intent("archive", [row("n", 1)], {
-    expandThreads: true, sources: [{ id: "n", folderId: INBOX }, { id: "o", folderId: INBOX }],
+    state: "done", landedFolderId: ARCHIVE, expandThreads: true,
+    sources: [{ id: "n", folderId: INBOX }, { id: "o", folderId: INBOX }],
   });
   const [move] = reversalsOf(archive, 900, () => "r");
   assert.deepEqual(ids(move.messages), ["n", "o"]);
@@ -286,10 +301,11 @@ test("undoing a conversation archive uses the messages the server reported", () 
 test("undoing a flag change only touches messages it changed", () => {
   const starred = row("s", 1, { is_flagged: true });
   const plain = row("p", 2);
-  const [unflag] = reversalsOf(intent("flag", [starred, plain]), 900, () => "r");
+  const done = { state: "done" as const };
+  const [unflag] = reversalsOf(intent("flag", [starred, plain], done), 900, () => "r");
   assert.equal(unflag.action, "unflag");
   assert.deepEqual(ids(unflag.messages), ["p"]);
-  assert.deepEqual(reversalsOf(intent("flag", [starred]), 900, () => "r"), []);
+  assert.deepEqual(reversalsOf(intent("flag", [starred], done), 900, () => "r"), []);
 });
 
 test("the undo stack is bounded and forgets old steps", () => {
@@ -300,6 +316,81 @@ test("the undo stack is bounded and forgets old steps", () => {
   assert.equal(pruned.length, UNDO_STACK_LIMIT);
   assert.equal(pruned[pruned.length - 1].id, `u${UNDO_STACK_LIMIT + 4}`);
   assert.deepEqual(pruneUndo(entries, 10_000_000 + UNDO_MAX_AGE_MS + 1000), []);
+});
+
+test("nothing is reversed that was never applied, moved on, or landed somewhere unknown", () => {
+  const m = row("m", 1);
+  const other = row("o", 2);
+  const archived = { state: "done" as const, landedFolderId: ARCHIVE };
+  assert.deepEqual(reversalsOf(intent("archive", [m], { ...archived, notApplied: true }), 1, () => "r"), []);
+  assert.deepEqual(reversalsOf(intent("archive", [m], { state: "done" }), 1, () => "r"), []);
+  assert.deepEqual(reversalsOf(intent("archive", [m], { state: "inflight" }), 1, () => "r"), []);
+  const partly = intent("archive", [m, other], { ...archived, skippedIds: ["o"] });
+  const moves = reversalsOf(partly, 1, () => "r").filter((r) => r.action === "move");
+  assert.deepEqual(moves.flatMap((r) => ids(r.messages)), ["m"]);
+});
+
+test("a count read after the first request left takes nothing more off", () => {
+  // The first attempt may have committed with its answer lost; a count read
+  // since can already hold the change.
+  const unread = row("u", 1);
+  const retrying = intent("archive", [unread], { attempts: 2, firstSentAt: 5000 });
+  assert.deepEqual(folderCountDeltas([retrying], 4000).get(INBOX), { total: -1, unread: -1 });
+  assert.equal(folderCountDeltas([retrying], 6000).size, 0);
+  // The row itself is still hidden -- hiding twice is harmless.
+  assert.deepEqual(ids(projectRows([unread], [retrying], folderList({ readAt: 6000 }))), []);
+});
+
+test("an intent unsent for an hour is due to be held; a confirmed one starts over", () => {
+  const old = intent("trash", [row("t", 1)], { createdAt: 0 });
+  assert.deepEqual(ids(staleIntents([old], PENDING_TTL_MS + 1)), [old.id]);
+  const approved = { ...old, approvedAt: PENDING_TTL_MS };
+  assert.deepEqual(staleIntents([approved], PENDING_TTL_MS + 1), []);
+  const held = { ...old, state: "held" as const };
+  assert.deepEqual(sendableIntents([held], PENDING_TTL_MS + 1), [], "a held intent is not sent");
+  assert.deepEqual(projectRows([row("t", 1)], [held], folderList()).length, 1, "nor shown as done");
+});
+
+test("requests carry where each message was seen and the newest mirror time", () => {
+  const a = { ...row("a", 1), mirrored_at: "2026-09-16T10:00:00+00:00" };
+  const convo = intent("archive", [a, row("b", 2, { folder_id: WORK })], { expandThreads: true });
+  convo.messages[0].mirroredAt = "2026-09-16T10:00:00+00:00";
+  convo.messages[1].mirroredAt = "2026-09-16T11:00:00+00:00";
+  assert.deepEqual(requestGuards(convo), {
+    expectedFolderIds: { a: INBOX, b: WORK }, expandThreadsThrough: "2026-09-16T11:00:00+00:00",
+  });
+});
+
+test("a retried intent outranks the refused copy still stored", () => {
+  const refused = intent("archive", [row("r", 1)], { state: "failed", updatedAt: 50 });
+  const retried = { ...refused, state: "pending" as const, generation: 1, updatedAt: 60 };
+  assert.equal(mergeIntents([retried], [refused], new Set())[0].state, "pending");
+  assert.equal(mergeIntents([refused], [retried], new Set())[0].state, "pending");
+  const staleInflight = { ...refused, state: "inflight" as const, generation: 0, updatedAt: 70 };
+  assert.equal(mergeIntents([retried], [staleInflight], new Set())[0].generation, 1);
+});
+
+test("a stored ledger of the wrong shape is dropped rather than read", () => {
+  const good = intent("flag", [row("g", 1)]);
+  assert.deepEqual(validIntents("nope"), []);
+  assert.deepEqual(ids(validIntents([good, { id: "x" }, null, { ...good, id: "y", messages: "z" }])), [good.id]);
+});
+
+test("projection over a busy ledger stays linear", () => {
+  const rows = Array.from({ length: 1000 }, (_, i) =>
+    row(`r${i}`, i, { thread_id: `t${i % 400}`, unread_in_thread: 1 }));
+  const intents: MailIntent[] = [];
+  for (let i = 0; i < 50; i++) {
+    intents.push(intent("mark_read", [rows[i * 7]], { state: "done", doneAt: 10_000, firstSentAt: 9000 }));
+  }
+  const bulk = Array.from({ length: 2000 }, (_, i) => row(`b${i}`, 2000 + i, { thread_id: `t${i % 400}` }));
+  intents.push(intent("archive", bulk, { state: "inflight", expandThreads: true }));
+  const started = performance.now();
+  for (let i = 0; i < 10; i++) {
+    projectRows(rows, intents, folderList({ threaded: true, readAt: 5000 }));
+  }
+  const perProjection = (performance.now() - started) / 10;
+  assert.ok(perProjection < 40, `projection took ${perProjection.toFixed(1)} ms`);
 });
 
 test("two tabs' ledgers merge to the more advanced copy of each intent", () => {

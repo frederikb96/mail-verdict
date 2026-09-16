@@ -34,14 +34,19 @@ interface UseKeyboardShortcutsOptions {
   onAction: (mailId: string, action: MailRowAction, accountId?: string) => void;
 }
 
-/** Whether an undo keystroke belongs to what has focus rather than to the
- * mail actions: text being edited, a composer, or a dialog. */
+/** Whether an undo keystroke belongs to something other than the mail
+ * actions: text being edited, a dialog, or a composer anywhere on the page
+ * -- someone who clicked out of a reply to press Ctrl+Z still means its
+ * text. */
 function ownsUndo(target: EventTarget | null): boolean {
   if (isEditableElement(target)) return true;
-  return (
+  if (
     target instanceof Element &&
-    target.closest('[role="dialog"], [role="alertdialog"], [data-slot="compose-form"]') !== null
-  );
+    target.closest('[role="dialog"], [role="alertdialog"]') !== null
+  ) {
+    return true;
+  }
+  return document.querySelector('[data-slot="compose-form"]') !== null;
 }
 
 /** Ctrl+Z, or Cmd+Z on macOS -- shift held is redo, and left alone. */
@@ -68,9 +73,9 @@ function isUndoKey(e: KeyboardEvent): boolean {
  * - a: reply all (the open message only -- there is no row form of this)
  * - f: forward (the open message only)
  * - v: move to folder (the open message only)
- * - Ctrl+Z / Cmd+Z: undo the most recent mail action, repeatedly -- never
- *   while typing, in a composer, or in a dialog, where the browser's own
- *   undo belongs
+ * - Ctrl+Z / Cmd+Z: undo this tab's most recent mail action, repeatedly --
+ *   never while typing, with a composer open, or in a dialog, where the
+ *   browser's own undo belongs
  *
  * Every one of them acts on the open message when there is one, and on the
  * focused row otherwise -- so a shortcut and a click on the same message's
@@ -113,7 +118,8 @@ export function useKeyboardShortcuts({
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (isUndoKey(e)) {
-        if (ownsUndo(e.target)) return;
+        // Holding the keys down must not walk back the whole stack.
+        if (e.repeat || ownsUndo(e.target)) return;
         if (undoMailAction()) e.preventDefault();
         return;
       }

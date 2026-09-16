@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useProjectedCounts } from "@/hooks/use-intent-ledger";
+import { timedRead } from "@/lib/read-clock";
 import type { FolderCreateRequest } from "@/types/api";
 
 export const folderKeys = {
@@ -16,17 +17,26 @@ export const folderKeys = {
 };
 
 /** An account's folders, their counts including mail actions the server
- * has not counted yet (mail-intents.ts). */
+ * has not counted yet (mail-intents.ts). Anything that confirms a count
+ * back to the server -- deleting a folder -- reads useServerFolders. */
 export function useFolders(accountId: string | null) {
-  const query = useQuery({
+  const query = useServerFolders(accountId);
+  const data = useProjectedCounts(
+    query.data, (f) => [f.id], folderKeys.list(accountId!), query.dataUpdatedAt,
+  );
+  return { ...query, data };
+}
+
+/** An account's folders with the counts exactly as the server last gave them. */
+export function useServerFolders(accountId: string | null) {
+  return useQuery({
     queryKey: folderKeys.list(accountId!),
-    queryFn: () => api.folders.list(accountId!),
+    queryFn: ({ queryKey, signal }) =>
+      timedRead(queryKey, signal, false, () => api.folders.list(accountId!)),
     enabled: !!accountId,
     staleTime: 5_000,
     placeholderData: keepPreviousData,
   });
-  const data = useProjectedCounts(query.data, (f) => [f.id], query.dataUpdatedAt);
-  return { ...query, data };
 }
 
 export function useCreateFolder() {

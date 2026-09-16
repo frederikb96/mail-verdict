@@ -1,29 +1,34 @@
 /**
  * Taking mail actions: turning a click or a key into intents, moving the
- * reading pane on, offering undo, and reacting to what the drainer reports.
+ * reading pane on, offering undo, and telling the person what came of it.
  *
  * Every surface that acts on mail -- a row's controls, the reading pane's
- * toolbar, keyboard shortcuts, drag and drop, the bulk panel -- goes through
- * useMailAction, so the next message opened, the undo step and the toast
- * are decided once.
+ * toolbar and verdict thumbs, keyboard shortcuts, drag and drop, the bulk
+ * panel, spam review -- goes through useMailAction, so the next message
+ * opened, the undo step and the toast are decided once. Folder-wide actions
+ * over a predicate are the exception: nothing client-side knows which
+ * messages they cover (use-selection.ts).
  */
 
 import { useCallback, useEffect } from "react";
-import { api } from "@/lib/api";
-import { mailKeys } from "@/hooks/use-mails";
 import { type InfiniteData, type Query, type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { refreshMailViews, refreshThreads } from "@/hooks/use-mails";
+import { api } from "@/lib/api";
+import { mailKeys, refreshMailViews, refreshThreads } from "@/hooks/use-mails";
 import { useToast } from "@/hooks/use-toast";
 import { activeReplyDirtyForThreadIdAtom, explicitlyUnreadMailIdAtom, selectedMailIdAtom } from "@/lib/atoms";
 import { newIdempotencyKey } from "@/lib/idempotency-key";
-import { kickDrainer, retryIntent, startDrainer } from "@/lib/intent-drainer";
+import { kickDrainer, startDrainer } from "@/lib/intent-drainer";
 import {
   addIntents,
+  currentTabId,
   getLedgerSnapshot,
+  projectableIntents,
+  requestUndo,
+  restartIntent,
   retireIntents,
+  subscribeLedger,
   takeUndo,
-  updateIntent,
 } from "@/lib/intent-ledger";
 import { markKeptWhileUnread } from "@/lib/mail-list-window";
 import {
@@ -33,12 +38,12 @@ import {
   leavesFolder,
   projectRows,
   projectThreadMessages,
-  reversalsOf,
   type IntentAction,
   type IntentMessage,
   type MailIntent,
 } from "@/lib/mail-intents";
 import { isMailListQuery } from "@/lib/query-persister";
+import { readTimeOf } from "@/lib/read-clock";
 import { type MailNavDirection, mailNavDirectionAtom } from "@/store/mail-nav-atom";
 import type { MessageSummary, ThreadResponse } from "@/types/api";
 
@@ -78,63 +83,76 @@ const TOASTED_ACTIONS: ReadonlySet<IntentAction> = new Set(["archive", "trash", 
 /** The toast offering undo for an intent, closed if the intent fails. */
 const undoToastByIntent = new Map<string, string>();
 
-interface CachedList {
-  query: Query;
-  rows: MessageSummary[];
+interface CachedRow {
+  row: MessageSummary;
+  readAt: number;
 }
 
-/** Every list the client holds rows for: folders, unified views and the
- * quick filter's results. Lists someone is looking at come first. */
-function cachedLists(qc: QueryClient): CachedList[] {
-  const lists = qc.getQueryCache().findAll({
-    predicate: (q) => isMailListQuery(q.queryKey) || q.queryKey[0] === "search",
-  });
-  return lists
-    .map((query) => {
-      const data = query.state.data as InfiniteData<{ messages?: MessageSummary[]; items?: MessageSummary[] }> | undefined;
-      const rows = data?.pages?.flatMap((page) => page.messages ?? page.items ?? []) ?? [];
-      return { query, rows };
-    })
-    .sort((a, b) => b.query.getObserversCount() - a.query.getObserversCount());
+/** Every row the client holds, freshest copy of each: lists, the quick
+ * filter's results and conversations. */
+function cachedRows(qc: QueryClient): Map<string, CachedRow> {
+  const rows = new Map<string, CachedRow>();
+  const consider = (row: MessageSummary, readAt: number) => {
+    const held = rows.get(row.id);
+    if (!held || held.readAt < readAt) rows.set(row.id, { row, readAt });
+  };
+  for (const query of qc.getQueryCache().getAll()) {
+    const key = query.queryKey;
+    const readAt = readTimeOf(key, query.state.dataUpdatedAt);
+    if (isMailListQuery(key) || key[0] === "search") {
+      const data = query.state.data as
+        | InfiniteData<{ messages?: MessageSummary[]; items?: MessageSummary[] }>
+        | undefined;
+      for (const page of data?.pages ?? []) {
+        for (const row of page.messages ?? page.items ?? []) consider(row, readAt);
+      }
+    } else if (key[0] === "thread") {
+      for (const message of (query.state.data as ThreadResponse | undefined)?.messages ?? []) {
+        consider(message, readAt);
+      }
+    }
+  }
+  return rows;
 }
 
-/** A message as the person last saw it -- its row with every intent already
- * taken on it applied -- for the counts and the undo a new intent needs. */
-function snapshotMessage(qc: QueryClient, id: string, keepRow: boolean): IntentMessage {
-  const { intents } = getLedgerSnapshot();
-  for (const { query, rows } of cachedLists(qc)) {
-    const row = rows.find((r) => r.id === id);
-    if (!row) continue;
-    const [seen] = projectThreadMessages([row], intents, query.state.dataUpdatedAt);
-    return {
-      id, folderId: seen.folder_id, isSeen: seen.is_seen, isFlagged: seen.is_flagged,
-      threadId: row.thread_id, row: keepRow ? row : undefined,
-    };
-  }
-  for (const [, thread] of qc.getQueriesData<ThreadResponse>({ queryKey: ["thread"] })) {
-    const message = thread?.messages.find((m) => m.id === id);
-    if (!message) continue;
-    const [seen] = projectThreadMessages([message], intents, 0);
-    return {
-      id, folderId: seen.folder_id, isSeen: seen.is_seen, isFlagged: seen.is_flagged,
-      threadId: message.thread_id,
-    };
-  }
-  return { id, folderId: null, isSeen: true, isFlagged: false, threadId: null };
+/** A message as the person last saw it -- its freshest cached row with
+ * every intent already taken on it applied. */
+function snapshotMessage(
+  cached: ReadonlyMap<string, CachedRow>, intents: readonly MailIntent[], id: string,
+  keepRow: boolean, seenIn?: string,
+): IntentMessage {
+  const found = cached.get(id);
+  if (!found) return { id, folderId: seenIn ?? null, isSeen: true, isFlagged: false, threadId: null };
+  const [seen] = projectThreadMessages([found.row], intents, found.readAt);
+  return {
+    id, folderId: seen.folder_id, isSeen: seen.is_seen, isFlagged: seen.is_flagged,
+    threadId: found.row.thread_id, mirroredAt: found.row.mirrored_at ?? null,
+    row: keepRow ? found.row : undefined,
+  };
 }
 
 /**
  * The message that should take the reader's place when `mailId` leaves the
  * list: its neighbour in `direction`, or the one on the other side when
- * there is nothing that way. Read from the lists as they are shown, so a
- * message another pending action already took away is never chosen.
+ * there is nothing that way. Read from the list someone is looking at, as
+ * shown, so a message another pending action already took away is never
+ * chosen.
  */
 function neighbourOf(qc: QueryClient, mailId: string, direction: MailNavDirection): string | null {
-  const { intents } = getLedgerSnapshot();
-  for (const { query, rows } of cachedLists(qc)) {
+  const intents = projectableIntents(getLedgerSnapshot());
+  const lists = qc
+    .getQueryCache()
+    .findAll({ predicate: (q) => isMailListQuery(q.queryKey) || q.queryKey[0] === "search" })
+    .sort((a, b) => b.getObserversCount() - a.getObserversCount());
+  for (const query of lists) {
+    const data = query.state.data as
+      | InfiniteData<{ messages?: MessageSummary[]; items?: MessageSummary[] }>
+      | undefined;
+    const rows = data?.pages?.flatMap((page) => page.messages ?? page.items ?? []) ?? [];
     if (!rows.some((r) => r.id === mailId)) continue;
     const shown = projectRows(rows, intents, {
-      dataUpdatedAt: query.state.dataUpdatedAt, scopeFolderIds: null, threaded: false, hasMore: true,
+      readAt: readTimeOf(query.queryKey, query.state.dataUpdatedAt),
+      scopeFolderIds: null, threaded: false, hasMore: true,
     });
     const ids = shown.map((r) => r.id);
     const at = ids.indexOf(mailId);
@@ -154,6 +172,8 @@ export interface MailActionInput {
   bulk?: boolean;
   /** Each id is a conversation row standing for its whole conversation. */
   expandThreads?: boolean;
+  /** Where the caller showed each message, for one no cached list holds. */
+  seenFolderIds?: Record<string, string>;
 }
 
 export interface PerformOptions {
@@ -162,34 +182,35 @@ export interface PerformOptions {
   undoable?: boolean;
 }
 
-/** Take an undo step back: the newest, or the one named. Returns its label. */
+/**
+ * Undo a step: the one named, or the newest this tab took. The tab that
+ * sends carries it out once every intent in it has an answer
+ * (intent-drainer.ts); until then the step stops showing at once. Returns
+ * the step's label.
+ */
 export function undoMailAction(entryId?: string): string | null {
-  const entry = takeUndo(entryId);
+  const entry = takeUndo(entryId, entryId ? undefined : currentTabId());
   if (!entry) return null;
-  const now = Date.now();
-  const { intents } = getLedgerSnapshot();
-  const retire: string[] = [];
-  const reversals: MailIntent[] = [];
-  for (const copy of entry.intents) {
-    const live = intents.find((i) => i.id === copy.id);
-    if (live && ((live.state === "pending" && live.attempts === 0) || live.state === "failed")) {
-      // Never sent, or refused: nothing reached the server to reverse.
-      retire.push(live.id);
-      continue;
-    }
-    if (live && (live.state === "inflight" || live.state === "pending")) {
-      // Out, or retrying one that may have landed with its answer lost --
-      // reversed once the server has answered it (intent-drainer.ts).
-      updateIntent(live.id, { undoRequested: true });
-      continue;
-    }
-    if (live) retire.push(live.id);
-    reversals.push(...reversalsOf({ ...copy, sources: live?.sources ?? copy.sources }, now, newIdempotencyKey));
-  }
-  retireIntents(retire);
-  if (reversals.length > 0) addIntents(reversals);
+  requestUndo(entry);
   kickDrainer();
   return entry.label;
+}
+
+/** Send a refused intent again. */
+export function retryIntent(id: string): void {
+  restartIntent(id, { resend: false });
+  kickDrainer();
+}
+
+/** Send an intent held for being old, now the person has confirmed it. */
+export function sendHeldIntent(id: string): void {
+  restartIntent(id, { resend: true });
+  kickDrainer();
+}
+
+/** Give up on a refused or held intent. */
+export function discardIntent(id: string): void {
+  retireIntents([id]);
 }
 
 /** Record the intents one user action makes, and send them. */
@@ -221,6 +242,7 @@ export function useMailAction() {
       const { action } = nonEmpty[0];
       const allIds = nonEmpty.flatMap((input) => input.mailIds);
       const now = Date.now();
+      const tab = currentTabId();
 
       // Recorded before the intent, so the reading pane's auto-read effect
       // sees it in the same render as the unread flip that effect reacts to.
@@ -234,19 +256,26 @@ export function useMailAction() {
         }
       }
 
+      const cached = cachedRows(qc);
+      const current = projectableIntents(getLedgerSnapshot());
       let snapshots = 0;
       const intents: MailIntent[] = nonEmpty.map((input) => ({
         id: newIdempotencyKey(),
         accountId: input.accountId,
         action: input.action,
         targetFolderId: input.targetFolderId,
-        messages: input.mailIds.map((id) => snapshotMessage(qc, id, snapshots++ < ROW_SNAPSHOT_LIMIT)),
+        messages: input.mailIds.map((id) =>
+          snapshotMessage(
+            cached, current, id, snapshots++ < ROW_SNAPSHOT_LIMIT, input.seenFolderIds?.[id],
+          )),
         bulk: input.bulk ?? input.mailIds.length > 1,
         expandThreads: input.expandThreads,
         createdAt: now,
         state: "pending",
         attempts: 0,
         notBefore: now,
+        generation: 0,
+        originTab: tab,
         updatedAt: now,
       }));
 
@@ -287,7 +316,7 @@ export function useMailAction() {
   return { perform, performAll };
 }
 
-/** Ctrl+Z / Cmd+Z's own action: undo the newest step and say so. */
+/** Ctrl+Z / Cmd+Z's own action: undo this tab's newest step and say so. */
 export function useUndoMailAction() {
   const { push: pushToast } = useToast();
   return useCallback((): boolean => {
@@ -298,46 +327,119 @@ export function useUndoMailAction() {
   }, [pushToast]);
 }
 
-/** Start sending intents and react to what comes back. Mounted once. */
-export function useMailIntentDrainer(): void {
+/** Past tense of an action, for an outcome, as in "Not archived". */
+const PAST: Record<IntentAction, string> = {
+  mark_read: "marked as read", mark_unread: "marked as unread", flag: "starred",
+  unflag: "unstarred", move: "moved", archive: "archived", trash: "moved to trash",
+  expunge: "deleted", spam: "marked as spam", not_spam: "marked as not spam",
+};
+
+/**
+ * Drop every cached list or conversation nobody is looking at that still
+ * shows messages as they were before `intent` was answered. Refreshing
+ * only re-reads what is on screen, and such a cache outlives the intent
+ * that hides its rows -- opened later, it would show the change undone
+ * until its own re-read landed. Removed, it simply loads afresh.
+ */
+function dropStaleUnobserved(qc: QueryClient, intent: MailIntent): void {
+  const ids = new Set([
+    ...intent.messages.map((m) => m.id), ...(intent.skippedIds ?? []),
+    ...(intent.sources ?? []).map((s) => s.id),
+  ]);
+  if (ids.size === 0 || intent.doneAt === undefined) return;
+  const stale: Query[] = [];
+  for (const query of qc.getQueryCache().getAll()) {
+    if (query.getObserversCount() > 0) continue;
+    const key = query.queryKey;
+    if (readTimeOf(key, query.state.dataUpdatedAt) >= intent.doneAt) continue;
+    let holds = false;
+    if (isMailListQuery(key) || key[0] === "search") {
+      const data = query.state.data as
+        | InfiniteData<{ messages?: MessageSummary[]; items?: MessageSummary[] }>
+        | undefined;
+      holds = !!data?.pages?.some((p) => (p.messages ?? p.items ?? []).some((r) => ids.has(r.id)));
+    } else if (key[0] === "thread") {
+      holds = !!(query.state.data as ThreadResponse | undefined)?.messages.some((m) => ids.has(m.id));
+    }
+    if (holds) stale.push(query);
+  }
+  for (const query of stale) qc.removeQueries({ queryKey: query.queryKey, exact: true });
+}
+
+/**
+ * Start the drainer, and act on what happens to intents in every tab: once
+ * one is answered, re-read what it touched here; tell this tab's person
+ * about the outcome of what they did here. Mounted once per page.
+ */
+export function useMailIntentOutcomes(): void {
   const qc = useQueryClient();
   const { push: pushToast, dismiss } = useToast();
 
   useEffect(() => {
-    startDrainer({
-      onSettled: (intent) => {
-        undoToastByIntent.delete(intent.id);
-        const ids = new Set(intent.messages.map((m) => m.id));
-        // A count fetch that began before the write must not land after
-        // it and look current.
-        void qc.cancelQueries({ queryKey: ["folders"] });
-        void qc.cancelQueries({ queryKey: ["folder-order"] });
-        void qc.cancelQueries({ queryKey: ["unified", "folders"] });
-        for (const id of ids) qc.invalidateQueries({ queryKey: ["mail", id] });
-        refreshThreads(qc, ids, false);
-        const folders = [...intent.messages.map((m) => m.folderId), intent.targetFolderId];
-        const known = folders.filter((id): id is string => !!id);
-        // An archive, trash or spam lands in a folder the client does not
-        // know -- the event for its arrival there re-reads that folder's lists.
-        const unknownOrigin = intent.messages.some((m) => m.folderId === null);
-        refreshMailViews(qc, unknownOrigin ? null : { folderIds: new Set(known) });
-      },
-      onFailed: (intent) => {
-        const toastId = undoToastByIntent.get(intent.id);
-        if (toastId) dismiss(toastId);
-        undoToastByIntent.delete(intent.id);
-        const verb = intent.reverses ? "undo" : ACTION_LABELS[intent.action];
-        pushToast(`Could not ${verb}: ${intent.lastError ?? ""}`, "error", 0, {
-          label: "Retry",
-          onClick: () => retryIntent(intent.id),
-        }, {
-          label: "Discard",
-          onClick: () => retireIntents([intent.id]),
-        });
-      },
-      onNothingToUndo: () => {
-        pushToast("Nothing to undo — the message has moved since", "info", 5000);
-      },
+    startDrainer();
+    const me = currentTabId();
+    const seen = new Map<string, string>();
+    const keyOf = (i: MailIntent) => `${i.generation ?? 0}:${i.state}`;
+    for (const intent of getLedgerSnapshot().intents) seen.set(intent.id, keyOf(intent));
+
+    const onDone = (intent: MailIntent) => {
+      undoToastByIntent.delete(intent.id);
+      const ids = new Set([...intent.messages.map((m) => m.id), ...(intent.skippedIds ?? [])]);
+      // A count fetch that began before the write must not land after it
+      // and look current.
+      void qc.cancelQueries({ queryKey: ["folders"] });
+      void qc.cancelQueries({ queryKey: ["folder-order"] });
+      void qc.cancelQueries({ queryKey: ["unified", "folders"] });
+      for (const id of ids) qc.invalidateQueries({ queryKey: ["mail", id] });
+      refreshThreads(qc, ids, false);
+      dropStaleUnobserved(qc, intent);
+      const folders = [
+        ...intent.messages.map((m) => m.folderId), intent.targetFolderId, intent.landedFolderId,
+      ];
+      const unknownOrigin = intent.messages.some((m) => m.folderId === null);
+      refreshMailViews(
+        qc,
+        unknownOrigin ? null : { folderIds: new Set(folders.filter((id): id is string => !!id)) },
+      );
+      if (intent.originTab !== me) return;
+      if (intent.notApplied) {
+        pushToast(
+          intent.reverses
+            ? "Nothing to undo — the message has moved since"
+            : `Not ${PAST[intent.action]} — the message had already moved`,
+          "info", 6000,
+        );
+      } else if (intent.skippedIds?.length && intent.action !== "mark_unread") {
+        const count = intent.skippedIds.length;
+        pushToast(
+          `${count} message${count === 1 ? " was" : "s were"} left alone — ${count === 1 ? "it" : "they"} had moved since`,
+          "info", 6000,
+        );
+      }
+    };
+
+    const onFailed = (intent: MailIntent) => {
+      refreshMailViews(qc, null);
+      if (intent.originTab !== me) return;
+      const toastId = undoToastByIntent.get(intent.id);
+      if (toastId) dismiss(toastId);
+      undoToastByIntent.delete(intent.id);
+      const verb = intent.reverses ? "undo" : ACTION_LABELS[intent.action];
+      pushToast(
+        `Could not ${verb}: ${intent.lastError ?? ""}`, "error", 0,
+        { label: "Retry", onClick: () => retryIntent(intent.id) },
+        { label: "Discard", onClick: () => discardIntent(intent.id) },
+      );
+    };
+
+    return subscribeLedger(() => {
+      for (const intent of getLedgerSnapshot().intents) {
+        const key = keyOf(intent);
+        if (seen.get(intent.id) === key) continue;
+        seen.set(intent.id, key);
+        if (intent.state === "done") onDone(intent);
+        else if (intent.state === "failed") onFailed(intent);
+      }
     });
   }, [qc, pushToast, dismiss]);
 }
@@ -352,7 +454,7 @@ export function openMailInCache(
     .getQueryData<ThreadResponse>(mailKeys.thread(mailId))
     ?.messages.find((m) => m.id === mailId);
   if (own) return { folderId: own.folder_id, threadId: own.thread_id };
-  const snapshot = snapshotMessage(qc, mailId, false);
+  const snapshot = snapshotMessage(cachedRows(qc), [], mailId, false);
   return snapshot.threadId === null ? null : snapshot;
 }
 
@@ -372,6 +474,7 @@ export function useMarkConversationRead() {
   return useCallback(
     async (row: MessageSummary, includeRow: boolean, folderIds?: readonly string[]) => {
       let thread: ThreadResponse;
+      const startedAt = Date.now();
       try {
         thread = await qc.fetchQuery({
           queryKey: mailKeys.thread(row.id),
@@ -384,8 +487,8 @@ export function useMarkConversationRead() {
       }
       const inScope = (folderId: string) =>
         folderIds ? folderIds.includes(folderId) : folderId === row.folder_id;
-      const { intents } = getLedgerSnapshot();
-      const shown = projectThreadMessages(thread.messages, intents, Date.now());
+      const intents = projectableIntents(getLedgerSnapshot());
+      const shown = projectThreadMessages(thread.messages, intents, startedAt);
       const ids = shown
         .filter((m) => inScope(m.folder_id) && !m.is_seen)
         .filter((m) => includeRow || m.id !== row.id)

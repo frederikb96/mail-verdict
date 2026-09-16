@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useProjectedCounts } from "@/hooks/use-intent-ledger";
+import { timedRead } from "@/lib/read-clock";
 
 export const folderOrderKeys = {
   get: (accountId: string) => ["folder-order", accountId] as const,
@@ -13,12 +14,14 @@ export const folderOrderKeys = {
 export function useFolderOrder(accountId: string | null) {
   const query = useQuery({
     queryKey: folderOrderKeys.get(accountId!),
-    queryFn: () => api.folderManagement.getOrder(accountId!),
+    queryFn: ({ queryKey, signal }) =>
+      timedRead(queryKey, signal, false, () => api.folderManagement.getOrder(accountId!)),
     enabled: !!accountId,
     staleTime: 30_000,
   });
   const folders = useProjectedCounts(
-    query.data?.folders, (f) => [f.folder_id], query.dataUpdatedAt,
+    query.data?.folders, (f) => [f.folder_id], folderOrderKeys.get(accountId!),
+    query.dataUpdatedAt,
   );
   const data = useMemo(
     () => (query.data && folders !== query.data.folders ? { ...query.data, folders: folders! } : query.data),

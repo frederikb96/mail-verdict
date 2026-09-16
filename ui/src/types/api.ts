@@ -115,6 +115,8 @@ export interface MessageActionRequest {
   keyword?: string;
   /** Repeats of a request carrying the same key are answered once. */
   idempotency_key?: string;
+  /** Applied only if the message is still in this folder. */
+  expected_folder_id?: string;
 }
 
 export interface MessageActionResponse {
@@ -122,6 +124,10 @@ export interface MessageActionResponse {
   action: string;
   message_id: string;
   message: string | null;
+  /** False when expected_folder_id no longer matched and nothing was written. */
+  applied?: boolean;
+  /** Where the message is once the action is applied. */
+  folder_id?: string | null;
 }
 
 /** Which parts of a message the fulltext search endpoint scans. */
@@ -504,6 +510,10 @@ export type BulkActionRequest = BulkActionTarget & {
   confirm_message_count?: number;
   /** Repeats of a request carrying the same key are answered once. */
   idempotency_key?: string;
+  /** Per id, the folder it must still be in to be acted on. */
+  expected_folder_ids?: Record<string, string>;
+  /** With expand_threads: only members mirrored at or before this instant. */
+  expand_threads_through?: string;
 };
 
 export interface BulkActionResponse {
@@ -513,6 +523,10 @@ export interface BulkActionResponse {
   errors: string[];
   /** With expand_threads: every message acted on and its folder before. */
   sources: Array<{ id: string; folder_id: string }>;
+  /** Ids not acted on: gone, or no longer in their expected folder. */
+  skipped_ids?: string[];
+  /** Where a moving action filed the messages. */
+  target_folder_id?: string | null;
 }
 
 /** GET .../messages/selection -- an instant and a count from one statement. */

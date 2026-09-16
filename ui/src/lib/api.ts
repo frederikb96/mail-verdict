@@ -101,15 +101,8 @@ export class ApiError extends Error {
   }
 }
 
-/** How long a read may take before it counts as failed. A stalled
- * connection otherwise holds a request open until the operating system
- * gives up on it, minutes later, with nothing on screen saying so. Writes
- * set their own (RequestOptions.timeoutMs): an upload or a model call can
- * legitimately take longer. */
-const READ_TIMEOUT_MS = 30_000;
-
 interface RequestOptions extends RequestInit {
-  /** Abort after this long; a timeout rejects with a TimeoutError. */
+  /** Abort after this long; a timeout rejects like a network failure. */
   timeoutMs?: number;
 }
 
@@ -118,26 +111,28 @@ function withTimeout(
   signal: AbortSignal | null | undefined, timeoutMs: number | undefined,
 ): AbortSignal | undefined {
   if (timeoutMs === undefined) return signal ?? undefined;
-  const timeout = AbortSignal.timeout(timeoutMs);
-  if (!signal) return timeout;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any([signal, timeout]);
   const controller = new AbortController();
-  const forward = (source: AbortSignal) => () => controller.abort(source.reason);
-  signal.addEventListener("abort", forward(signal), { once: true });
-  timeout.addEventListener("abort", forward(timeout), { once: true });
+  const timer = setTimeout(
+    () => controller.abort(new DOMException("The request timed out", "TimeoutError")),
+    timeoutMs,
+  );
+  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+  }
   return controller.signal;
 }
 
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
   const { timeoutMs, ...init } = options ?? {};
   const isFormData = init.body instanceof FormData;
-  const isRead = (init.method ?? "GET").toUpperCase() === "GET";
   const res = await fetch(`${BASE_URL}${path}`, {
     headers: isFormData
       ? init.headers
       : { "Content-Type": "application/json", ...init.headers },
     ...init,
-    signal: withTimeout(init.signal, timeoutMs ?? (isRead ? READ_TIMEOUT_MS : undefined)),
+    signal: withTimeout(init.signal, timeoutMs),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);

@@ -8,6 +8,7 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useProjectedCounts } from "@/hooks/use-intent-ledger";
+import { readTimeOf, timedRead } from "@/lib/read-clock";
 import {
   type MailListWindow,
   mailListQueryOptions,
@@ -31,10 +32,12 @@ export const unifiedKeys = {
 export function useUnifiedFolders() {
   const query = useQuery<UnifiedFolderResponse[]>({
     queryKey: unifiedKeys.folders,
-    queryFn: () => api.unified.folders(),
+    queryFn: ({ queryKey, signal }) =>
+      timedRead(queryKey, signal, false, () => api.unified.folders()),
   });
   const data = useProjectedCounts(
-    query.data, (view) => view.folders.map((f) => f.folder_id), query.dataUpdatedAt,
+    query.data, (view) => view.folders.map((f) => f.folder_id), unifiedKeys.folders,
+    query.dataUpdatedAt,
   );
   return { ...query, data };
 }
@@ -53,7 +56,7 @@ export function useUnifiedMails(
   );
   const listWindow: MailListWindow | undefined =
     folderName && !aroundId ? { kind: "unified", folderName, threaded, unreadOnly } : undefined;
-  const result = useInfiniteQuery(
+  const query = useInfiniteQuery(
     mailListQueryOptions(
       queryKey,
       (cursor) =>
@@ -67,7 +70,7 @@ export function useUnifiedMails(
     ),
   );
   useRefreshWindowOnMount(queryKey, listWindow !== undefined);
-  return result;
+  return { ...query, readAt: readTimeOf(queryKey, query.dataUpdatedAt) };
 }
 
 /** Fetch unified folder display order. */

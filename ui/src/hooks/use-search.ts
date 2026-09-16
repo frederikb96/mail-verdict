@@ -2,6 +2,7 @@
 
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { readTimeOf, timedRead } from "@/lib/read-clock";
 import type { SearchField, SearchResult, SearchSort, SearchStrictness } from "@/types/api";
 
 /** The fulltext and semantic endpoints already return the same shape --
@@ -96,47 +97,53 @@ export function useSearchResults(params: {
   // from silently becoming an unscoped search.
   const hasFolderScope = folderIds === null || folderIds.length > 0;
 
-  return useInfiniteQuery({
-    queryKey: searchKeys.results(
-      semantic, trimmed, accountId, folderIds, fields, strictness, sort, dateRange, isSeen,
-    ),
-    queryFn: async ({ pageParam, signal }): Promise<SearchResultPage> => {
-      if (semantic) {
-        const r = await api.search.semantic({
-          q: trimmed,
-          account_id: accountId,
-          folder_ids: folderIds ?? undefined,
-          strictness,
-          sort,
-          received_after: dateRange?.after,
-          received_before: dateRange?.before,
-        }, signal);
-        return { items: r.results, has_more: false, next_cursor: null, total: r.results.length };
-      }
-      const r = await api.search.query({
-        q: trimmed,
-        account_id: accountId,
-        folder_ids: folderIds ?? undefined,
-        fields,
-        before: pageParam ?? undefined,
-        limit: 50,
-        sort,
-        received_after: dateRange?.after,
-        received_before: dateRange?.before,
-        is_seen: isSeen,
-      }, signal);
-      return {
-        items: r.results,
-        has_more: r.has_more,
-        next_cursor: r.next_cursor,
-        total: r.total,
-      };
-    },
+  const queryKey = searchKeys.results(
+    semantic, trimmed, accountId, folderIds, fields, strictness, sort, dateRange, isSeen,
+  );
+  const results = useInfiniteQuery({
+    queryKey,
+    queryFn: ({ pageParam, signal }): Promise<SearchResultPage> =>
+      timedRead(queryKey, signal, pageParam !== null, () => readPage(pageParam, signal)),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : undefined),
     enabled: trimmed.length >= 2 && hasFolderScope,
     staleTime: 30_000,
   });
+  // When the results were read, for the mail actions shown over them.
+  return { ...results, readAt: readTimeOf(queryKey, results.dataUpdatedAt) };
+
+  async function readPage(pageParam: string | null, signal: AbortSignal): Promise<SearchResultPage> {
+    if (semantic) {
+      const r = await api.search.semantic({
+        q: trimmed,
+        account_id: accountId,
+        folder_ids: folderIds ?? undefined,
+        strictness,
+        sort,
+        received_after: dateRange?.after,
+        received_before: dateRange?.before,
+      }, signal);
+      return { items: r.results, has_more: false, next_cursor: null, total: r.results.length };
+    }
+    const r = await api.search.query({
+      q: trimmed,
+      account_id: accountId,
+      folder_ids: folderIds ?? undefined,
+      fields,
+      before: pageParam ?? undefined,
+      limit: 50,
+      sort,
+      received_after: dateRange?.after,
+      received_before: dateRange?.before,
+      is_seen: isSeen,
+    }, signal);
+    return {
+      items: r.results,
+      has_more: r.has_more,
+      next_cursor: r.next_cursor,
+      total: r.total,
+    };
+  }
 }
 
 /** The date-range control's own axis -- oldest/newest received_at across

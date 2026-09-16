@@ -15,7 +15,7 @@ import {
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { invalidateAllFolderCaches } from "@/hooks/use-folders";
-import { useIntentLedger } from "@/hooks/use-intent-ledger";
+import { useProjectionIntents } from "@/hooks/use-intent-ledger";
 import {
   type WindowRow,
   chunkIntoPages,
@@ -25,6 +25,7 @@ import {
 } from "@/lib/mail-list-window";
 import { projectThreadMessages, type RowIntentMarks } from "@/lib/mail-intents";
 import { isMailListQuery } from "@/lib/query-persister";
+import { readTimeOf, recordRead, timedRead } from "@/lib/read-clock";
 import type {
   MessageDetail,
   MessageListResponse,
@@ -170,6 +171,7 @@ async function refreshWindowOnce(
   qc.setQueryData(query.queryKey, windowAsInfiniteData(merged.rows, merged.hasMore), {
     updatedAt: readStartedAt,
   });
+  recordRead(query.queryKey, readStartedAt);
 }
 
 const windowRefreshes = new WeakMap<Query, { again: boolean }>();
@@ -317,17 +319,23 @@ export function mailListQueryOptions(
 ) {
   return infiniteQueryOptions({
     queryKey,
-    queryFn: ({ pageParam }: { pageParam: MailListPageParam }) => {
-      switch (pageParam.kind) {
-        case "around":
-          return fetchPage({ around: pageParam.id });
-        case "before":
-          return fetchPage({ before: pageParam.cursor });
-        case "after":
-          return fetchPage({ after: pageParam.cursor });
-        case "initial":
-          return fetchPage({});
-      }
+    queryFn: ({ pageParam, queryKey: key, signal }: {
+      pageParam: MailListPageParam; queryKey: readonly unknown[]; signal: AbortSignal;
+    }) => {
+      // A further page keeps the older read time of the pages before it.
+      const continues = pageParam.kind === "before" || pageParam.kind === "after";
+      return timedRead(key, signal, continues, () => {
+        switch (pageParam.kind) {
+          case "around":
+            return fetchPage({ around: pageParam.id });
+          case "before":
+            return fetchPage({ before: pageParam.cursor });
+          case "after":
+            return fetchPage({ after: pageParam.cursor });
+          case "initial":
+            return fetchPage({});
+        }
+      });
     },
     initialPageParam: (
       aroundId ? { kind: "around", id: aroundId } : { kind: "initial" }
@@ -363,7 +371,7 @@ export function useMailList(
     accountId && folderId && !aroundId
       ? { kind: "account", accountId, folderId, threaded, unreadOnly }
       : undefined;
-  const result = useInfiniteQuery(
+  const query = useInfiniteQuery(
     mailListQueryOptions(
       queryKey,
       (cursor) =>
@@ -377,7 +385,7 @@ export function useMailList(
     ),
   );
   useRefreshWindowOnMount(queryKey, listWindow !== undefined);
-  return result;
+  return { ...query, readAt: readTimeOf(queryKey, query.dataUpdatedAt) };
 }
 
 export function useMailDetail(mailId: string | null) {
@@ -399,7 +407,8 @@ export function useMailDetail(mailId: string | null) {
 export function threadQueryOptions(mailId: string | null) {
   return queryOptions<ThreadResponse>({
     queryKey: mailKeys.thread(mailId!),
-    queryFn: () => api.mails.thread(mailId!),
+    queryFn: ({ queryKey, signal }) =>
+      timedRead(queryKey, signal, false, () => api.mails.thread(mailId!)),
     enabled: !!mailId,
     staleTime: 30_000,
     refetchOnMount: true,
@@ -414,12 +423,13 @@ export type ProjectedThread = Omit<ThreadResponse, "messages"> & {
  * not have applied yet shown on top (mail-intents.ts). */
 export function useThread(mailId: string | null) {
   const query = useQuery(threadQueryOptions(mailId));
-  const { intents } = useIntentLedger();
+  const intents = useProjectionIntents();
+  const readAt = readTimeOf(mailKeys.thread(mailId!), query.dataUpdatedAt);
   const data = useMemo((): ProjectedThread | undefined => {
     if (!query.data) return undefined;
-    const messages = projectThreadMessages(query.data.messages, intents, query.dataUpdatedAt);
+    const messages = projectThreadMessages(query.data.messages, intents, readAt);
     return messages === query.data.messages ? query.data : { ...query.data, messages };
-  }, [query.data, query.dataUpdatedAt, intents]);
+  }, [query.data, readAt, intents]);
   return { ...query, data };
 }
 
