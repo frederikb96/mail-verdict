@@ -234,6 +234,11 @@ class MessageActionResponse(BaseModel):
         description="False when expected_folder_id no longer matched and "
         "nothing was written.",
     )
+    folder_id: uuid.UUID | None = Field(
+        default=None,
+        description="The folder the message is in once the action is applied "
+        "-- where an undo expects to find it.",
+    )
 
 
 # --- Bulk action schemas (client-held selection, server-side scope) ---
@@ -363,6 +368,13 @@ class BulkActionResponse(BaseModel):
             "With expand_threads: every message acted on and its folder "
             "before the action, so a caller can undo a move of messages it "
             "never listed itself. Empty otherwise."
+        ),
+    )
+    target_folder_id: uuid.UUID | None = Field(
+        default=None,
+        description=(
+            "The folder a moving action (move, archive, trash, spam, not_spam) "
+            "files messages into -- where an undo expects to find them."
         ),
     )
     skipped_ids: list[uuid.UUID] = Field(

@@ -1093,14 +1093,27 @@ async def message_action(
     (mail_actions/submissions.py).
     """
     if request.idempotency_key is None:
-        return await _apply_message_action(message_id, request)
+        return await _apply_and_locate(message_id, request)
     return await run_once(
         get_db_connection(),
         request.idempotency_key,
         request_fingerprint("message", message_id, request),
         MessageActionResponse,
-        lambda: _apply_message_action(message_id, request),
+        lambda: _apply_and_locate(message_id, request),
     )
+
+
+async def _apply_and_locate(
+    message_id: uuid.UUID, request: MessageActionRequest,
+) -> MessageActionResponse:
+    """Apply the action, then say which folder the message is in now."""
+    response = await _apply_message_action(message_id, request)
+    if response.applied:
+        async with get_db_connection().session() as session:
+            response.folder_id = await session.scalar(
+                select(Message.folder_id).where(Message.id == message_id)
+            )
+    return response
 
 
 async def _apply_message_action(
@@ -1197,6 +1210,9 @@ async def _apply_message_action(
         return await _handle_spam_action(message_id, account_id, is_spam=action == "spam")
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+_FLAG_ACTIONS = frozenset({"mark_read", "mark_unread", "flag", "unflag", "expunge"})
 
 
 def _not_applied(action: str, message_id: uuid.UUID) -> MessageActionResponse:
@@ -1453,6 +1469,7 @@ async def _apply_bulk_action(
     action = request.action
     errors: list[str] = []
     affected = 0
+    target: uuid.UUID | None = None
 
     async def move_groups(session: AsyncSession, target: uuid.UUID) -> list[uuid.UUID]:
         """Move every group into `target`; the ids that moved or were
@@ -1489,7 +1506,7 @@ async def _apply_bulk_action(
         if action == "move":
             if not request.target_folder_id:
                 raise HTTPException(status_code=400, detail="target_folder_id required for move")
-            target: uuid.UUID | None = request.target_folder_id
+            target = request.target_folder_id
             target_role = await FolderRepository(db).get_effective_special_use(
                 request.target_folder_id,
             )
@@ -1513,6 +1530,7 @@ async def _apply_bulk_action(
         from mail_verdict.server import get_spam_processor
         from mail_verdict.spam.feedback import FolderResolutionError
 
+        target = await _resolve_special_folder(account_id, "junk" if action == "spam" else "inbox")
         processor = get_spam_processor()
         if processor is None:
             errors.append("Spam feedback handler not available")
@@ -1547,6 +1565,7 @@ async def _apply_bulk_action(
     return BulkActionResponse(
         success=not errors, action=action, affected_count=affected, errors=errors,
         sources=sources, skipped_ids=skipped,
+        target_folder_id=target if action not in _FLAG_ACTIONS else None,
     )
 
 

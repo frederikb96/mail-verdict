@@ -957,6 +957,19 @@
           "success": {
             "title": "Success",
             "type": "boolean"
+          },
+          "target_folder_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The folder a moving action (move, archive, trash, spam, not_spam) files messages into -- where an undo expects to find them.",
+            "title": "Target Folder Id"
           }
         },
         "required": [
@@ -4049,6 +4062,19 @@
             "description": "False when expected_folder_id no longer matched and nothing was written.",
             "title": "Applied",
             "type": "boolean"
+          },
+          "folder_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The folder the message is in once the action is applied -- where an undo expects to find it.",
+            "title": "Folder Id"
           },
           "message": {
             "anyOf": [

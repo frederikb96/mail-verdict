@@ -310,6 +310,7 @@ class TestExpectedFolder:
             )
 
         assert resp.json()["applied"] is True
+        assert resp.json()["folder_id"] == str(ids["target"]), "where an undo will look for it"
         assert client.portal.call(_folder_of, migrated_db, ids["message"]) == ids["target"]
 
     def test_an_expunged_message_is_not_found(
@@ -343,6 +344,7 @@ class TestExpectedFolder:
         assert resp.status_code == 200, resp.text
         assert resp.json()["affected_count"] == 1
         assert resp.json()["skipped_ids"] == [str(other)]
+        assert resp.json()["target_folder_id"] == str(ids["target"])
         assert client.portal.call(_folder_of, migrated_db, ids["message"]) == ids["target"]
         assert client.portal.call(_folder_of, migrated_db, other) == ids["source"]
 
