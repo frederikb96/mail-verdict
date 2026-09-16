@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.4.0] - 2026-09-16
+
 - Archiving, trashing, moving, spam, read state and stars show at once everywhere the message
   appears -- including unified views, which used to keep an archived row until the next refresh
   -- and a refresh arriving meanwhile can no longer put it back. Folder and view counts follow.
