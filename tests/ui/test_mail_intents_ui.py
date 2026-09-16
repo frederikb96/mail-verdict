@@ -380,6 +380,69 @@ class TestUndoKey:
         assert _folder_of(api_client, target["id"]) == account["archive"]["id"]
 
 
+class TestRulings:
+    def test_confirming_a_verdict_that_moves_nothing_keeps_the_message_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        account: dict[str, Any],
+    ) -> None:
+        """A not-spam verdict confirmed: the server records it and leaves the
+        message where it is, so the reader stays on it and there is nothing
+        to undo."""
+        target = _deliver(api_client, dovecot_endpoint, account, f"Clean {uuid.uuid4()}")
+        resp = api_client.post(
+            f"/api/messages/{target['id']}/action", json={"action": "not_spam"},
+        )
+        assert resp.status_code == 200 and resp.json()["success"], resp.text
+        _open_inbox(page, app_server, account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+        toolbar = page.get_by_role("toolbar", name="Message actions")
+        confirm = toolbar.get_by_role("button", name="Confirm this verdict", exact=True)
+        expect(confirm).to_be_visible(timeout=15_000)
+
+        confirm.click()
+        expect(page.get_by_text("Marked as not spam", exact=True)).to_be_visible(timeout=5_000)
+        expect(page.get_by_role("button", name="Undo", exact=True)).to_have_count(0)
+        expect(row).to_be_visible()
+        expect(confirm).to_be_visible()
+        page.wait_for_timeout(2_000)
+        expect(row).to_be_visible()
+        assert _folder_of(api_client, target["id"]) == account["inbox"]["id"]
+
+    def test_undoing_a_ruling_moves_the_message_back_and_says_the_ruling_stays(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        account: dict[str, Any],
+    ) -> None:
+        junk = wait_for_folder(api_client, account["id"], "Junk")
+        target = _deliver(api_client, dovecot_endpoint, account, f"Junked {uuid.uuid4()}")
+        _open_inbox(page, app_server, account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+        row.get_by_title("Move to Junk").click()
+        expect(row).not_to_be_visible(timeout=1_000)
+        _wait_through_page(page, api_client, target["id"], junk["id"], "filed in Junk", 20.0)
+
+        page.locator("body").click(position={"x": 1, "y": 1})
+        page.keyboard.press("Control+z")
+        expect(
+            page.get_by_text("Moved back — still marked as spam", exact=True)
+        ).to_be_visible(timeout=5_000)
+        _wait_through_page(
+            page, api_client, target["id"], account["inbox"]["id"], "moved back", 20.0,
+        )
+        assert api_client.get(f"/api/messages/{target['id']}").json()["verdict_is_spam"] is True
+
+
 class TestNothingIsPulledBack:
     def test_retry_sends_a_refused_action_again(
         self,
@@ -438,6 +501,55 @@ class TestNothingIsPulledBack:
             page.get_by_text("Not archived — the message had already moved", exact=True)
         ).to_be_visible(timeout=30_000)
         assert _folder_of(api_client, target["id"]) == account["elsewhere"]["id"]
+
+    def test_discarding_an_old_action_whose_answer_was_lost_moves_the_message_back(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        account: dict[str, Any],
+    ) -> None:
+        """The archive reached the server and its answer never came back; the
+        connection stayed dead for over an hour. Discarding it has to take
+        back what may have happened rather than forget it."""
+        target = _deliver(api_client, dovecot_endpoint, account, f"Answer lost {uuid.uuid4()}")
+        page.clock.install()
+        _open_inbox(page, app_server, account)
+        row = mail_row(page, target["id"])
+        expect(row).to_be_visible(timeout=15_000)
+
+        sent: list[dict[str, Any]] = []
+
+        def _lose_answer(route: Route, request: Request) -> None:
+            sent.append(json.loads(request.post_data or "{}"))
+            if len(sent) == 1:
+                route.fetch()
+            route.abort("internetdisconnected")
+
+        page.route(_ACTION_ROUTE, _lose_answer)
+        row.hover()
+        row.get_by_title("Archive").click()
+        _wait_through_page(
+            page, api_client, target["id"], account["archive"]["id"], "archived", 20.0,
+        )
+        page.clock.fast_forward("01:05:00")
+        held = page.get_by_test_id("actions-held")
+        expect(held).to_contain_text("may have been sent", timeout=15_000)
+
+        def _record(route: Route, request: Request) -> None:
+            sent.append(json.loads(request.post_data or "{}"))
+            route.continue_()
+
+        page.unroute(_ACTION_ROUTE, _lose_answer)
+        page.route(_ACTION_ROUTE, _record)
+        held.get_by_role("button", name="Discard", exact=True).click()
+        _wait_through_page(
+            page, api_client, target["id"], account["inbox"]["id"], "moved back", 30.0,
+        )
+        keys = {body["idempotency_key"] for body in sent if body.get("action") == "archive"}
+        assert len(keys) == 1, sent
+        expect(held).to_have_count(0, timeout=10_000)
 
     def test_undo_leaves_a_message_filed_elsewhere_since(
         self,

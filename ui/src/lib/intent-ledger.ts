@@ -277,7 +277,7 @@ export function updateIntent(id: string, patch: Partial<MailIntent>): MailIntent
   return updated;
 }
 
-/** Start an intent over as a new generation -- Retry on a refused one, Send
+/** Start an intent over as a new generation -- Retry on a failed one, Send
  * on a held one. `resend` keeps the record of an earlier request that may
  * have landed. */
 export function restartIntent(id: string, { resend }: { resend: boolean }): void {
@@ -287,7 +287,7 @@ export function restartIntent(id: string, { resend }: { resend: boolean }): void
   updateIntent(id, {
     state: "pending", generation: (current.generation ?? 0) + 1, notBefore: now,
     lastError: undefined, approvedAt: now, attempts: resend ? current.attempts : 0,
-    firstSentAt: resend ? current.firstSentAt : undefined,
+    firstSentAt: resend ? current.firstSentAt : undefined, refused: undefined,
   });
 }
 

@@ -32,6 +32,7 @@ import {
   currentTabId,
   dropUndoFor,
   getLedgerSnapshot,
+  restartIntent,
   retireIntents,
   subscribeLedger,
   sweepLedger,
@@ -41,6 +42,7 @@ import { newIdempotencyKey } from "@/lib/idempotency-key";
 import {
   MAX_RETRY_ATTEMPTS,
   classifyFailure,
+  mayHaveLanded,
   nextWakeAt,
   requestGuards,
   retryDelay,
@@ -195,12 +197,20 @@ function schedule(delay: number): void {
 
 /**
  * Carry out every undo request whose intents have all been answered: an
- * intent never sent, refused or held is dropped; one applied is reversed
- * from the undo step's copy; one still out is waited for.
+ * intent never sent or refused is dropped; one applied is reversed from the
+ * undo step's copy; one still out is waited for. One that may have landed
+ * unanswered is sent again first -- held or given up on, nothing else would
+ * ever send it.
  */
 function processUndoRequests(): void {
   const { undoRequests } = getLedgerSnapshot();
   for (const request of undoRequests) {
+    for (const copy of request.entry.intents) {
+      const live = getLedgerSnapshot().intents.find((i) => i.id === copy.id);
+      if (live && mayHaveLanded(live) && (live.state === "held" || live.state === "failed")) {
+        restartIntent(live.id, { resend: true });
+      }
+    }
     if (!undoRequestReady(request)) continue;
     const { intents } = getLedgerSnapshot();
     const now = Date.now();
@@ -229,10 +239,7 @@ function undoRequestReady(request: UndoRequest): boolean {
   return request.entry.intents.every((copy) => {
     const live = intents.find((i) => i.id === copy.id);
     if (!live) return true;
-    if (live.state === "inflight") return false;
-    // One retried after a network error may have landed with its answer
-    // lost: find out before deciding there is nothing to reverse.
-    return !(live.state === "pending" && live.attempts > 0);
+    return live.state !== "inflight" && !mayHaveLanded(live);
   });
 }
 
@@ -311,7 +318,7 @@ async function send(intent: MailIntent): Promise<void> {
     networkBlockedUntil = 0;
     setStatus({ waitingForNetwork: false });
     const current = currentIntent(intent.id, intent.generation);
-    if (current && "refused" in outcome) settleFailed(current, outcome.refused);
+    if (current && "refused" in outcome) settleFailed(current, outcome.refused, { refused: true });
     else if (current && !("refused" in outcome)) settleDone(current, outcome);
   }
   kickDrainer();
@@ -336,7 +343,7 @@ function settleError(intent: MailIntent, err: unknown): void {
     return;
   }
   if (kind === "terminal" || (kind === "retry" && intent.attempts >= MAX_RETRY_ATTEMPTS)) {
-    settleFailed(intent, message);
+    settleFailed(intent, message, { refused: kind === "terminal" });
     return;
   }
   const now = Date.now();
@@ -364,9 +371,10 @@ function settleDone(intent: MailIntent, outcome: Exclude<Outcome, { refused: str
   });
 }
 
-function settleFailed(intent: MailIntent, error: string): void {
-  dropUndoFor(intent.id);
-  updateIntent(intent.id, { state: "failed", lastError: error });
+function settleFailed(intent: MailIntent, error: string, { refused }: { refused: boolean }): void {
+  // One that may have landed can still be undone.
+  if (refused) dropUndoFor(intent.id);
+  updateIntent(intent.id, { state: "failed", lastError: error, refused: refused || undefined });
 }
 
 /** The server answered on another channel (the event stream reconnected,

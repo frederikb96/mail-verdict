@@ -3,6 +3,7 @@
 import { AlertCircle, CloudOff, History, RefreshCw } from "lucide-react";
 import { useDrainerStatus, useIntentLedger } from "@/hooks/use-intent-ledger";
 import { discardIntent, retryIntent, sendHeldIntent } from "@/hooks/use-mail-intents";
+import { mayHaveLanded } from "@/lib/mail-intents";
 
 /**
  * Mail actions that have not reached the server, said out loud: how many
@@ -19,6 +20,8 @@ export function ActionsIndicator() {
   const held = intents.filter((i) => i.state === "held");
   const plural = (n: number) => `${n} action${n === 1 ? "" : "s"}`;
   const oldest = held.reduce((min, i) => Math.min(min, i.createdAt), Number.POSITIVE_INFINITY);
+  // Discarding one that may have been sent undoes it once the server says.
+  const heldOutcome = held.some(mayHaveLanded) ? "may have been sent" : "never sent";
 
   return (
     <>
@@ -35,7 +38,7 @@ export function ActionsIndicator() {
         <Pill testId="actions-held" tone="warn" icon={<History className="h-3 w-3" />}>
           {plural(held.length)} from{" "}
           {new Date(oldest).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })}{" "}
-          never sent
+          {heldOutcome}
           <Action onClick={() => held.forEach((i) => sendHeldIntent(i.id))}>Send</Action>
           <Action onClick={() => held.forEach((i) => discardIntent(i.id))}>Discard</Action>
         </Pill>

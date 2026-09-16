@@ -80,6 +80,9 @@ export interface MailIntent {
   bulk: boolean;
   /** Each id stands for its whole conversation in its folder. */
   expandThreads?: boolean;
+  /** A spam or not-spam ruling that leaves its messages where they are
+   * (rulingMoves): it hides nothing and has nothing to undo. */
+  staysInPlace?: boolean;
   createdAt: number;
   state: IntentState;
   attempts: number;
@@ -102,6 +105,9 @@ export interface MailIntent {
   reverses?: string;
   /** When the person confirmed sending a held intent. */
   approvedAt?: number;
+  /** The server answered this generation with a refusal, so none of its
+   * requests wrote anything. */
+  refused?: boolean;
   /** Bumped by Retry or Send: a newer generation outranks any copy of the
    * older one another tab still holds. */
   generation: number;
@@ -176,6 +182,26 @@ const LEAVING_ACTIONS: ReadonlySet<IntentAction> = new Set([
 
 export function leavesFolder(action: IntentAction): boolean {
   return LEAVING_ACTIONS.has(action);
+}
+
+/**
+ * Whether a spam or not-spam ruling moves a message, as the server decides
+ * it (spam/feedback.py): spam files it in Junk unless it is there already;
+ * not-spam rescues it to the inbox only from a verdict that called it spam.
+ * A fact not known here (undefined) counts as moving.
+ */
+export function rulingMoves(
+  action: "spam" | "not_spam",
+  folderRole: string | null | undefined,
+  verdictIsSpam: boolean | null | undefined,
+): boolean {
+  if (action === "spam") return folderRole !== "junk";
+  return verdictIsSpam !== false && verdictIsSpam !== null && folderRole !== "inbox";
+}
+
+/** Whether an intent takes its messages out of the folder they are in. */
+export function intentLeaves(intent: MailIntent): boolean {
+  return leavesFolder(intent.action) && !intent.staysInPlace;
 }
 
 /** Actions a person can take back. Expunge has nothing left to restore. */
@@ -254,7 +280,7 @@ function indexIntents(ordered: readonly MailIntent[]): IntentIndex {
  * conversation it expanded (found by thread and folder, see IntentIndex).
  * A move leaves only lists outside its target. */
 function hidesRow(intent: MailIntent, row: RowLike): boolean {
-  if (!leavesFolder(intent.action)) return false;
+  if (!intentLeaves(intent)) return false;
   if (intent.action === "move" && intent.targetFolderId) {
     return row.folder_id !== intent.targetFolderId;
   }
@@ -448,7 +474,7 @@ function stepMessage(
   emit: (folderId: string, total: number, unread: number) => void,
 ): void {
   const { action } = intent;
-  if (leavesFolder(action)) {
+  if (intentLeaves(intent)) {
     if (track.folderId !== null) emit(track.folderId, -1, track.isSeen ? 0 : -1);
     const landed = action === "move" ? intent.targetFolderId : intent.landedFolderId;
     if (landed && action !== "expunge") {
@@ -596,6 +622,16 @@ export function retryDelay(attempts: number, kind: "retry" | "network" = "retry"
   return Math.min(RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), cap);
 }
 
+/**
+ * Whether a request of this intent may have been applied with its answer
+ * lost: one went out and no answer said either way. Undoing or discarding
+ * such an intent sends it again first, under the same key, so the server's
+ * answer says what to reverse.
+ */
+export function mayHaveLanded(intent: MailIntent): boolean {
+  return intent.state !== "done" && intent.attempts > 0 && !intent.refused;
+}
+
 /** Pending intents unsent past PENDING_TTL_MS -- to be held. */
 export function staleIntents(intents: readonly MailIntent[], now: number): MailIntent[] {
   return intents.filter(
@@ -681,12 +717,12 @@ type NewId = () => string;
  * unread again where it was unread), or the opposite flag for each message
  * whose flag it changed. A message moved on since is left where it is.
  *
- * Nothing for an intent that wrote nothing, and nothing for a leaving
+ * Nothing for an intent that wrote nothing or moved nothing, and nothing for a leaving
  * action whose landing folder is unknown -- guessing would be the
  * unguarded move back this exists to avoid.
  */
 export function reversalsOf(original: MailIntent, now: number, newId: NewId): MailIntent[] {
-  if (original.notApplied || original.state !== "done") return [];
+  if (original.notApplied || original.state !== "done" || original.staysInPlace) return [];
   const base = {
     accountId: original.accountId, bulk: true, createdAt: now, state: "pending" as const,
     attempts: 0, notBefore: now, reverses: original.id, updatedAt: now, generation: 0,

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   classifyFailure,
   folderCountDeltas,
+  mayHaveLanded,
   mergeIntents,
   nextWakeAt,
   projectCounts,
@@ -13,6 +14,7 @@ import {
   requestGuards,
   retryDelay,
   reversalsOf,
+  rulingMoves,
   sendableIntents,
   staleIntents,
   validIntents,
@@ -349,6 +351,35 @@ test("an intent unsent for an hour is due to be held; a confirmed one starts ove
   const held = { ...old, state: "held" as const };
   assert.deepEqual(sendableIntents([held], PENDING_TTL_MS + 1), [], "a held intent is not sent");
   assert.deepEqual(projectRows([row("t", 1)], [held], folderList()).length, 1, "nor shown as done");
+});
+
+test("a ruling that moves nothing hides nothing, counts nothing and has nothing to undo", () => {
+  assert.equal(rulingMoves("spam", "junk", true), false, "already in Junk");
+  assert.equal(rulingMoves("spam", null, false), true);
+  assert.equal(rulingMoves("not_spam", null, false), false, "nothing called it spam");
+  assert.equal(rulingMoves("not_spam", null, null), false, "never classified");
+  assert.equal(rulingMoves("not_spam", "inbox", true), false, "already in the inbox");
+  assert.equal(rulingMoves("not_spam", null, true), true);
+  assert.equal(rulingMoves("not_spam", undefined, undefined), true, "unknown counts as moving");
+
+  const rows = [row("a", 1)];
+  const confirm = intent("not_spam", rows, { staysInPlace: true });
+  assert.deepEqual(ids(projectRows(rows, [confirm], folderList())), ["a"]);
+  const counts = folderCountDeltas([{ ...confirm, state: "done", landedFolderId: INBOX }], 0);
+  assert.equal(counts.size, 0);
+  const done = { ...confirm, state: "done" as const, landedFolderId: ARCHIVE };
+  assert.deepEqual(reversalsOf(done, 1, () => "r"), []);
+  // The same ruling that does move leaves the list like any filing.
+  assert.deepEqual(ids(projectRows(rows, [intent("spam", rows)], folderList())), []);
+});
+
+test("an intent may have landed only once a request went out with no refusal back", () => {
+  const trash = (extra: Partial<MailIntent>) => intent("trash", [row("t", 1)], extra);
+  assert.equal(mayHaveLanded(trash({ state: "held" })), false, "never sent");
+  assert.equal(mayHaveLanded(trash({ state: "held", attempts: 2 })), true, "sent, no answer");
+  assert.equal(mayHaveLanded(trash({ state: "failed", attempts: 8 })), true, "server kept failing");
+  assert.equal(mayHaveLanded(trash({ state: "failed", attempts: 1, refused: true })), false);
+  assert.equal(mayHaveLanded(trash({ state: "done", attempts: 1 })), false, "answered");
 });
 
 test("requests carry where each message was seen and when its newest list was read", () => {

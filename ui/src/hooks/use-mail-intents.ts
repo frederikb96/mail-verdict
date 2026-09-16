@@ -22,6 +22,7 @@ import { kickDrainer, startDrainer } from "@/lib/intent-drainer";
 import {
   addIntents,
   currentTabId,
+  dropUndoFor,
   getLedgerSnapshot,
   projectableIntents,
   requestUndo,
@@ -35,17 +36,21 @@ import {
   ACTION_LABELS,
   ROW_SNAPSHOT_LIMIT,
   isUndoable,
-  leavesFolder,
+  intentLeaves,
+  mayHaveLanded,
   projectRows,
   projectThreadMessages,
+  rulingMoves,
   type IntentAction,
   type IntentMessage,
   type MailIntent,
+  type UndoEntry,
 } from "@/lib/mail-intents";
 import { isMailListQuery } from "@/lib/query-persister";
 import { readTimeOf } from "@/lib/read-clock";
 import { type MailNavDirection, mailNavDirectionAtom } from "@/store/mail-nav-atom";
-import type { MessageSummary, ThreadResponse } from "@/types/api";
+import { folderKeys } from "@/hooks/use-folders";
+import type { FolderResponse, MessageSummary, ThreadResponse } from "@/types/api";
 
 /** What a single message's action says once taken, as in "Archived". */
 const DONE_LABELS: Record<IntentAction, string> = {
@@ -194,17 +199,30 @@ export interface PerformOptions {
  * (intent-drainer.ts); until then the step stops showing at once. Returns
  * the step's label.
  */
-export function undoMailAction(entryId?: string): string | null {
+export function undoMailAction(entryId?: string): UndoEntry | null {
   const entry = takeUndo(entryId, entryId ? undefined : currentTabId());
   if (!entry) return null;
   requestUndo(entry);
   kickDrainer();
-  return entry.label;
+  return entry;
 }
 
-/** Send a refused intent again. */
+function isRuling(entry: UndoEntry): boolean {
+  return entry.intents.some((i) => i.action === "spam" || i.action === "not_spam");
+}
+
+/** What undoing a step says. Undoing a ruling moves the messages back; the
+ * ruling itself stands until the opposite one is given. */
+function undoneText(entry: UndoEntry): string {
+  if (!isRuling(entry)) return `Undone: ${entry.label}`;
+  const spam = entry.intents.some((i) => i.action === "spam");
+  return `Moved back — still marked as ${spam ? "spam" : "not spam"}`;
+}
+
+/** Send a failed intent again. */
 export function retryIntent(id: string): void {
-  restartIntent(id, { resend: false });
+  const intent = getLedgerSnapshot().intents.find((i) => i.id === id);
+  restartIntent(id, { resend: intent ? mayHaveLanded(intent) : false });
   kickDrainer();
 }
 
@@ -214,9 +232,22 @@ export function sendHeldIntent(id: string): void {
   kickDrainer();
 }
 
-/** Give up on a refused or held intent. */
+/** Give up on a failed or held intent -- undone instead, once its answer
+ * is known, if a request of it may have landed. */
 export function discardIntent(id: string): void {
-  retireIntents([id]);
+  const { intents, undo } = getLedgerSnapshot();
+  const intent = intents.find((i) => i.id === id);
+  if (!intent || !mayHaveLanded(intent)) {
+    retireIntents([id]);
+    return;
+  }
+  const copy = undo.flatMap((e) => e.intents).find((i) => i.id === id) ?? intent;
+  dropUndoFor(id);
+  requestUndo({
+    id: newIdempotencyKey(), label: "Discarded", createdAt: Date.now(),
+    originTab: currentTabId(), intents: [{ ...intent, messages: copy.messages }],
+  });
+  kickDrainer();
 }
 
 /** Record the intents one user action makes, and send them. */
@@ -265,27 +296,50 @@ export function useMailAction() {
       const cached = cachedRows(qc);
       const current = projectableIntents(getLedgerSnapshot());
       let snapshots = 0;
-      const intents: MailIntent[] = nonEmpty.map((input) => ({
-        id: newIdempotencyKey(),
-        accountId: input.accountId,
-        action: input.action,
-        targetFolderId: input.targetFolderId,
-        messages: input.mailIds.map((id) =>
-          snapshotMessage(
-            cached, current, id, snapshots++ < ROW_SNAPSHOT_LIMIT, input.seenFolderIds?.[id],
-          )),
-        bulk: input.bulk ?? input.mailIds.length > 1,
-        expandThreads: input.expandThreads,
-        createdAt: now,
-        state: "pending",
-        attempts: 0,
-        notBefore: now,
-        generation: 0,
-        originTab: tab,
-        updatedAt: now,
-      }));
+      const intents: MailIntent[] = nonEmpty.flatMap((input) => {
+        const intent: MailIntent = {
+          id: newIdempotencyKey(),
+          accountId: input.accountId,
+          action: input.action,
+          targetFolderId: input.targetFolderId,
+          messages: input.mailIds.map((id) =>
+            snapshotMessage(
+              cached, current, id, snapshots++ < ROW_SNAPSHOT_LIMIT, input.seenFolderIds?.[id],
+            )),
+          bulk: input.bulk ?? input.mailIds.length > 1,
+          expandThreads: input.expandThreads,
+          createdAt: now,
+          state: "pending",
+          attempts: 0,
+          notBefore: now,
+          generation: 0,
+          originTab: tab,
+          updatedAt: now,
+        };
+        const ruling = input.action;
+        if (ruling !== "spam" && ruling !== "not_spam") return [intent];
+        // A ruling that leaves a message where it is is its own intent, so
+        // the ones that do move can still be hidden and undone.
+        const roles = new Map(
+          (qc.getQueryData<FolderResponse[]>(folderKeys.list(input.accountId)) ?? [])
+            .map((f) => [f.id, f.special_use]),
+        );
+        const moves = (m: IntentMessage) =>
+          rulingMoves(
+            ruling, m.folderId ? roles.get(m.folderId) : undefined, cached.get(m.id)?.row.verdict_is_spam,
+          );
+        const moving = intent.messages.filter(moves);
+        const staying = intent.messages.filter((m) => !moves(m));
+        return [
+          ...(moving.length > 0 ? [{ ...intent, messages: moving }] : []),
+          ...(staying.length > 0
+            ? [{ ...intent, id: newIdempotencyKey(), messages: staying, staysInPlace: true }]
+            : []),
+        ];
+      });
 
-      if (leavesFolder(action) && selectedMailId && allIds.includes(selectedMailId)) {
+      const leaving = intents.filter(intentLeaves);
+      if (selectedMailId && leaving.some((i) => i.messages.some((m) => m.id === selectedMailId))) {
         // A reply or forward in progress against this message's thread
         // must not be discarded by unmounting the reading pane under it.
         // Matched on the thread: the pane's open message may be an older
@@ -300,15 +354,25 @@ export function useMailAction() {
 
       const label =
         allIds.length === 1 ? DONE_LABELS[action] : `${allIds.length} messages ${BULK_DONE_LABELS[action]}`;
-      const entry = addIntents(intents, undoable && isUndoable(action) ? label : undefined);
+      // A ruling that moved nothing is recorded, not undone: the opposite
+      // ruling is what takes it back.
+      const takesBack = intents.some((i) => !i.staysInPlace);
+      const entry = addIntents(
+        intents, undoable && isUndoable(action) && takesBack ? label : undefined,
+      );
       kickDrainer();
 
       if (entry && TOASTED_ACTIONS.has(action)) {
         const toastId = pushToast(label, "success", 6000, {
           label: "Undo",
-          onClick: () => undoMailAction(entry.id),
+          onClick: () => {
+            const undone = undoMailAction(entry.id);
+            if (undone && isRuling(entry)) pushToast(undoneText(entry), "info", 3000);
+          },
         });
         for (const intent of intents) undoToastByIntent.set(intent.id, toastId);
+      } else if (!takesBack && undoable) {
+        pushToast(label, "success", 3000);
       }
     },
     [qc, selectedMailId, activeReplyDirtyForThreadId, setExplicitlyUnread, setSelectedMailId, navDirection, pushToast],
@@ -326,9 +390,9 @@ export function useMailAction() {
 export function useUndoMailAction() {
   const { push: pushToast } = useToast();
   return useCallback((): boolean => {
-    const label = undoMailAction();
-    if (label === null) return false;
-    pushToast(`Undone: ${label}`, "info", 3000);
+    const entry = undoMailAction();
+    if (entry === null) return false;
+    pushToast(undoneText(entry), "info", 3000);
     return true;
   }, [pushToast]);
 }

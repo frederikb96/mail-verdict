@@ -77,6 +77,19 @@ test("Retry on a refused intent sticks, however the stored copy ranks it", () =>
   assert.equal(stored().intents.find((i) => i.id === "r1")?.state, "pending");
 });
 
+test("a resent intent keeps its attempts, and a new generation forgets a refusal", () => {
+  reset();
+  ledger.addIntents([intent("s1")]);
+  ledger.updateIntent("s1", { state: "held", attempts: 3, firstSentAt: 5 });
+  ledger.restartIntent("s1", { resend: true });
+  const resent = ledger.getLedgerSnapshot().intents.find((i) => i.id === "s1");
+  assert.equal(resent?.attempts, 3);
+  assert.equal(resent?.firstSentAt, 5);
+  ledger.updateIntent("s1", { state: "failed", refused: true });
+  ledger.restartIntent("s1", { resend: false });
+  assert.equal(ledger.getLedgerSnapshot().intents.find((i) => i.id === "s1")?.refused, undefined);
+});
+
 test("what the server answered reaches the undo copy", () => {
   reset();
   ledger.addIntents([intent("b1")], "Archived");
