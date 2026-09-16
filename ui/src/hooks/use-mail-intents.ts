@@ -402,6 +402,9 @@ export function useMailIntentOutcomes(): void {
         unknownOrigin ? null : { folderIds: new Set(folders.filter((id): id is string => !!id)) },
       );
       if (intent.originTab !== me) return;
+      // A reversal speaks through its move alone: the mark-unread following
+      // it misses exactly when the move did.
+      if (intent.reverses !== undefined && intent.action !== "move") return;
       if (intent.notApplied) {
         pushToast(
           intent.reverses
@@ -409,7 +412,7 @@ export function useMailIntentOutcomes(): void {
             : `Not ${PAST[intent.action]} — the message had already moved`,
           "info", 6000,
         );
-      } else if (intent.skippedIds?.length && intent.action !== "mark_unread") {
+      } else if (intent.skippedIds?.length) {
         const count = intent.skippedIds.length;
         pushToast(
           `${count} message${count === 1 ? " was" : "s were"} left alone — ${count === 1 ? "it" : "they"} had moved since`,

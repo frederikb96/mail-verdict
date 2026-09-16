@@ -643,16 +643,25 @@ export function nextWakeAt(intents: readonly MailIntent[], now: number): number 
   return wake;
 }
 
-/** The request body guards for an intent: where each message was seen,
- * and how recent a conversation member may be. */
+/**
+ * The request body guards for an intent: where each message was seen, and
+ * how recent a conversation member may be.
+ *
+ * Only an action that files messages somewhere, or destroys them, is
+ * guarded to a folder -- and every reversal, whose whole point is where the
+ * original left things. A flag set by the reader follows the message
+ * wherever another client has filed it: nothing is lost by that, and the
+ * reader asked for it.
+ */
 export function requestGuards(intent: MailIntent): {
   expectedFolderIds: Record<string, string>;
   expandThreadsThrough: string | null;
 } {
+  const guarded = leavesFolder(intent.action) || intent.reverses !== undefined;
   const expectedFolderIds: Record<string, string> = {};
   let newest: string | null = null;
   for (const m of intent.messages) {
-    if (m.folderId) expectedFolderIds[m.id] = m.folderId;
+    if (guarded && m.folderId) expectedFolderIds[m.id] = m.folderId;
     if (m.mirroredAt && (newest === null || Date.parse(m.mirroredAt) > Date.parse(newest))) {
       newest = m.mirroredAt;
     }

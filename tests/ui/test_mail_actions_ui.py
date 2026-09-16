@@ -564,8 +564,12 @@ class TestMailActionsUi:
         page.get_by_role("button", name="Undo", exact=True).click()
 
         expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
-        detail = api_client.get(f"/api/messages/{target['id']}").json()
-        assert detail["folder_id"] == inbox_folder["id"]
+        wait_for(
+            lambda: True if api_client.get(
+                f"/api/messages/{target['id']}",
+            ).json()["folder_id"] == inbox_folder["id"] else None,
+            timeout_s=15.0, description=f"{target['id']} moved back on the server",
+        )
 
     def test_bulk_star_flags_every_selected_row(
         self,
@@ -683,10 +687,16 @@ class TestMailActionsUi:
 
         page.get_by_role("button", name="Undo", exact=True).click()
 
+        # The rows come back at once, before the move back has landed.
         for target in targets:
             expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
-            detail = api_client.get(f"/api/messages/{target['id']}").json()
-            assert detail["folder_id"] == inbox_folder["id"]
+        for target in targets:
+            wait_for(
+                lambda t=target: True if api_client.get(
+                    f"/api/messages/{t['id']}",
+                ).json()["folder_id"] == inbox_folder["id"] else None,
+                timeout_s=15.0, description=f"{target['id']} moved back on the server",
+            )
 
     def test_bulk_archive_with_no_archive_folder_shows_the_failure(
         self,

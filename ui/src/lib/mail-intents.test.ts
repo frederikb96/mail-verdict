@@ -359,6 +359,10 @@ test("requests carry where each message was seen and the newest mirror time", ()
   assert.deepEqual(requestGuards(convo), {
     expectedFolderIds: { a: INBOX, b: WORK }, expandThreadsThrough: "2026-09-16T11:00:00+00:00",
   });
+  // A star follows the message wherever it has been filed since.
+  assert.deepEqual(requestGuards(intent("flag", [a])).expectedFolderIds, {});
+  const [unstar] = reversalsOf(intent("flag", [a], { state: "done" }), 1, () => "r");
+  assert.deepEqual(requestGuards(unstar).expectedFolderIds, { a: INBOX }, "a reversal is guarded");
 });
 
 test("a retried intent outranks the refused copy still stored", () => {

@@ -133,9 +133,11 @@ a list read that lands while an action is still on its way cannot put an archive
   once.
 - **Sending.** A drainer (`ui/src/lib/intent-drainer.ts`) sends one request per account at a time,
   never one overtaking an earlier unsettled intent on the same message, each with the intent's id
-  as `idempotency_key`, a timeout, and the folder each message was seen in (`expected_folder_id`,
-  `expected_folder_ids`, `expand_threads_through`). The server leaves a message that has moved
-  since alone (`applied: false`, `skipped_ids`), and the reader is told. A network error or timeout
+  as `idempotency_key` and a timeout. An action that files or destroys messages, and every undo,
+  also carries the folder each message was seen in (`expected_folder_id`, `expected_folder_ids`,
+  `expand_threads_through`): the server leaves a message that has moved since alone
+  (`applied: false`, `skipped_ids`), and the reader is told. A read state or a star follows the
+  message wherever it has been filed. A network error or timeout
   waits for the network with backoff and resumes when the browser reports being online or the event
   stream reconnects; a 408, 425, 429 or 5xx retries a bounded number of times; a 404 ends the intent
   quietly; any other refusal marks it failed, shown on its row and in the header with Retry (a new
