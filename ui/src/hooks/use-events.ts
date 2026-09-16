@@ -7,7 +7,7 @@
  * month view is not re-fetched for the day view landing on the same week.
  */
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import {
   type QueryClient,
   keepPreviousData,
@@ -17,6 +17,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { mergeEventsInRange } from "@/lib/calendar-event-merge";
+import { identity } from "@/lib/query-combine";
 import { useCalendars } from "@/hooks/use-calendars";
 import { monthChunksForWeek, monthsBetween, weekDays } from "@/lib/dates";
 import type {
@@ -46,13 +48,6 @@ function filterHidden(events: EventInstance[], hidden: ReadonlySet<string>): Eve
 export const eventKeys = {
   chunk: (month: string) => ["calendar-events", month] as const,
 };
-
-/** A stable key for one instance within a chunk -- a modified occurrence of
- * a recurring series shares its object_id with the master, so recurrence_id
- * has to be part of the identity. */
-function instanceKey(e: Pick<EventInstance, "object_id" | "recurrence_id">): string {
-  return `${e.object_id}:${e.recurrence_id ?? "master"}`;
-}
 
 /** SSE explicitly invalidates the exact chunks a change touches (see
  * use-sse.ts's calendar.object handling), so a chunk needs no eager
@@ -89,39 +84,57 @@ export function useEventDetail(objectId: string | null, recurrenceId: string | n
   });
 }
 
-/** Every month chunk touching [from, to], merged and filtered to the range. */
-export function useEventsForRange(from: Date, to: Date) {
+export interface RangeEvents {
+  events: EventInstance[];
+  isLoading: boolean;
+  isError: boolean;
+  /** True when any chunk touching this range came back truncated (its
+   * server-side expansion ran out of budget) -- a caller shows this
+   * distinctly from an ordinary empty range, the same warning the month
+   * view already carries per-chunk. */
+  truncated: boolean;
+  /** Re-fetches every chunk touching this range -- what a caller's Retry
+   * control on isError wires up to. */
+  refetch: () => void;
+}
+
+/** Every month chunk touching [from, to], merged and filtered to the range.
+ *
+ * The memo below depends on `results` itself, not a hand-derived array of
+ * its `data` fields: that derived array is what silently broke this hook
+ * before -- `dataRefs` was passed as the deps array itself, so its length
+ * (and therefore what "unchanged deps" meant) varied with how many months
+ * the range touched, and React's production dep comparison (common-prefix
+ * only) then treated a genuinely different range as unchanged whenever a
+ * month boundary added an entry. A single, fixed-length deps array element
+ * -- `results` -- has no such failure mode, and is what lets
+ * react-hooks/exhaustive-deps verify this without a disable comment: every
+ * reactive value the callback reads is named in the array. */
+export function useEventsForRange(from: Date, to: Date): RangeEvents {
   const months = monthsBetween(from, to);
   const { data: calendars } = useCalendars();
-  const results = useQueries({ queries: months.map((month) => chunkQueryOptions(month)) });
-  const dataRefs = results.map((r) => r.data);
+  const results = useQueries({
+    queries: months.map((month) => chunkQueryOptions(month)),
+    combine: identity,
+  });
 
   const isLoading = results.some((r) => r.isLoading);
+  const isError = results.some((r) => r.isError);
+  const truncated = results.some((r) => r.data?.truncated === true);
   const fromMs = from.getTime();
   const toMs = to.getTime();
 
-  // Referentially stable while every chunk's own `data` reference is
-  // unchanged -- react-query already keeps that reference stable across
-  // renders where the underlying data didn't actually change, so this
-  // only recomputes on a real fetch, never on an unrelated re-render.
-  const events = useMemo(() => {
-    const byKey = new Map<string, EventInstance>();
-    for (const r of results) {
-      for (const e of r.data?.events ?? []) {
-        byKey.set(instanceKey(e), e);
-      }
-    }
-    return Array.from(byKey.values()).filter((e) => {
-      const start = new Date(e.dtstart).getTime();
-      const end = new Date(e.dtend).getTime();
-      return end >= fromMs && start <= toMs;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, dataRefs);
+  const events = useMemo(
+    () => mergeEventsInRange(results, fromMs, toMs),
+    [results, fromMs, toMs],
+  );
   const hidden = useMemo(() => hiddenCalendarIds(calendars), [calendars]);
   const visible = useMemo(() => filterHidden(events, hidden), [events, hidden]);
+  const refetch = useCallback(() => {
+    for (const r of results) void r.refetch();
+  }, [results]);
 
-  return { events: visible, isLoading };
+  return { events: visible, isLoading, isError, truncated, refetch };
 }
 
 /** Events touching a given week, read from whichever month chunks the week's
@@ -153,25 +166,22 @@ export function useWeekEvents(
   const months = monthChunksForWeek(weekIndex);
   const results = useQueries({
     queries: months.map((month) => ({ ...chunkQueryOptions(month), enabled: false })),
+    combine: identity,
   });
-  const dataRefs = results.map((r) => r.data);
 
   const days = weekDays(weekIndex);
   const weekStart = days[0].getTime();
   const weekEnd = days[6].getTime() + 24 * 60 * 60 * 1000;
 
-  const events = useMemo(() => {
-    const byKey = new Map<string, EventInstance>();
-    for (const r of results) {
-      for (const e of r.data?.events ?? []) {
-        const start = new Date(e.dtstart).getTime();
-        const end = new Date(e.dtend).getTime();
-        if (end >= weekStart && start < weekEnd) byKey.set(instanceKey(e), e);
-      }
-    }
-    return Array.from(byKey.values());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, dataRefs);
+  // Same shape as useEventsForRange above, for the same reason -- `results`
+  // itself is the deps array element, fixed length regardless of whether
+  // this week touches one month chunk or two. weekEnd - 1 turns the
+  // exclusive week-end boundary into mergeEventsInRange's inclusive one --
+  // equivalent since both sides are integer millisecond instants.
+  const events = useMemo(
+    () => mergeEventsInRange(results, weekStart, weekEnd - 1),
+    [results, weekStart, weekEnd],
+  );
   const visible = useMemo(() => filterHidden(events, hidden), [events, hidden]);
 
   return { events: visible, loaded: results.every((r) => r.data !== undefined) };

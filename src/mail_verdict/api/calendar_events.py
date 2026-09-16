@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import time
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -288,12 +289,22 @@ async def _to_instance(
 # can carry one such object per visible calendar. Run the whole batch
 # once on a worker thread rather than the request's own coroutine, so it
 # cannot hold up every other request sharing this process's one event
-# loop while it works. The budget below is the backstop for a single
-# object recurring-ical-events cannot expand quickly despite that: a
-# thread has no cooperative way to be interrupted mid-walk, so timing out
-# abandons the wait rather than the underlying computation -- that
-# object's occurrences are simply missing from the response, the same
-# best-effort contract this view already keeps for a parse failure.
+# loop while it works. _EXPANSION_BUDGET_SECONDS is checked between
+# objects, inside the worker thread: once exceeded, whatever has already
+# been expanded is kept and the rest of the batch is simply skipped --
+# the same best-effort contract this view already keeps for a parse
+# failure, now applied to "ran out of time" rather than discarding
+# everything the batch had already produced.
+#
+# _EXPANSION_TIMEOUT_SECONDS is a second, outer backstop above that --
+# for the one object recurring-ical-events itself cannot expand quickly,
+# which the per-object check above can only ever see *between* objects.
+# A thread has no cooperative way to be interrupted mid-walk, so this
+# outer timeout abandons the wait rather than the underlying
+# computation, and whatever the thread had already returned is lost with
+# it -- the batch comes back empty rather than partial. Kept comfortably
+# above the inner budget so the inner, partial-results path is what
+# normally fires; this one is the rare, strictly worse fallback.
 #
 # A thread that outlives its own timeout keeps occupying whatever pool it
 # was submitted to until it eventually finishes on its own -- a
@@ -301,17 +312,22 @@ async def _to_instance(
 # more worker. A dedicated, bounded pool contains that to calendar
 # expansion alone, rather than eventually starving every unrelated
 # asyncio.to_thread() call sharing the loop's own default executor.
-_EXPANSION_TIMEOUT_SECONDS = 10.0
+_EXPANSION_BUDGET_SECONDS = 10.0
+_EXPANSION_TIMEOUT_SECONDS = _EXPANSION_BUDGET_SECONDS + 5.0
 _EXPANSION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="calendar-expand",
 )
 
 
 def _expand_all_sync(
-    objects: list[DavObject], window_start: datetime, window_end: datetime,
-) -> dict[uuid.UUID, list[ical.ParsedEvent]]:
+    objects: list[DavObject], window_start: datetime, window_end: datetime, deadline: float,
+) -> tuple[dict[uuid.UUID, list[ical.ParsedEvent]], bool]:
     expanded: dict[uuid.UUID, list[ical.ParsedEvent]] = {}
+    truncated = False
     for obj in objects:
+        if time.monotonic() > deadline:
+            truncated = True
+            break
         try:
             expanded[obj.id] = expansion_cache.occurrences_for(
                 obj.id, obj.etag, obj.data, window_start, window_end,
@@ -325,26 +341,27 @@ def _expand_all_sync(
             logger.warning(
                 "Skipping calendar object %s in month view", obj.id, exc_info=True,
             )
-    return expanded
+    return expanded, truncated
 
 
 async def _expand_all(
     objects: list[DavObject], window_start: datetime, window_end: datetime,
 ) -> tuple[dict[uuid.UUID, list[ical.ParsedEvent]], bool]:
-    """Returns (expanded, truncated) -- truncated is True when the whole
-    batch missed its shared budget, so the caller can tell a person "the
-    month view came back empty because it ran out of time" apart from
-    "the month view came back empty because there is nothing in it",
-    which look identical without this."""
+    """Returns (expanded, truncated) -- truncated is True when the batch
+    missed its budget, so the caller can tell a person "some events may
+    be missing because it ran out of time" apart from "the month view
+    came back empty because there is nothing in it", which look
+    identical without this. On a budget miss, whatever finished before
+    the deadline is still returned rather than discarded."""
     loop = asyncio.get_running_loop()
+    deadline = time.monotonic() + _EXPANSION_BUDGET_SECONDS
     try:
-        result = await asyncio.wait_for(
+        return await asyncio.wait_for(
             loop.run_in_executor(
-                _EXPANSION_EXECUTOR, _expand_all_sync, objects, window_start, window_end,
+                _EXPANSION_EXECUTOR, _expand_all_sync, objects, window_start, window_end, deadline,
             ),
             timeout=_EXPANSION_TIMEOUT_SECONDS,
         )
-        return result, False
     except TimeoutError:
         logger.warning(
             "Calendar expansion exceeded %.0fs for %d objects; returning none of them",

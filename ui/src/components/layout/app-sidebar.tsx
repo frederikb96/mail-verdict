@@ -526,7 +526,7 @@ export function AppSidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/search" />}
+              render={<Link href="/search" prefetch={false} />}
               isActive={pathname === "/search"}
             >
               <Search className="h-4 w-4" />
@@ -535,7 +535,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/" />}
+              render={<Link href="/" prefetch={false} />}
               isActive={pathname === "/"}
             >
               <Mail className="h-4 w-4" />
@@ -544,7 +544,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/calendar" />}
+              render={<Link href="/calendar" prefetch={false} />}
               isActive={pathname.startsWith("/calendar")}
             >
               <CalendarDays className="h-4 w-4" />
@@ -553,7 +553,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/contacts" />}
+              render={<Link href="/contacts" prefetch={false} />}
               isActive={pathname.startsWith("/contacts")}
             >
               <Contact className="h-4 w-4" />
@@ -562,7 +562,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/spam-review" />}
+              render={<Link href="/spam-review" prefetch={false} />}
               isActive={pathname === "/spam-review"}
             >
               <ShieldAlert className="h-4 w-4" />
@@ -571,7 +571,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/accounts" />}
+              render={<Link href="/accounts" prefetch={false} />}
               isActive={pathname === "/accounts"}
             >
               <UserCircle className="h-4 w-4" />
@@ -580,7 +580,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/pipeline" />}
+              render={<Link href="/pipeline" prefetch={false} />}
               isActive={pathname === "/pipeline"}
             >
               <Workflow className="h-4 w-4" />
@@ -589,7 +589,7 @@ export function AppSidebar() {
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton
-              render={<Link href="/settings" />}
+              render={<Link href="/settings" prefetch={false} />}
               isActive={pathname === "/settings"}
             >
               <Settings className="h-4 w-4" />

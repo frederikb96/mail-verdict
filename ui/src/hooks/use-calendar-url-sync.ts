@@ -27,14 +27,13 @@
 
 import { useCallback, useEffect, useRef } from "react";
 import { useSetAtom, useStore } from "jotai";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
 import { calendarUrl, parseCalendarDate } from "@/lib/calendar-url";
 
 const VALID_VIEWS: CalendarViewMode[] = ["day", "week", "month", "agenda"];
 
 export function useCalendarUrlSync(): void {
-  const router = useRouter();
   const searchParams = useSearchParams();
   // The atoms are read from the store rather than subscribed to: this hook
   // sits at the top of the calendar page, and calendarDateAtom changes on
@@ -66,11 +65,11 @@ export function useCalendarUrlSync(): void {
     readRef.current = true;
     if (!searchParams.get("view") && !searchParams.get("date")) {
       const url = calendarUrl(store.get(calendarViewAtom), store.get(calendarDateAtom));
-      router.replace(url, { scroll: false });
+      window.history.replaceState(null, "", url);
       return;
     }
     apply(searchParams);
-  }, [searchParams, apply, router, store]);
+  }, [searchParams, apply, store]);
 
   useEffect(() => {
     function onPopState() {

@@ -7,16 +7,17 @@
  * scrolling skill describes, unlike the month view.
  */
 
-import { useMemo, useRef } from "react";
-import { useAtomValue } from "jotai";
+import { useEffect, useMemo, useRef } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
 import { VList, type VListHandle } from "virtua";
 import { AlertTriangle, Ban, CalendarX2, Loader2, Repeat } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { resolveCalendarColor } from "@/components/calendar/colors";
 import { allDayInstant, deriveEventLook, type SelectEventHandler } from "@/components/calendar/layout";
 import { Truncate } from "@/components/ui/truncate";
 import { useCalendars } from "@/hooks/use-calendars";
 import { useEventsForRange } from "@/hooks/use-events";
-import { calendarDateAtom } from "@/lib/atoms";
+import { calendarDateAtom, calendarTruncatedAtom } from "@/lib/atoms";
 import { addDays, format, isToday } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import type { Calendar, EventInstance } from "@/types/api";
@@ -114,7 +115,16 @@ export function AgendaList({ onSelectEvent }: AgendaListProps) {
   }, [anchor]);
   const rangeEnd = useMemo(() => addDays(rangeStart, AGENDA_RANGE_DAYS), [rangeStart]);
 
-  const { events, isLoading } = useEventsForRange(rangeStart, rangeEnd);
+  const { events, isLoading, isError, truncated, refetch } = useEventsForRange(rangeStart, rangeEnd);
+
+  // See time-grid.tsx's own note on this atom -- the toolbar reads it to
+  // show the same truncation warning the month view already carries,
+  // regardless of which range view is actually mounted.
+  const setTruncated = useSetAtom(calendarTruncatedAtom);
+  useEffect(() => {
+    setTruncated(truncated);
+    return () => setTruncated(false);
+  }, [truncated, setTruncated]);
 
   const rows = useMemo<AgendaRow[]>(() => {
     const byDay = new Map<string, typeof events>();
@@ -137,9 +147,22 @@ export function AgendaList({ onSelectEvent }: AgendaListProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, rangeStart.getTime(), rangeEnd.getTime()]);
 
+  if (isError) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+        <AlertTriangle className="h-8 w-8 text-destructive" />
+        <p className="text-sm">Could not load events.</p>
+        <Button variant="outline" size="sm" onClick={() => refetch()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
   if (isLoading && rows.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+      <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
         Loading…
       </div>
     );

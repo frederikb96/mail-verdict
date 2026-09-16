@@ -52,6 +52,84 @@ from tests.setup.containers import (  # isort: skip
 _HOUR_HEIGHT_PX = 56
 
 
+def _three_consecutive_weeks() -> tuple[datetime, datetime, datetime]:
+    """Three Mondays (midnight UTC), far enough out to be clear of any
+    other test's own events: the first two share a calendar month, and
+    the third crosses into the next one -- covering both shapes
+    useEventsForRange has to get right stepping through them."""
+    now = datetime.now(timezone.utc)
+    monday = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    week1 = monday + timedelta(weeks=30)
+    while True:
+        week2 = week1 + timedelta(weeks=1)
+        week3 = week2 + timedelta(weeks=1)
+        if (
+            (week1.year, week1.month) == (week2.year, week2.month)
+            and (week2.year, week2.month) != (week3.year, week3.month)
+        ):
+            return week1, week2, week3
+        week1 += timedelta(weeks=1)
+
+
+def _two_consecutive_days() -> tuple[datetime, datetime]:
+    """Two adjacent days sharing a calendar month, far enough out to be
+    clear of any other test's own events. Unlike the week view, a single
+    day's own range can never touch two month chunks at once, so the
+    deps-array-length failure mode does not apply here -- what a day-view
+    Next has to get right is the other one: recomputing at all when the
+    month chunk's own data hasn't changed underneath it, only the day
+    being filtered to has."""
+    day1 = (datetime.now(timezone.utc) + timedelta(weeks=45)).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    while True:
+        day2 = day1 + timedelta(days=1)
+        if (day1.year, day1.month) == (day2.year, day2.month):
+            return day1, day2
+        day1 += timedelta(days=1)
+
+
+def _put_hour_event(
+    dav_client: httpx.Client, calendar_url: str, dtstart: datetime, label: str,
+) -> str:
+    """PUTs a one-hour VEVENT directly on the DAV server and returns its
+    (unique) summary."""
+    uid = str(uuid.uuid4())
+    summary = f"{label} {uuid.uuid4()}"
+    dtend = dtstart + timedelta(hours=1)
+    now = datetime.now(timezone.utc)
+    fmt = "%Y%m%dT%H%M%SZ"
+    ics = (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//mail-verdict-test//EN\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"UID:{uid}\r\n"
+        f"DTSTAMP:{now.strftime(fmt)}\r\n"
+        f"DTSTART:{dtstart.strftime(fmt)}\r\n"
+        f"DTEND:{dtend.strftime(fmt)}\r\n"
+        f"SUMMARY:{summary}\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+    put_object(dav_client, f"{calendar_url}{uid}.ics", ics, "text/calendar; charset=utf-8")
+    return summary
+
+
+def _wait_for_summary_in_month(
+    api_client: httpx.Client, calendar_collection: dict[str, Any], month: str, summary: str,
+) -> dict[str, Any]:
+    def _check() -> dict[str, Any] | None:
+        listed = api_client.get(
+            "/api/calendar/events", params={"month": month, "calendars": calendar_collection["id"]},
+        ).json()["events"]
+        return next((e for e in listed if e["summary"] == summary), None)
+
+    return wait_for(_check, description=f"Event {summary!r} synced")
+
+
 @pytest.fixture(scope="module")
 def radicale_base_url(radicale_endpoint: tuple[str, int]) -> str:
     host, port = radicale_endpoint
@@ -1670,6 +1748,130 @@ class TestCalendarUi:
 
         page.get_by_role("tab", name="Day", exact=True).click()
         expect(toolbar_title).to_have_text(today_title, timeout=10_000)
+
+    def test_week_view_next_and_previous_show_the_correct_events_across_a_month_boundary(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        radicale_base_url: str,
+        ui_calendar_owner: str,
+        dav_account: dict[str, Any],
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """The regression this guards: useEventsForRange memoised on the
+        month chunks' own data references with fromMs/toMs left out of its
+        deps entirely, and passed a derived array as the useMemo deps
+        array itself -- whose length varies with how many months a range
+        touches. Stepping Next/Previous through the week view therefore
+        either kept rendering the PREVIOUS week's events (fromMs/toMs not
+        a dep, so an unchanged month's data never triggers a recompute) or
+        never recomputed past a month boundary at all (a variable-length
+        deps array, compared by common prefix in production). Three
+        consecutive weeks -- the first two sharing a month, the third
+        crossing into the next one -- exercise both failure modes."""
+        week1, week2, week3 = _three_consecutive_weeks()
+        dtstart_a = week1 + timedelta(days=1, hours=10)
+        dtstart_b = week2 + timedelta(days=1, hours=10)
+        dtstart_c = week3 + timedelta(days=1, hours=10)
+
+        with httpx.Client(auth=(ui_calendar_owner, "unused"), timeout=10.0) as dav_client:
+            principal = discover(dav_client, radicale_base_url)
+            calendar_url = urljoin(principal.calendar_home, "work/")
+            summary_a = _put_hour_event(dav_client, calendar_url, dtstart_a, "Week nav A")
+            summary_b = _put_hour_event(dav_client, calendar_url, dtstart_b, "Week nav B")
+            summary_c = _put_hour_event(dav_client, calendar_url, dtstart_c, "Week nav C")
+
+        sync_resp = api_client.post(f"/api/dav-accounts/{dav_account['id']}/sync")
+        assert sync_resp.status_code == 200, sync_resp.text
+
+        event_a = _wait_for_summary_in_month(
+            api_client, calendar_collection, dtstart_a.strftime("%Y-%m"), summary_a,
+        )
+        event_b = _wait_for_summary_in_month(
+            api_client, calendar_collection, dtstart_b.strftime("%Y-%m"), summary_b,
+        )
+        event_c = _wait_for_summary_in_month(
+            api_client, calendar_collection, dtstart_c.strftime("%Y-%m"), summary_c,
+        )
+
+        chip_a = event_chip(page, event_a["object_id"])
+        chip_b = event_chip(page, event_b["object_id"])
+        chip_c = event_chip(page, event_c["object_id"])
+
+        page.goto(f"{app_server}/calendar?view=week&date={week1.strftime('%Y-%m-%d')}")
+        expect(chip_a).to_be_visible(timeout=15_000)
+
+        next_button = page.get_by_role("button", name="Next", exact=True)
+        prev_button = page.get_by_role("button", name="Previous", exact=True)
+
+        next_button.click()
+        expect(chip_b).to_be_visible(timeout=15_000)
+        expect(chip_a).not_to_be_visible(timeout=10_000)
+
+        next_button.click()  # crosses into the next calendar month
+        expect(chip_c).to_be_visible(timeout=15_000)
+        expect(chip_b).not_to_be_visible(timeout=10_000)
+
+        prev_button.click()  # back across the same month boundary
+        expect(chip_b).to_be_visible(timeout=15_000)
+        expect(chip_c).not_to_be_visible(timeout=10_000)
+
+        prev_button.click()
+        expect(chip_a).to_be_visible(timeout=15_000)
+        expect(chip_b).not_to_be_visible(timeout=10_000)
+
+    def test_day_view_next_and_previous_show_the_correct_events(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        radicale_base_url: str,
+        ui_calendar_owner: str,
+        dav_account: dict[str, Any],
+        calendar_collection: dict[str, Any],
+    ) -> None:
+        """Same regression as the week-view test above, exercised in the
+        day view instead -- dayCount=1 reads from the same
+        useEventsForRange hook, on a range one day wide. See
+        _two_consecutive_days's own docstring for why this one stays
+        within a single month rather than crossing a boundary."""
+        day1, day2 = _two_consecutive_days()
+        dtstart_1 = day1 + timedelta(hours=10)
+        dtstart_2 = day2 + timedelta(hours=10)
+
+        with httpx.Client(auth=(ui_calendar_owner, "unused"), timeout=10.0) as dav_client:
+            principal = discover(dav_client, radicale_base_url)
+            calendar_url = urljoin(principal.calendar_home, "work/")
+            summary_1 = _put_hour_event(dav_client, calendar_url, dtstart_1, "Day nav 1")
+            summary_2 = _put_hour_event(dav_client, calendar_url, dtstart_2, "Day nav 2")
+
+        sync_resp = api_client.post(f"/api/dav-accounts/{dav_account['id']}/sync")
+        assert sync_resp.status_code == 200, sync_resp.text
+
+        event_1 = _wait_for_summary_in_month(
+            api_client, calendar_collection, dtstart_1.strftime("%Y-%m"), summary_1,
+        )
+        event_2 = _wait_for_summary_in_month(
+            api_client, calendar_collection, dtstart_2.strftime("%Y-%m"), summary_2,
+        )
+
+        chip_1 = event_chip(page, event_1["object_id"])
+        chip_2 = event_chip(page, event_2["object_id"])
+
+        page.goto(f"{app_server}/calendar?view=day&date={day1.strftime('%Y-%m-%d')}")
+        expect(chip_1).to_be_visible(timeout=15_000)
+
+        next_button = page.get_by_role("button", name="Next", exact=True)
+        prev_button = page.get_by_role("button", name="Previous", exact=True)
+
+        next_button.click()  # crosses the month boundary
+        expect(chip_2).to_be_visible(timeout=15_000)
+        expect(chip_1).not_to_be_visible(timeout=10_000)
+
+        prev_button.click()
+        expect(chip_1).to_be_visible(timeout=15_000)
+        expect(chip_2).not_to_be_visible(timeout=10_000)
 
 
 class TestCalendarNavigation:

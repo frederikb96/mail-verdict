@@ -10,11 +10,20 @@
  * scroller's own scroll-driven date update uses, and what continuous
  * stepping (prev/next, the day/week keyboard shortcuts) uses too, so
  * neither spends a history entry on every unit stepped through.
+ *
+ * Written through the History API, not router.push/replace -- the same
+ * move use-mail-url-sync.ts made for the same reason: a route change
+ * (`/calendar` itself) never happens here, only its query string, and
+ * Next's router fetches the page's RSC payload for every push/replace
+ * regardless, a request per click, falling back to a full page reload
+ * after a deploy (a payload from a newer build). Next's own patch to
+ * pushState/replaceState keeps useSearchParams in step with no fetch of
+ * its own, which is what use-calendar-url-sync.ts's popstate listener
+ * and mount read still rely on.
  */
 
 import { useCallback } from "react";
 import { useSetAtom, useStore } from "jotai";
-import { useRouter } from "next/navigation";
 import { calendarDateAtom, calendarViewAtom, type CalendarViewMode } from "@/lib/atoms";
 import { calendarUrl } from "@/lib/calendar-url";
 
@@ -29,7 +38,6 @@ import { calendarUrl } from "@/lib/calendar-url";
  * silently defeating its memoization. Reading from the store gives one
  * stable function for the component's whole lifetime and no re-render. */
 export function useCalendarNavigate() {
-  const router = useRouter();
   const store = useStore();
   const setView = useSetAtom(calendarViewAtom);
   const setDate = useSetAtom(calendarDateAtom);
@@ -41,10 +49,10 @@ export function useCalendarNavigate() {
       if (next.view !== undefined) setView(next.view);
       if (next.date !== undefined) setDate(next.date);
       const url = calendarUrl(nextView, nextDate);
-      if (options?.push === false) router.replace(url, { scroll: false });
-      else router.push(url, { scroll: false });
+      if (options?.push === false) window.history.replaceState(null, "", url);
+      else window.history.pushState(null, "", url);
     },
-    [store, setView, setDate, router],
+    [store, setView, setDate],
   );
 }
 
@@ -53,13 +61,14 @@ export function useCalendarNavigate() {
  * touching either -- for a caller that already keeps them current itself
  * (the month scroller writes `calendarDateAtom` directly, cheaply, on
  * every row scrolled past) and only wants the address bar to catch up
- * once, when scrolling settles. `router.replace` is what every other
- * passive write here uses too: a settle event happens once per pause, not
- * once per user gesture, so it never deserves a history entry. */
+ * once, when scrolling settles. A replace, like every other passive write
+ * here: a settle event happens once per pause, not once per user gesture,
+ * so it never deserves a history entry. */
 export function useCalendarUrlWriter() {
-  const router = useRouter();
   const store = useStore();
   return useCallback(() => {
-    router.replace(calendarUrl(store.get(calendarViewAtom), store.get(calendarDateAtom)), { scroll: false });
-  }, [store, router]);
+    window.history.replaceState(
+      null, "", calendarUrl(store.get(calendarViewAtom), store.get(calendarDateAtom)),
+    );
+  }, [store]);
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { AlertTriangle, ChevronLeft, ChevronRight, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -10,6 +10,7 @@ import { EventEditor } from "@/components/calendar/event-editor";
 import { MonthYearPicker } from "@/components/calendar/month-year-picker";
 import {
   calendarDateAtom,
+  calendarTruncatedAtom,
   calendarViewAtom,
   effectiveCalendarView,
   type CalendarViewMode,
@@ -50,7 +51,13 @@ export function CalendarToolbar() {
   // it -- reading the same chunk the month view itself renders from
   // rather than fetching a second time.
   const { data: monthEvents } = useEventChunk(monthChunkKey(date));
-  const showTruncationWarning = view === "month" && monthEvents?.truncated === true;
+  // Month reads its own anchor chunk directly, the same one it is already
+  // subscribed to for other reasons (see the comment above); every other
+  // view reports through calendarTruncatedAtom instead, since the toolbar
+  // has no other way to reach whichever range view happens to be mounted.
+  const rangeTruncated = useAtomValue(calendarTruncatedAtom);
+  const showTruncationWarning =
+    view === "month" ? monthEvents?.truncated === true : rangeTruncated;
 
   // push: false -- prev/next never spends a history entry (navigate()'s
   // default push is for the changes worth one), but still keeps the URL
@@ -93,7 +100,7 @@ export function CalendarToolbar() {
             <AlertTriangle className="h-4 w-4 text-amber-500" />
           </TooltipTrigger>
           <TooltipContent side="bottom">
-            This month has too much to expand in time -- some events may be missing.
+            This range has too much to expand in time -- some events may be missing.
           </TooltipContent>
         </Tooltip>
       )}
