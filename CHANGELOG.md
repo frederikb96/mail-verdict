@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.3.1] - 2026-09-16
+
 - Fixed the week and day calendar views showing the wrong events, or none, after Next/Previous --
   sometimes recovering after 10-30s, sometimes not until leaving and returning to the view.
   Stepping through them now always shows the range actually on screen.
