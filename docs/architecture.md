@@ -164,7 +164,7 @@ a list read that lands while an action is still on its way cannot put an archive
 - **Rulings.** A spam or not-spam ruling moves a message only as the server decides
   (`rulingMoves`, after `spam/feedback.py`). One that leaves it where it is hides no row, keeps the
   reader on it and offers no undo -- the opposite ruling takes it back. Undoing one that moved
-  moves the message back and leaves the ruling recorded.
+  moves the message back, which records the opposite ruling as any move into or out of Junk does.
 - **Destroying a folder** confirms the server's own count, never a projected one, and is refused
   while an unanswered action involves that folder: a move still in the browser is invisible to the
   server's guards.

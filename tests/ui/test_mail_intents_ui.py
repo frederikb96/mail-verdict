@@ -414,7 +414,7 @@ class TestRulings:
         expect(row).to_be_visible()
         assert _folder_of(api_client, target["id"]) == account["inbox"]["id"]
 
-    def test_undoing_a_ruling_moves_the_message_back_and_says_the_ruling_stays(
+    def test_undoing_a_ruling_moves_the_message_back_and_reverses_the_ruling(
         self,
         page: Page,
         app_server: str,
@@ -422,6 +422,8 @@ class TestRulings:
         dovecot_endpoint: tuple[str, int, int],
         account: dict[str, Any],
     ) -> None:
+        """Moving a message back out of Junk is itself a not-spam ruling
+        (spam/feedback.py), so undo takes back both the move and the ruling."""
         junk = wait_for_folder(api_client, account["id"], "Junk")
         target = _deliver(api_client, dovecot_endpoint, account, f"Junked {uuid.uuid4()}")
         _open_inbox(page, app_server, account)
@@ -434,13 +436,16 @@ class TestRulings:
 
         page.locator("body").click(position={"x": 1, "y": 1})
         page.keyboard.press("Control+z")
-        expect(
-            page.get_by_text("Moved back — still marked as spam", exact=True)
-        ).to_be_visible(timeout=5_000)
+        expect(page.get_by_text("Undone: Marked as spam", exact=True)).to_be_visible(timeout=5_000)
         _wait_through_page(
             page, api_client, target["id"], account["inbox"]["id"], "moved back", 20.0,
         )
-        assert api_client.get(f"/api/messages/{target['id']}").json()["verdict_is_spam"] is True
+        wait_for(
+            lambda: True
+            if api_client.get(f"/api/mails/{target['id']}/verdict").json()["is_spam"] is False
+            else None,
+            timeout_s=20.0, description="the spam ruling reversed by the move back",
+        )
 
 
 class TestNothingIsPulledBack:

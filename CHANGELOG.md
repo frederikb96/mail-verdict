@@ -29,8 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   is the same undo. Undoing an archive also restores unread.
 - An action sent without ever getting an answer is shown as possibly sent, and discarding or
   undoing it checks with the server and takes back whatever was applied.
-- Confirming a verdict that moves nothing keeps the message open and in its list. Undoing a
-  spam or not-spam action moves the message back and says the ruling stays.
+- Confirming a verdict that moves nothing keeps the message open and in its list, and offers no
+  undo that would do nothing.
 - Mail action requests give up after a timeout instead of hanging on a stalled connection.
 - A mail event re-reads only the lists showing the folders it touched; a reconnect re-reads what
   is on screen a few queries at a time.

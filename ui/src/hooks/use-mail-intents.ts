@@ -207,17 +207,6 @@ export function undoMailAction(entryId?: string): UndoEntry | null {
   return entry;
 }
 
-function isRuling(entry: UndoEntry): boolean {
-  return entry.intents.some((i) => i.action === "spam" || i.action === "not_spam");
-}
-
-/** What undoing a step says. Undoing a ruling moves the messages back; the
- * ruling itself stands until the opposite one is given. */
-function undoneText(entry: UndoEntry): string {
-  if (!isRuling(entry)) return `Undone: ${entry.label}`;
-  const spam = entry.intents.some((i) => i.action === "spam");
-  return `Moved back — still marked as ${spam ? "spam" : "not spam"}`;
-}
 
 /** Send a failed intent again. */
 export function retryIntent(id: string): void {
@@ -365,10 +354,7 @@ export function useMailAction() {
       if (entry && TOASTED_ACTIONS.has(action)) {
         const toastId = pushToast(label, "success", 6000, {
           label: "Undo",
-          onClick: () => {
-            const undone = undoMailAction(entry.id);
-            if (undone && isRuling(entry)) pushToast(undoneText(entry), "info", 3000);
-          },
+          onClick: () => undoMailAction(entry.id),
         });
         for (const intent of intents) undoToastByIntent.set(intent.id, toastId);
       } else if (!takesBack && undoable) {
@@ -392,7 +378,7 @@ export function useUndoMailAction() {
   return useCallback((): boolean => {
     const entry = undoMailAction();
     if (entry === null) return false;
-    pushToast(undoneText(entry), "info", 3000);
+    pushToast(`Undone: ${entry.label}`, "info", 3000);
     return true;
   }, [pushToast]);
 }
