@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.4.1] - 2026-09-17
+
+- A unified view has a select-all checkbox again; it ticks every loaded message in the view.
+
 ## [6.4.0] - 2026-09-16
 
 - Archiving, trashing, moving, spam, read state and stars show at once everywhere the message
