@@ -133,6 +133,18 @@ function setRowChecked(s: SelectionState, row: SelectableRow, checked: boolean):
   return { ...s, excluded };
 }
 
+/** Tick every given row -- the unified view's select-all, which has no
+ * single folder to mint a predicate over and so selects what is loaded. */
+export function selectRows(
+  s: SelectionState,
+  rows: Iterable<SelectableRow>,
+  scope: SelectionScope,
+): SelectionState {
+  let next = selectionForScope(s, scope);
+  for (const row of rows) next = setRowChecked(next, row, true);
+  return { ...next, scope, anchorId: null, anchorBase: null };
+}
+
 /**
  * Checkbox click / ctrl+click on a row's text: toggle that one row and set
  * it as the shift-range anchor, capturing the resulting state as

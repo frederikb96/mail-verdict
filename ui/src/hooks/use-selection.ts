@@ -23,6 +23,7 @@ import {
   EMPTY_SELECTION,
   extendRange,
   isRowSelected,
+  selectRows,
   toggleRow,
   type SelectableRow,
   type SelectionPredicate,
@@ -69,7 +70,12 @@ export function useSelectionGestures() {
     [setState, scope],
   );
 
-  return { toggle, shiftRange };
+  const selectLoaded = useCallback(
+    (rows: Iterable<SelectableRow>) => setState((s) => selectRows(s, rows, scope)),
+    [setState, scope],
+  );
+
+  return { toggle, shiftRange, selectLoaded };
 }
 
 /** Mint a "select all matching" predicate over a whole folder, and clear it.

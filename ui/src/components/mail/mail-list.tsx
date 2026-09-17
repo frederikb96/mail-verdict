@@ -106,7 +106,7 @@ export function MailList() {
   const selectionMode = useAtomValue(selectionModeAtom);
   const [threaded, setThreaded] = useAtom(threadedViewAtom);
   const { isSelected } = useSelection();
-  const { toggle, shiftRange } = useSelectionGestures();
+  const { toggle, shiftRange, selectLoaded } = useSelectionGestures();
   const clearSelection = useClearSelection();
   const { selectFolderScope } = useSelectAll();
   const { perform } = useMailAction();
@@ -717,27 +717,35 @@ export function MailList() {
               control's own) clears it. The banner's own "every unread" /
               clear-by-hand paths stay reachable once a selection already
               exists. A unified view has no single folder to mint that
-              predicate over, so selection there is by hand. */}
-          {!isUnifiedView && (
-            <Checkbox
-              checked={selectionMode}
-              onCheckedChange={() => {
-                if (selectionMode) {
-                  clearSelection();
-                } else if (accountId && folderId) {
-                  selectFolderScope(accountId, folderId, unreadOnly ? "unread" : "all", threaded);
-                }
-              }}
-              aria-label={
-                selectionMode
-                  ? "Deselect all"
+              predicate over, so there it ticks every loaded row. */}
+          <Checkbox
+            checked={selectionMode}
+            onCheckedChange={() => {
+              if (selectionMode) {
+                clearSelection();
+              } else if (isUnifiedView) {
+                selectLoaded(allMails);
+              } else if (accountId && folderId) {
+                selectFolderScope(accountId, folderId, unreadOnly ? "unread" : "all", threaded);
+              }
+            }}
+            aria-label={
+              selectionMode
+                ? "Deselect all"
+                : isUnifiedView
+                  ? "Select all loaded messages in this view"
                   : unreadOnly
                     ? "Select all unread messages in this folder"
                     : "Select all messages in this folder"
-              }
-              title={selectionMode ? "Deselect all" : "Select all messages in this folder"}
-            />
-          )}
+            }
+            title={
+              selectionMode
+                ? "Deselect all"
+                : isUnifiedView
+                  ? "Select all loaded messages in this view"
+                  : "Select all messages in this folder"
+            }
+          />
           <label className="flex items-center gap-2 text-xs text-muted-foreground">
             <Switch checked={threaded} onCheckedChange={setThreaded} />
             <Layers className="h-3 w-3" />
