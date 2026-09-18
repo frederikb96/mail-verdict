@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-09-18
+
 - Scrolling search results or the spam review no longer re-reads the account list once per row
   that comes into view.
 
