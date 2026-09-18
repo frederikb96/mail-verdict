@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.5.1] - 2026-09-18
+
+- A keyboard shortcut used over a selection no longer runs a second time on its own the next time
+  messages are ticked, which could archive, trash or junk them with nothing pressed.
+- Restoring the last mailbox no longer makes the first load rebuild the page, which could leave
+  the sidebar's controls doing nothing until the next navigation.
+- Opening a message that lives in a hidden folder -- from a search result, a link or a
+  notification -- no longer pulls the list back to the inbox underneath it.
+
 ## [6.5.0] - 2026-09-18
 
 - The keyboard shortcuts for archive, trash, spam, read/unread, star and move now act on a
