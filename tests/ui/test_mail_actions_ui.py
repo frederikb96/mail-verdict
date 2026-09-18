@@ -629,6 +629,60 @@ class TestMailActionsUi:
 
         wait_for(_both_flagged, timeout_s=15.0, description="both messages flagged")
 
+    def test_the_star_shortcut_acts_on_every_selected_row(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """A keyboard shortcut over a selection acts on the whole selection
+        rather than on the one message the reader happens to be on. Pressing
+        the key with the tick still focused is the real flow, and the row's
+        checkbox has to stay something the shortcut handler does not read as
+        a field being typed into."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Keyed selection {i} {uuid.uuid4()}" for i in range(2)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(_find_all, description="both shortcut-selection messages synced")
+        assert not any(m["is_flagged"] for m in targets)
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        rows = [mail_row(page, target["id"]) for target in targets]
+        for row in rows:
+            expect(row).to_be_visible(timeout=15_000)
+        rows[0].hover()
+        rows[0].get_by_role("checkbox").click()
+        rows[1].get_by_role("checkbox").click()
+
+        page.keyboard.press("s")
+
+        def _both_flagged() -> bool | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in targets]
+            return True if all(d["is_flagged"] for d in details) else None
+
+        wait_for(_both_flagged, timeout_s=15.0, description="both messages flagged by the shortcut")
+
     def test_bulk_undo_after_trash_restores_every_row(
         self,
         page: Page,

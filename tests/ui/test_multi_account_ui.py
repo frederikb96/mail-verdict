@@ -105,6 +105,39 @@ class TestAccountPicker:
         expect(mail_row(page, msg_b["id"])).to_be_visible(timeout=15_000)
         expect(mail_row(page, msg_a["id"])).to_have_count(0)
 
+    def test_a_reload_comes_back_to_the_account_that_was_open(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+    ) -> None:
+        """A bare reload lands back where the reader was, rather than on
+        whichever account sorts first across the whole database."""
+        account_a = create_account(api_client, "reload-a")
+        account_b = create_account(api_client, "reload-b")
+        inbox_a = wait_for_folder(api_client, account_a["id"], "INBOX")
+        inbox_b = wait_for_folder(api_client, account_b["id"], "INBOX")
+
+        msg_a = _deliver(
+            dovecot_endpoint, api_client, account_a["id"], inbox_a["id"],
+            account_a["email"], f"Reload A {uuid.uuid4()}",
+        )
+        msg_b = _deliver(
+            dovecot_endpoint, api_client, account_b["id"], inbox_b["id"],
+            account_b["email"], f"Reload B {uuid.uuid4()}",
+        )
+
+        page.goto(app_server)
+        select_account(page, account_b)
+        folder_button(page, inbox_b["id"]).click()
+        expect(mail_row(page, msg_b["id"])).to_be_visible(timeout=15_000)
+
+        page.goto(app_server)
+
+        expect(mail_row(page, msg_b["id"])).to_be_visible(timeout=15_000)
+        expect(mail_row(page, msg_a["id"])).to_have_count(0)
+
     def test_switching_repeatedly_and_rapidly_always_lands_on_the_right_account(
         self,
         page: Page,
