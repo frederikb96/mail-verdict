@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- The keyboard shortcuts for archive, trash, spam, read/unread, star and move now act on a
+  multi-selection when several messages are ticked, through the same request the bulk toolbar's
+  own buttons send -- confirming first for a "select all" scope, exactly as clicking would.
+- The mailbox on screen -- account, unified view, or folder -- survives a reload instead of always
+  resetting to the first account's inbox; a link naming its own account or folder still wins.
+
 ## [6.4.1] - 2026-09-17
 
 - A unified view has a select-all checkbox again; it ticks every loaded message in the view.

@@ -2,18 +2,68 @@
 
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
+import type { MailRowAction } from "@/types/api";
+
+const LAST_ACCOUNT_ID_KEY = "mailverdict:last-account-id";
+const LAST_FOLDER_ID_KEY = "mailverdict:last-folder-id";
+const LAST_MAIL_VIEW_UNIFIED_KEY = "mailverdict:last-mail-view-unified";
+const RECENT_UNIFIED_VIEWS_KEY = "mailverdict:recent-unified-views";
+
+/** A raw, synchronous localStorage read, guarded for the static export's
+ * Node prerender pass (no `window` there) the same way jotai's own
+ * atomWithStorage guards it. Used only to compute the initial value of
+ * the selection atoms below -- once that value exists, everything else
+ * reads and writes the atom itself, never localStorage directly. */
+function readLastVisited<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? fallback : (JSON.parse(raw) as T);
+  } catch {
+    return fallback;
+  }
+}
+
+/** Where to land before anything else runs: whichever mailbox was last
+ * visited, read synchronously so it is already the atoms' own initial
+ * value -- app-sidebar.tsx's own "nothing selected yet" auto-select
+ * effects then simply never fire, rather than racing an effect here to
+ * overwrite whatever they already picked. A `?account=`/`?folder=` in the
+ * URL still wins over this: use-mail-url-sync.ts's cold-read effect
+ * overwrites these atoms the moment it runs, always after module
+ * initialisation. Unified takes priority when that was the last view --
+ * mirroring recentUnifiedViewsAtom/lastMailViewWasUnifiedAtom below,
+ * whose write side (useRecordLastMailbox, use-open-message.ts) keeps the
+ * account/folder pair in step with them. */
+function initialMailboxSelection(): {
+  accountId: string | null;
+  folderId: string | null;
+  unifiedFolder: string | null;
+} {
+  if (readLastVisited(LAST_MAIL_VIEW_UNIFIED_KEY, false)) {
+    const [lastUnified] = readLastVisited<string[]>(RECENT_UNIFIED_VIEWS_KEY, []);
+    if (lastUnified) return { accountId: "unified", folderId: null, unifiedFolder: lastUnified };
+  }
+  return {
+    accountId: readLastVisited<string | null>(LAST_ACCOUNT_ID_KEY, null),
+    folderId: readLastVisited<string | null>(LAST_FOLDER_ID_KEY, null),
+    unifiedFolder: null,
+  };
+}
+
+const initialSelection = initialMailboxSelection();
 
 /**
  * Currently selected account ID.
  * Special value "unified" indicates the unified multi-account view.
  */
-export const selectedAccountIdAtom = atom<string | null>(null);
+export const selectedAccountIdAtom = atom<string | null>(initialSelection.accountId);
 
 /** Currently selected folder ID (single-account mode). */
-export const selectedFolderIdAtom = atom<string | null>(null);
+export const selectedFolderIdAtom = atom<string | null>(initialSelection.folderId);
 
 /** Currently selected unified folder name (unified view mode). */
-export const selectedUnifiedFolderAtom = atom<string | null>(null);
+export const selectedUnifiedFolderAtom = atom<string | null>(initialSelection.unifiedFolder);
 
 /** Whether the unified view is active. */
 export const isUnifiedViewAtom = atom<boolean>((get) => {
@@ -42,15 +92,30 @@ export const pendingAroundMailIdAtom = atom<{ id: string; threadId: string } | n
 /** The unified views the reader opened, by name, most recent first, and
  * whether the mail view last on screen was a unified one. Together they
  * decide where a message opened from outside its list lands -- see
- * use-open-message.ts. Persisted, so a notification opening a fresh
- * window still knows; read on init, so the first message opened there
- * does not see the empty defaults. */
+ * use-open-message.ts -- and, read synchronously by
+ * initialMailboxSelection() above, where a cold load with no `?account=`
+ * in the URL restores its view to. Persisted, so a notification opening a
+ * fresh window still knows; read on init, so the first message opened
+ * there does not see the empty defaults. */
 export const recentUnifiedViewsAtom = atomWithStorage<string[]>(
-  "mailverdict:recent-unified-views", [], undefined, { getOnInit: true },
+  RECENT_UNIFIED_VIEWS_KEY, [], undefined, { getOnInit: true },
 );
 export const lastMailViewWasUnifiedAtom = atomWithStorage<boolean>(
-  "mailverdict:last-mail-view-unified", false, undefined, { getOnInit: true },
+  LAST_MAIL_VIEW_UNIFIED_KEY, false, undefined, { getOnInit: true },
 );
+
+/** The last real account and folder visited (never "unified" -- that side
+ * is recentUnifiedViewsAtom/lastMailViewWasUnifiedAtom above). Write-only
+ * from every other file's perspective: useRecordLastMailbox
+ * (use-open-message.ts) is the one place that sets these, mirroring the
+ * live selection; initialMailboxSelection() above is the one place that
+ * reads them, synchronously, at module load. Nothing else should
+ * subscribe to these reactively -- a `useAtomValue` here would also
+ * mount the storage-event listener atomWithStorage sets up for
+ * cross-tab sync, which is not wanted for the account actually on
+ * screen. */
+export const lastAccountIdAtom = atomWithStorage<string | null>(LAST_ACCOUNT_ID_KEY, null);
+export const lastFolderIdAtom = atomWithStorage<string | null>(LAST_FOLDER_ID_KEY, null);
 
 /**
  * The most recent mail.new SSE arrival, by account/folder -- not a log,
@@ -159,6 +224,21 @@ export const requestReplyModeAtom = atom<{ mode: "reply-all" | "forward"; nonce:
  * currently open -- the `v` shortcut's counterpart to the toolbar button
  * that does the same thing. Same nonce reasoning as requestReplyModeAtom. */
 export const requestMoveDialogAtom = atom<{ nonce: number } | null>(null);
+
+/** Asks the bulk panel to open its own "Move to..." menu -- the `v`
+ * shortcut's counterpart to requestMoveDialogAtom for a multi-selection,
+ * where there is no single open message for that picker to act on. Same
+ * nonce reasoning. */
+export const requestBulkMoveMenuAtom = atom<{ nonce: number } | null>(null);
+
+/** Asks the bulk panel to run one of its own quick actions (archive, trash,
+ * spam, mark read/unread, star) -- the multi-selection keyboard shortcuts'
+ * route to the exact same request the toolbar's own buttons send, so a
+ * destructive action over a "select all" predicate still confirms with a
+ * count first, the same as clicking the button would. */
+export const requestBulkQuickActionAtom = atom<{ action: MailRowAction; nonce: number } | null>(
+  null,
+);
 
 // --- Calendar ---
 

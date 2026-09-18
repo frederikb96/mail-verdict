@@ -175,11 +175,15 @@ export function AppSidebar() {
     ? null
     : accounts?.find((a) => a.id === selectedAccountId) ?? null;
 
-  // Auto-select first account if none selected
+  // Auto-select the first account if none is selected -- including a
+  // selection restored from a previous session (see
+  // initialMailboxSelection() in atoms.ts) naming an account that no
+  // longer exists, which reads identically to none being selected from
+  // this effect's own point of view.
   useEffect(() => {
-    if (!isUnified && !selectedAccountId && accounts?.length) {
-      setSelectedAccountId(accounts[0].id);
-    }
+    if (isUnified || !accounts?.length) return;
+    const exists = selectedAccountId != null && accounts.some((a) => a.id === selectedAccountId);
+    if (!exists) setSelectedAccountId(accounts[0].id);
   }, [isUnified, selectedAccountId, accounts, setSelectedAccountId]);
 
   // Use custom folder order if available, with visibility filtering. INBOX
@@ -200,7 +204,14 @@ export function AppSidebar() {
     [folders],
   );
 
-  // Auto-select inbox folder when account changes or folders load.
+  // Auto-select inbox folder when account changes or folders load -- or
+  // when a folder id restored from a previous session (see
+  // initialMailboxSelection() in atoms.ts) no longer exists in this
+  // account, which this effect treats the same as none being selected.
+  // Every in-session account switch already clears selectedFolderId to
+  // null itself (the account switcher, handleUnifiedFolderSelect), so
+  // this validity check only ever fires for a stale restored id, never
+  // for an ordinary switch still carrying the previous account's folder.
   //
   // `useFolders` keeps the previous account's folders as placeholder data
   // while the new account's request is in flight, so the fallback branch
@@ -209,12 +220,14 @@ export function AppSidebar() {
   // no such placeholder: it returns undefined for an account it hasn't
   // fetched yet, so `orderedFolders` is never stale for the wrong account.
   useEffect(() => {
-    if (isUnified || selectedFolderId) return;
+    if (isUnified) return;
 
     if (orderedFolders && orderedFolders.length > 0) {
+      if (orderedFolders.some((f) => f.folder_id === selectedFolderId)) return;
       const inbox = orderedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.folder_id : orderedFolders[0].folder_id);
     } else if (sortedFolders.length > 0 && !foldersArePlaceholder) {
+      if (sortedFolders.some((f) => f.id === selectedFolderId)) return;
       const inbox = sortedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.id : sortedFolders[0].id);
     }
@@ -231,12 +244,13 @@ export function AppSidebar() {
   // view -- without this, the list area reads "No messages in this
   // folder" (the same empty state a genuinely empty folder shows) rather
   // than the honest "nothing chosen yet" it actually is, until the reader
-  // clicks one by hand.
+  // clicks one by hand. Also fires for a unified view name restored from a
+  // previous session (initialMailboxSelection() in atoms.ts) that no
+  // longer exists -- renamed or every one of its folders removed.
   useEffect(() => {
-    if (!isUnified || selectedUnifiedFolder) return;
-    if (unifiedFolders && unifiedFolders.length > 0) {
-      setSelectedUnifiedFolder(unifiedFolders[0].unified_name);
-    }
+    if (!isUnified || !unifiedFolders || unifiedFolders.length === 0) return;
+    if (unifiedFolders.some((f) => f.unified_name === selectedUnifiedFolder)) return;
+    setSelectedUnifiedFolder(unifiedFolders[0].unified_name);
   }, [isUnified, selectedUnifiedFolder, unifiedFolders, setSelectedUnifiedFolder]);
 
   /** Select a folder and navigate to the mail view if on a different page. */

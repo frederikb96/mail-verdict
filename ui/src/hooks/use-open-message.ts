@@ -29,6 +29,8 @@ import { useToast } from "@/hooks/use-toast";
 import {
   activeReplyDirtyForThreadIdAtom,
   isUnifiedViewAtom,
+  lastAccountIdAtom,
+  lastFolderIdAtom,
   lastMailViewWasUnifiedAtom,
   pendingAroundMailIdAtom,
   recentUnifiedViewsAtom,
@@ -199,4 +201,28 @@ export function useRecordUnifiedView(): void {
 export function useMarkAccountView(): () => void {
   const setLastUnified = useSetAtom(lastMailViewWasUnifiedAtom);
   return useCallback(() => setLastUnified(false), [setLastUnified]);
+}
+
+/**
+ * Mirrors a real account and its folder into localStorage whenever both
+ * are on screen -- the write half of the pair completing
+ * initialMailboxSelection() in atoms.ts, which reads them back
+ * synchronously on the next cold load with no `?account=` in the URL.
+ * Effect-based rather than an explicit callback (unlike
+ * useMarkAccountView's lastMailViewWasUnifiedAtom): these two are never
+ * consulted again once the app is already running, only once at the very
+ * start of the next one, so there is no live routing decision here for
+ * an auto-selected account on load to race against.
+ */
+export function useRecordLastMailbox(): void {
+  const accountId = useAtomValue(selectedAccountIdAtom);
+  const folderId = useAtomValue(selectedFolderIdAtom);
+  const setLastAccountId = useSetAtom(lastAccountIdAtom);
+  const setLastFolderId = useSetAtom(lastFolderIdAtom);
+
+  useEffect(() => {
+    if (accountId === "unified" || !accountId || !folderId) return;
+    setLastAccountId(accountId);
+    setLastFolderId(folderId);
+  }, [accountId, folderId, setLastAccountId, setLastFolderId]);
 }

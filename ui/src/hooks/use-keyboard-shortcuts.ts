@@ -11,11 +11,13 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import {
   composeIntentAtom,
+  requestBulkMoveMenuAtom,
+  requestBulkQuickActionAtom,
   requestMoveDialogAtom,
   requestReplyModeAtom,
   requestSelectMailAtom,
 } from "@/lib/atoms";
-import { useClearSelection, useSelectionGestures } from "@/hooks/use-selection";
+import { useClearSelection, useSelection, useSelectionGestures } from "@/hooks/use-selection";
 import { useUndoMailAction } from "@/hooks/use-mail-intents";
 import { isEditableElement } from "@/lib/utils";
 import { isRowUnread } from "@/lib/mail-unread";
@@ -66,23 +68,31 @@ function isUndoKey(e: KeyboardEvent): boolean {
  * - e: archive
  * - Delete/#: move to trash
  * - !: mark as spam
- * - r: toggle read/unread
+ * - r: mark as read (toggle read/unread outside a multi-selection)
  * - u: mark as unread
- * - s: toggle star
+ * - s: star
  * - c: compose a new message
  * - a: reply all (the open message only -- there is no row form of this)
  * - f: forward (the open message only)
- * - v: move to folder (the open message only)
+ * - v: move to folder
  * - Ctrl+Z / Cmd+Z: undo this tab's most recent mail action, repeatedly --
  *   never while typing, with a composer open, or in a dialog, where the
  *   browser's own undo belongs
  *
  * Every one of them acts on the open message when there is one, and on the
  * focused row otherwise -- so a shortcut and a click on the same message's
- * own control do the same thing, auto-advance included. c/a/f/v are the
- * exception: reply, forward and move exist only for an open message (there
- * is no equivalent row control), so they act only while the reading pane
- * actually has one, not merely a keyboard-focused row.
+ * own control do the same thing, auto-advance included. With more than one
+ * message ticked -- the same threshold the reading pane itself switches to
+ * the bulk panel at -- e/Delete/!/r/u/s/v act on the whole selection
+ * instead, through the same bulk-action request the toolbar's own buttons
+ * send, and clear the selection the same way those do. r and s have no
+ * single message to read a toggle target from there, so they always mean
+ * "mark read" and "star" -- the two actions the bulk panel itself offers a
+ * button for. c/a/f are the exception: compose, reply and forward have
+ * nothing to do with a selection, and reply/forward exist only for an open
+ * message (there is no row form of either), so they act only while the
+ * reading pane actually has one open and no multi-selection is shadowing
+ * it.
  *
  * `/` (focus the global search field) and `?` (the shortcuts overlay) are
  * not here -- they are not specific to a mail list, so they are registered
@@ -103,7 +113,15 @@ export function useKeyboardShortcuts({
   const setComposeIntent = useSetAtom(composeIntentAtom);
   const setRequestReplyMode = useSetAtom(requestReplyModeAtom);
   const setRequestMoveDialog = useSetAtom(requestMoveDialogAtom);
+  const setRequestBulkMoveMenu = useSetAtom(requestBulkMoveMenuAtom);
+  const setRequestBulkQuickAction = useSetAtom(requestBulkQuickActionAtom);
   const undoMailAction = useUndoMailAction();
+  // Same threshold reading-pane.tsx switches the pane to the bulk panel
+  // at -- below it a lone ticked row is not "a selection" for shortcut
+  // purposes, and the open/focused message is still what e/r/s/etc. act
+  // on.
+  const { count: selectionCount } = useSelection();
+  const multiSelect = selectionCount > 1;
 
   const openIndex = openMailId
     ? mails.findIndex((m) => m.id === openMailId)
@@ -140,7 +158,18 @@ export function useKeyboardShortcuts({
         if (openIndex >= 0) onOpen(mails[next].id);
       }
 
+      // Acts on the whole ticked selection through the same request the
+      // bulk panel's own buttons send -- see requestBulkQuickActionAtom --
+      // so a destructive action over a "select all" predicate still
+      // confirms with a count, and the selection clears itself the same
+      // way a button click does. Otherwise acts on the open/focused
+      // message exactly as before; getCurrentMail() is never consulted
+      // once a multi-selection is driving.
       function act(action: MailRowAction) {
+        if (multiSelect) {
+          setRequestBulkQuickAction({ action, nonce: Date.now() });
+          return;
+        }
         const mail = getCurrentMail();
         if (mail) onAction(mail.id, action, mail.account_id);
       }
@@ -198,6 +227,13 @@ export function useKeyboardShortcuts({
         }
         case "r": {
           e.preventDefault();
+          // No single message to read a toggle target from once several
+          // are ticked -- "mark read" is what the bulk panel itself offers
+          // a button for, "mark unread" stays reachable through u.
+          if (multiSelect) {
+            act("mark_read");
+            break;
+          }
           const mail = getCurrentMail();
           if (mail) act(isRowUnread(mail) ? "mark_read" : "mark_unread");
           break;
@@ -209,6 +245,12 @@ export function useKeyboardShortcuts({
         }
         case "s": {
           e.preventDefault();
+          // Same reasoning as r -- and the bulk panel itself offers only
+          // "Star", never an "Unstar", over a selection.
+          if (multiSelect) {
+            act("flag");
+            break;
+          }
           const mail = getCurrentMail();
           if (mail) act(mail.is_flagged ? "unflag" : "flag");
           break;
@@ -221,18 +263,26 @@ export function useKeyboardShortcuts({
         case "a": {
           // Acts on the open reading pane, not merely a focused row --
           // openIndex, not currentIndex, is "something is actually open".
-          if (openIndex < 0) return;
+          // A multi-selection replaces that pane with the bulk panel, so
+          // there is nothing here to reply to even when openIndex still
+          // names a message.
+          if (openIndex < 0 || multiSelect) return;
           e.preventDefault();
           setRequestReplyMode({ mode: "reply-all", nonce: Date.now() });
           break;
         }
         case "f": {
-          if (openIndex < 0) return;
+          if (openIndex < 0 || multiSelect) return;
           e.preventDefault();
           setRequestReplyMode({ mode: "forward", nonce: Date.now() });
           break;
         }
         case "v": {
+          if (multiSelect) {
+            e.preventDefault();
+            setRequestBulkMoveMenu({ nonce: Date.now() });
+            break;
+          }
           if (openIndex < 0) return;
           e.preventDefault();
           setRequestMoveDialog({ nonce: Date.now() });
@@ -254,10 +304,13 @@ export function useKeyboardShortcuts({
     setComposeIntent,
     setRequestReplyMode,
     setRequestMoveDialog,
+    setRequestBulkMoveMenu,
+    setRequestBulkQuickAction,
     onAction,
     toggleSelection,
     clearSelection,
     scrollToIndex,
     undoMailAction,
+    multiSelect,
   ]);
 }

@@ -53,7 +53,9 @@ mirror, which is what keeps it simple.
   forwards, `v` moves the open message, `e` archives, `Delete` trashes, `r` toggles read and
   unread, `/` focuses search, `?` lists every shortcut, Ctrl+Z (Cmd+Z on a Mac) takes back the last
   few actions one by one, and whatever takes the open message out of the list opens the next one
-  in the direction you were already going. Every action shows at once and survives a flaky or
+  in the direction you were already going. With more than one message ticked, `e`, `Delete`, `r`,
+  `u`, `s` and `v` act on the whole selection instead, the same as the bulk toolbar's own buttons.
+  Every action shows at once and survives a flaky or
   absent connection: it waits, retries and is sent exactly once, even across a reload, with a
   marker on the row while the server has not confirmed it and a Retry when the server refuses.
   Sent late, or undone, an action never pulls a message out of a folder it was filed into

@@ -13,7 +13,7 @@
  * because the selection banner above the list already carries it.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Archive, Ban, ChevronDown, Mail as MailIcon, MailOpen, Star, Trash2 } from "lucide-react";
 import { useAtomValue } from "jotai";
 import { Badge } from "@/components/ui/badge";
@@ -31,8 +31,27 @@ import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import { useToast } from "@/hooks/use-toast";
 import { folderDisplayName } from "@/lib/folders";
 import { cn } from "@/lib/utils";
-import { isUnifiedViewAtom, selectedAccountIdAtom } from "@/lib/atoms";
-import type { BulkActionType } from "@/types/api";
+import {
+  isUnifiedViewAtom,
+  requestBulkMoveMenuAtom,
+  requestBulkQuickActionAtom,
+  selectedAccountIdAtom,
+} from "@/lib/atoms";
+import type { BulkActionType, MailRowAction } from "@/types/api";
+
+/** Labels for the quick actions below, keyed the same way their buttons
+ * already call `run` -- shared with the multi-selection keyboard shortcuts
+ * (requestBulkQuickActionAtom), which have no label of their own to send.
+ * Only the actions a shortcut can reach: there is no bulk "Unstar" or "Not
+ * spam" button here for a keyboard request to land on either. */
+const QUICK_ACTION_LABELS: Partial<Record<MailRowAction, string>> = {
+  mark_read: "Mark as read",
+  mark_unread: "Mark as unread",
+  flag: "Star",
+  archive: "Archive",
+  spam: "Move to Junk",
+  trash: "Move to trash",
+};
 
 /** A batch is not atomic and cannot be undone -- these confirm with a
  * count and destination when the selection is a predicate rather than
@@ -68,6 +87,18 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
   const [pending, setPending] = useState<PendingAction | null>(null);
   const { push: pushToast } = useToast();
 
+  // The `v` shortcut's route to this same "Move to" menu -- see
+  // requestBulkMoveMenuAtom's own comment. Consumed by nonce so a stale
+  // request does not reopen the menu on a later, unrelated render.
+  const [moveMenuOpen, setMoveMenuOpen] = useState(false);
+  const requestBulkMoveMenu = useAtomValue(requestBulkMoveMenuAtom);
+  const consumedMoveNonceRef = useRef(0);
+  useEffect(() => {
+    if (!requestBulkMoveMenu || requestBulkMoveMenu.nonce === consumedMoveNonceRef.current) return;
+    consumedMoveNonceRef.current = requestBulkMoveMenu.nonce;
+    setMoveMenuOpen(true);
+  }, [requestBulkMoveMenu]);
+
   const folders = orderData?.folders ?? [];
   const showUnifiedMoveTargets = isUnifiedView && !state.predicate;
 
@@ -93,6 +124,24 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
     }
     execute(action, targetFolderId, label);
   };
+
+  // A multi-selection keyboard shortcut's route to the same quick actions
+  // the buttons below send -- through `run`, so a predicate-scoped trash
+  // or spam still confirms with a count first, exactly as the matching
+  // button click does. See requestBulkQuickActionAtom's own comment.
+  const requestBulkQuickAction = useAtomValue(requestBulkQuickActionAtom);
+  const consumedQuickActionNonceRef = useRef(0);
+  useEffect(() => {
+    if (
+      !requestBulkQuickAction ||
+      requestBulkQuickAction.nonce === consumedQuickActionNonceRef.current
+    ) {
+      return;
+    }
+    consumedQuickActionNonceRef.current = requestBulkQuickAction.nonce;
+    const label = QUICK_ACTION_LABELS[requestBulkQuickAction.action];
+    if (label) run(requestBulkQuickAction.action, undefined, label);
+  }, [requestBulkQuickAction]);
 
   return (
     <div className={cn("flex flex-col gap-4", compact ? "border-t p-2" : "h-full items-center justify-center p-8")}>
@@ -138,7 +187,7 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
           <Trash2 className="h-4 w-4" />
           Move to trash
         </Button>
-        <DropdownMenu>
+        <DropdownMenu open={moveMenuOpen} onOpenChange={setMoveMenuOpen}>
           <DropdownMenuTrigger render={<Button variant="outline" size="sm" className="gap-1" />}>
             Move to
             <ChevronDown className="h-3 w-3" />
