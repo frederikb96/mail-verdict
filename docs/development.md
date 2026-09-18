@@ -203,14 +203,37 @@ calendar does.
 
 ## Before pushing
 
+The default, for an ordinary change — seconds to a couple of minutes:
+
 ```bash
 ruff check .
 mypy src/
 python scripts/export_api_contract.py --check
-pytest tests/unit && pytest tests/pg && pytest tests/e2e
-for f in tests/ui/test_*.py; do pytest "$f" || break; done
-cd ui && npx tsc --noEmit && npm run build
+pytest tests/unit
+cd ui && npx tsc --noEmit && npm run build     # only if the frontend changed
 ```
+
+Then push, and let CI run the rest: it covers lint, the unit, pg and e2e layers, the UI type
+check, its unit tests and the production build, and the image and chart builds, as parallel jobs
+in about eight minutes. A release is cut from a tag, not from a push, so a red run is caught with
+nothing shipped.
+
+Add the layer that covers what the change actually touched — `pytest tests/pg` for a query or a
+migration, `pytest tests/e2e` for a route, the one or two `tests/ui` modules covering a screen you
+changed. Each browser module rebuilds five containers before its first assertion, so the whole
+directory is half an hour and is worth it only when the change reaches across the interface.
+
+The full sweep below is for a change whose blast radius is genuinely wide — a contract every area
+reads, a dependency upgrade, anything touching deletion or the mail server:
+
+```bash
+pytest tests/pg && pytest tests/e2e
+for f in tests/ui/test_*.py; do pytest "$f" || break; done
+```
+
+Two things are never worth skipping, because they are cheap and they gate a release: do not tag
+before CI is green, and run the tests covering anything irreversible — deletion, expunge, a write
+to the mail server — watching them fail first.
 
 One layer per invocation, which is also how CI runs them. A single invocation over the
 whole tree is not the same thing and is not supported: the layers share one set of
