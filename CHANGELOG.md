@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Scrolling search results or the spam review no longer re-reads the account list once per row
+  that comes into view.
+
 ## [6.5.1] - 2026-09-18
 
 - A keyboard shortcut used over a selection no longer runs a second time on its own the next time

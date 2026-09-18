@@ -31,15 +31,24 @@ function applyAccountOrder(
 
 /** Lists accounts in the order the user has set, wherever they appear. */
 export function useAccounts() {
+  // `refetchOnMount: false` overrides this app's global "always" default,
+  // which ignores `staleTime` entirely. Rows inside a virtualized list
+  // read this hook (search results, the spam review), so mounting one per
+  // row while scrolling would refetch the account list per row -- and
+  // every other reader of it re-renders twice per fetch as `isFetching`
+  // turns over. Accounts change on a live event, which invalidates this
+  // key anyway.
   const accountsQuery = useQuery({
     queryKey: accountKeys.all,
     queryFn: () => api.accounts.list(),
     staleTime: 30_000,
+    refetchOnMount: false,
   });
   const orderQuery = useQuery({
     queryKey: ["account-order"],
     queryFn: () => api.accountOrder.get(),
     staleTime: 30_000,
+    refetchOnMount: false,
   });
   const order = orderQuery.data?.order;
 
