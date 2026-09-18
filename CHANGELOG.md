@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-09-18
+
 - The keyboard shortcuts for archive, trash, spam, read/unread, star and move now act on a
   multi-selection when several messages are ticked, through the same request the bulk toolbar's
   own buttons send -- confirming first for a "select all" scope, exactly as clicking would.
