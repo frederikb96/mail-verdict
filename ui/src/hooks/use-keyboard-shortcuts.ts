@@ -11,6 +11,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { focusedMailIndexAtom } from "@/store/focused-mail-atom";
 import {
   composeIntentAtom,
+  nextBulkRequestNonce,
   requestBulkMoveMenuAtom,
   requestBulkQuickActionAtom,
   requestMoveDialogAtom,
@@ -167,7 +168,7 @@ export function useKeyboardShortcuts({
       // once a multi-selection is driving.
       function act(action: MailRowAction) {
         if (multiSelect) {
-          setRequestBulkQuickAction({ action, nonce: Date.now() });
+          setRequestBulkQuickAction({ action, nonce: nextBulkRequestNonce() });
           return;
         }
         const mail = getCurrentMail();
@@ -280,7 +281,7 @@ export function useKeyboardShortcuts({
         case "v": {
           if (multiSelect) {
             e.preventDefault();
-            setRequestBulkMoveMenu({ nonce: Date.now() });
+            setRequestBulkMoveMenu({ nonce: nextBulkRequestNonce() });
             break;
           }
           if (openIndex < 0) return;

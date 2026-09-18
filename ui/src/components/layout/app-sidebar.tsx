@@ -219,21 +219,34 @@ export function AppSidebar() {
   // selected a moment ago, not the one selected now. `useFolderOrder` has
   // no such placeholder: it returns undefined for an account it hasn't
   // fetched yet, so `orderedFolders` is never stale for the wrong account.
+  //
+  // Whether the selected folder still exists is asked of the account's
+  // whole folder list, never of the visible subset the sidebar draws: a
+  // hidden folder is a real folder a message can be opened in -- from a
+  // search result, "Show in folder", a link or a notification -- and
+  // reading it as gone would pull the list back to the inbox underneath
+  // the message that was just opened.
   useEffect(() => {
     if (isUnified) return;
+    const known = folderOrderData?.folders ?? folders ?? [];
+    const selectionExists =
+      selectedFolderId != null &&
+      known.some((f) => ("folder_id" in f ? f.folder_id : f.id) === selectedFolderId);
 
     if (orderedFolders && orderedFolders.length > 0) {
-      if (orderedFolders.some((f) => f.folder_id === selectedFolderId)) return;
+      if (selectionExists) return;
       const inbox = orderedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.folder_id : orderedFolders[0].folder_id);
     } else if (sortedFolders.length > 0 && !foldersArePlaceholder) {
-      if (sortedFolders.some((f) => f.id === selectedFolderId)) return;
+      if (selectionExists) return;
       const inbox = sortedFolders.find((f) => f.special_use === "inbox");
       setSelectedFolderId(inbox ? inbox.id : sortedFolders[0].id);
     }
   }, [
     isUnified,
     selectedFolderId,
+    folderOrderData,
+    folders,
     orderedFolders,
     sortedFolders,
     foldersArePlaceholder,
@@ -273,7 +286,13 @@ export function AppSidebar() {
     }
   };
 
+  // Client-only: every selection below can start from a value restored
+  // out of localStorage (initialMailboxSelection, atoms.ts), which the
+  // static export's prerender cannot see. Rendering the same markup on
+  // both sides is impossible then, and a hydration mismatch here throws
+  // away the tree along with the handlers attached to it.
   return (
+    <ClientOnly>
     <Sidebar collapsible="icon">
       <SidebarHeader>
         <SidebarMenu>
@@ -613,5 +632,6 @@ export function AppSidebar() {
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+    </ClientOnly>
   );
 }

@@ -683,6 +683,69 @@ class TestMailActionsUi:
 
         wait_for(_both_flagged, timeout_s=15.0, description="both messages flagged by the shortcut")
 
+    def test_a_selection_shortcut_does_not_replay_itself_on_the_next_selection(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+    ) -> None:
+        """The panel a selection shortcut is routed through is mounted only
+        while a selection is live, and acting clears the selection -- so the
+        request has to be consumed exactly once, or the next selection runs
+        the previous action the moment it is made, with nothing pressed."""
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        subjects = [f"Replay guard {i} {uuid.uuid4()}" for i in range(4)]
+        for subject in subjects:
+            message = build_eml(
+                sender="sender@example.com", recipient=ui_account["email"], subject=subject,
+                message_id=f"<{uuid.uuid4()}@example.com>",
+            )
+            deliver_message(
+                message, host, lmtp_port,
+                sender="sender@example.com", recipient=ui_account["email"],
+            )
+
+        def _find_all() -> list[dict[str, Any]] | None:
+            found = [
+                m for m in _list_folder(api_client, ui_account["id"], inbox_folder["id"])
+                if m["subject"] in subjects
+            ]
+            return found if len(found) == len(subjects) else None
+
+        targets = wait_for(_find_all, description="all four replay-guard messages synced")
+        acted, untouched = targets[:2], targets[2:]
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        _open_folder(page, inbox_folder)
+        for target in targets:
+            expect(mail_row(page, target["id"])).to_be_visible(timeout=15_000)
+
+        mail_row(page, acted[0]["id"]).hover()
+        for target in acted:
+            mail_row(page, target["id"]).get_by_role("checkbox").click()
+        page.keyboard.press("s")
+
+        def _acted_flagged() -> bool | None:
+            details = [api_client.get(f"/api/messages/{t['id']}").json() for t in acted]
+            return True if all(d["is_flagged"] for d in details) else None
+
+        wait_for(_acted_flagged, timeout_s=15.0, description="the two acted-on messages flagged")
+
+        mail_row(page, untouched[0]["id"]).hover()
+        for target in untouched:
+            mail_row(page, target["id"]).get_by_role("checkbox").click()
+
+        # Long enough that the replay -- which happens as the panel mounts,
+        # in the same beat as the second tick -- would have reached the
+        # server and come back well inside it.
+        page.wait_for_timeout(4000)
+        after = [api_client.get(f"/api/messages/{t['id']}").json() for t in untouched]
+        assert not any(d["is_flagged"] for d in after), "the shortcut replayed onto a new selection"
+
     def test_bulk_undo_after_trash_restores_every_row(
         self,
         page: Page,

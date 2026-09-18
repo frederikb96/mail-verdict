@@ -13,9 +13,9 @@
  * because the selection banner above the list already carries it.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Archive, Ban, ChevronDown, Mail as MailIcon, MailOpen, Star, Trash2 } from "lucide-react";
-import { useAtomValue } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
@@ -32,6 +32,7 @@ import { useToast } from "@/hooks/use-toast";
 import { folderDisplayName } from "@/lib/folders";
 import { cn } from "@/lib/utils";
 import {
+  claimBulkRequest,
   isUnifiedViewAtom,
   requestBulkMoveMenuAtom,
   requestBulkQuickActionAtom,
@@ -92,12 +93,13 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
   // request does not reopen the menu on a later, unrelated render.
   const [moveMenuOpen, setMoveMenuOpen] = useState(false);
   const requestBulkMoveMenu = useAtomValue(requestBulkMoveMenuAtom);
-  const consumedMoveNonceRef = useRef(0);
+  const setRequestBulkMoveMenu = useSetAtom(requestBulkMoveMenuAtom);
   useEffect(() => {
-    if (!requestBulkMoveMenu || requestBulkMoveMenu.nonce === consumedMoveNonceRef.current) return;
-    consumedMoveNonceRef.current = requestBulkMoveMenu.nonce;
+    if (!requestBulkMoveMenu) return;
+    setRequestBulkMoveMenu(null);
+    if (!claimBulkRequest(requestBulkMoveMenu.nonce)) return;
     setMoveMenuOpen(true);
-  }, [requestBulkMoveMenu]);
+  }, [requestBulkMoveMenu, setRequestBulkMoveMenu]);
 
   const folders = orderData?.folders ?? [];
   const showUnifiedMoveTargets = isUnifiedView && !state.predicate;
@@ -130,18 +132,14 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
   // or spam still confirms with a count first, exactly as the matching
   // button click does. See requestBulkQuickActionAtom's own comment.
   const requestBulkQuickAction = useAtomValue(requestBulkQuickActionAtom);
-  const consumedQuickActionNonceRef = useRef(0);
+  const setRequestBulkQuickAction = useSetAtom(requestBulkQuickActionAtom);
   useEffect(() => {
-    if (
-      !requestBulkQuickAction ||
-      requestBulkQuickAction.nonce === consumedQuickActionNonceRef.current
-    ) {
-      return;
-    }
-    consumedQuickActionNonceRef.current = requestBulkQuickAction.nonce;
+    if (!requestBulkQuickAction) return;
+    setRequestBulkQuickAction(null);
+    if (!claimBulkRequest(requestBulkQuickAction.nonce)) return;
     const label = QUICK_ACTION_LABELS[requestBulkQuickAction.action];
     if (label) run(requestBulkQuickAction.action, undefined, label);
-  }, [requestBulkQuickAction]);
+  }, [requestBulkQuickAction, setRequestBulkQuickAction]);
 
   return (
     <div className={cn("flex flex-col gap-4", compact ? "border-t p-2" : "h-full items-center justify-center p-8")}>

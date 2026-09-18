@@ -240,6 +240,32 @@ export const requestBulkQuickActionAtom = atom<{ action: MailRowAction; nonce: n
   null,
 );
 
+let bulkRequestNonce = 0;
+let lastClaimedBulkRequest = 0;
+
+/** Nonces for the two bulk requests above, from one counter: two presses
+ * inside the same millisecond have to be two distinct requests, and a
+ * clock reading cannot promise that. */
+export function nextBulkRequestNonce(): number {
+  bulkRequestNonce += 1;
+  return bulkRequestNonce;
+}
+
+/** Claims a bulk request for exactly one consumer, synchronously. The
+ * panel that reads these requests is mounted only while a selection is
+ * live, and an action clears the selection -- so a per-component record
+ * of what it has already run is reset by the unmount and replays the
+ * request on the next selection, with no keypress behind it. Module state
+ * rather than component state for the same reason it is checked here
+ * rather than in an effect body: two panels can be mounted at once (the
+ * compact one over a reading pane), and both would otherwise claim the
+ * same request in one commit. */
+export function claimBulkRequest(nonce: number): boolean {
+  if (nonce <= lastClaimedBulkRequest) return false;
+  lastClaimedBulkRequest = nonce;
+  return true;
+}
+
 // --- Calendar ---
 
 export type CalendarViewMode = "month" | "week" | "day" | "agenda";
