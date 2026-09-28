@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.6.1] - 2026-09-28
+
+- A new mail shows one desktop notification again on a browser that also has push switched
+  on, instead of two a few seconds apart -- the page and the push now raise the same
+  notification, so the later one replaces the earlier rather than stacking beside it.
+
 ## [6.6.0] - 2026-09-18
 
 - Scrolling search results or the spam review no longer re-reads the account list once per row
