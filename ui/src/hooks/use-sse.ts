@@ -27,7 +27,7 @@ import { api } from "@/lib/api";
 import { networkRecovered } from "@/lib/intent-drainer";
 import { recordObservedChange } from "@/lib/observed-changes";
 import { folderAlertsEnabled } from "@/lib/alert-prefs";
-import { closeResolvedNotifications, trackPageNotification } from "@/lib/live-notifications";
+import { closeResolvedNotifications, showAlertNotification } from "@/lib/live-notifications";
 import {
   type CalendarObjectPayload,
   resolveCalendarInvalidationTargets,
@@ -395,8 +395,8 @@ export function useSSE(accountId?: string) {
       });
 
       // A new alert (currently: new mail) -- refresh the bell's own list
-      // and count, and raise a system notification directly when this
-      // browser has been granted permission and this folder is one of
+      // and count, and raise a system notification when this browser
+      // has been granted permission and this folder is one of
       // the ones allowed to alert (see alert-prefs.ts). Not gated on the
       // tab being focused: an unfocused tab is exactly the case a
       // notification exists for, and a focused one simply gets both the
@@ -414,16 +414,12 @@ export function useSSE(accountId?: string) {
             "Notification" in window &&
             Notification.permission === "granted"
           ) {
-            const n = new Notification(data.title || "New mail", {
+            void showAlertNotification({
+              id: data.id,
+              title: data.title || "New mail",
               body: data.body ?? undefined,
-              tag: data.id,
+              url: data.url ?? undefined,
             });
-            if (data.id) trackPageNotification(data.id, n);
-            n.onclick = () => {
-              window.focus();
-              if (data.url) window.location.href = data.url;
-              n.close();
-            };
           }
         } catch {
           // Ignore -- the invalidate above already refreshed the bell.

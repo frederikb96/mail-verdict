@@ -167,12 +167,12 @@ async def _send_webpush(
     payload = json.dumps(
         {
             "title": alert.title or "MailVerdict", "body": alert.body, "url": alert.url,
-            # The same id the SSE-driven in-app Notification() call tags
-            # itself with (see use-sse.ts) -- a page open and subscribed
-            # at once gets one OS notification, not two, since same-tag
-            # notifications from the same origin replace one another
-            # whether raised from the page or from this push's own
-            # service worker.
+            # The same id the SSE-driven in-app notification tags itself
+            # with (see live-notifications.ts) -- a page open and
+            # subscribed at once gets one OS notification, not two,
+            # because same-tag notifications from the same origin
+            # replace one another and that page raises its own through
+            # this service worker for exactly that reason.
             "tag": str(alert.id),
         }
     )
