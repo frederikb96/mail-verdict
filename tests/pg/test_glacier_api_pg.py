@@ -16,7 +16,13 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.accounts import delete_account, list_folders, update_account
-from mail_verdict.api.mails import get_attachment, get_message, get_raw_source, locate_message
+from mail_verdict.api.mails import (
+    get_attachment,
+    get_message,
+    get_message_quote,
+    get_raw_source,
+    locate_message,
+)
 from mail_verdict.api.mails import message_action as api_message_action
 from mail_verdict.api.schemas import AccountUpdateRequest, MessageActionRequest
 from mail_verdict.database.connection import DatabaseConnection
@@ -161,6 +167,14 @@ async def test_move_action_into_glacier_and_read_it_back(
 
     raw_response = await get_raw_source(glacier_id)
     assert raw_response.body == _RAW_SOURCE
+
+    # The reply/forward compose flow's only server call besides the
+    # already-fetched message detail: quoting a glaciered message must
+    # not 404, or replying to one is silently broken. (No body_text/html
+    # was seeded, so an empty quote is the correct answer here -- the
+    # point is that this call succeeds at all.)
+    quote = await get_message_quote(glacier_id)
+    assert quote.html == ""
 
 
 @pytest.mark.asyncio

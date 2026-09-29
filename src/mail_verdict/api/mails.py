@@ -1185,6 +1185,16 @@ async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
             )
         )
         row = result.one_or_none()
+        if row is None:
+            glacier_result = await session.execute(
+                select(
+                    GlacierMessage.body_html, GlacierMessage.body_text,
+                    GlacierMessage.account_id, GlacierMessage.from_addr,
+                ).where(
+                    GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            row = glacier_result.one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")
