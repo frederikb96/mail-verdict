@@ -31,10 +31,15 @@ interface FolderRowMenuProps {
   folderName: string;
   badgeCount: number;
   totalCount: number;
+  /** "Mark all as read" and "Empty folder" both assume an ordinary IMAP
+   * folder -- the glacier gets neither: its own removal is a permanent
+   * delete requiring its own confirmation (the reading pane's), and a
+   * folder-wide sweep of it is not offered here. */
+  isGlacier?: boolean;
 }
 
 export function FolderRowMenu({
-  accountId, folderId, folderName, badgeCount, totalCount,
+  accountId, folderId, folderName, badgeCount, totalCount, isGlacier,
 }: FolderRowMenuProps) {
   // Minted the moment the menu item is clicked, not deferred to the
   // confirm click -- the dialog must show the same count the request
@@ -70,6 +75,18 @@ export function FolderRowMenu({
       );
     }
   };
+
+  if (isGlacier) {
+    return (
+      <span className="ml-auto flex h-5 shrink-0 items-center" onClick={(e) => e.stopPropagation()}>
+        {badgeCount > 0 && (
+          <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-xs">
+            {badgeCount}
+          </Badge>
+        )}
+      </span>
+    );
+  }
 
   return (
     <span

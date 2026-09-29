@@ -48,7 +48,12 @@ export function FolderManageDialog({ accountId }: { accountId: string }) {
   const deleteFolder = useDeleteFolder();
   const { push: pushToast } = useToast();
 
-  const liveFolders = (folders ?? []).filter((f) => f.special_use !== "inbox");
+  // The glacier is managed from account settings (its own switch), never
+  // created or deleted here -- and it is nobody's parent, being synthetic
+  // rather than a real IMAP folder a person could nest another one under.
+  const liveFolders = (folders ?? []).filter(
+    (f) => f.special_use !== "inbox" && f.kind !== "glacier",
+  );
 
   const handleCreate = () => {
     const trimmed = name.trim();

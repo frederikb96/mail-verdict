@@ -58,6 +58,7 @@ import {
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
 import { accountConnectionState, useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
+import { useToast } from "@/hooks/use-toast";
 import { formatRelativeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
@@ -372,6 +373,7 @@ function AccountForm({
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
   const isEditing = !!account;
+  const { push: pushToast } = useToast();
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -410,7 +412,14 @@ function AccountForm({
       };
       updateAccount.mutate(
         { id: account.id, data },
-        { onSuccess: onClose },
+        {
+          onSuccess: onClose,
+          // The most common refusal here is the glacier switch: turning
+          // it off while it still holds mail is a 409 naming the count,
+          // and otherwise this dialog would just sit there having
+          // silently done nothing.
+          onError: (err) => pushToast(`Could not update account: ${err.message}`, "error", 0),
+        },
       );
     } else {
       const data: AccountCreateRequest = {

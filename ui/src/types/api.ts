@@ -482,6 +482,8 @@ export interface FolderOrderItem {
   is_visible: boolean;
   unread_count: number;
   total_count: number;
+  /** "glacier" for the one synthetic per-account folder representing the glacier. */
+  kind: 'imap' | 'glacier';
 }
 
 export interface FolderOrderResponse {

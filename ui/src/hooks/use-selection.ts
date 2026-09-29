@@ -284,6 +284,11 @@ export function useBulkAction() {
     (vars: {
       action: BulkActionType;
       targetFolderId?: string | ((accountId: string) => string | undefined);
+      /** Whether Ctrl+Z and a toast may take this back -- off for a move
+       * into the glacier, which removes mail from the mail server for
+       * good. Has no bearing on the predicate branch above, which never
+       * offers undo regardless. */
+      undoable?: boolean;
     }) => {
       const requests = buildBulkRequests(state).map((r) => ({
         ...r,
@@ -316,6 +321,7 @@ export function useBulkAction() {
           bulk: true,
           expandThreads: target.expand_threads,
         })),
+        { undoable: vars.undoable ?? true },
       );
       clearSelection();
     },

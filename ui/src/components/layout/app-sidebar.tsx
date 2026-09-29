@@ -494,6 +494,7 @@ export function AppSidebar() {
                                 folderName={folderDisplayName(folder)}
                                 badgeCount={getFolderBadgeCount(folder)}
                                 totalCount={folder.total_count}
+                                isGlacier={folder.kind === "glacier"}
                               />
                             )}
                           </SidebarMenuItem>
@@ -525,6 +526,7 @@ export function AppSidebar() {
                                 folderName={folderDisplayName(folder)}
                                 badgeCount={getFolderBadgeCount(folder)}
                                 totalCount={folder.total_count}
+                                isGlacier={folder.kind === "glacier"}
                               />
                             )}
                           </SidebarMenuItem>

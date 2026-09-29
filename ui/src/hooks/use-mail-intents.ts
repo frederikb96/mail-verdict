@@ -179,6 +179,9 @@ export interface MailActionInput {
   mailIds: string[];
   action: IntentAction;
   targetFolderId?: string;
+  /** Confirms an expunge whose message is already in the glacier -- the
+   * only copy that exists. Ignored by the server for every other message. */
+  confirmed?: boolean;
   /** Sent through the bulk endpoint even for one message. */
   bulk?: boolean;
   /** Each id is a conversation row standing for its whole conversation. */
@@ -291,6 +294,7 @@ export function useMailAction() {
           accountId: input.accountId,
           action: input.action,
           targetFolderId: input.targetFolderId,
+          confirmed: input.confirmed,
           messages: input.mailIds.map((id) =>
             snapshotMessage(
               cached, current, id, snapshots++ < ROW_SNAPSHOT_LIMIT, input.seenFolderIds?.[id],

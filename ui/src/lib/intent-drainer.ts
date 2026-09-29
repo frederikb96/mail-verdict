@@ -261,6 +261,7 @@ async function request(intent: MailIntent): Promise<Outcome> {
       {
         action: intent.action, target_folder_id: intent.targetFolderId, idempotency_key: intent.id,
         expected_folder_id: guards.expectedFolderIds[message.id],
+        confirm: intent.confirmed,
       },
       options,
     );
