@@ -57,10 +57,16 @@ MIN_INLINE_ATTACHMENT_SERVICE_VERSION = (1, 7, 0)
 # -- an APPEND of exact bytes into a chosen folder, with none of the
 # recomposition kind="send"/"draft" do -- exist, and are granted, from this
 # PostIMAP service version onward. The glacier's restore mechanism
-# (glacier/restore.py) is the only thing that uses this; moving a message
-# into the glacier at all is gated on the same check, since restore must
-# work before removal is ever offered.
-MIN_MESSAGE_APPEND_SERVICE_VERSION = (1, 8, 0)
+# (glacier/restore.py) is the only thing that uses this.
+#
+# 🚨 Must stay above whatever PostIMAP version is actually shipping this
+# capability -- the currently pinned test image is 1.10.0 and does not
+# have it (tests/setup/images.py), so this cannot be set to anything at
+# or below that without the gate silently reporting the capability
+# available against a PostIMAP that does not actually have the columns.
+# Set this to the exact version the outbox-append change ships under
+# once that is known.
+MIN_MESSAGE_APPEND_SERVICE_VERSION = (1, 11, 0)
 
 
 class ContractMismatchError(Exception):

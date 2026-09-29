@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Glacier storage: a per-account place a message can be moved to where it leaves the mail
+  server for good and lives on only in this database. It behaves like a folder -- listed,
+  searchable, selectable in unified views -- can be left again (back onto a server folder), and
+  can fill itself from an account's archive automatically after a configured number of days.
+  Moving a message in and out uses the ordinary move action; nothing else changes. Restoring a
+  message back to the server needs a PostIMAP capability that has not shipped yet, so it is
+  currently unavailable.
+
 ## [6.6.1] - 2026-09-28
 
 - A new mail shows one desktop notification again on a browser that also has push switched

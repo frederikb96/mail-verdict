@@ -22,7 +22,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 from sqlalchemy import func as sa_func
 
 from mail_verdict.api.deps import get_account_prefs_repo
@@ -90,6 +90,9 @@ def _build_account_response(
         folder_order=prefs.folder_order if prefs else None,
         trash_retention_days=prefs.trash_retention_days if prefs else None,
         junk_retention_days=prefs.junk_retention_days if prefs else None,
+        glacier_enabled=prefs.glacier_enabled if prefs else False,
+        glacier_folder_id=prefs.glacier_folder_id if prefs else None,
+        glacier_auto_days=prefs.glacier_auto_days if prefs else None,
     )
 
 
@@ -174,11 +177,50 @@ async def update_account(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     # Separate Account fields from AccountPrefs fields
-    prefs_fields = {"emoji", "spam_enabled", "trash_retention_days", "junk_retention_days"}
+    prefs_fields = {
+        "emoji", "spam_enabled", "trash_retention_days", "junk_retention_days",
+        "glacier_enabled", "glacier_auto_days",
+    }
     account_values = {k: v for k, v in all_values.items() if k not in prefs_fields}
     prefs_values = {k: v for k, v in all_values.items() if k in prefs_fields}
 
     credentials_changed = "imap_password" in account_values or "smtp_password" in account_values
+
+    if "glacier_enabled" in prefs_values:
+        async with db.session() as session:
+            if prefs_values["glacier_enabled"]:
+                # D6: the folder id is assigned once, on first enable, and
+                # kept across a disable -- so a re-enable does not orphan
+                # unified-view membership or folder prefs already set on it.
+                existing_id = (
+                    await session.execute(
+                        select(AccountPrefs.glacier_folder_id).where(
+                            AccountPrefs.account_id == account_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if not existing_id:
+                    prefs_values["glacier_folder_id"] = uuid.uuid4()
+            else:
+                # D7: disabling is refused while the glacier still holds
+                # the only copy of anything.
+                held = (
+                    await session.execute(
+                        text(
+                            "SELECT count(*) FROM glacier_messages "
+                            "WHERE account_id = :account_id AND visible_at IS NOT NULL"
+                        ),
+                        {"account_id": account_id},
+                    )
+                ).scalar_one()
+                if held:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"the glacier still holds {held} message(s) -- restore or "
+                            "permanently delete them first"
+                        ),
+                    )
 
     async with db.session() as session:
         result = await session.execute(select(Account).where(Account.id == account_id))
@@ -254,6 +296,27 @@ async def delete_account(account_id: uuid.UUID) -> None:
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Account not found")
 
+        # The glacier has no foreign key onto accounts (by design -- see
+        # docs/architecture.md), so deleting the account would silently
+        # orphan the only copy of everything in it rather than cascading.
+        held = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE account_id = :account_id AND visible_at IS NOT NULL"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
+        if held:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"the glacier still holds {held} message(s) -- restore or permanently "
+                    "delete them first"
+                ),
+            )
+
         await postimap_delete_account(session, account_id)
 
 
@@ -283,9 +346,37 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
         )
         result = await session.execute(stmt)
         rows = list(result.all())
-        views = await view_ids_by_folder(session, [f.id for f, _, _, _ in rows])
+        folder_ids = [f.id for f, _, _, _ in rows]
 
-    return [
+        glacier_row = None
+        prefs = (
+            await session.execute(
+                select(AccountPrefs).where(AccountPrefs.account_id == account_id)
+            )
+        ).scalar_one_or_none()
+        if prefs is not None and prefs.glacier_enabled and prefs.glacier_folder_id is not None:
+            folder_ids.append(prefs.glacier_folder_id)
+            counts = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) AS total, "
+                        "count(*) FILTER (WHERE is_seen = false) AS unread "
+                        "FROM glacier_messages WHERE account_id = :account_id "
+                        "AND visible_at IS NOT NULL"
+                    ),
+                    {"account_id": account_id},
+                )
+            ).mappings().one()
+            glacier_fp = (
+                await session.execute(
+                    select(FolderPrefs).where(FolderPrefs.folder_id == prefs.glacier_folder_id)
+                )
+            ).scalar_one_or_none()
+            glacier_row = (prefs.glacier_folder_id, counts["total"], counts["unread"], glacier_fp)
+
+        views = await view_ids_by_folder(session, folder_ids)
+
+    responses = [
         FolderResponse(
             id=f.id,
             account_id=f.account_id,
@@ -307,6 +398,31 @@ async def list_folders(account_id: uuid.UUID) -> list[FolderResponse]:
         )
         for f, fp, total, unread in rows
     ]
+    if glacier_row is not None:
+        glacier_folder_id, total, unread, glacier_fp = glacier_row
+        responses.append(
+            FolderResponse(
+                id=glacier_folder_id,
+                account_id=account_id,
+                imap_name="Glacier",
+                display_name=glacier_fp.display_name if glacier_fp else None,
+                special_use=None,
+                mailbox_id=None,
+                initial_sync_done=True,
+                backfill_total=None,
+                idle_requested=False,
+                idle_status=None,
+                last_synced_at=None,
+                sync_error=None,
+                created_at=None,
+                unified_view_ids=views.get(glacier_folder_id, []),
+                is_visible=glacier_fp.is_visible if glacier_fp else True,
+                total_count=total,
+                unread_count=unread,
+                kind="glacier",
+            )
+        )
+    return responses
 
 
 @router.get("/{account_id}/sync-status", response_model=SyncStatusResponse)

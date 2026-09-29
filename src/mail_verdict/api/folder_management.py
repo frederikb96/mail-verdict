@@ -19,7 +19,7 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import case, select
+from sqlalchemy import case, select, text
 from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +36,14 @@ from mail_verdict.api.schemas import (
 )
 from mail_verdict.api.unified import set_folder_views, view_ids_by_folder
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, FolderPrefs, Message, SyncNotification
+from mail_verdict.database.models import (
+    Account,
+    AccountPrefs,
+    Folder,
+    FolderPrefs,
+    Message,
+    SyncNotification,
+)
 from mail_verdict.postimap.actions import create_folder as postimap_create_folder
 from mail_verdict.postimap.actions import delete_folder as postimap_delete_folder
 from mail_verdict.postimap.actions import set_folder_idle
@@ -171,6 +178,44 @@ async def update_folder_order(
     return await get_folder_order(account_id)
 
 
+async def _glacier_account_id(session: AsyncSession, folder_id: uuid.UUID) -> uuid.UUID | None:
+    """Whether folder_id is a currently-enabled glacier's synthetic id,
+    and if so, whose."""
+    return (
+        await session.execute(
+            select(AccountPrefs.account_id).where(
+                AccountPrefs.glacier_folder_id == folder_id, AccountPrefs.glacier_enabled.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def _fetch_glacier_folder_response(
+    session: AsyncSession, folder_id: uuid.UUID, account_id: uuid.UUID,
+) -> FolderResponse:
+    counts = (
+        await session.execute(
+            text(
+                "SELECT count(*) AS total, count(*) FILTER (WHERE is_seen = false) AS unread "
+                "FROM glacier_messages WHERE account_id = :account_id AND visible_at IS NOT NULL"
+            ),
+            {"account_id": account_id},
+        )
+    ).mappings().one()
+    fp = (
+        await session.execute(select(FolderPrefs).where(FolderPrefs.folder_id == folder_id))
+    ).scalar_one_or_none()
+    views = await view_ids_by_folder(session, [folder_id])
+    return FolderResponse(
+        id=folder_id, account_id=account_id, imap_name="Glacier",
+        display_name=fp.display_name if fp else None, special_use=None, mailbox_id=None,
+        initial_sync_done=True, backfill_total=None, idle_requested=False, idle_status=None,
+        last_synced_at=None, sync_error=None, created_at=None,
+        unified_view_ids=views.get(folder_id, []), is_visible=fp.is_visible if fp else True,
+        total_count=counts["total"], unread_count=counts["unread"], kind="glacier",
+    )
+
+
 async def _fetch_folder_response(
     session: AsyncSession, folder_id: uuid.UUID,
 ) -> FolderResponse | None:
@@ -195,6 +240,9 @@ async def _fetch_folder_response(
     result = await session.execute(stmt)
     row = result.one_or_none()
     if row is None:
+        glacier_account_id = await _glacier_account_id(session, folder_id)
+        if glacier_account_id is not None:
+            return await _fetch_glacier_folder_response(session, folder_id, glacier_account_id)
         return None
 
     f, fp, total, unread = row
@@ -438,6 +486,13 @@ async def delete_folder(
     """
     db = get_db_connection()
     async with db.session() as session:
+        if await _glacier_account_id(session, folder_id) is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="The glacier cannot be deleted -- turn it off in account settings "
+                "instead, once it is empty.",
+            )
+
         await _require_folder_crud_support(session)
 
         folder_result = await session.execute(
@@ -532,6 +587,15 @@ async def update_folder_prefs(
     db = get_db_connection()
     real_time = values.pop("real_time", None)
     unified_view_ids = values.pop("unified_view_ids", None)
+    special_use_override = values.get("special_use_override")
+
+    async with db.session() as session:
+        is_glacier = await _glacier_account_id(session, folder_id) is not None
+    if is_glacier and (real_time is not None or special_use_override is not None):
+        raise HTTPException(
+            status_code=409,
+            detail="The glacier does not support real-time sync or a special-use override.",
+        )
 
     # First, so an unknown folder or view is refused before anything
     # else in the request is written.

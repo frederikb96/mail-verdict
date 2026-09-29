@@ -25,10 +25,11 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, tuple_
+from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
+from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.image_exceptions import (
     ImageAllowlist,
     is_sender_image_allowed,
@@ -62,7 +63,16 @@ from mail_verdict.core.sanitizer import (
 )
 from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Attachment, Folder, MailTag, Message, Verdict
+from mail_verdict.database.models import (
+    AccountPrefs,
+    Attachment,
+    Folder,
+    GlacierAttachment,
+    GlacierMessage,
+    MailTag,
+    Message,
+    Verdict,
+)
 from mail_verdict.database.repository import (
     FolderRepository,
     RowMarks,
@@ -71,6 +81,8 @@ from mail_verdict.database.repository import (
     list_row_marks,
     list_tags_for_mails,
 )
+from mail_verdict.glacier.operations import glacier_message_now
+from mail_verdict.glacier.restore import start_restore
 from mail_verdict.mail_actions.submissions import request_fingerprint, run_once
 from mail_verdict.postimap.actions import (
     expunge,
@@ -83,6 +95,11 @@ from mail_verdict.postimap.actions import (
     set_keywords,
 )
 from mail_verdict.settings.service import get_settings_service
+
+# The one shared refusal wording for an action a glaciered message
+# cannot support -- so web, iOS and the API never say this three
+# different ways.
+GLACIER_REFUSAL_REASON = "This message is no longer on the mail server -- it is in the glacier."
 
 logger = logging.getLogger(__name__)
 
@@ -698,7 +715,44 @@ async def locate_message(message_id: uuid.UUID) -> MessageLocation:
             ).where(Message.id == message_id)
         )).one_or_none()
         if row is None:
-            raise HTTPException(status_code=404, detail="Message not found")
+            glacier_row = (await session.execute(
+                select(
+                    GlacierMessage.id, GlacierMessage.account_id, GlacierMessage.folder_id,
+                    GlacierMessage.thread_id, GlacierMessage.restored_at,
+                    GlacierMessage.msg_key,
+                ).where(GlacierMessage.id == message_id)
+            )).one_or_none()
+            if glacier_row is None:
+                raise HTTPException(status_code=404, detail="Message not found")
+            if glacier_row.restored_at is None:
+                return MessageLocation(
+                    id=glacier_row.id, account_id=glacier_row.account_id,
+                    folder_id=glacier_row.folder_id, thread_id=glacier_row.thread_id,
+                )
+            # A tombstone (restored earlier): resolve to whatever live row
+            # its restore produced. msg_key IS the Message-ID header,
+            # angle brackets included the same way messages.message_id
+            # stores it, whenever it isn't the hash-fallback form for a
+            # message with no header at all -- which never matches a
+            # restored row either, so there is nothing to resolve to.
+            live_twin = None
+            if not glacier_row.msg_key.startswith("sha256:"):
+                live_twin = (await session.execute(
+                    select(Message.id, Message.account_id, Message.folder_id, Message.thread_id)
+                    .where(
+                        Message.account_id == glacier_row.account_id,
+                        Message.message_id == glacier_row.msg_key,
+                        Message.expunged_at.is_(None),
+                    )
+                    .order_by(desc(Message.created_at))
+                    .limit(1)
+                )).one_or_none()
+            if live_twin is None:
+                raise HTTPException(status_code=404, detail="Message no longer exists")
+            return MessageLocation(
+                id=live_twin.id, account_id=live_twin.account_id,
+                folder_id=live_twin.folder_id, thread_id=live_twin.thread_id,
+            )
         if row.expunged_at is None:
             return MessageLocation(
                 id=row.id, account_id=row.account_id,
@@ -726,14 +780,16 @@ async def locate_message(message_id: uuid.UUID) -> MessageLocation:
 
 
 def _to_message_detail(
-    m: Message,
+    m: Message | GlacierMessage,
     *,
     body_html: str | None,
     has_blocked_images: bool,
     images_allowed: bool,
     tags: list[MailTag],
-    attachments: list[Attachment],
+    attachments: list[Attachment] | list[Any],
     verdict: Verdict | None,
+    is_glacier: bool = False,
+    origin_folder_name: str | None = None,
 ) -> MessageDetail:
     """
     Assemble a MessageDetail from a message row plus its tags, attachments
@@ -742,13 +798,20 @@ def _to_message_detail(
     silently drift apart from the other. Callers own sanitizing body_html
     and deciding has_blocked_images/images_allowed, since get_message and
     get_thread apply load_images differently -- see each one's docstring.
+
+    `m` is a Message or, for a glaciered message, a GlacierMessage --
+    every field read below has the same name on both, by design (see
+    that model's own docstring), so this function needs no branch to
+    tell them apart.
     """
     return MessageDetail(
         id=m.id,
         account_id=m.account_id,
         folder_id=m.folder_id,
         thread_id=m.thread_id,
-        pending_sync=m.imap_uid is None,
+        # A glacier row's imap_uid is always NULL -- unlike a live row,
+        # that means "not on the server", not "move pending".
+        pending_sync=False if is_glacier else m.imap_uid is None,
         is_truncated=m.is_truncated,
         message_id=m.message_id,
         subject=m.subject,
@@ -772,6 +835,8 @@ def _to_message_detail(
         created_at=m.created_at,
         has_blocked_images=has_blocked_images,
         images_allowed=images_allowed,
+        is_glacier=is_glacier,
+        origin_folder_name=origin_folder_name,
         tags=[TagResponse(tag_name=t.tag_name, source=t.source.value) for t in tags],
         attachments=[
             AttachmentSummary(
@@ -815,12 +880,35 @@ async def get_message(
         result = await session.execute(
             select(Message).options(*_DETAIL_DEFERRED_COLUMNS).where(Message.id == message_id)
         )
-        msg = result.scalar_one_or_none()
+        msg: Message | GlacierMessage | None = result.scalar_one_or_none()
+        is_glacier = False
+        origin_folder_name = None
         if msg is None:
-            raise HTTPException(status_code=404, detail="Message not found")
+            glacier_result = await session.execute(
+                select(GlacierMessage).where(
+                    GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            msg = glacier_result.scalar_one_or_none()
+            if msg is None:
+                raise HTTPException(status_code=404, detail="Message not found")
+            is_glacier = True
+            origin_folder_name = msg.origin_imap_name
 
         tags = (await list_tags_for_mails(session, [message_id]))[message_id]
-        attachments = (await list_attachments_for_mails(session, [message_id]))[message_id]
+        attachments: list[Any]
+        if is_glacier:
+            attachments = list(
+                (
+                    await session.execute(
+                        select(GlacierAttachment).where(
+                            GlacierAttachment.glacier_message_id == message_id,
+                        )
+                    )
+                ).scalars().all()
+            )
+        else:
+            attachments = (await list_attachments_for_mails(session, [message_id]))[message_id]
         verdict = (await list_latest_verdicts_for_mails(session, [message_id])).get(message_id)
 
         body_html = msg.body_html
@@ -854,6 +942,8 @@ async def get_message(
             tags=tags,
             attachments=attachments,
             verdict=verdict,
+            is_glacier=is_glacier,
+            origin_folder_name=origin_folder_name,
         )
 
 
@@ -980,7 +1070,15 @@ async def get_attachment(message_id: uuid.UUID, attachment_id: uuid.UUID) -> Res
                 Attachment.id == attachment_id, Attachment.message_id == message_id,
             )
         )
-        attachment = result.scalar_one_or_none()
+        attachment: Attachment | GlacierAttachment | None = result.scalar_one_or_none()
+        if attachment is None:
+            glacier_result = await session.execute(
+                select(GlacierAttachment).where(
+                    GlacierAttachment.id == attachment_id,
+                    GlacierAttachment.glacier_message_id == message_id,
+                )
+            )
+            attachment = glacier_result.scalar_one_or_none()
 
     if attachment is None or attachment.data is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
@@ -1011,6 +1109,14 @@ async def get_raw_source(message_id: uuid.UUID) -> Response:
             .where(Message.id == message_id)
         )
         row = result.one_or_none()
+        if row is None:
+            glacier_result = await session.execute(
+                select(
+                    GlacierMessage.subject, GlacierMessage.raw_source,
+                    GlacierMessage.is_truncated,
+                ).where(GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None))
+            )
+            row = glacier_result.one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -1159,6 +1265,9 @@ async def _apply_message_action(
         result = await session.execute(select(Message).where(Message.id == message_id))
         msg = result.scalar_one_or_none()
     if msg is None or msg.expunged_at is not None:
+        glacier_response = await _apply_glacier_message_action(message_id, request)
+        if glacier_response is not None:
+            return glacier_response
         raise HTTPException(status_code=404, detail="Message not found")
 
     action = request.action
@@ -1173,6 +1282,28 @@ async def _apply_message_action(
                 success=True, action=action, message_id=message_id, folder_id=msg.folder_id,
             )
         return _not_applied(action, message_id)
+
+    if action == "move" and request.target_folder_id is not None:
+        async with db.session() as session:
+            glacier_account_id = (
+                await session.execute(
+                    select(AccountPrefs.account_id).where(
+                        AccountPrefs.glacier_folder_id == request.target_folder_id,
+                        AccountPrefs.glacier_enabled.is_(True),
+                    )
+                )
+            ).scalar_one_or_none()
+        if glacier_account_id is not None:
+            if glacier_account_id != account_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="target_folder_id does not belong to this account",
+                )
+            outcome = await glacier_message_now(db, message_id, event_ring=get_event_ring())
+            return MessageActionResponse(
+                success=outcome.ok, action=action, message_id=message_id,
+                message=outcome.reason,
+            )
 
     if action in ("mark_read", "mark_unread", "flag", "unflag"):
         flag = {"mark_read": ("is_seen", True), "mark_unread": ("is_seen", False),
@@ -1247,6 +1378,145 @@ async def _apply_message_action(
         )
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+async def _apply_glacier_message_action(
+    glacier_id: uuid.UUID, request: MessageActionRequest,
+) -> MessageActionResponse | None:
+    """
+    The action table for a message already in the glacier (this
+    feature's design, section 6). Read/star/keywords work directly
+    against the glacier row -- MailVerdict owns those columns on it, the
+    same as on a live message. move/archive/trash restore it to the
+    server. expunge here is genuinely permanent: it is the only copy
+    that exists, so it requires request.confirm. spam/not_spam are not
+    yet supported against a glaciered message.
+
+    Returns:
+        None if glacier_id does not name a glacier row at all (the
+        caller then reports the ordinary 404), otherwise a response --
+        possibly success=false, never a silent no-op
+    """
+    db = get_db_connection()
+    action = request.action
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                select(GlacierMessage).where(
+                    GlacierMessage.id == glacier_id, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+        ).scalar_one_or_none()
+    if row is None:
+        return None
+
+    if request.expected_folder_id is not None and row.folder_id != request.expected_folder_id:
+        return _not_applied(action, glacier_id)
+
+    if action in ("mark_read", "mark_unread", "flag", "unflag"):
+        column, value = {
+            "mark_read": ("is_seen", True), "mark_unread": ("is_seen", False),
+            "flag": ("is_flagged", True), "unflag": ("is_flagged", False),
+        }[action]
+        async with db.session() as session:
+            await session.execute(
+                text(f"UPDATE glacier_messages SET {column} = :value WHERE id = :id"),  # noqa: S608
+                {"value": value, "id": glacier_id},
+            )
+        await _announce_glacier_change(row.account_id, glacier_id, row.folder_id)
+        return MessageActionResponse(success=True, action=action, message_id=glacier_id)
+
+    if action in ("keyword_add", "keyword_remove"):
+        if not request.keyword:
+            raise HTTPException(status_code=400, detail=f"keyword required for {action}")
+        current = set(row.keywords or [])
+        current = (
+            current | {request.keyword} if action == "keyword_add"
+            else current - {request.keyword}
+        )
+        async with db.session() as session:
+            await session.execute(
+                text("UPDATE glacier_messages SET keywords = :kw WHERE id = :id"),
+                {"kw": sorted(current), "id": glacier_id},
+            )
+        await _announce_glacier_change(row.account_id, glacier_id, row.folder_id)
+        return MessageActionResponse(success=True, action=action, message_id=glacier_id)
+
+    if action == "expunge":
+        if not request.confirm:
+            return MessageActionResponse(
+                success=False, action=action, message_id=glacier_id,
+                message="This is the only copy of this message. Confirm to delete it "
+                "permanently.",
+            )
+        async with db.session() as session:
+            await session.execute(
+                text("DELETE FROM glacier_attachments WHERE glacier_message_id = :id"),
+                {"id": glacier_id},
+            )
+            await session.execute(
+                text("DELETE FROM glacier_messages WHERE id = :id"), {"id": glacier_id},
+            )
+        return MessageActionResponse(
+            success=True, action=action, message_id=glacier_id, message="Permanently deleted",
+        )
+
+    if action in ("move", "archive", "trash"):
+        if action == "move":
+            if request.target_folder_id is None:
+                raise HTTPException(status_code=400, detail="target_folder_id required for move")
+            target_folder_id = request.target_folder_id
+            async with db.session() as session:
+                is_another_glacier = (
+                    await session.execute(
+                        select(AccountPrefs.account_id).where(
+                            AccountPrefs.glacier_folder_id == target_folder_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if is_another_glacier is not None:
+                    return MessageActionResponse(
+                        success=False, action=action, message_id=glacier_id,
+                        message=GLACIER_REFUSAL_REASON,
+                    )
+                if not await _folder_belongs_to_account(session, row.account_id, target_folder_id):
+                    raise HTTPException(
+                        status_code=400, detail="target_folder_id does not belong to this account",
+                    )
+        else:
+            resolved = await _resolve_special_folder(row.account_id, action)
+            if resolved is None:
+                raise HTTPException(
+                    status_code=400, detail=f"No {action} folder found for this account",
+                )
+            target_folder_id = resolved
+        outcome = await start_restore(db, glacier_id, target_folder_id)
+        return MessageActionResponse(
+            success=outcome.ok, action=action, message_id=glacier_id, message=outcome.reason,
+        )
+
+    if action in ("spam", "not_spam"):
+        return MessageActionResponse(
+            success=False, action=action, message_id=glacier_id,
+            message="Spam rulings on glaciered mail are not yet supported.",
+        )
+
+    raise HTTPException(status_code=400, detail=f"Unknown action: {action}")
+
+
+async def _announce_glacier_change(
+    account_id: uuid.UUID, glacier_id: uuid.UUID, folder_id: uuid.UUID,
+) -> None:
+    """glacier_messages carries no PostIMAP trigger of its own -- a write
+    to a MailVerdict-owned table announces nothing unless the write path
+    pushes its own event, the same rule every other owned table in this
+    codebase follows (see docs/architecture.md)."""
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        await event_ring.add(
+            account_id, "mail.updated",
+            {"id": str(glacier_id), "account_id": str(account_id), "folder_id": str(folder_id)},
+        )
 
 
 async def _action_target(

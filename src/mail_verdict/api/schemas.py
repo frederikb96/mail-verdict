@@ -93,6 +93,11 @@ class MessageSummary(BaseModel):
         default=None,
         description="Unread message count in the thread, only present when threaded=true",
     )
+    is_glacier: bool = Field(
+        default=False,
+        description="This message is in the account's glacier -- it no longer exists on "
+        "the mail server and lives on only here.",
+    )
     mirrored_at: datetime = Field(
         description=(
             "When this row entered the mirror (messages.created_at). Named "
@@ -168,6 +173,16 @@ class MessageDetail(BaseModel):
     has_blocked_images: bool = False
     images_allowed: bool = False
     created_at: datetime
+    is_glacier: bool = Field(
+        default=False,
+        description="This message is in the account's glacier -- it no longer exists on "
+        "the mail server and lives on only here.",
+    )
+    origin_folder_name: str | None = Field(
+        default=None,
+        description="Provenance for a glaciered message: the folder it was copied out of, "
+        "by name. Null for an ordinary message.",
+    )
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
     verdict: VerdictResponse | None = None
@@ -225,6 +240,11 @@ class MessageActionRequest(BaseModel):
         "written and the response says applied=false. For an action queued on "
         "a device and sent later, which must not undo what happened to the "
         "message meanwhile.",
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else.",
     )
 
 
@@ -498,6 +518,9 @@ class AccountResponse(BaseModel):
     # .junk_retention_days, independently configurable.
     trash_retention_days: int | None = None
     junk_retention_days: int | None = None
+    glacier_enabled: bool = False
+    glacier_folder_id: uuid.UUID | None = None
+    glacier_auto_days: int | None = None
 
     model_config = {"from_attributes": True}
 
@@ -551,6 +574,11 @@ class AccountUpdateRequest(BaseModel):
     # See AccountCreateRequest.trash_retention_days for why ge=1.
     trash_retention_days: int | None = Field(default=None, ge=1)
     junk_retention_days: int | None = Field(default=None, ge=1)
+    glacier_enabled: bool | None = None
+    # NULL turns the automatic sweep off; the switch alone (with no days
+    # set) still gives a glacier that can be moved into by hand. Same
+    # ge=1 reasoning as the two retention periods above.
+    glacier_auto_days: int | None = Field(default=None, ge=1)
 
 
 # --- Folder schemas ---
@@ -569,6 +597,11 @@ class FolderResponse(BaseModel):
     special_use: str | None = None
     mailbox_id: str | None = None
     initial_sync_done: bool = False
+    kind: Literal["imap", "glacier"] = Field(
+        default="imap",
+        description="'glacier' for the one synthetic per-account folder representing the "
+        "glacier; every real IMAP folder is 'imap'.",
+    )
     # How many messages the folder held when its first sync began: the
     # denominator for total_count while that sync runs. Set with
     # initial_sync_done false means this folder is being synced now.

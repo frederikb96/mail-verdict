@@ -211,6 +211,34 @@
             ],
             "title": "Folder Order"
           },
+          "glacier_auto_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Glacier Auto Days"
+          },
+          "glacier_enabled": {
+            "default": false,
+            "title": "Glacier Enabled",
+            "type": "boolean"
+          },
+          "glacier_folder_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Glacier Folder Id"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -386,6 +414,29 @@
               }
             ],
             "title": "Emoji"
+          },
+          "glacier_auto_days": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Glacier Auto Days"
+          },
+          "glacier_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Glacier Enabled"
           },
           "imap_password": {
             "anyOf": [
@@ -3492,6 +3543,16 @@
             "title": "Is Visible",
             "type": "boolean"
           },
+          "kind": {
+            "default": "imap",
+            "description": "'glacier' for the one synthetic per-account folder representing the glacier; every real IMAP folder is 'imap'.",
+            "enum": [
+              "imap",
+              "glacier"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "last_synced_at": {
             "anyOf": [
               {
@@ -3992,6 +4053,12 @@
             "title": "Action",
             "type": "string"
           },
+          "confirm": {
+            "default": false,
+            "description": "Required for expunge on a message already in the glacier -- it is the only copy in existence. Ignored everywhere else.",
+            "title": "Confirm",
+            "type": "boolean"
+          },
           "expected_folder_id": {
             "anyOf": [
               {
@@ -4222,6 +4289,12 @@
             "title": "Is Flagged",
             "type": "boolean"
           },
+          "is_glacier": {
+            "default": false,
+            "description": "This message is in the account's glacier -- it no longer exists on the mail server and lives on only here.",
+            "title": "Is Glacier",
+            "type": "boolean"
+          },
           "is_seen": {
             "default": false,
             "title": "Is Seen",
@@ -4249,6 +4322,18 @@
               }
             ],
             "title": "Message Id"
+          },
+          "origin_folder_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provenance for a glaciered message: the folder it was copied out of, by name. Null for an ordinary message.",
+            "title": "Origin Folder Name"
           },
           "pending_sync": {
             "default": false,
@@ -4523,6 +4608,12 @@
           "is_flagged": {
             "default": false,
             "title": "Is Flagged",
+            "type": "boolean"
+          },
+          "is_glacier": {
+            "default": false,
+            "description": "This message is in the account's glacier -- it no longer exists on the mail server and lives on only here.",
+            "title": "Is Glacier",
             "type": "boolean"
           },
           "is_seen": {
@@ -6131,6 +6222,12 @@
           "is_flagged": {
             "default": false,
             "title": "Is Flagged",
+            "type": "boolean"
+          },
+          "is_glacier": {
+            "default": false,
+            "description": "This message is in the account's glacier -- it no longer exists on the mail server and lives on only here.",
+            "title": "Is Glacier",
             "type": "boolean"
           },
           "is_seen": {

@@ -39,6 +39,7 @@ from mail_verdict.glacier.operations import (
     resolve_duplicate,
     verify_message,
 )
+from mail_verdict.glacier.restore import confirm_restores, fail_stale_restores
 from mail_verdict.queue.notify import ReconciliationTimer
 
 if TYPE_CHECKING:
@@ -210,6 +211,8 @@ async def _sweep_account_once(
     await reresolve_origins(db, account_id)
     await repair_thread_ids(db, account_id)
     await _progress_mid_flight(db, account_id, event_ring=event_ring)
+    await confirm_restores(db, account_id, event_ring=event_ring)
+    await fail_stale_restores(db, account_id, timeout_seconds=cfg.restore_timeout_seconds)
     if confirmed or withdrawn:
         logger.info(
             "Glacier bookkeeping",
