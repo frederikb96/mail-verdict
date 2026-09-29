@@ -149,23 +149,44 @@ export function OrdersPage() {
   );
 
   // Restoring the list's own scroll position on the Back navigation that
-  // returns to this order -- attempted once per selection, and only once
-  // rows are actually on screen to scroll to.
-  const listRestoredForRef = useRef<string | null>(null);
+  // returns to this order -- once per anchor (not once per selection: a
+  // Back navigation can restore this same mounted page rather than
+  // remounting it, so a guard keyed on selectedId alone would already
+  // read as "handled" from the first visit, before any anchor existed,
+  // and silently skip the real one written moments later), and only
+  // once rows are actually on screen to scroll to.
+  //
+  // A Back navigation is not guaranteed to change selectedId or shown --
+  // the router can restore this same mounted page without React seeing
+  // any dependency change, so the check also runs from the ordinary
+  // signals a Back navigation fires regardless of whether React
+  // re-renders (order-detail.tsx's own restore effect has the identical
+  // shape, for the same reason).
+  const restoredAnchorKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => {
-    if (!selectedId) return;
-    if (listRestoredForRef.current === selectedId) return;
-    const anchor = readOrderScrollAnchor(selectedId);
-    if (!anchor) {
-      listRestoredForRef.current = selectedId;
-      return;
-    }
-    const el = listScrollRef.current;
-    if (!el || shown.length === 0) return;
-    listRestoredForRef.current = selectedId;
-    const target = anchor.listIndex * ORDER_ROW_HEIGHT - anchor.listRowTop;
-    const max = Math.max(0, el.scrollHeight - el.clientHeight);
-    el.scrollTop = Math.max(0, Math.min(target, max));
+    const tryRestore = () => {
+      if (!selectedId) return;
+      const anchor = readOrderScrollAnchor(selectedId);
+      if (!anchor) return;
+      const anchorKey = `${anchor.orderId}:${anchor.mailKey}`;
+      if (restoredAnchorKeyRef.current === anchorKey) return;
+      const el = listScrollRef.current;
+      if (!el || shown.length === 0) return;
+      restoredAnchorKeyRef.current = anchorKey;
+      const target = anchor.listIndex * ORDER_ROW_HEIGHT - anchor.listRowTop;
+      const max = Math.max(0, el.scrollHeight - el.clientHeight);
+      el.scrollTop = Math.max(0, Math.min(target, max));
+    };
+
+    tryRestore();
+    window.addEventListener("popstate", tryRestore);
+    window.addEventListener("pageshow", tryRestore);
+    document.addEventListener("visibilitychange", tryRestore);
+    return () => {
+      window.removeEventListener("popstate", tryRestore);
+      window.removeEventListener("pageshow", tryRestore);
+      document.removeEventListener("visibilitychange", tryRestore);
+    };
   }, [selectedId, shown]);
 
   const showDetailOnly = isMobile && selectedId !== null;

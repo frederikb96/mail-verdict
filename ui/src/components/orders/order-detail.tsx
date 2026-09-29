@@ -90,60 +90,96 @@ export function OrderDetailPane({
   const [previewDoc, setPreviewDoc] = useState<OrderDocument | null>(null);
 
   const mailRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const anchorAttemptedForRef = useRef<string | null>(null);
+  // Which anchor ("orderId:mailKey") has already been applied -- not
+  // which order.id has been "seen": on a Back navigation the browser can
+  // restore this same mounted component rather than remounting it, so a
+  // guard keyed on order.id alone would have already marked this order
+  // "attempted" on the very first visit, before any anchor existed, and
+  // then silently skip the real one written moments later by opening a
+  // mail. Keying on the anchor's own identity means a fresh anchor is
+  // never mistaken for one already handled.
+  const appliedAnchorKeyRef = useRef<string | null>(null);
 
   // Coming back to this order after opening one of its mails: put the mail
   // row back exactly where it sat on screen. Held while the surrounding
   // content settles (documents/summary can still be loading), released on
   // the reader's first gesture or after 1.5s -- see the scrolling notes on
   // never leaving a hold running forever.
+  //
+  // A Back navigation is not guaranteed to change `order` or
+  // `scrollContainerRef`'s own identity -- the router can restore this
+  // same mounted component rather than remounting it, and React then
+  // never re-runs an effect whose dependencies read as unchanged, even
+  // though the anchor a click just wrote (external to React state) is
+  // new. popstate/pageshow/visibilitychange are the ordinary signals a
+  // Back navigation fires regardless of whether React itself re-renders,
+  // so the check also runs from those, not only from the dependency
+  // array.
   useLayoutEffect(() => {
-    if (!order || !scrollContainerRef?.current) return;
-    if (anchorAttemptedForRef.current === order.id) return;
-    const anchor = readOrderScrollAnchor(order.id);
-    if (!anchor) {
-      anchorAttemptedForRef.current = order.id;
-      return;
-    }
-    const container = scrollContainerRef.current;
-    const rowEl = mailRowRefs.current.get(anchor.mailKey);
-    if (!rowEl) return; // Mail rows not painted yet -- retry once they are.
+    // The active hold's own release, if one is running -- so the outer
+    // effect's cleanup (an actual unmount, or order/scrollContainerRef
+    // genuinely changing) can tear it down too, not only its own natural
+    // end. tryApply can run more than once (mount, then again on a later
+    // popstate); without this, an earlier call's listeners would outlive
+    // whatever tore this effect down.
+    let currentRelease: (() => void) | null = null;
 
-    anchorAttemptedForRef.current = order.id;
+    const tryApply = () => {
+      const container = scrollContainerRef?.current;
+      if (!order || !container) return;
+      const anchor = readOrderScrollAnchor(order.id);
+      if (!anchor) return;
+      const anchorKey = `${anchor.orderId}:${anchor.mailKey}`;
+      if (appliedAnchorKeyRef.current === anchorKey) return;
+      const rowEl = mailRowRefs.current.get(anchor.mailKey);
+      if (!rowEl) return; // Mail rows not painted yet -- retry once they are.
 
-    const apply = () => {
-      const containerRect = container.getBoundingClientRect();
-      const rowRect = rowEl.getBoundingClientRect();
-      container.scrollTop += rowRect.top - containerRect.top - anchor.rowTop;
+      appliedAnchorKeyRef.current = anchorKey;
+
+      const apply = () => {
+        const containerRect = container.getBoundingClientRect();
+        const rowRect = rowEl.getBoundingClientRect();
+        container.scrollTop += rowRect.top - containerRect.top - anchor.rowTop;
+      };
+      apply();
+
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        resizeObserver.disconnect();
+        container.removeEventListener("wheel", release);
+        container.removeEventListener("touchstart", release);
+        container.removeEventListener("pointerdown", release);
+        container.removeEventListener("keydown", release);
+        window.clearTimeout(timeoutId);
+        clearOrderScrollAnchor();
+        if (currentRelease === release) currentRelease = null;
+      };
+      currentRelease = release;
+
+      const resizeObserver = new ResizeObserver(() => {
+        if (!released) apply();
+      });
+      resizeObserver.observe(container);
+
+      container.addEventListener("wheel", release, { passive: true });
+      container.addEventListener("touchstart", release, { passive: true });
+      container.addEventListener("pointerdown", release);
+      container.addEventListener("keydown", release);
+      const timeoutId = window.setTimeout(release, 1500);
     };
-    apply();
 
-    let released = false;
-    const release = () => {
-      if (released) return;
-      released = true;
-      resizeObserver.disconnect();
-      container.removeEventListener("wheel", release);
-      container.removeEventListener("touchstart", release);
-      container.removeEventListener("pointerdown", release);
-      container.removeEventListener("keydown", release);
-      window.clearTimeout(timeoutId);
-      clearOrderScrollAnchor();
+    tryApply();
+    window.addEventListener("popstate", tryApply);
+    window.addEventListener("pageshow", tryApply);
+    document.addEventListener("visibilitychange", tryApply);
+    return () => {
+      window.removeEventListener("popstate", tryApply);
+      window.removeEventListener("pageshow", tryApply);
+      document.removeEventListener("visibilitychange", tryApply);
+      currentRelease?.();
     };
-
-    const resizeObserver = new ResizeObserver(() => {
-      if (!released) apply();
-    });
-    resizeObserver.observe(container);
-
-    container.addEventListener("wheel", release, { passive: true });
-    container.addEventListener("touchstart", release, { passive: true });
-    container.addEventListener("pointerdown", release);
-    container.addEventListener("keydown", release);
-    const timeoutId = window.setTimeout(release, 1500);
-
-    return release;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order, scrollContainerRef]);
 
   if (isLoading || !order) {
