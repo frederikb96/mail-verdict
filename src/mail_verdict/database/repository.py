@@ -774,18 +774,47 @@ class MessageRepository:
             )
             rank = func.ts_rank(Message.search_vector, ts_query)
 
-            stmt = (
-                select(Message, snippet.label("snippet"))
-                .where(
-                    Message.expunged_at.is_(None),
-                    Message.search_vector.op("@@")(ts_query),
-                )
-                .order_by(desc(rank))
-                .limit(limit)
+            live_stmt = select(Message, snippet.label("snippet"), rank.label("rank")).where(
+                Message.expunged_at.is_(None), Message.search_vector.op("@@")(ts_query),
             )
             if account_id is not None:
-                stmt = stmt.where(Message.account_id == account_id)
+                live_stmt = live_stmt.where(Message.account_id == account_id)
 
+            glacier_folders = await touches_glacier(
+                session, account_id=account_id, folder_ids=None,
+            )
+            if not glacier_folders:
+                stmt = live_stmt.order_by(desc(rank)).limit(limit)
+                result = await session.execute(stmt)
+                return [(row[0], row[1]) for row in result.all()]
+
+            glacier_searchable_text = (
+                func.coalesce(GlacierMessage.subject, "")
+                + " "
+                + func.coalesce(GlacierMessage.from_addr, "")
+                + " "
+                + func.coalesce(GlacierMessage.body_text, "")
+            )
+            glacier_snippet = func.ts_headline(
+                "simple", glacier_searchable_text, ts_query,
+                "StartSel=**, StopSel=**, MaxWords=35, MinWords=15",
+            )
+            glacier_rank = func.ts_rank(GlacierMessage.search_vector, ts_query)
+            glacier_stmt = (
+                glacier_as_message_select()
+                .add_columns(glacier_snippet.label("snippet"), glacier_rank.label("rank"))
+                .where(GlacierMessage.search_vector.op("@@")(ts_query))
+            )
+            if account_id is not None:
+                glacier_stmt = glacier_stmt.where(GlacierMessage.account_id == account_id)
+
+            sub = live_stmt.union_all(glacier_stmt).subquery()
+            entity = aliased(Message, sub)
+            stmt = (
+                select(entity, sub.c.snippet)
+                .order_by(desc(sub.c.rank))
+                .limit(limit)
+            )
             result = await session.execute(stmt)
             return [(row[0], row[1]) for row in result.all()]
 

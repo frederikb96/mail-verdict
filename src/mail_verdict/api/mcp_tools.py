@@ -25,11 +25,13 @@ import base64
 import binascii
 import uuid
 from collections.abc import Sequence
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
 from typing import Any
 
 from fastapi import HTTPException
 from fastmcp import FastMCP
-from sqlalchemy import desc, select
+from sqlalchemy import select, text
 
 from mail_verdict.api.calendar_events import (
     create_event as _create_calendar_event,
@@ -74,7 +76,9 @@ from mail_verdict.api.contacts import (
     update_contact as _update_contact,
 )
 from mail_verdict.api.identities import resolve_send_from_addr
+from mail_verdict.api.mails import _announce_glacier_change
 from mail_verdict.api.mails import get_message_quote as _get_message_quote
+from mail_verdict.api.mails import list_message_page as _list_message_page
 from mail_verdict.api.mcp_reply import (
     ForwardDraft,
     ReplyDraft,
@@ -121,6 +125,7 @@ from mail_verdict.database.repository import (
 )
 from mail_verdict.glacier.operations import glacier_message_now
 from mail_verdict.glacier.restore import start_restore
+from mail_verdict.glacier.rows import glacier_ids_among
 from mail_verdict.outbox.submissions import record_submission
 from mail_verdict.postimap.actions import insert_outbox, move_message, set_flags
 
@@ -133,8 +138,14 @@ mcp = FastMCP(
 )
 
 
-def _message_summary(msg: Message) -> dict[str, Any]:
-    """Convert a Message model to a summary dict for MCP responses."""
+def _message_summary(msg: Message | GlacierMessage, *, is_glacier: bool = False) -> dict[str, Any]:
+    """Convert a Message (or a visible GlacierMessage -- same field names,
+    see that model's own docstring) to a summary dict for MCP responses.
+
+    `is_glacier` must be given explicitly by the caller whenever `msg`
+    could have come from a union spanning both tables -- imap_uid alone
+    cannot tell a glacier row (always NULL) from a live one with a move
+    pending (also NULL); see glacier/rows.py:glacier_ids_among."""
     return {
         "id": str(msg.id),
         "account_id": str(msg.account_id),
@@ -146,7 +157,8 @@ def _message_summary(msg: Message) -> dict[str, Any]:
         "is_seen": msg.is_seen,
         "is_flagged": msg.is_flagged,
         "is_truncated": msg.is_truncated,
-        "pending_sync": msg.imap_uid is None,
+        "pending_sync": False if is_glacier else msg.imap_uid is None,
+        "is_glacier": is_glacier,
     }
 
 
@@ -188,7 +200,12 @@ async def search_mail(
     msg_repo = MessageRepository(db)
     aid = uuid.UUID(account_id) if account_id else None
     rows = await msg_repo.search_fulltext_with_snippet(aid, query, limit=limit)
-    return [{**_message_summary(msg), "snippet": snippet} for msg, snippet in rows]
+    async with db.session() as session:
+        glacier_ids = await glacier_ids_among(session, [msg.id for msg, _snippet in rows])
+    return [
+        {**_message_summary(msg, is_glacier=msg.id in glacier_ids), "snippet": snippet}
+        for msg, snippet in rows
+    ]
 
 
 @mcp.tool(
@@ -219,18 +236,22 @@ async def list_mails(
     """
     db = get_db_connection()
     async with db.session() as session:
-        stmt = (
-            select(Message)
-            .where(Message.account_id == uuid.UUID(account_id), Message.expunged_at.is_(None))
-            .order_by(desc(Message.received_at))
-            .limit(min(limit, 100))
+        page = await _list_message_page(
+            session, account_id=uuid.UUID(account_id),
+            folder_id=uuid.UUID(folder_id) if folder_id else None,
+            folder_scope=None, threaded=False, is_seen=None, since=None,
+            before=None, after=None, around=None, limit=min(limit, 100),
         )
-        if folder_id:
-            stmt = stmt.where(Message.folder_id == uuid.UUID(folder_id))
-        result = await session.execute(stmt)
-        messages = list(result.scalars().all())
-
-    return [_message_summary(m) for m in messages]
+    return [
+        {
+            "id": str(m.id), "account_id": str(m.account_id), "folder_id": str(m.folder_id),
+            "thread_id": str(m.thread_id), "subject": m.subject, "from_addr": m.from_addr,
+            "received_at": m.received_at.isoformat() if m.received_at else None,
+            "is_seen": m.is_seen, "is_flagged": m.is_flagged, "is_truncated": m.is_truncated,
+            "pending_sync": m.pending_sync, "is_glacier": m.is_glacier,
+        }
+        for m in page.messages
+    ]
 
 
 @mcp.tool(
@@ -254,19 +275,29 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
     Returns:
         Full message content, or {"error": "Message not found"}
     """
-    from mail_verdict.api.deps import get_attachment_repo
+    from mail_verdict.database.repository import list_attachments_for_mails
 
     db = get_db_connection()
+    mail_uuid = uuid.UUID(mail_id)
+    is_glacier = False
     async with db.session() as session:
-        result = await session.execute(select(Message).where(Message.id == uuid.UUID(mail_id)))
-        msg = result.scalar_one_or_none()
-    if msg is None:
-        return {"error": "Message not found"}
+        result = await session.execute(select(Message).where(Message.id == mail_uuid))
+        msg: Message | GlacierMessage | None = result.scalar_one_or_none()
+        if msg is None:
+            glacier_result = await session.execute(
+                select(GlacierMessage).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            msg = glacier_result.scalar_one_or_none()
+            is_glacier = msg is not None
+        if msg is None:
+            return {"error": "Message not found"}
 
-    attachments = await get_attachment_repo().get_by_message_id(msg.id)
+        attachments = (await list_attachments_for_mails(session, [msg.id]))[msg.id]
 
     return {
-        **_message_summary(msg),
+        **_message_summary(msg, is_glacier=is_glacier),
         "message_id": msg.message_id,
         "to_addrs": msg.to_addrs,
         "cc_addrs": msg.cc_addrs,
@@ -306,22 +337,43 @@ async def get_thread(mail_id: str) -> list[dict[str, Any]]:
         {"error": ...} dict if the message does not exist
     """
     db = get_db_connection()
+    mail_uuid = uuid.UUID(mail_id)
     async with db.session() as session:
-        anchor = await session.execute(
-            select(Message.thread_id).where(Message.id == uuid.UUID(mail_id))
-        )
+        anchor = await session.execute(select(Message.thread_id).where(Message.id == mail_uuid))
         thread_id = anchor.scalar_one_or_none()
+        if thread_id is None:
+            glacier_anchor = await session.execute(
+                select(GlacierMessage.thread_id).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            thread_id = glacier_anchor.scalar_one_or_none()
         if thread_id is None:
             return [{"error": "Message not found"}]
 
-        result = await session.execute(
+        # A conversation is never entirely one table once any of its
+        # messages has been glaciered -- see api/mails.py's get_thread
+        # for the full reasoning (its thread_id is unchanged by
+        # glaciering, design section 3.9).
+        live_result = await session.execute(
             select(Message)
             .where(Message.thread_id == thread_id, Message.expunged_at.is_(None))
-            .order_by(Message.received_at)
         )
-        messages = list(result.scalars().all())
+        live_messages: list[Message | GlacierMessage] = list(live_result.scalars().all())
+        glacier_result = await session.execute(
+            select(GlacierMessage).where(
+                GlacierMessage.thread_id == thread_id, GlacierMessage.visible_at.is_not(None),
+            )
+        )
+        glacier_messages = list(glacier_result.scalars().all())
+        glacier_ids = {m.id for m in glacier_messages}
 
-    return [_message_summary(m) for m in messages]
+        _min_dt = _datetime.min.replace(tzinfo=_timezone.utc)
+        messages = sorted(
+            [*live_messages, *glacier_messages], key=lambda m: m.received_at or _min_dt,
+        )
+
+    return [_message_summary(m, is_glacier=m.id in glacier_ids) for m in messages]
 
 
 @mcp.tool(
@@ -527,13 +579,33 @@ async def mark_mail(
         return {"success": False, "error": "Provide at least one of is_seen, is_flagged"}
 
     db = get_db_connection()
+    mail_uuid = uuid.UUID(mail_id)
     async with db.session() as session:
-        result = await session.execute(
-            select(Message.id).where(Message.id == uuid.UUID(mail_id))
-        )
-        if result.scalar_one_or_none() is None:
+        result = await session.execute(select(Message.id).where(Message.id == mail_uuid))
+        if result.scalar_one_or_none() is not None:
+            await set_flags(session, mail_uuid, **flags)
+            return {"success": True}
+
+        # A glaciered message has no PostIMAP-managed row to write flags
+        # onto -- MailVerdict owns these columns directly on the glacier
+        # row instead (design section 6), the same as the web API's
+        # mark_read/flag actions on one.
+        glacier_row = (
+            await session.execute(
+                select(GlacierMessage.account_id, GlacierMessage.folder_id).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+        ).one_or_none()
+        if glacier_row is None:
             return {"success": False, "error": "Message not found"}
-        await set_flags(session, uuid.UUID(mail_id), **flags)
+
+        set_clause = ", ".join(f"{column} = :{column}" for column in flags)
+        await session.execute(
+            text(f"UPDATE glacier_messages SET {set_clause} WHERE id = :id"),  # noqa: S608
+            {**flags, "id": mail_uuid},
+        )
+    await _announce_glacier_change(glacier_row.account_id, mail_uuid, glacier_row.folder_id)
 
     return {"success": True}
 
@@ -1012,7 +1084,14 @@ async def reply_mail(
 
     db = get_db_connection()
     async with db.session() as session:
-        source = await session.get(Message, mail_uuid)
+        source: Message | GlacierMessage | None = await session.get(Message, mail_uuid)
+        if source is None:
+            glacier_result = await session.execute(
+                select(GlacierMessage).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            source = glacier_result.scalar_one_or_none()
         if source is None:
             return {"success": False, "error": "Message not found"}
         if source.is_truncated:
@@ -1048,12 +1127,15 @@ async def reply_mail(
 
     draft: ReplyDraft | ForwardDraft
     if mode == "forward":
-        from mail_verdict.api.deps import get_attachment_repo
+        from mail_verdict.database.repository import list_attachments_for_mails
 
         draft = derive_forward(source)
         recipients_to = merge_addresses([], to)
         recipients_cc = merge_addresses([], cc, exclude=recipients_to)
-        source_attachments = await get_attachment_repo().get_by_message_id(source.id)
+        async with db.session() as attachment_session:
+            source_attachments = (
+                await list_attachments_for_mails(attachment_session, [source.id])
+            )[source.id]
         outbox_attachments = [
             (a.filename or "attachment", a.content_type, a.data or b"") for a in source_attachments
         ] + decoded_attachments
@@ -1230,8 +1312,13 @@ async def semantic_search_mail(
         get_db_connection(), query_vector=vectors[0], model=model, account_id=aid,
         k=limit, strictness=strictness,
     )
+    async with get_db_connection().session() as session:
+        glacier_ids = await glacier_ids_among(session, [hit.message.id for hit in outcome.results])
     return [
-        {**_message_summary(hit.message), "similarity": hit.similarity}
+        {
+            **_message_summary(hit.message, is_glacier=hit.message.id in glacier_ids),
+            "similarity": hit.similarity,
+        }
         for hit in outcome.results
     ]
 
