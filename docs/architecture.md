@@ -541,7 +541,23 @@ through a `kind="append"` outbox row rather than the ordinary send/draft recompo
 would lose the original Message-ID, DKIM signature and every received header. It needs a PostIMAP
 capability gated the same way every other one in this codebase is
 (`postimap.contract.supports_message_append`); against an older PostIMAP it answers unavailable
-rather than falling back to some other mechanism, since none exists.
+rather than falling back to some other mechanism, since none exists. Moving a message *in* is
+refused by the same gate, naming the running PostIMAP's version — restore has to work before
+removal is ever offered at all, so a deployment that cannot restore never gets the chance to
+remove anything in the first place.
+
+Listing, conversation threading, text search, semantic search and unified views all reach the
+glacier the same way: scoped to exactly the glacier folder, they query `glacier_messages` alone;
+scoped wider (an account-wide list, a unified view, an unscoped search), they union it with
+`messages` via `glacier/rows.py`'s column-compatible helpers, aliased back onto `Message` so every
+predicate, cursor and `DISTINCT ON` thread grouping downstream reads one entity regardless of
+which table a row actually came from — the same trick `database/repository.py`'s own text-search
+candidate query already used for its `to_addrs` branch before the glacier existed. A request whose
+scope cannot reach a glacier at all — a real folder alone, or an installation with the feature off
+— never builds that union, so it costs nothing. A glaciered message's semantic-search embedding
+carries no `message_id` hint at all (unlike a live message's, which is repointed on a UIDVALIDITY
+resync) — it is looked up by the same durable `(account_id, msg_key)` identity the glacier row
+itself uses, needing no hint to go stale in the first place.
 
 ## Threading
 
