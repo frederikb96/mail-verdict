@@ -73,24 +73,49 @@ def glacier_as_message_select() -> Select[Any]:
     return select(*cols).where(GlacierMessage.visible_at.is_not(None))
 
 
-def scope_touches_glacier(
-    folder_ids: set[uuid.UUID] | None, known_glacier_ids: set[uuid.UUID],
-) -> bool:
-    """Whether a request's folder scope can reach a glacier at all, so a
-    caller can skip adding a union branch entirely when it cannot --
-    which is what makes an installation with the feature off, or a
-    request scoped to real folders only, pay nothing for it.
+async def touches_glacier(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID | None,
+    folder_ids: Any | None,
+) -> dict[uuid.UUID, uuid.UUID]:
+    """Which glacier folders (folder_id -> account_id) a request scoped
+    this way can reach -- the one predicate every caller that needs to
+    decide "does a union branch over glacier_messages pay for anything
+    here" (api/mails.py's listing, database/repository.py's search) goes
+    through, so an installation with the feature off, or a request
+    scoped to real folders only, never derives that conclusion twice.
 
     Args:
-        folder_ids: The request's folder scope, or None for unscoped
-            (account-wide or instance-wide)
-        known_glacier_ids: Every glacier folder id that currently exists
+        session: Active AsyncSession
+        account_id: The request's account scope, or None for every account
+        folder_ids: The request's folder scope (any sequence/selectable
+            `in_()` accepts), or None for unscoped
 
     Returns:
-        True if a union branch over glacier_messages should be added
+        Empty when nothing in scope can reach a glacier
     """
-    if not known_glacier_ids:
-        return False
-    if folder_ids is None:
-        return True
-    return bool(folder_ids & known_glacier_ids)
+    known = await glacier_folder_ids(session)
+    if not known:
+        return {}
+    if folder_ids is not None:
+        return {fid: aid for fid, aid in known.items() if fid in folder_ids}
+    if account_id is not None:
+        return {fid: aid for fid, aid in known.items() if aid == account_id}
+    return known
+
+
+async def glacier_ids_among(
+    session: AsyncSession, ids: list[uuid.UUID],
+) -> frozenset[uuid.UUID]:
+    """Which of these ids are visible glacier rows -- for a caller
+    (api/mails.py's listing, api/search.py's results) whose returned
+    rows are indistinguishably Message-typed regardless of which table
+    they actually came from (aliased(Message, union_subquery) returns
+    Message instances for both arms), so imap_uid alone cannot tell a
+    glacier row (always NULL, GlacierMessage's own docstring) from a
+    live one with a move pending (also NULL)."""
+    if not ids:
+        return frozenset()
+    result = await session.execute(select(GlacierMessage.id).where(GlacierMessage.id.in_(ids)))
+    return frozenset(result.scalars())

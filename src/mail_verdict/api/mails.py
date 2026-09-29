@@ -83,7 +83,11 @@ from mail_verdict.database.repository import (
 )
 from mail_verdict.glacier.operations import glacier_message_now
 from mail_verdict.glacier.restore import start_restore
-from mail_verdict.glacier.rows import glacier_as_message_select, glacier_folder_ids
+from mail_verdict.glacier.rows import (
+    glacier_as_message_select,
+    glacier_folder_ids,
+    glacier_ids_among,
+)
 from mail_verdict.mail_actions.submissions import request_fingerprint, run_once
 from mail_verdict.postimap.actions import (
     expunge,
@@ -211,10 +215,7 @@ async def _resolve_glacier_ids(
         return frozenset()
     if entity is GlacierMessage:
         return frozenset(ids)
-    if not ids:
-        return frozenset()
-    result = await session.execute(select(GlacierMessage.id).where(GlacierMessage.id.in_(ids)))
-    return frozenset(result.scalars())
+    return await glacier_ids_among(session, ids)
 
 
 @account_router.get("", response_model=MessageListResponse)
