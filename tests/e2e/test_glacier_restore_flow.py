@@ -16,6 +16,7 @@ pass, only for a documented skip.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -35,8 +36,11 @@ from tests.e2e.helpers import (
     wait_for_folder,
 )
 from tests.setup.containers import DOVECOT_ALIAS, DOVECOT_IMAP_PORT, DOVECOT_PASSWORD
-from tests.setup.imap_helpers import find_message_by_id, imap_session
+from tests.setup.imap_helpers import find_message_by_id, imap_session, wait_for_flags
 from tests.setup.mail_delivery import build_eml, deliver_message
+
+_INTERNALDATE_RE = re.compile(rb'INTERNALDATE "([^"]*)"')
+_FLAGS_RE = re.compile(rb"FLAGS \(([^)]*)\)")
 
 
 @pytest.mark.asyncio
@@ -104,6 +108,32 @@ async def test_glacier_round_trip_against_real_dovecot(
         assert typ == "OK" and fetch_data and isinstance(fetch_data[0], tuple)
         server_bytes: bytes = fetch_data[0][1]
 
+    # Mark it read and flagged through the app's own action -- design
+    # section 7 says a restore must carry the message's original date
+    # and flags, and start_restore builds the APPEND's flags/internal_date
+    # from exactly is_seen/is_flagged/received_at on the glacier row, so
+    # this is what proves that path for real rather than by reading the
+    # code. Through the API (not a direct IMAP STORE) so the mirror --
+    # what copy_message actually reads from -- picks it up the same way
+    # a person starring a message would.
+    action_resp = app_client.post(
+        f"/api/messages/{message_id}/action", json={"action": "mark_read"},
+    )
+    assert action_resp.status_code == 200, action_resp.text
+    action_resp = app_client.post(f"/api/messages/{message_id}/action", json={"action": "flag"})
+    assert action_resp.status_code == 200, action_resp.text
+    wait_for_flags(
+        host, imap_port, email, DOVECOT_PASSWORD, "INBOX", msg_id, {"\\Seen", "\\Flagged"},
+    )
+
+    with imap_session(host, imap_port, email, DOVECOT_PASSWORD) as conn:
+        seq = find_message_by_id(conn, "INBOX", msg_id)
+        assert seq is not None
+        conn.select("INBOX")
+        typ, date_data = conn.fetch(seq.decode(), "(INTERNALDATE)")
+        assert typ == "OK" and date_data and isinstance(date_data[0], bytes)
+        original_internaldate = date_data[0]
+
     # Enable the glacier on this account (account_prefs is MailVerdict's own table --
     # a plain upsert, the same shape update_account's own handler uses).
     async with db.session() as session:
@@ -164,6 +194,27 @@ async def test_glacier_round_trip_against_real_dovecot(
         description="the APPEND to actually land the message back on the real IMAP server",
     )
     assert restored_bytes == server_bytes, "the restored message must be byte-identical"
+
+    with imap_session(host, imap_port, email, DOVECOT_PASSWORD) as conn:
+        seq = find_message_by_id(conn, "INBOX", msg_id)
+        assert seq is not None
+        conn.select("INBOX")
+        typ, restored_date_data = conn.fetch(seq.decode(), "(INTERNALDATE FLAGS)")
+        assert typ == "OK" and restored_date_data and isinstance(restored_date_data[0], bytes)
+        restored_line = restored_date_data[0]
+
+    original_date_str = _INTERNALDATE_RE.search(original_internaldate)
+    restored_date_str = _INTERNALDATE_RE.search(restored_line)
+    assert original_date_str is not None and restored_date_str is not None
+    assert restored_date_str.group(1) == original_date_str.group(1), (
+        "the restored message must land with its original INTERNALDATE"
+    )
+    restored_flags_match = _FLAGS_RE.search(restored_line)
+    assert restored_flags_match is not None
+    restored_flags = {f.decode() for f in restored_flags_match.group(1).split()}
+    assert {"\\Seen", "\\Flagged"} <= restored_flags, (
+        "the restored message must carry its original read/flagged state"
+    )
 
     confirmed_count = await wait_for_async(
         lambda: confirm_restores(db, uuid.UUID(account_id)),
