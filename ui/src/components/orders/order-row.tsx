@@ -30,6 +30,8 @@ export function OrderRow({ order, selected, onSelect }: OrderRowProps) {
     <button
       type="button"
       onClick={onSelect}
+      data-testid="order-row"
+      data-order-id={order.id}
       className={cn(
         "h-[124px] w-full overflow-hidden border-b px-4 py-3 flex gap-3 text-left hover:bg-accent/50",
         selected && "bg-accent",

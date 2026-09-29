@@ -2,6 +2,7 @@
  * components/orders/ for the screens and use-sse.ts for the
  * order.updated live invalidation. */
 
+import { useMemo } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { OrderDetail } from "@/types/api";
@@ -21,7 +22,14 @@ export function useOrdersList(state: "all" | "open") {
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : undefined),
   });
-  const items = query.data?.pages.flatMap((p) => p.items) ?? [];
+  // Stable across renders that don't change query.data -- orders-page.tsx
+  // depends on this array's identity in an effect, and an unmemoized
+  // .flatMap() here (a fresh array every call) turns that into an effect
+  // that fires every render (see this repo's own notes on that trap).
+  const items = useMemo(
+    () => query.data?.pages.flatMap((p) => p.items) ?? [],
+    [query.data],
+  );
   return { ...query, items };
 }
 

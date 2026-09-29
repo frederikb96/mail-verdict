@@ -1,17 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OrderDetailPane } from "@/components/orders/order-detail";
 import { OrderRow } from "@/components/orders/order-row";
+import { useAccounts } from "@/hooks/use-accounts";
 import { useOrdersList } from "@/hooks/use-orders";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { readOrderScrollAnchor, writeOrderScrollAnchor } from "@/lib/order-scroll-anchor";
+import { stableOrder } from "@/lib/stable-order";
+import type { OrderListItem } from "@/types/api";
 import Link from "next/link";
 
 const STATE_STORAGE_KEY = "mv.orders.state";
+
+/** Every row is exactly this tall (order-row.tsx) -- what makes the list
+ * and the scroll-anchor restore's arithmetic exact rather than an
+ * estimate. */
+const ORDER_ROW_HEIGHT = 124;
 
 function readStoredState(): "all" | "open" {
   if (typeof window === "undefined") return "all";
@@ -28,6 +37,86 @@ export function OrdersPage() {
 
   const { items, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } =
     useOrdersList(state);
+  const { data: accounts } = useAccounts();
+
+  // The list actually rendered, decoupled from `items` (the query's own
+  // latest answer) so a live update never moves a row a scrolled-down
+  // reader is looking at -- see stable-order.ts. Kept in a ref alongside
+  // the state so effects and event handlers always read the current
+  // value without re-subscribing.
+  const [shown, setShown] = useState<OrderListItem[]>([]);
+  const [held, setHeld] = useState<OrderListItem[]>([]);
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const atTopRef = useRef(true);
+  const isPaginatingRef = useRef(false);
+
+  const listScrollRef = useRef<HTMLDivElement>(null);
+  const detailScrollRef = useRef<HTMLDivElement>(null);
+
+  // A new filter (state) is a new list, keyed on it: start over at the
+  // top rather than carrying rows from the previous filter's reconciled
+  // window.
+  useEffect(() => {
+    setShown([]);
+    setHeld([]);
+    atTopRef.current = true;
+  }, [state]);
+
+  useEffect(() => {
+    if (isLoading) return;
+
+    if (isPaginatingRef.current) {
+      isPaginatingRef.current = false;
+      setShown((prev) => {
+        const prevIds = new Set(prev.map((o) => o.id));
+        const appended = items.filter((o) => !prevIds.has(o.id));
+        return appended.length > 0 ? [...prev, ...appended] : prev;
+      });
+      return;
+    }
+
+    if (shownRef.current.length === 0) {
+      setShown(items);
+      setHeld([]);
+      return;
+    }
+
+    const result = stableOrder(shownRef.current, items, atTopRef.current);
+    setShown(result.rows);
+    setHeld(result.held);
+  }, [items, isLoading]);
+
+  const takeOverFresh = useCallback(() => {
+    setShown(itemsRef.current);
+    setHeld([]);
+    listScrollRef.current?.scrollTo({ top: 0 });
+  }, []);
+
+  const handleListScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const el = e.currentTarget;
+      const isAtTop = el.scrollTop <= 2;
+      const wasAtTop = atTopRef.current;
+      atTopRef.current = isAtTop;
+      if (isAtTop && !wasAtTop) {
+        // Reaching the top is the other way to take over the fresh order,
+        // besides clicking the pill.
+        if (held.length > 0) takeOverFresh();
+      }
+      if (
+        el.scrollHeight - el.scrollTop - el.clientHeight < 600 &&
+        hasNextPage &&
+        !isFetchingNextPage
+      ) {
+        isPaginatingRef.current = true;
+        fetchNextPage();
+      }
+    },
+    [held.length, takeOverFresh, hasNextPage, isFetchingNextPage, fetchNextPage],
+  );
 
   // The one writer of this route's URL -- window.history.pushState only,
   // never router.push: the static export refetches the page's RSC
@@ -45,8 +134,45 @@ export function OrdersPage() {
     window.localStorage.setItem(STATE_STORAGE_KEY, next);
   }, []);
 
+  // Just before a mail row hands off to the normal mail view, remember
+  // where both panes sat on screen -- read back on the Back navigation
+  // that returns here (order-detail.tsx's own effect does the reading).
+  const beforeOpenMail = useCallback(
+    (mailKey: string, rowTop: number) => {
+      if (!selectedId) return;
+      const index = shownRef.current.findIndex((o) => o.id === selectedId);
+      const el = listScrollRef.current;
+      const listRowTop = index >= 0 && el ? index * ORDER_ROW_HEIGHT - el.scrollTop : 0;
+      writeOrderScrollAnchor({ orderId: selectedId, mailKey, rowTop, listIndex: index, listRowTop });
+    },
+    [selectedId],
+  );
+
+  // Restoring the list's own scroll position on the Back navigation that
+  // returns to this order -- attempted once per selection, and only once
+  // rows are actually on screen to scroll to.
+  const listRestoredForRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!selectedId) return;
+    if (listRestoredForRef.current === selectedId) return;
+    const anchor = readOrderScrollAnchor(selectedId);
+    if (!anchor) {
+      listRestoredForRef.current = selectedId;
+      return;
+    }
+    const el = listScrollRef.current;
+    if (!el || shown.length === 0) return;
+    listRestoredForRef.current = selectedId;
+    const target = anchor.listIndex * ORDER_ROW_HEIGHT - anchor.listRowTop;
+    const max = Math.max(0, el.scrollHeight - el.clientHeight);
+    el.scrollTop = Math.max(0, Math.min(target, max));
+  }, [selectedId, shown]);
+
   const showDetailOnly = isMobile && selectedId !== null;
   const showListOnly = isMobile && selectedId === null;
+
+  const anyAccountHasOrders = (accounts ?? []).some((a) => a.orders_enabled);
+  const isEmpty = !isLoading && shown.length === 0;
 
   return (
     <div className="flex h-full">
@@ -74,58 +200,78 @@ export function OrdersPage() {
             </div>
           </div>
 
-          <div
-            className="flex-1 overflow-y-auto"
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              if (
-                el.scrollHeight - el.scrollTop - el.clientHeight < 600 &&
-                hasNextPage &&
-                !isFetchingNextPage
-              ) {
-                fetchNextPage();
-              }
-            }}
-          >
-            {isLoading &&
-              Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="h-[124px] border-b px-4 py-3">
-                  <Skeleton className="h-full w-full" />
-                </div>
-              ))}
-
-            {!isLoading && items.length === 0 && (
-              <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-                <Package className="h-12 w-12 opacity-40" />
-                <p className="text-sm font-medium">Nothing bundled yet</p>
-                <p className="max-w-[320px] text-sm text-muted-foreground">
-                  Order mail appears here within a minute of arriving.
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2"
-                  render={<Link href="/accounts" />}
-                >
-                  Open accounts
-                </Button>
-              </div>
+          <div className="relative flex-1 overflow-hidden">
+            {held.length > 0 && (
+              <button
+                type="button"
+                data-testid="orders-new-activity-pill"
+                onClick={takeOverFresh}
+                className="absolute left-1/2 top-2 z-10 inline-flex h-7 -translate-x-1/2 items-center rounded-full bg-primary px-3 text-xs text-primary-foreground shadow"
+              >
+                New activity
+              </button>
             )}
+            <div
+              ref={listScrollRef}
+              data-testid="orders-list-scroll"
+              className="h-full overflow-y-auto [overflow-anchor:none]"
+              onScroll={handleListScroll}
+            >
+              {isLoading &&
+                Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="h-[124px] border-b px-4 py-3">
+                    <Skeleton className="h-full w-full animate-none" />
+                  </div>
+                ))}
 
-            {items.map((order) => (
-              <OrderRow
-                key={order.id}
-                order={order}
-                selected={order.id === selectedId}
-                onSelect={() => selectOrder(order.id)}
-              />
-            ))}
+              {isEmpty && !anyAccountHasOrders && (
+                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+                  <Package className="h-12 w-12 opacity-40" />
+                  <p className="text-sm font-medium">No orders yet</p>
+                  <p className="max-w-[320px] text-sm text-muted-foreground">
+                    Mail about purchases, tickets and bookings is bundled here. Switch it on for
+                    an account first.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    render={<Link href="/accounts" />}
+                  >
+                    Open accounts
+                  </Button>
+                </div>
+              )}
+
+              {isEmpty && anyAccountHasOrders && (
+                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+                  <Package className="h-12 w-12 opacity-40" />
+                  <p className="text-sm font-medium">Nothing bundled yet</p>
+                  <p className="max-w-[320px] text-sm text-muted-foreground">
+                    Order mail appears here within a minute of arriving.
+                  </p>
+                </div>
+              )}
+
+              {shown.map((order) => (
+                <OrderRow
+                  key={order.id}
+                  order={order}
+                  selected={order.id === selectedId}
+                  onSelect={() => selectOrder(order.id)}
+                />
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       {(!isMobile || showDetailOnly) && (
-        <div className="flex-1 overflow-y-auto">
+        <div
+          ref={detailScrollRef}
+          data-testid="order-detail-scroll"
+          className="flex-1 overflow-y-auto [overflow-anchor:none]"
+        >
           {showDetailOnly && (
             <div className="flex h-11 items-center gap-2 border-b px-2">
               <Button variant="ghost" size="sm" onClick={() => selectOrder(null)}>
@@ -139,6 +285,8 @@ export function OrdersPage() {
               orderId={selectedId}
               onBack={showDetailOnly ? undefined : () => selectOrder(null)}
               onDeleted={() => selectOrder(null)}
+              scrollContainerRef={detailScrollRef}
+              onBeforeOpenMail={beforeOpenMail}
             />
           ) : (
             !isMobile && (

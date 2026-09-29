@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { type RefObject, useLayoutEffect, useRef, useState } from "react";
 import { format, isSameDay, isSameYear } from "date-fns";
 import { CalendarDays, FileText, MoreHorizontal, Ticket as TicketIcon } from "lucide-react";
 import {
@@ -26,6 +26,7 @@ import { useOpenMessage } from "@/hooks/use-open-message";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { formatRelativeDate, formatSize } from "@/lib/format";
+import { clearOrderScrollAnchor, readOrderScrollAnchor } from "@/lib/order-scroll-anchor";
 import { orderIconEntry } from "@/lib/order-icon";
 import { cn } from "@/lib/utils";
 import type { OrderDocument, OrderMail } from "@/types/api";
@@ -59,9 +60,21 @@ interface OrderDetailProps {
   orderId: string;
   onBack?: () => void;
   onDeleted: () => void;
+  /** The pane's own scroll container -- one level up in orders-page.tsx,
+   * since it also hosts the phone-width back bar above this component. */
+  scrollContainerRef?: RefObject<HTMLDivElement | null>;
+  /** Called just before a mail row hands off to the normal mail view, so
+   * the caller can remember where the list itself was sitting too. */
+  onBeforeOpenMail?: (mailKey: string, rowTop: number) => void;
 }
 
-export function OrderDetailPane({ orderId, onBack, onDeleted }: OrderDetailProps) {
+export function OrderDetailPane({
+  orderId,
+  onBack,
+  onDeleted,
+  scrollContainerRef,
+  onBeforeOpenMail,
+}: OrderDetailProps) {
   const { data: order, isLoading } = useOrderDetail(orderId);
   const { openMessageById } = useOpenMessage();
   const { push: pushToast } = useToast();
@@ -75,6 +88,63 @@ export function OrderDetailPane({ orderId, onBack, onDeleted }: OrderDetailProps
   const [pickingMerge, setPickingMerge] = useState(false);
   const [movingMail, setMovingMail] = useState<OrderMail | null>(null);
   const [previewDoc, setPreviewDoc] = useState<OrderDocument | null>(null);
+
+  const mailRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const anchorAttemptedForRef = useRef<string | null>(null);
+
+  // Coming back to this order after opening one of its mails: put the mail
+  // row back exactly where it sat on screen. Held while the surrounding
+  // content settles (documents/summary can still be loading), released on
+  // the reader's first gesture or after 1.5s -- see the scrolling notes on
+  // never leaving a hold running forever.
+  useLayoutEffect(() => {
+    if (!order || !scrollContainerRef?.current) return;
+    if (anchorAttemptedForRef.current === order.id) return;
+    const anchor = readOrderScrollAnchor(order.id);
+    if (!anchor) {
+      anchorAttemptedForRef.current = order.id;
+      return;
+    }
+    const container = scrollContainerRef.current;
+    const rowEl = mailRowRefs.current.get(anchor.mailKey);
+    if (!rowEl) return; // Mail rows not painted yet -- retry once they are.
+
+    anchorAttemptedForRef.current = order.id;
+
+    const apply = () => {
+      const containerRect = container.getBoundingClientRect();
+      const rowRect = rowEl.getBoundingClientRect();
+      container.scrollTop += rowRect.top - containerRect.top - anchor.rowTop;
+    };
+    apply();
+
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      resizeObserver.disconnect();
+      container.removeEventListener("wheel", release);
+      container.removeEventListener("touchstart", release);
+      container.removeEventListener("pointerdown", release);
+      container.removeEventListener("keydown", release);
+      window.clearTimeout(timeoutId);
+      clearOrderScrollAnchor();
+    };
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (!released) apply();
+    });
+    resizeObserver.observe(container);
+
+    container.addEventListener("wheel", release, { passive: true });
+    container.addEventListener("touchstart", release, { passive: true });
+    container.addEventListener("pointerdown", release);
+    container.addEventListener("keydown", release);
+    const timeoutId = window.setTimeout(release, 1500);
+
+    return release;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order, scrollContainerRef]);
 
   if (isLoading || !order) {
     return (
@@ -95,10 +165,13 @@ export function OrderDetailPane({ orderId, onBack, onDeleted }: OrderDetailProps
 
   const handleOpenMail = async (mail: OrderMail) => {
     if (mail.location !== "mailbox" || !mail.message_id) return;
-    sessionStorage.setItem(
-      "mv.orders.anchor",
-      JSON.stringify({ orderId: order.id, mailKey: mail.key }),
-    );
+    const rowEl = mailRowRefs.current.get(mail.key);
+    const container = scrollContainerRef?.current;
+    const rowTop =
+      rowEl && container
+        ? rowEl.getBoundingClientRect().top - container.getBoundingClientRect().top
+        : 0;
+    onBeforeOpenMail?.(mail.key, rowTop);
     await openMessageById(mail.message_id);
   };
 
@@ -233,6 +306,12 @@ export function OrderDetailPane({ orderId, onBack, onDeleted }: OrderDetailProps
           {order.mails.map((mail) => (
             <div
               key={mail.key}
+              ref={(el) => {
+                if (el) mailRowRefs.current.set(mail.key, el);
+                else mailRowRefs.current.delete(mail.key);
+              }}
+              data-testid="order-mail-row"
+              data-mail-key={mail.key}
               className={cn(
                 "h-14 px-4 flex items-center gap-3 border-b last:border-b-0",
                 mail.location === "gone" && "opacity-50",
