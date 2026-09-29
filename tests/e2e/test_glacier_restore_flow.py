@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 import uuid
+from email.message import EmailMessage
+from email.policy import SMTP as SMTP_POLICY
 from typing import Any
 
 import pytest
@@ -248,3 +250,169 @@ async def test_glacier_round_trip_against_real_dovecot(
         ).mappings().one()
         assert live_again["imap_uid"] is not None
         assert live_again["raw_source"] == server_bytes
+
+
+@pytest.mark.asyncio
+async def test_glacier_round_trip_preserves_an_attachment(
+    app_client: TestClient,
+    dovecot_endpoint: tuple[str, int, int],
+    db: DatabaseConnection,
+) -> None:
+    """design section 8.6's own claim ("everything of a message is
+    preserved... its attachments") proven the same way as the byte-for-
+    byte message body: through the real APPEND, never by only checking
+    glacier_attachments before restore. Attachment survival through the
+    move into the glacier is already covered at the pg layer
+    (test_glacier_api_pg.py); what only a real Dovecot round trip proves
+    is that the *restored* live message's own `attachments` row comes
+    back too -- PostIMAP re-parses MIME from the appended raw_source the
+    same way it does for any newly-synced message, so this is really
+    proving that path, not anything MailVerdict itself does differently
+    for an attachment specifically.
+    """
+    async with db.session() as session:
+        info = await read_postimap_info(session)
+    if info is None or not supports_message_append(info):
+        pytest.skip(
+            'this PostIMAP build does not carry outbox kind="append" -- '
+            f"reports service_version={info.service_version if info else 'unknown'}, "
+            "the glacier restore round trip cannot run against it"
+        )
+
+    host, imap_port, lmtp_port = dovecot_endpoint
+    email = unique_email("glacier-attachment")
+    msg_id = f"<glacier-attachment-{uuid.uuid4()}@example.com>"
+    attachment_bytes = b"%PDF-1.4 fake pdf content for the round trip\n"
+
+    mime_msg = EmailMessage()
+    mime_msg["From"] = "sender@example.com"
+    mime_msg["To"] = email
+    mime_msg["Subject"] = "Glacier attachment round trip"
+    mime_msg["Message-ID"] = msg_id
+    mime_msg.set_content("This message carries an attachment through the glacier and back.")
+    mime_msg.add_attachment(
+        attachment_bytes, maintype="application", subtype="pdf", filename="report.pdf",
+    )
+    original_bytes = mime_msg.as_bytes(policy=SMTP_POLICY)
+    deliver_message(original_bytes, host, lmtp_port, sender="sender@example.com", recipient=email)
+
+    resp = app_client.post(
+        "/api/accounts",
+        json={
+            "name": email, "imap_host": DOVECOT_ALIAS, "imap_port": DOVECOT_IMAP_PORT,
+            "imap_user": email, "imap_password": DOVECOT_PASSWORD,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    account_id = resp.json()["id"]
+    wait_for_account_active(app_client, account_id)
+    inbox = wait_for_folder(app_client, account_id, "INBOX")
+
+    def _find_message() -> dict[str, Any] | None:
+        listing = app_client.get(
+            f"/api/accounts/{account_id}/messages", params={"folder_id": inbox["id"]},
+        )
+        assert listing.status_code == 200, listing.text
+        for row in listing.json()["messages"]:
+            if row["subject"] == "Glacier attachment round trip":
+                return row
+        return None
+
+    live_row = wait_for(_find_message, description="the delivered message to sync into the mirror")
+    message_id = live_row["id"]
+
+    def _has_attachment() -> bool:
+        detail = app_client.get(f"/api/messages/{message_id}")
+        assert detail.status_code == 200, detail.text
+        return len(detail.json()["attachments"]) == 1
+
+    wait_for(_has_attachment, description="PostIMAP to parse and mirror the attachment")
+
+    async with db.session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO account_prefs (account_id, glacier_enabled, glacier_folder_id) "
+                "VALUES (:account_id, true, :glacier_folder_id) "
+                "ON CONFLICT (account_id) DO UPDATE SET glacier_enabled = true, "
+                "glacier_folder_id = :glacier_folder_id"
+            ),
+            {"account_id": uuid.UUID(account_id), "glacier_folder_id": uuid.uuid4()},
+        )
+
+    outcome = await glacier_message_now(db, uuid.UUID(message_id))
+    assert outcome.ok, outcome.reason
+    glacier_id = outcome.glacier_id
+    assert glacier_id is not None
+
+    async with db.session() as session:
+        glacier_attachment = (
+            await session.execute(
+                text(
+                    "SELECT filename, data FROM glacier_attachments "
+                    "WHERE glacier_message_id = :id"
+                ),
+                {"id": glacier_id},
+            )
+        ).mappings().one()
+    assert glacier_attachment["filename"] == "report.pdf"
+    assert glacier_attachment["data"] == attachment_bytes
+
+    def _gone_from_inbox() -> bool:
+        with imap_session(host, imap_port, email, DOVECOT_PASSWORD) as conn:
+            return find_message_by_id(conn, "INBOX", msg_id) is None
+
+    wait_for(_gone_from_inbox, description="the EXPUNGE to actually reach the real IMAP server")
+
+    confirmed, withdrawn = await confirm_or_withdraw_removing(
+        db, uuid.UUID(account_id), grace_seconds=0,
+    )
+    assert (confirmed, withdrawn) == (1, 0)
+
+    restore_outcome = await start_restore(db, glacier_id, uuid.UUID(inbox["id"]))
+    assert restore_outcome.ok, restore_outcome.reason
+
+    def _back_on_the_server() -> bool:
+        with imap_session(host, imap_port, email, DOVECOT_PASSWORD) as conn:
+            return find_message_by_id(conn, "INBOX", msg_id) is not None
+
+    wait_for(
+        _back_on_the_server, timeout_s=60.0,
+        description="the APPEND to actually land the message back on the real IMAP server",
+    )
+
+    await wait_for_async(
+        lambda: confirm_restores(db, uuid.UUID(account_id)),
+        description="confirm_restores to see the appended copy sync back into the mirror",
+    )
+
+    async with db.session() as session:
+        live_again = (
+            await session.execute(
+                text(
+                    "SELECT id FROM messages WHERE account_id = :account_id "
+                    "AND message_id = :message_id_hdr AND expunged_at IS NULL"
+                ),
+                {"account_id": uuid.UUID(account_id), "message_id_hdr": msg_id},
+            )
+        ).mappings().one()
+        restored_message_id = str(live_again["id"])
+
+    def _restored_attachment_synced() -> dict[str, Any] | None:
+        detail = app_client.get(f"/api/messages/{restored_message_id}")
+        assert detail.status_code == 200, detail.text
+        attachments = detail.json()["attachments"]
+        return attachments[0] if len(attachments) == 1 else None
+
+    restored_attachment = wait_for(
+        _restored_attachment_synced,
+        description="PostIMAP to re-parse the restored message's MIME and mirror its attachment",
+    )
+    assert restored_attachment["filename"] == "report.pdf"
+
+    download = app_client.get(
+        f"/api/messages/{restored_message_id}/attachments/{restored_attachment['id']}",
+    )
+    assert download.status_code == 200, download.text
+    assert download.content == attachment_bytes, (
+        "the restored message's attachment must download byte-identical"
+    )
