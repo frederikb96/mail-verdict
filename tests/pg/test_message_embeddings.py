@@ -421,7 +421,7 @@ async def test_worker_embeds_a_truncated_message_as_envelope_only(
         await _handle_one(
             claimed[0], "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=_FakeSettings(),  # type: ignore[arg-type]
-            circuit=_NullCircuit(),  # type: ignore[arg-type]
+            circuit=_NullCircuit(), db=migrated_db,  # type: ignore[arg-type]
         )
     finally:
         worker_module.resolve_embedding_provider = original_resolve

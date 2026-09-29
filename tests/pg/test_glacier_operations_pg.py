@@ -28,6 +28,7 @@ from mail_verdict.glacier.operations import (
     resolve_duplicate,
     verify_message,
 )
+from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 
@@ -454,7 +455,20 @@ async def test_forged_duplicate_with_different_content_is_never_expunged(
 async def test_glacier_message_now_runs_the_whole_sequence(
     migrated_db: DatabaseConnection,
 ) -> None:
-    """The manual move action, end to end."""
+    """The manual move action, end to end. glacier_message_now is gated
+    on the running PostIMAP carrying outbox kind="append" (restore must
+    work before removal is ever offered -- see
+    tests/pg/test_glacier_gate_pg.py), so this needs a capable build to
+    exercise the sequence itself; against the pinned default it would
+    only re-prove the gate that file already covers exhaustively."""
+    async with migrated_db.session() as session:
+        info = await read_postimap_info(session)
+    if info is None or not supports_message_append(info):
+        pytest.skip(
+            'this PostIMAP build does not carry outbox kind="append" -- '
+            f"reports service_version={info.service_version if info else 'unknown'}, "
+            "so glacier_message_now is correctly refused rather than exercised here"
+        )
     _, _, message_id = await _seed_ready_message(migrated_db)
     result = await glacier_message_now(migrated_db, message_id)
     assert result.ok is True

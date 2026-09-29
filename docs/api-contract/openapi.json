@@ -862,6 +862,12 @@
             "title": "Action",
             "type": "string"
           },
+          "confirm": {
+            "default": false,
+            "description": "Required for expunge on a message already in the glacier -- it is the only copy in existence. Ignored everywhere else, including an ordinary expunge.",
+            "title": "Confirm",
+            "type": "boolean"
+          },
           "confirm_message_count": {
             "anyOf": [
               {
@@ -2446,11 +2452,37 @@
         "type": "object"
       },
       "EmbeddingStatusResponse": {
-        "description": "Coverage snapshot for one embedding model.\n\nencoded/pending/failed are message_embeddings row counts by status.\nreachable/unreachable/shadowed further split \"done\": reachable is a\ndone row whose message_id join hint resolves to a live, non-expunged\nmessage (what semantic search can actually return); unreachable is a\ndone row whose hint is dead; shadowed is an in-scope message with no\nembedding of its own because a sibling sharing its Message-ID header\nalready holds one (see embeddings/repository.py's status()).\ncoverage is reachable/in_scope, not encoded/in_scope -- a drift shows\nup here as coverage below 1.0 instead of as an empty search.",
+        "description": "Coverage snapshot for one embedding model.\n\nencoded/pending/failed are message_embeddings row counts by status.\nreachable/unreachable/shadowed further split \"done\": reachable is a\ndone row whose message_id join hint resolves to a live, non-expunged\nmessage (what semantic search can actually return); unreachable is a\ndone row whose hint is dead; shadowed is an in-scope message with no\nembedding of its own because a sibling sharing its Message-ID header\nalready holds one (see embeddings/repository.py's status()).\ncoverage is reachable/in_scope, not encoded/in_scope -- a drift shows\nup here as coverage below 1.0 instead of as an empty search. It never\nreaches exactly 1.0 in a real mailbox (a message can permanently fail\nto embed), so it is not what gates a migration's cutover -- see\noutstanding/cutover_ready/cutover_blocked_reason for that.\n\nactive is whether this model is the one currently serving search and\nthe classify stage's neighbour hints (embeddings/provider.py's\nresolve_active_embedding_model) -- distinct from being the configured\n`semantic.model`, which can be a migration still in flight. outstanding\nis in-scope messages with no terminal (or in-progress) accounting yet\nunder this model at all (EmbeddingStatus.outstanding). cutover_ready\nand cutover_blocked_reason are only meaningful, and only populated,\nwhen queried for a model that is not (yet) active -- see\nEmbeddingRepository.cutover_readiness for the predicate.",
         "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
           "coverage": {
             "title": "Coverage",
             "type": "number"
+          },
+          "cutover_blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutover Blocked Reason"
+          },
+          "cutover_ready": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cutover Ready"
           },
           "encoded": {
             "title": "Encoded",
@@ -2467,6 +2499,10 @@
           "model": {
             "title": "Model",
             "type": "string"
+          },
+          "outstanding": {
+            "title": "Outstanding",
+            "type": "integer"
           },
           "pending": {
             "title": "Pending",
@@ -2494,7 +2530,9 @@
           "reachable",
           "unreachable",
           "shadowed",
-          "coverage"
+          "coverage",
+          "active",
+          "outstanding"
         ],
         "title": "EmbeddingStatusResponse",
         "type": "object"
@@ -11159,7 +11197,7 @@
     },
     "/embeddings/status": {
       "get": {
-        "description": "Coverage for one embedding model, defaulting to the configured one.\n\nCoverage below 100% is the honest answer, not something to infer from\nsearch quietly returning less than it should.",
+        "description": "Coverage for one embedding model, defaulting to the configured one.\n\nCoverage below 100% is often the honest, permanent answer -- a real\nmailbox always has a few messages that never embed successfully -- so\nit is not what says whether a migration is ready to cut over;\ncutover_ready and cutover_blocked_reason are.",
         "operationId": "get_status_embeddings_status_get",
         "parameters": [
           {

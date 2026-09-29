@@ -324,6 +324,11 @@ class BulkActionRequest(BaseModel):
             "confirm nothing and have no count to repeat back."
         ),
     )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else, including an ordinary expunge.",
+    )
     idempotency_key: uuid.UUID | None = Field(
         default=None,
         description="A key the caller generates once per user action. A repeat "
@@ -1307,7 +1312,20 @@ class EmbeddingStatusResponse(BaseModel):
     embedding of its own because a sibling sharing its Message-ID header
     already holds one (see embeddings/repository.py's status()).
     coverage is reachable/in_scope, not encoded/in_scope -- a drift shows
-    up here as coverage below 1.0 instead of as an empty search.
+    up here as coverage below 1.0 instead of as an empty search. It never
+    reaches exactly 1.0 in a real mailbox (a message can permanently fail
+    to embed), so it is not what gates a migration's cutover -- see
+    outstanding/cutover_ready/cutover_blocked_reason for that.
+
+    active is whether this model is the one currently serving search and
+    the classify stage's neighbour hints (embeddings/provider.py's
+    resolve_active_embedding_model) -- distinct from being the configured
+    `semantic.model`, which can be a migration still in flight. outstanding
+    is in-scope messages with no terminal (or in-progress) accounting yet
+    under this model at all (EmbeddingStatus.outstanding). cutover_ready
+    and cutover_blocked_reason are only meaningful, and only populated,
+    when queried for a model that is not (yet) active -- see
+    EmbeddingRepository.cutover_readiness for the predicate.
     """
 
     model: str
@@ -1319,6 +1337,10 @@ class EmbeddingStatusResponse(BaseModel):
     unreachable: int
     shadowed: int
     coverage: float
+    active: bool
+    outstanding: int
+    cutover_ready: bool | None = None
+    cutover_blocked_reason: str | None = None
 
 
 class SemanticSearchResponse(BaseModel):

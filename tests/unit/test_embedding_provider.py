@@ -10,8 +10,11 @@ import pytest
 
 from mail_verdict.database.models import EMBEDDING_DIMENSIONS
 from mail_verdict.embeddings.provider import (
+    DEFAULT_EMBEDDING_MODEL,
     FakeEmbeddingProvider,
     OpenAIEmbeddingProvider,
+    resolve_active_embedding_model,
+    resolve_active_embedding_provider,
     resolve_embedding_provider,
 )
 
@@ -71,3 +74,53 @@ def test_resolve_unknown_provider_raises() -> None:
     silent fallback to something else."""
     with pytest.raises(ValueError, match="Unknown embedding provider"):
         resolve_embedding_provider("anthropic", cred_repo=None)  # type: ignore[arg-type]
+
+
+def test_resolve_custom_provider() -> None:
+    """The 'custom' name resolves to the same class as 'openai', carrying
+    its own base_url."""
+    provider = resolve_embedding_provider(  # type: ignore[arg-type]
+        "custom", cred_repo=None, base_url="https://example.test/v1",
+    )
+    assert isinstance(provider, OpenAIEmbeddingProvider)
+    assert provider._provider == "custom"  # noqa: SLF001
+    assert provider._base_url == "https://example.test/v1"  # noqa: SLF001
+
+
+class TestResolveActiveEmbeddingModel:
+    """resolve_active_embedding_model: which model actually serves search."""
+
+    def test_falls_back_to_model_when_unset(self) -> None:
+        assert resolve_active_embedding_model({"model": "text-embedding-3-small"}) == (
+            "text-embedding-3-small"
+        )
+
+    def test_falls_back_to_default_when_nothing_set(self) -> None:
+        assert resolve_active_embedding_model({}) == DEFAULT_EMBEDDING_MODEL
+
+    def test_frozen_active_model_wins_over_the_migration_target(self) -> None:
+        """Mid-migration, active_model differs from model -- and it is
+        the one search must keep using."""
+        settings = {"model": "new-model", "active_model": "old-model"}
+        assert resolve_active_embedding_model(settings) == "old-model"
+
+
+class TestResolveActiveEmbeddingProvider:
+    def test_falls_back_to_current_provider_and_base_url(self) -> None:
+        settings = {"provider": "custom", "base_url": "https://example.test/v1"}
+        assert resolve_active_embedding_provider(settings) == (
+            "custom", "https://example.test/v1",
+        )
+
+    def test_defaults_to_openai_with_no_provider_set(self) -> None:
+        assert resolve_active_embedding_provider({}) == ("openai", None)
+
+    def test_frozen_active_provider_wins_over_the_migration_target(self) -> None:
+        """Mid-migration, the frozen provider/base_url -- not the new
+        target -- is what a fresh search query must be embedded through,
+        to land in the vector space active_model actually names."""
+        settings = {
+            "provider": "custom", "base_url": "https://new.example.test/v1",
+            "active_provider": "openai", "active_base_url": None,
+        }
+        assert resolve_active_embedding_provider(settings) == ("openai", None)
