@@ -104,13 +104,23 @@ from mail_verdict.config import get_config
 from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, Identity, Message, TagSource
+from mail_verdict.database.models import (
+    Account,
+    AccountPrefs,
+    Folder,
+    GlacierMessage,
+    Identity,
+    Message,
+    TagSource,
+)
 from mail_verdict.database.repository import (
     FolderRepository,
     MessageRepository,
     TagRepository,
     VerdictRepository,
 )
+from mail_verdict.glacier.operations import glacier_message_now
+from mail_verdict.glacier.restore import start_restore
 from mail_verdict.outbox.submissions import record_submission
 from mail_verdict.postimap.actions import insert_outbox, move_message, set_flags
 
@@ -337,7 +347,7 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
     db = get_db_connection()
     folder_repo = FolderRepository(db)
     folders = await folder_repo.get_by_account(uuid.UUID(account_id))
-    return [
+    result = [
         {
             "id": str(f.id),
             "imap_name": f.imap_name,
@@ -347,6 +357,20 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
         }
         for f in folders
     ]
+    async with db.session() as session:
+        prefs = (
+            await session.execute(
+                select(AccountPrefs).where(AccountPrefs.account_id == uuid.UUID(account_id))
+            )
+        ).scalar_one_or_none()
+    if prefs is not None and prefs.glacier_enabled and prefs.glacier_folder_id is not None:
+        result.append(
+            {
+                "id": str(prefs.glacier_folder_id), "imap_name": "Glacier",
+                "display_name": None, "special_use": None, "last_synced_at": None,
+            }
+        )
+    return result
 
 
 @mcp.tool(
@@ -398,10 +422,15 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
     Move a message to a different folder by that folder's IMAP name.
 
     PostIMAP's own trigger propagates the move to IMAP asynchronously.
+    "Glacier" moves the message into the account's glacier instead --
+    off the mail server for good -- if that account has one enabled;
+    moving a message already in the glacier to any other name restores
+    it.
 
     Args:
         mail_id: Message UUID to move
-        target_folder: Target folder's IMAP name (see list_folders)
+        target_folder: Target folder's IMAP name (see list_folders), or
+            "Glacier"
 
     Returns:
         {"success": bool, "message"/"error": str}
@@ -413,7 +442,41 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
         )
         msg = msg_result.scalar_one_or_none()
         if msg is None:
-            return {"success": False, "error": "Message not found"}
+            glacier_row = (
+                await session.execute(
+                    select(GlacierMessage.account_id).where(
+                        GlacierMessage.id == uuid.UUID(mail_id),
+                        GlacierMessage.visible_at.is_not(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if glacier_row is None:
+                return {"success": False, "error": "Message not found"}
+            folder = (
+                await session.execute(
+                    select(Folder).where(
+                        Folder.account_id == glacier_row, Folder.imap_name == target_folder,
+                    )
+                )
+            ).scalar_one_or_none()
+            if folder is None:
+                return {"success": False, "error": f"Folder not found: {target_folder}"}
+            restore_outcome = await start_restore(db, uuid.UUID(mail_id), folder.id)
+            return {
+                "success": restore_outcome.ok,
+                "message": restore_outcome.reason or f"Restoring to {target_folder}",
+            }
+
+        if target_folder == "Glacier":
+            prefs = (
+                await session.execute(
+                    select(AccountPrefs).where(AccountPrefs.account_id == msg.account_id)
+                )
+            ).scalar_one_or_none()
+            if prefs is None or not prefs.glacier_enabled:
+                return {"success": False, "error": "This account has no glacier enabled"}
+            outcome = await glacier_message_now(db, msg.id)
+            return {"success": outcome.ok, "message": outcome.reason or "Moved to Glacier"}
 
         folder_result = await session.execute(
             select(Folder).where(
