@@ -2,52 +2,35 @@
 Glacier storage from the browser: moving mail into it behind a
 confirmation that names the count and says plainly that it leaves the
 mail server for good, with no undo offered for it once confirmed; the
-sidebar's own folder row for it, excluded from folder management and
-from the sidebar's per-folder menu; the account form's own switch
-persisting and refusing to be turned off while the glacier still holds
-something; and its presence in the search scope picker.
+sidebar's own folder row for it, excluded from folder management, with
+its own per-folder menu (mark all as read, but not empty folder); the
+account form's own switch persisting and refusing to be turned off
+while the glacier still holds something; and its presence in the search
+scope picker.
 
-Five server gaps this design calls for closing, not there yet on this
-branch, so the flows that would need them are left out on purpose rather
-than written to fail red for a reason unrelated to what they are named
-after:
+Restoring a message needs an IMAP APPEND, which the pinned default
+PostIMAP test image (tests/setup/images.py) does not support yet -- run
+this module with MAIL_VERDICT_TEST_POSTIMAP_IMAGE pointed at a build
+that does (ghcr.io/frederikb96/postimap:1.11.0 at the time of writing)
+or the moves in TestGlacierMoveUi time out waiting for the glacier
+folder's own count, since the manual glacier-in flow itself is gated on
+the same capability check restoring needs.
 
-  - The move response for a message glaciered this way answers with the
-    *original* message_id, never the fresh id the copy in glacier_messages
-    actually got (ManualOutcome.glacier_id is computed and simply not put
-    in the response). Nothing reachable from the client ever learns the
-    new id.
-  - get_message's own live-row lookup (`select(Message).where(Message.id
-    == message_id)`) carries no `expunged_at IS NULL` filter, so it still
-    finds and returns the stale, now-expunged original row instead of
-    ever falling through to check glacier_messages -- is_glacier reads
-    false forever for a message's original id.
-  - locate_message's twin-resolution for an expunged original id only
-    looks for another *live* messages row sharing its Message-ID header
-    (the "resynced under a new id by another client" case) -- it does
-    not know to look in glacier_messages, so it 404s "Message no longer
-    exists" for a glaciered message instead of resolving to the copy.
-  - GET /messages/{id}/thread inherits the same gap: its own anchor
-    lookup only ever checks Message.thread_id, so it 404s "Message not
-    found" for a glaciered message's original id -- the reading pane can
-    never open one.
-  - GET /accounts/{id}/messages?folder_id=<glacier> always returns an
-    empty list, even once the folder's own count (a different query) is
-    correctly non-zero -- the glacier folder's own message list is
-    unreachable from the UI's ordinary list endpoint.
-  - The bulk-action endpoint's target-folder check does not recognise a
-    glacier id ("target_folder_id does not belong to this account"), so
-    a multi-message move into the glacier is refused; only the single-
-    message path (the reading pane's picker, a one-row drag) is
-    exercised here.
-  - PATCH /folders/{glacier_id}/prefs 404s outright ("Folder not found"),
-    so a unified view cannot actually be assigned to it yet, even though
-    the picker offers it as an option.
+Every move here is proven by the glacier folder's own count (GET
+/accounts/{id}/folders, which reads visible_at correctly) rather than by
+asking after a message's own identity: the move response, get_message,
+get_thread and locate_message all now resolve a message glaciered this
+way under the id the client held before the move, but nothing in this
+module needs that id, so it is left unexercised here -- see
+test_reading_pane_ui.py or the equivalent for coverage of opening a
+glaciered message directly.
 
-Because of the first three, this module proves a move landed by the
-glacier folder's own count (from GET /accounts/{id}/folders, which reads
-visible_at correctly) rather than by asking after the message's own new
-identity, which nothing here can yet learn.
+Empty folder is deliberately not offered on the glacier's own menu:
+GET .../messages/selection, which the confirmation mints its count
+from, does not yet resolve a glacier folder id and always answers a
+count of zero, so the confirmation would misname the count and the
+server's own mismatch guard would then refuse the actual delete for any
+glacier genuinely holding something.
 """
 
 from __future__ import annotations
@@ -140,14 +123,12 @@ def _glacier_total(api_client: httpx.Client, account_id: str) -> int:
 def _wait_glacier_total(
     api_client: httpx.Client, account_id: str, expected: int, timeout_s: float = 30.0,
 ) -> None:
-    """Confirms a move landed by the glacier folder's own count, not by
-    resolving the original message id forward -- get_message, get_thread
-    and locate_message all still answer for that id from the (soft-
-    deleted, but not id-matched) original messages row, or 404, never
-    from the glacier row the move actually created under a fresh id. The
-    move response itself reports the original id back, too. The count is
-    the one place this environment can observe a move having landed
-    without already knowing the new id."""
+    """Confirms a move landed by the glacier folder's own count. The move
+    response reports the glacier row's own fresh id, and get_message,
+    get_thread and locate_message all resolve it back from the original
+    id too -- but this module never captures that id in the first place
+    (its assertions are all about the confirmation and the move's effect
+    on the two folders involved), so the count is what it waits on."""
 
     def _check() -> bool | None:
         return _glacier_total(api_client, account_id) == expected or None
@@ -318,13 +299,22 @@ class TestGlacierElsewhereInTheUi:
         expect(dialog).to_be_visible(timeout=10_000)
         expect(dialog.get_by_text("Glacier", exact=True)).to_have_count(0)
 
-    def test_the_glacier_row_offers_no_per_folder_menu(
+    def test_the_glacier_row_offers_mark_read_but_not_empty_folder(
         self,
         page: Page, app_server: str, ui_account: dict[str, Any], glacier_folder: dict[str, Any],
     ) -> None:
+        """Mark all as read reaches the glacier the same way it reaches an
+        ordinary folder now that bulk actions resolve a glacier scope.
+        Empty folder stays out: the message-selection endpoint the
+        confirmation would mint its count from does not yet resolve a
+        glacier folder id (always answers a count of zero), so offering
+        it here would show the wrong count and then be refused by the
+        server's own count-mismatch guard for any glacier actually
+        holding something."""
         page.goto(app_server)
         select_account(page, ui_account)
         folder(page, glacier_folder["id"]).hover()
-        expect(
-            folder(page, glacier_folder["id"]).get_by_role("button", name="Glacier options"),
-        ).to_have_count(0)
+        page.get_by_role("button", name="Glacier options").click()
+        menu = page.get_by_role("menu")
+        expect(menu.get_by_role("menuitem", name="Mark all as read")).to_be_visible(timeout=5_000)
+        expect(menu.get_by_role("menuitem", name="Empty folder")).to_have_count(0)
