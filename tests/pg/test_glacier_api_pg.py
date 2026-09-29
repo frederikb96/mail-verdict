@@ -180,6 +180,11 @@ async def test_move_action_into_glacier_and_read_it_back(
         ).mappings().one()
         glacier_id = glacier_row["id"]
 
+    # The response is a caller's only synchronous way to learn the new
+    # id -- there is no live row left to look it up from afterward.
+    assert response.message_id == glacier_id
+    assert response.folder_id == glacier_folder_id
+
     location = await locate_message(glacier_id)
     assert location.account_id == account_id
     assert location.folder_id == glacier_folder_id

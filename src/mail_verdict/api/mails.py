@@ -1470,7 +1470,12 @@ async def _apply_and_locate(
 ) -> MessageActionResponse:
     """Apply the action, then say which folder the message is in now."""
     response = await _apply_message_action(message_id, request)
-    if response.applied:
+    if response.applied and response.folder_id is None:
+        # A branch that already set folder_id itself (moving into the
+        # glacier, whose id and folder no longer belong to `messages` at
+        # all by the time this runs) knows better than this generic
+        # re-read, which only ever looks at the live table under the
+        # original id.
         async with get_db_connection().session() as session:
             response.folder_id = await session.scalar(
                 select(Message.folder_id).where(Message.id == message_id)
@@ -1529,7 +1534,9 @@ async def _apply_message_action(
                 )
             outcome = await glacier_message_now(db, message_id, event_ring=get_event_ring())
             return MessageActionResponse(
-                success=outcome.ok, action=action, message_id=message_id,
+                success=outcome.ok, action=action,
+                message_id=outcome.glacier_id if outcome.glacier_id is not None else message_id,
+                folder_id=request.target_folder_id if outcome.ok else None,
                 message=outcome.reason,
             )
 
