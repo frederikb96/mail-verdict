@@ -205,6 +205,7 @@ async def _model_call(
     effort = orders_settings.get("reasoning_effort") or None
     max_tokens = int(orders_settings.get("max_tokens", 4000))
     base_url = ai_settings.get("base_url") or None
+    call_timeout_seconds = float(orders_settings.get("call_timeout_seconds", 40.0))
 
     retry_config = RetryConfig.from_settings(settings_service.get("retry"))
     gateway = ModelGateway(db, cred_repo, retry_config)
@@ -212,6 +213,7 @@ async def _model_call(
         provider=provider, model=model, effort=effort, max_tokens=max_tokens,
         schema_name=schema_name, system_prompt=system_prompt, user_prompt=user_prompt,
         schema=schema, validate=validate, base_url=base_url,
+        timeout_seconds=call_timeout_seconds,
     )
     return data, model, latency_ms
 
