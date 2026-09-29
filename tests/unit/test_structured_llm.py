@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +13,7 @@ from mail_verdict.core.retry import RetryConfig
 from mail_verdict.core.structured_llm import (
     call_chat_completions_structured,
     resolve_client,
+    retry_after_from_exception,
     retry_structured_call,
 )
 
@@ -83,6 +85,19 @@ class TestRetryStructuredCall:
         with pytest.raises(RuntimeError, match="failed after"):
             await retry_structured_call(call_once, _fast_retry(max_retries=1), transient_errors=())
         assert call_once.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_exhausted_retries_chains_the_last_underlying_error(self) -> None:
+        """A caller needing to know *what kind* of failure this was (a
+        sustained rate limit, say -- see ModelGateway._map_and_raise)
+        must still be able to recover it via __cause__ rather than losing
+        it to the generic RuntimeError wrapper."""
+        call_once = AsyncMock(side_effect=_Transient("rate limited"))
+        with pytest.raises(RuntimeError) as exc_info:
+            await retry_structured_call(
+                call_once, _fast_retry(max_retries=1), transient_errors=(_Transient,),
+            )
+        assert isinstance(exc_info.value.__cause__, _Transient)
 
 
 class TestResolveClient:
@@ -184,3 +199,44 @@ class TestCallChatCompletionsStructured:
                 {"type": "object"}, _fast_retry(max_retries=1),
             )
         assert client.chat.completions.create.await_count == 2
+
+
+class TestRetryAfterFromException:
+    """retry_after_from_exception: an adaptive 429 backoff, read from the
+    server's own Retry-After header rather than a blind guess."""
+
+    def _exc_with_header(self, value: str | None) -> Exception:
+        exc = Exception("rate limited")
+        response = MagicMock()
+        response.headers = {"retry-after": value} if value is not None else {}
+        exc.response = response  # type: ignore[attr-defined]
+        return exc
+
+    def test_reads_a_plain_integer_seconds_header(self) -> None:
+        exc = self._exc_with_header("12")
+        assert retry_after_from_exception(exc, default=timedelta(seconds=30)) == timedelta(
+            seconds=12
+        )
+
+    def test_missing_header_falls_back_to_default(self) -> None:
+        exc = self._exc_with_header(None)
+        assert retry_after_from_exception(exc, default=timedelta(seconds=30)) == timedelta(
+            seconds=30
+        )
+
+    def test_unparseable_header_falls_back_to_default(self) -> None:
+        """An HTTP-date form (valid per RFC 9110) is not parsed here --
+        the safe default covers it rather than raising."""
+        exc = self._exc_with_header("Wed, 21 Oct 2026 07:28:00 GMT")
+        assert retry_after_from_exception(exc, default=timedelta(seconds=30)) == timedelta(
+            seconds=30
+        )
+
+    def test_no_response_attribute_falls_back_to_default(self) -> None:
+        """A connection error, or a re-raised exception with nothing
+        attached -- must not raise trying to read a header that isn't
+        there."""
+        exc = Exception("connection dropped")
+        assert retry_after_from_exception(exc, default=timedelta(seconds=30)) == timedelta(
+            seconds=30
+        )

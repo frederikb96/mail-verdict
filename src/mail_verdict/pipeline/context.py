@@ -281,18 +281,29 @@ class ModelGateway:
 
     async def _map_and_raise(self, provider: str, exc: Exception) -> None:
         """Translate a provider SDK exception into the stage vocabulary,
-        recording the outcome on the shared circuit breaker."""
+        recording the outcome on the shared circuit breaker.
+
+        `retry_structured_call` (core/structured_llm.py) wraps an
+        exhausted retry loop's last error in a plain `RuntimeError`,
+        chained via `__cause__` -- unwrapped here so a rate limit that
+        outlasts that loop's own retry budget is still classified as
+        `StageThrottled` (refunded, uncapped) rather than falling through
+        to the generic `StageTransient` branch below, which counts
+        against `pipeline_runs.attempts` and can eventually dead-letter a
+        message a sustained throttle should have kept retrying forever.
+        """
+        from mail_verdict.core.structured_llm import retry_after_from_exception
         from mail_verdict.pipeline.contracts import StageTransient
 
-        name = type(exc).__name__
+        cause = exc.__cause__ if type(exc).__name__ == "RuntimeError" and exc.__cause__ else exc
+        name = type(cause).__name__
         if name == "AuthenticationError":
             await self._circuit.record_unavailable(
                 reason=f"{provider} rejected the API key", probe_interval=timedelta(minutes=5),
             )
             raise StageUnavailable(f"{provider} rejected the API key") from exc
         if name == "RateLimitError":
-            retry_after = getattr(exc, "retry_after", None)
-            delay = timedelta(seconds=retry_after) if retry_after else timedelta(seconds=30)
+            delay = retry_after_from_exception(cause, default=timedelta(seconds=30))
             await self._circuit.record_backoff(retry_after=delay, reason=f"{provider} rate limited")
             raise StageThrottled(f"{provider} rate limited", retry_after=delay) from exc
         await self._circuit.record_backoff(

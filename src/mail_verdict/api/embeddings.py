@@ -54,6 +54,38 @@ def _current_model() -> str:
     return str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
 
 
+async def _status_response(
+    repo: EmbeddingRepository, *, model: str, account_id: uuid.UUID | None,
+) -> EmbeddingStatusResponse:
+    """
+    Build the full response for one model's coverage, including whether
+    it is the one actually serving search right now and -- only when
+    reporting the true, unscoped deployment state a real cutover decision
+    is made against -- why it hasn't cut over yet, if it hasn't.
+
+    cutover_ready/cutover_blocked_reason are left unset for an
+    account-scoped query: cutover itself is deployment-wide (there is no
+    per-account settings mechanism here), so a per-account readiness
+    figure would not correspond to what the real gate actually checks.
+    """
+    semantic_settings = get_settings_service().get("semantic")
+    active_model = resolve_active_embedding_model(semantic_settings)
+    status = await repo.status(model=model, account_id=account_id)
+    cutover_ready: bool | None = None
+    cutover_blocked_reason: str | None = None
+    if account_id is None and model != active_model:
+        readiness = await repo.cutover_readiness(target_model=model, active_model=active_model)
+        cutover_ready = readiness.ready
+        cutover_blocked_reason = readiness.blocked_reason
+    return EmbeddingStatusResponse(
+        model=status.model, in_scope=status.in_scope, encoded=status.encoded,
+        pending=status.pending, failed=status.failed,
+        reachable=status.reachable, unreachable=status.unreachable, shadowed=status.shadowed,
+        coverage=status.coverage, active=model == active_model, outstanding=status.outstanding,
+        cutover_ready=cutover_ready, cutover_blocked_reason=cutover_blocked_reason,
+    )
+
+
 @router.get("/status", response_model=EmbeddingStatusResponse)
 async def get_status(
     account_id: uuid.UUID | None = Query(default=None),
@@ -62,17 +94,13 @@ async def get_status(
     """
     Coverage for one embedding model, defaulting to the configured one.
 
-    Coverage below 100% is the honest answer, not something to infer from
-    search quietly returning less than it should.
+    Coverage below 100% is often the honest, permanent answer -- a real
+    mailbox always has a few messages that never embed successfully -- so
+    it is not what says whether a migration is ready to cut over;
+    cutover_ready and cutover_blocked_reason are.
     """
     repo = EmbeddingRepository(get_db_connection())
-    status = await repo.status(model=model or _current_model(), account_id=account_id)
-    return EmbeddingStatusResponse(
-        model=status.model, in_scope=status.in_scope, encoded=status.encoded,
-        pending=status.pending, failed=status.failed,
-        reachable=status.reachable, unreachable=status.unreachable, shadowed=status.shadowed,
-        coverage=status.coverage,
-    )
+    return await _status_response(repo, model=model or _current_model(), account_id=account_id)
 
 
 @router.post("/backfill", response_model=EmbeddingStatusResponse)
@@ -97,13 +125,7 @@ async def trigger_backfill(
         if candidates < _BACKFILL_BATCH_SIZE:
             break
 
-    status = await repo.status(model=model, account_id=account_id)
-    return EmbeddingStatusResponse(
-        model=status.model, in_scope=status.in_scope, encoded=status.encoded,
-        pending=status.pending, failed=status.failed,
-        reachable=status.reachable, unreachable=status.unreachable, shadowed=status.shadowed,
-        coverage=status.coverage,
-    )
+    return await _status_response(repo, model=model, account_id=account_id)
 
 
 @router.get("/search", response_model=SemanticSearchResponse)

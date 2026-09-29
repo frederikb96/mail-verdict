@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.core.structured_llm import retry_after_from_exception
 from mail_verdict.database.models import MessageEmbedding
 from mail_verdict.database.repository import MessageRepository
 from mail_verdict.embeddings.content import build_embedding_input
@@ -161,22 +162,26 @@ async def _maybe_cutover(
     embedding_repo: EmbeddingRepository, settings_service: SettingsService, target_model: str,
 ) -> None:
     """
-    Advance `active_model` to `target_model` once every in-scope message
-    has a done, reachable vector under it -- the point search and the
-    classify stage's neighbour hints can safely stop answering from
-    whatever model was active before (embeddings/provider.py's
-    resolve_active_embedding_model).
+    Advance `active_model` to `target_model` once `EmbeddingRepository.
+    cutover_readiness` says the target is ready -- see its own docstring
+    for the predicate (never "coverage == 1.0"; a real mailbox always has
+    a few permanently-failed messages, and waiting for exact 1.0 coverage
+    would block cutover forever).
 
-    A no-op once the two already match. For a mailbox with nothing
-    in scope, EmbeddingStatus.coverage is 1.0 by construction, so a
-    migration with no work to do cuts over on the very next tick rather
-    than waiting on a completion that was never going to arrive.
+    A no-op once the two already match.
     """
     current = settings_service.get("semantic")
-    if resolve_active_embedding_model(current) == target_model:
+    active_model = resolve_active_embedding_model(current)
+    if active_model == target_model:
         return
-    status = await embedding_repo.status(model=target_model)
-    if status.coverage < 1.0:
+    readiness = await embedding_repo.cutover_readiness(
+        target_model=target_model, active_model=active_model,
+    )
+    if not readiness.ready:
+        logger.info(
+            "Embedding cutover not ready yet",
+            extra={"model": target_model, "reason": readiness.blocked_reason},
+        )
         return
     await settings_service.update(
         "semantic",
@@ -194,7 +199,7 @@ async def _maybe_cutover(
     )
     logger.info(
         "Embedding cutover complete -- search now answers from the new model",
-        extra={"model": target_model, "in_scope": status.in_scope},
+        extra={"model": target_model, "in_scope": readiness.target.in_scope},
     )
 
 
@@ -346,8 +351,11 @@ async def _handle_one(
             # A shared-resource throttle, not this item's fault: every
             # queued item waits out the same circuit backoff, and none of
             # them burns an attempt over it -- the same uncapped refund
-            # ProviderUnavailableError gets above.
-            await circuit.record_backoff(retry_after=timedelta(seconds=30), reason=str(exc))
+            # ProviderUnavailableError gets above. Reads the provider's
+            # own Retry-After when it sent one, rather than a blind 30s
+            # guess (core/structured_llm.py's retry_after_from_exception).
+            delay = retry_after_from_exception(exc, default=timedelta(seconds=30))
+            await circuit.record_backoff(retry_after=delay, reason=str(exc))
             await work_queue.release_untouched(item_id, worker_id=worker_id)
         elif _is_retryable(exc):
             # Unlike a throttle, this class of error (a connection drop, a

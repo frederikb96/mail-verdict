@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from mail_verdict.core.errors import ProviderUnavailableError
@@ -39,6 +40,38 @@ if TYPE_CHECKING:
     from mail_verdict.settings.credentials import ProviderCredentialRepository
 
 logger = logging.getLogger(__name__)
+
+
+def retry_after_from_exception(exc: BaseException, *, default: timedelta) -> timedelta:
+    """
+    How long a 429 actually asked callers to wait, read from the
+    response's own `Retry-After` header -- rather than a blind guess.
+    `openai.RateLimitError` (shared by real OpenAI and any "custom"
+    OpenAI-compatible server, since both raise the same SDK exception
+    class keyed on HTTP status) carries no parsed retry-delay attribute
+    of its own, only the raw `httpx.Response` on `.response`.
+
+    Args:
+        exc: The caught exception -- anything without a `.response.headers`
+            (a connection error, a wrapped/re-raised exception with no
+            response attached) falls through to `default`
+        default: Used when no header is present, or it doesn't parse as
+            a plain integer/float seconds count (an HTTP-date form is
+            valid per RFC 9110 but not handled here -- rare for a JSON
+            API, and the safe default covers it)
+
+    Returns:
+        The server's requested delay, or `default`
+    """
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    header = headers.get("retry-after") if headers is not None else None
+    if header:
+        try:
+            return timedelta(seconds=float(header))
+        except ValueError:
+            pass
+    return default
 
 
 async def resolve_client(
@@ -107,7 +140,13 @@ async def retry_structured_call(
         The parsed response dict
 
     Raises:
-        RuntimeError: If every attempt failed
+        RuntimeError: If every attempt failed -- chained from the last
+            underlying error (`raise ... from last_error`) so a caller
+            that needs to know *what kind* of failure this was (a
+            sustained rate limit, say, which must never count against a
+            retry budget the way an ordinary transient failure does) can
+            still recover it via `__cause__` rather than losing it to a
+            generic wrapper type.
     """
     last_error: Exception | None = None
 
@@ -133,7 +172,7 @@ async def retry_structured_call(
 
     raise RuntimeError(
         f"LLM structured call failed after {retry_config.max_retries + 1} attempts: {last_error}"
-    )
+    ) from last_error
 
 
 async def call_anthropic_structured(

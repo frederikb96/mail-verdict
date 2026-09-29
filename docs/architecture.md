@@ -310,10 +310,17 @@ and the classify stage's neighbour hints actually query) are two settings, not o
 `model` (or `provider`/`base_url` alongside it, moving to a different compatible server) freezes
 whichever identity was previously active into `active_model`/`active_provider`/`active_base_url`
 (`api/settings_api.py`'s `update_settings`), and the backfill reconciler advances them to match
-only once every in-scope message has a `done`, reachable row under the new model
+once `EmbeddingRepository.cutover_readiness` says the new model is ready
 (`embeddings/worker.py`'s `_maybe_cutover`) — `embeddings/provider.py`'s
 `resolve_active_embedding_model`/`resolve_active_embedding_provider` are the one place either is
-read from. A provider is itself a setting per category (`ai.provider`, `semantic.provider`):
+read from. Readiness is never "every message embedded" — a real mailbox always has a few that
+permanently fail (no usable content, a provider refusal), so a check waiting for exact 100%
+coverage would block forever. It asks instead whether every in-scope message has been *tried* at
+least once (`EmbeddingStatus.outstanding == 0` — done, failed, or covered indirectly through a
+shadowed sibling's row) and whether the new model's own reachable count is at least what the
+active one already reaches; `GET /api/embeddings/status` reports the same predicate
+(`cutover_ready`/`cutover_blocked_reason`), computed in the one place rather than twice. A
+provider is itself a setting per category (`ai.provider`, `semantic.provider`):
 `"openai"`, `"anthropic"` (verdicts only), `"custom"` (any OpenAI-compatible server, reached at
 that category's own `base_url` with one shared credential per provider name, `settings/
 credentials.py`), or `"fake"`. A custom server speaks chat completions only, not the Responses API

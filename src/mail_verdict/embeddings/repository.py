@@ -88,6 +88,49 @@ class EmbeddingStatus:
             return 1.0
         return self.reachable / self.in_scope
 
+    @property
+    def outstanding(self) -> int:
+        """In-scope messages with no terminal (or in-progress) accounting
+        under this model yet -- not `encoded`, `pending`/`claimed`,
+        `failed`, or covered indirectly via a sibling's row (`shadowed`).
+        Zero means every in-scope message has been tried at least once;
+        it says nothing about whether the outcome was `done` or `failed`
+        -- see CutoverReadiness for the predicate that also weighs that."""
+        return max(
+            self.in_scope - self.encoded - self.pending - self.failed - self.shadowed, 0,
+        )
+
+
+@dataclass(frozen=True)
+class CutoverReadiness:
+    """
+    Whether `target_model` is ready to become the model search and the
+    classify stage's neighbour hints actually read from, and why not when
+    it isn't -- the one predicate embeddings/worker.py's `_maybe_cutover`
+    acts on and `GET /api/embeddings/status` reports, computed in exactly
+    one place (`EmbeddingRepository.cutover_readiness`) so the two can
+    never disagree.
+
+    Coverage alone (`EmbeddingStatus.coverage == 1.0`) can never be
+    reached in a real mailbox -- a message with no usable content, or one
+    a provider permanently refuses, reaches `failed` and stays there, so
+    a target's own coverage tops out below 1.0 forever and a check
+    waiting for exactly 1.0 blocks cutover forever too. Readiness instead
+    asks two separate questions: has every in-scope message been *tried*
+    at least once under the target (`EmbeddingStatus.outstanding == 0` --
+    done, failed, or covered indirectly via a sibling's row), and does
+    the target's own reachable count *at least match* whatever is
+    currently serving search. A target that permanently fails exactly the
+    messages the active model also permanently failed on still cuts
+    over; one that regresses on messages the active model could reach
+    does not, and says why.
+    """
+
+    ready: bool
+    target: EmbeddingStatus
+    active: EmbeddingStatus
+    blocked_reason: str | None
+
 
 async def _live_message_ids(
     session: AsyncSession, message_ids: set[uuid.UUID],
@@ -573,3 +616,36 @@ class EmbeddingRepository:
                 encoded=counts.encoded, pending=counts.pending, failed=counts.failed,
                 reachable=reachable, unreachable=unreachable, shadowed=shadowed,
             )
+
+    async def cutover_readiness(
+        self, *, target_model: str, active_model: str,
+    ) -> CutoverReadiness:
+        """
+        See CutoverReadiness's own docstring for the predicate.
+
+        Args:
+            target_model: The model a migration is filling toward
+            active_model: The model currently serving search
+
+        Returns:
+            Whether the target is ready, both models' coverage
+            snapshots, and the reason when it isn't
+        """
+        target = await self.status(model=target_model)
+        active = await self.status(model=active_model)
+        if target.outstanding > 0:
+            return CutoverReadiness(
+                ready=False, target=target, active=active,
+                blocked_reason=(
+                    f"{target.outstanding} message(s) not yet tried under the target model"
+                ),
+            )
+        if target.reachable < active.reachable:
+            return CutoverReadiness(
+                ready=False, target=target, active=active,
+                blocked_reason=(
+                    f"target model reaches {target.reachable} message(s), fewer than the "
+                    f"{active.reachable} the active model already reaches"
+                ),
+            )
+        return CutoverReadiness(ready=True, target=target, active=active, blocked_reason=None)
