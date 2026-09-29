@@ -8,7 +8,7 @@ lives in tests/pg/test_pipeline_runner.py, which exercises the default
 
 from __future__ import annotations
 
-from mail_verdict.pipeline.revisions import build_migrated_definition
+from mail_verdict.pipeline.revisions import build_migrated_definition, insert_orders_stage
 
 
 def _stage(document: dict, stage_id: str) -> dict:
@@ -124,3 +124,49 @@ def test_copy_to_and_forward_to_actions_are_dropped() -> None:
 
     migrated = next(s for s in document["stages"] if s["name"] == "dead-actions")
     assert migrated["config"]["effects"] == []
+
+
+def test_insert_orders_stage_lands_directly_after_move_spam() -> None:
+    stages = [
+        {"stage_id": "classify", "type": "classify", "config": {}},
+        {
+            "stage_id": "move-spam", "type": "match",
+            "config": {"when": {"verdict_is": "spam"}, "effects": []},
+        },
+        {"stage_id": "file-steuer", "type": "match", "config": {"when": {}, "effects": []}},
+    ]
+    result = insert_orders_stage(stages)
+    stage_ids = [s["stage_id"] for s in result]
+    assert stage_ids == ["classify", "move-spam", "orders", "file-steuer"]
+
+
+def test_insert_orders_stage_lands_after_classify_with_no_move_spam() -> None:
+    stages = [
+        {"stage_id": "classify", "type": "classify", "config": {}},
+        {"stage_id": "file-steuer", "type": "match", "config": {"when": {}, "effects": []}},
+    ]
+    result = insert_orders_stage(stages)
+    stage_ids = [s["stage_id"] for s in result]
+    assert stage_ids == ["classify", "orders", "file-steuer"]
+
+
+def test_insert_orders_stage_goes_first_with_neither_move_spam_nor_classify() -> None:
+    stages = [{"stage_id": "file-steuer", "type": "match", "config": {"when": {}, "effects": []}}]
+    result = insert_orders_stage(stages)
+    assert [s["stage_id"] for s in result] == ["orders", "file-steuer"]
+
+
+def test_insert_orders_stage_is_a_no_op_when_one_already_exists() -> None:
+    stages = [
+        {"stage_id": "classify", "type": "classify", "config": {}},
+        {"stage_id": "orders", "type": "orders", "config": {}},
+    ]
+    assert insert_orders_stage(stages) == stages
+
+
+def test_calling_insert_orders_stage_twice_never_adds_a_second_one() -> None:
+    stages = [{"stage_id": "classify", "type": "classify", "config": {}}]
+    once = insert_orders_stage(stages)
+    twice = insert_orders_stage(once)
+    assert once == twice
+    assert sum(1 for s in twice if s["type"] == "orders") == 1

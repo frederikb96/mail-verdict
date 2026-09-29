@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Literal
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import Message, OrderMail
+
+Location = Literal["mailbox", "glacier", "gone"]
 
 
 @dataclass(frozen=True)
@@ -27,7 +30,7 @@ class ResolvedMail:
     """Where one order_mails row's mail is now."""
 
     order_mail_id: uuid.UUID
-    location: str  # "mailbox" | "glacier" | "gone"
+    location: Location
     message_id: uuid.UUID | None
     folder_id: uuid.UUID | None
     is_seen: bool | None

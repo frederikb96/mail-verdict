@@ -4898,6 +4898,517 @@
         "title": "NotificationResponse",
         "type": "object"
       },
+      "OrderCatchUpRequest": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Days",
+            "type": "integer"
+          },
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "account_id",
+          "days"
+        ],
+        "title": "OrderCatchUpRequest",
+        "type": "object"
+      },
+      "OrderCatchUpResponse": {
+        "properties": {
+          "considered": {
+            "title": "Considered",
+            "type": "integer"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "considered",
+          "passed",
+          "queued"
+        ],
+        "title": "OrderCatchUpResponse",
+        "type": "object"
+      },
+      "OrderDetachRequest": {
+        "properties": {
+          "move_to": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Move To"
+          }
+        },
+        "title": "OrderDetachRequest",
+        "type": "object"
+      },
+      "OrderDetail": {
+        "properties": {
+          "account_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Account Ids",
+            "type": "array"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/OrderDocumentOut"
+            },
+            "title": "Documents",
+            "type": "array"
+          },
+          "first_mail_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Mail At"
+          },
+          "icon": {
+            "title": "Icon",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "identifiers": {
+            "items": {
+              "$ref": "#/components/schemas/OrderIdentifierOut"
+            },
+            "title": "Identifiers",
+            "type": "array"
+          },
+          "is_open": {
+            "title": "Is Open",
+            "type": "boolean"
+          },
+          "last_mail_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Mail At"
+          },
+          "mail_count": {
+            "title": "Mail Count",
+            "type": "integer"
+          },
+          "mails": {
+            "items": {
+              "$ref": "#/components/schemas/OrderMailOut"
+            },
+            "title": "Mails",
+            "type": "array"
+          },
+          "merchant": {
+            "title": "Merchant",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "summary_preview": {
+            "title": "Summary Preview",
+            "type": "string"
+          },
+          "text_stale": {
+            "title": "Text Stale",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "merchant",
+          "subject",
+          "status",
+          "title",
+          "is_open",
+          "icon",
+          "summary_preview",
+          "first_mail_at",
+          "last_mail_at",
+          "mail_count",
+          "account_ids",
+          "text_stale",
+          "updated_at",
+          "summary",
+          "identifiers",
+          "mails",
+          "documents"
+        ],
+        "title": "OrderDetail",
+        "type": "object"
+      },
+      "OrderDocumentOut": {
+        "properties": {
+          "attachment_id": {
+            "format": "uuid",
+            "title": "Attachment Id",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "required": [
+          "message_id",
+          "attachment_id",
+          "filename",
+          "content_type",
+          "size_bytes",
+          "received_at"
+        ],
+        "title": "OrderDocumentOut",
+        "type": "object"
+      },
+      "OrderIdentifierOut": {
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "OrderIdentifierOut",
+        "type": "object"
+      },
+      "OrderListItem": {
+        "description": "One row of the orders list -- everything a screen renders without\nopening the order.",
+        "properties": {
+          "account_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Account Ids",
+            "type": "array"
+          },
+          "first_mail_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Mail At"
+          },
+          "icon": {
+            "title": "Icon",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_open": {
+            "title": "Is Open",
+            "type": "boolean"
+          },
+          "last_mail_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Mail At"
+          },
+          "mail_count": {
+            "title": "Mail Count",
+            "type": "integer"
+          },
+          "merchant": {
+            "title": "Merchant",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "summary_preview": {
+            "title": "Summary Preview",
+            "type": "string"
+          },
+          "text_stale": {
+            "title": "Text Stale",
+            "type": "boolean"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "merchant",
+          "subject",
+          "status",
+          "title",
+          "is_open",
+          "icon",
+          "summary_preview",
+          "first_mail_at",
+          "last_mail_at",
+          "mail_count",
+          "account_ids",
+          "text_stale",
+          "updated_at"
+        ],
+        "title": "OrderListItem",
+        "type": "object"
+      },
+      "OrderListResponse": {
+        "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "title": "OrderListResponse",
+        "type": "object"
+      },
+      "OrderMailOut": {
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "attached_by": {
+            "title": "Attached By",
+            "type": "string"
+          },
+          "folder_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Folder Id"
+          },
+          "from_addr": {
+            "title": "From Addr",
+            "type": "string"
+          },
+          "is_seen": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Seen"
+          },
+          "key": {
+            "format": "uuid",
+            "title": "Key",
+            "type": "string"
+          },
+          "location": {
+            "enum": [
+              "mailbox",
+              "glacier",
+              "gone"
+            ],
+            "title": "Location",
+            "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          }
+        },
+        "required": [
+          "key",
+          "account_id",
+          "message_id",
+          "thread_id",
+          "location",
+          "folder_id",
+          "is_seen",
+          "subject",
+          "from_addr",
+          "received_at",
+          "attached_by"
+        ],
+        "title": "OrderMailOut",
+        "type": "object"
+      },
+      "OrderMergeRequest": {
+        "properties": {
+          "into": {
+            "format": "uuid",
+            "title": "Into",
+            "type": "string"
+          }
+        },
+        "required": [
+          "into"
+        ],
+        "title": "OrderMergeRequest",
+        "type": "object"
+      },
       "OutboxAttachmentSummary": {
         "description": "Attachment metadata for an outbox row (no data).",
         "properties": {
@@ -12018,6 +12529,367 @@
         "summary": "List All Notifications",
         "tags": [
           "notifications"
+        ]
+      }
+    },
+    "/orders": {
+      "get": {
+        "description": "Orders across every enabled account, newest activity first.",
+        "operationId": "list_orders_orders_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "pattern": "^(all|open)$",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Orders",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/catch-up": {
+      "post": {
+        "operationId": "catch_up_orders_catch_up_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderCatchUpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderCatchUpResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Catch Up",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{order_id}": {
+      "delete": {
+        "description": "Delete an order. No mail is touched.",
+        "operationId": "delete_order_orders__order_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Order",
+        "tags": [
+          "orders"
+        ]
+      },
+      "get": {
+        "operationId": "get_order_orders__order_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{order_id}/mails/{mail_key}/detach": {
+      "post": {
+        "description": "Remove a mail from its order, optionally moving it to another --\nnever bundled automatically again either way (uq_order_mails_account\n_msg_key holds; the job row for it is left as-is so a catch-up never\nreconsiders it).",
+        "operationId": "detach_mail_orders__order_id__mails__mail_key__detach_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mail_key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Mail Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderDetachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/OrderDetail"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Detach Mail Orders  Order Id  Mails  Mail Key  Detach Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Detach Mail",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{order_id}/merge": {
+      "post": {
+        "description": "Merge `order_id` into `request.into`. The source disappears.",
+        "operationId": "merge_order_orders__order_id__merge_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderMergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Merge Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{order_id}/rewrite": {
+      "post": {
+        "description": "Enqueue a manual rewrite of an order's title and summary.",
+        "operationId": "rewrite_order_orders__order_id__rewrite_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rewrite Order",
+        "tags": [
+          "orders"
         ]
       }
     },
