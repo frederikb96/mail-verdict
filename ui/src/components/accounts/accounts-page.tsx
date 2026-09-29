@@ -250,6 +250,15 @@ function AccountCard({
                 )}
                 {account.spam_enabled ? "Enabled" : "Disabled"}
               </div>
+              <div className="text-muted-foreground">Orders</div>
+              <div className="flex items-center gap-1">
+                {account.orders_enabled ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-muted-foreground" />
+                )}
+                {account.orders_enabled ? "On" : "Off"}
+              </div>
               <div className="text-muted-foreground">Trash retention</div>
               <div className="flex items-center gap-1">
                 {account.trash_retention_days ? (
@@ -372,6 +381,7 @@ function AccountForm({
     const smtp_user = (form.get("smtp_user") as string) || undefined;
     const smtp_password = (form.get("smtp_password") as string) || undefined;
     const spam_enabled = form.get("spam_enabled") === "on";
+    const orders_enabled = form.get("orders_enabled") === "on";
     const trashRetentionRaw = form.get("trash_retention_days") as string;
     const trash_retention_days = trashRetentionRaw ? Number(trashRetentionRaw) : null;
     const junkRetentionRaw = form.get("junk_retention_days") as string;
@@ -387,6 +397,7 @@ function AccountForm({
         smtp_user,
         smtp_password,
         spam_enabled,
+        orders_enabled,
         trash_retention_days,
         junk_retention_days,
       };
@@ -406,6 +417,7 @@ function AccountForm({
         smtp_user,
         smtp_password,
         spam_enabled,
+        orders_enabled,
         trash_retention_days,
         junk_retention_days,
       };
@@ -527,6 +539,16 @@ function AccountForm({
             className="h-4 w-4"
           />
           <Label htmlFor="spam_enabled">Enable spam detection</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            id="orders_enabled"
+            name="orders_enabled"
+            type="checkbox"
+            defaultChecked={account?.orders_enabled ?? false}
+            className="h-4 w-4"
+          />
+          <Label htmlFor="orders_enabled">Bundle orders and tickets</Label>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">

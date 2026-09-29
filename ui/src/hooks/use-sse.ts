@@ -589,6 +589,23 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries({ queryKey: alertKeys.count });
       });
 
+      // Orders is a cross-account register with no account-scoped event of
+      // its own to ride -- broadcast to every ring (see api/events.py's
+      // broadcast_event). Invalidates the list (one request for the whole
+      // loaded window) and the one order's own detail, when open.
+      source.addEventListener("order.updated", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        try {
+          const data: SSEEvent = JSON.parse(e.data);
+          queryClient.invalidateQueries({ queryKey: ["orders"] });
+          if (data.order_id) {
+            queryClient.invalidateQueries({ queryKey: ["orders", "detail", data.order_id] });
+          }
+        } catch {
+          // Ignore
+        }
+      });
+
       // Identities are MailVerdict's own table too -- the compose "from"
       // selector, reply/forward and RSVP all read the same list.
       source.addEventListener("identity.changed", (e: MessageEvent) => {

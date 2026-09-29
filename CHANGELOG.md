@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- A new "Orders & tickets" screen bundles every mail about one purchase, ticket or booking --
+  confirmation, invoice, shipping, carrier notices, delivery, return, refund, customer-service
+  conversation -- into one entry with an AI-written title, status and summary, across every
+  enabled account. Switched on per account, next to spam detection. A mail can be moved between
+  orders or removed, two orders merged, a summary rewritten by hand, and recent mail looked
+  through after switching the feature on.
 - The AI provider for spam verdicts and for embeddings is now a setting: OpenAI as before, or any
   OpenAI-compatible server by address, key and model name. Switching the embedding model re-embeds
   the whole store in the background while search keeps answering from the old vectors, cutting

@@ -83,3 +83,4 @@ Web anchors are relative to `ui/src/`.
 | AI pipeline and admin | `app/pipeline/`, `components/settings/settings-page.tsx` (AI & automation) | n/a | `6bc157c` | No admin or pipeline controls on the phone. |
 | Web Push | `public/sw.js`, `hooks/use-push.ts` (the VAPID half) | n/a | `6bc157c` | Native push replaces it on the phone. |
 | Default mail app, `mailto:` | `components/layout/protocol-handler.tsx` | n/a | `6bc157c` | Needs Apple's mail-client entitlement. |
+| Orders & tickets | `src/mail_verdict/api/orders.py`, `docs/api-contract/*`; web `app/orders/`, `components/orders/`, `hooks/use-orders.ts` | absent | `e4d2e05` | Server, API and web UI shipped; the app has not been started. |
