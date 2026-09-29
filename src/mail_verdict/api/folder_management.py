@@ -107,6 +107,43 @@ async def _get_folders_with_counts(
 # --- Folder Ordering ---
 
 
+async def _glacier_order_item(account_id: uuid.UUID) -> FolderOrderItem | None:
+    """The glacier's own FolderOrderItem, for whichever account has one
+    enabled -- so the move-to-folder picker and drag-and-drop, both of
+    which source from folder-order rather than the plain folder list,
+    can offer it as a target too."""
+    db = get_db_connection()
+    async with db.session() as session:
+        prefs = (
+            await session.execute(
+                select(AccountPrefs).where(AccountPrefs.account_id == account_id)
+            )
+        ).scalar_one_or_none()
+        if prefs is None or not prefs.glacier_enabled or prefs.glacier_folder_id is None:
+            return None
+        counts = (
+            await session.execute(
+                text(
+                    "SELECT count(*) AS total, count(*) FILTER (WHERE is_seen = false) "
+                    "AS unread FROM glacier_messages WHERE account_id = :account_id "
+                    "AND visible_at IS NOT NULL"
+                ),
+                {"account_id": account_id},
+            )
+        ).mappings().one()
+        fp = (
+            await session.execute(
+                select(FolderPrefs).where(FolderPrefs.folder_id == prefs.glacier_folder_id)
+            )
+        ).scalar_one_or_none()
+    return FolderOrderItem(
+        folder_id=prefs.glacier_folder_id, imap_name="Glacier",
+        display_name=fp.display_name if fp else None, special_use=None,
+        is_visible=fp.is_visible if fp else True,
+        unread_count=counts["unread"], total_count=counts["total"], kind="glacier",
+    )
+
+
 @router.get("/folder-order", response_model=FolderOrderResponse)
 async def get_folder_order(account_id: uuid.UUID) -> FolderOrderResponse:
     """Get ordered folder list with visibility and counts."""
@@ -152,6 +189,10 @@ async def get_folder_order(account_id: uuid.UUID) -> FolderOrderResponse:
                 total_count=total,
             )
         )
+
+    glacier_item = await _glacier_order_item(account_id)
+    if glacier_item is not None:
+        items.append(glacier_item)
 
     return FolderOrderResponse(folders=items)
 

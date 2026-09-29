@@ -975,6 +975,7 @@ class FolderOrderItem(BaseModel):
     is_visible: bool = True
     unread_count: int = 0
     total_count: int = 0
+    kind: Literal["imap", "glacier"] = "imap"
 
 
 class FolderOrderResponse(BaseModel):

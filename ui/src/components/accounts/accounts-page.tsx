@@ -272,6 +272,19 @@ function AccountCard({
                   ? `${account.junk_retention_days} days`
                   : "Off"}
               </div>
+              <div className="text-muted-foreground">Glacier</div>
+              <div className="flex items-center gap-1">
+                {account.glacier_enabled ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-muted-foreground" />
+                )}
+                {account.glacier_enabled
+                  ? account.glacier_auto_days
+                    ? `On, sweeps after ${account.glacier_auto_days} days`
+                    : "On, manual only"
+                  : "Off"}
+              </div>
             </div>
 
             {/* Sync status */}
@@ -376,6 +389,9 @@ function AccountForm({
     const trash_retention_days = trashRetentionRaw ? Number(trashRetentionRaw) : null;
     const junkRetentionRaw = form.get("junk_retention_days") as string;
     const junk_retention_days = junkRetentionRaw ? Number(junkRetentionRaw) : null;
+    const glacier_enabled = form.get("glacier_enabled") === "on";
+    const glacierAutoRaw = form.get("glacier_auto_days") as string;
+    const glacier_auto_days = glacierAutoRaw ? Number(glacierAutoRaw) : null;
 
     if (isEditing) {
       // imap_host/imap_port/imap_user are insert-only -- not part of this payload.
@@ -389,6 +405,8 @@ function AccountForm({
         spam_enabled,
         trash_retention_days,
         junk_retention_days,
+        glacier_enabled,
+        glacier_auto_days,
       };
       updateAccount.mutate(
         { id: account.id, data },
@@ -552,6 +570,40 @@ function AccountForm({
             />
           </div>
         </div>
+        {isEditing && (
+          <div className="flex flex-col gap-2 rounded-md border p-3">
+            <div className="flex items-center gap-2">
+              <input
+                id="glacier_enabled"
+                name="glacier_enabled"
+                type="checkbox"
+                defaultChecked={account?.glacier_enabled ?? false}
+                className="h-4 w-4"
+              />
+              <Label htmlFor="glacier_enabled">
+                Enable glacier storage
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              A place mail can be moved to that leaves this account&apos;s mail server
+              for good and lives on only here. Can&apos;t be turned off again while it
+              holds anything.
+            </p>
+            <div className="grid gap-1.5">
+              <Label htmlFor="glacier_auto_days">
+                Automatically sweep archived mail after (days)
+              </Label>
+              <Input
+                id="glacier_auto_days"
+                name="glacier_auto_days"
+                type="number"
+                min={1}
+                defaultValue={account?.glacier_auto_days ?? ""}
+                placeholder="Off -- move mail into the glacier by hand only"
+              />
+            </div>
+          </div>
+        )}
       </div>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onClose}>
