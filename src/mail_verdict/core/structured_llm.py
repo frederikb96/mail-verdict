@@ -211,6 +211,14 @@ async def call_chat_completions_structured(
     `json.loads` and is retried like any other malformed response, rather
     than raising a TypeError that would not be.
 
+    "none" is sent explicitly, not omitted: a compatible server's
+    reasoning models reason by default, so an absent field means "reason"
+    to them, not "don't" -- measured directly against Infomaniak's own
+    Qwen3.5-122B-A10B-FP8, which spent 2,000+ hidden reasoning tokens and
+    15-20 real seconds per call with the field left out, and answered in
+    under a second with it sent as `"none"`. Only a genuinely unset
+    effort (`None`) is left off the request.
+
     timeout_seconds overrides the client's own per-request timeout
     (openai_provider.py's REQUEST_TIMEOUT_SECONDS, sized for classify and
     embeddings' tighter leases) for this call alone, when a caller's own
@@ -221,7 +229,7 @@ async def call_chat_completions_structured(
 
     async def _call_once() -> str:
         kwargs: dict[str, Any] = {}
-        if effort and effort != "none":
+        if effort:
             kwargs["extra_body"] = {"reasoning_effort": effort}
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
