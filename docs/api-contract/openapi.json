@@ -862,6 +862,12 @@
             "title": "Action",
             "type": "string"
           },
+          "confirm": {
+            "default": false,
+            "description": "Required for expunge on a message already in the glacier -- it is the only copy in existence. Ignored everywhere else, including an ordinary expunge.",
+            "title": "Confirm",
+            "type": "boolean"
+          },
           "confirm_message_count": {
             "anyOf": [
               {

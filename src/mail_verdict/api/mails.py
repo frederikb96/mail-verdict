@@ -2013,27 +2013,58 @@ async def _apply_bulk_action(
     """
     db = get_db_connection()
 
+    # Glacier ids live in a different table with ids disjoint from
+    # `messages`, so nothing below can ever resolve or act on one --
+    # resolved and applied through their own path first (marking,
+    # restoring to a server folder, expunging for good all already exist
+    # per-message in _apply_glacier_message_action; there is no batched
+    # statement for any of them the way move_groups() has for live rows).
+    glacier_ids: list[uuid.UUID] = []
+    async with db.session() as session:
+        glacier_folder_id = await _glacier_folder_id_for_account(session, account_id)
+        if glacier_folder_id is not None:
+            if request.scope is not None and request.scope.folder_id == glacier_folder_id:
+                glacier_ids.extend(
+                    await _resolve_glacier_scope_ids(session, account_id, request.scope)
+                )
+            if request.ids:
+                glacier_ids.extend(
+                    await _resolve_glacier_explicit_ids(session, account_id, request.ids)
+                )
+    glacier_ids = list(dict.fromkeys(glacier_ids))
+    glacier_id_set = set(glacier_ids)
+
+    glacier_affected = 0
+    glacier_errors: list[str] = []
+    glacier_skipped: list[uuid.UUID] = []
+    if glacier_ids:
+        glacier_affected, glacier_errors, glacier_skipped = await _bulk_glacier_action(
+            db, glacier_ids, request,
+        )
+
+    live_ids = [mid for mid in request.ids if mid not in glacier_id_set] if request.ids else None
+
     sources: list[BulkActionSource] = []
-    skipped: list[uuid.UUID] = []
+    skipped: list[uuid.UUID] = list(glacier_skipped)
     # message id -> the folder its write is guarded to, None for unguarded
     expected_of: dict[uuid.UUID, uuid.UUID | None] = {}
     async with db.session() as session:
         if request.scope is not None:
             for mid in await _resolve_scope_ids(session, account_id, request.scope):
                 expected_of[mid] = None
-        if request.ids:
+        if live_ids:
             # An explicit id list is client-supplied and otherwise never
             # checked against the path's account_id -- narrowed to the
             # ids that actually belong here (and still exist) the same
             # way a scope already is, rather than trusting the list.
-            live = await _resolve_explicit_ids(session, account_id, request.ids)
+            live = await _resolve_explicit_ids(session, account_id, live_ids)
             guards = request.expected_folder_ids or {}
             target = (
                 await _action_target(account_id, request.action, request.target_folder_id)
                 if guards else None
             )
             explicit: list[uuid.UUID] = []
-            for mid in dict.fromkeys(request.ids):
+            for mid in dict.fromkeys(live_ids):
                 folder = live.get(mid)
                 if folder is not None and mid in guards and guards[mid] != folder:
                     # Already where the action files it: done, not a miss
@@ -2062,17 +2093,18 @@ async def _apply_bulk_action(
     # must not be able to make an irreversible write look confirmed when
     # it wasn't. Most actions pass nothing and skip this entirely.
     confirmed = request.confirm_message_count
-    if confirmed is not None and confirmed != len(message_ids):
+    total_resolved = len(message_ids) + len(glacier_ids)
+    if confirmed is not None and confirmed != total_resolved:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This resolves to {len(message_ids)} message(s) now, not the "
+                f"This resolves to {total_resolved} message(s) now, not the "
                 f"{confirmed} confirmed. Repeat the request "
-                f"with confirm_message_count={len(message_ids)} to proceed."
+                f"with confirm_message_count={total_resolved} to proceed."
             ),
         )
 
-    if not message_ids:
+    if not message_ids and not glacier_ids:
         return BulkActionResponse(
             success=True, action=request.action, affected_count=0, skipped_ids=skipped,
         )
@@ -2082,8 +2114,8 @@ async def _apply_bulk_action(
         groups.setdefault(expected, []).append(mid)
 
     action = request.action
-    errors: list[str] = []
-    affected = 0
+    errors: list[str] = list(glacier_errors)
+    affected = glacier_affected
     target = None
 
     async def move_groups(session: AsyncSession, target: uuid.UUID) -> list[uuid.UUID]:
@@ -2330,3 +2362,92 @@ async def _resolve_scope_ids(
         stmt = stmt.where(Message.id != all_(scope.exclude_ids))  # type: ignore[arg-type]
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def _glacier_folder_id_for_account(
+    session: AsyncSession, account_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """The synthetic folder id this account's glacier answers to, or None
+    when it has none enabled -- the reverse direction of
+    _glacier_account_for_folder, for resolving a bulk action's own
+    account_id into the one folder id a glacier-scoped selection could
+    possibly name."""
+    result = await session.execute(
+        select(AccountPrefs.glacier_folder_id).where(
+            AccountPrefs.account_id == account_id, AccountPrefs.glacier_enabled.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _resolve_glacier_explicit_ids(
+    session: AsyncSession, account_id: uuid.UUID, ids: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    """Which of `ids` are visible glacier rows on this account -- the
+    glacier counterpart of _resolve_explicit_ids, since `messages` and
+    `glacier_messages` are different tables with disjoint ids and an
+    explicit selection can mix ids from either."""
+    if not ids:
+        return []
+    result = await session.execute(
+        select(GlacierMessage.id).where(
+            GlacierMessage.id == any_(ids),  # type: ignore[arg-type]
+            GlacierMessage.account_id == account_id, GlacierMessage.visible_at.is_not(None),
+        )
+    )
+    return list(result.scalars().all())
+
+
+async def _resolve_glacier_scope_ids(
+    session: AsyncSession, account_id: uuid.UUID, scope: BulkActionScope,
+) -> list[uuid.UUID]:
+    """The glacier counterpart of _resolve_scope_ids -- visible_at is what
+    a glacier row's own snapshot instant is, the moment it stopped being
+    a live row and started being this one (GlacierMessage's own
+    docstring); its own created_at is copied from the live row instead
+    and can be years old, so using it here the way _resolve_scope_ids
+    uses Message.created_at would sweep in glacier rows regardless of
+    when the caller actually saw them."""
+    stmt = select(GlacierMessage.id).where(
+        GlacierMessage.account_id == account_id,
+        GlacierMessage.folder_id == scope.folder_id,
+        GlacierMessage.visible_at.is_not(None),
+        GlacierMessage.visible_at <= scope.snapshot_at,
+    )
+    if scope.filter == "unread":
+        stmt = stmt.where(GlacierMessage.is_seen.is_(False))
+    if scope.exclude_ids:
+        stmt = stmt.where(GlacierMessage.id != all_(scope.exclude_ids))  # type: ignore[arg-type]
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def _bulk_glacier_action(
+    db: DatabaseConnection, glacier_ids: list[uuid.UUID], request: BulkActionRequest,
+) -> tuple[int, list[str], list[uuid.UUID]]:
+    """Apply one bulk action to a selection of already-glaciered messages,
+    one at a time through _apply_glacier_message_action -- move/restore is
+    a whole outbox append and expunge deletes attachment rows too, so
+    unlike move_groups() there is no batched statement for any of this.
+
+    Returns:
+        (how many actually applied, the distinct failure reasons hit,
+        ids that had already been restored or expunged by something else
+        between resolution and this call)
+    """
+    landed = 0
+    reasons: dict[str, None] = {}
+    gone: list[uuid.UUID] = []
+    for gid in glacier_ids:
+        action_request = MessageActionRequest(
+            action=request.action, target_folder_id=request.target_folder_id,
+            confirm=request.confirm,
+        )
+        response = await _apply_glacier_message_action(gid, action_request)
+        if response is None:
+            gone.append(gid)
+        elif response.success:
+            landed += 1
+        elif response.message is not None:
+            reasons.setdefault(response.message, None)
+    return landed, list(reasons), gone

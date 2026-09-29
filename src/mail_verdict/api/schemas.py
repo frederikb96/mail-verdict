@@ -324,6 +324,11 @@ class BulkActionRequest(BaseModel):
             "confirm nothing and have no count to repeat back."
         ),
     )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else, including an ordinary expunge.",
+    )
     idempotency_key: uuid.UUID | None = Field(
         default=None,
         description="A key the caller generates once per user action. A repeat "

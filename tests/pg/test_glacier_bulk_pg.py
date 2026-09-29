@@ -17,7 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mails import bulk_action as api_bulk_action
-from mail_verdict.api.schemas import BulkActionRequest
+from mail_verdict.api.schemas import BulkActionRequest, BulkActionScope
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
@@ -125,6 +125,186 @@ async def test_bulk_move_into_glacier(migrated_db: DatabaseConnection) -> None:
             )
         ).scalar_one()
         assert glaciered == 3
+
+
+async def _seed_glacier_messages(
+    session: AsyncSession, *, account_id: uuid.UUID, glacier_folder_id: uuid.UUID, count: int,
+) -> list[uuid.UUID]:
+    """`count` visible, terminal ("glaciered") rows, ready to be marked,
+    restored or expunged -- hand-seeded rather than run through the real
+    glacier_message_now flow, since none of this needs the append
+    capability the way restoring one back out does."""
+    ids = [uuid.uuid4() for _ in range(count)]
+    now = datetime.now(timezone.utc)
+    for glacier_id in ids:
+        await session.execute(
+            text(
+                "INSERT INTO glacier_messages "
+                "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+                " to_addrs, body_text, raw_source, size_bytes, received_at, is_seen, "
+                " msg_key, state, visible_at, glaciered_at) "
+                "VALUES (:id, :account_id, :folder_id, :thread_id, :message_id_hdr, "
+                " 'Bulk glacier test', 'sender@example.com', '[\"me@example.com\"]', "
+                " 'Body', :raw_source, :size_bytes, :received_at, false, "
+                " :msg_key, 'glaciered', :visible_at, :visible_at)"
+            ),
+            {
+                "id": glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+                "thread_id": glacier_id, "message_id_hdr": f"<{glacier_id}@example.com>",
+                "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE), "received_at": now,
+                "msg_key": f"msg-{glacier_id}", "visible_at": now,
+            },
+        )
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_bulk_mark_read_by_explicit_ids(migrated_db: DatabaseConnection) -> None:
+    async with migrated_db.session() as session:
+        account_id, _folder_id, glacier_folder_id, _live_ids = (
+            await _seed_account_with_messages(session, count=0)
+        )
+        glacier_ids = await _seed_glacier_messages(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id, count=3,
+        )
+        await session.commit()
+
+    response = await api_bulk_action(
+        account_id, BulkActionRequest(action="mark_read", ids=glacier_ids),
+    )
+
+    assert response.success is True, response.errors
+    assert response.affected_count == 3
+    assert response.skipped_ids == []
+
+    async with migrated_db.session() as session:
+        unread = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE id = ANY(:ids) AND is_seen = false"
+                ),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert unread == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_mark_read_by_the_glacier_as_scope(migrated_db: DatabaseConnection) -> None:
+    async with migrated_db.session() as session:
+        account_id, _folder_id, glacier_folder_id, _live_ids = (
+            await _seed_account_with_messages(session, count=0)
+        )
+        glacier_ids = await _seed_glacier_messages(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id, count=2,
+        )
+        await session.commit()
+
+    response = await api_bulk_action(
+        account_id,
+        BulkActionRequest(
+            action="mark_read",
+            scope=BulkActionScope(
+                folder_id=glacier_folder_id, snapshot_at=datetime.now(timezone.utc),
+            ),
+        ),
+    )
+
+    assert response.success is True, response.errors
+    assert response.affected_count == 2
+
+    async with migrated_db.session() as session:
+        unread = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE id = ANY(:ids) AND is_seen = false"
+                ),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert unread == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_expunge_requires_confirmation_then_deletes(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        account_id, _folder_id, glacier_folder_id, _live_ids = (
+            await _seed_account_with_messages(session, count=0)
+        )
+        glacier_ids = await _seed_glacier_messages(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id, count=2,
+        )
+        await session.commit()
+
+    # Without confirm: refused, and nothing was written -- the whole
+    # point of the guard is that a caller cannot get a silent success
+    # while the messages are still there.
+    unconfirmed = await api_bulk_action(
+        account_id, BulkActionRequest(action="expunge", ids=glacier_ids),
+    )
+    assert unconfirmed.success is False
+    assert unconfirmed.affected_count == 0
+
+    async with migrated_db.session() as session:
+        still_there = (
+            await session.execute(
+                text("SELECT count(*) FROM glacier_messages WHERE id = ANY(:ids)"),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert still_there == 2
+
+    confirmed = await api_bulk_action(
+        account_id, BulkActionRequest(action="expunge", ids=glacier_ids, confirm=True),
+    )
+    assert confirmed.success is True, confirmed.errors
+    assert confirmed.affected_count == 2
+
+    async with migrated_db.session() as session:
+        remaining = (
+            await session.execute(
+                text("SELECT count(*) FROM glacier_messages WHERE id = ANY(:ids)"),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_restore_to_a_server_folder(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, folder_id, glacier_folder_id, _live_ids = (
+            await _seed_account_with_messages(session, count=0)
+        )
+        glacier_ids = await _seed_glacier_messages(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id, count=2,
+        )
+        await session.commit()
+
+    response = await api_bulk_action(
+        account_id,
+        BulkActionRequest(action="move", target_folder_id=folder_id, ids=glacier_ids),
+    )
+
+    assert response.success is True, response.errors
+    assert response.affected_count == 2
+
+    async with migrated_db.session() as session:
+        restoring = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE id = ANY(:ids) AND state = 'restoring'"
+                ),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert restoring == 2
 
 
 @pytest.mark.asyncio
