@@ -62,7 +62,7 @@ from mail_verdict.core.sanitizer import (
     sanitize_email_html,
 )
 from mail_verdict.core.snippet import build_snippet
-from mail_verdict.database.connection import get_db_connection
+from mail_verdict.database.connection import DatabaseConnection, get_db_connection
 from mail_verdict.database.models import (
     AccountPrefs,
     Attachment,
@@ -1518,14 +1518,9 @@ async def _apply_message_action(
 
     if action == "move" and request.target_folder_id is not None:
         async with db.session() as session:
-            glacier_account_id = (
-                await session.execute(
-                    select(AccountPrefs.account_id).where(
-                        AccountPrefs.glacier_folder_id == request.target_folder_id,
-                        AccountPrefs.glacier_enabled.is_(True),
-                    )
-                )
-            ).scalar_one_or_none()
+            glacier_account_id = await _glacier_account_for_folder(
+                session, request.target_folder_id,
+            )
         if glacier_account_id is not None:
             if glacier_account_id != account_id:
                 raise HTTPException(
@@ -1897,6 +1892,65 @@ async def _folder_belongs_to_account(
     return result.scalar_one_or_none() is not None
 
 
+async def _glacier_account_for_folder(
+    session: AsyncSession, folder_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """The account an enabled glacier folder belongs to, or None when
+    `folder_id` does not name one -- a glacier folder is never a row in
+    `folders` at all, so `_folder_belongs_to_account` above always
+    answers False for it and every move-target check (single action,
+    bulk action, restore's own move-into-another-glacier refusal) needs
+    this one first, before deciding whether the ordinary check even
+    applies."""
+    result = await session.execute(
+        select(AccountPrefs.account_id).where(
+            AccountPrefs.glacier_folder_id == folder_id, AccountPrefs.glacier_enabled.is_(True),
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _bulk_glacier_move(
+    db: DatabaseConnection, groups: dict[uuid.UUID | None, list[uuid.UUID]],
+) -> tuple[int, list[str], list[uuid.UUID]]:
+    """Glacier every message in `groups`, one at a time -- glacier_message_
+    now is a whole copy/verify/expunge sequence of its own transactions,
+    not a single UPDATE, so unlike move_groups() there is no batched
+    statement to fall back to. A guarded group (expected is not None) is
+    filtered down to the ids actually still in that folder first, the
+    same "already moved elsewhere since the caller last looked" check
+    move_messages_from() makes for an ordinary bulk move -- the rest are
+    reported skipped rather than attempted.
+
+    Returns:
+        (how many actually glaciered, the distinct failure reasons hit,
+        ids left alone because they had already moved elsewhere)
+    """
+    landed = 0
+    reasons: dict[str, None] = {}
+    skipped: list[uuid.UUID] = []
+    for expected, ids in groups.items():
+        eligible = ids
+        if expected is not None:
+            async with db.session() as session:
+                still_there = await session.execute(
+                    select(Message.id).where(
+                        Message.id.in_(ids), Message.folder_id == expected,
+                        Message.expunged_at.is_(None),
+                    )
+                )
+                eligible = list(still_there.scalars())
+            eligible_set = set(eligible)
+            skipped.extend(mid for mid in ids if mid not in eligible_set)
+        for mid in eligible:
+            outcome = await glacier_message_now(db, mid, event_ring=get_event_ring())
+            if outcome.ok:
+                landed += 1
+            elif outcome.reason is not None:
+                reasons.setdefault(outcome.reason, None)
+    return landed, list(reasons), skipped
+
+
 @account_router.get("/selection", response_model=SelectionSnapshotResponse)
 async def mint_selection(
     account_id: uuid.UUID,
@@ -2077,16 +2131,30 @@ async def _apply_bulk_action(
             if target is None:
                 errors.append(f"No {action} folder found for this account")
         if target is not None:
-            async with db.session() as session:
-                if action == "move" and not await _folder_belongs_to_account(
-                    session, account_id, target,
-                ):
+            glacier_account_id = None
+            if action == "move":
+                async with db.session() as session:
+                    glacier_account_id = await _glacier_account_for_folder(session, target)
+            if glacier_account_id is not None:
+                if glacier_account_id != account_id:
                     raise HTTPException(
                         status_code=400, detail="target_folder_id does not belong to this account",
                     )
-                landed = await move_groups(session, target)
-                if landed and _should_mark_read_on_file(target_role):
-                    await set_flags_bulk(session, landed, is_seen=True)
+                affected, glacier_errors, glacier_skipped = await _bulk_glacier_move(db, groups)
+                errors.extend(glacier_errors)
+                skipped.extend(glacier_skipped)
+            else:
+                async with db.session() as session:
+                    if action == "move" and not await _folder_belongs_to_account(
+                        session, account_id, target,
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="target_folder_id does not belong to this account",
+                        )
+                    landed = await move_groups(session, target)
+                    if landed and _should_mark_read_on_file(target_role):
+                        await set_flags_bulk(session, landed, is_seen=True)
     elif action in ("spam", "not_spam"):
         from mail_verdict.server import get_spam_processor
         from mail_verdict.spam.feedback import FolderResolutionError
