@@ -30,6 +30,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.msg_key import compute_msg_key
+from mail_verdict.glacier.restore import require_message_append_support
 from mail_verdict.postimap.actions import expunge_if_matches
 
 if TYPE_CHECKING:
@@ -794,6 +795,10 @@ async def glacier_message_now(
     Returns:
         Whether it fully completed, and why not if it did not
     """
+    capability_error = await require_message_append_support(db)
+    if capability_error is not None:
+        return ManualOutcome(False, capability_error)
+
     outcome = await copy_message(db, message_id)
     if outcome.status == "ineligible":
         return ManualOutcome(False, outcome.reason)

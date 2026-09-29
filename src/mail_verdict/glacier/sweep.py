@@ -39,7 +39,11 @@ from mail_verdict.glacier.operations import (
     resolve_duplicate,
     verify_message,
 )
-from mail_verdict.glacier.restore import confirm_restores, fail_stale_restores
+from mail_verdict.glacier.restore import (
+    confirm_restores,
+    fail_stale_restores,
+    require_message_append_support,
+)
 from mail_verdict.queue.notify import ReconciliationTimer
 
 if TYPE_CHECKING:
@@ -67,6 +71,10 @@ async def _sweep_guard_reason(
     Section 8.3 step 2: why this account's automatic sweep should claim
     nothing new this tick, or None if it may proceed.
     """
+    capability_error = await require_message_append_support(db)
+    if capability_error is not None:
+        return capability_error
+
     async with db.session() as session:
         row = (
             await session.execute(

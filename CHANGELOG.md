@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   server for good and lives on only in this database. It behaves like a folder -- listed,
   searchable, selectable in unified views -- can be left again (back onto a server folder), and
   can fill itself from an account's archive automatically after a configured number of days.
-  Moving a message in and out uses the ordinary move action; nothing else changes. Restoring a
-  message back to the server needs a PostIMAP capability that has not shipped yet, so it is
-  currently unavailable.
+  Moving a message in and out uses the ordinary move action; nothing else changes. Moving a
+  message in is refused, naming the deployment's PostIMAP version, whenever that PostIMAP cannot
+  carry it back out again -- restore must work before removal is ever offered at all.
 
 ## [6.6.1] - 2026-09-28
 

@@ -3,6 +3,15 @@ The glacier through the API surface: enabling it on an account, moving a
 message into it via the ordinary message action, reading it back, and
 the guards that keep it from being disabled or deleted while it still
 holds the only copy of something.
+
+Moving a message in is refused outright unless the running PostIMAP
+carries outbox kind="append" (tests/pg/test_glacier_gate_pg.py proves
+the refusal itself), so every test below that needs a message actually
+inside the glacier skips itself, with the running version named in the
+reason, against the pinned default image -- exactly the exception
+tests/e2e/test_glacier_restore_flow.py already documents for the same
+capability. Point MAIL_VERDICT_TEST_POSTIMAP_IMAGE (see
+tests/setup/images.py) at a capable build to run this file for real.
 """
 
 from __future__ import annotations
@@ -26,6 +35,8 @@ from mail_verdict.api.mails import (
 from mail_verdict.api.mails import message_action as api_message_action
 from mail_verdict.api.schemas import AccountUpdateRequest, MessageActionRequest
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.glacier.operations import confirm_or_withdraw_removing
+from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 
@@ -82,6 +93,18 @@ async def _seed_ready_message(
     return account_id, folder_id, message_id
 
 
+async def _skip_unless_append_capable(db: DatabaseConnection) -> None:
+    async with db.session() as session:
+        info = await read_postimap_info(session)
+    if info is None or not supports_message_append(info):
+        pytest.skip(
+            'this PostIMAP build does not carry outbox kind="append" -- '
+            f"reports service_version={info.service_version if info else 'unknown'}, "
+            "so moving a message into the glacier is correctly refused rather than "
+            "exercised here; see this module's own docstring"
+        )
+
+
 async def _glacier_folder_id(session: AsyncSession, account_id: uuid.UUID) -> uuid.UUID:
     return (
         await session.execute(
@@ -132,6 +155,7 @@ async def test_folder_listing_shows_the_glacier_only_when_enabled(
 async def test_move_action_into_glacier_and_read_it_back(
     migrated_db: DatabaseConnection,
 ) -> None:
+    await _skip_unless_append_capable(migrated_db)
     account_id, folder_id, message_id = await _seed_ready_message(migrated_db)
     async with migrated_db.session() as session:
         glacier_folder_id = await _glacier_folder_id(session, account_id)
@@ -181,6 +205,7 @@ async def test_move_action_into_glacier_and_read_it_back(
 async def test_attachment_survives_the_move_and_downloads_byte_identical(
     migrated_db: DatabaseConnection,
 ) -> None:
+    await _skip_unless_append_capable(migrated_db)
     account_id, folder_id, message_id = await _seed_ready_message(migrated_db)
     attachment_id = uuid.uuid4()
     attachment_data = b"some pdf bytes"
@@ -224,6 +249,7 @@ async def test_attachment_survives_the_move_and_downloads_byte_identical(
 async def test_expunge_on_a_glaciered_message_requires_confirmation(
     migrated_db: DatabaseConnection,
 ) -> None:
+    await _skip_unless_append_capable(migrated_db)
     account_id, folder_id, message_id = await _seed_ready_message(migrated_db)
     async with migrated_db.session() as session:
         glacier_folder_id = await _glacier_folder_id(session, account_id)
@@ -265,6 +291,7 @@ async def test_expunge_on_a_glaciered_message_requires_confirmation(
 async def test_disabling_glacier_while_it_holds_mail_is_refused(
     migrated_db: DatabaseConnection,
 ) -> None:
+    await _skip_unless_append_capable(migrated_db)
     account_id, folder_id, message_id = await _seed_ready_message(migrated_db)
     async with migrated_db.session() as session:
         glacier_folder_id = await _glacier_folder_id(session, account_id)
@@ -283,11 +310,13 @@ async def test_disabling_glacier_while_it_holds_mail_is_refused(
 
 
 @pytest.mark.asyncio
-async def test_restoring_without_a_capable_postimap_is_refused_cleanly(
-    migrated_db: DatabaseConnection,
-) -> None:
-    """The PostIMAP this test stack runs does not have outbox kind=append
-    yet -- restore must refuse cleanly rather than erroring."""
+async def test_restoring_through_the_move_action(migrated_db: DatabaseConnection) -> None:
+    """The refusal when the running PostIMAP lacks the capability is
+    tests/pg/test_glacier_gate_pg.py's own subject, exhaustively; this
+    test is the allow path, so it needs a capable build to run for real
+    rather than trivially pass on a refusal it never asked for -- see
+    this module's own docstring."""
+    await _skip_unless_append_capable(migrated_db)
     account_id, folder_id, message_id = await _seed_ready_message(migrated_db)
     async with migrated_db.session() as session:
         glacier_folder_id = await _glacier_folder_id(session, account_id)
@@ -302,8 +331,29 @@ async def test_restoring_without_a_capable_postimap_is_refused_cleanly(
             )
         ).scalar_one()
 
+    # Restore only works once the message has actually left "removing"
+    # for "glaciered" -- confirm_or_withdraw_removing is what promotes
+    # it, the same bookkeeping step the automatic sweep runs on its own
+    # tick. grace_seconds=0 skips the ordinary wait, the same shape the
+    # pg operations tests already use for this.
+    confirmed, withdrawn = await confirm_or_withdraw_removing(
+        migrated_db, account_id, grace_seconds=0,
+    )
+    assert (confirmed, withdrawn) == (1, 0)
+
     response = await api_message_action(
         glacier_id, MessageActionRequest(action="move", target_folder_id=folder_id),
     )
-    assert response.success is False
-    assert "newer PostIMAP" in (response.message or "")
+    assert response.success is True, response.message
+
+    async with migrated_db.session() as session:
+        restoring = (
+            await session.execute(
+                text(
+                    "SELECT state, restore_outbox_id FROM glacier_messages WHERE id = :id"
+                ),
+                {"id": glacier_id},
+            )
+        ).mappings().one()
+        assert restoring["state"] == "restoring"
+        assert restoring["restore_outbox_id"] is not None
