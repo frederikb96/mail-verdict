@@ -23,10 +23,15 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
 from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.core.structured_llm import retry_after_from_exception
 from mail_verdict.database.models import MessageEmbedding
 from mail_verdict.database.repository import MessageRepository
 from mail_verdict.embeddings.content import build_embedding_input
-from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL, resolve_embedding_provider
+from mail_verdict.embeddings.provider import (
+    DEFAULT_EMBEDDING_MODEL,
+    resolve_active_embedding_model,
+    resolve_embedding_provider,
+)
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.queue.backoff import compute_backoff
 from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
@@ -44,7 +49,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 QUEUE_NAME = "embeddings"
-CIRCUIT_NAME = "openai"
 LEASE_SECONDS = 30.0
 POLL_INTERVAL_SECONDS = 2.0
 
@@ -109,17 +113,21 @@ def register_embeddings(
     """
     embedding_repo = EmbeddingRepository(db)
     message_repo = MessageRepository(db)
-    circuit = CircuitBreaker(db, CIRCUIT_NAME)
 
     async def worker_body(worker_id: str, stop_event: asyncio.Event) -> None:
         await _run_worker(
-            queue_manager, worker_id, stop_event,
-            embedding_repo, message_repo, cred_repo, settings_service, circuit,
+            queue_manager, worker_id, stop_event, db,
+            embedding_repo, message_repo, cred_repo, settings_service,
         )
 
     queue_manager.register(
         QUEUE_NAME, cast("Table", MessageEmbedding.__table__), worker_body,
-        circuit_name=CIRCUIT_NAME,
+        # A callable rather than a fixed name: whichever provider
+        # settings.semantic.provider currently names is the breaker this
+        # queue's calls actually trip, and the classify stage shares the
+        # same breaker whenever ai.provider names the same one (see
+        # pipeline/context.py's ModelGateway).
+        circuit_name=lambda: str(settings_service.get("semantic").get("provider", "openai")),
     )
 
     async def _reconcile() -> None:
@@ -139,6 +147,10 @@ def register_embeddings(
                 "Embedding backfill enqueued messages",
                 extra={"model": model, "candidates": candidates, "inserted": inserted},
             )
+        # Checked every tick, not only when this sweep inserted something --
+        # coverage can complete purely from rows earlier sweeps already
+        # queued, independent of whether this one found anything new.
+        await _maybe_cutover(embedding_repo, settings_service, model)
 
     backfill_timer = ReconciliationTimer(
         db, _BACKFILL_LOCK_KEY, _reconcile, backfill_interval_seconds,
@@ -146,15 +158,60 @@ def register_embeddings(
     return EmbeddingComponents(backfill_timer)
 
 
+async def _maybe_cutover(
+    embedding_repo: EmbeddingRepository, settings_service: SettingsService, target_model: str,
+) -> None:
+    """
+    Advance `active_model` to `target_model` once `EmbeddingRepository.
+    cutover_readiness` says the target is ready -- see its own docstring
+    for the predicate (never "coverage == 1.0"; a real mailbox always has
+    a few permanently-failed messages, and waiting for exact 1.0 coverage
+    would block cutover forever).
+
+    A no-op once the two already match.
+    """
+    current = settings_service.get("semantic")
+    active_model = resolve_active_embedding_model(current)
+    if active_model == target_model:
+        return
+    readiness = await embedding_repo.cutover_readiness(
+        target_model=target_model, active_model=active_model,
+    )
+    if not readiness.ready:
+        logger.info(
+            "Embedding cutover not ready yet",
+            extra={"model": target_model, "reason": readiness.blocked_reason},
+        )
+        return
+    await settings_service.update(
+        "semantic",
+        {
+            "active_model": target_model,
+            # Advanced together with active_model: a provider switch
+            # alongside a model switch (moving to a different compatible
+            # server, say) must not leave a fresh search query embedded
+            # through the OLD provider against the NEW model's vector
+            # space -- resolve_active_embedding_provider reads all three
+            # as one identity.
+            "active_provider": str(current.get("provider", "openai")),
+            "active_base_url": current.get("base_url"),
+        },
+    )
+    logger.info(
+        "Embedding cutover complete -- search now answers from the new model",
+        extra={"model": target_model, "in_scope": readiness.target.in_scope},
+    )
+
+
 async def _run_worker(
     queue_manager: QueueManager,
     worker_id: str,
     stop_event: asyncio.Event,
+    db: DatabaseConnection,
     embedding_repo: EmbeddingRepository,
     message_repo: MessageRepository,
     cred_repo: ProviderCredentialRepository,
     settings_service: SettingsService,
-    circuit: CircuitBreaker,
 ) -> None:
     """
     Claim/process loop for one worker task.
@@ -164,6 +221,14 @@ async def _run_worker(
     provider circuit before every claim rather than only once at startup,
     so a circuit that opens mid-run stops this worker from claiming
     immediately instead of on its next restart.
+
+    The circuit itself is built fresh every iteration from
+    settings.semantic.provider, the same live-setting-per-call pattern
+    pipeline/context.py's ModelGateway uses -- a provider switch takes
+    effect on the next claim, not the next restart, and (by construction,
+    since CircuitBreaker is keyed by name alone) automatically shares a
+    breaker with the classify stage whenever both categories point at the
+    same provider.
 
     Claims exactly one row per iteration, the same way pipeline/runner.py
     does -- never a batch under one shared lease. `heartbeat_while` only
@@ -180,6 +245,13 @@ async def _run_worker(
     work_queue = queue_manager.work_queue(QUEUE_NAME)
 
     while not stop_event.is_set():
+        # Read fresh on every iteration, not once at worker startup -- a
+        # live provider or max_attempts change takes effect on the next
+        # claim.
+        semantic_settings = settings_service.get("semantic")
+        provider_name = str(semantic_settings.get("provider", "openai"))
+        circuit = CircuitBreaker(db, provider_name)
+
         if not await circuit.is_available():
             status = await circuit.status()
             if status.state != CircuitState.SUSPENDED or not await circuit.try_probe(
@@ -192,10 +264,7 @@ async def _run_worker(
             # record_success in _handle_one, the ordinary success path --
             # there is no separate probe call.
 
-        # Read fresh on every iteration rather than once at worker
-        # startup, the same as _handle_one's own read -- a live setting
-        # change takes effect on the next claim, not on a restart.
-        max_attempts = int(settings_service.get("semantic").get("max_attempts", 5))
+        max_attempts = int(semantic_settings.get("max_attempts", 5))
         claimed = await work_queue.claim_batch(
             worker_id=worker_id, batch_size=1, lease_seconds=LEASE_SECONDS,
             max_attempts=max_attempts,
@@ -261,6 +330,7 @@ async def _handle_one(
     settings = settings_service.get("semantic")
     content_chars = int(settings.get("content_chars", 2000))
     provider_name = str(settings.get("provider", "openai"))
+    base_url = settings.get("base_url") or None
 
     embedding_input = build_embedding_input(
         subject=message.subject, from_addr=message.from_addr,
@@ -269,7 +339,7 @@ async def _handle_one(
     )
 
     try:
-        provider = resolve_embedding_provider(provider_name, cred_repo)
+        provider = resolve_embedding_provider(provider_name, cred_repo, base_url=base_url)
         vectors = await provider.embed_batch([embedding_input.text], model=model)
     except ProviderUnavailableError as exc:
         await circuit.record_unavailable(reason=str(exc), probe_interval=PROBE_INTERVAL)
@@ -281,8 +351,11 @@ async def _handle_one(
             # A shared-resource throttle, not this item's fault: every
             # queued item waits out the same circuit backoff, and none of
             # them burns an attempt over it -- the same uncapped refund
-            # ProviderUnavailableError gets above.
-            await circuit.record_backoff(retry_after=timedelta(seconds=30), reason=str(exc))
+            # ProviderUnavailableError gets above. Reads the provider's
+            # own Retry-After when it sent one, rather than a blind 30s
+            # guess (core/structured_llm.py's retry_after_from_exception).
+            delay = retry_after_from_exception(exc, default=timedelta(seconds=30))
+            await circuit.record_backoff(retry_after=delay, reason=str(exc))
             await work_queue.release_untouched(item_id, worker_id=worker_id)
         elif _is_retryable(exc):
             # Unlike a throttle, this class of error (a connection drop, a

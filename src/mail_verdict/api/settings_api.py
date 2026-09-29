@@ -7,10 +7,17 @@ PUT /api/settings/{category} — update category (merge)
 POST /api/settings/import — bulk import
 
 The "ai" category carries provider API keys as a write-only extension:
-PUT accepts anthropic_api_key / openai_api_key (plaintext, encrypted and
-stored on write), and every read reports only anthropic_api_key_configured
-/ anthropic_api_key_hint (and the openai equivalents) -- the key itself is
-never merged into the JSONB settings blob and never appears in a response.
+PUT accepts anthropic_api_key / openai_api_key / custom_api_key (plaintext,
+encrypted and stored on write), and every read reports only
+anthropic_api_key_configured / anthropic_api_key_hint (and the other
+providers' equivalents) -- the key itself is never merged into the JSONB
+settings blob and never appears in a response.
+
+A write to "semantic" that changes model, provider or base_url freezes the
+identity that was actually serving search into active_model/active_provider
+/active_base_url first -- see _freeze_active_embedding_identity. The
+worker's backfill reconciler advances those to match once coverage under
+the new identity completes (embeddings/worker.py's _maybe_cutover).
 """
 
 from __future__ import annotations
@@ -23,8 +30,12 @@ from pydantic import BaseModel
 
 from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.database.connection import get_db_connection
+from mail_verdict.embeddings.provider import (
+    resolve_active_embedding_model,
+    resolve_active_embedding_provider,
+)
 from mail_verdict.settings import SettingCategory, get_settings_service
-from mail_verdict.settings.ai_validation import validate_ai_settings
+from mail_verdict.settings.ai_validation import validate_ai_settings, validate_semantic_settings
 from mail_verdict.settings.credentials import (
     PROVIDER_ENV_VARS,
     EncryptionUnavailableError,
@@ -96,6 +107,45 @@ async def _announce_settings_changed(category: str | None = None) -> None:
         return
     data: dict[str, Any] = {"category": category} if category else {}
     await broadcast_event(get_db_connection(), event_ring, "settings.changed", data)
+
+
+_EMBEDDING_IDENTITY_FIELDS = ("model", "provider", "base_url")
+
+
+def _freeze_active_embedding_identity(
+    current: dict[str, Any], data: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Before a write changes semantic.model, .provider or .base_url, snapshot
+    whichever identity is actually serving search right now into
+    active_model/active_provider/active_base_url -- so search keeps
+    answering from it until the reconciler observes full coverage under
+    the new one and advances them to match (embeddings/worker.py's
+    _maybe_cutover). A no-op once already frozen for an in-flight
+    migration another change lands on top of, and never overrides a value
+    the caller set explicitly.
+
+    Args:
+        current: The semantic settings dict as it reads before this write
+        data: The incoming partial update
+
+    Returns:
+        data, with active_model/active_provider/active_base_url added when
+        an identity field is changing and the caller didn't already set them
+    """
+    changing = any(
+        field in data and str(data[field] or "") != str(current.get(field) or "")
+        for field in _EMBEDDING_IDENTITY_FIELDS
+    )
+    if not changing or "active_model" in data:
+        return data
+    active_provider, active_base_url = resolve_active_embedding_provider(current)
+    return {
+        **data,
+        "active_model": resolve_active_embedding_model(current),
+        "active_provider": active_provider,
+        "active_base_url": active_base_url,
+    }
 
 
 async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
@@ -176,6 +226,15 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if category == "semantic":
+        current = service.get("semantic")
+        data = _freeze_active_embedding_identity(current, data)
+        effective = {**current, **data}
+        try:
+            validate_semantic_settings(effective)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         result = await service.update(category, data)
     except ValueError as exc:
@@ -204,6 +263,16 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         data["ai"] = ai_data
+
+    if "semantic" in data:
+        current = get_settings_service().get("semantic")
+        semantic_data = _freeze_active_embedding_identity(current, data["semantic"])
+        effective = {**current, **semantic_data}
+        try:
+            validate_semantic_settings(effective)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        data["semantic"] = semantic_data
 
     service = get_settings_service()
     try:

@@ -192,6 +192,7 @@ class ModelGateway:
         user_prompt: str,
         schema: dict[str, JsonValue],
         validate: Any = None,
+        base_url: str | None = None,
     ) -> tuple[dict[str, Any], float]:
         """
         Issue one strict-schema request.
@@ -199,7 +200,14 @@ class ModelGateway:
         The circuit breaker is keyed by provider name alone, so it is
         shared by every caller of that provider -- a future embedding
         worker calling OpenAI trips and clears the same breaker a
-        classify stage's calls do.
+        classify stage's calls do. The same holds for "custom": whichever
+        settings category (ai, semantic) has its provider set to "custom"
+        shares one breaker with the other, since a custom deployment is
+        one account.
+
+        Args:
+            base_url: Required when provider is "custom" -- the compatible
+                server's API base. Ignored otherwise.
 
         Returns:
             (parsed response, latency in milliseconds)
@@ -212,7 +220,7 @@ class ModelGateway:
         """
         from mail_verdict.pipeline.contracts import StageMisconfigured
 
-        if provider not in ("anthropic", "openai"):
+        if provider not in ("anthropic", "openai", "custom"):
             raise StageMisconfigured(f"Unknown ai.provider {provider!r}")
 
         # db is None only in a test building a ModelGateway with no database
@@ -230,13 +238,14 @@ class ModelGateway:
 
         from mail_verdict.core.structured_llm import (
             call_anthropic_structured,
+            call_chat_completions_structured,
             call_openai_structured,
             resolve_client,
         )
 
         started = time.monotonic()
         try:
-            client = await resolve_client(provider, self._cred_repo)
+            client = await resolve_client(provider, self._cred_repo, base_url=base_url)
         except ProviderUnavailableError as exc:
             await self._circuit.record_unavailable(
                 reason=str(exc), probe_interval=timedelta(minutes=5),
@@ -248,6 +257,14 @@ class ModelGateway:
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
+                )
+            elif provider == "custom":
+                # A compatible server serves chat completions only, not
+                # OpenAI's own Responses API -- see
+                # core/structured_llm.py's module docstring.
+                data = await call_chat_completions_structured(
+                    client, model, effort, max_tokens, schema_name, system_prompt,
+                    user_prompt, schema, self._retry_config, validate=validate,
                 )
             else:
                 data = await call_openai_structured(
@@ -264,18 +281,29 @@ class ModelGateway:
 
     async def _map_and_raise(self, provider: str, exc: Exception) -> None:
         """Translate a provider SDK exception into the stage vocabulary,
-        recording the outcome on the shared circuit breaker."""
+        recording the outcome on the shared circuit breaker.
+
+        `retry_structured_call` (core/structured_llm.py) wraps an
+        exhausted retry loop's last error in a plain `RuntimeError`,
+        chained via `__cause__` -- unwrapped here so a rate limit that
+        outlasts that loop's own retry budget is still classified as
+        `StageThrottled` (refunded, uncapped) rather than falling through
+        to the generic `StageTransient` branch below, which counts
+        against `pipeline_runs.attempts` and can eventually dead-letter a
+        message a sustained throttle should have kept retrying forever.
+        """
+        from mail_verdict.core.structured_llm import retry_after_from_exception
         from mail_verdict.pipeline.contracts import StageTransient
 
-        name = type(exc).__name__
+        cause = exc.__cause__ if type(exc).__name__ == "RuntimeError" and exc.__cause__ else exc
+        name = type(cause).__name__
         if name == "AuthenticationError":
             await self._circuit.record_unavailable(
                 reason=f"{provider} rejected the API key", probe_interval=timedelta(minutes=5),
             )
             raise StageUnavailable(f"{provider} rejected the API key") from exc
         if name == "RateLimitError":
-            retry_after = getattr(exc, "retry_after", None)
-            delay = timedelta(seconds=retry_after) if retry_after else timedelta(seconds=30)
+            delay = retry_after_from_exception(cause, default=timedelta(seconds=30))
             await self._circuit.record_backoff(retry_after=delay, reason=f"{provider} rate limited")
             raise StageThrottled(f"{provider} rate limited", retry_after=delay) from exc
         await self._circuit.record_backoff(

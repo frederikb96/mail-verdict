@@ -303,6 +303,30 @@ part of a row's identity, not a separate column to keep in sync — changing it 
 settings category makes coverage for the new model start at zero rather than mixing two vector
 spaces in one index; old rows are kept, not deleted, until the new coverage completes.
 
+A model change alone would leave search reading an empty-to-partial vector space for however long
+the backfill takes, which for a real mailbox is not a moment a client should ever see. So
+`semantic.model` (the target the backfill fills toward) and `semantic.active_model` (what search
+and the classify stage's neighbour hints actually query) are two settings, not one: changing
+`model` (or `provider`/`base_url` alongside it, moving to a different compatible server) freezes
+whichever identity was previously active into `active_model`/`active_provider`/`active_base_url`
+(`api/settings_api.py`'s `update_settings`), and the backfill reconciler advances them to match
+once `EmbeddingRepository.cutover_readiness` says the new model is ready
+(`embeddings/worker.py`'s `_maybe_cutover`) — `embeddings/provider.py`'s
+`resolve_active_embedding_model`/`resolve_active_embedding_provider` are the one place either is
+read from. Readiness is never "every message embedded" — a real mailbox always has a few that
+permanently fail (no usable content, a provider refusal), so a check waiting for exact 100%
+coverage would block forever. It asks instead whether every in-scope message has been *tried* at
+least once (`EmbeddingStatus.outstanding == 0` — done, failed, or covered indirectly through a
+shadowed sibling's row) and whether the new model's own reachable count is at least what the
+active one already reaches; `GET /api/embeddings/status` reports the same predicate
+(`cutover_ready`/`cutover_blocked_reason`), computed in the one place rather than twice. A
+provider is itself a setting per category (`ai.provider`, `semantic.provider`):
+`"openai"`, `"anthropic"` (verdicts only), `"custom"` (any OpenAI-compatible server, reached at
+that category's own `base_url` with one shared credential per provider name, `settings/
+credentials.py`), or `"fake"`. A custom server speaks chat completions only, not the Responses API
+`structured_llm.py`'s `call_openai_structured` uses for real OpenAI — `call_chat_completions_structured`
+is the separate request shape a custom provider needs instead.
+
 Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and orders
 messages by cosine distance, joined back to `messages` at read time — never a denormalised copy of
 anything that changes, matching the no-foreign-key posture above. It complements the fuzzy,
@@ -683,13 +707,16 @@ Two separate mechanisms that must not overlap:
 - **Settings** are application behaviour — AI provider, model, reasoning effort, spam handling,
   rules, and provider API keys. They live in the database and change at runtime through the API.
 
-Provider API keys sit inside the "ai" settings category but are write-only: settable, reportable
-as present with a last-four-character hint, never returned by any read. They are encrypted at rest
-with `security.encryption_key` (AES-256-GCM), the one config value in this system that protects a
-setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`) is the fallback for a deployment that would rather keep a key out of the database
-entirely — read fresh on every call, so switching from the env var to a stored key, or rotating a
-stored one, takes effect on the next request with no restart.
+Provider API keys are write-only: settable, reportable as present with a last-four-character hint,
+never returned by any read. One key per provider name (`settings/credentials.py`'s
+`PROVIDER_ENV_VARS`) rather than per settings category — `ai.provider` and `semantic.provider` set
+to `"custom"` share the one `"custom"` key, since a compatible deployment is one account serving
+both workloads, distinguished by whichever `base_url` each category's own settings carry. Keys are
+encrypted at rest with `security.encryption_key` (AES-256-GCM), the one config value in this system
+that protects a setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `CUSTOM_AI_API_KEY`) is the fallback for a deployment that would rather keep a key
+out of the database entirely — read fresh on every call, so switching from the env var to a stored
+key, or rotating a stored one, takes effect on the next request with no restart.
 
 ## Access
 
