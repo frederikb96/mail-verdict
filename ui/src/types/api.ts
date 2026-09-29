@@ -529,6 +529,10 @@ export type BulkActionRequest = BulkActionTarget & {
    * was sent -- the server 409s naming the current count if it disagrees,
    * rather than acting on a number nobody actually confirmed. */
   confirm_message_count?: number;
+  /** Required for expunge over a selection already in the glacier -- each
+   * row is its only remaining copy. Ignored everywhere else, including an
+   * ordinary expunge. */
+  confirm?: boolean;
   /** Repeats of a request carrying the same key are answered once. */
   idempotency_key?: string;
   /** Per id, the folder it must still be in to be acted on. */

@@ -31,10 +31,16 @@ interface FolderRowMenuProps {
   folderName: string;
   badgeCount: number;
   totalCount: number;
-  /** "Mark all as read" and "Empty folder" both assume an ordinary IMAP
-   * folder -- the glacier gets neither: its own removal is a permanent
-   * delete requiring its own confirmation (the reading pane's), and a
-   * folder-wide sweep of it is not offered here. */
+  /** "Mark all as read" works against the glacier the same way it does
+   * against an ordinary folder. "Empty folder" is left out for it: the
+   * count this menu shows before confirming, and the count the later
+   * expunge request repeats back, both come from GET .../messages/
+   * selection, which does not yet resolve a glacier folder id (it always
+   * answers 0) -- so the dialog would misname the count, and confirming
+   * it would then be refused by the server's own (correct) mismatch
+   * guard for every glacier that genuinely holds anything. Bring it back
+   * once that endpoint resolves the glacier the same way the message
+   * list and the folder's own counts already do. */
   isGlacier?: boolean;
 }
 
@@ -76,18 +82,6 @@ export function FolderRowMenu({
     }
   };
 
-  if (isGlacier) {
-    return (
-      <span className="ml-auto flex h-5 shrink-0 items-center" onClick={(e) => e.stopPropagation()}>
-        {badgeCount > 0 && (
-          <Badge variant="secondary" className="h-5 min-w-5 justify-center px-1 text-xs">
-            {badgeCount}
-          </Badge>
-        )}
-      </span>
-    );
-  }
-
   return (
     <span
       className="ml-auto flex h-5 shrink-0 items-center"
@@ -119,22 +113,27 @@ export function FolderRowMenu({
           <DropdownMenuItem
             onClick={() => {
               warnIfSlow("Marking", totalCount);
-              folderAction.mutate({ accountId, folderId, action: "mark_read" });
+              folderAction.mutate(
+                { accountId, folderId, action: "mark_read" },
+                { onError: (err) => pushToast(`Could not mark as read: ${err.message}`, "error", 0) },
+              );
             }}
           >
             Mark all as read
           </DropdownMenuItem>
-          <DropdownMenuItem
-            variant="destructive"
-            onClick={async () => {
-              const snapshot = await api.messages.selection(accountId, {
-                folder_id: folderId, filter: "all",
-              });
-              setConfirmEmpty({ snapshotAt: snapshot.snapshot_at, count: snapshot.count });
-            }}
-          >
-            Empty folder
-          </DropdownMenuItem>
+          {!isGlacier && (
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={async () => {
+                const snapshot = await api.messages.selection(accountId, {
+                  folder_id: folderId, filter: "all",
+                });
+                setConfirmEmpty({ snapshotAt: snapshot.snapshot_at, count: snapshot.count });
+              }}
+            >
+              Empty folder
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -166,7 +165,10 @@ export function FolderRowMenu({
           warnIfSlow("Deleting", confirmEmpty.count);
           folderAction.mutate(
             { accountId, folderId, action: "expunge", confirmedSnapshot: confirmEmpty },
-            { onSuccess: () => setConfirmEmpty(null) },
+            {
+              onSuccess: () => setConfirmEmpty(null),
+              onError: (err) => pushToast(`Could not empty folder: ${err.message}`, "error", 0),
+            },
           );
         }}
       />
