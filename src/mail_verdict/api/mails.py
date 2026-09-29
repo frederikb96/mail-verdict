@@ -87,6 +87,7 @@ from mail_verdict.glacier.rows import (
     glacier_as_message_select,
     glacier_folder_ids,
     glacier_ids_among,
+    resolve_glacier_id,
 )
 from mail_verdict.mail_actions.submissions import request_fingerprint, run_once
 from mail_verdict.postimap.actions import (
@@ -911,8 +912,24 @@ async def locate_message(message_id: uuid.UUID) -> MessageLocation:
             .order_by(Message.imap_uid.is_(None), desc(Message.created_at))
             .limit(1)
         )).one_or_none()
-    if twin is None:
-        raise HTTPException(status_code=404, detail="Message no longer exists")
+        if twin is None:
+            # No live twin either -- the expunge could be this message
+            # having been glaciered rather than moved by another client,
+            # which leaves origin_message_id pointing at exactly this id.
+            glacier_id = await resolve_glacier_id(session, message_id)
+            if glacier_id is not None:
+                glacier_twin = (await session.execute(
+                    select(
+                        GlacierMessage.id, GlacierMessage.account_id,
+                        GlacierMessage.folder_id, GlacierMessage.thread_id,
+                    ).where(GlacierMessage.id == glacier_id)
+                )).one_or_none()
+                if glacier_twin is not None:
+                    return MessageLocation(
+                        id=glacier_twin.id, account_id=glacier_twin.account_id,
+                        folder_id=glacier_twin.folder_id, thread_id=glacier_twin.thread_id,
+                    )
+            raise HTTPException(status_code=404, detail="Message no longer exists")
     return MessageLocation(
         id=twin.id, account_id=twin.account_id,
         folder_id=twin.folder_id, thread_id=twin.thread_id,
@@ -1018,45 +1035,69 @@ async def get_message(
     db = get_db_connection()
     async with db.session() as session:
         result = await session.execute(
-            select(Message).options(*_DETAIL_DEFERRED_COLUMNS).where(Message.id == message_id)
+            select(Message)
+            .options(*_DETAIL_DEFERRED_COLUMNS)
+            .where(Message.id == message_id, Message.expunged_at.is_(None))
         )
         msg: Message | GlacierMessage | None = result.scalar_one_or_none()
         is_glacier = False
         origin_folder_name = None
+        resolved_id = message_id
         if msg is None:
-            glacier_result = await session.execute(
-                select(GlacierMessage).where(
-                    GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
+            # message_id may be a glacier row's own id, or the *original*
+            # live id a message had before it was glaciered -- a client
+            # that had it open, a saved link, a draft reply already
+            # pointing at it. Either way resolved_id becomes the glacier
+            # row's own id from here on: mail_tags/verdicts are repointed
+            # to it at glacier time (design section 2.5), so looking them
+            # up under the original id would silently find nothing.
+            glacier_id = await resolve_glacier_id(session, message_id)
+            if glacier_id is not None:
+                glacier_result = await session.execute(
+                    select(GlacierMessage).where(GlacierMessage.id == glacier_id)
                 )
-            )
-            msg = glacier_result.scalar_one_or_none()
-            if msg is None:
-                raise HTTPException(status_code=404, detail="Message not found")
-            is_glacier = True
-            origin_folder_name = msg.origin_imap_name
+                msg = glacier_result.scalar_one_or_none()
+            if msg is not None:
+                is_glacier = True
+                origin_folder_name = msg.origin_imap_name
+                resolved_id = msg.id
+            else:
+                # Not glaciered -- an ordinary expunge (moved by another
+                # mail client). mail_tags/verdicts/attachments are never
+                # repointed for that case, so the expunged row's own id
+                # still keys them correctly; fall back to it rather than
+                # 404ing on a message that still has a readable copy.
+                stale_result = await session.execute(
+                    select(Message)
+                    .options(*_DETAIL_DEFERRED_COLUMNS)
+                    .where(Message.id == message_id)
+                )
+                msg = stale_result.scalar_one_or_none()
+                if msg is None:
+                    raise HTTPException(status_code=404, detail="Message not found")
 
-        tags = (await list_tags_for_mails(session, [message_id]))[message_id]
+        tags = (await list_tags_for_mails(session, [resolved_id]))[resolved_id]
         attachments: list[Any]
         if is_glacier:
             attachments = list(
                 (
                     await session.execute(
                         select(GlacierAttachment).where(
-                            GlacierAttachment.glacier_message_id == message_id,
+                            GlacierAttachment.glacier_message_id == resolved_id,
                         )
                     )
                 ).scalars().all()
             )
         else:
-            attachments = (await list_attachments_for_mails(session, [message_id]))[message_id]
-        verdict = (await list_latest_verdicts_for_mails(session, [message_id])).get(message_id)
+            attachments = (await list_attachments_for_mails(session, [resolved_id]))[resolved_id]
+        verdict = (await list_latest_verdicts_for_mails(session, [resolved_id])).get(resolved_id)
 
         body_html = msg.body_html
         images_allowed = False
         has_blocked_images = False
         if body_html:
             body_html = sanitize_email_html(body_html)
-            body_html = _rewrite_cid_references(body_html, message_id, attachments)
+            body_html = _rewrite_cid_references(body_html, resolved_id, attachments)
 
             allowlist = await load_image_allowlist(session, msg.account_id)
             images_allowed = allowlist.allows(msg.from_addr)
@@ -1245,13 +1286,15 @@ async def get_attachment(message_id: uuid.UUID, attachment_id: uuid.UUID) -> Res
         )
         attachment: Attachment | GlacierAttachment | None = result.scalar_one_or_none()
         if attachment is None:
-            glacier_result = await session.execute(
-                select(GlacierAttachment).where(
-                    GlacierAttachment.id == attachment_id,
-                    GlacierAttachment.glacier_message_id == message_id,
+            glacier_id = await resolve_glacier_id(session, message_id)
+            if glacier_id is not None:
+                glacier_result = await session.execute(
+                    select(GlacierAttachment).where(
+                        GlacierAttachment.id == attachment_id,
+                        GlacierAttachment.glacier_message_id == glacier_id,
+                    )
                 )
-            )
-            attachment = glacier_result.scalar_one_or_none()
+                attachment = glacier_result.scalar_one_or_none()
 
     if attachment is None or attachment.data is None:
         raise HTTPException(status_code=404, detail="Attachment not found")
@@ -1283,13 +1326,15 @@ async def get_raw_source(message_id: uuid.UUID) -> Response:
         )
         row = result.one_or_none()
         if row is None:
-            glacier_result = await session.execute(
-                select(
-                    GlacierMessage.subject, GlacierMessage.raw_source,
-                    GlacierMessage.is_truncated,
-                ).where(GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None))
-            )
-            row = glacier_result.one_or_none()
+            glacier_id = await resolve_glacier_id(session, message_id)
+            if glacier_id is not None:
+                glacier_result = await session.execute(
+                    select(
+                        GlacierMessage.subject, GlacierMessage.raw_source,
+                        GlacierMessage.is_truncated,
+                    ).where(GlacierMessage.id == glacier_id)
+                )
+                row = glacier_result.one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -1359,15 +1404,15 @@ async def get_message_quote(message_id: uuid.UUID) -> MessageQuoteResponse:
         )
         row = result.one_or_none()
         if row is None:
-            glacier_result = await session.execute(
-                select(
-                    GlacierMessage.body_html, GlacierMessage.body_text,
-                    GlacierMessage.account_id, GlacierMessage.from_addr,
-                ).where(
-                    GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
+            glacier_id = await resolve_glacier_id(session, message_id)
+            if glacier_id is not None:
+                glacier_result = await session.execute(
+                    select(
+                        GlacierMessage.body_html, GlacierMessage.body_text,
+                        GlacierMessage.account_id, GlacierMessage.from_addr,
+                    ).where(GlacierMessage.id == glacier_id)
                 )
-            )
-            row = glacier_result.one_or_none()
+                row = glacier_result.one_or_none()
 
     if row is None:
         raise HTTPException(status_code=404, detail="Message not found")

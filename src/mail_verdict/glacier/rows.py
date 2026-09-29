@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import AccountPrefs, GlacierMessage, Message
@@ -119,6 +119,33 @@ async def glacier_ids_among(
         return frozenset()
     result = await session.execute(select(GlacierMessage.id).where(GlacierMessage.id.in_(ids)))
     return frozenset(result.scalars())
+
+
+async def resolve_glacier_id(session: AsyncSession, message_id: uuid.UUID) -> uuid.UUID | None:
+    """Whether `message_id` already names a visible glacier row, or is
+    the *original* live id a message had before it was glaciered (its
+    `messages` row still exists, expunged, and a client that had it
+    open -- or a browser tab, a saved link, a reply already drafted --
+    still holds that id): one lookup covers both, since a caller
+    resolving detail/thread/raw-source/attachments/quote for a message
+    cannot tell up front which shape it was handed. A glacier row's
+    `origin_message_id` is set to exactly this id at copy time and never
+    changes afterward for an ordinary (non-resynced) glacier, which is
+    what makes the second half of this safe.
+
+    Visible rows only (D8); a tombstone (already restored) resolves
+    through locate_message's own Message-ID-header twin search instead,
+    not here.
+    """
+    result = await session.execute(
+        select(GlacierMessage.id)
+        .where(
+            GlacierMessage.visible_at.is_not(None),
+            or_(GlacierMessage.id == message_id, GlacierMessage.origin_message_id == message_id),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
 
 
 async def get_glacier_message_by_key(

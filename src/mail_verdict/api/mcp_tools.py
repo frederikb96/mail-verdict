@@ -125,7 +125,7 @@ from mail_verdict.database.repository import (
 )
 from mail_verdict.glacier.operations import glacier_message_now
 from mail_verdict.glacier.restore import start_restore
-from mail_verdict.glacier.rows import glacier_ids_among
+from mail_verdict.glacier.rows import glacier_ids_among, resolve_glacier_id
 from mail_verdict.outbox.submissions import record_submission
 from mail_verdict.postimap.actions import insert_outbox, move_message, set_flags
 
@@ -281,16 +281,31 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
     mail_uuid = uuid.UUID(mail_id)
     is_glacier = False
     async with db.session() as session:
-        result = await session.execute(select(Message).where(Message.id == mail_uuid))
+        result = await session.execute(
+            select(Message).where(Message.id == mail_uuid, Message.expunged_at.is_(None))
+        )
         msg: Message | GlacierMessage | None = result.scalar_one_or_none()
         if msg is None:
-            glacier_result = await session.execute(
-                select(GlacierMessage).where(
-                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+            # mail_id may be a glacier row's own id, or the *original*
+            # live id a message held before it was glaciered -- either
+            # way this resolves to the glacier row, whose own id is what
+            # mail_tags/verdicts/attachments are repointed to at glacier
+            # time (design section 2.5).
+            glacier_id = await resolve_glacier_id(session, mail_uuid)
+            if glacier_id is not None:
+                glacier_result = await session.execute(
+                    select(GlacierMessage).where(GlacierMessage.id == glacier_id)
                 )
-            )
-            msg = glacier_result.scalar_one_or_none()
+                msg = glacier_result.scalar_one_or_none()
             is_glacier = msg is not None
+        if msg is None:
+            # Not glaciered -- an ordinary expunge (moved by another mail
+            # client). Nothing repoints tags/attachments for that case,
+            # so the expunged row's own id still keys them correctly.
+            stale_result = await session.execute(
+                select(Message).where(Message.id == mail_uuid)
+            )
+            msg = stale_result.scalar_one_or_none()
         if msg is None:
             return {"error": "Message not found"}
 
