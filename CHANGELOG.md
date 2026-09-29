@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- A long message's links now always reach the spam classifier, including ones an HTML anchor's
+  visible text gives no hint of and ones that would otherwise have sat past the body excerpt's cut.
+
 ## [6.6.1] - 2026-09-28
 
 - A new mail shows one desktop notification again on a browser that also has push switched
