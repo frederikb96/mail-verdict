@@ -192,6 +192,7 @@ class ModelGateway:
         user_prompt: str,
         schema: dict[str, JsonValue],
         validate: Any = None,
+        base_url: str | None = None,
     ) -> tuple[dict[str, Any], float]:
         """
         Issue one strict-schema request.
@@ -199,7 +200,14 @@ class ModelGateway:
         The circuit breaker is keyed by provider name alone, so it is
         shared by every caller of that provider -- a future embedding
         worker calling OpenAI trips and clears the same breaker a
-        classify stage's calls do.
+        classify stage's calls do. The same holds for "custom": whichever
+        settings category (ai, semantic) has its provider set to "custom"
+        shares one breaker with the other, since a custom deployment is
+        one account.
+
+        Args:
+            base_url: Required when provider is "custom" -- the compatible
+                server's API base. Ignored otherwise.
 
         Returns:
             (parsed response, latency in milliseconds)
@@ -212,7 +220,7 @@ class ModelGateway:
         """
         from mail_verdict.pipeline.contracts import StageMisconfigured
 
-        if provider not in ("anthropic", "openai"):
+        if provider not in ("anthropic", "openai", "custom"):
             raise StageMisconfigured(f"Unknown ai.provider {provider!r}")
 
         # db is None only in a test building a ModelGateway with no database
@@ -230,13 +238,14 @@ class ModelGateway:
 
         from mail_verdict.core.structured_llm import (
             call_anthropic_structured,
+            call_chat_completions_structured,
             call_openai_structured,
             resolve_client,
         )
 
         started = time.monotonic()
         try:
-            client = await resolve_client(provider, self._cred_repo)
+            client = await resolve_client(provider, self._cred_repo, base_url=base_url)
         except ProviderUnavailableError as exc:
             await self._circuit.record_unavailable(
                 reason=str(exc), probe_interval=timedelta(minutes=5),
@@ -248,6 +257,14 @@ class ModelGateway:
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
+                )
+            elif provider == "custom":
+                # A compatible server serves chat completions only, not
+                # OpenAI's own Responses API -- see
+                # core/structured_llm.py's module docstring.
+                data = await call_chat_completions_structured(
+                    client, model, effort, max_tokens, schema_name, system_prompt,
+                    user_prompt, schema, self._retry_config, validate=validate,
                 )
             else:
                 data = await call_openai_structured(

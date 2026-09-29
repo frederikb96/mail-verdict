@@ -4,10 +4,20 @@ Provider-agnostic strict-schema LLM completion.
 The one place a classification or enrichment request actually leaves the
 process: resolves the configured provider's client, issues the request
 under a JSON schema the provider enforces server-side (Anthropic's
-`output_config.format`, OpenAI's `text.format` with `strict: true`), and
-retries transient failures with full-jitter exponential backoff. A
-response that violates the schema is treated the same as a transient
-failure -- retried, never trimmed or accepted partially.
+`output_config.format`, OpenAI's `text.format` with `strict: true`, a
+"custom" compatible server's `response_format.json_schema`), and retries
+transient failures with full-jitter exponential backoff. A response that
+violates the schema is treated the same as a transient failure -- retried,
+never trimmed or accepted partially.
+
+A "custom" provider -- any OpenAI-compatible server reached at a
+category's own base_url, Infomaniak among them -- speaks chat completions
+only, not OpenAI's own Responses API `call_openai_structured` uses:
+`call_chat_completions_structured` is the separate request shape that
+gap needs, over the same `AsyncOpenAI` client class (core/openai_provider.py
+points it at the compatible server's base_url instead of api.openai.com).
+`json_object` response formatting is commonly rejected by such a server in
+favour of a declared `json_schema` -- this module never emits the former.
 
 Callers never see a raw client: resolve_client() raises
 ProviderUnavailableError for the one case worth telling apart from a
@@ -31,21 +41,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def resolve_client(provider: str, cred_repo: ProviderCredentialRepository) -> Any:
+async def resolve_client(
+    provider: str, cred_repo: ProviderCredentialRepository, *, base_url: str | None = None,
+) -> Any:
     """
     Resolve a live client for the given provider, reading its key fresh.
 
     Args:
-        provider: "anthropic" or "openai"
+        provider: "anthropic", "openai" or "custom"
         cred_repo: Provider credential repository
+        base_url: The compatible server's API base -- required for
+            "custom", ignored otherwise. Validated as present at settings
+            write time (settings/ai_validation.py); this is defence in
+            depth for a caller that bypasses that write path.
 
     Returns:
         A provider client
 
     Raises:
-        ProviderUnavailableError: If no API key is configured
+        ProviderUnavailableError: If no API key is configured, or provider
+            is "custom" with no base_url
         ValueError: If the provider name is not one this module supports
     """
+    if provider == "custom" and not base_url:
+        raise ProviderUnavailableError("custom provider has no base_url configured")
+
     api_key = await cred_repo.resolve_key(provider)
     if not api_key:
         raise ProviderUnavailableError(f"No {provider} API key configured")
@@ -54,10 +74,10 @@ async def resolve_client(provider: str, cred_repo: ProviderCredentialRepository)
         from mail_verdict.core.anthropic_provider import get_anthropic_client
 
         return get_anthropic_client(api_key)
-    if provider == "openai":
+    if provider in ("openai", "custom"):
         from mail_verdict.core.openai_provider import get_openai_client
 
-        return get_openai_client(api_key)
+        return get_openai_client(api_key, base_url=base_url if provider == "custom" else None)
     raise ValueError(f"Unsupported provider {provider!r}")
 
 
@@ -142,6 +162,65 @@ async def call_anthropic_structured(
             output_config=output_config,
         )
         return "".join(block.text for block in response.content if block.type == "text")
+
+    return await retry_structured_call(
+        _call_once,
+        retry_config,
+        transient_errors=(RateLimitError, APIConnectionError, InternalServerError),
+        validate=validate,
+    )
+
+
+async def call_chat_completions_structured(
+    client: Any,
+    model: str,
+    effort: str | None,
+    max_tokens: int,
+    schema_name: str,
+    system_prompt: str,
+    user_prompt: str,
+    schema: dict[str, Any],
+    retry_config: RetryConfig,
+    validate: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """
+    Issue a strict-schema request against an OpenAI-compatible Chat
+    Completions endpoint -- the request shape a "custom" provider needs,
+    since such a server (Infomaniak among them) serves chat completions
+    only and rejects OpenAI's own Responses API.
+
+    `response_format.json_schema` is Chat Completions' structured-output
+    field, distinct from the Responses API's `text.format`; `reasoning_effort`
+    is passed via `extra_body` rather than the SDK's own typed kwarg, since
+    a compatible server's accepted request shape for it is otherwise
+    unverified per model. A response whose `content` comes back `None` --
+    a reasoning model that exhausted its output budget on thinking, see
+    the module docstring -- becomes an empty string here so it fails
+    `json.loads` and is retried like any other malformed response, rather
+    than raising a TypeError that would not be.
+    """
+    from openai import APIConnectionError, InternalServerError, RateLimitError
+
+    async def _call_once() -> str:
+        kwargs: dict[str, Any] = {}
+        if effort and effort != "none":
+            kwargs["extra_body"] = {"reasoning_effort": effort}
+        if max_tokens:
+            kwargs["max_tokens"] = max_tokens
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+            },
+            **kwargs,
+        )
+        content = response.choices[0].message.content
+        return content if content is not None else ""
 
     return await retry_structured_call(
         _call_once,

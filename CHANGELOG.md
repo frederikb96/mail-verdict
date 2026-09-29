@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- The AI provider for spam verdicts and for embeddings is now a setting: OpenAI as before, or any
+  OpenAI-compatible server by address, key and model name. Switching the embedding model re-embeds
+  the whole store in the background while search keeps answering from the old vectors, cutting
+  over automatically once the new set is complete.
 - A long message's links now always reach the spam classifier, including ones an HTML anchor's
   visible text gives no hint of and ones that would otherwise have sat past the body excerpt's cut.
 

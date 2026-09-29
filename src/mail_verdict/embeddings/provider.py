@@ -7,10 +7,12 @@ provider's API key fresh on every call rather than capturing it at
 construction, and a deterministic fake for tests and API-key-free local
 development.
 
-There is deliberately only one live implementation. Anthropic has no
-embedding model of its own and is not going to grow one -- its own
-documentation points at a third-party partner for this -- so "provider" is
-not a `semantic` settings knob the way it is for spam's `ai.provider`.
+Anthropic has no embedding model of its own and is not going to grow one --
+its own documentation points at a third-party partner for this -- so it is
+never one of the names `semantic.provider` accepts. "custom" is any
+OpenAI-compatible embeddings endpoint (settings.semantic.base_url), the
+same request shape as "openai" -- both are OpenAIEmbeddingProvider,
+differing only in which client the resolved base_url points at.
 """
 
 from __future__ import annotations
@@ -18,7 +20,8 @@ from __future__ import annotations
 import hashlib
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.core.structured_llm import resolve_client
@@ -30,6 +33,52 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+def resolve_active_embedding_model(settings: Mapping[str, Any]) -> str:
+    """
+    The embedding model actually serving search and neighbour hints right
+    now, as opposed to `settings.semantic.model` -- the migration target a
+    re-embed fills toward, which may still have incomplete coverage.
+
+    `active_model` starts unset (None), meaning "whatever `model` currently
+    is" -- the steady state where no migration is in flight. It is frozen
+    to the previously-active model the moment `model` changes
+    (api/settings_api.py's update_settings) and advanced to match `model`
+    only once the reconciler observes full coverage under it
+    (embeddings/worker.py's `_maybe_cutover`), which is what keeps search
+    answering from a complete vector space throughout a migration.
+
+    Args:
+        settings: The "semantic" settings category
+
+    Returns:
+        The model name to embed a search query or neighbour lookup with
+    """
+    return str(settings.get("active_model") or settings.get("model") or DEFAULT_EMBEDDING_MODEL)
+
+
+def resolve_active_embedding_provider(settings: Mapping[str, Any]) -> tuple[str, str | None]:
+    """
+    The provider and base_url a fresh search query must be embedded
+    through, to land in the vector space `resolve_active_embedding_model`
+    names -- which can differ from `settings.provider`/`base_url` mid
+    migration if the switch changed provider as well as model (moving to
+    a different compatible server, say). Frozen and advanced in the same
+    write as `active_model` (see that function's docstring); falls back to
+    the live provider/base_url exactly when `active_model` does, for the
+    same reason.
+
+    Args:
+        settings: The "semantic" settings category
+
+    Returns:
+        (provider name, base_url or None)
+    """
+    active_provider = settings.get("active_provider")
+    if active_provider:
+        return str(active_provider), (settings.get("active_base_url") or None)
+    return str(settings.get("provider") or "openai"), (settings.get("base_url") or None)
 
 
 class EmbeddingProvider(ABC):
@@ -56,27 +105,39 @@ class EmbeddingProvider(ABC):
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     """
-    Embeds via OpenAI's embeddings endpoint, truncated to
+    Embeds via an OpenAI-compatible embeddings endpoint, truncated to
     EMBEDDING_DIMENSIONS via the API's own `dimensions` parameter.
 
-    Every `text-embedding-3-*` model supports Matryoshka truncation this
-    way, which is what lets the vector column stay a single fixed width
+    Serves both "openai" and "custom" (settings.semantic.provider): the
+    request shape is identical, so only which client `resolve_client`
+    hands back -- pointed at api.openai.com or at base_url -- differs.
+
+    Every `text-embedding-3-*` model, and Infomaniak's own
+    `Qwen/Qwen3-Embedding-8B`, supports Matryoshka truncation this way,
+    which is what lets the vector column stay a single fixed width
     regardless of which model produced a given row -- the model itself is
     recorded per row instead (message_embeddings.model), so a model change
     is a visible coverage change rather than a validation the dimensions
     setting would otherwise need.
     """
 
-    def __init__(self, cred_repo: ProviderCredentialRepository) -> None:
+    def __init__(
+        self, cred_repo: ProviderCredentialRepository,
+        *, provider: str = "openai", base_url: str | None = None,
+    ) -> None:
         """
         Args:
             cred_repo: Provider API key repository, read fresh per call
+            provider: "openai" or "custom" -- which credential to resolve
+            base_url: Required when provider is "custom"; ignored otherwise
         """
         self._cred_repo = cred_repo
+        self._provider = provider
+        self._base_url = base_url
 
     async def embed_batch(self, texts: list[str], *, model: str) -> list[list[float]]:
         """
-        Embed a batch through OpenAI, resolving the API key fresh.
+        Embed a batch, resolving the API key fresh.
 
         Raises whatever the client raises on failure -- rate limits,
         connection errors, and auth rejections are all `openai` exception
@@ -84,11 +145,14 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         core/structured_llm.py leaves provider exceptions to its callers
         rather than wrapping them here.
         """
-        client = await resolve_client("openai", self._cred_repo)
+        client = await resolve_client(self._provider, self._cred_repo, base_url=self._base_url)
         response = await client.embeddings.create(
             model=model, input=texts, dimensions=EMBEDDING_DIMENSIONS,
         )
-        logger.debug("Embedded batch", extra={"model": model, "count": len(texts)})
+        logger.debug(
+            "Embedded batch",
+            extra={"provider": self._provider, "model": model, "count": len(texts)},
+        )
         return [item.embedding for item in response.data]
 
 
@@ -118,14 +182,16 @@ def _fake_vector(text: str) -> list[float]:
 
 
 def resolve_embedding_provider(
-    provider_name: str, cred_repo: ProviderCredentialRepository,
+    provider_name: str, cred_repo: ProviderCredentialRepository, *, base_url: str | None = None,
 ) -> EmbeddingProvider:
     """
     Resolve a provider instance by name.
 
     Args:
-        provider_name: "openai" or "fake"
+        provider_name: "openai", "custom" or "fake"
         cred_repo: Provider API key repository
+        base_url: Required when provider_name is "custom"; ignored
+            otherwise
 
     Returns:
         A provider instance
@@ -133,8 +199,8 @@ def resolve_embedding_provider(
     Raises:
         ValueError: provider_name is not recognized
     """
-    if provider_name == "openai":
-        return OpenAIEmbeddingProvider(cred_repo)
+    if provider_name in ("openai", "custom"):
+        return OpenAIEmbeddingProvider(cred_repo, provider=provider_name, base_url=base_url)
     if provider_name == "fake":
         return FakeEmbeddingProvider()
     raise ValueError(f"Unknown embedding provider {provider_name!r}")
@@ -146,5 +212,7 @@ __all__ = [
     "FakeEmbeddingProvider",
     "OpenAIEmbeddingProvider",
     "ProviderUnavailableError",
+    "resolve_active_embedding_model",
+    "resolve_active_embedding_provider",
     "resolve_embedding_provider",
 ]

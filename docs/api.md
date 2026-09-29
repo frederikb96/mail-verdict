@@ -104,10 +104,11 @@ curl -X POST localhost:8080/api/addressbooks -H 'content-type: application/json'
 
 ### Set a provider key
 
-Classification and embeddings need a key for whichever provider `ai.provider` names (`openai` or
-`anthropic`; a bare-metal deployment can also fall back to the `OPENAI_API_KEY`/
-`ANTHROPIC_API_KEY` environment variables instead of storing one). Through the API, a key is
-write-only — it can be set and its presence checked, never read back:
+Classification and embeddings need a key for whichever provider `ai.provider`/`semantic.provider`
+names (`openai`, `anthropic` — verdicts only — or `custom`; a bare-metal deployment can also fall
+back to the `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`CUSTOM_AI_API_KEY` environment variables instead
+of storing one). Through the API, a key is write-only — it can be set and its presence checked,
+never read back:
 
 ```bash
 curl -X PUT localhost:8080/api/settings/ai -H 'content-type: application/json' -d '{
@@ -119,9 +120,19 @@ curl localhost:8080/api/settings/ai
 #     "openai_api_key_hint": "...ab12"}
 ```
 
-An empty string clears a stored key. `settings/defaults.py` documents every other setting category
-(`ai`, `retry`, `pipeline`, `semantic`) and its default with a comment — that file is the
-authoritative list, not repeated here.
+An empty string clears a stored key. `provider: "custom"` also needs `base_url` set to the
+compatible server's API base, on whichever category (`ai`, `semantic`) selects it — the credential
+is shared by provider name, so one `custom_api_key` write covers both:
+
+```bash
+curl -X PUT localhost:8080/api/settings/ai -H 'content-type: application/json' -d '{
+  "data": {"provider": "custom", "base_url": "https://example.test/v1", "custom_api_key": "..."}
+}'
+```
+
+`settings/defaults.py` documents every other setting category (`ai`, `retry`, `pipeline`,
+`semantic`) and its default with a comment — that file is the authoritative list, not repeated
+here.
 
 ### Edit the pipeline: write a rule as a stage
 

@@ -27,7 +27,12 @@ from mail_verdict.api.schemas import EmbeddingStatusResponse, SearchResult, Sema
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import list_row_marks
-from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL, resolve_embedding_provider
+from mail_verdict.embeddings.provider import (
+    DEFAULT_EMBEDDING_MODEL,
+    resolve_active_embedding_model,
+    resolve_active_embedding_provider,
+    resolve_embedding_provider,
+)
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.search import SemanticSort, Strictness, semantic_search
 from mail_verdict.settings.credentials import get_provider_credential_repo
@@ -144,14 +149,18 @@ async def search(
     it -- literal search wins for a known sender or an exact phrase,
     this wins for a half-remembered topic with no exact words in common.
     """
-    model = _current_model()
     settings = get_settings_service().get("semantic")
-    provider_name = str(settings.get("provider", "openai"))
+    # The model currently serving search, which is settings.semantic.model
+    # except mid-migration -- see resolve_active_embedding_model. Embedding
+    # the query with anything else would compare it against a vector space
+    # it was never placed in.
+    model = resolve_active_embedding_model(settings)
+    provider_name, base_url = resolve_active_embedding_provider(settings)
     resolved_strictness: Strictness = strictness or settings.get("default_strictness", "balanced")
     cred_repo = get_provider_credential_repo()
 
     try:
-        provider = resolve_embedding_provider(provider_name, cred_repo)
+        provider = resolve_embedding_provider(provider_name, cred_repo, base_url=base_url)
         vectors = await provider.embed_batch([q], model=model)
     except ProviderUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None

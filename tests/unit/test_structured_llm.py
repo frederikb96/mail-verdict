@@ -7,8 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.core.openai_provider import reset_openai_provider
 from mail_verdict.core.retry import RetryConfig
-from mail_verdict.core.structured_llm import resolve_client, retry_structured_call
+from mail_verdict.core.structured_llm import (
+    call_chat_completions_structured,
+    resolve_client,
+    retry_structured_call,
+)
 
 
 def _fast_retry(max_retries: int = 2) -> RetryConfig:
@@ -83,6 +88,12 @@ class TestRetryStructuredCall:
 class TestResolveClient:
     """Tests for provider client resolution."""
 
+    def setup_method(self) -> None:
+        reset_openai_provider()
+
+    def teardown_method(self) -> None:
+        reset_openai_provider()
+
     @pytest.mark.asyncio
     async def test_no_key_raises_provider_unavailable(self) -> None:
         cred_repo = MagicMock()
@@ -96,3 +107,80 @@ class TestResolveClient:
         cred_repo.resolve_key = AsyncMock(return_value="some-key")
         with pytest.raises(ValueError, match="Unsupported provider"):
             await resolve_client("not-a-real-provider", cred_repo)
+
+    @pytest.mark.asyncio
+    async def test_custom_provider_without_base_url_raises_provider_unavailable(self) -> None:
+        """Defence in depth for a caller that bypasses settings write-time
+        validation (settings/ai_validation.py) -- never silently falls
+        back to real OpenAI's own endpoint with a compatible server's key."""
+        cred_repo = MagicMock()
+        cred_repo.resolve_key = AsyncMock(return_value="some-key")
+        with pytest.raises(ProviderUnavailableError, match="base_url"):
+            await resolve_client("custom", cred_repo)
+        cred_repo.resolve_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_custom_provider_resolves_a_client_pointed_at_base_url(self) -> None:
+        cred_repo = MagicMock()
+        cred_repo.resolve_key = AsyncMock(return_value="custom-key")
+        client = await resolve_client("custom", cred_repo, base_url="https://example.test/v1")
+        assert str(client.base_url).rstrip("/") == "https://example.test/v1"
+        cred_repo.resolve_key.assert_awaited_once_with("custom")
+
+
+class TestCallChatCompletionsStructured:
+    """The request shape a "custom" (chat-completions-only) provider needs."""
+
+    def _client(self, content: str | None) -> MagicMock:
+        client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=content))]
+        client.chat.completions.create = AsyncMock(return_value=response)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_sends_a_json_schema_response_format(self) -> None:
+        client = self._client('{"a": 1}')
+        result = await call_chat_completions_structured(
+            client, "some-model", None, 512, "schema_name", "system", "user",
+            {"type": "object"}, _fast_retry(),
+        )
+        assert result == {"a": 1}
+        kwargs = client.chat.completions.create.await_args.kwargs
+        assert kwargs["response_format"]["type"] == "json_schema"
+        assert kwargs["response_format"]["json_schema"]["name"] == "schema_name"
+        assert kwargs["response_format"]["json_schema"]["strict"] is True
+        assert kwargs["max_tokens"] == 512
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_sent_via_extra_body_when_set(self) -> None:
+        client = self._client('{"a": 1}')
+        await call_chat_completions_structured(
+            client, "some-model", "low", 512, "schema_name", "system", "user",
+            {"type": "object"}, _fast_retry(),
+        )
+        kwargs = client.chat.completions.create.await_args.kwargs
+        assert kwargs["extra_body"] == {"reasoning_effort": "low"}
+
+    @pytest.mark.asyncio
+    async def test_no_effort_omits_extra_body(self) -> None:
+        client = self._client('{"a": 1}')
+        await call_chat_completions_structured(
+            client, "some-model", "none", 512, "schema_name", "system", "user",
+            {"type": "object"}, _fast_retry(),
+        )
+        kwargs = client.chat.completions.create.await_args.kwargs
+        assert "extra_body" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_null_content_is_treated_as_malformed_and_retried(self) -> None:
+        """An exhausted output budget on a reasoning model returns
+        content: null with HTTP 200 (see the module docstring) -- this
+        must fail json.loads and be retried, never raise a TypeError."""
+        client = self._client(None)
+        with pytest.raises(RuntimeError, match="failed after"):
+            await call_chat_completions_structured(
+                client, "some-model", "low", 512, "schema_name", "system", "user",
+                {"type": "object"}, _fast_retry(max_retries=1),
+            )
+        assert client.chat.completions.create.await_count == 2

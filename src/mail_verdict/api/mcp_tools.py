@@ -1138,12 +1138,13 @@ async def semantic_search_mail(
         closer), ranked nearest first -- up to limit, or fewer if the
         rest don't clear the account's configured strictness cutoff (see
         embeddings/search.py: relative to the best match in the pool, not
-        an absolute floor). Only messages already encoded with the
-        currently configured model are searched -- see get_semantic_status
-        for coverage.
+        an absolute floor). Only messages already encoded with the model
+        currently serving search are searched -- which lags the configured
+        one during a re-embed -- see get_semantic_status for coverage.
     """
     from mail_verdict.embeddings.provider import (
-        DEFAULT_EMBEDDING_MODEL,
+        resolve_active_embedding_model,
+        resolve_active_embedding_provider,
         resolve_embedding_provider,
     )
     from mail_verdict.embeddings.search import semantic_search
@@ -1151,10 +1152,13 @@ async def semantic_search_mail(
     from mail_verdict.settings.service import get_settings_service
 
     settings = get_settings_service().get("semantic")
-    model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    # The model and provider actually serving search right now, not the
+    # migration target -- see resolve_active_embedding_model's docstring.
+    model = resolve_active_embedding_model(settings)
+    provider_name, base_url = resolve_active_embedding_provider(settings)
     strictness = settings.get("default_strictness", "balanced")
     provider = resolve_embedding_provider(
-        str(settings.get("provider", "openai")), get_provider_credential_repo(),
+        provider_name, get_provider_credential_repo(), base_url=base_url,
     )
     vectors = await provider.embed_batch([query], model=model)
 

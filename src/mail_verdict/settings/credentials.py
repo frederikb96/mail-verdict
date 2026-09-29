@@ -6,8 +6,11 @@ hint; nothing in this module or the API layer built on it ever returns the
 key itself. Reads decrypt fresh on every call rather than caching the
 plaintext, so rotating a key or setting ENCRYPTION_KEY for the first time
 takes effect on the next call, not the next restart. An environment
-variable (ANTHROPIC_API_KEY / OPENAI_API_KEY) is the fallback for a
-deployment that prefers keeping the key out of the database entirely.
+variable (ANTHROPIC_API_KEY / OPENAI_API_KEY / CUSTOM_AI_API_KEY) is the
+fallback for a deployment that prefers keeping the key out of the database
+entirely. "custom" is one credential shared by whichever settings category
+(ai, semantic) has its provider set to "custom" -- a compatible deployment
+is one account, reached at that category's own base_url.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_ENV_VARS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
+    "custom": "CUSTOM_AI_API_KEY",
 }
 
 
