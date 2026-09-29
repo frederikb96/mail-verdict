@@ -146,20 +146,31 @@ async def call_anthropic_structured(
     schema: dict[str, Any],
     retry_config: RetryConfig,
     validate: Callable[[dict[str, Any]], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Issue a strict-schema request against the Anthropic Messages API."""
+    """Issue a strict-schema request against the Anthropic Messages API.
+
+    timeout_seconds overrides the client's own per-request timeout
+    (anthropic_provider.py's REQUEST_TIMEOUT_SECONDS) for this call alone,
+    when a caller's own budget for a full-length response needs more room
+    than the shared default allows. Left unset, the client's default holds.
+    """
     from anthropic import APIConnectionError, InternalServerError, RateLimitError
 
     async def _call_once() -> str:
         output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": schema}}
         if effort:
             output_config["effort"] = effort
+        kwargs: dict[str, Any] = {}
+        if timeout_seconds is not None:
+            kwargs["timeout"] = timeout_seconds
         response = await client.messages.create(
             model=model,
             max_tokens=max_tokens,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
             output_config=output_config,
+            **kwargs,
         )
         return "".join(block.text for block in response.content if block.type == "text")
 
@@ -182,6 +193,7 @@ async def call_chat_completions_structured(
     schema: dict[str, Any],
     retry_config: RetryConfig,
     validate: Callable[[dict[str, Any]], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """
     Issue a strict-schema request against an OpenAI-compatible Chat
@@ -198,6 +210,12 @@ async def call_chat_completions_structured(
     the module docstring -- becomes an empty string here so it fails
     `json.loads` and is retried like any other malformed response, rather
     than raising a TypeError that would not be.
+
+    timeout_seconds overrides the client's own per-request timeout
+    (openai_provider.py's REQUEST_TIMEOUT_SECONDS, sized for classify and
+    embeddings' tighter leases) for this call alone, when a caller's own
+    budget for a full-length response needs more room. Left unset, the
+    client's default holds.
     """
     from openai import APIConnectionError, InternalServerError, RateLimitError
 
@@ -207,6 +225,8 @@ async def call_chat_completions_structured(
             kwargs["extra_body"] = {"reasoning_effort": effort}
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
+        if timeout_seconds is not None:
+            kwargs["timeout"] = timeout_seconds
         response = await client.chat.completions.create(
             model=model,
             messages=[
@@ -241,8 +261,13 @@ async def call_openai_structured(
     schema: dict[str, Any],
     retry_config: RetryConfig,
     validate: Callable[[dict[str, Any]], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Issue a strict-schema request against the OpenAI Responses API."""
+    """Issue a strict-schema request against the OpenAI Responses API.
+
+    timeout_seconds overrides the client's own per-request timeout for
+    this call alone; see call_chat_completions_structured's docstring.
+    """
     from openai import APIConnectionError, InternalServerError, RateLimitError
 
     async def _call_once() -> str:
@@ -251,6 +276,8 @@ async def call_openai_structured(
             kwargs["reasoning"] = {"effort": effort}
         if max_tokens:
             kwargs["max_output_tokens"] = max_tokens
+        if timeout_seconds is not None:
+            kwargs["timeout"] = timeout_seconds
         response = await client.responses.create(
             model=model,
             input=[

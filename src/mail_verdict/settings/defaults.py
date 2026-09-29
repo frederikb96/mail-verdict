@@ -304,5 +304,19 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_attempts": 5,
         "base_delay_seconds": 5.0,
         "max_delay_seconds": 300.0,
+        # Per-model-call timeout, overriding the shared provider client's
+        # own default (core/openai_provider.py's REQUEST_TIMEOUT_SECONDS,
+        # sized for classify and embeddings' much tighter leases). A
+        # reasoning model can legitimately spend several thousand hidden
+        # tokens "thinking" before it answers even with reasoning_effort
+        # left at "none" -- measured directly against a real model, a
+        # write call routinely took 16-20 seconds, right at or past the
+        # shared 20-second default, which made retries (themselves capped
+        # by that same too-short timeout) the common case rather than the
+        # exception. Sized to stay under lease_seconds even in the
+        # pathological case where every one of settings.retry's
+        # max_retries attempts times out: max_retries * this value, plus
+        # their backoff delays, still leaves margin under the lease above.
+        "call_timeout_seconds": 40.0,
     },
 }

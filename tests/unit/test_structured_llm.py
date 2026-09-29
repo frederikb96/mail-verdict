@@ -184,3 +184,26 @@ class TestCallChatCompletionsStructured:
                 {"type": "object"}, _fast_retry(max_retries=1),
             )
         assert client.chat.completions.create.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_timeout_seconds_omitted_by_default(self) -> None:
+        """Leaving timeout_seconds unset must not pass timeout at all --
+        the client's own configured default (openai_provider.py) has to
+        keep governing classify and embeddings' calls unchanged."""
+        client = self._client('{"a": 1}')
+        await call_chat_completions_structured(
+            client, "some-model", None, 512, "schema_name", "system", "user",
+            {"type": "object"}, _fast_retry(),
+        )
+        kwargs = client.chat.completions.create.await_args.kwargs
+        assert "timeout" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_timeout_seconds_forwarded_when_given(self) -> None:
+        client = self._client('{"a": 1}')
+        await call_chat_completions_structured(
+            client, "some-model", None, 512, "schema_name", "system", "user",
+            {"type": "object"}, _fast_retry(), timeout_seconds=40.0,
+        )
+        kwargs = client.chat.completions.create.await_args.kwargs
+        assert kwargs["timeout"] == 40.0

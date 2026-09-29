@@ -194,6 +194,7 @@ class ModelGateway:
         schema: dict[str, JsonValue],
         validate: Any = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], float]:
         """
         Issue one strict-schema request.
@@ -209,6 +210,15 @@ class ModelGateway:
         Args:
             base_url: Required when provider is "custom" -- the compatible
                 server's API base. Ignored otherwise.
+            timeout_seconds: Overrides the shared client's own per-request
+                timeout for this call alone. Left unset, the client's
+                default holds (core/openai_provider.py,
+                core/anthropic_provider.py) -- sized for classify and
+                embeddings' tighter queue leases. A caller with a more
+                generous lease of its own, and a workload that can
+                legitimately take longer than that shared default, passes
+                its own budget here rather than the default being widened
+                for everyone.
 
         Returns:
             (parsed response, latency in milliseconds)
@@ -258,6 +268,7 @@ class ModelGateway:
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
             elif provider == "custom":
                 # A compatible server serves chat completions only, not
@@ -266,11 +277,13 @@ class ModelGateway:
                 data = await call_chat_completions_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
             else:
                 data = await call_openai_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
         except Exception as exc:
             await self._map_and_raise(provider, exc)
