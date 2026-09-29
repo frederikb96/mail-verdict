@@ -178,7 +178,20 @@ async def _maybe_cutover(
     status = await embedding_repo.status(model=target_model)
     if status.coverage < 1.0:
         return
-    await settings_service.update("semantic", {"active_model": target_model})
+    await settings_service.update(
+        "semantic",
+        {
+            "active_model": target_model,
+            # Advanced together with active_model: a provider switch
+            # alongside a model switch (moving to a different compatible
+            # server, say) must not leave a fresh search query embedded
+            # through the OLD provider against the NEW model's vector
+            # space -- resolve_active_embedding_provider reads all three
+            # as one identity.
+            "active_provider": str(current.get("provider", "openai")),
+            "active_base_url": current.get("base_url"),
+        },
+    )
     logger.info(
         "Embedding cutover complete -- search now answers from the new model",
         extra={"model": target_model, "in_scope": status.in_scope},
