@@ -19,6 +19,7 @@ from typing import Any
 
 from mail_verdict.pipeline.contracts import (
     Effect,
+    EnqueueOrder,
     Expunge,
     Keywords,
     Move,
@@ -68,6 +69,8 @@ def parse_effect(raw: dict[str, Any]) -> Effect:
         )
     if kind == "notify":
         return Notify(text=str(value.get("text", "")))
+    if kind == "enqueue_order":
+        return EnqueueOrder(reason=str(value.get("reason", "")))
     raise EffectConfigError(f"unknown effect type {kind!r}")
 
 
@@ -97,4 +100,6 @@ def effect_to_dict(effect: Effect) -> dict[str, Any]:
         }}
     if isinstance(effect, Notify):
         return {"notify": {"text": effect.text}}
+    if isinstance(effect, EnqueueOrder):
+        return {"enqueue_order": {"reason": effect.reason}}
     raise EffectConfigError(f"unknown effect {effect!r}")  # pragma: no cover

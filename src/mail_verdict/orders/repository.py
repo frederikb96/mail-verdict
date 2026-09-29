@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,6 +126,58 @@ async def store_identifiers(
             .on_conflict_do_nothing(constraint="uq_order_identifiers_order_value_norm")
         )
         await session.execute(stmt)
+
+
+async def enqueue_mail_job(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    msg_key: str,
+    message_id: uuid.UUID | None,
+    origin: str,
+    priority: int,
+    filter_reason: str,
+    next_attempt_at: datetime,
+) -> bool:
+    """
+    Insert the orders queue's mail job, under the never-twice gate
+    (uq_order_jobs_mail): a duplicate is a no-op on the job row itself,
+    but still refreshes message_id when a resync gave this mail a new
+    row -- so a later worker claim resolves the current mail, not a stale
+    id from before a UIDVALIDITY change.
+
+    Shared by the pipeline stage's EnqueueOrder effect
+    (pipeline/effects.py) and the thread follow-up hook (orders/
+    intake.py) -- the one place this insert is written.
+
+    Returns:
+        True only when a new row was inserted.
+    """
+    stmt = (
+        pg_insert(OrderJob)
+        .values(
+            kind="mail", account_id=account_id, msg_key=msg_key, message_id=message_id,
+            origin=origin, priority=priority, next_attempt_at=next_attempt_at,
+            filter_reason=filter_reason,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["account_id", "msg_key"], index_where=text("kind = 'mail'"),
+        )
+    )
+    result = await session.execute(stmt)
+    inserted = bool(result.rowcount)  # type: ignore[attr-defined]
+    if inserted:
+        return True
+
+    await session.execute(
+        update(OrderJob)
+        .where(
+            OrderJob.kind == "mail", OrderJob.account_id == account_id,
+            OrderJob.msg_key == msg_key, OrderJob.message_id.is_distinct_from(message_id),
+        )
+        .values(message_id=message_id)
+    )
+    return False
 
 
 async def enqueue_write_job(
@@ -251,11 +303,20 @@ async def delete_order(session: AsyncSession, order_id: uuid.UUID) -> bool:
     return bool(result.rowcount)  # type: ignore[attr-defined]
 
 
-async def delete_for_account(session: AsyncSession, account_id: uuid.UUID) -> None:
+async def delete_for_account(
+    session: AsyncSession, account_id: uuid.UUID,
+) -> list[tuple[uuid.UUID, str]]:
     """
     Account deletion's cleanup: remove this account's order_mails and
     order_jobs, delete orders left with no mail, and enqueue a write for
     orders that lost some but still have mail from another account.
+
+    Returns:
+        (order_id, change) pairs -- "deleted" or "updated" -- for the
+        caller to broadcast order.updated with, once its own transaction
+        has committed. Orders is a cross-account register with no
+        account-scoped event of its own to ride: a second browser with
+        one of these orders open only learns of the change this way.
     """
     affected = await session.execute(
         select(OrderMail.order_id.distinct()).where(OrderMail.account_id == account_id)
@@ -265,10 +326,14 @@ async def delete_for_account(session: AsyncSession, account_id: uuid.UUID) -> No
     await session.execute(delete(OrderMail).where(OrderMail.account_id == account_id))
     await session.execute(delete(OrderJob).where(OrderJob.account_id == account_id))
 
+    changes: list[tuple[uuid.UUID, str]] = []
     for order_id in order_ids:
         remaining = await recompute_aggregates(session, order_id)
         if remaining == 0:
             await delete_order_if_empty(session, order_id)
+            changes.append((order_id, "deleted"))
         else:
             await mark_text_stale(session, order_id)
             await enqueue_write_job(session, order_id, priority=50)
+            changes.append((order_id, "updated"))
+    return changes

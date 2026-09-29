@@ -145,9 +145,6 @@ async def find_candidates(
         Candidates ranked best-first, capped at 8
     """
     now = now or datetime.now(timezone.utc)
-    haystack_upper = f"{subject}\n{haystack_raw}".upper()
-    haystack_norm = normalize_identifier(haystack_upper)
-    sender_domain = _sender_domain(from_addr)
 
     thread_order_ids: set[uuid.UUID] = set()
     if thread_id is not None:
@@ -178,6 +175,34 @@ async def find_candidates(
     order_ids = list(order_by_id)
     identifiers_by_order = await _load_identifiers(session, order_ids)
     mails_by_order = await _load_mails(session, order_ids)
+
+    return rank_orders(
+        order_by_id, thread_order_ids=thread_order_ids,
+        identifiers_by_order=identifiers_by_order, mails_by_order=mails_by_order,
+        subject=subject, from_addr=from_addr, haystack_raw=haystack_raw, now=now,
+    )
+
+
+def rank_orders(
+    order_by_id: dict[uuid.UUID, Order],
+    *,
+    thread_order_ids: set[uuid.UUID],
+    identifiers_by_order: dict[uuid.UUID, list[tuple[str, str, str]]],
+    mails_by_order: dict[uuid.UUID, OrderMails],
+    subject: str,
+    from_addr: str,
+    haystack_raw: str,
+    now: datetime,
+) -> list[Candidate]:
+    """
+    The ranking rules of this module's own docstring, over already-loaded
+    data -- separated from find_candidates so the rules are testable
+    against plain constructed `Order` objects, with no session or
+    database involved.
+    """
+    haystack_upper = f"{subject}\n{haystack_raw}".upper()
+    haystack_norm = normalize_identifier(haystack_upper)
+    sender_domain = _sender_domain(from_addr)
 
     ranked: list[Candidate] = []
     for order_id, order in order_by_id.items():
@@ -275,14 +300,14 @@ async def _load_identifiers(
 
 
 @dataclass(frozen=True)
-class _OrderMails:
+class OrderMails:
     froms: tuple[str, ...]
     latest: tuple[CandidateMail, ...]
 
 
 async def _load_mails(
     session: AsyncSession, order_ids: list[uuid.UUID],
-) -> dict[uuid.UUID, _OrderMails]:
+) -> dict[uuid.UUID, OrderMails]:
     """Per order: every sender address (for the domain rule) and the
     newest 3 mails, oldest first, for the candidate text (orders/
     prompts.py)."""
@@ -303,7 +328,7 @@ async def _load_mails(
                 )
             )
     return {
-        order_id: _OrderMails(
+        order_id: OrderMails(
             froms=tuple(froms_by_order[order_id]),
             latest=tuple(reversed(latest_desc_by_order[order_id])),
         )
@@ -317,4 +342,5 @@ __all__ = [
     "find_candidates",
     "is_valid_identifier",
     "normalize_identifier",
+    "rank_orders",
 ]

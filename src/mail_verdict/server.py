@@ -216,6 +216,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
     from mail_verdict.embeddings.repository import EmbeddingRepository
     from mail_verdict.embeddings.worker import register_embeddings
+    from mail_verdict.orders.intake import enqueue_thread_follow_up
     from mail_verdict.pipeline.enqueue import (
         build_reconciliation_timer,
         enqueue_live_arrival,
@@ -271,6 +272,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _embedding_components = register_embeddings(
         _queue_manager, db, cred_repo, settings_service,
     )
+
+    from mail_verdict.orders.worker import register_orders
+
+    register_orders(_queue_manager, db, cred_repo, settings_service, event_ring)
 
     await _queue_manager.start()
     await _embedding_components.start()
@@ -363,6 +368,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     # that alert resolves at birth instead of announcing.
                     await mark_read_on_landing(db, settings_service, event)
                     await enqueue_live_arrival(db, event, settings_service)
+                    await enqueue_thread_follow_up(db, event)
                     if _calendar_intake_handler:
                         await _calendar_intake_handler.handle_message_event(event)
                     try:

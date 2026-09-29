@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.models import Folder, FolderPrefs, Verdict, VerdictSource
+from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.pipeline.contracts import (
     JsonValue,
     StageOutcome,
@@ -322,6 +323,10 @@ class RunContext:
     # read once per run by the runner so the classify stage stays free of its
     # own database access -- see pipeline/stages/classify.py.
     account_spam_enabled: bool = False
+    # account_prefs.orders_enabled, the same way -- see
+    # pipeline/stages/orders.py.
+    account_orders_enabled: bool = False
+    orders: OrderLookup | None = None
 
     def with_trace_entry(self, outcome: StageOutcome) -> RunContext:
         """A copy with `outcome` appended to the trace and its facts merged

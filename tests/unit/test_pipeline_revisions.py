@@ -20,11 +20,12 @@ def _stage(document: dict, stage_id: str) -> dict:
 
 def test_default_settings_produce_classify_then_move_spam() -> None:
     """No rules, spam enabled with the default auto-move/auto-mark-read --
-    the shape every fresh deployment migrates into."""
+    the shape every fresh deployment migrates into. The orders stage
+    lands directly after move-spam (insert_orders_stage)."""
     document = build_migrated_definition(raw_rules=[], spam_settings={"enabled": True})
 
     stage_ids = [s["stage_id"] for s in document["stages"]]
-    assert stage_ids == ["classify", "move-spam"]
+    assert stage_ids == ["classify", "move-spam", "orders"]
 
     classify = _stage(document, "classify")
     assert classify["type"] == "classify"

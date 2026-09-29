@@ -26,7 +26,7 @@ from sqlalchemy import case, select
 from sqlalchemy import func as sa_func
 
 from mail_verdict.api.deps import get_account_prefs_repo
-from mail_verdict.api.events import get_event_ring
+from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.api.schemas import (
     AccountCreateRequest,
     AccountResponse,
@@ -44,12 +44,14 @@ from mail_verdict.database.models import (
     Message,
     SyncState,
 )
+from mail_verdict.orders.repository import delete_for_account as orders_delete_for_account
 from mail_verdict.postimap.actions import create_account as postimap_create_account
 from mail_verdict.postimap.actions import delete_account as postimap_delete_account
 from mail_verdict.postimap.actions import force_reconnect
 from mail_verdict.postimap.actions import update_account as postimap_update_account
 from mail_verdict.postimap.commands import request_sync_now
 from mail_verdict.postimap.contract import read_postimap_info, supports_account_delete
+from mail_verdict.settings import get_settings_service
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,7 @@ def _build_account_response(
         updated_at=account.updated_at,
         emoji=prefs.emoji if prefs else None,
         spam_enabled=prefs.spam_enabled if prefs else False,
+        orders_enabled=prefs.orders_enabled if prefs else False,
         folder_order=prefs.folder_order if prefs else None,
         trash_retention_days=prefs.trash_retention_days if prefs else None,
         junk_retention_days=prefs.junk_retention_days if prefs else None,
@@ -135,6 +138,7 @@ async def create_account(request: AccountCreateRequest) -> AccountResponse:
             account_id=account.id,
             emoji=request.emoji,
             spam_enabled=request.spam_enabled,
+            orders_enabled=request.orders_enabled,
             trash_retention_days=request.trash_retention_days,
             junk_retention_days=request.junk_retention_days,
         )
@@ -174,9 +178,17 @@ async def update_account(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     # Separate Account fields from AccountPrefs fields
-    prefs_fields = {"emoji", "spam_enabled", "trash_retention_days", "junk_retention_days"}
+    prefs_fields = {
+        "emoji", "spam_enabled", "orders_enabled", "trash_retention_days", "junk_retention_days",
+    }
     account_values = {k: v for k, v in all_values.items() if k not in prefs_fields}
     prefs_values = {k: v for k, v in all_values.items() if k in prefs_fields}
+
+    if prefs_values.get("orders_enabled") is True:
+        if not str(get_settings_service().get("orders").get("model") or "").strip():
+            raise HTTPException(
+                status_code=409, detail="Set the orders model in Settings first",
+            )
 
     credentials_changed = "imap_password" in account_values or "smtp_password" in account_values
 
@@ -254,7 +266,15 @@ async def delete_account(account_id: uuid.UUID) -> None:
         if result.scalar_one_or_none() is None:
             raise HTTPException(status_code=404, detail="Account not found")
 
+        order_changes = await orders_delete_for_account(session, account_id)
         await postimap_delete_account(session, account_id)
+
+    event_ring = get_event_ring()
+    if event_ring is not None:
+        for order_id, change in order_changes:
+            await broadcast_event(
+                db, event_ring, "order.updated", {"order_id": str(order_id), "change": change},
+            )
 
 
 @router.get("/{account_id}/folders", response_model=list[FolderResponse])

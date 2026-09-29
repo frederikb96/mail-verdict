@@ -60,6 +60,11 @@
             "title": "Name",
             "type": "string"
           },
+          "orders_enabled": {
+            "default": false,
+            "title": "Orders Enabled",
+            "type": "boolean"
+          },
           "smtp_host": {
             "anyOf": [
               {
@@ -248,6 +253,11 @@
             "title": "Name",
             "type": "string"
           },
+          "orders_enabled": {
+            "default": false,
+            "title": "Orders Enabled",
+            "type": "boolean"
+          },
           "smtp_host": {
             "anyOf": [
               {
@@ -431,6 +441,17 @@
               }
             ],
             "title": "Name"
+          },
+          "orders_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orders Enabled"
           },
           "smtp_host": {
             "anyOf": [

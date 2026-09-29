@@ -493,6 +493,7 @@ class AccountResponse(BaseModel):
     # AccountPrefs fields (from account_prefs table)
     emoji: str | None = None
     spam_enabled: bool = False
+    orders_enabled: bool = False
     folder_order: list[str] | None = None
     # NULL/omitted is off -- see AccountPrefs.trash_retention_days /
     # .junk_retention_days, independently configurable.
@@ -518,6 +519,7 @@ class AccountCreateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool = False
+    orders_enabled: bool = False
     # Zero means every retention_entries row already stamped is overdue,
     # and a negative period puts the threshold in the future -- either
     # clears the whole folder on the very next sweep tick. ge=1 rejects
@@ -548,6 +550,7 @@ class AccountUpdateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool | None = None
+    orders_enabled: bool | None = None
     # See AccountCreateRequest.trash_retention_days for why ge=1.
     trash_retention_days: int | None = Field(default=None, ge=1)
     junk_retention_days: int | None = Field(default=None, ge=1)
