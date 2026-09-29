@@ -304,6 +304,19 @@ class MailActionsConfig(BaseModel):
     submission_retention_hours: float
 
 
+class GlacierConfig(BaseModel):
+    """The automatic sweep and the manual-action caps for the glacier
+    (glacier/sweep.py) -- see config.yaml for what each one is for."""
+
+    sweep_enabled: bool
+    interval_seconds: float
+    batch_size: int
+    max_unconfirmed: int
+    confirm_grace_seconds: int
+    max_manual_batch: int
+    restore_timeout_seconds: int
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -324,6 +337,7 @@ class InfraConfig(BaseModel):
     database: DatabaseConfig
     search: SearchConfig
     push: PushConfig
+    glacier: GlacierConfig
 
 
 _config_instance: InfraConfig | None = None
@@ -356,6 +370,7 @@ def get_config() -> InfraConfig:
                 database=DatabaseConfig(**database_cfg),
                 search=SearchConfig(**(cfg.get("search") or {})),
                 push=PushConfig(**(cfg.get("push") or {})),
+                glacier=GlacierConfig(**(cfg.get("glacier") or {})),
             )
         except ValidationError as exc:
             raise ConfigError(f"Invalid configuration: {exc}") from exc
