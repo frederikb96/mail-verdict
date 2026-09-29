@@ -17,6 +17,7 @@ import {
   GripVertical,
   ImageOff,
   MoreVertical,
+  Search,
   Zap,
   AlertCircle,
 } from "lucide-react";
@@ -57,6 +58,7 @@ import {
   useUpdateAccount,
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
+import { useOrderCatchUp } from "@/hooks/use-orders";
 import { accountConnectionState, useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
 import { formatRelativeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -108,6 +110,106 @@ function SectionTrigger({
   );
 }
 
+/** "Look through recent mail…": a number of days, a dry-run preview of how
+ * many mails the model would read, then the real sweep -- against the
+ * catch-up endpoint's own dry_run flag, so a preview never enqueues
+ * anything and Start always sees the count it just asked for. */
+function OrderCatchUpDialog({
+  accountId,
+  open,
+  onOpenChange,
+}: {
+  accountId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [days, setDays] = useState(90);
+  const [preview, setPreview] = useState<number | null>(null);
+  const [result, setResult] = useState<number | null>(null);
+  const catchUp = useOrderCatchUp();
+
+  const runPreview = () => {
+    setResult(null);
+    catchUp.mutate(
+      { account_id: accountId, days, dry_run: true },
+      { onSuccess: (r) => setPreview(r.passed) },
+    );
+  };
+
+  const runStart = () => {
+    catchUp.mutate(
+      { account_id: accountId, days, dry_run: false },
+      { onSuccess: (r) => setResult(r.queued) },
+    );
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        onOpenChange(next);
+        if (!next) {
+          setDays(90);
+          setPreview(null);
+          setResult(null);
+        }
+      }}
+    >
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>Look through recent mail</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Reads mail already in this account's mailbox for orders and tickets it missed --
+          nothing is classified twice, whatever you choose here.
+        </p>
+        <div className="grid gap-1.5">
+          <Label htmlFor="catch-up-days">Days</Label>
+          <Input
+            id="catch-up-days"
+            type="number"
+            min={1}
+            max={365}
+            value={days}
+            onChange={(e) => {
+              setDays(Number(e.target.value));
+              setPreview(null);
+              setResult(null);
+            }}
+          />
+        </div>
+        {preview !== null && result === null && (
+          <p className="text-sm">
+            {preview} mail{preview === 1 ? "" : "s"} would be read by the model.
+          </p>
+        )}
+        {result !== null && (
+          <p className="text-sm">
+            {result} mail{result === 1 ? "" : "s"} queued.
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+          {result === null && (
+            <Button variant="outline" disabled={catchUp.isPending} onClick={runPreview}>
+              {catchUp.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Preview
+            </Button>
+          )}
+          {preview !== null && result === null && (
+            <Button disabled={catchUp.isPending} onClick={runStart}>
+              {catchUp.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Start
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AccountCard({
   account,
   onEdit,
@@ -122,6 +224,7 @@ function AccountCard({
   const triggerSync = useTriggerSync();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [catchUpOpen, setCatchUpOpen] = useState(false);
 
   const isRetrying = accountConnectionState(account, syncStatus) === "retrying";
 
@@ -258,6 +361,17 @@ function AccountCard({
                   <XCircle className="h-3 w-3 text-muted-foreground" />
                 )}
                 {account.orders_enabled ? "On" : "Off"}
+                {account.orders_enabled && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-2 h-6 px-2 text-xs"
+                    onClick={() => setCatchUpOpen(true)}
+                  >
+                    <Search className="mr-1 h-3 w-3" />
+                    Look through recent mail…
+                  </Button>
+                )}
               </div>
               <div className="text-muted-foreground">Trash retention</div>
               <div className="flex items-center gap-1">
@@ -354,6 +468,14 @@ function AccountCard({
           })
         }
       />
+
+      {account.orders_enabled && (
+        <OrderCatchUpDialog
+          accountId={account.id}
+          open={catchUpOpen}
+          onOpenChange={setCatchUpOpen}
+        />
+      )}
     </Card>
   );
 }
