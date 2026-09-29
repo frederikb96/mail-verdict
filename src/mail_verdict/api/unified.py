@@ -28,7 +28,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import Select, case, delete, insert, select, text
+from sqlalchemy import case, delete, insert, select, text
 from sqlalchemy import func as sa_func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,6 +53,7 @@ from mail_verdict.database.models import (
     AccountPrefs,
     Folder,
     FolderPrefs,
+    GlacierMessage,
     Message,
     UnifiedView,
     UnifiedViewFolder,
@@ -100,11 +101,13 @@ async def set_account_emoji(
 # --- Membership, shared with folder_management.py and accounts.py ---
 
 
-def member_folder_ids(view_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
+def member_folder_ids(view_id: uuid.UUID) -> Any:
     """The folders a view actually shows: its members on an active account
-    that have not been deleted. The one definition every read of a view's
-    contents goes through."""
-    return (
+    that have not been deleted, unioned with any member that names a
+    still-enabled glacier folder -- a glacier id never appears in Folder
+    at all (it is synthetic, D2), so the plain join above would silently
+    drop it (design section 4.5)."""
+    real = (
         select(UnifiedViewFolder.folder_id)
         .join(Folder, Folder.id == UnifiedViewFolder.folder_id)
         .join(Account, Account.id == Folder.account_id)
@@ -114,6 +117,17 @@ def member_folder_ids(view_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
             Account.is_active.is_(True),
         )
     )
+    glacier = (
+        select(UnifiedViewFolder.folder_id)
+        .join(AccountPrefs, AccountPrefs.glacier_folder_id == UnifiedViewFolder.folder_id)
+        .join(Account, Account.id == AccountPrefs.account_id)
+        .where(
+            UnifiedViewFolder.view_id == view_id,
+            AccountPrefs.glacier_enabled.is_(True),
+            Account.is_active.is_(True),
+        )
+    )
+    return real.union(glacier)
 
 
 async def view_ids_by_folder(
@@ -156,7 +170,16 @@ async def set_folder_views(
         select(Folder.id).where(Folder.id == folder_id, Folder.deleted_at.is_(None))
     )
     if folder_exists is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        # A glacier folder id is synthetic -- never a Folder row (D2) --
+        # so it is checked against account_prefs instead.
+        glacier_exists = await session.scalar(
+            select(AccountPrefs.account_id).where(
+                AccountPrefs.glacier_folder_id == folder_id,
+                AccountPrefs.glacier_enabled.is_(True),
+            )
+        )
+        if glacier_exists is None:
+            raise HTTPException(status_code=404, detail="Folder not found")
 
     wanted = list(dict.fromkeys(view_ids))
     if wanted:
@@ -235,6 +258,38 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
         )
         rows = list((await session.execute(stmt)).all())
 
+        # A glacier membership row never joins the query above (its
+        # folder_id is synthetic, not a Folder row -- D2) and would
+        # silently vanish from every view that includes it without this
+        # arm (design section 4.5).
+        glacier_stmt = (
+            select(
+                UnifiedViewFolder.view_id,
+                AccountPrefs.account_id,
+                AccountPrefs.glacier_folder_id,
+                Account.name.label("account_name"),
+                AccountPrefs.emoji.label("account_emoji"),
+                sa_func.count(GlacierMessage.id).label("total_count"),
+                sa_func.count(
+                    case((GlacierMessage.is_seen.is_(False), GlacierMessage.id))
+                ).label("unread_count"),
+            )
+            .select_from(UnifiedViewFolder)
+            .join(AccountPrefs, AccountPrefs.glacier_folder_id == UnifiedViewFolder.folder_id)
+            .join(Account, Account.id == AccountPrefs.account_id)
+            .outerjoin(
+                GlacierMessage,
+                (GlacierMessage.folder_id == UnifiedViewFolder.folder_id)
+                & GlacierMessage.visible_at.is_not(None),
+            )
+            .where(AccountPrefs.glacier_enabled.is_(True), Account.is_active.is_(True))
+            .group_by(
+                UnifiedViewFolder.view_id, AccountPrefs.account_id,
+                AccountPrefs.glacier_folder_id, Account.name, AccountPrefs.emoji,
+            )
+        )
+        glacier_rows = list((await session.execute(glacier_stmt)).all())
+
     members: dict[uuid.UUID, list[tuple[UnifiedFolderSource, int, int]]] = {}
     for view_id, folder, override, account_name, account_emoji, total, unread in rows:
         members.setdefault(view_id, []).append((
@@ -245,6 +300,21 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
                 folder_id=folder.id,
                 imap_name=folder.imap_name,
                 special_use=override or folder.special_use,
+            ),
+            total,
+            unread,
+        ))
+    for view_id, account_id, glacier_folder_id, account_name, account_emoji, total, unread in (
+        glacier_rows
+    ):
+        members.setdefault(view_id, []).append((
+            UnifiedFolderSource(
+                account_id=account_id,
+                account_name=account_name,
+                account_emoji=account_emoji,
+                folder_id=glacier_folder_id,
+                imap_name="Glacier",
+                special_use=None,
             ),
             total,
             unread,

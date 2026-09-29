@@ -21,13 +21,13 @@ from __future__ import annotations
 import html
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import defer
+from sqlalchemy.orm import aliased, defer
 
 from mail_verdict.api.events import get_event_ring
 from mail_verdict.api.image_exceptions import (
@@ -83,6 +83,7 @@ from mail_verdict.database.repository import (
 )
 from mail_verdict.glacier.operations import glacier_message_now
 from mail_verdict.glacier.restore import start_restore
+from mail_verdict.glacier.rows import glacier_as_message_select, glacier_folder_ids
 from mail_verdict.mail_actions.submissions import request_fingerprint, run_once
 from mail_verdict.postimap.actions import (
     expunge,
@@ -133,7 +134,18 @@ _DETAIL_DEFERRED_COLUMNS = (
 )
 
 
-def _flat_summary(m: Message, marks: dict[uuid.UUID, RowMarks]) -> MessageSummary:
+def _flat_summary(
+    m: Message, marks: dict[uuid.UUID, RowMarks], glacier_ids: frozenset[uuid.UUID] = frozenset(),
+) -> MessageSummary:
+    """`glacier_ids` is which of this page's own ids are actually a
+    glacier row -- needed because a union page's rows are all plain
+    `Message` instances regardless of which table they came from
+    (aliased(Message, union_subquery) returns Message objects for both
+    arms), so imap_uid alone cannot tell a glacier row (always NULL,
+    §2.2) from a live one with a move pending (also NULL). The
+    glacier-only entity path could infer this from isinstance instead,
+    but resolving it from ids here covers both paths with one rule."""
+    is_glacier = m.id in glacier_ids
     return MessageSummary(
         has_attachments=marks[m.id].has_attachments,
         verdict_is_spam=marks[m.id].verdict_is_spam,
@@ -150,15 +162,18 @@ def _flat_summary(m: Message, marks: dict[uuid.UUID, RowMarks]) -> MessageSummar
         is_answered=m.is_answered,
         is_draft=m.is_draft,
         is_truncated=m.is_truncated,
-        pending_sync=m.imap_uid is None,
+        pending_sync=False if is_glacier else m.imap_uid is None,
         snippet=build_snippet(m.body_text),
         mirrored_at=m.created_at,
+        is_glacier=is_glacier,
     )
 
 
 def _threaded_summary(
     m: Message, thread_count: int, unread_in_thread: int, marks: dict[uuid.UUID, RowMarks],
+    glacier_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> MessageSummary:
+    is_glacier = m.id in glacier_ids
     return MessageSummary(
         has_attachments=marks[m.id].has_attachments,
         verdict_is_spam=marks[m.id].verdict_is_spam,
@@ -175,12 +190,31 @@ def _threaded_summary(
         is_answered=m.is_answered,
         is_draft=m.is_draft,
         is_truncated=m.is_truncated,
-        pending_sync=m.imap_uid is None,
+        pending_sync=False if is_glacier else m.imap_uid is None,
         snippet=build_snippet(m.body_text),
         thread_count=thread_count,
         unread_in_thread=unread_in_thread,
         mirrored_at=m.created_at,
+        is_glacier=is_glacier,
     )
+
+
+async def _resolve_glacier_ids(
+    session: AsyncSession, entity: Any, ids: list[uuid.UUID],
+) -> frozenset[uuid.UUID]:
+    """Which of these ids are glacier rows, for _flat_summary/
+    _threaded_summary's own is_glacier/pending_sync computation. Zero
+    query cost on the untouched path (entity is Message): a real-folder
+    list can never have one. The glacier-only path (entity is
+    GlacierMessage) needs no query either -- every id already is one."""
+    if entity is Message:
+        return frozenset()
+    if entity is GlacierMessage:
+        return frozenset(ids)
+    if not ids:
+        return frozenset()
+    result = await session.execute(select(GlacierMessage.id).where(GlacierMessage.id.in_(ids)))
+    return frozenset(result.scalars())
 
 
 @account_router.get("", response_model=MessageListResponse)
@@ -297,10 +331,14 @@ async def _read_message_page(
             status_code=400, detail="around is mutually exclusive with before/after",
         )
 
+    entity = await _resolve_list_entity(
+        session, account_id=account_id, folder_id=folder_id, folder_scope=folder_scope,
+    )
+
     if around is not None:
         return await _list_messages_around(
             session, account_id, folder_id, threaded, is_seen, since, around, limit,
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
 
     direction: Literal["older", "newer"] = "newer" if after is not None else "older"
@@ -308,7 +346,7 @@ async def _read_message_page(
     cursor_received_at, cursor_id = None, None
     if cursor_param is not None:
         cursor_result = await session.execute(
-            select(Message.received_at, Message.id).where(Message.id == cursor_param)
+            select(entity.received_at, entity.id).where(entity.id == cursor_param)
         )
         cursor_row = cursor_result.one_or_none()
         if cursor_row is None:
@@ -322,26 +360,28 @@ async def _read_message_page(
         rows = await _list_messages_threaded(
             session, account_id, folder_id, is_seen, since,
             cursor_received_at, cursor_id, limit, direction=direction,
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
         overflow = len(rows) > limit
         page = rows[:limit]
         if direction == "newer":
             page = list(reversed(page))
         marks = await list_row_marks(session, [m.id for m, _tc, _uc in page])
-        messages = [_threaded_summary(m, tc, uc, marks) for m, tc, uc in page]
+        glacier_ids = await _resolve_glacier_ids(session, entity, [m.id for m, _tc, _uc in page])
+        messages = [_threaded_summary(m, tc, uc, marks, glacier_ids) for m, tc, uc in page]
     else:
         all_msgs = await _list_messages_flat_page(
             session, account_id, folder_id, is_seen, since,
             cursor_received_at, cursor_id, limit, direction=direction,
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
         overflow = len(all_msgs) > limit
         page_msgs = all_msgs[:limit]
         if direction == "newer":
             page_msgs = list(reversed(page_msgs))
         marks = await list_row_marks(session, [m.id for m in page_msgs])
-        messages = [_flat_summary(m, marks) for m in page_msgs]
+        glacier_ids = await _resolve_glacier_ids(session, entity, [m.id for m in page_msgs])
+        messages = [_flat_summary(m, marks, glacier_ids) for m in page_msgs]
 
     # Only the direction actually explored by this fetch is a genuinely
     # open question; the other stays at its safe default (nothing more)
@@ -358,28 +398,109 @@ async def _read_message_page(
     )
 
 
+async def _resolve_list_entity(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID | None,
+    folder_id: uuid.UUID | None,
+    folder_scope: Any | None,
+) -> Any:
+    """What every list helper below actually queries: `Message` itself,
+    untouched, for a request that cannot reach a glacier at all (design
+    section 4.2's "an installation with the feature off pays nothing" --
+    this is the one query that decides it, once per page rather than
+    once per helper).
+
+    `folder_id` naming a glacier folder queries `GlacierMessage` directly
+    -- no union, the cheaper and more common case (opening the Glacier
+    folder itself), and no aliasing either: `GlacierMessage` is a proper
+    mapped class in its own right, so `entity.<field>` and `select(entity)`
+    already work on it exactly as they do on `Message`, without needing
+    to fake up an ORM correspondence the way the union path below does.
+    `_list_filters` adds the `visible_at IS NOT NULL` guard (D8) whenever
+    `entity is GlacierMessage`, since nothing else on this path goes
+    through glacier_as_message_select() to pick it up automatically.
+
+    Anything wider that can still reach a glacier -- a unified view's
+    folder_scope (member_folder_ids already unions a glacier membership
+    in, so any folder_scope might carry one), or an account-wide/
+    instance-wide list with no folder_id at all -- gets a UNION ALL of
+    both tables (never plain UNION: a live id and a glacier id can never
+    collide, so there is nothing to deduplicate) wrapped in a subquery
+    and aliased back onto Message (database/repository.py's
+    _build_candidate_query already uses the same trick for its own
+    to_addrs branch). Unlike the glacier-only case, this DOES need
+    `aliased(Message, ...)`: `entity.<field>` has to work as one thing
+    spanning both tables, which only a real entity backed by the
+    combined subquery can give it -- SQLAlchemy can only correlate that
+    aliasing when the subquery's own first branch is itself an ORM
+    `select(Message)`, which the union's live arm always is; a bare
+    `select(*columns)` over `GlacierMessage` alone (as glacier_as_message
+    _select() builds) carries no such anchor and aliased() cannot
+    correlate to it standalone (as this function's glacier-only branch
+    demonstrates by not even trying).
+
+    A message's own thread_id survives glaciering unchanged (design
+    section 3.9's "reads stay a plain thread_id equality union"), which
+    is what makes grouping by thread_id after this union still correct.
+    """
+    known = await glacier_folder_ids(session)
+    if not known:
+        return Message
+
+    if folder_id is not None:
+        if folder_id in known:
+            return GlacierMessage
+        return Message
+
+    if folder_scope is None and account_id is not None and account_id not in known.values():
+        return Message
+
+    live = select(Message).where(Message.expunged_at.is_(None))
+    glacier = glacier_as_message_select()
+    if account_id is not None:
+        live = live.where(Message.account_id == account_id)
+        glacier = glacier.where(GlacierMessage.account_id == account_id)
+    if folder_scope is not None:
+        live = live.where(Message.folder_id.in_(folder_scope))
+        glacier = glacier.where(GlacierMessage.folder_id.in_(folder_scope))
+    return aliased(Message, live.union_all(glacier).subquery())
+
+
 def _list_filters(
+    entity: Any,
     account_id: uuid.UUID | None,
     folder_id: uuid.UUID | None,
     is_seen: bool | None,
     since: datetime | None,
     folder_scope: Any | None,
 ) -> list[ColumnElement[bool]]:
-    """The WHERE clause every list helper below shares. folder_scope is a
-    selectable of folder ids -- a unified view's member folders, which can
-    span accounts -- for a list covering more than one folder; None for an
-    ordinary account/folder list."""
-    filters: list[ColumnElement[bool]] = [Message.expunged_at.is_(None)]
+    """The WHERE clause every list helper below shares. `entity` is
+    whatever _resolve_list_entity returned for this page -- `Message`
+    itself, or an entity already scoped to one glacier folder or to a
+    live+glacier union, in which case re-applying account_id/folder_id/
+    folder_scope here is a harmless no-op (they already hold, by
+    construction) rather than a second filter doing real work.
+    folder_scope is a selectable of folder ids -- a unified view's member
+    folders, which can span accounts -- for a list covering more than one
+    folder; None for an ordinary account/folder list."""
+    filters: list[ColumnElement[bool]] = [entity.expunged_at.is_(None)]
+    if entity is GlacierMessage:
+        # D8: NULL means invisible to every listing -- the glacier-only
+        # path's own guard, since it never goes through
+        # glacier_as_message_select() (which bakes this in for the union
+        # path below) to pick this up automatically.
+        filters.append(entity.visible_at.is_not(None))
     if account_id is not None:
-        filters.append(Message.account_id == account_id)
+        filters.append(entity.account_id == account_id)
     if folder_id is not None:
-        filters.append(Message.folder_id == folder_id)
+        filters.append(entity.folder_id == folder_id)
     if folder_scope is not None:
-        filters.append(Message.folder_id.in_(folder_scope))
+        filters.append(entity.folder_id.in_(folder_scope))
     if is_seen is not None:
-        filters.append(Message.is_seen == is_seen)
+        filters.append(entity.is_seen == is_seen)
     if since is not None:
-        filters.append(Message.received_at >= since)
+        filters.append(entity.received_at >= since)
     return filters
 
 
@@ -394,17 +515,20 @@ async def _list_messages_around(
     limit: int,
     *,
     folder_scope: Any | None = None,
+    entity: Any = Message,
 ) -> MessageListResponse:
     """A page centred on `around` rather than the newest edge -- see
     list_messages's own docstring for the threaded resolution and the
     not-a-member answer."""
     if threaded:
         resolved = await _resolve_around_threaded(
-            session, account_id, folder_id, is_seen, since, around, folder_scope=folder_scope,
+            session, account_id, folder_id, is_seen, since, around,
+            folder_scope=folder_scope, entity=entity,
         )
     else:
         flat_target = await _resolve_around_flat(
-            session, account_id, folder_id, is_seen, since, around, folder_scope=folder_scope,
+            session, account_id, folder_id, is_seen, since, around,
+            folder_scope=folder_scope, entity=entity,
         )
         resolved = (flat_target, 0, 0) if flat_target is not None else None
 
@@ -425,12 +549,12 @@ async def _list_messages_around(
         older_rows = await _list_messages_threaded(
             session, account_id, folder_id, is_seen, since,
             target.received_at, target.id, half_older, direction="older",
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
         newer_rows = await _list_messages_threaded(
             session, account_id, folder_id, is_seen, since,
             target.received_at, target.id, half_newer, direction="newer",
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
         has_more = len(older_rows) > half_older
         has_more_newer = len(newer_rows) > half_newer
@@ -440,23 +564,27 @@ async def _list_messages_around(
             *older_rows[:half_older],
         ]
         marks = await list_row_marks(session, [m.id for m, _tc, _uc in combined])
-        messages = [_threaded_summary(m, tc, uc, marks) for m, tc, uc in combined]
+        glacier_ids = await _resolve_glacier_ids(
+            session, entity, [m.id for m, _tc, _uc in combined],
+        )
+        messages = [_threaded_summary(m, tc, uc, marks, glacier_ids) for m, tc, uc in combined]
     else:
         older_msgs = await _list_messages_flat_page(
             session, account_id, folder_id, is_seen, since,
             target.received_at, target.id, half_older, direction="older",
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
         newer_msgs = await _list_messages_flat_page(
             session, account_id, folder_id, is_seen, since,
             target.received_at, target.id, half_newer, direction="newer",
-            folder_scope=folder_scope,
+            folder_scope=folder_scope, entity=entity,
         )
         has_more = len(older_msgs) > half_older
         has_more_newer = len(newer_msgs) > half_newer
         combined_msgs = [*reversed(newer_msgs[:half_newer]), target, *older_msgs[:half_older]]
         marks = await list_row_marks(session, [m.id for m in combined_msgs])
-        messages = [_flat_summary(m, marks) for m in combined_msgs]
+        glacier_ids = await _resolve_glacier_ids(session, entity, [m.id for m in combined_msgs])
+        messages = [_flat_summary(m, marks, glacier_ids) for m in combined_msgs]
 
     next_cursor = str(messages[-1].id) if has_more and messages else None
     prev_cursor = str(messages[0].id) if has_more_newer and messages else None
@@ -475,18 +603,17 @@ async def _resolve_around_flat(
     around: uuid.UUID,
     *,
     folder_scope: Any | None = None,
+    entity: Any = Message,
 ) -> Message | None:
     """The `around` target itself, if it matches this list's own filters --
     None otherwise (it doesn't exist, isn't in this account, or is filtered
     out), which the caller reports as "not a member of this list"."""
-    stmt = (
-        select(Message)
-        .options(*_LIST_DEFERRED_COLUMNS)
-        .where(
-            Message.id == around,
-            *_list_filters(account_id, folder_id, is_seen, since, folder_scope),
-        )
+    stmt = select(entity).where(
+        entity.id == around,
+        *_list_filters(entity, account_id, folder_id, is_seen, since, folder_scope),
     )
+    if entity is Message:
+        stmt = stmt.options(*_LIST_DEFERRED_COLUMNS)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -500,6 +627,7 @@ async def _resolve_around_threaded(
     around: uuid.UUID,
     *,
     folder_scope: Any | None = None,
+    entity: Any = Message,
 ) -> tuple[Message, int, int] | None:
     """Resolve `around` to the row that actually represents it in threaded
     mode: the latest message in its own thread among those matching this
@@ -510,8 +638,9 @@ async def _resolve_around_threaded(
     of its messages could still be filtered out (e.g. an unread-only view
     where this thread is fully read)."""
     thread_result = await session.execute(
-        select(Message.thread_id).where(
-            Message.id == around, *_list_filters(account_id, None, None, None, None),
+        select(entity.thread_id).where(
+            entity.id == around,
+            *_list_filters(entity, account_id, None, None, None, None),
         )
     )
     thread_id = thread_result.scalar_one_or_none()
@@ -519,25 +648,27 @@ async def _resolve_around_threaded(
         return None
 
     filters = [
-        *_list_filters(account_id, folder_id, is_seen, since, folder_scope),
-        Message.thread_id == thread_id,
+        *_list_filters(entity, account_id, folder_id, is_seen, since, folder_scope),
+        entity.thread_id == thread_id,
     ]
 
-    representative_result = await session.execute(
-        select(Message)
-        .options(*_LIST_DEFERRED_COLUMNS)
+    representative_stmt = (
+        select(entity)
         .where(*filters)
-        .order_by(desc(Message.received_at), desc(Message.id))
+        .order_by(desc(entity.received_at), desc(entity.id))
         .limit(1)
     )
+    if entity is Message:
+        representative_stmt = representative_stmt.options(*_LIST_DEFERRED_COLUMNS)
+    representative_result = await session.execute(representative_stmt)
     representative = representative_result.scalar_one_or_none()
     if representative is None:
         return None
 
     stats_result = await session.execute(
         select(
-            func.count(Message.id),
-            func.count(case((Message.is_seen.is_(False), Message.id))),
+            func.count(entity.id),
+            func.count(case((entity.is_seen.is_(False), entity.id))),
         ).where(*filters)
     )
     thread_count, unread_in_thread = stats_result.one()
@@ -556,6 +687,7 @@ async def _list_messages_flat_page(
     *,
     direction: Literal["older", "newer"] = "older",
     folder_scope: Any | None = None,
+    entity: Any = Message,
 ) -> list[Message]:
     """
     One page of ordinary (non-threaded) messages.
@@ -568,24 +700,31 @@ async def _list_messages_flat_page(
     forward from its cursor; the caller reverses it before rendering, since
     the list itself is always newest-first regardless of which direction a
     given page happened to be fetched in.
+
+    `entity` is _resolve_list_entity's own choice for this page -- plain
+    `Message` deferring raw_source/raw_headers as always, or an aliased
+    glacier-only/union entity, which is queried whole (no defer options:
+    they name Message's own columns, meaningless against a derived
+    entity, and a glacier-involved page is the less common case this
+    costs a little extra I/O on rather than the ordinary one).
     """
-    stmt = (
-        select(Message)
-        .options(*_LIST_DEFERRED_COLUMNS)
-        .where(*_list_filters(account_id, folder_id, is_seen, since, folder_scope))
+    stmt = select(entity).where(
+        *_list_filters(entity, account_id, folder_id, is_seen, since, folder_scope)
     )
+    if entity is Message:
+        stmt = stmt.options(*_LIST_DEFERRED_COLUMNS)
 
     if direction == "older":
-        stmt = stmt.order_by(desc(Message.received_at), desc(Message.id))
+        stmt = stmt.order_by(desc(entity.received_at), desc(entity.id))
         if cursor_id is not None:
             stmt = stmt.where(
-                after_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
+                after_cursor(entity.received_at, entity.id, cursor_received_at, cursor_id)
             )
     else:
-        stmt = stmt.order_by(Message.received_at.asc(), Message.id.asc())
+        stmt = stmt.order_by(entity.received_at.asc(), entity.id.asc())
         if cursor_id is not None:
             stmt = stmt.where(
-                before_cursor(Message.received_at, Message.id, cursor_received_at, cursor_id)
+                before_cursor(entity.received_at, entity.id, cursor_received_at, cursor_id)
             )
     stmt = stmt.limit(limit + 1)
     result = await session.execute(stmt)
@@ -604,6 +743,7 @@ async def _list_messages_threaded(
     *,
     direction: Literal["older", "newer"] = "older",
     folder_scope: Any | None = None,
+    entity: Any = Message,
 ) -> list[tuple[Message, int, int]]:
     """
     One row per thread_id: the latest message plus its thread's counts.
@@ -618,7 +758,12 @@ async def _list_messages_threaded(
     Both the DISTINCT ON pick and the count aggregate are scoped to the
     same folder filter as the rest of the list: a thread's count here means
     "messages in this thread within this folder", matching the per-folder
-    browsing the list itself is scoped to.
+    browsing the list itself is scoped to. When `entity` is a live+glacier
+    union, this groups across both tables by thread_id equality, exactly
+    as design section 3.9 says a read must ("reads stay a plain thread_id
+    equality union") -- a message's own thread_id is unchanged by
+    glaciering, so a conversation split across both tables still groups
+    as one thread here.
 
     direction: see _list_messages_flat_page's own docstring -- the same
     "older" default / "newer" mirror, and the same reversal obligation on
@@ -636,24 +781,24 @@ async def _list_messages_threaded(
     raw_headers through the sort for every candidate message in the
     folder, not just the ones returned.
     """
-    filters = _list_filters(account_id, folder_id, is_seen, since, folder_scope)
+    filters = _list_filters(entity, account_id, folder_id, is_seen, since, folder_scope)
 
     latest_per_thread = (
-        select(Message.id, Message.thread_id, Message.received_at)
+        select(entity.id, entity.thread_id, entity.received_at)
         .where(*filters)
-        .distinct(Message.thread_id)
-        .order_by(Message.thread_id, desc(Message.received_at), desc(Message.id))
+        .distinct(entity.thread_id)
+        .order_by(entity.thread_id, desc(entity.received_at), desc(entity.id))
         .subquery("latest_per_thread")
     )
 
     thread_stats = (
         select(
-            Message.thread_id.label("thread_id"),
-            func.count(Message.id).label("thread_count"),
-            func.count(case((Message.is_seen.is_(False), Message.id))).label("unread_in_thread"),
+            entity.thread_id.label("thread_id"),
+            func.count(entity.id).label("thread_count"),
+            func.count(case((entity.is_seen.is_(False), entity.id))).label("unread_in_thread"),
         )
         .where(*filters)
-        .group_by(Message.thread_id)
+        .group_by(entity.thread_id)
         .subquery("thread_stats")
     )
 
@@ -680,16 +825,10 @@ async def _list_messages_threaded(
     if not page:
         return []
 
-    messages_by_id = {
-        m.id: m
-        for m in (
-            await session.execute(
-                select(Message)
-                .options(*_LIST_DEFERRED_COLUMNS)
-                .where(Message.id.in_([row.id for row in page]))
-            )
-        ).scalars()
-    }
+    ids_stmt = select(entity).where(entity.id.in_([row.id for row in page]))
+    if entity is Message:
+        ids_stmt = ids_stmt.options(*_LIST_DEFERRED_COLUMNS)
+    messages_by_id = {m.id: m for m in (await session.execute(ids_stmt)).scalars()}
     return [(messages_by_id[row.id], row.thread_count, row.unread_in_thread) for row in page]
 
 
@@ -948,14 +1087,17 @@ async def get_message(
 
 
 def _rewrite_cid_references(
-    body_html: str, message_id: uuid.UUID, attachments: list[Attachment],
+    body_html: str, message_id: uuid.UUID, attachments: list[Any],
 ) -> str:
     """
     Rewrite cid: image sources to the attachment streaming endpoint.
 
     Inline images referenced by Content-ID resolve through
     GET /messages/{id}/attachments/{attachment_id} rather than staying as
-    a cid: URI the browser cannot fetch directly.
+    a cid: URI the browser cannot fetch directly -- id-agnostic (design
+    section 4.2), so a glaciered message's own attachments need no
+    branch here: only content_id and id are read, and GlacierAttachment
+    carries both under the same names.
     """
     import re
 
@@ -1000,15 +1142,42 @@ async def get_thread(
         anchor = await session.execute(select(Message.thread_id).where(Message.id == message_id))
         thread_id = anchor.scalar_one_or_none()
         if thread_id is None:
+            glacier_anchor = await session.execute(
+                select(GlacierMessage.thread_id).where(
+                    GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            thread_id = glacier_anchor.scalar_one_or_none()
+        if thread_id is None:
             raise HTTPException(status_code=404, detail="Message not found")
 
-        result = await session.execute(
+        # A conversation is never entirely one table once any of its
+        # messages has been glaciered -- a live message's own thread_id
+        # is unchanged by copy_message (design section 3), so the
+        # glaciered half and whatever stayed live both carry it. Two
+        # queries, one per table, unioned in Python and re-sorted by
+        # received_at -- the "column-compatible union" pattern
+        # (glacier/rows.py) done directly here rather than through a SQL
+        # UNION, since both halves already need their own full ORM rows
+        # for tags/attachments/verdict lookups below regardless.
+        live_result = await session.execute(
             select(Message)
             .options(*_DETAIL_DEFERRED_COLUMNS)
             .where(Message.thread_id == thread_id, Message.expunged_at.is_(None))
-            .order_by(Message.received_at)
         )
-        thread_messages = list(result.scalars().all())
+        live_messages: list[Message | GlacierMessage] = list(live_result.scalars().all())
+        glacier_result = await session.execute(
+            select(GlacierMessage).where(
+                GlacierMessage.thread_id == thread_id, GlacierMessage.visible_at.is_not(None),
+            )
+        )
+        glacier_messages = list(glacier_result.scalars().all())
+        glacier_ids = {m.id for m in glacier_messages}
+
+        _min_dt = datetime.min.replace(tzinfo=timezone.utc)
+        thread_messages = sorted(
+            [*live_messages, *glacier_messages], key=lambda m: m.received_at or _min_dt,
+        )
         mail_ids = [m.id for m in thread_messages]
 
         # Four queries total for the whole conversation rather than four
@@ -1032,6 +1201,7 @@ async def get_thread(
         for m in thread_messages:
             attachments = attachments_by_mail[m.id]
             verdict = verdicts_by_mail.get(m.id)
+            is_glacier = m.id in glacier_ids
 
             body_html = m.body_html
             if body_html:
@@ -1055,6 +1225,8 @@ async def get_thread(
                     tags=tags_by_mail[m.id],
                     attachments=attachments,
                     verdict=verdict,
+                    is_glacier=is_glacier,
+                    origin_folder_name=m.origin_imap_name if is_glacier else None,  # type: ignore[union-attr]
                 )
             )
         return ThreadResponse(messages=details)

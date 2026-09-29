@@ -39,6 +39,7 @@ from mail_verdict.database.models import (
     Attachment,
     Folder,
     FolderPrefs,
+    GlacierAttachment,
     MailTag,
     Message,
     PushSubscription,
@@ -1462,6 +1463,21 @@ async def list_row_marks(
             )
         ).scalars()
     )
+    # A glaciered message's attachments live in glacier_attachments, keyed
+    # by glacier_message_id -- a glacier row's own id never appears in
+    # attachments at all. ids mixes live and glacier ids indiscriminately
+    # (a caller cannot tell which is which without this), so both are
+    # always checked; the wrong table simply never matches an id from the
+    # other.
+    attached |= set(
+        (
+            await session.execute(
+                select(GlacierAttachment.glacier_message_id)
+                .where(GlacierAttachment.glacier_message_id.in_(ids))
+                .distinct()
+            )
+        ).scalars()
+    )
     latest_rows = (
         await session.execute(
             select(Verdict.mail_id, Verdict.is_spam)
@@ -1497,17 +1513,28 @@ async def list_tags_for_mails(
 
 async def list_attachments_for_mails(
     session: AsyncSession, message_ids: Sequence[uuid.UUID],
-) -> dict[uuid.UUID, list[Attachment]]:
-    """Every attachment for a set of messages, in one query. See
+) -> dict[uuid.UUID, list[Attachment | GlacierAttachment]]:
+    """Every attachment for a set of messages, in one query per table. See
     list_tags_for_mails for why this exists alongside AttachmentRepository's
-    own per-message get_by_message_id."""
+    own per-message get_by_message_id.
+
+    ids mixes live and glacier message ids indiscriminately (a caller
+    cannot tell which is which without checking both tables) -- a
+    GlacierAttachment mirrors Attachment field for field (id, filename,
+    content_type, content_id, size_bytes, data), so callers that only
+    read those fields need no branch of their own."""
     ids = list(message_ids)
     if not ids:
         return {}
     result = await session.execute(select(Attachment).where(Attachment.message_id.in_(ids)))
-    grouped: dict[uuid.UUID, list[Attachment]] = {mid: [] for mid in ids}
+    grouped: dict[uuid.UUID, list[Attachment | GlacierAttachment]] = {mid: [] for mid in ids}
     for attachment in result.scalars().all():
         grouped[attachment.message_id].append(attachment)
+    glacier_result = await session.execute(
+        select(GlacierAttachment).where(GlacierAttachment.glacier_message_id.in_(ids))
+    )
+    for glacier_attachment in glacier_result.scalars().all():
+        grouped[glacier_attachment.glacier_message_id].append(glacier_attachment)
     return grouped
 
 

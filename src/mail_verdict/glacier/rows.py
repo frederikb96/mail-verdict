@@ -9,11 +9,23 @@ than a database VIEW).
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.database.models import AccountPrefs, GlacierMessage
+from mail_verdict.database.models import AccountPrefs, GlacierMessage, Message
+
+# Message's own column names, in its table's declared order -- the same
+# order select(Message) emits, since a single-table ORM select follows
+# the mapped table's own Table.columns. Building the glacier arm's
+# column list by indexing GlacierMessage.__table__.c with these exact
+# names (rather than by Python attribute name, which need not match --
+# "references" is msg_references on both models) is what makes a UNION
+# against select(Message) line up column-for-column: tests/unit/
+# test_glacier_columns.py is what actually guarantees every name here
+# resolves on the glacier side too.
+_MESSAGE_COLUMN_NAMES: list[str] = [c.name for c in Message.__table__.columns]
 
 
 async def glacier_folder_ids(session: AsyncSession) -> dict[uuid.UUID, uuid.UUID]:
@@ -35,13 +47,30 @@ async def glacier_folder_ids(session: AsyncSession) -> dict[uuid.UUID, uuid.UUID
 
 
 def glacier_branch() -> Select[tuple[GlacierMessage]]:
-    """A Select over glacier_messages, visible rows only, shaped exactly
-    like select(Message) so a caller can union it with one and read the
-    result through an aliased Message the way
-    database/repository.py:_build_candidate_query already does for its
-    own two-branch union. Callers add their own account/folder/date/seen
-    filters on top."""
+    """A Select over glacier_messages, visible rows only (D8), for a
+    caller that wants full GlacierMessage rows -- the manual actions in
+    api/mails.py that already resolve a glacier id directly. For a UNION
+    against select(Message), use glacier_as_message_select() instead:
+    this one carries glacier_messages' own extra columns (msg_key,
+    state, ...) and is not column-compatible with Message."""
     return select(GlacierMessage).where(GlacierMessage.visible_at.is_not(None))
+
+
+def glacier_as_message_select() -> Select[Any]:
+    """A Select over glacier_messages, visible rows only (D8), with
+    exactly Message's own columns in Message's own order -- what makes
+    `select(Message).where(...).union(glacier_as_message_select().where(...))`
+    produce a row shape `aliased(Message, the_union.subquery())` can bind
+    to, the same pattern database/repository.py:_build_candidate_query
+    already uses for its own to_addrs union arm.
+
+    Every predicate a caller adds on top must be written against
+    `GlacierMessage.<name>`, never `Message.<name>` -- the two are
+    different mapped classes over different tables that merely share
+    column names.
+    """
+    cols = [GlacierMessage.__table__.c[name] for name in _MESSAGE_COLUMN_NAMES]
+    return select(*cols).where(GlacierMessage.visible_at.is_not(None))
 
 
 def scope_touches_glacier(
