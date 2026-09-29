@@ -200,7 +200,7 @@ async def confirm_restores(
                           AND imap_uid IS NOT NULL
                           AND coalesce(message_id, '') = coalesce(:message_id_hdr, '')
                           AND size_bytes IS NOT DISTINCT FROM :size_bytes
-                          AND (:target_folder_id::uuid IS NULL OR folder_id = :target_folder_id)
+                          AND folder_id = :target_folder_id
                         LIMIT 1
                         """
                     ),
