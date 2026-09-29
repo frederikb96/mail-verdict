@@ -487,6 +487,38 @@ new enough to grant them, checked the same way account deletion is: a service-ve
 at the call site, not the contract version, since granting a permission breaks nothing a consumer
 already does.
 
+## Glacier storage
+
+A per-account glacier is a place a message can be moved to where it leaves the mail server for
+good and lives on only in `glacier_messages`/`glacier_attachments` — MailVerdict-owned tables,
+column-compatible with `messages`/`attachments`: every column of those two exists on their glacier
+counterpart with the same name and type. That is what makes a read that must span both a
+mechanical `UNION` built per query in SQLAlchemy, rather than a maintained parallel query or a
+database `VIEW` — a view would create a dependency object on a PostIMAP-owned table that a later
+migration of PostIMAP's own could not then alter without erroring "other objects depend on it",
+from another repository, on someone else's deploy.
+
+The glacier gets a synthetic UUID used everywhere a real `folder_id` is used
+(`account_prefs.glacier_folder_id`), assigned once on first enable and kept across a disable.
+Moving a message into or out of it is the ordinary `move` action naming that id as the target — no
+new action verb — which is what lets the existing move picker, drag-and-drop and bulk move pick it
+up with no code of their own once the glacier appears in a folder listing.
+
+The write sequence (`glacier/operations.py`) is copy, verify, expunge, each its own committed
+transaction: the copy and the hash comparison never load message bytes into Python, and the
+expunge step re-checks the live message's account, Message-ID header, size and received date
+against what was recorded at copy time in the same statement that expunges it — the identity guard
+that makes it structurally impossible to remove anything but the exact message that was copied and
+verified. A verify failure never expunges; a crash between any two steps leaves the row exactly
+where the previous step left it, picked up by the next tick rather than needing a human.
+
+Restore (`glacier/restore.py`) is the reverse: an IMAP APPEND of the stored bytes verbatim,
+through a `kind="append"` outbox row rather than the ordinary send/draft recomposition, which
+would lose the original Message-ID, DKIM signature and every received header. It needs a PostIMAP
+capability gated the same way every other one in this codebase is
+(`postimap.contract.supports_message_append`); against an older PostIMAP it answers unavailable
+rather than falling back to some other mechanism, since none exists.
+
 ## Threading
 
 Conversations are grouped by a thread identifier that PostIMAP resolves from the `References` and

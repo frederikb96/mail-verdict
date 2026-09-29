@@ -65,6 +65,14 @@ mirror, which is what keeps it simple.
   and Junk.
   An account can also be given a Trash retention and a Junk retention, each in days and set
   independently, so mail sitting in either long enough is permanently removed on its own.
+- **Glacier storage** — a per-account place mail can be moved to where it leaves the mail server
+  for good and lives on only in this application's own database: listed, searched and included in
+  unified views like any folder, since moving into or out of it is the ordinary move action. Read,
+  star, keyword, reply and forward all keep working, since none of them need the server; moving it
+  to a real folder restores it there with its original date and flags. Turning a glacier off, or
+  deleting its account, is refused while it still holds anything. A number of days set on the
+  account moves its archived mail in automatically, in small paced batches, once a message has sat
+  there that long.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens. A message still waiting on its way out long after it should have gone raises an
