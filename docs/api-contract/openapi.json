@@ -3336,6 +3336,15 @@
             "title": "Is Visible",
             "type": "boolean"
           },
+          "kind": {
+            "default": "imap",
+            "enum": [
+              "imap",
+              "glacier"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "special_use": {
             "anyOf": [
               {
