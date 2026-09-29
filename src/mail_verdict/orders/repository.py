@@ -184,11 +184,22 @@ async def enqueue_write_job(
     session: AsyncSession, order_id: uuid.UUID, *, priority: int, origin: str = "live",
 ) -> None:
     """Enqueue a write job for an order, a no-op if a pending one already
-    exists (uq_order_jobs_write)."""
+    exists (uq_order_jobs_write).
+
+    uq_order_jobs_write is a partial unique INDEX, not a table
+    CONSTRAINT (it can't be one -- a constraint has no WHERE clause) --
+    ON CONFLICT ON CONSTRAINT requires an actual constraint and raises
+    UndefinedObjectError against an index of the same name, so this
+    infers the arbiter from its columns and predicate instead, the same
+    way the uq_order_jobs_mail partial index is targeted elsewhere.
+    """
     stmt = (
         pg_insert(OrderJob)
         .values(kind="write", order_id=order_id, origin=origin, priority=priority)
-        .on_conflict_do_nothing(constraint="uq_order_jobs_write")
+        .on_conflict_do_nothing(
+            index_elements=["order_id"],
+            index_where=text("kind = 'write' AND status = 'pending'"),
+        )
     )
     await session.execute(stmt)
 

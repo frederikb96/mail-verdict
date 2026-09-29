@@ -220,3 +220,29 @@ async def test_an_identifier_another_recently_active_order_holds_is_not_stored(
         )
         rows = {row[0] for row in result.all()}
     assert rows == {order_a}
+
+
+async def test_enqueue_write_job_is_a_no_op_when_one_is_already_pending(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """uq_order_jobs_write is a partial unique INDEX, not a table
+    CONSTRAINT (it carries a WHERE clause, which a constraint cannot) --
+    resolving its ON CONFLICT arbiter by constraint name raises
+    UndefinedObjectError against a real Postgres, which only a real
+    database (never the ORM alone) catches."""
+    from mail_verdict.database.models import OrderJob
+
+    async with migrated_db.session() as session:
+        order_id = await repository.create_order(session)
+        await repository.enqueue_write_job(session, order_id, priority=50)
+        await repository.enqueue_write_job(session, order_id, priority=10)
+
+    async with migrated_db.session() as session:
+        result = await session.execute(
+            select(OrderJob.priority).where(
+                OrderJob.order_id == order_id, OrderJob.kind == "write",
+            )
+        )
+        rows = result.all()
+    assert len(rows) == 1
+    assert rows[0].priority == 50

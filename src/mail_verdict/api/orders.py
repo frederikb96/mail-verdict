@@ -63,9 +63,9 @@ async def _account_ids_by_order(
     if not order_ids:
         return {}
     result = await session.execute(
-        select(OrderMail.order_id, OrderMail.account_id.distinct()).where(
-            OrderMail.order_id.in_(order_ids)
-        )
+        select(OrderMail.order_id, OrderMail.account_id)
+        .distinct()
+        .where(OrderMail.order_id.in_(order_ids))
     )
     out: dict[uuid.UUID, list[uuid.UUID]] = {}
     for order_id, account_id in result.all():
