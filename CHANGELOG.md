@@ -11,13 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   server for good and lives on only in this database. It behaves like a folder -- listed,
   searchable, selectable in unified views -- can be left again (back onto a server folder), and
   can fill itself from an account's archive automatically after a configured number of days.
-  Moving a message in and out uses the ordinary move action; nothing else changes. Moving one in
-  -- from the reading pane, drag and drop, or the bulk toolbar -- always confirms first, naming
-  the count and that the mail leaves the mail server for good, and is never offered undo once
-  confirmed. A glaciered message can still be read, starred, tagged, replied to and forwarded,
-  and deleted for good behind its own confirmation naming it as the only remaining copy; a spam
-  ruling on one is not yet offered. Restoring a message back to the server needs a PostIMAP
-  capability that has not shipped yet, so it is currently unavailable.
+  Moving a message in and out uses the ordinary move action; nothing else changes. Restoring a
+  message back to the server needs a PostIMAP capability that has not shipped yet, so it is
+  currently unavailable.
 
 ## [6.6.1] - 2026-09-28
 
