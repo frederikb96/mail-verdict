@@ -119,3 +119,20 @@ async def glacier_ids_among(
         return frozenset()
     result = await session.execute(select(GlacierMessage.id).where(GlacierMessage.id.in_(ids)))
     return frozenset(result.scalars())
+
+
+async def get_glacier_message_by_key(
+    session: AsyncSession, *, account_id: uuid.UUID, msg_key: str,
+) -> GlacierMessage | None:
+    """A visible glacier row by its durable identity -- what
+    embeddings/worker.py resolves against when a queued row's message_id
+    hint is NULL (design section 4.7: a glaciered message's embedding
+    hint is set to NULL rather than to the glacier row's own id, so the
+    worker cannot find its content the way it finds a live message's)."""
+    result = await session.execute(
+        select(GlacierMessage).where(
+            GlacierMessage.account_id == account_id, GlacierMessage.msg_key == msg_key,
+            GlacierMessage.visible_at.is_not(None),
+        )
+    )
+    return result.scalar_one_or_none()

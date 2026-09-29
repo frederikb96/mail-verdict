@@ -329,6 +329,7 @@ async def test_a_persistently_retryable_failure_reaches_a_dead_letter(
         await _handle_one(
             first, "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=settings_service, circuit=circuit,  # type: ignore[arg-type]
+            db=migrated_db,
         )
 
         async with migrated_db.session() as session:
@@ -346,6 +347,7 @@ async def test_a_persistently_retryable_failure_reaches_a_dead_letter(
         await _handle_one(
             second, "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=settings_service, circuit=circuit,  # type: ignore[arg-type]
+            db=migrated_db,
         )
     finally:
         worker_module.resolve_embedding_provider = original_resolve
@@ -499,6 +501,7 @@ async def test_a_rate_limit_backs_off_by_the_providers_own_retry_after(
         await _handle_one(
             row, "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=settings_service, circuit=circuit,  # type: ignore[arg-type]
+            db=migrated_db,
         )
     finally:
         worker_module.resolve_embedding_provider = original_resolve

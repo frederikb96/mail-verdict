@@ -34,7 +34,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from mail_verdict.database.models import Folder, Message, MessageEmbedding
+from mail_verdict.database.models import Folder, GlacierMessage, Message, MessageEmbedding
 from mail_verdict.database.msg_key import compute_msg_key
 
 if TYPE_CHECKING:
@@ -209,80 +209,116 @@ class EmbeddingRepository:
                 stmt = stmt.where(Message.account_id == account_id)
 
             candidates = (await session.execute(stmt)).all()
-            if not candidates:
-                return (0, 0)
-
-            keys_by_candidate = {
-                row.id: compute_msg_key(
-                    account_id=row.account_id, message_id_hdr=row.message_id_hdr,
-                    from_addr=row.from_addr, subject=row.subject,
-                    received_at=row.received_at, size_bytes=row.size_bytes,
-                )
-                for row in candidates
-            }
-
-            existing = await session.execute(
-                select(
-                    MessageEmbedding.id, MessageEmbedding.account_id,
-                    MessageEmbedding.msg_key, MessageEmbedding.message_id,
-                ).where(
-                    MessageEmbedding.model == model,
-                    tuple_(MessageEmbedding.account_id, MessageEmbedding.msg_key).in_(
-                        [(row.account_id, keys_by_candidate[row.id]) for row in candidates]
-                    ),
-                )
-            )
-            existing_by_key = {(row.account_id, row.msg_key): row for row in existing.all()}
-
-            # A repoint candidate: an existing row under this key whose
-            # hint already points somewhere else. Only actually repointed
-            # below if that hint turns out to be dead -- see the comment
-            # after the liveness check for why.
-            repoint_candidates = {
-                found.id: found.message_id
-                for row in candidates
-                if (found := existing_by_key.get((row.account_id, keys_by_candidate[row.id])))
-                is not None
-                and found.message_id != row.id
-                and found.message_id is not None
-            }
-            live_hint_ids: set[uuid.UUID] = set()
-            if repoint_candidates:
-                live_hint_ids = await _live_message_ids(
-                    session, set(repoint_candidates.values())
-                )
 
             to_insert: list[dict[str, Any]] = []
-            for row in candidates:
-                key = keys_by_candidate[row.id]
-                found = existing_by_key.get((row.account_id, key))
-                if found is None:
-                    to_insert.append({
-                        "account_id": row.account_id, "msg_key": key,
-                        "message_id": row.id, "model": model,
-                    })
-                elif found.message_id != row.id:
-                    # Repoint only when the existing hint is dead (NULL,
-                    # or resolves to no live/non-expunged message) -- this
-                    # is the actual UIDVALIDITY-resync case, and it is
-                    # the only one that should ever move the hint.
-                    #
-                    # An anti-join candidate (this loop's `row`) that
-                    # reaches here despite the hint being alive is IMAP
-                    # storing one message under the same header in two
-                    # folders: `found` already has a live embedding under
-                    # this key, so `row` is that message's shadowed twin
-                    # and stays without an embedding of its own,
-                    # deterministically. Repointing unconditionally here
-                    # (the old behaviour) made the two twins swap which
-                    # one was searchable on every sweep forever.
-                    hint_id = repoint_candidates.get(found.id)
-                    if hint_id is None or hint_id not in live_hint_ids:
-                        await session.execute(
-                            update(MessageEmbedding)
-                            .where(MessageEmbedding.id == found.id)
-                            .values(message_id=row.id)
-                        )
+
+            # Skipped entirely once there are no live candidates -- a
+            # glacier-only batch (a message glaciered while already
+            # missing its embedding) still needs the block below to run,
+            # which an early return here used to prevent.
+            if candidates:
+                keys_by_candidate = {
+                    row.id: compute_msg_key(
+                        account_id=row.account_id, message_id_hdr=row.message_id_hdr,
+                        from_addr=row.from_addr, subject=row.subject,
+                        received_at=row.received_at, size_bytes=row.size_bytes,
+                    )
+                    for row in candidates
+                }
+
+                existing = await session.execute(
+                    select(
+                        MessageEmbedding.id, MessageEmbedding.account_id,
+                        MessageEmbedding.msg_key, MessageEmbedding.message_id,
+                    ).where(
+                        MessageEmbedding.model == model,
+                        tuple_(MessageEmbedding.account_id, MessageEmbedding.msg_key).in_(
+                            [(row.account_id, keys_by_candidate[row.id]) for row in candidates]
+                        ),
+                    )
+                )
+                existing_by_key = {(row.account_id, row.msg_key): row for row in existing.all()}
+
+                # A repoint candidate: an existing row under this key whose
+                # hint already points somewhere else. Only actually repointed
+                # below if that hint turns out to be dead -- see the comment
+                # after the liveness check for why.
+                repoint_candidates = {
+                    found.id: found.message_id
+                    for row in candidates
+                    if (found := existing_by_key.get((row.account_id, keys_by_candidate[row.id])))
+                    is not None
+                    and found.message_id != row.id
+                    and found.message_id is not None
+                }
+                live_hint_ids: set[uuid.UUID] = set()
+                if repoint_candidates:
+                    live_hint_ids = await _live_message_ids(
+                        session, set(repoint_candidates.values())
+                    )
+
+                for row in candidates:
+                    key = keys_by_candidate[row.id]
+                    found = existing_by_key.get((row.account_id, key))
+                    if found is None:
+                        to_insert.append({
+                            "account_id": row.account_id, "msg_key": key,
+                            "message_id": row.id, "model": model,
+                        })
+                    elif found.message_id != row.id:
+                        # Repoint only when the existing hint is dead (NULL,
+                        # or resolves to no live/non-expunged message) -- this
+                        # is the actual UIDVALIDITY-resync case, and it is
+                        # the only one that should ever move the hint.
+                        #
+                        # An anti-join candidate (this loop's `row`) that
+                        # reaches here despite the hint being alive is IMAP
+                        # storing one message under the same header in two
+                        # folders: `found` already has a live embedding under
+                        # this key, so `row` is that message's shadowed twin
+                        # and stays without an embedding of its own,
+                        # deterministically. Repointing unconditionally here
+                        # (the old behaviour) made the two twins swap which
+                        # one was searchable on every sweep forever.
+                        hint_id = repoint_candidates.get(found.id)
+                        if hint_id is None or hint_id not in live_hint_ids:
+                            await session.execute(
+                                update(MessageEmbedding)
+                                .where(MessageEmbedding.id == found.id)
+                                .values(message_id=row.id)
+                            )
+
+            # A visible glacier row (design section 4.7): a message
+            # glaciered before it was ever embedded still needs a vector,
+            # built from its own stored subject/from/body -- see
+            # embeddings/worker.py's own glacier branch for the content
+            # side of this. Its own msg_key is already the durable
+            # identity (set at copy time), so -- unlike the live-message
+            # anti-join above -- this needs no Python-side recompute for
+            # a UIDVALIDITY resync: a glacier row's msg_key never changes
+            # once written. The hint is left NULL on insert, deliberately
+            # (glacier/rows.py's own note on why a hint column that
+            # sometimes names messages.id and sometimes glacier_messages.
+            # id is a type nobody can join safely).
+            glacier_not_embedded = ~select(MessageEmbedding.id).where(
+                MessageEmbedding.account_id == GlacierMessage.account_id,
+                MessageEmbedding.msg_key == GlacierMessage.msg_key,
+                MessageEmbedding.model == model,
+            ).exists()
+            glacier_stmt = (
+                select(GlacierMessage.id, GlacierMessage.account_id, GlacierMessage.msg_key)
+                .where(GlacierMessage.visible_at.is_not(None), glacier_not_embedded)
+                .order_by(GlacierMessage.received_at.desc().nulls_last(), GlacierMessage.id)
+                .limit(batch_size)
+            )
+            if account_id is not None:
+                glacier_stmt = glacier_stmt.where(GlacierMessage.account_id == account_id)
+            glacier_candidates = (await session.execute(glacier_stmt)).all()
+            for glacier_row in glacier_candidates:
+                to_insert.append({
+                    "account_id": glacier_row.account_id, "msg_key": glacier_row.msg_key,
+                    "message_id": None, "model": model,
+                })
 
             inserted = 0
             if to_insert:
@@ -293,7 +329,7 @@ class EmbeddingRepository:
                 result = await session.execute(stmt_ins)
                 inserted = result.rowcount or 0  # type: ignore[attr-defined]
 
-            return (len(candidates), inserted)
+            return (len(candidates) + len(glacier_candidates), inserted)
 
     async def enqueue_one(
         self, *, account_id: uuid.UUID, message_id: uuid.UUID, model: str, priority: int = 0,
@@ -533,6 +569,22 @@ class EmbeddingRepository:
                 scope_stmt = scope_stmt.where(Message.account_id == account_id)
             in_scope = (await session.execute(scope_stmt)).scalar_one()
 
+            # A glaciered message has left `messages` entirely (D2's own
+            # expunge), so the scope query above already excludes it --
+            # without this, in_scope silently forgets a message the
+            # instant it is glaciered, rather than continuing to count it
+            # until it actually has a vector (design section 4.7).
+            glacier_scope_stmt = (
+                select(func.count())
+                .select_from(GlacierMessage)
+                .where(GlacierMessage.visible_at.is_not(None))
+            )
+            if account_id is not None:
+                glacier_scope_stmt = glacier_scope_stmt.where(
+                    GlacierMessage.account_id == account_id
+                )
+            in_scope += (await session.execute(glacier_scope_stmt)).scalar_one()
+
             counts_stmt = (
                 select(
                     func.count().filter(MessageEmbedding.status == "done").label("encoded"),
@@ -563,6 +615,37 @@ class EmbeddingRepository:
             reachable = 0
             if done_hint_ids:
                 reachable = len(await _live_message_ids(session, done_hint_ids))
+
+            # A done row with a NULL hint is not automatically unreachable
+            # -- design section 4.7's own case, a message glaciered after
+            # (or before) being embedded, whose hint is NULL by design
+            # rather than dead. Resolve it against glacier_messages by
+            # its durable (account_id, msg_key) identity, the same
+            # resolution semantic_search itself uses.
+            null_hint_keys_stmt = select(
+                MessageEmbedding.account_id, MessageEmbedding.msg_key,
+            ).where(
+                MessageEmbedding.model == model, MessageEmbedding.status == "done",
+                MessageEmbedding.message_id.is_(None),
+            )
+            if account_id is not None:
+                null_hint_keys_stmt = null_hint_keys_stmt.where(
+                    MessageEmbedding.account_id == account_id
+                )
+            null_hint_keys = (await session.execute(null_hint_keys_stmt)).all()
+            if null_hint_keys:
+                glacier_reachable_stmt = select(
+                    func.count(func.distinct(
+                        tuple_(GlacierMessage.account_id, GlacierMessage.msg_key)
+                    ))
+                ).where(
+                    GlacierMessage.visible_at.is_not(None),
+                    tuple_(GlacierMessage.account_id, GlacierMessage.msg_key).in_(
+                        [(row.account_id, row.msg_key) for row in null_hint_keys]
+                    ),
+                )
+                reachable += (await session.execute(glacier_reachable_stmt)).scalar_one()
+
             unreachable = counts.encoded - reachable
 
             # An in-scope, headered message with no embedding of its own,

@@ -33,6 +33,7 @@ from mail_verdict.embeddings.provider import (
     resolve_embedding_provider,
 )
 from mail_verdict.embeddings.repository import EmbeddingRepository
+from mail_verdict.glacier.rows import get_glacier_message_by_key
 from mail_verdict.queue.backoff import compute_backoff
 from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.queue.manager import QueueManager
@@ -282,7 +283,7 @@ async def _run_worker(
         ):
             await _handle_one(
                 row, worker_id, work_queue, embedding_repo, message_repo,
-                cred_repo, settings_service, circuit,
+                cred_repo, settings_service, circuit, db,
             )
 
 
@@ -295,6 +296,7 @@ async def _handle_one(
     cred_repo: ProviderCredentialRepository,
     settings_service: SettingsService,
     circuit: CircuitBreaker,
+    db: DatabaseConnection,
 ) -> None:
     """
     Process one claimed message_embeddings row to a terminal state.
@@ -306,26 +308,53 @@ async def _handle_one(
     never work_queue's own generic terminal transitions, since both of
     those also gate this message's pipeline run in the same transaction
     (see pipeline/enqueue.enqueue_pipeline_run_if_live_eligible).
+
+    A row whose message_id hint is NULL is not necessarily dead: design
+    section 4.7 sets it to NULL, deliberately, for a message that is
+    (or has become) a glacier row -- read by its durable (account_id,
+    msg_key) identity instead, since the hint intentionally never names
+    a glacier row's own id (see GlacierMessage's docstring for why).
     """
     item_id: uuid.UUID = row["id"]
     account_id: uuid.UUID = row["account_id"]
     message_id: uuid.UUID | None = row["message_id"]
     model: str = row["model"]
 
-    if message_id is None:
-        await embedding_repo.fail(
-            item_id, worker_id=worker_id, last_error="no message_id on row",
-            settings_service=settings_service,
-        )
-        return
+    subject: str | None
+    from_addr: str | None
+    body_text: str | None
+    body_html: str | None
+    is_truncated: bool
 
-    message = await message_repo.get_by_id(account_id, message_id)
-    if message is None:
-        await embedding_repo.fail(
-            item_id, worker_id=worker_id, last_error="message no longer exists",
-            settings_service=settings_service,
+    if message_id is not None:
+        message = await message_repo.get_by_id(account_id, message_id)
+        if message is None:
+            await embedding_repo.fail(
+                item_id, worker_id=worker_id, last_error="message no longer exists",
+                settings_service=settings_service,
+            )
+            return
+        subject, from_addr = message.subject, message.from_addr
+        body_text, body_html, is_truncated = (
+            message.body_text, message.body_html, message.is_truncated,
         )
-        return
+    else:
+        msg_key: str = row["msg_key"]
+        async with db.session() as session:
+            glacier_message = await get_glacier_message_by_key(
+                session, account_id=account_id, msg_key=msg_key,
+            )
+        if glacier_message is None:
+            await embedding_repo.fail(
+                item_id, worker_id=worker_id,
+                last_error="no message_id on row and no glacier row under its msg_key",
+                settings_service=settings_service,
+            )
+            return
+        subject, from_addr = glacier_message.subject, glacier_message.from_addr
+        body_text, body_html, is_truncated = (
+            glacier_message.body_text, glacier_message.body_html, glacier_message.is_truncated,
+        )
 
     settings = settings_service.get("semantic")
     content_chars = int(settings.get("content_chars", 2000))
@@ -333,9 +362,9 @@ async def _handle_one(
     base_url = settings.get("base_url") or None
 
     embedding_input = build_embedding_input(
-        subject=message.subject, from_addr=message.from_addr,
-        body_text=message.body_text, body_html=message.body_html,
-        is_truncated=message.is_truncated, content_chars=content_chars,
+        subject=subject, from_addr=from_addr,
+        body_text=body_text, body_html=body_html,
+        is_truncated=is_truncated, content_chars=content_chars,
     )
 
     try:

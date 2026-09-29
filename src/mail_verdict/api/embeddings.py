@@ -35,6 +35,7 @@ from mail_verdict.embeddings.provider import (
 )
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.search import SemanticSort, Strictness, semantic_search
+from mail_verdict.glacier.rows import glacier_ids_among
 from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
 
@@ -195,8 +196,10 @@ async def search(
         account_id=account_id, folder_ids=folder_ids, strictness=resolved_strictness,
         sort=sort, received_after=received_after, received_before=received_before,
     )
+    result_ids = [hit.message.id for hit in outcome.results]
     async with get_db_connection().session() as session:
-        marks = await list_row_marks(session, [hit.message.id for hit in outcome.results])
+        marks = await list_row_marks(session, result_ids)
+        glacier_ids = await glacier_ids_among(session, result_ids)
     return SemanticSearchResponse(
         results=[
             SearchResult(
@@ -208,9 +211,12 @@ async def search(
                 to_addrs=hit.message.to_addrs, received_at=hit.message.received_at,
                 is_seen=hit.message.is_seen, is_flagged=hit.message.is_flagged,
                 is_answered=hit.message.is_answered, is_draft=hit.message.is_draft,
-                pending_sync=hit.message.imap_uid is None,
+                pending_sync=(
+                    False if hit.message.id in glacier_ids else hit.message.imap_uid is None
+                ),
                 is_truncated=hit.message.is_truncated, mirrored_at=hit.message.created_at,
                 similarity=hit.similarity,
+                is_glacier=hit.message.id in glacier_ids,
             )
             for hit in outcome.results
         ],
