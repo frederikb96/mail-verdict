@@ -188,16 +188,25 @@ class TestTwoAccountsFeedOneOrder:
             assert job_c.outcome == "skipped"
             assert job_c.last_error == "orders disabled"
 
-            orders = (await session.execute(select(Order))).scalars().all()
-            assert len(orders) == 1
-            order = orders[0]
+            # migrated_db is shared across the whole pg-layer session, so
+            # scope to the order account_a's own mail landed in -- never
+            # the whole orders table, which other tests are also using.
+            order_id = (
+                await session.execute(
+                    select(OrderMail.order_id).where(OrderMail.account_id == account_a)
+                )
+            ).scalar_one()
+            order = (await session.execute(select(Order).where(Order.id == order_id))).scalar_one()
             assert order.mail_count == 2
 
             mails = (
                 await session.execute(select(OrderMail).where(OrderMail.order_id == order.id))
             ).scalars().all()
+            account_c_mails = (
+                await session.execute(select(OrderMail).where(OrderMail.account_id == account_c))
+            ).scalars().all()
         assert {m.account_id for m in mails} == {account_a, account_b}
-        assert account_c not in {m.account_id for m in mails}
+        assert account_c_mails == []
 
 
 class TestSameSecondAndRerun:

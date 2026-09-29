@@ -96,7 +96,12 @@ async def test_dry_run_counts_without_creating_anything(migrated_db: DatabaseCon
     assert result.passed == 1
     assert result.queued == 0
     async with migrated_db.session() as session:
-        jobs = (await session.execute(select(OrderJob))).scalars().all()
+        # Scoped to this test's own account -- migrated_db is shared
+        # across the whole pg-layer session, so other tests' order_jobs
+        # rows are already sitting in the same table.
+        jobs = (
+            await session.execute(select(OrderJob).where(OrderJob.account_id == account_id))
+        ).scalars().all()
     assert jobs == []
 
 
