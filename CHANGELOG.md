@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- The calendar's month view now selects a week a little above the middle of the visible rows,
+  not the topmost one -- the header and the currently-selected date always agree on that same
+  row, and jumping to a date (Today, the mini-month, a link) lands its week there too.
+
 ## [6.6.1] - 2026-09-28
 
 - A new mail shows one desktop notification again on a browser that also has push switched

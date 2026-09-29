@@ -9,10 +9,14 @@
  * component alone controls, and `scrollTop` needs exactly one writer.
  *
  * Position is identity, never pixels: `calendarDateAtom` holds the anchor
- * date. `scrollToWeek` writes `scrollTop` for external navigation (Today,
- * the mini-month, the toolbar arrows); `applyMeasurement` writes it for a
+ * date -- the week whose row currently spans the anchor line, a fixed
+ * fraction of the viewport down from the top rather than the top row
+ * itself, so the weeks on both sides stay in view (see month-window.ts's
+ * `computeAnchorWeek`). `scrollToWeek` writes `scrollTop` for external
+ * navigation (Today, the mini-month, the toolbar arrows), placing the
+ * target week's row on that same line; `applyMeasurement` writes it for a
  * mount or a resize, correcting for whatever rowHeight just became. The
- * scroll listener writes the week at the top back into the atom, and
+ * scroll listener writes the week at the anchor back into the atom, and
  * remembers the Date objects it wrote so the navigation effect can tell
  * them from an external write when they come back around a render later.
  *
@@ -61,10 +65,13 @@ import {
 import { MonthWeekRow } from "@/components/calendar/month-week-row";
 import {
   type RenderRange,
+  anchorOffset,
+  computeAnchorWeek,
   computeFetchWindow,
   computeRenderRange,
   sameMonthSet,
   sameRange,
+  scrollTopForAnchorWeek,
 } from "@/components/calendar/month-window";
 import { WEEK_NUMBER_GUTTER_WIDTH, type SelectEventHandler } from "@/components/calendar/layout";
 
@@ -151,8 +158,8 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
    * rendering (the header label, which rows to render) but does not write
    * `calendarDateAtom` back -- the anchor `scrollToWeek` is animating
    * towards (e.g. today's own weekday) is already correct, and the scroll
-   * events fired mid-animation only ever see the top row passing underneath
-   * it, which is not the same date. */
+   * events fired mid-animation only ever see whatever row is passing under
+   * the anchor line, which is not the same date. */
   const programmaticScrollRef = useRef(false);
   /** Set before a rowHeight change lands (initial mount, or a resize), so
    * the effect that applies it knows which week to restore and how far
@@ -165,10 +172,13 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
 
   const totalHeight = (WEEK_INDEX_MAX - WEEK_INDEX_MIN + 1) * rowHeight;
 
-  const updateMonthLabel = useCallback((top: number, height: number) => {
+  // Same computation as the week written into calendarDateAtom below, so the
+  // header and the top-left date can never disagree about which week is
+  // current -- both read off computeAnchorWeek with the same inputs.
+  const updateMonthLabel = useCallback((top: number, viewportHeight: number, height: number) => {
     if (height <= 0) return;
-    const headerWeek = Math.floor((top + 1.5 * height) / height) + WEEK_INDEX_MIN;
-    const clamped = Math.min(WEEK_INDEX_MAX, Math.max(WEEK_INDEX_MIN, headerWeek));
+    const anchorWeek = computeAnchorWeek(top, viewportHeight, height, WEEK_INDEX_MIN);
+    const clamped = Math.min(WEEK_INDEX_MAX, Math.max(WEEK_INDEX_MIN, anchorWeek));
     const thursday = weekDays(clamped)[3];
     setMonthLabel(format(thursday, "MMMM yyyy"));
   }, []);
@@ -244,17 +254,19 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     if (!container) return;
     const rowsPerScreen = compact ? ROWS_PER_SCREEN_COMPACT : ROWS_PER_SCREEN_DESKTOP;
 
-    // Snapshot which week is at the top and how far through it the reader
-    // is, before rowHeight changes under them -- an absolute value computed
-    // from a pre-mutation snapshot. Skipped on the true first mount only:
-    // pendingScrollRef's own useRef initializer already holds the right
-    // target then, and the container has not been positioned yet to
-    // snapshot from.
+    // Snapshot which week is at the anchor and how far through it the
+    // anchor line falls, before rowHeight (or the viewport height, which
+    // the anchor line's own offset scales with) changes under them -- an
+    // absolute value computed from a pre-mutation snapshot. Skipped on the
+    // true first mount only: pendingScrollRef's own useRef initializer
+    // already holds the right target then, and the container has not been
+    // positioned yet to snapshot from.
     function snapshotPending() {
       const prevRowHeight = rowHeightRef.current;
       const week = currentWeekRef.current;
-      const rowTop = (week - WEEK_INDEX_MIN) * prevRowHeight;
-      const fraction = prevRowHeight > 0 ? (container!.scrollTop - rowTop) / prevRowHeight : 0;
+      const anchorPoint = container!.scrollTop + anchorOffset(viewportHeightRef.current);
+      const weekTop = (week - WEEK_INDEX_MIN) * prevRowHeight;
+      const fraction = prevRowHeight > 0 ? (anchorPoint - weekTop) / prevRowHeight : 0;
       pendingScrollRef.current = { week, fraction };
     }
 
@@ -267,11 +279,20 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
 
       const pending = pendingScrollRef.current;
       if (!pending) return;
-      const top = (pending.week - WEEK_INDEX_MIN) * next + pending.fraction * next;
+      const weekTop = (pending.week - WEEK_INDEX_MIN) * next;
+      const anchorPoint = weekTop + pending.fraction * next;
+      const top = anchorPoint - anchorOffset(h);
+      // Same reasoning as scrollToWeek's own write below: this is our own
+      // repositioning, not a reader scroll, and the target week is already
+      // known -- currentWeekRef.current, untouched. Guarding it the same
+      // way means the scroll event this write fires can never recompute a
+      // week and overwrite the atom, whatever rounding the browser applies
+      // to a fractional scrollTop.
+      programmaticScrollRef.current = true;
       container!.scrollTop = top;
       pendingScrollRef.current = null;
       scrollTopRef.current = top;
-      updateMonthLabel(top, next);
+      updateMonthLabel(top, h, next);
       const range = computeRenderRange(top, h, next, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
       setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
       commitFetchWindow(range);
@@ -298,7 +319,9 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       const container = containerRef.current;
       if (!container) return;
       programmaticScrollRef.current = true;
-      const top = (week - WEEK_INDEX_MIN) * rowHeightRef.current;
+      const top = scrollTopForAnchorWeek(
+        week, viewportHeightRef.current, rowHeightRef.current, WEEK_INDEX_MIN,
+      );
       container.scrollTo({ top, behavior });
     },
     [],
@@ -318,7 +341,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     if (!container) return;
     const top = container.scrollTop;
     scrollTopRef.current = top;
-    updateMonthLabel(top, rowHeightRef.current);
+    updateMonthLabel(top, viewportHeightRef.current, rowHeightRef.current);
 
     const range = computeRenderRange(
       top, viewportHeightRef.current, rowHeightRef.current, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX,
@@ -345,7 +368,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
 
     if (programmaticScrollRef.current) return;
 
-    const week = Math.floor(top / rowHeightRef.current) + WEEK_INDEX_MIN;
+    const week = computeAnchorWeek(top, viewportHeightRef.current, rowHeightRef.current, WEEK_INDEX_MIN);
     if (week !== currentWeekRef.current) {
       currentWeekRef.current = week;
       // Cheap: writes only the jotai atom, so the toolbar and mini-month
