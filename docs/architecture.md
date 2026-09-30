@@ -559,6 +559,16 @@ carries no `message_id` hint at all (unlike a live message's, which is repointed
 resync) — it is looked up by the same durable `(account_id, msg_key)` identity the glacier row
 itself uses, needing no hint to go stale in the first place.
 
+An id a caller already holds — a browser tab open before a move, a saved link, a drafted reply —
+keeps resolving after the message it names has moved between `messages` and `glacier_messages`:
+every read that can be reached by id (detail, thread, location, raw source, an attachment, a
+quote) falls through to `glacier/rows.py`'s `resolve_glacier_id`, which checks a glacier row's own
+id as well as its `origin_message_id` — the join hint set at copy time and never changed
+afterward for an ordinary glacier row. `database/msg_key.py`'s `resolve_by_msg_key` is the more
+general form of the same idea, for a caller holding the durable `(account_id, msg_key)` identity
+rather than a specific row id: it answers with whichever table currently holds the message, live
+or glacier, or neither.
+
 ## Threading
 
 Conversations are grouped by a thread identifier that PostIMAP resolves from the `References` and

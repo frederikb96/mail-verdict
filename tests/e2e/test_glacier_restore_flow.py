@@ -27,6 +27,7 @@ from sqlalchemy import text
 from starlette.testclient import TestClient
 
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.database.msg_key import resolve_by_msg_key
 from mail_verdict.glacier.operations import confirm_or_withdraw_removing, glacier_message_now
 from mail_verdict.glacier.restore import confirm_restores, start_restore
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
@@ -177,6 +178,13 @@ async def test_glacier_round_trip_against_real_dovecot(
         assert state["state"] == "glaciered"
         assert state["raw_source"] == server_bytes
 
+        resolved_while_glaciered = await resolve_by_msg_key(
+            session, account_id=uuid.UUID(account_id), msg_key=msg_id,
+        )
+        assert resolved_while_glaciered is not None
+        assert resolved_while_glaciered.kind == "glacier"
+        assert resolved_while_glaciered.id == glacier_id
+
     restore_outcome = await start_restore(db, glacier_id, uuid.UUID(inbox["id"]))
     assert restore_outcome.ok, restore_outcome.reason
 
@@ -250,6 +258,17 @@ async def test_glacier_round_trip_against_real_dovecot(
         ).mappings().one()
         assert live_again["imap_uid"] is not None
         assert live_again["raw_source"] == server_bytes
+
+        # The general (account_id, msg_key) resolver finds the same
+        # restored copy -- the reverse of glaciering, through the one
+        # function other code (search, a stale reference held across the
+        # round trip) resolves a durable identity with.
+        resolved = await resolve_by_msg_key(
+            session, account_id=uuid.UUID(account_id), msg_key=msg_id,
+        )
+        assert resolved is not None
+        assert resolved.kind == "live"
+        assert resolved.id == live_again["id"]
 
 
 @pytest.mark.asyncio

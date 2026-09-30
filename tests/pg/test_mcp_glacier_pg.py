@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.api.mcp_tools import mcp
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
 _TARGETS = (
     "mail_verdict.api.mcp_tools.get_db_connection",
@@ -263,3 +264,49 @@ class TestReplyMailToAGlacieredMessage:
         assert outcome.get("success") is True, outcome
         assert outcome["to"] == ["them@example.com"]
         assert outcome["subject"] == "Re: Original subject"
+
+
+class TestMoveMailRestoresAGlacieredMessage:
+    @pytest.mark.asyncio
+    async def test_move_mail_to_a_named_folder_restores_it(
+        self, mcp_client: Client, migrated_db: DatabaseConnection,
+    ) -> None:
+        async with migrated_db.session() as session:
+            info = await read_postimap_info(session)
+        if info is None or not supports_message_append(info):
+            pytest.skip(
+                'this PostIMAP build does not carry outbox kind="append" -- '
+                f"reports service_version={info.service_version if info else 'unknown'}"
+            )
+
+        async with migrated_db.session() as session:
+            account_id = await _seed_account(session)
+            glacier_folder_id = await _enable_glacier(session, account_id)
+            inbox_id = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO folders (id, account_id, imap_name, special_use, "
+                    "initial_sync_done) VALUES (:id, :account_id, 'INBOX', NULL, true)"
+                ),
+                {"id": inbox_id, "account_id": account_id},
+            )
+            glacier_id = await _seed_glacier_message(
+                session, account_id=account_id, glacier_folder_id=glacier_folder_id,
+                subject="Restore me",
+            )
+            await session.commit()
+
+        result = await mcp_client.call_tool(
+            "move_mail", {"mail_id": str(glacier_id), "target_folder": "INBOX"},
+        )
+        outcome = result.data
+        assert outcome.get("success") is True, outcome
+
+        async with migrated_db.session() as session:
+            row = (
+                await session.execute(
+                    text("SELECT state, visible_at FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+        assert row["state"] == "restoring"

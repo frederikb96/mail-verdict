@@ -2,19 +2,33 @@
 The glacier only works with a PostIMAP capable of the append outbox kind
 restore needs -- moving a message in is refused on exactly the same
 check restoring it back out is, since restore must work before removal
-is ever offered at all. Run with no special image arrangement: this
-proves the refusal against whatever PostIMAP is actually pinned for the
-rest of the suite (currently 1.10.0, which does not carry the
-capability), which is the case that must always hold in the ordinary
-run. The allow path -- moving in and restoring actually succeeding on a
+is ever offered at all.
+
+The pg layer's pinned PostIMAP is capable by default (see
+tests/setup/images.py), which is what every other glacier test needs in
+the ordinary run without any override. Proving the refusal therefore
+means faking an incapable version reported through postimap_info --
+the same single-row handshake table read_postimap_info reads, seeded
+directly the way every other pg test seeds a PostIMAP-owned table --
+rather than pinning a second, older PostIMAP image just for this file,
+which would need its own container and cost every invocation the
+minutes that starting one takes. postimap_info is a single row shared
+by the whole session (migrated_db is one database for the entire
+invocation), so each test restores the real value it found before
+faking, or every glacier test after this file in the same run would
+see the fake instead.
+
+The allow path -- moving in and restoring actually succeeding on a
 capable PostIMAP -- is proven by tests/pg/test_glacier_api_pg.py and
-tests/e2e/test_glacier_restore_flow.py, run against a capable image via
-MAIL_VERDICT_TEST_POSTIMAP_IMAGE (see tests/setup/images.py).
+tests/e2e/test_glacier_restore_flow.py, against the pinned default with
+no special image arrangement needed.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -28,6 +42,33 @@ from mail_verdict.glacier.restore import require_message_append_support
 from mail_verdict.postimap.contract import MIN_MESSAGE_APPEND_SERVICE_VERSION
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
+
+# Comfortably below any realistic MIN_MESSAGE_APPEND_SERVICE_VERSION, so the
+# fixture keeps proving what it claims even after that minimum moves.
+_INCAPABLE_VERSION = "1.0.0"
+
+
+@asynccontextmanager
+async def _reported_as_incapable(db: DatabaseConnection) -> AsyncIterator[None]:
+    """Fake postimap_info.service_version below what the gate needs, for the
+    duration of the block, then restore whatever the real running PostIMAP
+    actually reported -- the row is shared by the whole pg-layer session."""
+    async with db.session() as session:
+        real_version = (
+            await session.execute(text("SELECT service_version FROM postimap_info"))
+        ).scalar_one()
+    try:
+        async with db.session() as session:
+            await session.execute(
+                text("UPDATE postimap_info SET service_version = :v"),
+                {"v": _INCAPABLE_VERSION},
+            )
+        yield
+    finally:
+        async with db.session() as session:
+            await session.execute(
+                text("UPDATE postimap_info SET service_version = :v"), {"v": real_version},
+            )
 
 
 async def _seed_ready_message(
@@ -79,19 +120,18 @@ async def _seed_ready_message(
 
 
 @pytest.mark.asyncio
-async def test_the_pinned_postimap_does_not_carry_the_capability(
+async def test_the_faked_version_is_read_back_as_incapable(
     migrated_db: DatabaseConnection,
 ) -> None:
     """A sanity check on the fixture itself, so a false pass elsewhere --
     the gate reporting "refused" because it could not read postimap_info
     at all, say -- is never mistaken for the gate actually working."""
-    error = await require_message_append_support(migrated_db)
-    assert error is not None
-    # Names the *running* version -- which must be below what the gate needs,
-    # or this fixture no longer proves what the rest of the file assumes.
-    assert "1.10.0" in error
     major, minor = MIN_MESSAGE_APPEND_SERVICE_VERSION[:2]
-    assert (major, minor) > (1, 10)
+    async with _reported_as_incapable(migrated_db):
+        error = await require_message_append_support(migrated_db)
+        assert error is not None
+        assert _INCAPABLE_VERSION in error
+        assert (major, minor) > (0, 0)
 
 
 @pytest.mark.asyncio
@@ -99,7 +139,8 @@ async def test_moving_into_the_glacier_is_refused_naming_the_version(
     migrated_db: DatabaseConnection,
 ) -> None:
     _, _, message_id = await _seed_ready_message(migrated_db)
-    outcome = await glacier_message_now(migrated_db, message_id)
+    async with _reported_as_incapable(migrated_db):
+        outcome = await glacier_message_now(migrated_db, message_id)
     assert outcome.ok is False
     assert outcome.reason is not None
     assert "1.11.0" in outcome.reason or "newer PostIMAP" in outcome.reason
@@ -133,8 +174,9 @@ async def test_the_move_action_refuses_the_same_way_through_the_api(
             )
         ).scalar_one()
 
-    response = await api_message_action(
-        message_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
-    )
+    async with _reported_as_incapable(migrated_db):
+        response = await api_message_action(
+            message_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
+        )
     assert response.success is False
     assert response.message is not None and "newer PostIMAP" in response.message

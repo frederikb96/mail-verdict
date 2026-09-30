@@ -19,7 +19,7 @@ POSTGRES_IMAGE = "pgvector/pgvector:pg18"
 # pinned default is what every ordinary run, and Renovate's own tracking,
 # uses.
 POSTIMAP_IMAGE = os.environ.get(
-    "MAIL_VERDICT_TEST_POSTIMAP_IMAGE", "ghcr.io/frederikb96/postimap:1.10.0",
+    "MAIL_VERDICT_TEST_POSTIMAP_IMAGE", "ghcr.io/frederikb96/postimap:1.11.0",
 )
 
 # renovate: datasource=docker depName=dovecot/dovecot versioning=docker
