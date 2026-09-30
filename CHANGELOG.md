@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fixed the orders migration writing the pipeline's current revision as JSON text instead of a
+  JSON object, which made the pipeline page, its health check and spam classification of new mail
+  fail after upgrading. A database that already ran the broken migration is repaired automatically
+  on upgrade, with its pipeline stages left exactly as they were.
+
 ## [6.7.0] - 2026-09-30
 
 - Glacier storage: a per-account place a message can be moved to where it leaves the mail

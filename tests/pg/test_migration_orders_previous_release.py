@@ -8,6 +8,17 @@ The migration must insert the `orders` stage directly after the last
 move-spam-shaped stage, as a new appended revision, leaving the filing
 rule and classify stages untouched and the pipeline_revisions history
 append-only.
+
+Every assertion here reads the appended revision the way the application
+actually reads it -- through PipelineRevisionRepository, which calls
+.get() on the stored document unconditionally -- rather than through a
+helper that re-parses a str defensively "just in case the driver hands
+one back". A migration that writes the document as a jsonb *string*
+instead of a jsonb *object* (0038_orders' own released bug: a JSONB-typed
+column's bind processor serializes whatever it is handed, so handing it
+an already-serialized string serializes it a second time) is exactly what
+such a defensive re-parse silently repairs in the test while leaving the
+database, and every real reader of it, broken.
 """
 
 from __future__ import annotations
@@ -24,18 +35,12 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import command
+from mail_verdict.config.loader import DatabaseConfig
+from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.pipeline.revisions import PipelineRevisionRepository
 from tests.pg.test_migration_from_v1 import _POSTIMAP_STUBS, _alembic_config
 
 _PREVIOUS = "0033_message_action_submissions"
-
-
-def _doc(value: object) -> dict[str, Any]:
-    """pipeline_revisions.document is JSONB; a bare text() query returns
-    it already parsed as a dict, but normalise defensively in case the
-    driver ever hands back the raw JSON string instead."""
-    parsed = json.loads(value) if isinstance(value, str) else value
-    assert isinstance(parsed, dict)
-    return parsed
 
 _PREVIOUS_DOCUMENT: dict[str, Any] = {
     "enabled": True,
@@ -68,6 +73,18 @@ async def _upgrade(url: str, revision: str) -> None:
     await asyncio.to_thread(command.upgrade, _alembic_config(url), revision)
 
 
+async def _connect(url: str) -> DatabaseConnection:
+    """A DatabaseConnection against `url`, independent of the global
+    singleton init_database()/close_database() manage -- this module
+    upgrades its own throwaway database outside the migrated_db fixture,
+    so it owns its connection's lifecycle too."""
+    db = DatabaseConnection(
+        DatabaseConfig(url=url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+    )
+    await db.init()
+    return db
+
+
 @pytest_asyncio.fixture()
 async def db_at_previous(postgres_url: str) -> AsyncIterator[str]:
     """A throwaway database migrated to the revision before this one,
@@ -91,8 +108,14 @@ async def db_at_previous(postgres_url: str) -> AsyncIterator[str]:
     await _upgrade(url, _PREVIOUS)
     engine = create_async_engine(url)
     async with engine.begin() as conn:
+        # CAST explicitly -- the same pattern PipelineRevisionRepository
+        # .append() uses -- so this baseline is unambiguously a jsonb
+        # object, the shape every previous release's own writes produce.
         await conn.execute(
-            text("INSERT INTO pipeline_revisions (document, note) VALUES (:document, 'baseline')"),
+            text(
+                "INSERT INTO pipeline_revisions (document, note) "
+                "VALUES (CAST(:document AS jsonb), 'baseline')"
+            ),
             {"document": json.dumps(_PREVIOUS_DOCUMENT)},
         )
     await engine.dispose()
@@ -117,8 +140,8 @@ async def test_orders_stage_lands_after_move_spam_in_a_real_multi_stage_pipeline
             rows = (
                 await conn.execute(
                     text(
-                        "SELECT revision, document, note FROM pipeline_revisions "
-                        "ORDER BY revision"
+                        "SELECT revision, note, jsonb_typeof(document) AS doc_type "
+                        "FROM pipeline_revisions ORDER BY revision"
                     )
                 )
             ).all()
@@ -129,13 +152,22 @@ async def test_orders_stage_lands_after_move_spam_in_a_real_multi_stage_pipeline
     # spam settings' defaults) is whatever this database already carried
     # from running the migrations up to _PREVIOUS; our seeded baseline is
     # the one right after it; and exactly one more revision -- the
-    # migration's own insert -- comes after that.
+    # migration's own insert -- comes after that. Every one of them is a
+    # jsonb *object* -- the incident this migration caused in production
+    # was exactly a revision stored as a jsonb *string* instead.
     assert len(rows) == 3
-    baseline, appended = rows[1], rows[2]
-    assert _doc(baseline.document) == _PREVIOUS_DOCUMENT
+    assert [row.doc_type for row in rows] == ["object", "object", "object"]
+    assert rows[2].note == "Add the orders stage"
 
-    stages = _doc(appended.document)["stages"]
-    stage_types = [(s["stage_id"], s["type"]) for s in stages]
+    db = await _connect(db_at_previous)
+    try:
+        current = await PipelineRevisionRepository(db).current()
+    finally:
+        await db.close()
+
+    assert current is not None
+    assert current.enabled is True
+    stage_types = [(s.stage_id, s.type) for s in current.stages]
     assert stage_types == [
         ("classify", "classify"),
         ("rule-newsletters", "match"),
@@ -144,10 +176,12 @@ async def test_orders_stage_lands_after_move_spam_in_a_real_multi_stage_pipeline
     ]
     # the filing rule and move-spam stages themselves are byte-for-byte
     # untouched, not merely present under the same stage_id
-    assert stages[1] == _PREVIOUS_DOCUMENT["stages"][1]
-    assert stages[2] == _PREVIOUS_DOCUMENT["stages"][2]
-    assert _doc(appended.document)["enabled"] is True
-    assert appended.note == "Add the orders stage"
+    assert current.stages[1].config == _PREVIOUS_DOCUMENT["stages"][1]["config"]
+    assert current.stages[1].enabled == _PREVIOUS_DOCUMENT["stages"][1]["enabled"]
+    assert current.stages[1].halt == _PREVIOUS_DOCUMENT["stages"][1]["halt"]
+    assert current.stages[2].config == _PREVIOUS_DOCUMENT["stages"][2]["config"]
+    assert current.stages[2].enabled == _PREVIOUS_DOCUMENT["stages"][2]["enabled"]
+    assert current.stages[2].halt == _PREVIOUS_DOCUMENT["stages"][2]["halt"]
 
 
 @pytest.mark.asyncio
@@ -161,19 +195,124 @@ async def test_orders_stage_is_not_inserted_twice_on_a_second_upgrade_attempt(
     the already-migrated table's current revision a second time."""
     await _upgrade(db_at_previous, "head")
 
-    engine = create_async_engine(db_at_previous)
+    db = await _connect(db_at_previous)
     try:
         from mail_verdict.pipeline.revisions import insert_orders_stage
 
-        async with engine.connect() as conn:
-            current = (
-                await conn.execute(
-                    text(
-                        "SELECT document FROM pipeline_revisions ORDER BY revision DESC LIMIT 1"
-                    )
-                )
-            ).scalar_one()
-        stages = _doc(current)["stages"]
+        current = await PipelineRevisionRepository(db).current()
+        assert current is not None
+        stages = [
+            {
+                "stage_id": s.stage_id, "type": s.type, "name": s.name,
+                "config": dict(s.config), "enabled": s.enabled, "halt": s.halt,
+            }
+            for s in current.stages
+        ]
         assert insert_orders_stage(stages) == stages
     finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_heal_repairs_a_current_revision_already_double_encoded(
+    db_at_previous: str,
+) -> None:
+    """Simulates a database that already ran the originally released,
+    buggy 0038_orders: its appended revision stored as a jsonb *string*
+    holding the document's own encoded text, rather than a jsonb
+    *object* -- reproduced here at the storage level with
+    to_jsonb(document::text) rather than by re-running the fixed
+    migration code, since the bug this guards against is in the stored
+    data, not in how it gets there. The healing revision (chained right
+    after 0038_orders) must repair it, with the stages themselves
+    untouched and in the same order -- production's own database is
+    exactly this shape."""
+    await _upgrade(db_at_previous, "0038_orders")
+
+    engine = create_async_engine(db_at_previous)
+    try:
+        async with engine.begin() as conn:
+            broken_revision = (
+                await conn.execute(
+                    text("SELECT revision FROM pipeline_revisions ORDER BY revision DESC LIMIT 1")
+                )
+            ).scalar_one()
+            await conn.execute(
+                text(
+                    "UPDATE pipeline_revisions SET document = to_jsonb(document::text) "
+                    "WHERE revision = :r"
+                ),
+                {"r": broken_revision},
+            )
+        async with engine.connect() as conn:
+            doc_type = (
+                await conn.execute(
+                    text(
+                        "SELECT jsonb_typeof(document) FROM pipeline_revisions WHERE revision = :r"
+                    ),
+                    {"r": broken_revision},
+                )
+            ).scalar_one()
+    finally:
         await engine.dispose()
+    assert doc_type == "string"  # the corruption actually landed before healing
+
+    await _upgrade(db_at_previous, "head")
+
+    db = await _connect(db_at_previous)
+    try:
+        current = await PipelineRevisionRepository(db).current()
+    finally:
+        await db.close()
+
+    assert current is not None
+    stage_types = [(s.stage_id, s.type) for s in current.stages]
+    assert stage_types == [
+        ("classify", "classify"),
+        ("rule-newsletters", "match"),
+        ("move-spam", "match"),
+        ("orders", "orders"),
+    ]
+    assert current.stages[1].config == _PREVIOUS_DOCUMENT["stages"][1]["config"]
+    assert current.stages[2].config == _PREVIOUS_DOCUMENT["stages"][2]["config"]
+
+    engine = create_async_engine(db_at_previous)
+    try:
+        async with engine.connect() as conn:
+            doc_type_after = (
+                await conn.execute(
+                    text(
+                        "SELECT jsonb_typeof(document) FROM pipeline_revisions "
+                        "WHERE revision = :r"
+                    ),
+                    {"r": broken_revision},
+                )
+            ).scalar_one()
+    finally:
+        await engine.dispose()
+    assert doc_type_after == "object"
+
+
+@pytest.mark.asyncio
+async def test_heal_statement_is_a_noop_on_a_database_that_never_had_the_fault(
+    db_at_previous: str,
+) -> None:
+    """Idempotent, and safe to run against a database that never
+    produced a double-encoded document (a fresh install with the fixed
+    0038_orders, or one already healed): scoped by
+    jsonb_typeof(document) = 'string', so re-running the heal statement
+    a second time touches nothing."""
+    await _upgrade(db_at_previous, "head")
+
+    engine = create_async_engine(db_at_previous)
+    try:
+        async with engine.begin() as conn:
+            result = await conn.execute(
+                text(
+                    "UPDATE pipeline_revisions SET document = (document #>> '{}')::jsonb "
+                    "WHERE jsonb_typeof(document) = 'string'"
+                )
+            )
+    finally:
+        await engine.dispose()
+    assert result.rowcount == 0

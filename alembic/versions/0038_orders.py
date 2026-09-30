@@ -16,7 +16,6 @@ Revises: 0037_glacier_sweep_refusal
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import sqlalchemy as sa
@@ -215,7 +214,13 @@ def _insert_orders_stage_into_current_revision() -> None:
     new_document = {**document, "stages": new_stages}
     bind.execute(
         sa.insert(revisions).values(
-            document=json.dumps(new_document), note="Add the orders stage",
+            # A JSONB-typed Core column already serializes whatever Python
+            # object it is handed -- passing a pre-serialized string here
+            # serializes it a second time, writing a jsonb *string*
+            # holding the encoded document as text rather than a jsonb
+            # *object* (0006_pipeline.py's own data migration passes the
+            # dict the same way, for the same reason).
+            document=new_document, note="Add the orders stage",
         )
     )
 
