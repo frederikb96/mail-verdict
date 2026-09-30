@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Fixed the embedding backfill's periodic sweep getting permanently stuck on a mailbox with more
+  duplicate-header messages -- the same mail stored in two folders, of which only one can ever
+  hold a vector -- than its selection window holds: since those messages never get an embedding
+  row of their own, they kept reappearing as candidates on every sweep, and once there were enough
+  of them the newest-first window filled entirely with rows that could never be inserted, leaving
+  everything older than them never offered a single time. Such messages are now excluded from the
+  selection itself rather than merely skipped after being selected, so the sweep always reaches
+  every other message regardless of how many duplicates accumulate.
+
 ## [6.7.2] - 2026-09-30
 
 - Fixed a provider API key sent to a settings category other than AI -- the semantic search

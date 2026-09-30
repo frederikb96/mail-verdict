@@ -144,6 +144,42 @@ async def _live_message_ids(
     return {row[0] for row in result.all()}
 
 
+def _sibling_holds_embedding(model: str) -> Any:
+    """
+    Exists-subquery, correlated against a bare `Message`: is there a live,
+    non-expunged sibling sharing this message's Message-ID header that
+    already holds a `model` embedding row?
+
+    Headered mail only -- `sibling.message_id == Message.message_id` never
+    matches when both sides are NULL, the same accepted limitation
+    status()'s own shadowed count and enqueue_missing_batch's docstring
+    already carry for headerless mail's content-hash fallback.
+
+    The one place this predicate is defined: status() reports it as
+    `shadowed`, and enqueue_missing_batch excludes it from the SQL
+    candidate set in the first place -- a message it selects can never be
+    inserted while the sibling's hint stays live (see the repoint guard
+    below), so leaving it in the anti-join let it occupy a selection
+    window forever once there were more such messages than one window
+    holds, starving every older, genuinely embeddable message behind them.
+    """
+    sibling = aliased(Message)
+    return (
+        select(MessageEmbedding.id)
+        .select_from(MessageEmbedding)
+        .join(sibling, sibling.id == MessageEmbedding.message_id)
+        .where(
+            MessageEmbedding.account_id == Message.account_id,
+            MessageEmbedding.model == model,
+            sibling.account_id == Message.account_id,
+            sibling.message_id == Message.message_id,
+            sibling.id != Message.id,
+            sibling.expunged_at.is_(None),
+        )
+        .exists()
+    )
+
+
 class EmbeddingRepository:
     """CRUD and coverage queries over message_embeddings."""
 
@@ -173,6 +209,17 @@ class EmbeddingRepository:
         what stops the resynced row from being reselected as a candidate
         on the next call once its hint points at the new id.
 
+        A message whose header is shared with a live sibling that already
+        holds this model's row can never be inserted at all -- one row
+        per (account_id, msg_key, model), and the sibling keeps it as
+        long as it stays live -- so such a message is excluded from the
+        SQL candidate set itself (`_sibling_holds_embedding`), not merely
+        skipped after being selected. Left in the anti-join, it would
+        keep reappearing as a candidate on every call forever; once there
+        were more of those than one window holds, the newest-first
+        ordering meant every call's window filled entirely with them and
+        the sweep never reached anything older.
+
         Args:
             model: Embedding model this batch is enqueuing for
             batch_size: Maximum SQL candidates to consider this call
@@ -201,6 +248,13 @@ class EmbeddingRepository:
                     Folder.deleted_at.is_(None),
                     Folder.initial_sync_done.is_(True),
                     not_embedded,
+                    # A message that can never be inserted -- its header is
+                    # shared with a live sibling already holding this
+                    # model's row -- must never occupy a selection window
+                    # in the first place; see _sibling_holds_embedding's
+                    # own docstring for why leaving it in here livelocks
+                    # the whole sweep once there are enough of them.
+                    ~_sibling_holds_embedding(model),
                 )
                 .order_by(Message.received_at.desc().nulls_last(), Message.id)
                 .limit(batch_size)
@@ -662,21 +716,6 @@ class EmbeddingRepository:
                 )
                 .exists()
             )
-            sibling = aliased(Message)
-            sibling_holds_embedding = (
-                select(MessageEmbedding.id)
-                .select_from(MessageEmbedding)
-                .join(sibling, sibling.id == MessageEmbedding.message_id)
-                .where(
-                    MessageEmbedding.account_id == Message.account_id,
-                    MessageEmbedding.model == model,
-                    sibling.account_id == Message.account_id,
-                    sibling.message_id == Message.message_id,
-                    sibling.id != Message.id,
-                    sibling.expunged_at.is_(None),
-                )
-                .exists()
-            )
             shadowed_stmt = (
                 select(func.count())
                 .select_from(Message)
@@ -687,7 +726,7 @@ class EmbeddingRepository:
                     Folder.initial_sync_done.is_(True),
                     Message.message_id.is_not(None),
                     ~own_embedding_exists,
-                    sibling_holds_embedding,
+                    _sibling_holds_embedding(model),
                 )
             )
             if account_id is not None:
