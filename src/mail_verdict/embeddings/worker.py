@@ -122,11 +122,14 @@ def register_embeddings(
     queue_manager.register(
         QUEUE_NAME, cast("Table", MessageEmbedding.__table__), worker_body,
         # A callable rather than a fixed name: whichever provider
-        # settings.semantic.provider currently names is the breaker this
-        # queue's calls actually trip, and the classify stage shares the
-        # same breaker whenever ai.provider names the same one (see
-        # pipeline/context.py's ModelGateway).
-        circuit_name=lambda: str(settings_service.get("semantic").get("provider", "openai")),
+        # settings.semantic.provider currently names, paired with the
+        # fixed category "semantic", is the breaker this queue's calls
+        # actually trip (see _run_worker below) -- a category of its own
+        # even when ai.provider or settings.orders' effective provider
+        # names the same underlying provider.
+        circuit_name=lambda: (
+            f"{settings_service.get('semantic').get('provider', 'openai')}:semantic"
+        ),
     )
 
     async def _reconcile() -> None:
@@ -220,10 +223,11 @@ async def _run_worker(
     The circuit itself is built fresh every iteration from
     settings.semantic.provider, the same live-setting-per-call pattern
     pipeline/context.py's ModelGateway uses -- a provider switch takes
-    effect on the next claim, not the next restart, and (by construction,
-    since CircuitBreaker is keyed by name alone) automatically shares a
-    breaker with the classify stage whenever both categories point at the
-    same provider.
+    effect on the next claim, not the next restart. Named
+    "<provider>:semantic", the same (provider, category) scheme
+    ModelGateway uses, so this queue keeps its own breaker even when
+    ai.provider or settings.orders' effective provider name the same
+    underlying provider.
 
     Claims exactly one row per iteration, the same way pipeline/runner.py
     does -- never a batch under one shared lease. `heartbeat_while` only
@@ -245,7 +249,7 @@ async def _run_worker(
         # claim.
         semantic_settings = settings_service.get("semantic")
         provider_name = str(semantic_settings.get("provider", "openai"))
-        circuit = CircuitBreaker(db, provider_name)
+        circuit = CircuitBreaker(db, f"{provider_name}:semantic")
 
         if not await circuit.is_available():
             status = await circuit.status()

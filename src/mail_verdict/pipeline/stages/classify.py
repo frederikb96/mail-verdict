@@ -192,7 +192,7 @@ class ClassifyStage:
         user_prompt = _build_user_prompt(msg, neighbor_hints)
 
         data, latency_ms = await ctx.models.structured_call(
-            provider=provider, model=model, effort=effort, max_tokens=max_tokens,
+            provider=provider, category="ai", model=model, effort=effort, max_tokens=max_tokens,
             schema_name="spam_verdict", system_prompt=self._system_prompt,
             user_prompt=user_prompt, schema=CLASSIFY_SCHEMA, validate=_validate_shape,
             base_url=base_url,

@@ -106,7 +106,12 @@ def register_orders(
 
     queue_manager.register(
         QUEUE_NAME, cast("Table", OrderJob.__table__), worker_body,
-        circuit_name=lambda: str(settings_service.get("ai").get("provider", "openai")),
+        # "orders" -- not "ai" -- is the category half of the breaker name
+        # ModelGateway.structured_call actually writes to for this queue's
+        # calls (pipeline/context.py), even though the provider/key/base_url
+        # themselves come from settings.ai: a garbage settings.orders.model
+        # must not read as classify's own breaker being unavailable.
+        circuit_name=lambda: f"{settings_service.get('ai').get('provider', 'openai')}:orders",
     )
 
 
@@ -210,7 +215,7 @@ async def _model_call(
     retry_config = RetryConfig.from_settings(settings_service.get("retry"))
     gateway = ModelGateway(db, cred_repo, retry_config)
     data, latency_ms = await gateway.structured_call(
-        provider=provider, model=model, effort=effort, max_tokens=max_tokens,
+        provider=provider, category="orders", model=model, effort=effort, max_tokens=max_tokens,
         schema_name=schema_name, system_prompt=system_prompt, user_prompt=user_prompt,
         schema=schema, validate=validate, base_url=base_url,
         timeout_seconds=call_timeout_seconds,

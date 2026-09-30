@@ -239,14 +239,19 @@ A live message is embedded before it ever reaches the pipeline. `message`/`inser
 `origin = "sync"` enqueues a `message_embeddings` row, not a `pipeline_runs` row — the pipeline
 row is only inserted once that embedding reaches a terminal state, `done` or `failed`, in the same
 transaction as the write that reaches it (`embeddings/repository.py`, calling
-`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). Both the embedding call and the
-classify call hit the same provider, so gating on the first costs no real availability — if the
-provider is down, nothing downstream was going to be classified either — and it buys the
-invariant that everything in the pipeline queue has a vector, which is what neighbour hints below
-depend on. A message whose embedding permanently fails is not stranded: reaching `failed` opens
-the gate exactly as `done` does, just with no neighbour hints available, which the classify stage
-records in its own trace. Reconciliation's gap-recovery pass (a listener reconnect) respects the
-same gate, so it cannot enqueue a run ahead of a still-pending embedding.
+`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). The embedding and classify calls may
+run against entirely different providers, since `ai` and `semantic` are independently selectable
+settings — gating classify on the embedding's own terminal state costs nothing regardless: a
+permanently failing embedding still reaches `failed` and opens the gate exactly as `done` does,
+just with no neighbour hints available, so an unrelated semantic-provider outage only delays
+classification behind its own retries, never blocks it, and the gate still buys the invariant that
+everything in the pipeline queue has a vector, which is what neighbour hints below depend on. This
+is a scheduling gate, not the availability-tracking circuit breaker each of `pipeline`, `orders`
+and `embeddings` keeps for its own provider calls (`queue/circuit.py`) — a breaker is keyed by
+`(provider, settings category)`, never by provider alone, so a misconfiguration in one category's
+own settings cannot suspend another category that happens to share a provider name. Reconciliation's
+gap-recovery pass (a listener reconnect) respects the classify gate, so it cannot enqueue a run
+ahead of a still-pending embedding.
 
 Never on an update, either way. A stage reacting to a folder-move update could loop on its own
 writes: PostIMAP's `origin` field distinguishes its own sync writes from this application's, but

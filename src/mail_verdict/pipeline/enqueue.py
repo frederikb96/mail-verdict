@@ -8,13 +8,15 @@ Embedding strictly precedes the pipeline: `enqueue_live_arrival` enqueues
 a `message_embeddings` row, never a `pipeline_runs` row directly. Only
 `enqueue_pipeline_run_if_live_eligible`, called from
 embeddings/repository.py inside the same transaction that moves an
-embedding to 'done' or 'failed', ever inserts into `pipeline_runs`. Both
-provider calls (embedding and classification) hit the same account, so
-gating on the first costs no real availability -- if the provider is
-down, nothing downstream was going to be classified either -- and it buys
-the invariant that everything in the pipeline queue has a vector. A
-message whose embedding permanently fails still reaches the gate on that
-failure, so it is still classified, just without neighbour hints.
+embedding to 'done' or 'failed', ever inserts into `pipeline_runs`. The
+embedding and classification calls may run against entirely different
+providers -- `ai` and `semantic` are independently selectable settings --
+but gating on the embedding's own terminal state costs nothing regardless:
+a message whose embedding permanently fails still reaches the gate on that
+failure, so it is still classified, just without neighbour hints. An
+unrelated semantic-provider outage only delays classification behind its
+own retries, never blocks it, and the gate still buys the invariant that
+everything in the pipeline queue has a vector.
 
 The pipeline is triggered by arrival only: `message`/`insert` with
 `origin = "sync"`, and nothing else -- never a `message`/`update`. A

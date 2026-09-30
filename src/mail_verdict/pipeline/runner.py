@@ -128,11 +128,11 @@ class PipelineRunner:
     def _circuit_name(self) -> str:
         """The breaker a classify stage's calls actually trip.
 
-        `ModelGateway` names its breaker for the provider, which is the
-        live `ai.provider` setting rather than the queue -- so this is
-        resolved per call, not captured at registration.
+        `ModelGateway` names its breaker for `(provider, category)`, the
+        live `ai.provider` setting and the fixed category "ai" -- so this
+        is resolved per call, not captured at registration.
         """
-        return str(self._settings.get("ai")["provider"]).lower()
+        return f"{str(self._settings.get('ai')['provider']).lower()}:ai"
 
     async def dry_run(
         self, *, account_id: uuid.UUID, message_id: uuid.UUID,
