@@ -238,8 +238,9 @@ async def confirm_restores(
                 text(
                     """
                     UPDATE glacier_messages
-                    SET restored_at = now(), visible_at = NULL, raw_source = NULL,
-                        body_text = NULL, body_html = NULL, raw_headers = NULL
+                    SET state = 'restored', restored_at = now(), visible_at = NULL,
+                        raw_source = NULL, body_text = NULL, body_html = NULL,
+                        raw_headers = NULL
                     WHERE id = :gid
                     """
                 ),
@@ -270,6 +271,13 @@ async def fail_stale_restores(
     back to "glaciered" for a retry -- the glacier copy was never
     deleted, so nothing here is destructive.
 
+    🚨 `restored_at IS NULL` is checked in addition to `state =
+    'restoring'`, not merely instead of it -- confirm_restores setting
+    the terminal 'restored' state (see the migration adding it) is what
+    makes the state check alone sufficient in the ordinary case, but a
+    completed restore must never be flippable to failed by this function
+    under any state a future change might leave it in.
+
     Args:
         db: Database connection
         account_id: Account to check
@@ -289,6 +297,7 @@ async def fail_stale_restores(
                     FROM glacier_messages g
                     LEFT JOIN outbox o ON o.id = g.restore_outbox_id
                     WHERE g.account_id = :account_id AND g.state = 'restoring'
+                      AND g.restored_at IS NULL
                       AND (
                         o.status = 'dead'
                         OR g.restore_started_at < now() - make_interval(secs => :timeout)

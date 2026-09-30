@@ -19,7 +19,7 @@ from sqlalchemy import text
 
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.glacier.operations import confirm_or_withdraw_removing, glacier_message_now
-from mail_verdict.glacier.restore import confirm_restores, start_restore
+from mail_verdict.glacier.restore import confirm_restores, fail_stale_restores, start_restore
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
@@ -259,3 +259,82 @@ async def test_restore_confirms_once_a_byte_identical_live_row_exists_and_the_ou
             )
         ).scalar_one()
         assert att_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_restore_reaches_a_terminal_state_and_never_re_confirms(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """confirm_restores set restored_at but never changed state away from
+    'restoring', so it kept matching its own candidate query and
+    re-confirmed (re-announcing mail.updated + folder.changed) on every
+    later tick, indefinitely."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, archive_id, target_id = await _seed_account(migrated_db)
+    glacier_id, outbox_id = await _glacier_and_start_restore(
+        migrated_db, account_id=account_id, archive_id=archive_id, target_id=target_id,
+    )
+    await _seed_message(
+        migrated_db, account_id=account_id, folder_id=target_id, uid=77, imap_uid=77,
+        raw_source=_RAW_SOURCE,
+    )
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE outbox SET status = 'sent' WHERE id = :id"), {"id": outbox_id},
+        )
+    assert await confirm_restores(migrated_db, account_id) == 1
+
+    async with migrated_db.session() as session:
+        row = (
+            await session.execute(
+                text("SELECT state FROM glacier_messages WHERE id = :id"), {"id": glacier_id},
+            )
+        ).mappings().one()
+        assert row["state"] == "restored"
+
+    # A further tick, with the exact same live row and outbox status
+    # still in place, must change nothing -- the row no longer matches
+    # confirm_restores's own state='restoring' candidate query.
+    assert await confirm_restores(migrated_db, account_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_restore_timeout_never_flips_a_completed_restore_to_failed(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """fail_stale_restores must never touch a row confirm_restores has
+    already finished -- watched live, a restore completed 28 minutes
+    earlier was flipped to failed with 'copy intact' logged while
+    raw_source was actually NULL, and a retry then answered 'already
+    restored once'."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, archive_id, target_id = await _seed_account(migrated_db)
+    glacier_id, outbox_id = await _glacier_and_start_restore(
+        migrated_db, account_id=account_id, archive_id=archive_id, target_id=target_id,
+    )
+    await _seed_message(
+        migrated_db, account_id=account_id, folder_id=target_id, uid=77, imap_uid=77,
+        raw_source=_RAW_SOURCE,
+    )
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE outbox SET status = 'sent' WHERE id = :id"), {"id": outbox_id},
+        )
+    assert await confirm_restores(migrated_db, account_id) == 1
+
+    # timeout_seconds=0 is the harshest possible timeout -- if the
+    # terminal state protects the row at all, this proves it.
+    failed = await fail_stale_restores(migrated_db, account_id, timeout_seconds=0)
+    assert failed == 0
+
+    async with migrated_db.session() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT state, last_error FROM glacier_messages WHERE id = :id"
+                ),
+                {"id": glacier_id},
+            )
+        ).mappings().one()
+        assert row["state"] == "restored"
+        assert row["last_error"] is None
