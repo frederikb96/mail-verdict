@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   conversation -- into one entry with an AI-written title, status and summary, across every
   enabled account. Switched on per account, next to spam detection. A mail can be moved between
   orders or removed, two orders merged, a summary rewritten by hand, and recent mail looked
-  through after switching the feature on.
+  through after switching the feature on. Opening one of an order's mails shows it in the normal
+  mail view, and going back returns to the order -- and to the list behind it -- at the same
+  place.
 - The AI provider for spam verdicts and for embeddings is now a setting: OpenAI as before, or any
   OpenAI-compatible server by address, key and model name. Switching the embedding model re-embeds
   the whole store in the background while search keeps answering from the old vectors, cutting

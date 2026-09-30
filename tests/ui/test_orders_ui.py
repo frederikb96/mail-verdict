@@ -10,10 +10,11 @@ functions inside a plain DB transaction, the same pattern
 tests/e2e/test_spam_review.py uses to seed verdicts -- proving the screen
 against controlled data rather than a real or fake model call, which
 tests/pg/test_order_worker.py and the design's own real-model check cover
-elsewhere. Only the catch-up test needs the model to actually run, so it
-alone switches settings.ai.provider to "fake" (orders/fake.py) -- the
-same role that provider plays for the classify stage, deterministic and
-requiring no key.
+elsewhere. The tests that need the model to actually run -- the catch-up
+sweep, the summary rewrite, and the one proving a removed mail is left
+alone by a later sweep -- switch settings.ai.provider to "fake"
+(orders/fake.py), the same role that provider plays for the classify
+stage: deterministic and requiring no key.
 
 Test functions run in file order and lean on that: the two empty-state
 tests need to run before any order or enabled account exists, and every
@@ -48,7 +49,7 @@ from mail_verdict.database.models import OrderMail
 from mail_verdict.orders import repository as orders_repo
 from tests.e2e.helpers import wait_for
 from tests.setup.mail_delivery import build_eml, deliver_message
-from tests.ui.helpers import create_account
+from tests.ui.helpers import create_account, mail_row
 
 pytestmark = pytest.mark.usefixtures("app_server")
 
@@ -144,6 +145,33 @@ def _seed_order(
         is_open=is_open, mails=mails, icon=icon, announce_created=announce_created,
     ))
     return str(order_id), {k: str(v) for k, v in keys.items()}
+
+
+async def _order_mail_rows_async(
+    postgres_url: str, message_id: uuid.UUID,
+) -> list[tuple[str, str]]:
+    connection = DatabaseConnection(
+        DatabaseConfig(url=postgres_url, pool_size=2, max_overflow=0, reserved_for_requests=0)
+    )
+    await connection.init()
+    try:
+        async with connection.session() as session:
+            result = await session.execute(
+                select(OrderMail.order_id, OrderMail.id).where(
+                    OrderMail.message_id == message_id,
+                )
+            )
+            return [(str(row[0]), str(row[1])) for row in result.all()]
+    finally:
+        await connection.close()
+
+
+def _order_mail_rows(postgres_url: str, message_id: uuid.UUID) -> list[tuple[str, str]]:
+    """Every order a message is currently attached to, as (order id, the
+    order's own key for that mail) -- which is what the detail pane's row
+    is addressed by. Read straight from the database rather than by
+    walking every order's detail over HTTP."""
+    return _run_async(_order_mail_rows_async(postgres_url, message_id))  # type: ignore[no-any-return]
 
 
 def _inbox_id(api_client: httpx.Client, account: dict[str, Any]) -> str:
@@ -474,6 +502,135 @@ def test_scroll_position_restores_after_returning_to_an_order(
     )
 
 
+def test_opening_a_mail_and_going_back_returns_both_panes_to_where_they_sat(
+    page: Page, app_server: str, postgres_url: str, api_client: httpx.Client,
+    dovecot_endpoint: tuple[str, int, int], orders_switched_on: dict[str, Any],
+) -> None:
+    """The whole flow, driven the way a person drives it: a scrolled list,
+    an order opened from it, its detail scrolled, the third mail clicked,
+    and one press of Back. Both panes have to come back to where they sat.
+
+    The two positions are recorded at the moment of the click and nowhere
+    earlier, and the mail row is asserted to be inside the viewport before
+    it is clicked: Playwright scrolls a target into view before clicking
+    it, so a position read before that scroll is not the position the app
+    was asked to restore -- which produces a large, perfectly reproducible
+    mismatch that no change to the app can move.
+    """
+    account = orders_switched_on
+    now = datetime.now(UTC)
+
+    # Orders with newer activity than the one under test, so it sits below
+    # the fold and the list genuinely has to be scrolled to reach it.
+    for i in range(8):
+        _seed_order(
+            postgres_url, account_id=uuid.UUID(account["id"]),
+            merchant=f"Vorwerk Handel {i}", subject=f"Unrelated purchase {i}",
+            mails=[{
+                "msg_key": f"<filler-{i}-{uuid.uuid4()}@example.com>",
+                "subject": f"Unrelated purchase {i}", "from_addr": "shop@vorwerk.example",
+                "received_at": now - timedelta(minutes=i),
+            }],
+        )
+
+    real = _deliver_and_sync(
+        api_client, dovecot_endpoint, account, sender="post@fjordlys.example",
+        subject=f"Third mail of the order {uuid.uuid4().hex[:6]}",
+    )
+    # Enough mails that the detail pane scrolls by several hundred pixels;
+    # the third one (oldest first, as the pane renders them) is the real,
+    # clickable one.
+    mails: list[dict[str, Any]] = []
+    for i in range(14):
+        entry: dict[str, Any] = {
+            "msg_key": f"<deep-{i}-{uuid.uuid4()}@example.com>",
+            "subject": f"Message {i} about the vase", "from_addr": "post@fjordlys.example",
+            # Older than every filler above, so this order is last in the list.
+            "received_at": now - timedelta(days=4) + timedelta(minutes=i),
+        }
+        if i == 2:
+            entry["subject"] = real["subject"]
+            entry["message_id"] = uuid.UUID(real["id"])
+        mails.append(entry)
+    order_id, keys = _seed_order(
+        postgres_url, account_id=uuid.UUID(account["id"]), merchant="Fjordlys Atelier",
+        subject="Tall order with many mails", mails=mails,
+    )
+    target_key = keys[mails[2]["msg_key"]]
+
+    page.goto(f"{app_server}/orders")
+    list_scroll = page.locator('[data-testid="orders-list-scroll"]')
+    order_row = page.locator(f'[data-testid="order-row"][data-order-id="{order_id}"]')
+    expect(order_row).to_be_visible(timeout=20_000)
+    order_row.scroll_into_view_if_needed()
+    page.wait_for_timeout(200)
+    list_scroll_top = list_scroll.evaluate("(el) => el.scrollTop")
+    assert list_scroll_top > 0, (
+        "the list never scrolled, so restoring it to the top would look identical to a pass"
+    )
+    order_row.click()
+
+    detail_scroll = page.locator('[data-testid="order-detail-scroll"]')
+    target_row = page.locator(f'[data-testid="order-mail-row"][data-mail-key="{target_key}"]')
+    expect(target_row).to_be_visible(timeout=20_000)
+
+    # Put the third mail 120 px below the top of the detail pane: the pane
+    # is then genuinely scrolled, and the row is comfortably on screen so
+    # the click below cannot scroll it any further.
+    page.evaluate(
+        """([mailKey]) => {
+          const container = document.querySelector('[data-testid="order-detail-scroll"]');
+          const row = document.querySelector(
+            `[data-testid="order-mail-row"][data-mail-key="${mailKey}"]`,
+          );
+          container.scrollTop +=
+            row.getBoundingClientRect().top - container.getBoundingClientRect().top - 120;
+        }""",
+        [target_key],
+    )
+    page.wait_for_timeout(200)
+    detail_scroll_top = detail_scroll.evaluate("(el) => el.scrollTop")
+    assert detail_scroll_top > 50, (
+        f"the detail pane barely scrolled ({detail_scroll_top}px), so a restore to the top "
+        "would look identical to a pass"
+    )
+
+    viewport = page.viewport_size
+    assert viewport is not None
+    mail_box = target_row.bounding_box()
+    order_box = order_row.bounding_box()
+    assert mail_box is not None and order_box is not None
+    assert 0 < mail_box["y"] and mail_box["y"] + mail_box["height"] < viewport["height"], (
+        f"the mail row is not fully in the viewport ({mail_box}) -- the click would scroll it "
+        "and the recorded position would not be the one the app is asked to restore"
+    )
+
+    target_row.get_by_text(real["subject"], exact=True).click()
+
+    # The orders screen is really gone, not merely re-rendered: the route
+    # changed, which is what makes coming back a remount rather than a
+    # no-op.
+    expect(page).not_to_have_url(re.compile(r"[?&]order="), timeout=20_000)
+    expect(list_scroll).to_have_count(0, timeout=20_000)
+    expect(mail_row(page, real["id"])).to_be_visible(timeout=20_000)
+
+    page.go_back()
+
+    expect(target_row).to_be_visible(timeout=20_000)
+    page.wait_for_timeout(500)  # the restore's hold, settling as the content finishes loading
+    mail_box_after = target_row.bounding_box()
+    order_box_after = order_row.bounding_box()
+    assert mail_box_after is not None and order_box_after is not None
+    assert abs(mail_box_after["y"] - mail_box["y"]) < 5, (
+        "the mail row did not come back to where it sat: "
+        f"{mail_box['y']} -> {mail_box_after['y']}"
+    )
+    assert abs(order_box_after["y"] - order_box["y"]) < 5, (
+        "the order's own row in the list did not come back to where it sat: "
+        f"{order_box['y']} -> {order_box_after['y']}"
+    )
+
+
 def test_taking_a_mail_out_of_an_order_lowers_its_count(
     page: Page, app_server: str, postgres_url: str, api_client: httpx.Client,
     dovecot_endpoint: tuple[str, int, int], orders_switched_on: dict[str, Any],
@@ -678,3 +835,273 @@ def test_phone_width_shows_list_then_detail_then_back(
 
     back_button.click()
     expect(row).to_be_visible(timeout=15_000)
+
+
+# The four corrections below share the module's own account and run after
+# the catch-up test, so settings.ai.provider is already "fake" -- every
+# correction enqueues a rewrite of the order it touched, and with a
+# provider configured the worker actually performs it. Each assertion is
+# therefore on a count or on a row's presence rather than on model-written
+# text, except the rewrite test, which is about exactly that text.
+
+
+def test_moving_a_mail_to_another_order_takes_it_off_the_first(
+    page: Page, app_server: str, postgres_url: str, api_client: httpx.Client,
+    dovecot_endpoint: tuple[str, int, int], orders_switched_on: dict[str, Any],
+) -> None:
+    account = orders_switched_on
+    travelling = _deliver_and_sync(
+        api_client, dovecot_endpoint, account, sender="post@kalkspar.example",
+        subject=f"Bundled onto the wrong entry {uuid.uuid4().hex[:6]}",
+    )
+    staying = _deliver_and_sync(
+        api_client, dovecot_endpoint, account, sender="post@kalkspar.example",
+        subject=f"Rightly bundled here {uuid.uuid4().hex[:6]}",
+    )
+    now = datetime.now(UTC)
+    source_id, keys = _seed_order(
+        postgres_url, account_id=uuid.UUID(account["id"]), merchant="Kalkspar Kontor",
+        subject="Entry the mail leaves",
+        mails=[
+            {
+                "msg_key": f"<stays-{uuid.uuid4()}@example.com>", "subject": staying["subject"],
+                "from_addr": "post@kalkspar.example", "received_at": now - timedelta(hours=1),
+                "message_id": uuid.UUID(staying["id"]),
+            },
+            {
+                "msg_key": f"<travels-{uuid.uuid4()}@example.com>",
+                "subject": travelling["subject"], "from_addr": "post@kalkspar.example",
+                "received_at": now, "message_id": uuid.UUID(travelling["id"]),
+            },
+        ],
+    )
+    target_id, _ = _seed_order(
+        postgres_url, account_id=uuid.UUID(account["id"]), merchant="Steinbach Werk",
+        subject="Entry the mail arrives at",
+        mails=[{
+            "msg_key": f"<arrival-{uuid.uuid4()}@example.com>", "subject": "Already here",
+            "from_addr": "post@steinbach.example", "received_at": now - timedelta(hours=2),
+        }],
+    )
+    move_key = next(k for msg_key, k in keys.items() if msg_key.startswith("<travels-"))
+
+    page.goto(f"{app_server}/orders?order={source_id}")
+    row = page.locator(f'[data-testid="order-mail-row"][data-mail-key="{move_key}"]')
+    expect(row).to_be_visible(timeout=20_000)
+    row.get_by_role(
+        "button", name=f"Actions for {travelling['subject']}", exact=True,
+    ).click()
+    page.get_by_role("menuitem", name="Move to another order…", exact=True).click()
+
+    picker = page.get_by_role("dialog")
+    expect(picker.get_by_text("Choose an order", exact=True)).to_be_visible(timeout=10_000)
+    picker.get_by_placeholder("Search by merchant or subject…").fill("Steinbach")
+    picker.get_by_role("button").filter(has_text="Entry the mail arrives at").click()
+
+    expect(row).to_have_count(0, timeout=20_000)
+
+    page.goto(f"{app_server}/orders?order={target_id}")
+    arrived = page.locator('[data-testid="order-mail-row"]').filter(
+        has_text=travelling["subject"],
+    )
+    expect(arrived).to_be_visible(timeout=20_000)
+
+
+def test_merging_an_order_into_another_moves_its_mails_over(
+    page: Page, app_server: str, postgres_url: str, orders_switched_on: dict[str, Any],
+) -> None:
+    now = datetime.now(UTC)
+    account_id = uuid.UUID(orders_switched_on["id"])
+    source_id, _ = _seed_order(
+        postgres_url, account_id=account_id, merchant="Talgrund Werk",
+        subject="Entry that disappears",
+        mails=[
+            {
+                "msg_key": f"<absorbed-a-{uuid.uuid4()}@example.com>",
+                "subject": "Absorbed note one", "from_addr": "post@talgrund.example",
+                "received_at": now - timedelta(hours=2),
+            },
+            {
+                "msg_key": f"<absorbed-b-{uuid.uuid4()}@example.com>",
+                "subject": "Absorbed note two", "from_addr": "post@talgrund.example",
+                "received_at": now - timedelta(hours=1),
+            },
+        ],
+    )
+    target_id, _ = _seed_order(
+        postgres_url, account_id=account_id, merchant="Nordwand Bau",
+        subject="Entry that survives",
+        mails=[{
+            "msg_key": f"<survivor-{uuid.uuid4()}@example.com>", "subject": "Surviving note",
+            "from_addr": "post@nordwand.example", "received_at": now - timedelta(hours=3),
+        }],
+    )
+
+    page.goto(f"{app_server}/orders?order={source_id}")
+    expect(
+        page.get_by_role("heading", name="Entry that disappears", exact=True),
+    ).to_be_visible(timeout=20_000)
+    page.get_by_role("button", name="Order actions", exact=True).click()
+    page.get_by_role("menuitem", name="Merge into another order…", exact=True).click()
+
+    picker = page.get_by_role("dialog")
+    expect(picker.get_by_text("Choose an order", exact=True)).to_be_visible(timeout=10_000)
+    picker.get_by_placeholder("Search by merchant or subject…").fill("Nordwand")
+    picker.get_by_role("button").filter(has_text="Entry that survives").click()
+
+    confirm = page.get_by_role("dialog")
+    expect(
+        confirm.get_by_text("Merge this order into the chosen one?", exact=True),
+    ).to_be_visible(timeout=10_000)
+    confirm.get_by_role("button", name="Merge", exact=True).click()
+
+    source_row = page.locator(f'[data-testid="order-row"][data-order-id="{source_id}"]')
+    expect(source_row).to_have_count(0, timeout=20_000)
+
+    page.goto(f"{app_server}/orders?order={target_id}")
+    expect(page.locator('[data-testid="order-mail-row"]')).to_have_count(3, timeout=20_000)
+
+
+def test_deleting_an_order_leaves_its_mail_in_the_mailbox(
+    page: Page, app_server: str, postgres_url: str, api_client: httpx.Client,
+    dovecot_endpoint: tuple[str, int, int], orders_switched_on: dict[str, Any],
+) -> None:
+    account = orders_switched_on
+    kept = _deliver_and_sync(
+        api_client, dovecot_endpoint, account, sender="post@lindhorst.example",
+        subject=f"Mail that outlives its entry {uuid.uuid4().hex[:6]}",
+    )
+    order_id, _ = _seed_order(
+        postgres_url, account_id=uuid.UUID(account["id"]), merchant="Lindhorst Versand",
+        subject="Entry to be discarded",
+        mails=[{
+            "msg_key": f"<discarded-{uuid.uuid4()}@example.com>", "subject": kept["subject"],
+            "from_addr": "post@lindhorst.example", "received_at": datetime.now(UTC),
+            "message_id": uuid.UUID(kept["id"]),
+        }],
+    )
+
+    page.goto(f"{app_server}/orders?order={order_id}")
+    expect(
+        page.get_by_role("heading", name="Entry to be discarded", exact=True),
+    ).to_be_visible(timeout=20_000)
+    page.get_by_role("button", name="Order actions", exact=True).click()
+    page.get_by_role("menuitem", name="Delete order…", exact=True).click()
+
+    confirm = page.get_by_role("dialog")
+    expect(confirm.get_by_text("Delete this order?", exact=True)).to_be_visible(timeout=10_000)
+    confirm.get_by_role("button", name="Delete order", exact=True).click()
+
+    row = page.locator(f'[data-testid="order-row"][data-order-id="{order_id}"]')
+    expect(row).to_have_count(0, timeout=20_000)
+    assert api_client.get(f"/api/orders/{order_id}").status_code == 404
+
+    messages = api_client.get(
+        f"/api/accounts/{account['id']}/messages",
+        params={"folder_id": _inbox_id(api_client, account)},
+    ).json()["messages"]
+    assert any(m["id"] == kept["id"] for m in messages), (
+        "deleting an order must leave its mail where it is"
+    )
+
+
+def test_rewriting_a_summary_replaces_the_orders_own_text(
+    page: Page, app_server: str, postgres_url: str, api_client: httpx.Client,
+    orders_switched_on: dict[str, Any],
+) -> None:
+    """Rewrite hands the order to the model again. With the fake provider
+    that answers a fixed status of its own, so the pill changing from the
+    seeded status is the proof the rewrite ran end to end."""
+    resp = api_client.put("/api/settings/ai", json={"data": {"provider": "fake"}})
+    assert resp.status_code == 200, resp.text
+
+    order_id, _ = _seed_order(
+        postgres_url, account_id=uuid.UUID(orders_switched_on["id"]),
+        merchant="Ostwind Kontor", subject="Entry with a stale summary", status="confirmed",
+        mails=[{
+            "msg_key": f"<stale-{uuid.uuid4()}@example.com>", "subject": "The only note",
+            "from_addr": "post@ostwind.example", "received_at": datetime.now(UTC),
+        }],
+    )
+
+    page.goto(f"{app_server}/orders?order={order_id}")
+    detail = page.locator('[data-testid="order-detail-scroll"]')
+    expect(detail.get_by_text("confirmed", exact=True)).to_be_visible(timeout=20_000)
+
+    page.get_by_role("button", name="Order actions", exact=True).click()
+    page.get_by_role("menuitem", name="Rewrite summary", exact=True).click()
+
+    # The worker picks the job up, the model answers, and order.updated
+    # brings the new text to this open detail on its own.
+    expect(detail.get_by_text("updated", exact=True)).to_be_visible(timeout=60_000)
+
+
+def test_a_mail_taken_out_of_an_order_is_not_bundled_again_by_a_catch_up(
+    page: Page, app_server: str, postgres_url: str, api_client: httpx.Client,
+    dovecot_endpoint: tuple[str, int, int], orders_switched_on: dict[str, Any],
+) -> None:
+    """Removing a mail has to be final: a later sweep over the same
+    mailbox must leave it alone.
+
+    The mail is bundled by the real pipeline first, not seeded -- what
+    keeps it out afterwards is the job row the sweep checks, and a
+    hand-seeded order has none. The second sweep is watched through a
+    mail delivered for it, so "the removed one did not come back" is read
+    off a sweep that demonstrably ran rather than off a wait that expired.
+    """
+    account = orders_switched_on
+    resp = api_client.put("/api/settings/ai", json={"data": {"provider": "fake"}})
+    assert resp.status_code == 200, resp.text
+
+    removed = _deliver_and_sync(
+        api_client, dovecot_endpoint, account, sender="shop@ostsee.example",
+        subject=f"Order confirmation {uuid.uuid4().hex[:8]}",
+    )
+    resp = api_client.post(
+        "/api/orders/catch-up",
+        json={"account_id": account["id"], "days": 30, "dry_run": False},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["queued"] >= 1, resp.text
+
+    def _bundled() -> list[tuple[str, str]] | None:
+        rows = _order_mail_rows(postgres_url, uuid.UUID(removed["id"]))
+        return rows or None
+
+    bundled = wait_for(
+        _bundled, timeout_s=60.0, description="the sweep to bundle the delivered mail",
+    )
+    order_id, mail_key = bundled[0]
+
+    page.goto(f"{app_server}/orders?order={order_id}")
+    row = page.locator(f'[data-testid="order-mail-row"][data-mail-key="{mail_key}"]')
+    expect(row).to_be_visible(timeout=20_000)
+    row.get_by_role("button", name=f"Actions for {removed['subject']}", exact=True).click()
+    page.get_by_role("menuitem", name="Remove from this order", exact=True).click()
+
+    expect(row).to_have_count(0, timeout=20_000)
+    # It was the order's only mail, so the order itself is gone with it.
+    expect(page.get_by_text("This order no longer exists", exact=True)).to_be_visible(
+        timeout=20_000,
+    )
+    assert _order_mail_rows(postgres_url, uuid.UUID(removed["id"])) == []
+
+    # A second sweep, with a mail delivered for it so its completion is
+    # observable rather than assumed.
+    control = _deliver_and_sync(
+        api_client, dovecot_endpoint, account, sender="shop@ostsee.example",
+        subject=f"Order confirmation {uuid.uuid4().hex[:8]}",
+    )
+    resp = api_client.post(
+        "/api/orders/catch-up",
+        json={"account_id": account["id"], "days": 30, "dry_run": False},
+    )
+    assert resp.status_code == 200, resp.text
+
+    wait_for(
+        lambda: _order_mail_rows(postgres_url, uuid.UUID(control["id"])) or None,
+        timeout_s=60.0, description="the second sweep to bundle the mail delivered for it",
+    )
+    assert _order_mail_rows(postgres_url, uuid.UUID(removed["id"])) == [], (
+        "a mail taken out of an order was bundled again by a later sweep"
+    )
