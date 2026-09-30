@@ -1,6 +1,6 @@
 "use client";
 
-import { type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { format, isSameDay, isSameYear } from "date-fns";
 import { CalendarDays, FileText, MoreHorizontal, Ticket as TicketIcon } from "lucide-react";
 import {
@@ -61,8 +61,16 @@ interface OrderDetailProps {
   onBack?: () => void;
   onDeleted: () => void;
   /** The pane's own scroll container -- one level up in orders-page.tsx,
-   * since it also hosts the phone-width back bar above this component. */
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
+   * since it also hosts the phone-width back bar above this component.
+   *
+   * The element itself rather than a ref to it: React attaches a ref
+   * during the commit that renders its own component, so a parent's ref
+   * is still null while this child's layout effects run. Handed a ref,
+   * the scroll restore below would find nothing on the one commit that
+   * matters -- the first after a Back navigation -- and would then depend
+   * on some unrelated later render happening to re-run it. As a prop it
+   * arrives as an ordinary dependency change instead. */
+  scrollContainer?: HTMLDivElement | null;
   /** Called just before a mail row hands off to the normal mail view, so
    * the caller can remember where the list itself was sitting too. */
   onBeforeOpenMail?: (mailKey: string, rowTop: number) => void;
@@ -72,10 +80,10 @@ export function OrderDetailPane({
   orderId,
   onBack,
   onDeleted,
-  scrollContainerRef,
+  scrollContainer,
   onBeforeOpenMail,
 }: OrderDetailProps) {
-  const { data: order, isLoading } = useOrderDetail(orderId);
+  const { data: order, isLoading, isError } = useOrderDetail(orderId);
   const { openMessageById } = useOpenMessage();
   const { push: pushToast } = useToast();
   const deleteOrder = useDeleteOrder();
@@ -107,7 +115,7 @@ export function OrderDetailPane({
   // never leaving a hold running forever.
   //
   // A Back navigation is not guaranteed to change `order` or
-  // `scrollContainerRef`'s own identity -- the router can restore this
+  // `scrollContainer`'s own identity -- the router can restore this
   // same mounted component rather than remounting it, and React then
   // never re-runs an effect whose dependencies read as unchanged, even
   // though the anchor a click just wrote (external to React state) is
@@ -117,7 +125,7 @@ export function OrderDetailPane({
   // array.
   useLayoutEffect(() => {
     // The active hold's own release, if one is running -- so the outer
-    // effect's cleanup (an actual unmount, or order/scrollContainerRef
+    // effect's cleanup (an actual unmount, or order/scrollContainer
     // genuinely changing) can tear it down too, not only its own natural
     // end. tryApply can run more than once (mount, then again on a later
     // popstate); without this, an earlier call's listeners would outlive
@@ -125,7 +133,7 @@ export function OrderDetailPane({
     let currentRelease: (() => void) | null = null;
 
     const tryApply = () => {
-      const container = scrollContainerRef?.current;
+      const container = scrollContainer;
       if (!order || !container) return;
       const anchor = readOrderScrollAnchor(order.id);
       if (!anchor) return;
@@ -180,7 +188,20 @@ export function OrderDetailPane({
       document.removeEventListener("visibilitychange", tryApply);
       currentRelease?.();
     };
-  }, [order, scrollContainerRef]);
+  }, [order, scrollContainer]);
+
+  // Taking the last mail out of an order deletes the order, and merging
+  // one away deletes it too -- the detail query then answers 404 for an
+  // id the URL still names. Without this the pane holds its loading
+  // skeleton for good, which reads as a screen that hung rather than as
+  // an order that is gone.
+  if (isError) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+        <p className="text-sm text-muted-foreground">This order no longer exists</p>
+      </div>
+    );
+  }
 
   if (isLoading || !order) {
     return (
@@ -202,7 +223,7 @@ export function OrderDetailPane({
   const handleOpenMail = async (mail: OrderMail) => {
     if (mail.location !== "mailbox" || !mail.message_id) return;
     const rowEl = mailRowRefs.current.get(mail.key);
-    const container = scrollContainerRef?.current;
+    const container = scrollContainer;
     const rowTop =
       rowEl && container
         ? rowEl.getBoundingClientRect().top - container.getBoundingClientRect().top

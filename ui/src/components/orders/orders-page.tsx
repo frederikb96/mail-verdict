@@ -10,7 +10,11 @@ import { OrderRow } from "@/components/orders/order-row";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useOrdersList } from "@/hooks/use-orders";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { readOrderScrollAnchor, writeOrderScrollAnchor } from "@/lib/order-scroll-anchor";
+import {
+  type OrderScrollAnchor,
+  readOrderScrollAnchor,
+  writeOrderScrollAnchor,
+} from "@/lib/order-scroll-anchor";
 import { stableOrder } from "@/lib/stable-order";
 import type { OrderListItem } from "@/types/api";
 import Link from "next/link";
@@ -54,7 +58,11 @@ export function OrdersPage() {
   const isPaginatingRef = useRef(false);
 
   const listScrollRef = useRef<HTMLDivElement>(null);
-  const detailScrollRef = useRef<HTMLDivElement>(null);
+  // The detail pane's scroll container as state rather than a ref: the
+  // pane's own scroll restore needs the element during its first layout
+  // pass, and a parent's ref is not attached yet while a child's layout
+  // effects run (order-detail.tsx's own prop comment has the rest).
+  const [detailScrollEl, setDetailScrollEl] = useState<HTMLDivElement | null>(null);
 
   // A new filter (state) is a new list, keyed on it: start over at the
   // top rather than carrying rows from the previous filter's reconciled
@@ -163,10 +171,19 @@ export function OrdersPage() {
   // re-renders (order-detail.tsx's own restore effect has the identical
   // shape, for the same reason).
   const restoredAnchorKeyRef = useRef<string | null>(null);
+  // The last anchor this page saw for the open order. The detail pane
+  // removes the stored anchor once its own hold ends, and the list's rows
+  // can arrive after that (they come from an effect, a commit later than
+  // the detail's own restore), so reading storage alone would lose the
+  // anchor to whichever of the two happened to be slower.
+  const seenAnchorRef = useRef<OrderScrollAnchor | null>(null);
   useLayoutEffect(() => {
     const tryRestore = () => {
       if (!selectedId) return;
-      const anchor = readOrderScrollAnchor(selectedId);
+      const stored = readOrderScrollAnchor(selectedId);
+      if (stored) seenAnchorRef.current = stored;
+      const anchor =
+        seenAnchorRef.current?.orderId === selectedId ? seenAnchorRef.current : null;
       if (!anchor) return;
       const anchorKey = `${anchor.orderId}:${anchor.mailKey}`;
       if (restoredAnchorKeyRef.current === anchorKey) return;
@@ -289,7 +306,7 @@ export function OrdersPage() {
 
       {(!isMobile || showDetailOnly) && (
         <div
-          ref={detailScrollRef}
+          ref={setDetailScrollEl}
           data-testid="order-detail-scroll"
           className="flex-1 overflow-y-auto [overflow-anchor:none]"
         >
@@ -306,7 +323,7 @@ export function OrdersPage() {
               orderId={selectedId}
               onBack={showDetailOnly ? undefined : () => selectOrder(null)}
               onDeleted={() => selectOrder(null)}
-              scrollContainerRef={detailScrollRef}
+              scrollContainer={detailScrollEl}
               onBeforeOpenMail={beforeOpenMail}
             />
           ) : (
