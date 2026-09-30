@@ -26,11 +26,10 @@ test_reading_pane_ui.py or the equivalent for coverage of opening a
 glaciered message directly.
 
 Empty folder is deliberately not offered on the glacier's own menu:
-GET .../messages/selection, which the confirmation mints its count
-from, does not yet resolve a glacier folder id and always answers a
-count of zero, so the confirmation would misname the count and the
-server's own mismatch guard would then refuse the actual delete for any
-glacier genuinely holding something.
+GET .../messages/selection resolves a glacier folder id and reports its
+real count, but the folder row's own bulk action never sends the
+confirm: true the server's glacier expunge branch requires, so
+confirming the dialog would be refused rather than acted on.
 """
 
 from __future__ import annotations
@@ -307,12 +306,11 @@ class TestGlacierElsewhereInTheUi:
     ) -> None:
         """Mark all as read reaches the glacier the same way it reaches an
         ordinary folder now that bulk actions resolve a glacier scope.
-        Empty folder stays out: the message-selection endpoint the
-        confirmation would mint its count from does not yet resolve a
-        glacier folder id (always answers a count of zero), so offering
-        it here would show the wrong count and then be refused by the
-        server's own count-mismatch guard for any glacier actually
-        holding something."""
+        Empty folder stays out: the confirmation would show the right
+        count (the selection endpoint resolves a glacier folder id now),
+        but the folder row's own bulk action never sends the confirm:
+        true the server's glacier expunge branch requires, so confirming
+        it would be refused rather than acted on."""
         page.goto(app_server)
         select_account(page, ui_account)
         folder(page, glacier_folder["id"]).hover()

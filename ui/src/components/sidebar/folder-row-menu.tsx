@@ -32,15 +32,13 @@ interface FolderRowMenuProps {
   badgeCount: number;
   totalCount: number;
   /** "Mark all as read" works against the glacier the same way it does
-   * against an ordinary folder. "Empty folder" is left out for it: the
-   * count this menu shows before confirming, and the count the later
-   * expunge request repeats back, both come from GET .../messages/
-   * selection, which does not yet resolve a glacier folder id (it always
-   * answers 0) -- so the dialog would misname the count, and confirming
-   * it would then be refused by the server's own (correct) mismatch
-   * guard for every glacier that genuinely holds anything. Bring it back
-   * once that endpoint resolves the glacier the same way the message
-   * list and the folder's own counts already do. */
+   * against an ordinary folder. "Empty folder" is left out for it: this
+   * component's own bulk action (useFolderBulkAction) never sends
+   * confirm: true, which the server's glacier expunge branch requires --
+   * so confirming the dialog would be refused, not acted on, even though
+   * GET .../messages/selection now resolves a glacier folder id and
+   * reports its real count. Bring it back once the bulk action sends
+   * that confirmation too. */
   isGlacier?: boolean;
 }
 
