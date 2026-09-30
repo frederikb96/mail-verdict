@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import text
 
+from mail_verdict.api.mails import locate_message
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.glacier.operations import confirm_or_withdraw_removing, glacier_message_now
 from mail_verdict.glacier.restore import confirm_restores, fail_stale_restores, start_restore
@@ -259,6 +260,52 @@ async def test_restore_confirms_once_a_byte_identical_live_row_exists_and_the_ou
             )
         ).scalar_one()
         assert att_count == 0
+
+
+@pytest.mark.asyncio
+async def test_locate_message_resolves_a_restored_tombstone_to_its_live_twin(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """locate_message's own restored-tombstone branch resolves through
+    the durable-key resolver rather than a second hand-written lookup --
+    proven by driving a real restore round trip and asking for the
+    glacier row's own id afterward. Needs a real Message-ID header on
+    both ends: the hash-fallback msg_key form the other tests in this
+    file use never resolves through the resolver's live arm at all, by
+    its own documented limit, which would pass this test for the wrong
+    reason (a 404 neither before nor after this branch's rewrite could
+    tell apart)."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, archive_id, target_id = await _seed_account(migrated_db)
+    header = "<round-trip@example.com>"
+    origin_id = await _seed_message(
+        migrated_db, account_id=account_id, folder_id=archive_id, uid=1, message_id_hdr=header,
+    )
+    outcome = await glacier_message_now(migrated_db, origin_id)
+    assert outcome.ok, outcome.reason
+    glacier_id = outcome.glacier_id
+    assert glacier_id is not None
+    await confirm_or_withdraw_removing(migrated_db, account_id, grace_seconds=0)
+
+    result = await start_restore(migrated_db, glacier_id, target_id)
+    assert result.ok, result.reason
+    outbox_id = result.outbox_id
+    assert outbox_id is not None
+
+    live_id = await _seed_message(
+        migrated_db, account_id=account_id, folder_id=target_id, uid=77, imap_uid=77,
+        message_id_hdr=header,
+    )
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE outbox SET status = 'sent' WHERE id = :id"), {"id": outbox_id},
+        )
+    assert await confirm_restores(migrated_db, account_id) == 1
+
+    location = await locate_message(glacier_id)
+    assert location.id == live_id
+    assert location.account_id == account_id
+    assert location.folder_id == target_id
 
 
 @pytest.mark.asyncio

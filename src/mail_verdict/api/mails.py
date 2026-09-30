@@ -74,6 +74,7 @@ from mail_verdict.database.models import (
     Message,
     Verdict,
 )
+from mail_verdict.database.msg_key import resolve_by_msg_key
 from mail_verdict.database.repository import (
     FolderRepository,
     RowMarks,
@@ -873,28 +874,33 @@ async def locate_message(message_id: uuid.UUID) -> MessageLocation:
                     folder_id=glacier_row.folder_id, thread_id=glacier_row.thread_id,
                 )
             # A tombstone (restored earlier): resolve to whatever live row
-            # its restore produced. msg_key IS the Message-ID header,
-            # angle brackets included the same way messages.message_id
-            # stores it, whenever it isn't the hash-fallback form for a
-            # message with no header at all -- which never matches a
-            # restored row either, so there is nothing to resolve to.
-            live_twin = None
-            if not glacier_row.msg_key.startswith("sha256:"):
-                live_twin = (await session.execute(
-                    select(Message.id, Message.account_id, Message.folder_id, Message.thread_id)
-                    .where(
-                        Message.account_id == glacier_row.account_id,
-                        Message.message_id == glacier_row.msg_key,
-                        Message.expunged_at.is_(None),
-                    )
-                    .order_by(desc(Message.created_at))
-                    .limit(1)
-                )).one_or_none()
-            if live_twin is None:
+            # its restore produced, through the one durable-key resolver
+            # every such lookup goes through. A tombstone's own
+            # (account_id, msg_key) is unique, so the resolver's glacier
+            # arm can never match a second time here -- this always
+            # either finds the live twin or falls through to 404.
+            resolved = await resolve_by_msg_key(
+                session, account_id=glacier_row.account_id, msg_key=glacier_row.msg_key,
+            )
+            if resolved is None:
                 raise HTTPException(status_code=404, detail="Message no longer exists")
+            # resolve_by_msg_key's minimal return does not carry
+            # thread_id -- one more read by the id it resolved to.
+            if resolved.kind == "live":
+                thread_id = (
+                    await session.execute(
+                        select(Message.thread_id).where(Message.id == resolved.id)
+                    )
+                ).scalar_one()
+            else:
+                thread_id = (
+                    await session.execute(
+                        select(GlacierMessage.thread_id).where(GlacierMessage.id == resolved.id)
+                    )
+                ).scalar_one()
             return MessageLocation(
-                id=live_twin.id, account_id=live_twin.account_id,
-                folder_id=live_twin.folder_id, thread_id=live_twin.thread_id,
+                id=resolved.id, account_id=glacier_row.account_id,
+                folder_id=resolved.folder_id, thread_id=thread_id,
             )
         if row.expunged_at is None:
             return MessageLocation(
