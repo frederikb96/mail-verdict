@@ -30,6 +30,7 @@ from mail_verdict.api.mails import (
     get_message,
     get_message_quote,
     get_raw_source,
+    get_thread,
     locate_message,
 )
 from mail_verdict.api.mails import message_action as api_message_action
@@ -656,6 +657,10 @@ async def test_permanently_deleted_message_is_gone_under_its_old_id_too(
     with pytest.raises(HTTPException) as raw_exc:
         await get_raw_source(message_id)
     assert raw_exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as thread_exc:
+        await get_thread(message_id)
+    assert thread_exc.value.status_code == 404
 
     async with migrated_db.session() as session:
         stale_row = (

@@ -1189,7 +1189,11 @@ async def get_thread(
     """
     db = get_db_connection()
     async with db.session() as session:
-        anchor = await session.execute(select(Message.thread_id).where(Message.id == message_id))
+        anchor = await session.execute(
+            select(Message.thread_id).where(
+                Message.id == message_id, Message.expunged_at.is_(None),
+            )
+        )
         thread_id = anchor.scalar_one_or_none()
         if thread_id is None:
             glacier_anchor = await session.execute(
@@ -1198,6 +1202,22 @@ async def get_thread(
                 )
             )
             thread_id = glacier_anchor.scalar_one_or_none()
+        if thread_id is None:
+            if await was_permanently_expunged(session, message_id):
+                # Destroyed on purpose through the glacier's own delete-
+                # forever action -- the same guard get_message,
+                # get_attachment and get_raw_source already apply, never
+                # the "readable stale copy" fallback below, which exists
+                # for an ordinary client-side move, not for something
+                # deleted deliberately.
+                raise HTTPException(status_code=404, detail="Message not found")
+            # Not glaciered -- an ordinary expunge (moved by another mail
+            # client). thread_id is never repointed for that case, so the
+            # expunged row's own id still resolves the right conversation.
+            stale_anchor = await session.execute(
+                select(Message.thread_id).where(Message.id == message_id)
+            )
+            thread_id = stale_anchor.scalar_one_or_none()
         if thread_id is None:
             raise HTTPException(status_code=404, detail="Message not found")
 
