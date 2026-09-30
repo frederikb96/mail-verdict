@@ -1966,13 +1966,27 @@ async def mint_selection(
     """
     db = get_db_connection()
     async with db.session() as session:
-        stmt = select(func.now(), func.count(Message.id)).where(
-            Message.account_id == account_id,
-            Message.folder_id == folder_id,
-            Message.expunged_at.is_(None),
-        )
-        if filter == "unread":
-            stmt = stmt.where(Message.is_seen.is_(False))
+        glacier_account_id = await _glacier_account_for_folder(session, folder_id)
+        if glacier_account_id == account_id:
+            # The glacier folder id is synthetic -- never a row in
+            # `messages` (design section 2) -- so the live count below
+            # always answers zero for it, and a "select all" snapshot
+            # minted from that zero would make every bulk action against
+            # the whole glacier refuse itself as unconfirmed.
+            stmt = select(func.now(), func.count(GlacierMessage.id)).where(
+                GlacierMessage.account_id == account_id,
+                GlacierMessage.visible_at.is_not(None),
+            )
+            if filter == "unread":
+                stmt = stmt.where(GlacierMessage.is_seen.is_(False))
+        else:
+            stmt = select(func.now(), func.count(Message.id)).where(
+                Message.account_id == account_id,
+                Message.folder_id == folder_id,
+                Message.expunged_at.is_(None),
+            )
+            if filter == "unread":
+                stmt = stmt.where(Message.is_seen.is_(False))
         row = (await session.execute(stmt)).one()
     return SelectionSnapshotResponse(snapshot_at=row[0], count=row[1])
 
