@@ -89,6 +89,7 @@ from mail_verdict.glacier.rows import (
     glacier_folder_ids,
     glacier_ids_among,
     resolve_glacier_id,
+    was_permanently_expunged,
 )
 from mail_verdict.mail_actions.submissions import request_fingerprint, run_once
 from mail_verdict.postimap.actions import (
@@ -1062,6 +1063,12 @@ async def get_message(
                 is_glacier = True
                 origin_folder_name = msg.origin_imap_name
                 resolved_id = msg.id
+            elif await was_permanently_expunged(session, message_id):
+                # Destroyed on purpose through the glacier's own delete-
+                # forever action -- never the "readable stale copy"
+                # fallback below, which exists for an ordinary client-
+                # side move, not for something deleted deliberately.
+                raise HTTPException(status_code=404, detail="Message not found")
             else:
                 # Not glaciered -- an ordinary expunge (moved by another
                 # mail client). mail_tags/verdicts/attachments are never
@@ -1280,6 +1287,12 @@ async def get_attachment(message_id: uuid.UUID, attachment_id: uuid.UUID) -> Res
     """Stream an attachment's bytes with its content type and a download disposition."""
     db = get_db_connection()
     async with db.session() as session:
+        # Same reasoning as get_raw_source: the query below has no
+        # expunged_at filter (attachments of an ordinary expunge stay
+        # downloadable), so a message destroyed on purpose through the
+        # glacier is checked for first.
+        if await was_permanently_expunged(session, message_id):
+            raise HTTPException(status_code=404, detail="Attachment not found")
         result = await session.execute(
             select(Attachment).where(
                 Attachment.id == attachment_id, Attachment.message_id == message_id,
@@ -1321,6 +1334,14 @@ async def get_raw_source(message_id: uuid.UUID) -> Response:
     """
     db = get_db_connection()
     async with db.session() as session:
+        # Checked before the stale-`messages`-row query below even runs:
+        # that query has no expunged_at filter at all (an ordinary
+        # client-side expunge deliberately keeps serving its readable
+        # copy under the old id), which would otherwise serve this
+        # message's raw bytes straight from the stale row regardless of
+        # having been destroyed on purpose through the glacier.
+        if await was_permanently_expunged(session, message_id):
+            raise HTTPException(status_code=404, detail="Message not found")
         result = await session.execute(
             select(Message.subject, Message.raw_source, Message.is_truncated)
             .where(Message.id == message_id)
@@ -1718,8 +1739,21 @@ async def _apply_glacier_message_action(
                 text("DELETE FROM glacier_attachments WHERE glacier_message_id = :id"),
                 {"id": glacier_id},
             )
+            # A tombstone, not a physical delete -- the same shape a
+            # completed restore leaves (visible_at cleared, bytes
+            # nulled), state='expunged' distinguishing "destroyed on
+            # purpose" from "restored to the server". Without this the
+            # id resolves to nothing, and every read path falls back to
+            # the stale `messages` row (kept deliberately readable for
+            # an ordinary client-side move) as if this message had
+            # merely moved elsewhere rather than been destroyed.
             await session.execute(
-                text("DELETE FROM glacier_messages WHERE id = :id"), {"id": glacier_id},
+                text(
+                    "UPDATE glacier_messages SET state = 'expunged', visible_at = NULL, "
+                    "raw_source = NULL, body_text = NULL, body_html = NULL, "
+                    "raw_headers = NULL WHERE id = :id"
+                ),
+                {"id": glacier_id},
             )
         return MessageActionResponse(
             success=True, action=action, message_id=glacier_id, message="Permanently deleted",

@@ -148,6 +148,36 @@ async def resolve_glacier_id(session: AsyncSession, message_id: uuid.UUID) -> uu
     return result.scalar_one_or_none()
 
 
+async def was_permanently_expunged(session: AsyncSession, message_id: uuid.UUID) -> bool:
+    """Whether `message_id` -- its own id or the original pre-glacier id
+    -- names a glacier row destroyed on purpose through the permanent-
+    delete action (`state = 'expunged'`, the tombstone the delete leaves
+    behind instead of removing the row outright).
+
+    A read path falling back to the stale `messages` row for an
+    ordinary expunge (moved elsewhere by another client, still readable
+    until retention purges it) must not do the same for a message
+    destroyed deliberately -- this is the check that tells the two
+    apart before that fallback ever runs.
+
+    Args:
+        session: Active AsyncSession
+        message_id: The id to check, either shape
+
+    Returns:
+        True if a destroyed tombstone exists under this id
+    """
+    result = await session.execute(
+        select(GlacierMessage.id)
+        .where(
+            GlacierMessage.state == "expunged",
+            or_(GlacierMessage.id == message_id, GlacierMessage.origin_message_id == message_id),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def get_glacier_message_by_key(
     session: AsyncSession, *, account_id: uuid.UUID, msg_key: str,
 ) -> GlacierMessage | None:

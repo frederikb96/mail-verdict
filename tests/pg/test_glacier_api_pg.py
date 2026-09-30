@@ -284,12 +284,20 @@ async def test_expunge_on_a_glaciered_message_requires_confirmation(
     )
     assert confirmed.success is True
     async with migrated_db.session() as session:
+        # A tombstone, not a physically deleted row -- the same shape a
+        # completed restore leaves, so the id can still be recognised
+        # and refused rather than falling through to a stale live row.
         gone = (
             await session.execute(
-                text("SELECT 1 FROM glacier_messages WHERE id = :id"), {"id": glacier_id},
+                text(
+                    "SELECT state, visible_at, raw_source FROM glacier_messages WHERE id = :id"
+                ),
+                {"id": glacier_id},
             )
-        ).scalar_one_or_none()
-        assert gone is None
+        ).mappings().one()
+        assert gone["state"] == "expunged"
+        assert gone["visible_at"] is None
+        assert gone["raw_source"] is None
 
 
 @pytest.mark.asyncio
@@ -543,3 +551,58 @@ async def test_restore_not_ready_message_names_the_remaining_seconds(
     assert response.message is not None
     assert "second" in response.message
     assert any(char.isdigit() for char in response.message)
+
+
+@pytest.mark.asyncio
+async def test_permanently_deleted_message_is_gone_under_its_old_id_too(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's finding: after expunge with confirm, the glacier id
+    404s but the pre-glacier live id still answered 200 with the full
+    message -- the stale `messages` row's own raw_source is never
+    cleared (no grant to), and every read path fell back to serving it
+    as though the message had merely been moved elsewhere by another
+    client rather than destroyed on purpose."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, _folder_id, message_id = await _seed_ready_message(migrated_db)
+    async with migrated_db.session() as session:
+        glacier_folder_id = await _glacier_folder_id(session, account_id)
+    await api_message_action(
+        message_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
+    )
+    async with migrated_db.session() as session:
+        glacier_id = (
+            await session.execute(
+                text("SELECT id FROM glacier_messages WHERE origin_message_id = :id"),
+                {"id": message_id},
+            )
+        ).scalar_one()
+
+    confirmed = await api_message_action(
+        glacier_id, MessageActionRequest(action="expunge", confirm=True),
+    )
+    assert confirmed.success is True
+
+    with pytest.raises(HTTPException) as glacier_exc:
+        await get_message(glacier_id)
+    assert glacier_exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as old_id_exc:
+        await get_message(message_id)
+    assert old_id_exc.value.status_code == 404
+
+    with pytest.raises(HTTPException) as raw_exc:
+        await get_raw_source(message_id)
+    assert raw_exc.value.status_code == 404
+
+    async with migrated_db.session() as session:
+        stale_row = (
+            await session.execute(
+                text("SELECT raw_source FROM messages WHERE id = :id"), {"id": message_id},
+            )
+        ).mappings().one()
+        # The stale row itself is PostIMAP-owned and outside this
+        # application's write grant -- raw_source cannot be cleared
+        # there, which is exactly why every read path has to refuse it
+        # by other means rather than relying on the row being empty.
+        assert stale_row["raw_source"] == _RAW_SOURCE

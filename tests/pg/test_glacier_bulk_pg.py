@@ -268,13 +268,18 @@ async def test_bulk_expunge_requires_confirmation_then_deletes(
     assert confirmed.affected_count == 2
 
     async with migrated_db.session() as session:
+        # Tombstones, not physically deleted rows -- see
+        # test_glacier_api_pg.py's own version of this assertion for why.
         remaining = (
             await session.execute(
-                text("SELECT count(*) FROM glacier_messages WHERE id = ANY(:ids)"),
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE id = ANY(:ids) AND state = 'expunged'"
+                ),
                 {"ids": glacier_ids},
             )
         ).scalar_one()
-        assert remaining == 0
+        assert remaining == 2
 
 
 @pytest.mark.asyncio
