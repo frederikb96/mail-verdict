@@ -29,7 +29,7 @@ from starlette.testclient import TestClient
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.msg_key import resolve_by_msg_key
 from mail_verdict.glacier.operations import confirm_or_withdraw_removing, glacier_message_now
-from mail_verdict.glacier.restore import confirm_restores, start_restore
+from mail_verdict.glacier.restore import confirm_restores, fail_stale_restores, start_restore
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 from tests.e2e.helpers import (
     unique_email,
@@ -434,4 +434,154 @@ async def test_glacier_round_trip_preserves_an_attachment(
     assert download.status_code == 200, download.text
     assert download.content == attachment_bytes, (
         "the restored message's attachment must download byte-identical"
+    )
+
+
+@pytest.mark.asyncio
+async def test_restore_into_a_folder_deleted_meanwhile_leaves_the_copy_intact(
+    app_client: TestClient,
+    dovecot_endpoint: tuple[str, int, int],
+    db: DatabaseConnection,
+) -> None:
+    """Left untested by the red team for lack of time (design's own
+    failure-handling table: "Restore APPEND dead-letters | restore_failed,
+    alert, row returns to glaciered. Copy intact"). The target folder is
+    gone before the APPEND is ever attempted -- deleted at the row level
+    (`deleted_at` set, the same predicate PostIMAP's own outbound
+    processor checks before appending), which the design's own dead-
+    letter path must already handle since it never assumed the target
+    folder still exists.
+
+    The dead-lettered target is a synthetic row, never created on the
+    real Dovecot -- nothing about "the folder no longer exists" needs
+    the folder to have existed there in the first place, only that
+    PostIMAP's own check for it finds nothing.
+    """
+    async with db.session() as session:
+        info = await read_postimap_info(session)
+    if info is None or not supports_message_append(info):
+        pytest.skip(
+            'this PostIMAP build does not carry outbox kind="append" -- '
+            f"reports service_version={info.service_version if info else 'unknown'}, "
+            "the glacier restore round trip cannot run against it"
+        )
+
+    host, imap_port, lmtp_port = dovecot_endpoint
+    email = unique_email("glacier-deleted-folder")
+    msg_id = f"<glacier-deleted-folder-{uuid.uuid4()}@example.com>"
+    original_bytes = build_eml(
+        sender="sender@example.com", recipient=email, subject="Glacier restore, folder gone",
+        body="This message is restored into a folder that vanishes first.",
+        message_id=msg_id,
+    )
+    deliver_message(original_bytes, host, lmtp_port, sender="sender@example.com", recipient=email)
+
+    resp = app_client.post(
+        "/api/accounts",
+        json={
+            "name": email, "imap_host": DOVECOT_ALIAS, "imap_port": DOVECOT_IMAP_PORT,
+            "imap_user": email, "imap_password": DOVECOT_PASSWORD,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    account_id = resp.json()["id"]
+    wait_for_account_active(app_client, account_id)
+    inbox = wait_for_folder(app_client, account_id, "INBOX")
+
+    def _find_message() -> dict[str, Any] | None:
+        listing = app_client.get(
+            f"/api/accounts/{account_id}/messages", params={"folder_id": inbox["id"]},
+        )
+        assert listing.status_code == 200, listing.text
+        for row in listing.json()["messages"]:
+            if row["subject"] == "Glacier restore, folder gone":
+                return row
+        return None
+
+    live_row = wait_for(_find_message, description="the delivered message to sync into the mirror")
+    message_id = live_row["id"]
+
+    async with db.session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO account_prefs (account_id, glacier_enabled, glacier_folder_id) "
+                "VALUES (:account_id, true, :glacier_folder_id) "
+                "ON CONFLICT (account_id) DO UPDATE SET glacier_enabled = true, "
+                "glacier_folder_id = :glacier_folder_id"
+            ),
+            {"account_id": uuid.UUID(account_id), "glacier_folder_id": uuid.uuid4()},
+        )
+
+    outcome = await glacier_message_now(db, uuid.UUID(message_id))
+    assert outcome.ok, outcome.reason
+    glacier_id = outcome.glacier_id
+    assert glacier_id is not None
+
+    def _gone_from_inbox() -> bool:
+        with imap_session(host, imap_port, email, DOVECOT_PASSWORD) as conn:
+            return find_message_by_id(conn, "INBOX", msg_id) is None
+
+    wait_for(_gone_from_inbox, description="the EXPUNGE to actually reach the real IMAP server")
+    confirmed, withdrawn = await confirm_or_withdraw_removing(
+        db, uuid.UUID(account_id), grace_seconds=0,
+    )
+    assert (confirmed, withdrawn) == (1, 0)
+
+    # A folder row that never existed on the real server, already
+    # deleted -- what PostIMAP's own outbound append check refuses on.
+    vanished_folder_id = uuid.uuid4()
+    async with db.session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, initial_sync_done, deleted_at) "
+                "VALUES (:id, :account_id, 'Vanished', true, now())"
+            ),
+            {"id": vanished_folder_id, "account_id": uuid.UUID(account_id)},
+        )
+
+    restore_outcome = await start_restore(db, glacier_id, vanished_folder_id)
+    assert restore_outcome.ok, restore_outcome.reason
+
+    async def _dead_lettered() -> bool | None:
+        async with db.session() as session:
+            status = (
+                await session.execute(
+                    text("SELECT status FROM outbox WHERE id = :id"),
+                    {"id": restore_outcome.outbox_id},
+                )
+            ).scalar_one()
+        return status == "dead" or None
+
+    await wait_for_async(
+        _dead_lettered, description="the APPEND to dead-letter on the missing folder",
+    )
+
+    failed = await fail_stale_restores(db, uuid.UUID(account_id), timeout_seconds=1800)
+    assert failed == 1
+
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT state, raw_source, last_error FROM glacier_messages WHERE id = :id"
+                ),
+                {"id": glacier_id},
+            )
+        ).mappings().one()
+        assert row["state"] == "glaciered"
+        assert row["raw_source"] is not None, "the copy must never be deleted on a dead-letter"
+        assert row["last_error"] is not None
+
+    # The copy is intact and restorable again, into a folder that
+    # actually exists this time.
+    second_attempt = await start_restore(db, glacier_id, uuid.UUID(inbox["id"]))
+    assert second_attempt.ok, second_attempt.reason
+
+    def _back_on_the_server() -> bool:
+        with imap_session(host, imap_port, email, DOVECOT_PASSWORD) as conn:
+            return find_message_by_id(conn, "INBOX", msg_id) is not None
+
+    wait_for(
+        _back_on_the_server, timeout_s=60.0,
+        description="the retried APPEND to actually land the message back on the real server",
     )
