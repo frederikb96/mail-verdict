@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.7.1] - 2026-09-30
+
 - Fixed the orders migration writing the pipeline's current revision as JSON text instead of a
   JSON object, which made the pipeline page, its health check and spam classification of new mail
   fail after upgrading. A database that already ran the broken migration is repaired automatically
