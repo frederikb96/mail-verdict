@@ -10,8 +10,8 @@ PostIMAP-owned table, and none from order_mails/order_jobs onto orders
 either for order_jobs (see database/models.py's OrderJob docstring) --
 consistent with every other MailVerdict-owned table.
 
-Revision ID: 0034_orders
-Revises: 0033_message_action_submissions
+Revision ID: 0038_orders
+Revises: 0037_glacier_sweep_refusal
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "0034_orders"
-down_revision: str | None = "0033_message_action_submissions"
+revision: str = "0038_orders"
+down_revision: str | None = "0037_glacier_sweep_refusal"
 branch_labels: str | None = None
 depends_on: str | None = None
 
