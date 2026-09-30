@@ -147,13 +147,36 @@ async def confirm_restores(
     batch_size: int = 50,
 ) -> int:
     """
-    Section 7 step 3-4: for each row in "restoring", look for the
-    confirming live row -- same account, its target folder, the same
-    Message-ID header, `imap_uid IS NOT NULL` (genuinely on the server,
-    not another pending move), matching size. Found: re-point
-    tags/verdicts/embedding hint, set restored_at, clear visible_at, and
-    null the bulk columns (D9 -- the tombstone shape) in one transaction,
-    then announce the move.
+    Section 7 step 3-4: a restore is confirmed by the very outbox entry
+    it created, never by matching a look-alike message. Only once
+    PostIMAP itself reports the APPEND landed (`outbox.status = 'sent'`)
+    is a live row even considered, and the live row that confirms it is
+    the one whose bytes are byte-identical to the glacier's own stored
+    `raw_source` -- proof of identity that needs no Message-ID at all,
+    since a stored copy compared against its own bytes can never be
+    ambiguous about which live row is "the same message" the way
+    matching on a shallow attribute (a header, a size) can.
+
+    🚨 The first version of this fix matched on `outbox.sent_message_id`,
+    which the consumer contract documents as "read directly out of
+    raw_source's own Message-ID header" -- correct in principle, but
+    PostIMAP's extraction only recognises a Message-ID that fits on a
+    single physical line, and a folded one (RFC 5322 allows wrapping any
+    header across lines) leaves `sent_message_id` NULL even though the
+    append succeeded and the header is right there in the appended
+    bytes. A hash comparison against the exact bytes this row itself
+    asked to be appended sidesteps that limitation entirely rather than
+    depending on a header PostIMAP may or may not have been able to
+    read back out -- content identity is what "the very outbox entry it
+    created" actually cashes out to here, and a byte-for-byte match is
+    strictly harder to satisfy by accident than a text comparison ever
+    was. `DISTINCT ON (g.id)` guards against two content-identical live
+    rows (an unrelated duplicate already sitting in the folder) matching
+    the same glacier row twice in one pass.
+
+    Found: re-point tags/verdicts/embedding hint, set restored_at, clear
+    visible_at, and null the bulk columns (D9 -- the tombstone shape) in
+    one transaction, then announce the move.
 
     Args:
         db: Database connection
@@ -166,61 +189,38 @@ async def confirm_restores(
     """
     confirmed = 0
     async with db.session() as session:
-        restoring = (
+        matches = (
             await session.execute(
                 text(
                     """
-                    SELECT g.id, g.message_id, g.size_bytes, g.restore_outbox_id
+                    SELECT DISTINCT ON (g.id)
+                           g.id AS gid, m.id AS live_id, m.folder_id AS live_folder_id
                     FROM glacier_messages g
                     JOIN outbox o ON o.id = g.restore_outbox_id
+                    JOIN messages m
+                      ON m.account_id = g.account_id
+                     AND m.folder_id = o.target_folder_id
+                     AND m.expunged_at IS NULL
+                     AND m.imap_uid IS NOT NULL
+                     AND sha256(m.raw_source) = sha256(g.raw_source)
                     WHERE g.account_id = :account_id AND g.state = 'restoring'
+                      AND o.status = 'sent'
+                    ORDER BY g.id, m.id
                     LIMIT :batch
                     """
                 ),
                 {"account_id": account_id, "batch": batch_size},
             )
         ).mappings().all()
-        for row in restoring:
-            outbox_row = (
-                await session.execute(
-                    text(
-                        "SELECT status, target_folder_id FROM outbox WHERE id = :id"
-                    ),
-                    {"id": row["restore_outbox_id"]},
-                )
-            ).mappings().one_or_none()
-            if outbox_row is None:
-                continue
-            live = (
-                await session.execute(
-                    text(
-                        """
-                        SELECT id, folder_id FROM messages
-                        WHERE account_id = :account_id AND expunged_at IS NULL
-                          AND imap_uid IS NOT NULL
-                          AND coalesce(message_id, '') = coalesce(:message_id_hdr, '')
-                          AND size_bytes IS NOT DISTINCT FROM :size_bytes
-                          AND folder_id = :target_folder_id
-                        LIMIT 1
-                        """
-                    ),
-                    {
-                        "account_id": account_id, "message_id_hdr": row["message_id"],
-                        "size_bytes": row["size_bytes"],
-                        "target_folder_id": outbox_row["target_folder_id"],
-                    },
-                )
-            ).mappings().one_or_none()
-            if live is None:
-                continue
-
+        for row in matches:
+            gid, live_id, live_folder_id = row["gid"], row["live_id"], row["live_folder_id"]
             await session.execute(
                 text("UPDATE mail_tags SET mail_id = :new_id WHERE mail_id = :gid"),
-                {"new_id": live["id"], "gid": row["id"]},
+                {"new_id": live_id, "gid": gid},
             )
             await session.execute(
                 text("UPDATE verdicts SET mail_id = :new_id WHERE mail_id = :gid"),
-                {"new_id": live["id"], "gid": row["id"]},
+                {"new_id": live_id, "gid": gid},
             )
             await session.execute(
                 text(
@@ -228,11 +228,11 @@ async def confirm_restores(
                     "WHERE message_id IS NULL AND account_id = :account_id AND msg_key = "
                     "(SELECT msg_key FROM glacier_messages WHERE id = :gid)"
                 ),
-                {"new_id": live["id"], "account_id": account_id, "gid": row["id"]},
+                {"new_id": live_id, "account_id": account_id, "gid": gid},
             )
             await session.execute(
                 text("DELETE FROM glacier_attachments WHERE glacier_message_id = :gid"),
-                {"gid": row["id"]},
+                {"gid": gid},
             )
             await session.execute(
                 text(
@@ -243,15 +243,15 @@ async def confirm_restores(
                     WHERE id = :gid
                     """
                 ),
-                {"gid": row["id"]},
+                {"gid": gid},
             )
             confirmed += 1
             if event_ring is not None:
                 await event_ring.add(
                     account_id, "mail.updated",
                     {
-                        "id": str(live["id"]), "account_id": str(account_id),
-                        "folder_id": str(live["folder_id"]), "old_folder_id": str(row["id"]),
+                        "id": str(live_id), "account_id": str(account_id),
+                        "folder_id": str(live_folder_id), "old_folder_id": str(gid),
                         "changed": ["folder_id"],
                     },
                 )
