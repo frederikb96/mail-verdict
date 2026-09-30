@@ -10,6 +10,15 @@
  *   It is deliberately computed as a separate step so the caller can commit
  *   it on a different cadence (once the reader has settled, not on every
  *   scroll event): a fast flick must not fire one request per row passed.
+ *
+ * A third, separate notion: the **anchor** -- the one row that decides both
+ * the header month and which week is "current" (the top-left date, the
+ * toolbar, the mini-month). It sits at a fixed fraction of the viewport
+ * height down from the top, not at the top itself, so a week's neighbours on
+ * both sides stay in view -- and expressed as a fraction of the actual
+ * viewport rather than a fixed number of rows, it lands in the same relative
+ * place whether few rows are visible (a phone) or many (a wide desktop
+ * window).
  */
 
 import { monthsBetween, weekDays } from "@/lib/dates";
@@ -17,6 +26,43 @@ import { monthsBetween, weekDays } from "@/lib/dates";
 export interface RenderRange {
   start: number;
   end: number;
+}
+
+/** How far down the viewport the anchor row sits, as a fraction of its
+ * height -- a little above the middle, so the weeks before and after it are
+ * both in view. */
+export const ANCHOR_FRACTION = 0.4;
+
+/** Pixel distance from the top of the viewport to the anchor line -- rounded
+ * to a whole pixel, because the browser stores `scrollTop` as one: writing a
+ * fractional offset and reading it back through `computeAnchorWeek` loses
+ * the fraction, and flooring a value meant to land exactly on a row boundary
+ * then drops to the row before it. An integer offset makes every round trip
+ * exact regardless of what the browser does with `scrollTop`. */
+export function anchorOffset(viewportHeight: number): number {
+  return Math.round(viewportHeight * ANCHOR_FRACTION);
+}
+
+/** The week index whose row currently spans the anchor line. */
+export function computeAnchorWeek(
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  min: number,
+): number {
+  if (rowHeight <= 0) return min;
+  return Math.floor((scrollTop + anchorOffset(viewportHeight)) / rowHeight) + min;
+}
+
+/** The `scrollTop` that puts `week`'s row's top edge exactly on the anchor
+ * line -- the inverse of `computeAnchorWeek`. */
+export function scrollTopForAnchorWeek(
+  week: number,
+  viewportHeight: number,
+  rowHeight: number,
+  min: number,
+): number {
+  return (week - min) * rowHeight - anchorOffset(viewportHeight);
 }
 
 /** True when two ranges cover exactly the same weeks -- the caller's cue to
