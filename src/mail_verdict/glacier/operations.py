@@ -530,7 +530,7 @@ async def confirm_or_withdraw_removing(
     Section 3.5/3.6's bookkeeping over rows sitting in "removing": the
     contract offers no positive signal that an EXPUNGE reached the
     server, so the end is detected by age -- old enough, and no
-    sync_notifications row reporting this exact delete failed, means it
+    sync_notifications row reporting *this* delete failed, means it
     landed. A matching notification means it did not, and section 3.6
     applies: the glacier copy is withdrawn, since the live message is
     authoritative again.
@@ -538,6 +538,17 @@ async def confirm_or_withdraw_removing(
     Detecting the end by age rather than by enumerating every way an
     expunge can end is deliberate -- a guard built as "suppress on each
     known ending" is a set that can never be closed.
+
+    🚨 A notification row is only evidence about *this* attempt when its
+    own `created_at` is after `expunge_requested_at` -- an older row (a
+    failed delete from before this message was ever glaciered,
+    acknowledged and forgotten) says nothing about the expunge this row
+    is waiting on. And withdrawing a copy is only safe once PostIMAP has
+    actually put the live row back (`reverted_at IS NOT NULL`, per the
+    contract) *and* that live row is now verifiably intact -- a matching
+    notification whose revert has not landed yet is not evidence of
+    anything either way, and is left for a later tick rather than acted
+    on now.
 
     Args:
         db: Database connection
@@ -556,7 +567,7 @@ async def confirm_or_withdraw_removing(
             await session.execute(
                 text(
                     """
-                    SELECT id, origin_message_id, msg_key
+                    SELECT id, origin_message_id, msg_key, expunge_requested_at
                     FROM glacier_messages
                     WHERE account_id = :account_id AND state = 'removing'
                       AND expunge_requested_at < now() - make_interval(secs => :grace)
@@ -567,48 +578,24 @@ async def confirm_or_withdraw_removing(
             )
         ).mappings().all()
         for row in rows:
-            failed = (
+            failure = (
                 await session.execute(
                     text(
-                        "SELECT 1 FROM sync_notifications WHERE account_id = :account_id "
-                        "AND action = 'delete' AND message_id = :origin_id LIMIT 1"
-                    ),
-                    {"account_id": account_id, "origin_id": row["origin_message_id"]},
-                )
-            ).scalar_one_or_none()
-            if failed is not None:
-                await session.execute(
-                    text("UPDATE mail_tags SET mail_id = :origin_id WHERE mail_id = :gid"),
-                    {"origin_id": row["origin_message_id"], "gid": row["id"]},
-                )
-                await session.execute(
-                    text("UPDATE verdicts SET mail_id = :origin_id WHERE mail_id = :gid"),
-                    {"origin_id": row["origin_message_id"], "gid": row["id"]},
-                )
-                await session.execute(
-                    text(
-                        "UPDATE message_embeddings SET message_id = :origin_id "
-                        "WHERE message_id IS NULL AND account_id = :account_id "
-                        "AND msg_key = :msg_key"
+                        """
+                        SELECT reverted_at FROM sync_notifications
+                        WHERE account_id = :account_id AND action = 'delete'
+                          AND message_id = :origin_id AND created_at > :requested_at
+                        ORDER BY created_at DESC LIMIT 1
+                        """
                     ),
                     {
-                        "origin_id": row["origin_message_id"], "account_id": account_id,
-                        "msg_key": row["msg_key"],
+                        "account_id": account_id, "origin_id": row["origin_message_id"],
+                        "requested_at": row["expunge_requested_at"],
                     },
                 )
-                await session.execute(
-                    text("DELETE FROM glacier_attachments WHERE glacier_message_id = :gid"),
-                    {"gid": row["id"]},
-                )
-                await session.execute(
-                    text("DELETE FROM glacier_messages WHERE id = :gid"), {"gid": row["id"]},
-                )
-                withdrawn += 1
-                logger.warning(
-                    "Glacier expunge failed on the server, copy withdrawn",
-                    extra={"account_id": str(account_id), "glacier_id": str(row["id"])},
-                )
-            else:
+            ).mappings().one_or_none()
+
+            if failure is None:
                 await session.execute(
                     text(
                         "UPDATE glacier_messages SET state = 'glaciered', glaciered_at = now() "
@@ -617,6 +604,63 @@ async def confirm_or_withdraw_removing(
                     {"gid": row["id"]},
                 )
                 confirmed += 1
+                continue
+
+            if failure["reverted_at"] is None:
+                # PostIMAP has not yet put the live row back -- neither
+                # side is confirmed. Leave the row in "removing" for a
+                # later tick rather than guessing.
+                continue
+
+            live = (
+                await session.execute(
+                    text(
+                        "SELECT expunged_at, imap_uid FROM messages WHERE id = :id"
+                    ),
+                    {"id": row["origin_message_id"]},
+                )
+            ).mappings().one_or_none()
+            live_intact = (
+                live is not None and live["expunged_at"] is None and live["imap_uid"] is not None
+            )
+            if not live_intact:
+                # The revert notification exists but the live row is not
+                # verifiably the other copy yet -- withdrawing now would
+                # risk deleting the only copy in existence. Try again
+                # later rather than act on an unconfirmed state.
+                continue
+
+            await session.execute(
+                text("UPDATE mail_tags SET mail_id = :origin_id WHERE mail_id = :gid"),
+                {"origin_id": row["origin_message_id"], "gid": row["id"]},
+            )
+            await session.execute(
+                text("UPDATE verdicts SET mail_id = :origin_id WHERE mail_id = :gid"),
+                {"origin_id": row["origin_message_id"], "gid": row["id"]},
+            )
+            await session.execute(
+                text(
+                    "UPDATE message_embeddings SET message_id = :origin_id "
+                    "WHERE message_id IS NULL AND account_id = :account_id "
+                    "AND msg_key = :msg_key"
+                ),
+                {
+                    "origin_id": row["origin_message_id"], "account_id": account_id,
+                    "msg_key": row["msg_key"],
+                },
+            )
+            await session.execute(
+                text("DELETE FROM glacier_attachments WHERE glacier_message_id = :gid"),
+                {"gid": row["id"]},
+            )
+            await session.execute(
+                text("DELETE FROM glacier_messages WHERE id = :gid"), {"gid": row["id"]},
+            )
+            withdrawn += 1
+            logger.warning(
+                "Glacier expunge failed on the server, copy withdrawn",
+                extra={"account_id": str(account_id), "glacier_id": str(row["id"])},
+            )
     return confirmed, withdrawn
 
 
