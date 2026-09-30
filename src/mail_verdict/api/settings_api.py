@@ -6,12 +6,16 @@ GET /api/settings/{category} — single category
 PUT /api/settings/{category} — update category (merge)
 POST /api/settings/import — bulk import
 
-The "ai" category carries provider API keys as a write-only extension:
-PUT accepts anthropic_api_key / openai_api_key / custom_api_key (plaintext,
-encrypted and stored on write), and every read reports only
-anthropic_api_key_configured / anthropic_api_key_hint (and the other
-providers' equivalents) -- the key itself is never merged into the JSONB
-settings blob and never appears in a response.
+A provider API key is a write-only extension of the JSON any category
+accepts: PUT anthropic_api_key / openai_api_key / custom_api_key
+(plaintext, encrypted and stored on write, shared across whichever
+category names that provider -- see settings/credentials.py), and every
+read reports only anthropic_api_key_configured / anthropic_api_key_hint
+(and the other providers' equivalents). This is matched by field shape
+(_CREDENTIAL_FIELD_PATTERN below) rather than by which category the
+request names, so a key-shaped field is stripped -- never merged into a
+category's JSONB blob, never returned -- whichever category it is sent
+to or read from, not only "ai".
 
 A write to "semantic" that changes model, provider or base_url freezes the
 identity that was actually serving search into active_model/active_provider
@@ -23,6 +27,7 @@ the new identity completes (embeddings/worker.py's _maybe_cutover).
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -48,17 +53,34 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 _VALID_CATEGORIES = {cat.value for cat in SettingCategory}
-_CREDENTIAL_FIELDS = {f"{provider}_api_key" for provider in PROVIDER_ENV_VARS}
-# Read-only, computed on every GET -- stripped from any write so a client
-# that round-trips a GET response back through PUT/import can't persist a
-# stale status snapshot into the JSONB blob (harmless since the next GET
-# overwrites it anyway, but pointless to store).
-_CREDENTIAL_STATUS_FIELDS = {
-    f"{field}_{suffix}"
-    for field in _CREDENTIAL_FIELDS
-    for suffix in ("configured", "hint")
-}
-_AI_COMPUTED_FIELDS = _CREDENTIAL_FIELDS | _CREDENTIAL_STATUS_FIELDS
+# A raw provider key (e.g. "openai_api_key") or its computed status (the
+# "_configured"/"_hint" suffix a GET reports instead -- see
+# _ai_credential_status below), matched by NAME SHAPE rather than by an
+# enumerated per-category list. Stripped from every category's write and
+# read alike, including a field for a provider not (yet) in
+# PROVIDER_ENV_VARS -- there is no list of categories to keep in sync with
+# reality here; a key-shaped field is never persisted or returned,
+# whichever category it arrives on and whichever provider it names.
+_CREDENTIAL_FIELD_PATTERN = re.compile(r"^\w+_api_key(_configured|_hint)?$")
+
+
+def _strip_credential_shaped_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Drop every field shaped like a provider key or its computed status
+    from a settings dict, whichever category it belongs to.
+
+    Applied on every write (so nothing credential-shaped is ever merged
+    into a category's JSONB blob) and on every read (so a value already
+    sitting in a category's stored blob from before this stripping
+    existed is masked too, not only a freshly written one).
+
+    Args:
+        data: A category's settings dict, incoming or outgoing
+
+    Returns:
+        data, with every key matching _CREDENTIAL_FIELD_PATTERN removed
+    """
+    return {k: v for k, v in data.items() if not _CREDENTIAL_FIELD_PATTERN.match(k)}
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -151,29 +173,37 @@ def _freeze_active_embedding_identity(
 
 async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
     """
-    Extract and store any provider_api_key fields from a PUT body.
+    Extract and store any provider_api_key fields from a PUT body, for
+    whichever category it targets -- the credential store is keyed by
+    provider name, not by settings category (see settings/credentials.py:
+    "custom" is one key shared by every category whose own provider field
+    is set to "custom").
 
     An empty string clears the stored key; anything else (over)writes it.
-    Returns the request data with credential fields removed, so they are
-    never merged into the JSONB settings blob.
+    A key-shaped field for a provider this server doesn't know how to
+    store (not in PROVIDER_ENV_VARS) is dropped rather than stored or
+    raised on -- there is nowhere safe to put it, and the alternative is
+    persisting it in the clear.
+
+    Returns the request data with every credential-shaped field removed,
+    so none of them are ever merged into the category's JSONB blob.
 
     Args:
-        data: Raw PUT body for the "ai" category
+        data: Raw PUT body for any settings category
 
     Returns:
-        data with anthropic_api_key / openai_api_key and the read-only
-        computed status fields popped out
+        data with anthropic_api_key / openai_api_key / custom_api_key and
+        the read-only computed status fields popped out
 
     Raises:
         HTTPException: 400 if a key is set with no ENCRYPTION_KEY configured
     """
-    remaining = {k: v for k, v in data.items() if k not in _CREDENTIAL_STATUS_FIELDS}
     cred_repo = get_provider_credential_repo()
     for provider in PROVIDER_ENV_VARS:
         field_name = f"{provider}_api_key"
-        if field_name not in remaining:
+        if field_name not in data:
             continue
-        value = remaining.pop(field_name)
+        value = data[field_name]
         try:
             if value:
                 await cred_repo.set_key(provider, str(value))
@@ -181,14 +211,17 @@ async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
                 await cred_repo.clear_key(provider)
         except EncryptionUnavailableError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return remaining
+    return _strip_credential_shaped_fields(data)
 
 
 @router.get("")
 async def get_all_settings() -> dict[str, dict[str, Any]]:
     """Get all settings grouped by category."""
     service = get_settings_service()
-    all_settings = service.get_all()
+    all_settings = {
+        category: _strip_credential_shaped_fields(data)
+        for category, data in service.get_all().items()
+    }
     all_settings["ai"] = await _with_ai_credential_status(all_settings["ai"])
     return all_settings
 
@@ -202,7 +235,7 @@ async def get_settings(category: str) -> dict[str, Any]:
             detail=f"Invalid category '{category}'. Valid: {sorted(_VALID_CATEGORIES)}",
         )
     service = get_settings_service()
-    data = service.get(category)
+    data = _strip_credential_shaped_fields(service.get(category))
     if category == "ai":
         data = await _with_ai_credential_status(data)
     return data
@@ -217,10 +250,14 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
             detail=f"Invalid category '{category}'. Valid: {sorted(_VALID_CATEGORIES)}",
         )
     service = get_settings_service()
-    data = request.data
+    # Applied whichever category this is: a provider key is shared across
+    # categories by provider name, not scoped to "ai" (settings/
+    # credentials.py), and the request body is an arbitrary dict for every
+    # category alike -- nothing about the route restricts a key-shaped
+    # field to arriving only where one is expected.
+    data = await _apply_credential_writes(request.data)
 
     if category == "ai":
-        data = await _apply_credential_writes(data)
         effective = {**service.get("ai"), **data}
         try:
             validate_ai_settings(effective)
@@ -248,6 +285,10 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _announce_settings_changed(category)
+    # Defensive as well as prospective: masks a credential-shaped field
+    # already sitting in this category's stored blob from before writes
+    # were stripped everywhere, not only one this request just wrote.
+    result = _strip_credential_shaped_fields(result)
     if category == "ai":
         result = await _with_ai_credential_status(result)
     return result
@@ -262,15 +303,20 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
             status_code=400,
             detail=f"Invalid categories: {sorted(invalid)}. Valid: {sorted(_VALID_CATEGORIES)}",
         )
-    data = dict(request.data)
+    # A key-shaped field is stripped from every category's import payload,
+    # not only "ai" -- import never stores a provider key at all (unlike a
+    # PUT, which routes it to the credential store), so this is a plain
+    # drop rather than a call to _apply_credential_writes.
+    data = {
+        category: _strip_credential_shaped_fields(cat_data)
+        for category, cat_data in request.data.items()
+    }
     if "ai" in data:
-        ai_data = {k: v for k, v in data["ai"].items() if k not in _AI_COMPUTED_FIELDS}
-        effective = {**get_settings_service().get("ai"), **ai_data}
+        effective = {**get_settings_service().get("ai"), **data["ai"]}
         try:
             validate_ai_settings(effective)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        data["ai"] = ai_data
 
     if "semantic" in data:
         current = get_settings_service().get("semantic")
@@ -295,5 +341,9 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _announce_settings_changed()
+    result = {
+        category: _strip_credential_shaped_fields(cat_data)
+        for category, cat_data in result.items()
+    }
     result["ai"] = await _with_ai_credential_status(result["ai"])
     return result

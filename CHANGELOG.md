@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fixed a provider API key sent to a settings category other than AI -- the semantic search
+  category's own shared custom-server key, among others -- being merged into that category's
+  stored settings and returned by every later read, instead of masked the way an AI provider key
+  always was. Masking now applies to every settings category by the shape of the field rather than
+  by an enumerated list of which categories carry one, so this closes for whichever category might
+  need a key next as well. A key already stored this way is removed on upgrade.
+
 ## [6.7.1] - 2026-09-30
 
 - Fixed the orders migration writing the pipeline's current revision as JSON text instead of a

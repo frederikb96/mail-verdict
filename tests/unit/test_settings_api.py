@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from mail_verdict.settings.defaults import SETTING_DEFAULTS
+from mail_verdict.settings.defaults import SETTING_DEFAULTS, SettingCategory
 
 
 def _make_mock_service(
@@ -298,6 +299,100 @@ class TestSemanticSettings:
         assert "anthropic_api_key_hint" not in stored_data
 
 
+class TestCredentialMaskingAppliesToEveryCategory:
+    """
+    A provider key set through the settings API must never be readable
+    back out of it, whichever category it belongs to -- not just "ai".
+
+    Each test here generates its own throwaway value (never a real
+    credential) and asserts no field of any response equals it.
+    """
+
+    @pytest.mark.parametrize("category", [cat.value for cat in SettingCategory])
+    def test_a_key_sent_to_any_category_never_reaches_a_read(
+        self, client: TestClient, category: str,
+    ) -> None:
+        """
+        The generic PUT endpoint takes an arbitrary dict for every
+        category, so a key-shaped field reaching one that has no concept
+        of a provider (retry, pipeline, calendar, outbox, mail, orders)
+        must be masked exactly the same as it is for "ai" -- matched by
+        the field's shape, not by which category asked for it.
+        """
+        secret_value = secrets.token_hex(16)
+        put_resp = client.put(
+            f"/settings/{category}", json={"data": {"openai_api_key": secret_value}},
+        )
+        assert put_resp.status_code == 200, put_resp.text
+        assert secret_value not in put_resp.text
+
+        get_resp = client.get(f"/settings/{category}")
+        assert get_resp.status_code == 200
+        assert secret_value not in get_resp.text
+        assert "openai_api_key" not in get_resp.json()
+
+    def test_semantic_custom_api_key_never_returns_it(
+        self, client: TestClient, cred_repo: MagicMock,
+    ) -> None:
+        """
+        The actual production shape: the "custom" provider's key is
+        shared between "ai" and "semantic" (settings/credentials.py), so
+        setting it while configuring semantic search for a custom,
+        OpenAI-compatible embeddings server must store it the same way
+        the "ai" category does -- never merge it into semantic's own
+        JSONB blob, never return it on the write's own response or on
+        any later read.
+        """
+        secret_value = f"sk-{secrets.token_hex(16)}"
+        put_resp = client.put(
+            "/settings/semantic",
+            json={
+                "data": {
+                    "provider": "custom",
+                    "base_url": "https://example.test/v1",
+                    "custom_api_key": secret_value,
+                },
+            },
+        )
+        assert put_resp.status_code == 200, put_resp.text
+        assert secret_value not in put_resp.text
+        assert "custom_api_key" not in put_resp.json()
+
+        get_resp = client.get("/settings/semantic")
+        assert get_resp.status_code == 200
+        assert secret_value not in get_resp.text
+        assert "custom_api_key" not in get_resp.json()
+
+        # Routed to the shared credential store, not merely dropped.
+        assert cred_repo._stored.get("custom") == secret_value
+
+    def test_credential_shaped_field_for_an_unknown_provider_is_dropped(
+        self, client: TestClient, cred_repo: MagicMock,
+    ) -> None:
+        """
+        A field shaped like a key but naming a provider this server has
+        no credential slot for is never stored anywhere -- silently
+        dropped rather than persisted in the clear or raising.
+        """
+        secret_value = secrets.token_hex(16)
+        resp = client.put(
+            "/settings/ai", json={"data": {"mistral_api_key": secret_value}},
+        )
+        assert resp.status_code == 200
+        assert secret_value not in resp.text
+        cred_repo.set_key.assert_not_awaited()
+
+    def test_write_response_and_a_later_read_agree(self, client: TestClient) -> None:
+        """The write's own answer and a subsequent read are masked the
+        same way -- one code path, not two that could drift apart."""
+        secret_value = secrets.token_hex(16)
+        put_resp = client.put(
+            "/settings/pipeline", json={"data": {"openai_api_key": secret_value}},
+        )
+        get_resp = client.get("/settings/pipeline")
+        assert put_resp.json() == get_resp.json()
+
+
 class TestImportSettings:
     """Tests for POST /api/settings/import."""
 
@@ -342,4 +437,29 @@ class TestImportSettings:
             "data": {"ai": {"openai_api_key": "sk-should-not-be-stored"}},
         })
         assert resp.status_code == 200
+        cred_repo.set_key.assert_not_awaited()
+
+    def test_import_never_stores_a_key_sent_to_any_category(
+        self, client: TestClient, cred_repo: MagicMock,
+    ) -> None:
+        """The same masking as a PUT, for import -- a key-shaped field
+        under a category other than "ai" is dropped too, never merged
+        into that category's JSONB blob.
+
+        The mock's bulk_import returns a canned snapshot rather than
+        reflecting what it was called with (see
+        test_import_also_freezes_the_active_identity's docstring above),
+        so this asserts on the call args, the same way that test does.
+        """
+        from mail_verdict.api import settings_api as settings_api_module
+
+        secret_value = secrets.token_hex(16)
+        resp = client.post("/settings/import", json={
+            "data": {"semantic": {"custom_api_key": secret_value}},
+        })
+        assert resp.status_code == 200
+
+        service = settings_api_module.get_settings_service()
+        imported = service.bulk_import.await_args.args[0]  # type: ignore[union-attr]
+        assert "custom_api_key" not in imported["semantic"]
         cred_repo.set_key.assert_not_awaited()
