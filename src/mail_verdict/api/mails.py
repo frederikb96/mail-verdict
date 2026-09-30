@@ -1533,7 +1533,7 @@ async def _apply_message_action(
                 success=outcome.ok, action=action,
                 message_id=outcome.glacier_id if outcome.glacier_id is not None else message_id,
                 folder_id=request.target_folder_id if outcome.ok else None,
-                message=outcome.reason,
+                message=outcome.reason, applied=outcome.ok,
             )
 
     if action in ("mark_read", "mark_unread", "flag", "unflag"):
@@ -1652,12 +1652,22 @@ async def _apply_glacier_message_action(
             )
             if tombstone.scalar_one_or_none() is not None:
                 return MessageActionResponse(
-                    success=False, action=action, message_id=glacier_id,
+                    success=False, action=action, message_id=glacier_id, applied=False,
                     message="This message has already been restored to the mail server -- "
                     "look it up again to act on the restored copy.",
                 )
             return None
     glacier_id = row.id
+    # The glacier's own synthetic folder id -- honest for every one of
+    # this function's responses below, since MailVerdict owns where a
+    # glacier row lists and nothing here moves it out of the glacier
+    # synchronously (a restore only actually leaves once confirm_restores
+    # observes the server's copy). The generic re-read in message_action()
+    # only ever looks at `messages`, which has nothing useful to say about
+    # a glacier row or the stale expunged live row still sitting under its
+    # origin id -- every branch below sets this explicitly so that re-read
+    # is never reached.
+    glacier_folder_id = row.folder_id
 
     if request.expected_folder_id is not None and row.folder_id != request.expected_folder_id:
         return _not_applied(action, glacier_id)
@@ -1673,7 +1683,9 @@ async def _apply_glacier_message_action(
                 {"value": value, "id": glacier_id},
             )
         await _announce_glacier_change(row.account_id, glacier_id, row.folder_id)
-        return MessageActionResponse(success=True, action=action, message_id=glacier_id)
+        return MessageActionResponse(
+            success=True, action=action, message_id=glacier_id, folder_id=glacier_folder_id,
+        )
 
     if action in ("keyword_add", "keyword_remove"):
         if not request.keyword:
@@ -1689,12 +1701,15 @@ async def _apply_glacier_message_action(
                 {"kw": sorted(current), "id": glacier_id},
             )
         await _announce_glacier_change(row.account_id, glacier_id, row.folder_id)
-        return MessageActionResponse(success=True, action=action, message_id=glacier_id)
+        return MessageActionResponse(
+            success=True, action=action, message_id=glacier_id, folder_id=glacier_folder_id,
+        )
 
     if action == "expunge":
         if not request.confirm:
             return MessageActionResponse(
-                success=False, action=action, message_id=glacier_id,
+                success=False, action=action, message_id=glacier_id, applied=False,
+                folder_id=glacier_folder_id,
                 message="This is the only copy of this message. Confirm to delete it "
                 "permanently.",
             )
@@ -1725,8 +1740,8 @@ async def _apply_glacier_message_action(
                 ).scalar_one_or_none()
                 if is_another_glacier is not None:
                     return MessageActionResponse(
-                        success=False, action=action, message_id=glacier_id,
-                        message=GLACIER_REFUSAL_REASON,
+                        success=False, action=action, message_id=glacier_id, applied=False,
+                        folder_id=glacier_folder_id, message=GLACIER_REFUSAL_REASON,
                     )
                 if not await _folder_belongs_to_account(session, row.account_id, target_folder_id):
                     raise HTTPException(
@@ -1742,11 +1757,13 @@ async def _apply_glacier_message_action(
         outcome = await start_restore(db, glacier_id, target_folder_id)
         return MessageActionResponse(
             success=outcome.ok, action=action, message_id=glacier_id, message=outcome.reason,
+            applied=outcome.ok, folder_id=glacier_folder_id,
         )
 
     if action in ("spam", "not_spam"):
         return MessageActionResponse(
-            success=False, action=action, message_id=glacier_id,
+            success=False, action=action, message_id=glacier_id, applied=False,
+            folder_id=glacier_folder_id,
             message="Spam rulings on glaciered mail are not yet supported.",
         )
 

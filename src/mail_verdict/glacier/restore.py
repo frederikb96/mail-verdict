@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
+from mail_verdict.config import get_config
 from mail_verdict.postimap.actions import insert_outbox_append
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
@@ -87,6 +88,9 @@ async def start_restore(
     Only acts on a row already in "glaciered" -- restoring a message
     still mid-flight (copied/verified/removing, where the live row may
     still exist or an expunge is still in flight) is not handled here.
+    A row not yet at "glaciered" gets a reason naming roughly how much
+    longer that is expected to take, rather than the opaque "not ready"
+    every other case (already restoring, no such row) shares.
 
     Args:
         db: Database connection
@@ -106,14 +110,29 @@ async def start_restore(
                 text(
                     """
                     SELECT account_id, raw_source, is_seen, is_flagged, is_answered, keywords,
-                           received_at, message_id
-                    FROM glacier_messages WHERE id = :id AND state = 'glaciered'
+                           received_at, message_id, state, expunge_requested_at
+                    FROM glacier_messages WHERE id = :id
                     """
                 ),
                 {"id": glacier_id},
             )
         ).mappings().one_or_none()
         if row is None:
+            return RestoreOutcome(False, "message not found")
+        if row["state"] == "restoring":
+            return RestoreOutcome(False, "a restore is already in progress for this message")
+        if row["state"] != "glaciered":
+            if row["state"] == "removing" and row["expunge_requested_at"] is not None:
+                grace = get_config().glacier.confirm_grace_seconds
+                elapsed = (
+                    datetime.now(timezone.utc) - row["expunge_requested_at"]
+                ).total_seconds()
+                remaining = max(0, round(grace - elapsed))
+                return RestoreOutcome(
+                    False,
+                    "this message is still being removed from the mail server -- ready to "
+                    f"restore in about {remaining} second(s)",
+                )
             return RestoreOutcome(False, "message is not ready to restore")
         if row["raw_source"] is None:
             return RestoreOutcome(False, "this message has already been restored once")

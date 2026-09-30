@@ -362,3 +362,184 @@ async def test_restoring_through_the_move_action(migrated_db: DatabaseConnection
         ).mappings().one()
         assert restoring["state"] == "restoring"
         assert restoring["restore_outbox_id"] is not None
+
+
+async def _seed_and_glacier(migrated_db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID]:
+    """Move the message _seed_ready_message creates into the glacier and
+    confirm it all the way to 'glaciered'. Returns (account_id,
+    glacier_id)."""
+    account_id, _folder_id, message_id = await _seed_ready_message(migrated_db)
+    async with migrated_db.session() as session:
+        glacier_folder_id = await _glacier_folder_id(session, account_id)
+    await api_message_action(
+        message_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
+    )
+    async with migrated_db.session() as session:
+        glacier_id = (
+            await session.execute(
+                text("SELECT id FROM glacier_messages WHERE origin_message_id = :id"),
+                {"id": message_id},
+            )
+        ).scalar_one()
+    confirmed, withdrawn = await confirm_or_withdraw_removing(
+        migrated_db, account_id, grace_seconds=0,
+    )
+    assert (confirmed, withdrawn) == (1, 0)
+    return account_id, glacier_id
+
+
+@pytest.mark.asyncio
+async def test_spam_refusal_on_a_glacier_row_answers_applied_false(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Spam rulings on a glaciered message are refused outright -- a
+    client keying on `applied` must not read the refusal as having
+    worked."""
+    await _skip_unless_append_capable(migrated_db)
+    _account_id, glacier_id = await _seed_and_glacier(migrated_db)
+
+    response = await api_message_action(glacier_id, MessageActionRequest(action="spam"))
+    assert response.success is False
+    assert response.applied is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_identity_refusal_answers_applied_false(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A different message forged under the same Message-ID as an
+    already-glaciered row is refused -- the server-side guard already
+    keeps the live message intact (test_glacier_operations_pg.py's own
+    coverage); this is the API-level honesty of that refusal."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, _folder_id, message_id = await _seed_ready_message(migrated_db)
+    async with migrated_db.session() as session:
+        glacier_folder_id = await _glacier_folder_id(session, account_id)
+        message_id_hdr = (
+            await session.execute(
+                text("SELECT message_id FROM messages WHERE id = :id"), {"id": message_id},
+            )
+        ).scalar_one()
+    await api_message_action(
+        message_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
+    )
+    await confirm_or_withdraw_removing(migrated_db, account_id, grace_seconds=0)
+
+    async with migrated_db.session() as session:
+        archive_folder_id = (
+            await session.execute(
+                text(
+                    "SELECT id FROM folders WHERE account_id = :account_id "
+                    "AND special_use = 'archive'"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
+        forged_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+                " from_addr, raw_source, size_bytes, received_at) "
+                "VALUES (:id, :account_id, :folder_id, 2, :thread_id, :message_id_hdr, "
+                " 'Forged', 'attacker@example.com', :raw_source, :size_bytes, :received_at)"
+            ),
+            {
+                "id": forged_id, "account_id": account_id, "folder_id": archive_folder_id,
+                "thread_id": forged_id, "message_id_hdr": message_id_hdr,
+                "raw_source": b"different content entirely",
+                "size_bytes": len(b"different content entirely"),
+                "received_at": datetime.now(timezone.utc) - timedelta(days=400),
+            },
+        )
+
+    response = await api_message_action(
+        forged_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
+    )
+    assert response.success is False
+    assert response.applied is False
+
+
+@pytest.mark.asyncio
+async def test_mark_keyword_and_restore_answers_name_the_glacier_folder(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The origin folder id -- stale the instant a message leaves it, and
+    read straight off the pre-glacier live row by the generic re-read
+    every other action reuses -- must never leak into an answer about a
+    glacier row."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, glacier_id = await _seed_and_glacier(migrated_db)
+    async with migrated_db.session() as session:
+        glacier_folder_id = await _glacier_folder_id(session, account_id)
+        archive_folder_id = (
+            await session.execute(
+                text(
+                    "SELECT id FROM folders WHERE account_id = :account_id "
+                    "AND special_use = 'archive'"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
+
+    mark_response = await api_message_action(
+        glacier_id, MessageActionRequest(action="mark_read"),
+    )
+    assert mark_response.folder_id == glacier_folder_id
+    assert mark_response.folder_id != archive_folder_id
+
+    keyword_response = await api_message_action(
+        glacier_id, MessageActionRequest(action="keyword_add", keyword="Important"),
+    )
+    assert keyword_response.folder_id == glacier_folder_id
+
+    restore_response = await api_message_action(
+        glacier_id, MessageActionRequest(action="move", target_folder_id=archive_folder_id),
+    )
+    assert restore_response.success is True, restore_response.message
+    # Still in the glacier at the moment of this response -- the restore
+    # is an async outbox append, only confirmed later.
+    assert restore_response.folder_id == glacier_folder_id
+
+
+@pytest.mark.asyncio
+async def test_restore_not_ready_message_names_the_remaining_seconds(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A row still mid-flight (state='removing', not yet 'glaciered')
+    gets a reason naming roughly how much longer that will take, rather
+    than the same opaque string every other not-ready case shares."""
+    await _skip_unless_append_capable(migrated_db)
+    account_id, _folder_id, message_id = await _seed_ready_message(migrated_db)
+    async with migrated_db.session() as session:
+        glacier_folder_id = await _glacier_folder_id(session, account_id)
+        archive_folder_id = (
+            await session.execute(
+                text(
+                    "SELECT id FROM folders WHERE account_id = :account_id "
+                    "AND special_use = 'archive'"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
+    await api_message_action(
+        message_id, MessageActionRequest(action="move", target_folder_id=glacier_folder_id),
+    )
+    async with migrated_db.session() as session:
+        glacier_id = (
+            await session.execute(
+                text("SELECT id, state FROM glacier_messages WHERE origin_message_id = :id"),
+                {"id": message_id},
+            )
+        ).mappings().one()
+        assert glacier_id["state"] == "removing"
+        glacier_id = glacier_id["id"]
+    # Deliberately not confirmed -- still sitting in "removing".
+
+    response = await api_message_action(
+        glacier_id, MessageActionRequest(action="move", target_folder_id=archive_folder_id),
+    )
+    assert response.success is False
+    assert response.message is not None
+    assert "second" in response.message
+    assert any(char.isdigit() for char in response.message)
