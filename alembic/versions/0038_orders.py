@@ -37,7 +37,6 @@ def upgrade() -> None:
         "account_prefs",
         sa.Column("orders_enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
     )
-    op.alter_column("account_prefs", "orders_enabled", server_default=None)
 
     op.create_table(
         "orders",
