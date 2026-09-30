@@ -283,11 +283,29 @@ async def _sweep_account_once(
 
     reason = await _sweep_guard_reason(db, account_id, cfg=cfg)
     if reason is not None:
-        logger.debug(
+        logger.info(
             "Glacier sweep skipping account",
             extra={"account_id": str(account_id), "reason": reason},
         )
+        async with db.session() as session:
+            await session.execute(
+                text(
+                    "UPDATE account_prefs SET glacier_sweep_last_refusal = :reason "
+                    "WHERE account_id = :account_id AND glacier_sweep_last_refusal "
+                    "IS DISTINCT FROM :reason"
+                ),
+                {"reason": reason, "account_id": account_id},
+            )
         return
+
+    async with db.session() as session:
+        await session.execute(
+            text(
+                "UPDATE account_prefs SET glacier_sweep_last_refusal = NULL "
+                "WHERE account_id = :account_id AND glacier_sweep_last_refusal IS NOT NULL"
+            ),
+            {"account_id": account_id},
+        )
 
     async with db.session() as session:
         auto_days = (

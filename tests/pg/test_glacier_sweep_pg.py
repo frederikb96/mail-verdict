@@ -26,6 +26,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.api.accounts import get_account
 from mail_verdict.config.loader import GlacierConfig
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.glacier.sweep import _sweep_account_once, _sweep_guard_reason, _sweep_once
@@ -706,3 +707,50 @@ async def test_a_row_blocked_by_a_pending_move_never_reaches_glaciered(
             continue
     else:
         raise AssertionError("row never progressed after the pending move cleared")
+
+
+@pytest.mark.asyncio
+async def test_sweep_refusal_is_surfaced_on_the_account_and_self_clears(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's finding: the unacknowledged-notification guard
+    fires and never self-clears, but is logged at debug and surfaced
+    nowhere -- set the days, nothing happens, no explanation. The
+    account's own API answer must carry the sweep's last refusal, and
+    it must clear itself once a tick actually proceeds (here, once the
+    notification is acknowledged)."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _archive_folder_id = await _seed_sweepable_account(session)
+        notification_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO sync_notifications (account_id, action, error) "
+                    "VALUES (:account_id, 'delete', 'server refused') RETURNING id"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
+        await session.commit()
+
+    async def _tick_and_check_refused() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        account = await get_account(account_id)
+        assert account.glacier_sweep_last_refusal is not None
+        assert "unacknowledged" in account.glacier_sweep_last_refusal
+
+    await _activate_then(migrated_db, account_id, _tick_and_check_refused)
+
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE sync_notifications SET acknowledged_at = now() WHERE id = :id"),
+            {"id": notification_id},
+        )
+        await session.commit()
+
+    async def _tick_and_check_cleared() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        account = await get_account(account_id)
+        assert account.glacier_sweep_last_refusal is None
+
+    await _activate_then(migrated_db, account_id, _tick_and_check_cleared)

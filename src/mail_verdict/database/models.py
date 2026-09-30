@@ -786,6 +786,12 @@ class AccountPrefs(Base):
     # can still be moved into by hand. Age is judged against the
     # message's own received_at, never the time spent sitting archived.
     glacier_auto_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Why the sweep's last tick considering this account skipped it, or
+    # NULL once a tick actually proceeds -- some of these guards never
+    # self-clear on their own (an unacknowledged sync failure sits there
+    # until someone acknowledges it), so without a durable record of the
+    # reason there is nothing to explain why nothing is happening.
+    glacier_sweep_last_refusal: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class GlacierMessage(Base):

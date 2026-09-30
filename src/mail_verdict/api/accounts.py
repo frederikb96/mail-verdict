@@ -93,6 +93,7 @@ def _build_account_response(
         glacier_enabled=prefs.glacier_enabled if prefs else False,
         glacier_folder_id=prefs.glacier_folder_id if prefs else None,
         glacier_auto_days=prefs.glacier_auto_days if prefs else None,
+        glacier_sweep_last_refusal=prefs.glacier_sweep_last_refusal if prefs else None,
     )
 
 

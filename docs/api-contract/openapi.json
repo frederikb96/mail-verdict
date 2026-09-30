@@ -239,6 +239,18 @@
             ],
             "title": "Glacier Folder Id"
           },
+          "glacier_sweep_last_refusal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the automatic sweep's last tick considering this account skipped it, or null once a tick actually proceeds. Some reasons (auto-sweep not configured) are expected; others (an unacknowledged sync failure) never self-clear on their own until whatever caused them is fixed.",
+            "title": "Glacier Sweep Last Refusal"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",

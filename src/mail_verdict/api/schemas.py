@@ -535,6 +535,15 @@ class AccountResponse(BaseModel):
     glacier_enabled: bool = False
     glacier_folder_id: uuid.UUID | None = None
     glacier_auto_days: int | None = None
+    glacier_sweep_last_refusal: str | None = Field(
+        default=None,
+        description=(
+            "Why the automatic sweep's last tick considering this account skipped it, or "
+            "null once a tick actually proceeds. Some reasons (auto-sweep not configured) "
+            "are expected; others (an unacknowledged sync failure) never self-clear on "
+            "their own until whatever caused them is fixed."
+        ),
+    )
 
     model_config = {"from_attributes": True}
 
