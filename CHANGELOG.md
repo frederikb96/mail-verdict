@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   OpenAI-compatible server by address, key and model name. Switching the embedding model re-embeds
   the whole store in the background while search keeps answering from the old vectors, cutting
   over automatically once the new set is complete.
+- A queue card on the Pipeline page whose circuit is open or suspended now offers "Retry now",
+  closing it immediately instead of waiting out its own timer -- useful the moment a wrong
+  provider key or model is fixed.
 - A long message's links now always reach the spam classifier, including ones an HTML anchor's
   visible text gives no hint of and ones that would otherwise have sat past the body excerpt's cut.
 

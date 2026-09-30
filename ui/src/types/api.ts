@@ -874,6 +874,7 @@ export interface QueueResponse {
 export interface QueuePatchRequest {
   state?: "running" | "paused";
   concurrency?: number;
+  reset_circuit?: boolean;
 }
 
 // --- Calendar and contacts ---

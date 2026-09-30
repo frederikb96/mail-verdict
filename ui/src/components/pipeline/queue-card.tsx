@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Minus, Pause, Play, Plus } from "lucide-react";
+import { AlertTriangle, Minus, Pause, Play, Plus, RotateCw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -110,7 +110,23 @@ export function QueueCard({ queue }: { queue: QueueResponse }) {
           </div>
         </div>
 
-        <div className="flex justify-end">
+        <div className="flex justify-end gap-1.5">
+          {circuitOpen && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={patchQueue.isPending}
+              onClick={() =>
+                patchQueue.mutate({
+                  name: queue.name,
+                  data: { reset_circuit: true },
+                })
+              }
+            >
+              <RotateCw className="mr-1 h-3 w-3" />
+              Retry now
+            </Button>
+          )}
           <Button
             variant="outline"
             size="sm"
