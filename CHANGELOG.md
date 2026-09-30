@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [6.7.2] - 2026-09-30
 
 - Fixed a provider API key sent to a settings category other than AI -- the semantic search
   category's own shared custom-server key, among others -- being merged into that category's
