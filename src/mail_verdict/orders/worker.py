@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.database.models import AccountPrefs, Order, OrderJob, OrderMail
 from mail_verdict.orders import prompts, repository
-from mail_verdict.orders.candidates import find_candidates
+from mail_verdict.orders.candidates import extract_labeled_identifiers, find_candidates
 from mail_verdict.orders.content import load_order_mail
 from mail_verdict.orders.fake import fake_decide, fake_write
 from mail_verdict.pipeline.context import ModelGateway, current_verdict_for_mail
@@ -335,6 +335,12 @@ async def _handle_mail_job(
             (item["kind"], item["value"]) for item in decision.get("identifiers", [])
             if isinstance(item, dict) and item.get("kind") and item.get("value")
         ]
+        if not identifiers:
+            # The decide call's own extraction is the one field a small
+            # model measurably misses even when the number is plainly
+            # present -- a deterministic rescan is the floor under that,
+            # never a second opinion overriding a call that did answer.
+            identifiers = extract_labeled_identifiers(f"{content.subject}\n{content.body.raw}")
         await repository.store_identifiers(session, order_id, identifiers)
         await repository.recompute_aggregates(session, order_id)
         await repository.mark_text_stale(session, order_id)

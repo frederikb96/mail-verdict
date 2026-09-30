@@ -365,6 +365,16 @@ decide prompt, `orders/candidates.py`'s ranked list of existing orders) and writ
 module's write prompt, from the order's own mails, oldest first, with the entry's current text
 handed back in) are two calls, and the second is also what a manual rewrite and a correction reuse.
 
+**A decide call that reports no identifiers is not trusted blindly.** A small model
+measurably misses a number that is plainly present in the body more often than it misses the
+decision itself — a carrier notice's own tracking number, most commonly, since nothing else in the
+mail names it. When the model's own `identifiers` answer comes back empty, `orders/worker.py`
+deterministically rescans the mail's subject and raw body for the same order/tracking/booking/
+invoice labels `orders/filter.py`'s first pass already looks for and takes the identifier-shaped
+token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) — never overriding
+an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
+same number still finds the order rather than opening a duplicate.
+
 **Membership is `(account_id, msg_key)`, never `messages.id`** — the same durable identity
 `verdicts` and `message_embeddings` use, for the same reason: a UIDVALIDITY resync or a move made
 by another IMAP client replaces the row id, and an order keyed on it would silently lose the mail.

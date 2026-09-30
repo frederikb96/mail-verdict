@@ -20,7 +20,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Order, OrderJob, OrderMail
+from mail_verdict.database.models import Order, OrderIdentifier, OrderJob, OrderMail
 from mail_verdict.orders import repository
 from mail_verdict.orders.intake import enqueue_thread_follow_up
 from mail_verdict.orders.lookup import OrderLookup
@@ -89,6 +89,7 @@ async def _seed_message(
     session: AsyncSession, *, account_id: uuid.UUID, folder_id: uuid.UUID,
     subject: str, from_addr: str = "shop@example.com", received_at: datetime = _NOW,
     thread_id: uuid.UUID | None = None,
+    body_text: str = "Thanks for your order. See you soon.",
 ) -> tuple[uuid.UUID, str]:
     mail_id = uuid.uuid4()
     header = f"<{uuid.uuid4()}@example.com>"
@@ -104,7 +105,7 @@ async def _seed_message(
             "id": mail_id, "account_id": account_id, "folder_id": folder_id,
             "uid": next(_imap_uid_counter), "thread_id": thread_id or uuid.uuid4(),
             "message_id": header, "from_addr": from_addr, "subject": subject,
-            "body_text": "Thanks for your order. See you soon.",
+            "body_text": body_text,
             "received_at": received_at,
         },
     )
@@ -387,3 +388,83 @@ class TestThreadBypassJoinsAnOrdersConversation:
             ).scalar_one()
         assert job.origin == "thread"
         assert job.kind == "mail"
+
+
+class TestIdentifierBackstop:
+    async def test_a_body_only_tracking_number_is_recorded_even_when_the_model_reports_none(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A carrier notice's subject carries no order-number-shaped token
+        (fake_decide's own extraction stays empty, standing in for a real
+        model's decide call missing a number that plainly is present) --
+        the deterministic label-anchored rescan must still record it, so a
+        shop's confirmation arriving later can match it."""
+        settings_service = await _settings_service(migrated_db)
+        cred_repo = ProviderCredentialRepository(migrated_db, encryption_key="")
+
+        async with migrated_db.session() as session:
+            account_id = await _seed_account(session, orders_enabled=True)
+            folder_id = await _seed_folder(session, account_id=account_id)
+            mail_id, key = await _seed_message(
+                session, account_id=account_id, folder_id=folder_id,
+                subject="Ihre Sendung ist unterwegs",
+                body_text="Your parcel is on its way. Trackingnummer 1Z999BP34567.",
+            )
+            row = await _enqueue_mail_job(
+                session, account_id=account_id, message_id=mail_id, msg_key=key,
+            )
+
+        await _handle_mail_job(row, migrated_db, cred_repo, settings_service)
+
+        async with migrated_db.session() as session:
+            order_id = (
+                await session.execute(
+                    select(OrderMail.order_id).where(OrderMail.account_id == account_id)
+                )
+            ).scalar_one()
+            identifiers = (
+                await session.execute(
+                    select(OrderIdentifier.kind, OrderIdentifier.value).where(
+                        OrderIdentifier.order_id == order_id,
+                    )
+                )
+            ).all()
+        assert ("tracking_number", "1Z999BP34567") in identifiers
+
+    async def test_the_backstop_never_runs_when_the_model_already_answered(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """A subject-borne order number is the one fake_decide's own
+        extraction actually reports -- the backstop must not also scan the
+        body and add whatever it happens to find there."""
+        settings_service = await _settings_service(migrated_db)
+        cred_repo = ProviderCredentialRepository(migrated_db, encryption_key="")
+
+        async with migrated_db.session() as session:
+            account_id = await _seed_account(session, orders_enabled=True)
+            folder_id = await _seed_folder(session, account_id=account_id)
+            mail_id, key = await _seed_message(
+                session, account_id=account_id, folder_id=folder_id,
+                subject="Order NK-48213 confirmed",
+                body_text="Thanks for your order. Invoice number RE-99887 attached.",
+            )
+            row = await _enqueue_mail_job(
+                session, account_id=account_id, message_id=mail_id, msg_key=key,
+            )
+
+        await _handle_mail_job(row, migrated_db, cred_repo, settings_service)
+
+        async with migrated_db.session() as session:
+            order_id = (
+                await session.execute(
+                    select(OrderMail.order_id).where(OrderMail.account_id == account_id)
+                )
+            ).scalar_one()
+            identifiers = (
+                await session.execute(
+                    select(OrderIdentifier.kind, OrderIdentifier.value).where(
+                        OrderIdentifier.order_id == order_id,
+                    )
+                )
+            ).all()
+        assert [(k, v) for k, v in identifiers] == [("order_number", "NK-48213")]

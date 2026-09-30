@@ -70,6 +70,71 @@ def is_valid_identifier(value: str) -> bool:
     return len(norm) >= 5 and digit_count >= 3
 
 
+# The label vocabulary orders/filter.py's own default body patterns use
+# (settings/defaults.py, "orders".filter.include.body) -- reused here as
+# an anchor for a VALUE, not merely a pass/no-pass signal, because a
+# decide call's own `identifiers` answer is measurably the field a small
+# model misses even when the number is plainly present in the body (see
+# this module's own module docstring for how a miss there splits an
+# order in two). Kept in the same four categories the write schema's
+# `kind` enum already names.
+_LABELED_IDENTIFIER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
+    (kind, re.compile(pattern, re.IGNORECASE))
+    for kind, pattern in (
+        ("order_number", r"bestell(?:nummer|nr)|order\s*(?:number|no\.?|#)|auftrags(?:nummer|nr)"),
+        (
+            "tracking_number",
+            r"sendungs(?:nummer|verfolgung)|tracking\s*(?:number|nummer|id|code)|paketnummer",
+        ),
+        (
+            "booking_code",
+            r"buchungs(?:nummer|code|referenz)|booking\s*(?:number|reference|code)"
+            r"|reservierungsnummer|confirmation\s*number",
+        ),
+        ("invoice_number", r"rechnungs(?:nummer|nr)|invoice\s*(?:number|no\.?)"),
+    )
+)
+_IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./_#-]{3,39}")
+_LABEL_TO_VALUE_GAP = 40
+
+
+def extract_labeled_identifiers(text: str) -> list[tuple[str, str]]:
+    """
+    Deterministic backstop for a decide call whose own `identifiers`
+    answer comes back empty though the mail's body plainly labels one --
+    a floor under a real, observed model-accuracy gap, not a second
+    opinion meant to override a call that reported something. Finds a
+    known order/tracking/booking/invoice label and takes the
+    identifier-shaped token immediately after it; `is_valid_identifier`
+    rejects an unfilled template placeholder or a stray word the same way
+    it already does for a model-reported value.
+
+    Args:
+        text: Subject + raw body a number search scans -- see
+            orders/content.py's PreparedBody.raw
+
+    Returns:
+        (kind, value) pairs, deduplicated by normalized value
+    """
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for kind, label_re in _LABELED_IDENTIFIER_PATTERNS:
+        for label_match in label_re.finditer(text):
+            window = text[label_match.end() : label_match.end() + _LABEL_TO_VALUE_GAP]
+            token_match = _IDENTIFIER_TOKEN_RE.match(window.lstrip(" :#-\t"))
+            if token_match is None:
+                continue
+            value = token_match.group(0).rstrip(".,;:")
+            if not is_valid_identifier(value):
+                continue
+            norm = normalize_identifier(value)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            found.append((kind, value))
+    return found
+
+
 def _number_matches(value: str, value_norm: str, haystack_upper: str, haystack_norm: str) -> bool:
     """One identifier against one mail's haystack -- word-boundary match
     on the literal value, or, for a long identifier, a substring match on
