@@ -18,6 +18,7 @@ proven that never ran.
 from __future__ import annotations
 
 import itertools
+import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -754,3 +755,163 @@ async def test_sweep_refusal_is_surfaced_on_the_account_and_self_clears(
         assert account.glacier_sweep_last_refusal is None
 
     await _activate_then(migrated_db, account_id, _tick_and_check_cleared)
+
+
+async def _seed_duplicate_conflict(
+    session: AsyncSession, *, account_id: uuid.UUID, archive_folder_id: uuid.UUID,
+) -> tuple[uuid.UUID, str]:
+    """A live archived message old enough to be claimed, whose Message-ID
+    header is already claimed by an unrelated glacier row holding
+    different content -- operations.py's own duplicate_conflict shape
+    (two genuinely different messages sharing one header, the
+    course-notification case the defect was found against), not a
+    resync duplicate of the same message. Returns (live_message_id,
+    shared_message_id_header)."""
+    shared_header = f"<{uuid.uuid4()}@example.com>"
+    conflicting_raw_source = b"From: other@example.com\r\nSubject: Conflicting\r\n\r\nOld body\r\n"
+
+    glacier_folder_id = (
+        await session.execute(
+            text("SELECT glacier_folder_id FROM account_prefs WHERE account_id = :id"),
+            {"id": account_id},
+        )
+    ).scalar_one()
+    existing_glacier_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO glacier_messages "
+            "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+            " raw_source, size_bytes, received_at, msg_key, content_sha256, state) "
+            "VALUES (:id, :account_id, :folder_id, :thread_id, :msg_id, 'Conflicting', "
+            " 'other@example.com', :raw_source, :size_bytes, now(), :msg_key, "
+            " sha256(:raw_source), 'glaciered')"
+        ),
+        {
+            "id": existing_glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+            "thread_id": existing_glacier_id, "msg_id": shared_header,
+            "raw_source": conflicting_raw_source, "size_bytes": len(conflicting_raw_source),
+            "msg_key": shared_header,
+        },
+    )
+
+    live_message_id = uuid.uuid4()
+    received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    await session.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+            " from_addr, raw_source, size_bytes, received_at) "
+            "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, 'Live', "
+            " 'sender@example.com', :raw_source, :size_bytes, :received_at)"
+        ),
+        {
+            "id": live_message_id, "account_id": account_id, "folder_id": archive_folder_id,
+            "uid": next(_imap_uid_counter), "thread_id": live_message_id, "msg_id": shared_header,
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE), "received_at": received_at,
+        },
+    )
+    return live_message_id, shared_header
+
+
+class _CollectingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_duplicate_conflict_alerts_once_instead_of_vanishing(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The defect this fixes: two genuinely different messages sharing one
+    Message-ID header make the sweep's copy attempt come back
+    duplicate_conflict on every tick, forever -- the identity is never
+    going to change on its own. Before the fix, the sweep's loop
+    discarded that outcome with a bare `continue`: no log line, no
+    notification, no counter. This proves the opposite -- a durable,
+    account-visible alert appears once, a log line is emitted, nothing
+    destructive happens to either message, and a second tick raises
+    nothing new rather than alerting again forever.
+
+    A plain handler attached directly to the sweep module's own logger,
+    not pytest's caplog -- see tests/pg/test_worker_loop.py's own
+    docstring for why: fileConfig() (run as part of migrated_db's
+    migrations) disables every logger already registered at that point,
+    including this module's, which silently drops every record before
+    any handler -- caplog's or one attached here -- ever sees it.
+    """
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        live_message_id, _shared_header = await _seed_duplicate_conflict(
+            session, account_id=account_id, archive_folder_id=archive_folder_id,
+        )
+        await session.commit()
+
+    records: list[logging.LogRecord] = []
+    handler = _CollectingHandler()
+    sweep_logger = logging.getLogger("mail_verdict.glacier.sweep")
+    sweep_logger.addHandler(handler)
+    was_disabled = sweep_logger.disabled
+    sweep_logger.disabled = False
+
+    async def _tick_and_check() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            live = (
+                await session.execute(
+                    text("SELECT expunged_at, imap_uid FROM messages WHERE id = :id"),
+                    {"id": live_message_id},
+                )
+            ).mappings().one()
+            assert live["expunged_at"] is None, "the live message must never be touched"
+            assert live["imap_uid"] is not None
+            alerts = (
+                await session.execute(
+                    text(
+                        "SELECT kind, account_id, message_id, delivered_at, dismissed_at "
+                        "FROM alerts WHERE dedupe_key = :key"
+                    ),
+                    {"key": f"glacier-conflict:{live_message_id}"},
+                )
+            ).mappings().all()
+            assert len(alerts) == 1, "exactly one alert must exist for this message"
+            alert = alerts[0]
+            assert alert["kind"] == "glacier_conflict"
+            assert alert["account_id"] == account_id
+            assert alert["message_id"] == live_message_id
+            assert alert["delivered_at"] is not None
+            assert alert["dismissed_at"] is None
+        records.extend(handler.records)
+        handler.records.clear()
+        if not any("cannot move a message" in r.getMessage() for r in records):
+            raise AssertionError("guard blocked this tick -- retrying")
+
+    try:
+        await _activate_then(migrated_db, account_id, _tick_and_check)
+    finally:
+        sweep_logger.removeHandler(handler)
+        sweep_logger.disabled = was_disabled
+
+    assert any("cannot move a message" in r.getMessage() for r in records)
+
+    # A second tick must not alert again -- the whole point of the fix is
+    # that this never fires forever.
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE accounts SET is_active = true, state = 'active' WHERE id = :id"),
+            {"id": account_id},
+        )
+        await session.commit()
+    await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+    async with migrated_db.session() as session:
+        count = (
+            await session.execute(
+                text("SELECT count(*) FROM alerts WHERE dedupe_key = :key"),
+                {"key": f"glacier-conflict:{live_message_id}"},
+            )
+        ).scalar_one()
+    assert count == 1, "the alert must not be raised again on a later tick"

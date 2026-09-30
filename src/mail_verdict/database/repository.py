@@ -2020,6 +2020,47 @@ class AlertRepository:
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
+    async def create_glacier_conflict_alert(
+        self, *, account_id: uuid.UUID, message_id: uuid.UUID, title: str, body: str,
+    ) -> Alert | None:
+        """
+        Insert a delivered "glacier_conflict" alert -- see glacier/sweep.py.
+
+        A message the automatic sweep can never move: a different message
+        already claims its identity in the glacier, which is a permanent
+        state until a person acts (not something a retry ever clears, per
+        glacier/operations.py's own duplicate_conflict outcome). dedupe_key
+        on the live message's id is what makes this fire once rather than
+        on every sweep tick the message stays a candidate.
+
+        No folder_id, the same reasoning create_outbox_stalled_alert gives:
+        this matters whichever folders a device alerts for.
+
+        Returns:
+            The inserted Alert, or None if this message was already
+            alerted on
+        """
+        now = func.now()
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(Alert)
+                .values(
+                    kind="glacier_conflict",
+                    deliver_at=now,
+                    delivered_at=now,
+                    title=title,
+                    body=body,
+                    url=f"/?message={message_id}",
+                    dedupe_key=f"glacier-conflict:{message_id}",
+                    account_id=account_id,
+                    message_id=message_id,
+                )
+                .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
+                .returning(Alert)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
     async def list_recent(
         self, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
         unseen_only: bool = False,
