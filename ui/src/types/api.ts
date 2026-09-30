@@ -213,6 +213,11 @@ export interface AccountResponse {
   glacier_folder_id: string | null;
   /** NULL is off -- no automatic sweep moves archived mail into the glacier. */
   glacier_auto_days: number | null;
+  /** Why the automatic sweep's last tick considering this account skipped
+   * it, or null once a tick actually proceeds. Some reasons (auto-sweep
+   * not configured) are expected; others (an unacknowledged sync
+   * failure) never self-clear on their own. */
+  glacier_sweep_last_refusal: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -620,9 +625,12 @@ export interface SyncStatusResponse {
   updated_at: string | null;
 }
 
-// --- Outbox (send / draft) ---
+// --- Outbox (send / draft / append) ---
 
-export type OutboxKind = "send" | "draft";
+/** "append" is server-internal (the glacier's own restore mechanism) --
+ * never a kind the web's own compose flow creates, but a real value an
+ * outbox row read back from the server can carry. */
+export type OutboxKind = "send" | "draft" | "append";
 export type OutboxStatus = "pending" | "processing" | "sent" | "failed" | "dead";
 
 export interface OutboxCreateRequest {

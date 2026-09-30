@@ -848,6 +848,7 @@ export function MailList() {
                 isChecked={isSelected(mail)}
                 selectionMode={selectionMode}
                 isJunk={isUnifiedView ? viewJunkFolderIds.has(mail.folder_id) : isJunkFolder}
+                isGlacier={mail.is_glacier}
                 isThreaded={!isFiltering && threaded}
                 onOpen={handleOpen}
                 onPressStart={handlePressStart}

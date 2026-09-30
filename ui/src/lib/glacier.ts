@@ -33,3 +33,13 @@ export function glacierMoveWarning(count: number): string {
     ? "This message leaves the mail server for good and will only be found here afterward. This cannot be undone."
     : `These ${count} messages leave the mail server for good and will only be found here afterward. This cannot be undone.`;
 }
+
+/** The other direction: Archive, Move to trash and an explicit Move all
+ * restore a glaciered message to the mail server -- never fired without
+ * this confirmation, the same way entering the glacier needs one. One
+ * wording, reused wherever a restore can be started. */
+export function glacierRestoreWarning(count: number): string {
+  return count === 1
+    ? "This message goes back onto the mail server and counts toward your mailbox's storage again."
+    : `These ${count} messages go back onto the mail server and count toward your mailbox's storage again.`;
+}

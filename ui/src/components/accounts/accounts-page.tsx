@@ -287,6 +287,17 @@ function AccountCard({
                   : "Off"}
               </div>
             </div>
+            {/* Set whenever the automatic sweep's last tick considering
+                this account skipped it -- some reasons never self-clear
+                on their own (an unacknowledged sync failure), so this is
+                the only place that says why nothing is happening once
+                the days are set. */}
+            {account.glacier_auto_days && account.glacier_sweep_last_refusal && (
+              <div className="flex items-center gap-1 text-xs text-destructive">
+                <AlertCircle className="h-3 w-3 shrink-0" />
+                Glacier sweep paused: {account.glacier_sweep_last_refusal}
+              </div>
+            )}
 
             {/* Sync status */}
             {syncStatus && (

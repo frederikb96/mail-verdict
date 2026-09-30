@@ -587,6 +587,16 @@ general form of the same idea, for a caller holding the durable `(account_id, ms
 rather than a specific row id: it answers with whichever table currently holds the message, live
 or glacier, or neither.
 
+A restored message's INTERNALDATE is `received_at`, not the original server's own recorded
+INTERNALDATE value — a limit of the consumer contract, not something fixable locally. PostIMAP's
+mirror keeps no separate INTERNALDATE column at all: `received_at` is derived once, at parse time,
+from the header `Date`, falling back to the original INTERNALDATE only when that header is absent.
+For the overwhelming majority of mail the two already agree, so the restored APPEND's date matches
+what was there before; the two can only diverge for a message whose `Date` header was wrong or
+missing, and even then only by however far the sender's clock or the server's own arrival stamp
+drifted from it. Nothing upstream of the mirror preserves the true original value once it has been
+folded into `received_at` this way, so no local change can recover it either.
+
 ## Threading
 
 Conversations are grouped by a thread identifier that PostIMAP resolves from the `References` and

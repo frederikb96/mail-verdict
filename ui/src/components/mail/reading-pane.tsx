@@ -44,7 +44,9 @@ import { useAccount, useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
 import { useAlerts, useDismissAlert } from "@/hooks/use-alerts";
-import { glacierFolderIds, glacierMoveWarning, isGlacierFolder } from "@/lib/glacier";
+import {
+  glacierFolderIds, glacierMoveWarning, glacierRestoreWarning, isGlacierFolder,
+} from "@/lib/glacier";
 import { cn, isEditableElement } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
@@ -83,6 +85,14 @@ export function ReadingPane() {
   // server for good -- confirmed here, before the intent is queued, and
   // never offered undo once it is.
   const [pendingGlacierMove, setPendingGlacierMove] = useState<string | null>(null);
+  // The reverse direction: Archive, Move to trash and an explicit Move
+  // to a real folder all restore a glaciered message to the mail server
+  // -- confirmed here the same way, rather than firing on the first
+  // press the way a live message's do. targetFolderId is only set for
+  // the explicit-move shape.
+  const [pendingGlacierRestore, setPendingGlacierRestore] = useState<
+    { action: "archive" | "trash" } | { action: "move"; targetFolderId: string } | null
+  >(null);
   const { data: accounts } = useAccounts();
   const glacierIds = useMemo(() => glacierFolderIds(accounts), [accounts]);
   const [moveOpen, setMoveOpen] = useState(false);
@@ -394,12 +404,16 @@ export function ReadingPane() {
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() =>
+            onClick={() => {
+              if (isGlacier) {
+                setPendingGlacierRestore({ action: "archive" });
+                return;
+              }
               mailAction.perform({
                 accountId: primary.account_id, mailIds: [primary.id],
                 action: "archive",
-              })
-            }
+              });
+            }}
             title="Archive"
             aria-label="Archive"
           >
@@ -413,6 +427,10 @@ export function ReadingPane() {
             onMove={(targetFolderId) => {
               if (isGlacierFolder(targetFolderId, glacierIds)) {
                 setPendingGlacierMove(targetFolderId);
+                return;
+              }
+              if (isGlacier) {
+                setPendingGlacierRestore({ action: "move", targetFolderId });
                 return;
               }
               mailAction.perform({
@@ -534,12 +552,16 @@ export function ReadingPane() {
               variant="ghost"
               size="icon"
               className="h-8 w-8"
-              onClick={() =>
+              onClick={() => {
+                if (isGlacier) {
+                  setPendingGlacierRestore({ action: "trash" });
+                  return;
+                }
                 mailAction.perform({
                   accountId: primary.account_id, mailIds: [primary.id],
                   action: "trash",
-                })
-              }
+                });
+              }}
               title="Move to trash"
               aria-label="Move to trash"
             >
@@ -594,6 +616,38 @@ export function ReadingPane() {
             { undoable: false },
           );
           setPendingGlacierMove(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingGlacierRestore !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingGlacierRestore(null);
+        }}
+        title={
+          pendingGlacierRestore?.action === "trash"
+            ? "Move to trash?"
+            : pendingGlacierRestore?.action === "archive"
+              ? "Archive?"
+              : "Move to this folder?"
+        }
+        description={glacierRestoreWarning(1)}
+        confirmLabel={
+          pendingGlacierRestore?.action === "trash"
+            ? "Move to Trash"
+            : pendingGlacierRestore?.action === "archive"
+              ? "Archive"
+              : "Move"
+        }
+        onConfirm={() => {
+          if (!pendingGlacierRestore) return;
+          mailAction.perform({
+            accountId: primary.account_id, mailIds: [primary.id],
+            ...(pendingGlacierRestore.action === "move"
+              ? { action: "move" as const, targetFolderId: pendingGlacierRestore.targetFolderId }
+              : { action: pendingGlacierRestore.action }),
+          });
+          setPendingGlacierRestore(null);
         }}
       />
 

@@ -35,6 +35,7 @@ glacier genuinely holding something.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -93,11 +94,12 @@ def _deliver_to_inbox(
     recipient: str,
     inbox_folder_id: str,
     subject: str,
+    message_id: str | None = None,
 ) -> dict[str, Any]:
     host, _imap_port, lmtp_port = dovecot_endpoint
     message = build_eml(
         sender="sender@example.com", recipient=recipient, subject=subject,
-        message_id=f"<{uuid.uuid4()}@example.com>",
+        message_id=message_id or f"<{uuid.uuid4()}@example.com>",
     )
     deliver_message(message, host, lmtp_port, sender="sender@example.com", recipient=recipient)
 
@@ -318,3 +320,218 @@ class TestGlacierElsewhereInTheUi:
         menu = page.get_by_role("menu")
         expect(menu.get_by_role("menuitem", name="Mark all as read")).to_be_visible(timeout=5_000)
         expect(menu.get_by_role("menuitem", name="Empty folder")).to_have_count(0)
+
+
+class TestGlacierRowAndReadingPaneUi:
+    """A glaciered message's own row and reading pane: what the row offers
+    without a confirmation (star, read state -- nothing that restores),
+    and that Archive/Move to trash on the message itself, opened in the
+    reading pane, need one before they act."""
+
+    def test_glacier_row_offers_no_spam_control_and_no_unconfirmed_restore(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        glacier_folder: dict[str, Any],
+    ) -> None:
+        """The red team's finding: mail-list-item.tsx knew nothing of
+        is_glacier, so every glacier row offered the ordinary hover set
+        including Move to Junk (which the server refuses outright) and
+        Archive/Move to trash (which silently restored the message with
+        no confirmation at all)."""
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], f"Glacier row controls {uuid.uuid4()}",
+        )
+        resp = api_client.post(
+            f"/api/messages/{target['id']}/action",
+            json={"action": "move", "target_folder_id": glacier_folder["id"]},
+        )
+        assert resp.status_code == 200 and resp.json()["success"], resp.text
+        glacier_id = resp.json()["message_id"]
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        folder_button(page, glacier_folder["id"]).click()
+        row = mail_row(page, glacier_id)
+        expect(row).to_be_visible(timeout=15_000)
+        row.hover()
+
+        # Not exact=True: a threaded row's per-message actions carry a
+        # "(latest message in thread)" qualifier this module's account
+        # (grouped by conversation) always adds, which an exact match on
+        # the bare label misses -- passing whether the control is hidden
+        # or just differently named, proving nothing either way.
+        expect(row.get_by_role("button", name="Move to Junk", exact=False)).to_have_count(0)
+        expect(row.get_by_role("button", name="Remove from Junk", exact=False)).to_have_count(0)
+        expect(row.get_by_role("button", name="Archive", exact=False)).to_have_count(0)
+        expect(row.get_by_role("button", name="Move to trash", exact=False)).to_have_count(0)
+        # What it still offers, without any confirmation needed: star and
+        # read state, both local to this database.
+        expect(row.get_by_role("button", name="Star", exact=True)).to_be_visible()
+        mark_read = row.get_by_role("button", name=re.compile("^Mark as (read|unread)$"))
+        expect(mark_read).to_be_visible()
+
+    def test_archiving_a_glaciered_message_from_the_reading_pane_needs_confirmation(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        glacier_folder: dict[str, Any],
+    ) -> None:
+        """Archive and Move to trash on an open glaciered message both
+        restore it to the mail server -- the same red-team finding as
+        the row's own controls, but in the reading pane's toolbar, which
+        had no isGlacier check on either button at all. Confirmed here;
+        the outcome (a synchronous, grace-period refusal, in this
+        environment -- see below) is reported with restore-specific
+        wording, never as a send.
+
+        Trash rather than Archive: this module's own account has no
+        Archive folder (CLAUDE.md's "The `ui` layer's account has no
+        Archive folder" -- Archive would fail with "No archive folder
+        found for this account" before the restore is even attempted)."""
+        target = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], f"Glacier reading pane restore {uuid.uuid4()}",
+        )
+        resp = api_client.post(
+            f"/api/messages/{target['id']}/action",
+            json={"action": "move", "target_folder_id": glacier_folder["id"]},
+        )
+        assert resp.status_code == 200 and resp.json()["success"], resp.text
+        glacier_id = resp.json()["message_id"]
+        before = _glacier_total(api_client, ui_account["id"])
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        folder_button(page, glacier_folder["id"]).click()
+        row = mail_row(page, glacier_id)
+        expect(row).to_be_visible(timeout=15_000)
+        row.click()
+
+        page.get_by_role("button", name="Move to trash", exact=True).click()
+        dialog = page.get_by_role("dialog", name="Move to trash?", exact=True)
+        expect(dialog.get_by_text("goes back onto the mail server", exact=False)).to_be_visible(
+            timeout=5_000,
+        )
+        # Not yet acted on -- the count must still read the pre-restore value.
+        assert _glacier_total(api_client, ui_account["id"]) == before
+
+        dialog.get_by_role("button", name="Move to Trash", exact=True).click()
+
+        # start_restore itself refuses this, synchronously: glacier.confirm_grace_seconds
+        # (600s, the config default) has not elapsed since the message was glaciered a moment
+        # ago, and nothing short of the e2e layer's own direct grace_seconds=0 call bypasses
+        # that floor -- proving the eventual success toast would mean waiting out the full
+        # grace period, which the pg and e2e layers already cover. What this test can prove
+        # quickly is that the refusal itself is honest: restore-specific wording, never a claim
+        # of success, never "sent" or SMTP phrasing (kind="append" transmits nothing at all).
+        refusal = page.get_by_text("still being removed from the mail server", exact=False)
+        expect(refusal).to_be_visible(timeout=15_000)
+        expect(page.get_by_text("Message restored", exact=False)).to_have_count(0)
+        expect(page.get_by_text("Message sent", exact=True)).to_have_count(0)
+        expect(page.get_by_text("SMTP", exact=False)).to_have_count(0)
+        assert _glacier_total(api_client, ui_account["id"]) == before
+
+
+class TestGlacierPartialBulkResultUi:
+    def test_a_partial_bulk_move_shows_no_retry_for_the_irreversible_part(
+        self,
+        page: Page,
+        app_server: str,
+        api_client: httpx.Client,
+        dovecot_endpoint: tuple[str, int, int],
+        ui_account: dict[str, Any],
+        inbox_folder: dict[str, Any],
+        glacier_folder: dict[str, Any],
+    ) -> None:
+        """The red team's finding: a bulk move into the glacier that
+        partially fails answered success: false, and the ledger's own
+        request() folded any success: false straight into a plain
+        refusal -- discarding affected_count and skipped_ids entirely,
+        so a partial success (messages that genuinely left the server)
+        settled as "failed", offering Retry over an action that cannot
+        safely be repeated."""
+        shared_message_id = f"<{uuid.uuid4()}@example.com>"
+        already_glaciered = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], f"Partial bulk baseline {uuid.uuid4()}",
+            message_id=shared_message_id,
+        )
+        resp = api_client.post(
+            f"/api/messages/{already_glaciered['id']}/action",
+            json={"action": "move", "target_folder_id": glacier_folder["id"]},
+        )
+        assert resp.status_code == 200 and resp.json()["success"], resp.text
+        before = _glacier_total(api_client, ui_account["id"])
+
+        host, _imap_port, lmtp_port = dovecot_endpoint
+        # A forged duplicate of the message just glaciered -- same
+        # Message-ID (msg_key is the header alone when one exists), a
+        # different body, so the identity guard refuses it rather than
+        # treating it as the same message.
+        forged = build_eml(
+            sender="sender@example.com", recipient=ui_account["email"],
+            subject=f"Forged duplicate {uuid.uuid4()}", message_id=shared_message_id,
+            body="Not the same message at all.",
+        )
+        deliver_message(
+            forged, host, lmtp_port, sender="sender@example.com", recipient=ui_account["email"],
+        )
+        genuine = _deliver_to_inbox(
+            api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
+            inbox_folder["id"], f"Genuinely new for bulk move {uuid.uuid4()}",
+        )
+
+        def _forged_synced() -> dict[str, Any] | None:
+            listing = api_client.get(
+                f"/api/accounts/{ui_account['id']}/messages",
+                params={"folder_id": inbox_folder["id"]},
+            )
+            for m in listing.json()["messages"]:
+                if m["subject"].startswith("Forged duplicate"):
+                    return m
+            return None
+
+        forged_row = wait_for(_forged_synced, description="the forged duplicate synced into INBOX")
+
+        page.goto(app_server)
+        select_account(page, ui_account)
+        folder_button(page, inbox_folder["id"]).click()
+        forged_locator = mail_row(page, forged_row["id"])
+        genuine_locator = mail_row(page, genuine["id"])
+        expect(forged_locator).to_be_visible(timeout=15_000)
+        expect(genuine_locator).to_be_visible(timeout=15_000)
+
+        forged_locator.get_by_role("checkbox").click()
+        genuine_locator.get_by_role("checkbox").click()
+
+        page.get_by_role("button", name="Move to", exact=True).click()
+        page.get_by_role("menuitem", name="Glacier", exact=True).click()
+        # Not GLACIER_WARNING itself -- that constant is the singular
+        # wording ("leaves"), and a two-message confirmation reads
+        # "leave" (plural). The substring both share is this one.
+        dialog_text = page.get_by_text("the mail server for good", exact=False)
+        expect(dialog_text).to_be_visible(timeout=5_000)
+        page.get_by_role("button", name="Move to Glacier", exact=True).click()
+
+        def _one_more_landed() -> bool | None:
+            return _glacier_total(api_client, ui_account["id"]) == before + 1 or None
+
+        wait_for(_one_more_landed, description="exactly the genuine message to reach the glacier")
+
+        # The genuine message left INBOX; the forged one, refused, stays.
+        expect(genuine_locator).not_to_be_visible(timeout=15_000)
+        expect(forged_locator).to_be_visible()
+
+        # Never presented as a failure inviting a repeat of an
+        # irreversible partial success.
+        expect(page.get_by_role("button", name="Retry", exact=True)).to_have_count(0)
