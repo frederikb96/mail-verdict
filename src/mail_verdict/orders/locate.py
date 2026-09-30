@@ -3,15 +3,17 @@ Resolving where each of an order's mails is now -- the detail endpoint's
 own re-check, done fresh on every read rather than trusted from the
 stored message_id hint.
 
-Membership is (account_id, msg_key), never messages.id: a move through
-this API keeps the id, but a move made by another IMAP client is mirrored
-as an expunge in the source folder plus a new row sharing only the
-Message-ID header, and a move into or out of the glacier assigns an
-entirely new id. database/msg_key.py's resolve_by_msg_key is the one
-resolver from that durable identity to wherever the mail lives right now
-(a live row, a glacier row, or neither); this module is only the is_seen
-follow-up that resolver's minimal return doesn't carry, never a second
-lookup.
+Membership is (account_id, msg_key), never messages.id, but the stored
+message_id is still tried first as a join hint -- the same tie-break
+api/mails.py::locate_message uses: a move through this API keeps a live
+row's id, so most reads resolve on that one direct lookup, and only fall
+through to a fresh (account_id, msg_key) resolution when the hint is
+stale (the row moved under another client, or moved into or out of the
+glacier, which assigns an entirely new id). database/msg_key.py's
+resolve_by_msg_key is the one resolver for that fallback -- both the
+live-by-header case and the glacier case -- so there is no second lookup
+for either; this module is only the id-hint fast path in front of it and
+the is_seen follow-up resolve_by_msg_key's minimal return doesn't carry.
 """
 
 from __future__ import annotations
@@ -41,6 +43,21 @@ class ResolvedMail:
 
 
 async def _resolve_one(session: AsyncSession, mail: OrderMail) -> ResolvedMail:
+    if mail.message_id is not None:
+        row = (
+            await session.execute(
+                select(Message.id, Message.folder_id, Message.is_seen).where(
+                    Message.id == mail.message_id, Message.account_id == mail.account_id,
+                    Message.expunged_at.is_(None),
+                )
+            )
+        ).one_or_none()
+        if row is not None:
+            return ResolvedMail(
+                order_mail_id=mail.id, location="mailbox", message_id=row.id,
+                folder_id=row.folder_id, is_seen=row.is_seen,
+            )
+
     resolved = await resolve_by_msg_key(session, account_id=mail.account_id, msg_key=mail.msg_key)
     if resolved is None:
         return ResolvedMail(
