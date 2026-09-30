@@ -81,6 +81,41 @@ def client(cred_repo: MagicMock) -> TestClient:
         yield TestClient(app)
 
 
+@pytest.fixture()
+def client_without_credential_repo() -> TestClient:
+    """
+    A settings client with no credential repository initialized at all --
+    the shape settings/credentials.py's own get_provider_credential_repo()
+    describes for an application that never stored a provider key
+    (RuntimeError, exactly as it raises for real when nothing called
+    init_provider_credential_repo). A real deployment or test that only
+    ever writes ordinary categories -- retry, pipeline, calendar -- is in
+    this shape, and a settings write must not start requiring the
+    credential store to exist just because it now strips credential-
+    shaped fields from every category.
+    """
+    from fastapi import FastAPI
+
+    from mail_verdict.api.settings_api import router
+
+    app = FastAPI()
+    app.include_router(router)
+
+    mock_service = _make_mock_service()
+
+    def _not_initialized() -> MagicMock:
+        raise RuntimeError("ProviderCredentialRepository not initialized")
+
+    with (
+        patch("mail_verdict.api.settings_api.get_settings_service", return_value=mock_service),
+        patch(
+            "mail_verdict.api.settings_api.get_provider_credential_repo",
+            side_effect=_not_initialized,
+        ),
+    ):
+        yield TestClient(app)
+
+
 class TestGetSettings:
     """Tests for GET /api/settings endpoints."""
 
@@ -391,6 +426,42 @@ class TestCredentialMaskingAppliesToEveryCategory:
         )
         get_resp = client.get("/settings/pipeline")
         assert put_resp.json() == get_resp.json()
+
+
+class TestOrdinaryWritesNeedNoCredentialRepository:
+    """
+    Masking is universal now, but the credential STORE is not -- a write
+    to a category with nothing credential-shaped in its body must succeed
+    even when nothing ever initialized a ProviderCredentialRepository at
+    all, the same as before this category's masking was made universal.
+
+    "ai" is excluded here: unrelated to this fix, its response always
+    reports every provider's configured/hint status
+    (_with_ai_credential_status), which has always needed the repository
+    regardless of what a write carries -- see TestGetSettings above.
+    """
+
+    @pytest.mark.parametrize(
+        "category", [cat.value for cat in SettingCategory if cat != SettingCategory.AI],
+    )
+    def test_a_write_with_no_credential_field_never_touches_the_repo(
+        self, client_without_credential_repo: TestClient, category: str,
+    ) -> None:
+        resp = client_without_credential_repo.put(
+            f"/settings/{category}", json={"data": {}},
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_a_write_with_a_credential_field_still_needs_the_repo(
+        self, client_without_credential_repo: TestClient,
+    ) -> None:
+        """The other half: a genuine key has to be routed somewhere, so
+        this stays a real dependency for the one case that actually needs
+        it -- the fix must not paper over that by skipping storage too."""
+        with pytest.raises(RuntimeError, match="not initialized"):
+            client_without_credential_repo.put(
+                "/settings/ai", json={"data": {"openai_api_key": "sk-x"}},
+            )
 
 
 class TestImportSettings:

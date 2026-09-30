@@ -185,6 +185,14 @@ async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
     raised on -- there is nowhere safe to put it, and the alternative is
     persisting it in the clear.
 
+    The credential repository is only looked up when there is actually a
+    known provider's key field present -- an ordinary write to a category
+    with nothing credential-shaped in it (most of them, most of the time)
+    must not start depending on credential infrastructure it never
+    touches; get_provider_credential_repo() raises when nothing has
+    initialized it, and a deployment or test that never stores a
+    provider key is allowed not to.
+
     Returns the request data with every credential-shaped field removed,
     so none of them are ever merged into the category's JSONB blob.
 
@@ -198,19 +206,20 @@ async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
     Raises:
         HTTPException: 400 if a key is set with no ENCRYPTION_KEY configured
     """
-    cred_repo = get_provider_credential_repo()
-    for provider in PROVIDER_ENV_VARS:
-        field_name = f"{provider}_api_key"
-        if field_name not in data:
-            continue
-        value = data[field_name]
-        try:
-            if value:
-                await cred_repo.set_key(provider, str(value))
-            else:
-                await cred_repo.clear_key(provider)
-        except EncryptionUnavailableError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    present = [
+        provider for provider in PROVIDER_ENV_VARS if f"{provider}_api_key" in data
+    ]
+    if present:
+        cred_repo = get_provider_credential_repo()
+        for provider in present:
+            value = data[f"{provider}_api_key"]
+            try:
+                if value:
+                    await cred_repo.set_key(provider, str(value))
+                else:
+                    await cred_repo.clear_key(provider)
+            except EncryptionUnavailableError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _strip_credential_shaped_fields(data)
 
 
