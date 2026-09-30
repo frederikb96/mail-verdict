@@ -528,3 +528,181 @@ async def test_pacing_claims_at_most_one_batch_per_tick(
 
     await _activate_then(migrated_db, account_id, _second_tick_or_retry)
     assert await _glaciered_count() == cfg.batch_size * 2
+
+
+async def _seed_verified_row_with_pending_move(
+    session: AsyncSession, *, account_id: uuid.UUID, archive_folder_id: uuid.UUID,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """A live message and a glacier row already 'verified' against it --
+    origin_message_id, message_id header, size_bytes and received_at
+    matching exactly, the same identity expunge_if_matches's own guard
+    checks -- plus a second, unrelated message elsewhere on the account
+    with a pending move. Returns (origin_id, glacier_id, pending_id)."""
+    origin_id = uuid.uuid4()
+    origin_message_id_hdr = f"<{origin_id}@example.com>"
+    received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    await session.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+            " from_addr, raw_source, size_bytes, received_at) "
+            "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, 'Origin', "
+            " 'sender@example.com', :raw_source, :size_bytes, :received_at)"
+        ),
+        {
+            "id": origin_id, "account_id": account_id, "folder_id": archive_folder_id,
+            "uid": next(_imap_uid_counter),
+            "thread_id": origin_id, "msg_id": origin_message_id_hdr,
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+            "received_at": received_at,
+        },
+    )
+    glacier_folder_id = (
+        await session.execute(
+            text("SELECT glacier_folder_id FROM account_prefs WHERE account_id = :id"),
+            {"id": account_id},
+        )
+    ).scalar_one()
+    glacier_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO glacier_messages "
+            "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+            " raw_source, size_bytes, received_at, msg_key, state, origin_message_id, "
+            " origin_folder_id, origin_imap_name, origin_imap_uid) "
+            "VALUES (:id, :account_id, :folder_id, :thread_id, :msg_id, 'Stuck at verified', "
+            " 'sender@example.com', :raw_source, :size_bytes, :received_at, :msg_key, "
+            " 'verified', :origin_id, :origin_folder_id, 'Archive', 1)"
+        ),
+        {
+            "id": glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+            "thread_id": glacier_id, "msg_id": origin_message_id_hdr,
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+            "received_at": received_at, "msg_key": f"msg-{glacier_id}", "origin_id": origin_id,
+            "origin_folder_id": archive_folder_id,
+        },
+    )
+    # Account-wide, not scoped to the archive folder -- a pending move on
+    # any message means the mirror as a whole is untrustworthy.
+    pending_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+            " from_addr, raw_source, size_bytes, received_at) "
+            "VALUES (:id, :account_id, :folder_id, NULL, :thread_id, :msg_id, 'Pending', "
+            " 'sender@example.com', :raw_source, :size_bytes, now())"
+        ),
+        {
+            "id": pending_id, "account_id": account_id, "folder_id": archive_folder_id,
+            "thread_id": pending_id, "msg_id": f"<{pending_id}@example.com>",
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+        },
+    )
+    return origin_id, glacier_id, pending_id
+
+
+@pytest.mark.asyncio
+async def test_a_pending_move_blocks_finishing_an_already_verified_row(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's reproduction: _progress_mid_flight ran before
+    _sweep_guard_reason, so a row already sitting at 'verified' (a
+    manual move whose verify did not pass first time, say) was expunged
+    from the server on a tick where the guard itself would have refused
+    -- reachable without any lock trick, since a pending move elsewhere
+    on the account is ordinary while a manual glacier action is still
+    mid-flight. A sweep tick must expunge nothing and change no state
+    while that holds."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        origin_id, glacier_id, _pending_id = await _seed_verified_row_with_pending_move(
+            session, account_id=account_id, archive_folder_id=archive_folder_id,
+        )
+        await session.commit()
+
+    async def _tick_and_check() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            live = (
+                await session.execute(
+                    text("SELECT expunged_at FROM messages WHERE id = :id"), {"id": origin_id},
+                )
+            ).mappings().one()
+            assert live["expunged_at"] is None
+            glacier_row = (
+                await session.execute(
+                    text("SELECT state FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+            assert glacier_row["state"] == "verified"
+
+    await _activate_then(migrated_db, account_id, _tick_and_check)
+
+
+@pytest.mark.asyncio
+async def test_a_row_blocked_by_a_pending_move_never_reaches_glaciered(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The other half of the same fix, stated the way the row that never
+    got expunged actually reaches a user: since the destructive step
+    never ran, the glacier row never reaches 'removing' and therefore
+    never reaches 'glaciered' either -- confirm_or_withdraw_removing has
+    nothing to confirm, whatever the grace period. Once the pending move
+    clears, the same row progresses on the very next tick -- proving the
+    guard blocks it rather than the row being stuck for some other
+    reason."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        _origin_id, glacier_id, pending_id = await _seed_verified_row_with_pending_move(
+            session, account_id=account_id, archive_folder_id=archive_folder_id,
+        )
+        await session.commit()
+
+    async def _tick_while_pending() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            glacier_row = (
+                await session.execute(
+                    text("SELECT state FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+            assert glacier_row["state"] != "glaciered"
+            assert glacier_row["state"] == "verified"
+
+    await _activate_then(migrated_db, account_id, _tick_while_pending)
+
+    # The pending move clears -- the very next tick must finish the row,
+    # proving it was the guard holding it back and not something else.
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE messages SET imap_uid = 999 WHERE id = :id"), {"id": pending_id},
+        )
+        await session.commit()
+
+    async def _tick_after_clearing() -> None:
+        await _activate(migrated_db, account_id)
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            glacier_row = (
+                await session.execute(
+                    text("SELECT state FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+            if glacier_row["state"] == "verified":
+                raise AssertionError("still blocked -- retrying")
+            assert glacier_row["state"] in ("removing", "glaciered")
+
+    for _ in range(15):
+        try:
+            await _tick_after_clearing()
+            break
+        except AssertionError:
+            continue
+    else:
+        raise AssertionError("row never progressed after the pending move cleared")

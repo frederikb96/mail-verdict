@@ -536,6 +536,24 @@ that makes it structurally impossible to remove anything but the exact message t
 verified. A verify failure never expunges; a crash between any two steps leaves the row exactly
 where the previous step left it, picked up by the next tick rather than needing a human.
 
+The row that decides whether an expunge is destructive right now — a pending move elsewhere on the
+account, an unacknowledged sync failure, the account itself not currently connected — is shared
+between claiming new work and finishing work already claimed: a manual move left mid-flight (a
+verify that did not pass first time) is progressed toward `glaciered` on every sweep tick regardless
+of whether automatic sweeping is even configured for the account, so that guard has to apply there
+too, not only to the batch of new candidates a tick considers.
+
+**Documented limit, not an oversight:** the consumer contract offers no readable positive signal
+that an EXPUNGE reached the server at all — `sync_queue`, the internal outbound work queue, carries
+no consumer grant and its schema is explicitly not part of the contract, unlike `outbox`'s own
+app-readable `status` for a send, draft or append. A row in `removing` is therefore promoted to
+`glaciered` by age (old enough, with no failure notification naming this attempt) rather than by
+positive confirmation — the best available signal, not a claimed one. Gating that further on the
+account's *current* connection state was considered and rejected: `state` can read `error` for
+reasons that have nothing to do with whether the delete queued during the grace window actually
+landed, since PostIMAP keeps retrying and processing its outbound queue independently of the
+moment-to-moment state a consumer observes.
+
 Restore (`glacier/restore.py`) is the reverse: an IMAP APPEND of the stored bytes verbatim,
 through a `kind="append"` outbox row rather than the ordinary send/draft recomposition, which
 would lose the original Message-ID, DKIM signature and every received header. It needs a PostIMAP

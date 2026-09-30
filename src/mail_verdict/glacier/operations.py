@@ -550,6 +550,23 @@ async def confirm_or_withdraw_removing(
     anything either way, and is left for a later tick rather than acted
     on now.
 
+    🚨 The consumer contract exposes no readable positive signal at all
+    for a delete landing -- `sync_queue`, the internal outbound work
+    queue, "carries no consumer grant" and is explicitly not part of the
+    contract, unlike `outbox`'s own app-readable `status` column for a
+    send, draft or append. Confirming by age (no failure notification
+    within the grace period) is therefore the best available signal, not
+    a positive one; a documented limit rather than an oversight. Gating
+    it further on the account's *current* connection state was
+    considered and rejected: `accounts.state` can read `error` for
+    unrelated, transient reasons at the moment this runs while the
+    delete queued well before still landed during the grace window
+    (PostIMAP retries unboundedly and keeps processing its outbound
+    queue independently of the moment-to-moment state a consumer
+    observes -- the same reasoning `_ELIGIBILITY_SQL` already applies to
+    entering the glacier in the first place), so it would trade a
+    documented, narrow limitation for a much more common false refusal.
+
     Args:
         db: Database connection
         account_id: Account to sweep

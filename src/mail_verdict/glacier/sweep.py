@@ -64,6 +64,60 @@ _SWEEP_LOCK_KEY = 761_035_100
 _BOOKKEEPING_BATCH_SIZE = 500
 
 
+async def _write_hazard_reason(db: DatabaseConnection, account_id: uuid.UUID) -> str | None:
+    """
+    Whether the mirror is currently trustworthy enough for a *destructive*
+    glacier step (an EXPUNGE) to run against this account at all, or None
+    if it is safe to proceed. Deliberately narrower than
+    _sweep_guard_reason: whether automatic sweeping is even configured
+    for this account has no bearing on whether it is safe to finish a
+    row someone already glaciered by hand and left mid-flight (a crash,
+    or a verify that did not pass first time) -- this module's own
+    docstring documents that such rows are seen through regardless of
+    whether the automatic sweep itself is enabled. Reused by both
+    _sweep_guard_reason (which layers its own claim-new-work checks on
+    top) and _progress_mid_flight, which is exactly the destructive step
+    that must never bypass it.
+
+    Args:
+        db: Database connection
+        account_id: Account to check
+
+    Returns:
+        A short reason the mirror cannot currently be trusted, or None
+    """
+    async with db.session() as session:
+        row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT a.is_active, a.state,
+                           EXISTS (
+                             SELECT 1 FROM messages m
+                             WHERE m.account_id = a.id AND m.imap_uid IS NULL
+                               AND m.expunged_at IS NULL
+                           ) AS has_pending_move,
+                           EXISTS (
+                             SELECT 1 FROM sync_notifications sn
+                             WHERE sn.account_id = a.id AND sn.acknowledged_at IS NULL
+                           ) AS has_unacknowledged
+                    FROM accounts a WHERE a.id = :account_id
+                    """
+                ),
+                {"account_id": account_id},
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return "account no longer exists"
+        if not row["is_active"] or row["state"] != "active":
+            return "account is not currently active"
+        if row["has_pending_move"]:
+            return "a move is still pending on this account -- the mirror is untrustworthy"
+        if row["has_unacknowledged"]:
+            return "an unacknowledged sync failure exists on this account"
+    return None
+
+
 async def _sweep_guard_reason(
     db: DatabaseConnection, account_id: uuid.UUID, *, cfg: GlacierConfig,
 ) -> str | None:
@@ -81,23 +135,13 @@ async def _sweep_guard_reason(
                 text(
                     """
                     SELECT ap.glacier_enabled, ap.glacier_auto_days, ap.glacier_folder_id,
-                           a.is_active, a.state, ss.last_full_sync,
-                           EXISTS (
-                             SELECT 1 FROM messages m
-                             WHERE m.account_id = a.id AND m.imap_uid IS NULL
-                               AND m.expunged_at IS NULL
-                           ) AS has_pending_move,
-                           EXISTS (
-                             SELECT 1 FROM sync_notifications sn
-                             WHERE sn.account_id = a.id AND sn.acknowledged_at IS NULL
-                           ) AS has_unacknowledged,
+                           ss.last_full_sync,
                            (
                              SELECT count(*) FROM glacier_messages g
-                             WHERE g.account_id = a.id AND g.state = 'removing'
+                             WHERE g.account_id = ap.account_id AND g.state = 'removing'
                            ) AS removing_count
                     FROM account_prefs ap
-                    JOIN accounts a ON a.id = ap.account_id
-                    LEFT JOIN sync_state ss ON ss.account_id = a.id
+                    LEFT JOIN sync_state ss ON ss.account_id = ap.account_id
                     WHERE ap.account_id = :account_id
                     """
                 ),
@@ -110,14 +154,8 @@ async def _sweep_guard_reason(
             return "automatic sweep is off for this account"
         if row["glacier_folder_id"] is None:
             return "glacier has never been enabled"
-        if not row["is_active"] or row["state"] != "active":
-            return "account is not currently active"
         if row["last_full_sync"] is None:
             return "account has never completed a sync pass"
-        if row["has_pending_move"]:
-            return "a move is still pending on this account -- the mirror is untrustworthy"
-        if row["has_unacknowledged"]:
-            return "an unacknowledged sync failure exists on this account"
         if row["removing_count"] >= cfg.max_unconfirmed:
             return f"{row['removing_count']} messages already unconfirmed in the removing state"
 
@@ -137,7 +175,8 @@ async def _sweep_guard_reason(
         ).scalar_one_or_none()
         if not archive_ok:
             return "no fully-synced archive folder on this account"
-    return None
+
+    return await _write_hazard_reason(db, account_id)
 
 
 async def _claim_archive_candidates(
@@ -181,7 +220,19 @@ async def _progress_mid_flight(
 ) -> None:
     """Push anything left `copied` toward `verified`, and anything
     `verified` toward `glaciered` -- a crashed process, or a manual move
-    that only got partway, resumes here rather than staying stuck."""
+    that only got partway, resumes here rather than staying stuck.
+
+    🚨 Verifying is read-only against the mirror -- a corrupted or
+    inconsistent comparison simply fails to verify (verify_message's own
+    guard), never destroys anything -- so it always runs. Expunging is
+    the step that actually removes a message from the server, and it
+    must never run while the account-wide write hazard applies (a
+    pending move elsewhere, an unacknowledged failure, the account not
+    currently connected): _write_hazard_reason is the same check
+    _sweep_guard_reason uses to decide whether to claim new work, reused
+    here because "the mirror cannot be trusted right now" does not stop
+    being true just because this row was claimed on an earlier tick.
+    """
     async with db.session() as session:
         copied_ids = (
             await session.execute(
@@ -194,6 +245,9 @@ async def _progress_mid_flight(
         ).scalars().all()
     for glacier_id in copied_ids:
         await verify_message(db, glacier_id)
+
+    if await _write_hazard_reason(db, account_id) is not None:
+        return
 
     async with db.session() as session:
         verified_ids = (
