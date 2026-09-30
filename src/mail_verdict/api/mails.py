@@ -53,6 +53,7 @@ from mail_verdict.api.schemas import (
     ThreadResponse,
     VerdictResponse,
 )
+from mail_verdict.config import get_config
 from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.core.cursor import after_cursor, before_cursor
 from mail_verdict.core.image_sanitizer import restore_remote_images, strip_remote_images
@@ -1928,6 +1929,35 @@ async def _glacier_account_for_folder(
     return result.scalar_one_or_none()
 
 
+def _refuse_over_manual_batch_cap(count: int) -> None:
+    """`glacier.max_manual_batch` (config/config.yaml) is this feature's
+    own pacing cap for a person's own bulk action -- the account-wide
+    automatic sweep paces itself independently (glacier/sweep.py's
+    batch_size), so this exists purely to stop a "select all" over a
+    huge archive from queueing thousands of IMAP writes into PostIMAP's
+    outbound queue at once, ahead of every other flag change and send on
+    the account. Applies to moving mail INTO the glacier and to
+    restoring it back OUT -- both drive a real IMAP write per message;
+    every other glacier action (marking, keywords, permanent delete) is
+    local to this database and needs no such cap.
+
+    Args:
+        count: How many messages this bulk request would act on
+
+    Raises:
+        HTTPException: 409, naming the cap and how many were asked for
+    """
+    cap = get_config().glacier.max_manual_batch
+    if count > cap:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"A bulk glacier move or restore is capped at {cap} message(s) at once; "
+                f"this would act on {count}. Narrow the selection and try again."
+            ),
+        )
+
+
 async def _bulk_glacier_move(
     db: DatabaseConnection, groups: dict[uuid.UUID | None, list[uuid.UUID]],
 ) -> tuple[int, list[str], list[uuid.UUID]]:
@@ -2070,6 +2100,8 @@ async def _apply_bulk_action(
     glacier_errors: list[str] = []
     glacier_skipped: list[uuid.UUID] = []
     if glacier_ids:
+        if request.action in ("move", "archive", "trash"):
+            _refuse_over_manual_batch_cap(len(glacier_ids))
         glacier_affected, glacier_errors, glacier_skipped = await _bulk_glacier_action(
             db, glacier_ids, request,
         )
@@ -2204,6 +2236,7 @@ async def _apply_bulk_action(
                     raise HTTPException(
                         status_code=400, detail="target_folder_id does not belong to this account",
                     )
+                _refuse_over_manual_batch_cap(sum(len(ids) for ids in groups.values()))
                 affected, glacier_errors, glacier_skipped = await _bulk_glacier_move(db, groups)
                 errors.extend(glacier_errors)
                 skipped.extend(glacier_skipped)

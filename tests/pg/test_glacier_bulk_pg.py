@@ -9,6 +9,7 @@ tests/pg/test_glacier_api_pg.py does -- see that file's own docstring.
 
 from __future__ import annotations
 
+import types
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -16,8 +17,10 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import mail_verdict.api.mails as mails_module
 from mail_verdict.api.mails import bulk_action as api_bulk_action
 from mail_verdict.api.schemas import BulkActionRequest, BulkActionScope
+from mail_verdict.config.loader import GlacierConfig
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
@@ -329,3 +332,94 @@ async def test_bulk_move_into_another_accounts_glacier_is_refused(
             ),
         )
     assert "does not belong to this account" in str(exc_info.value)
+
+
+def _with_manual_batch_cap(monkeypatch: pytest.MonkeyPatch, cap: int) -> None:
+    """`glacier.max_manual_batch` (config/loader.py's GlacierConfig) is
+    declared and never read anywhere -- the red team's finding. Patched
+    at the point _refuse_over_manual_batch_cap actually reads it, rather
+    than through config.yaml, since every other pg test already runs
+    against the repo's real config and this cap needs to be small enough
+    to trip with a handful of seeded messages."""
+    fake_config = types.SimpleNamespace(
+        glacier=GlacierConfig(
+            sweep_enabled=True, interval_seconds=60, batch_size=25, max_unconfirmed=500,
+            confirm_grace_seconds=600, max_manual_batch=cap, restore_timeout_seconds=1800,
+        ),
+    )
+    monkeypatch.setattr(mails_module, "get_config", lambda: fake_config)
+
+
+@pytest.mark.asyncio
+async def test_bulk_move_into_glacier_over_the_cap_is_refused(
+    migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The red team's finding: glacier.max_manual_batch is declared and
+    read nowhere -- a bulk move of any size was accepted, which for a
+    real archive would queue thousands of IMAP EXPUNGEs into PostIMAP's
+    outbound queue at once."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _folder_id, glacier_folder_id, message_ids = (
+            await _seed_account_with_messages(session, count=3)
+        )
+        await session.commit()
+    _with_manual_batch_cap(monkeypatch, cap=2)
+
+    with pytest.raises(Exception) as exc_info:  # noqa: PT011
+        await api_bulk_action(
+            account_id,
+            BulkActionRequest(action="move", target_folder_id=glacier_folder_id, ids=message_ids),
+        )
+    message = str(exc_info.value)
+    assert "2" in message
+    assert "3" in message
+
+    async with migrated_db.session() as session:
+        live = (
+            await session.execute(
+                text("SELECT count(*) FROM messages WHERE id = ANY(:ids) AND expunged_at IS NULL"),
+                {"ids": message_ids},
+            )
+        ).scalar_one()
+        assert live == 3
+
+
+@pytest.mark.asyncio
+async def test_bulk_restore_over_the_cap_is_refused(
+    migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The uncapped-restore side of the same finding: 'restore is
+    uncapped for the same reason' -- a bulk restore over the cap must be
+    refused the same way a bulk move-in is, before any APPEND is queued."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, folder_id, glacier_folder_id, _live_ids = (
+            await _seed_account_with_messages(session, count=0)
+        )
+        glacier_ids = await _seed_glacier_messages(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id, count=3,
+        )
+        await session.commit()
+    _with_manual_batch_cap(monkeypatch, cap=2)
+
+    with pytest.raises(Exception) as exc_info:  # noqa: PT011
+        await api_bulk_action(
+            account_id,
+            BulkActionRequest(action="move", target_folder_id=folder_id, ids=glacier_ids),
+        )
+    message = str(exc_info.value)
+    assert "2" in message
+    assert "3" in message
+
+    async with migrated_db.session() as session:
+        still_glaciered = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE id = ANY(:ids) AND state = 'glaciered'"
+                ),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert still_glaciered == 3
