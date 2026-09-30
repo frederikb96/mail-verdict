@@ -25,6 +25,7 @@ from sqlalchemy import (
     or_,
     select,
     text,
+    union,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -472,6 +473,14 @@ async def _build_candidate_query(
     full explanation); the live arm is always present here, so this
     never hits that case.
 
+    🚨 Every arm is collected into a list and unioned exactly once at the
+    end. `Select.union()` returns a `CompoundSelect`, which has no
+    `.union()` method of its own -- so chaining `candidate_stmt =
+    candidate_stmt.union(...)` a second time (the "to" field arm plus a
+    glacier arm, or two glacier arms) raised `AttributeError` the moment
+    more than one extra arm applied, which is the default field set
+    ("to" is on by default) as soon as any glacier exists.
+
     received_after/received_before narrow the candidate set itself (every
     arm of the union alike) rather than being applied to the page
     returned -- a message with no Date header (received_at IS NULL) never
@@ -500,12 +509,12 @@ async def _build_candidate_query(
     if is_seen is not None:
         base = base.where(Message.is_seen == is_seen)
 
-    candidate_stmt: Any = base.where(primary)
+    arms: list[Any] = [base.where(primary)]
     if "to" in fields:
         to_predicate = and_(
             *[cast(Message.to_addrs, Text).ilike(f"%{_ilike_escape(t)}%") for t in tokens]
         )
-        candidate_stmt = candidate_stmt.union(base.where(to_predicate))
+        arms.append(base.where(to_predicate))
 
     glacier_folders = await touches_glacier(session, account_id=account_id, folder_ids=folder_ids)
     if glacier_folders:
@@ -521,7 +530,7 @@ async def _build_candidate_query(
             glacier_base = glacier_base.where(GlacierMessage.received_at <= received_before)
         if is_seen is not None:
             glacier_base = glacier_base.where(GlacierMessage.is_seen == is_seen)
-        candidate_stmt = candidate_stmt.union(glacier_base.where(glacier_primary))
+        arms.append(glacier_base.where(glacier_primary))
         if "to" in fields:
             glacier_to_predicate = and_(
                 *[
@@ -529,8 +538,9 @@ async def _build_candidate_query(
                     for t in tokens
                 ]
             )
-            candidate_stmt = candidate_stmt.union(glacier_base.where(glacier_to_predicate))
+            arms.append(glacier_base.where(glacier_to_predicate))
 
+    candidate_stmt: Any = arms[0] if len(arms) == 1 else union(*arms)
     sub = candidate_stmt.subquery()
     return sub, aliased(Message, sub)
 

@@ -246,6 +246,69 @@ async def test_a_search_cursor_can_land_on_a_glaciered_result(
 
 
 @pytest.mark.asyncio
+async def test_default_fields_do_not_crash_once_a_glacier_exists(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's reproduction: `_build_candidate_query` chained
+    `.union()` a second time on what the first call had already turned
+    into a `CompoundSelect` -- an `AttributeError` on every query using
+    the default field set (subject, from, to, body) the instant any
+    glacier exists, in the browser's own default search."""
+    now = datetime.now(timezone.utc)
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        glacier_folder_id = await _enable_glacier(session, account_id)
+        live_folder_id = await _seed_folder(session, account_id)
+        live_id = await _seed_live_message(
+            session, account_id=account_id, folder_id=live_folder_id,
+            subject="Defaultfield search term", received_at=now,
+        )
+        glacier_id = await _seed_glacier_message(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id,
+            subject="Defaultfield search term", received_at=now - timedelta(days=400),
+        )
+
+    # fields=None -- api/search.py's own default (omitted entirely, it
+    # is a bare FastAPI Query() default rather than a plain Python one,
+    # so a direct call needs the explicit None to get the same behaviour
+    # a real request gets) resolves to SEARCH_FIELDS: subject, from, to,
+    # body -- the browser's own default search.
+    page = await search_messages(
+        q="defaultfield", account_id=account_id, folder_ids=None, fields=None,
+        before=None, limit=50,
+    )
+    assert {r.id for r in page.results} == {live_id, glacier_id}
+
+
+@pytest.mark.asyncio
+async def test_searching_the_to_field_alone_does_not_crash(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The second union arm this bug affected on its own: fields=["to"]
+    unions the to_addrs branch onto an already-empty base, and once a
+    glacier exists that base itself is unioned a second time."""
+    now = datetime.now(timezone.utc)
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        glacier_folder_id = await _enable_glacier(session, account_id)
+        live_folder_id = await _seed_folder(session, account_id)
+        await _seed_live_message(
+            session, account_id=account_id, folder_id=live_folder_id,
+            subject="Irrelevant", received_at=now,
+        )
+        await _seed_glacier_message(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id,
+            subject="Also irrelevant", received_at=now,
+        )
+
+    page = await search_messages(
+        q="nomatch", account_id=account_id, folder_ids=None,
+        fields=["to"], before=None, limit=50,
+    )
+    assert page.results == []
+
+
+@pytest.mark.asyncio
 async def test_a_real_folder_search_never_reaches_the_glacier(
     migrated_db: DatabaseConnection,
 ) -> None:
