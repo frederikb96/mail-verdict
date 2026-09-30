@@ -59,7 +59,6 @@ import {
   WEEK_INDEX_MIN,
   dateToWeekIndex,
   format,
-  weekDays,
   weekIndexToDate,
 } from "@/lib/dates";
 import { MonthWeekRow } from "@/components/calendar/month-week-row";
@@ -174,13 +173,18 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
 
   // Same computation as the week written into calendarDateAtom below, so the
   // header and the top-left date can never disagree about which week is
-  // current -- both read off computeAnchorWeek with the same inputs.
+  // current -- both read off computeAnchorWeek with the same inputs, and
+  // both name the month from the week's Monday (weekIndexToDate's own
+  // day), the same day calendarDateAtom itself holds while scrolling
+  // (see handleScroll below) and the toolbar (calendar-toolbar.tsx)
+  // formats directly. A week spanning a month boundary needs one
+  // consistent answer for "which month is this", and Monday is the day
+  // every other consumer of the anchor already agrees on.
   const updateMonthLabel = useCallback((top: number, viewportHeight: number, height: number) => {
     if (height <= 0) return;
     const anchorWeek = computeAnchorWeek(top, viewportHeight, height, WEEK_INDEX_MIN);
     const clamped = Math.min(WEEK_INDEX_MAX, Math.max(WEEK_INDEX_MIN, anchorWeek));
-    const thursday = weekDays(clamped)[3];
-    setMonthLabel(format(thursday, "MMMM yyyy"));
+    setMonthLabel(format(weekIndexToDate(clamped), "MMMM yyyy"));
   }, []);
 
   /** Commits a new fetch window, but only replaces `committedMonths` when
@@ -333,6 +337,18 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     if (selfWrittenDatesRef.current.has(calendarDate)) return;
     const week = dateToWeekIndex(calendarDate);
     if (week === currentWeekRef.current) return;
+    // The header must not wait for the scroll it is about to trigger:
+    // updateMonthLabel otherwise only runs from the scroll events a
+    // smooth-scroll animation happens to fire, and the toolbar (which
+    // reads calendarDateAtom directly) has already moved on by then --
+    // exactly the gap that let the two disagree about the current month
+    // after a jump this component itself has not finished animating.
+    // Named the same way updateMonthLabel itself does (the week's Monday),
+    // so the eventual settle from the scroll this triggers agrees with
+    // this immediate value rather than overwriting it with a different
+    // day's month once the animation lands.
+    const clamped = Math.min(WEEK_INDEX_MAX, Math.max(WEEK_INDEX_MIN, week));
+    setMonthLabel(format(weekIndexToDate(clamped), "MMMM yyyy"));
     scrollToWeek(week, mountedRef.current ? "smooth" : "instant");
   }, [calendarDate, scrollToWeek]);
 
