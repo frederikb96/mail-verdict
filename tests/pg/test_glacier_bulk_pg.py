@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -280,6 +281,46 @@ async def test_bulk_expunge_requires_confirmation_then_deletes(
             )
         ).scalar_one()
         assert remaining == 2
+
+
+@pytest.mark.asyncio
+async def test_bulk_expunge_with_a_stale_confirmed_count_is_refused_before_it_acts(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """confirm_message_count has to gate a glacier bulk action before it
+    runs, not only report the refusal once the messages are already
+    gone: a request whose count no longer matches must get a 409 with
+    every glaciered message still present, whatever the per-message
+    `confirm` flag says."""
+    async with migrated_db.session() as session:
+        account_id, _folder_id, glacier_folder_id, _live_ids = (
+            await _seed_account_with_messages(session, count=0)
+        )
+        glacier_ids = await _seed_glacier_messages(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id, count=2,
+        )
+        await session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await api_bulk_action(
+            account_id,
+            BulkActionRequest(
+                action="expunge", ids=glacier_ids, confirm=True, confirm_message_count=5,
+            ),
+        )
+    assert exc_info.value.status_code == 409
+
+    async with migrated_db.session() as session:
+        still_there = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM glacier_messages "
+                    "WHERE id = ANY(:ids) AND state = 'glaciered'"
+                ),
+                {"ids": glacier_ids},
+            )
+        ).scalar_one()
+        assert still_there == 2, "a stale confirmed count must refuse before anything is expunged"
 
 
 @pytest.mark.asyncio

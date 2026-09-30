@@ -2162,20 +2162,10 @@ async def _apply_bulk_action(
     glacier_ids = list(dict.fromkeys(glacier_ids))
     glacier_id_set = set(glacier_ids)
 
-    glacier_affected = 0
-    glacier_errors: list[str] = []
-    glacier_skipped: list[uuid.UUID] = []
-    if glacier_ids:
-        if request.action in ("move", "archive", "trash"):
-            _refuse_over_manual_batch_cap(len(glacier_ids))
-        glacier_affected, glacier_errors, glacier_skipped = await _bulk_glacier_action(
-            db, glacier_ids, request,
-        )
-
     live_ids = [mid for mid in request.ids if mid not in glacier_id_set] if request.ids else None
 
     sources: list[BulkActionSource] = []
-    skipped: list[uuid.UUID] = list(glacier_skipped)
+    skipped: list[uuid.UUID] = []
     # message id -> the folder its write is guarded to, None for unguarded
     expected_of: dict[uuid.UUID, uuid.UUID | None] = {}
     async with db.session() as session:
@@ -2221,7 +2211,10 @@ async def _apply_bulk_action(
     # was true when it was minted. Mirrors folder deletion's own
     # confirm_message_count gate: a stale or optimistically-adjusted count
     # must not be able to make an irreversible write look confirmed when
-    # it wasn't. Most actions pass nothing and skip this entirely.
+    # it wasn't. Most actions pass nothing and skip this entirely. Checked
+    # before anything below acts -- a glacier bulk action can be a
+    # permanent, unrecoverable delete, and a stale count must refuse it
+    # before that runs, not merely report the refusal afterwards.
     confirmed = request.confirm_message_count
     total_resolved = len(message_ids) + len(glacier_ids)
     if confirmed is not None and confirmed != total_resolved:
@@ -2238,6 +2231,17 @@ async def _apply_bulk_action(
         return BulkActionResponse(
             success=True, action=request.action, affected_count=0, skipped_ids=skipped,
         )
+
+    glacier_affected = 0
+    glacier_errors: list[str] = []
+    glacier_skipped: list[uuid.UUID] = []
+    if glacier_ids:
+        if request.action in ("move", "archive", "trash"):
+            _refuse_over_manual_batch_cap(len(glacier_ids))
+        glacier_affected, glacier_errors, glacier_skipped = await _bulk_glacier_action(
+            db, glacier_ids, request,
+        )
+        skipped.extend(glacier_skipped)
 
     groups: dict[uuid.UUID | None, list[uuid.UUID]] = {}
     for mid, expected in expected_of.items():
