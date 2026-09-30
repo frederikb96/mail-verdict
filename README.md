@@ -69,7 +69,10 @@ mirror, which is what keeps it simple.
   for good and lives on only in this application's own database: listed, searched and included in
   unified views like any folder, since moving into or out of it is the ordinary move action. Read,
   star, keyword, reply and forward all keep working, since none of them need the server; moving it
-  to a real folder restores it there with its original date and flags. Turning a glacier off, or
+  to a real folder restores it there with its original flags and, for the overwhelming majority of
+  mail, its original date — derived from the message's own `Date` header rather than the server's
+  original arrival stamp, so the two can diverge for a message whose header was wrong or missing.
+  Turning a glacier off, or
   deleting its account, is refused while it still holds anything. A number of days set on the
   account moves its archived mail in automatically, in small paced batches, once a message has sat
   there that long.
