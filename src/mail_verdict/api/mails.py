@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import ColumnElement, all_, any_, case, desc, func, select, text, tuple_
+from sqlalchemy import ColumnElement, all_, any_, case, desc, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, defer
 
@@ -1623,22 +1623,40 @@ async def _apply_glacier_message_action(
     yet supported against a glaciered message.
 
     Returns:
-        None if glacier_id does not name a glacier row at all (the
-        caller then reports the ordinary 404), otherwise a response --
-        possibly success=false, never a silent no-op
+        None if glacier_id names neither a visible glacier row (its own
+        id or the original pre-glacier id) nor a tombstone (the caller
+        then reports the ordinary 404), otherwise a response -- possibly
+        success=false, never a silent no-op
     """
     db = get_db_connection()
     action = request.action
     async with db.session() as session:
-        row = (
-            await session.execute(
-                select(GlacierMessage).where(
-                    GlacierMessage.id == glacier_id, GlacierMessage.visible_at.is_not(None),
+        resolved_id = await resolve_glacier_id(session, glacier_id)
+        row = None
+        if resolved_id is not None:
+            row = (
+                await session.execute(
+                    select(GlacierMessage).where(GlacierMessage.id == resolved_id)
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            # Not live under this id or its origin -- a tombstone (already
+            # restored) gets a reason a client can act on, since silently
+            # acting on the now-live restored message under a stale
+            # reference is a write the caller never asked for.
+            tombstone = await session.execute(
+                select(GlacierMessage.id).where(
+                    GlacierMessage.id == glacier_id, GlacierMessage.restored_at.is_not(None),
                 )
             )
-        ).scalar_one_or_none()
-    if row is None:
-        return None
+            if tombstone.scalar_one_or_none() is not None:
+                return MessageActionResponse(
+                    success=False, action=action, message_id=glacier_id,
+                    message="This message has already been restored to the mail server -- "
+                    "look it up again to act on the restored copy.",
+                )
+            return None
+    glacier_id = row.id
 
     if request.expected_folder_id is not None and row.folder_id != request.expected_folder_id:
         return _not_applied(action, glacier_id)
@@ -2397,19 +2415,35 @@ async def _glacier_folder_id_for_account(
 async def _resolve_glacier_explicit_ids(
     session: AsyncSession, account_id: uuid.UUID, ids: list[uuid.UUID],
 ) -> list[uuid.UUID]:
-    """Which of `ids` are visible glacier rows on this account -- the
+    """Which of `ids` name a visible glacier row on this account -- the
     glacier counterpart of _resolve_explicit_ids, since `messages` and
     `glacier_messages` are different tables with disjoint ids and an
-    explicit selection can mix ids from either."""
+    explicit selection can mix ids from either. Matches a glacier row's
+    own id as well as its origin_message_id (the pre-glacier id a caller
+    may still hold, the same identity resolve_glacier_id checks), and
+    returns each match exactly as it appeared in `ids` -- the caller uses
+    this list for its own id-set bookkeeping, not to look the row up
+    again, and _bulk_glacier_action resolves each one properly itself
+    when it actually acts on it."""
     if not ids:
         return []
     result = await session.execute(
-        select(GlacierMessage.id).where(
-            GlacierMessage.id == any_(ids),  # type: ignore[arg-type]
+        select(GlacierMessage.id, GlacierMessage.origin_message_id).where(
+            or_(
+                GlacierMessage.id == any_(ids),  # type: ignore[arg-type]
+                GlacierMessage.origin_message_id == any_(ids),  # type: ignore[arg-type]
+            ),
             GlacierMessage.account_id == account_id, GlacierMessage.visible_at.is_not(None),
         )
     )
-    return list(result.scalars().all())
+    id_set = set(ids)
+    matched: list[uuid.UUID] = []
+    for glacier_id, origin_id in result.all():
+        if glacier_id in id_set:
+            matched.append(glacier_id)
+        elif origin_id is not None and origin_id in id_set:
+            matched.append(origin_id)
+    return matched
 
 
 async def _resolve_glacier_scope_ids(
