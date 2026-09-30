@@ -65,6 +65,14 @@ mirror, which is what keeps it simple.
   and Junk.
   An account can also be given a Trash retention and a Junk retention, each in days and set
   independently, so mail sitting in either long enough is permanently removed on its own.
+- **Glacier storage** — a per-account place mail can be moved to where it leaves the mail server
+  for good and lives on only in this application's own database: listed, searched and included in
+  unified views like any folder, since moving into or out of it is the ordinary move action. Read,
+  star, keyword, reply and forward all keep working, since none of them need the server; moving it
+  to a real folder restores it there with its original date and flags. Turning a glacier off, or
+  deleting its account, is refused while it still holds anything. A number of days set on the
+  account moves its archived mail in automatically, in small paced batches, once a message has sat
+  there that long.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens. A message still waiting on its way out long after it should have gone raises an
@@ -168,12 +176,17 @@ Anything that changes at runtime — the AI provider and model, spam behaviour, 
 API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API or
 the Settings page, not in a file.
 
+The AI provider for spam verdicts, and separately for embeddings, is one of these settings: OpenAI,
+Anthropic (verdicts only — no embedding model of its own), or any OpenAI-compatible server by its
+own address, key and model name. A custom server needs its address set (`ai.base_url` /
+`semantic.base_url`) alongside its key below.
+
 A handful of values stay environment variables regardless, because they either gate config loading
 itself or are the fallback path for a deployment that would rather not put a key in the database:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CUSTOM_AI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
 | `MAIL_VERDICT_DATABASE_URL` | PostgreSQL connection, shared with PostIMAP |
 | `POSTGRES_PASSWORD` | Database password, used by compose |
 | `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, PostIMAP's own credential-at-rest encryption, and this server's Web Push signing key (generated on first use, never provisioned) — one key shared by all three. Optional; without it, provider keys can only come from the two env vars above, and push notifications are unavailable |

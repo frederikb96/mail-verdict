@@ -20,6 +20,7 @@ import {
   UserCircle,
   ChevronDown,
   RefreshCw,
+  Snowflake,
   Workflow,
 } from "lucide-react";
 import Link from "next/link";
@@ -107,6 +108,7 @@ function sortFolders(folders: FolderResponse[]): FolderResponse[] {
 }
 
 function getFolderIcon(folder: FolderResponse | FolderOrderItem) {
+  if ("kind" in folder && folder.kind === "glacier") return Snowflake;
   const specialUse = "special_use" in folder ? folder.special_use : null;
   if (specialUse && SPECIAL_USE_ICONS[specialUse]) {
     return SPECIAL_USE_ICONS[specialUse];
@@ -492,6 +494,7 @@ export function AppSidebar() {
                                 folderName={folderDisplayName(folder)}
                                 badgeCount={getFolderBadgeCount(folder)}
                                 totalCount={folder.total_count}
+                                isGlacier={folder.kind === "glacier"}
                               />
                             )}
                           </SidebarMenuItem>
@@ -523,6 +526,7 @@ export function AppSidebar() {
                                 folderName={folderDisplayName(folder)}
                                 badgeCount={getFolderBadgeCount(folder)}
                                 totalCount={folder.total_count}
+                                isGlacier={folder.kind === "glacier"}
                               />
                             )}
                           </SidebarMenuItem>

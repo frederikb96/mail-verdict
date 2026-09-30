@@ -12,6 +12,7 @@ column -- is refused by Postgres itself with permission denied.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -45,7 +46,9 @@ from mail_verdict.postimap.actions import (
     expunge,
     expunge_bulk,
     expunge_guarded,
+    expunge_if_matches,
     insert_outbox,
+    insert_outbox_append,
     mark_seen_if_live,
     move_message,
     move_message_bulk,
@@ -480,6 +483,14 @@ async def test_every_contract_write_survives_the_restricted_grant(
         ("set_folder_idle", lambda s: set_folder_idle(s, folder_id, requested=False)),
         ("update_account", lambda s: update_account(s, account_id, is_active=True)),
         ("expunge_guarded", lambda s: expunge_guarded(s, message_id)),
+        ("expunge_if_matches", lambda s: expunge_if_matches(
+            s, message_id, account_id=account_id, message_id_hdr=None,
+            size_bytes=None, received_at=None,
+        )),
+        ("insert_outbox_append", lambda s: insert_outbox_append(
+            s, account_id=account_id, raw_source=b"sweep", target_folder_id=folder_id,
+            flags=["\\Seen"], internal_date=datetime.now(timezone.utc),
+        )),
         ("create_account", lambda s: create_account(
             s, name=f"sweep-{uuid.uuid4()}", imap_host="imap.example.com", imap_port=993,
             imap_user="sweep@example.com", imap_password="pw", smtp_host=None,
@@ -545,6 +556,15 @@ async def test_every_contract_write_survives_the_restricted_grant(
         except ProgrammingError as exc:
             if "permission denied" in str(exc):
                 denied.append(f"{name}: {str(exc).splitlines()[0][:90]}")
+            elif name == "insert_outbox_append" and "does not exist" in str(exc):
+                # outbox.raw_source/target_folder_id/flags/internal_date --
+                # and kind="append" itself -- are granted from a PostIMAP
+                # service version this test stack does not yet run. A grant
+                # cannot be proven against a column that does not exist at
+                # all; once the pinned PostIMAP image carries it, this
+                # branch stops matching and the write is verified for real
+                # like every other one in this sweep.
+                pass
             else:
                 raise
 

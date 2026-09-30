@@ -38,6 +38,7 @@ from mail_verdict.database.repository import (
     SearchSort,
     list_row_marks,
 )
+from mail_verdict.glacier.rows import glacier_ids_among
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,17 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 def _to_search_result(
     msg: Message, snippet: str | None, tier: int, marks: dict[uuid.UUID, RowMarks],
+    glacier_ids: frozenset[uuid.UUID] = frozenset(),
 ) -> SearchResult:
     """A search hit is a MessageSummary plus how the query matched it --
-    see SearchResult's docstring for why the two are one shape."""
+    see SearchResult's docstring for why the two are one shape.
+
+    `glacier_ids` is which of this page's own ids are actually a glacier
+    row -- a union search's own rows are all plain Message instances
+    regardless of which table they came from (see
+    glacier/rows.py:glacier_ids_among), so imap_uid alone cannot tell a
+    glacier row (always NULL) from a live one with a move pending."""
+    is_glacier = msg.id in glacier_ids
     return SearchResult(
         has_attachments=marks[msg.id].has_attachments,
         verdict_is_spam=marks[msg.id].verdict_is_spam,
@@ -65,16 +74,22 @@ def _to_search_result(
         is_answered=msg.is_answered,
         is_draft=msg.is_draft,
         snippet=snippet,
-        pending_sync=msg.imap_uid is None,
+        pending_sync=False if is_glacier else msg.imap_uid is None,
         is_truncated=msg.is_truncated,
         mirrored_at=msg.created_at,
         match_tier=tier,
+        is_glacier=is_glacier,
     )
 
 
 async def _row_marks(message_ids: list[uuid.UUID]) -> dict[uuid.UUID, RowMarks]:
     async with get_db_connection().session() as session:
         return await list_row_marks(session, message_ids)
+
+
+async def _glacier_ids(message_ids: list[uuid.UUID]) -> frozenset[uuid.UUID]:
+    async with get_db_connection().session() as session:
+        return await glacier_ids_among(session, message_ids)
 
 
 @router.get("/date-bounds", response_model=SearchDateBoundsResponse)
@@ -202,9 +217,13 @@ async def search_messages(
             received_after=received_after, received_before=received_before,
             is_seen=is_seen, limit=limit,
         )
-        fallback_marks = await _row_marks([msg.id for msg, _snippet in fallback_rows])
+        fallback_ids = [msg.id for msg, _snippet in fallback_rows]
+        fallback_marks = await _row_marks(fallback_ids)
+        fallback_glacier_ids = await _glacier_ids(fallback_ids)
         results = [
-            _to_search_result(msg, snippet, FALLBACK_MATCH_TIER, fallback_marks)
+            _to_search_result(
+                msg, snippet, FALLBACK_MATCH_TIER, fallback_marks, fallback_glacier_ids,
+            )
             for msg, snippet in fallback_rows
         ]
         # The fallback is a single, unpaginated page -- its own count is
@@ -213,8 +232,12 @@ async def search_messages(
             results=results, has_more=False, next_cursor=None, query=q, total=len(results),
         )
 
-    marks = await _row_marks([msg.id for msg, _snippet, _tier in rows])
-    results = [_to_search_result(msg, snippet, tier, marks) for msg, snippet, tier in rows]
+    row_ids = [msg.id for msg, _snippet, _tier in rows]
+    marks = await _row_marks(row_ids)
+    glacier_ids = await _glacier_ids(row_ids)
+    results = [
+        _to_search_result(msg, snippet, tier, marks, glacier_ids) for msg, snippet, tier in rows
+    ]
     next_cursor = str(results[-1].id) if has_more and results else None
 
     return SearchResponse(

@@ -79,6 +79,7 @@ _stalled_outbox_timer: Any | None = None
 _action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
+_glacier_sweeper: Any | None = None
 _read_state_reconciler: Any | None = None
 _contract_ok: bool = False
 _liveness_server: ThreadingHTTPServer | None = None
@@ -144,7 +145,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
-    global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler
+    global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler, _glacier_sweeper
     global _stalled_outbox_timer, _action_submission_pruner
 
     config = get_config()
@@ -333,6 +334,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _retention_sweeper = build_retention_timer(db)
     await _retention_sweeper.start()
 
+    from mail_verdict.glacier.sweep import build_glacier_sweep_timer
+
+    _glacier_sweeper = build_glacier_sweep_timer(db, event_ring, config.glacier)
+    await _glacier_sweeper.start()
+
     from mail_verdict.alerts.resolve import resolve_for_message_event
     from mail_verdict.filing.read_state import build_read_state_timer, mark_read_on_landing
     from mail_verdict.outbox.stalled import resolve_stalled_for_outbox_event
@@ -494,6 +500,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _action_submission_pruner.stop()
     if _retention_sweeper:
         await _retention_sweeper.stop()
+    if _glacier_sweeper:
+        await _glacier_sweeper.stop()
     if _read_state_reconciler:
         await _read_state_reconciler.stop()
     if _embedding_components:
@@ -513,6 +521,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _action_submission_pruner = None
     _mail_alert_finalizer = None
     _retention_sweeper = None
+    _glacier_sweeper = None
     _read_state_reconciler = None
     _contract_ok = False
 

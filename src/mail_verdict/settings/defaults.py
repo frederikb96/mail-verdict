@@ -41,7 +41,12 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     SettingCategory.AI: {
         # "openai" and "anthropic" both need their provider's API key
         # configured (settings/credentials.py, or the matching env var).
-        # "fake" classifies on keywords alone, for local use without a key.
+        # "custom" is any OpenAI-compatible chat-completions server reached
+        # at ai.base_url with its own key (settings/credentials.py's
+        # "custom" entry) -- the same slot semantic.provider == "custom"
+        # reads, since a custom deployment is one account serving both
+        # workloads. "fake" classifies on keywords alone, for local use
+        # without a key.
         "provider": "openai",
         "model": "gpt-5.4-nano",
         # "none" matches gpt-5.4-nano's own server-side default. Raising
@@ -51,6 +56,11 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # higher setting changes anything for a given model.
         "reasoning_effort": "none",
         "max_tokens": 1024,
+        # Read only when provider == "custom" -- the compatible server's
+        # API base, e.g. "https://api.infomaniak.com/2/ai/<product_id>/
+        # openai/v1". Ignored for "openai"/"anthropic"/"fake", and required
+        # by settings/ai_validation.py whenever provider is "custom".
+        "base_url": None,
     },
     SettingCategory.RETRY: {
         "max_retries": 5,
@@ -77,12 +87,16 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "live_max_age_days": 7,
     },
     SettingCategory.SEMANTIC: {
-        # "openai" is the only real provider -- Anthropic has no embedding
-        # model of its own to select here, unlike ai.provider. "fake"
-        # produces deterministic hash-derived vectors for local use
-        # without a key.
+        # "openai" or "custom" (any OpenAI-compatible embeddings endpoint,
+        # reached at semantic.base_url) -- Anthropic has no embedding model
+        # of its own to select here, unlike ai.provider. "fake" produces
+        # deterministic hash-derived vectors for local use without a key.
         "provider": "openai",
         "model": "text-embedding-3-small",
+        # Read only when provider == "custom" -- see ai.base_url's comment;
+        # the two are independent settings, so pointing both categories at
+        # the same compatible server means setting this the same way there.
+        "base_url": None,
         # Gates the periodic reconciler that enqueues missing embeddings
         # (embeddings/worker.py) -- search and the manual backfill endpoint
         # still work with this off, they just find nothing new to fill.
@@ -122,6 +136,25 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_attempts": 5,
         "base_delay_seconds": 2.0,
         "max_delay_seconds": 60.0,
+        # The model actually serving search and the classify stage's
+        # neighbour hints right now -- distinct from `model`, which is the
+        # target new mail is embedded with and the backfill reconciler
+        # fills toward. None means "whatever `model` currently is" (the
+        # steady state, nothing mid-migration). Changing `model` freezes
+        # this to the model it resolved to just before the change
+        # (api/settings_api.py's update_settings), so search keeps
+        # answering from the old vector space until every in-scope message
+        # has a `model` embedding (embeddings/worker.py's reconciler,
+        # checked via embeddings/repository.py's coverage), at which point
+        # the reconciler advances this to match and the cutover is
+        # complete. Frozen and advanced together with `model` --
+        # embeddings/provider.py's resolve_active_embedding_model()/
+        # resolve_active_embedding_provider() are the two places that read
+        # them, for embedding a fresh search query against whichever
+        # vector space is actually complete.
+        "active_model": None,
+        "active_provider": None,
+        "active_base_url": None,
     },
     SettingCategory.CALENDAR: {
         # A click on empty grid space creates an event this long; a drag

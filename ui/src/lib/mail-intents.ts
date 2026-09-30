@@ -75,6 +75,10 @@ export interface MailIntent {
   accountId: string;
   action: IntentAction;
   targetFolderId?: string;
+  /** Confirms an expunge whose message is already in the glacier -- the
+   * only copy that exists. The server ignores this for every other
+   * message, so it is never set for an ordinary permanent delete. */
+  confirmed?: boolean;
   messages: IntentMessage[];
   /** Sent to the bulk endpoint rather than the single-message one. */
   bulk: boolean;

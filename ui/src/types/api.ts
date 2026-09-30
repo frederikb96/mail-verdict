@@ -36,6 +36,8 @@ export interface MessageSummary {
   /** Only present when the list was fetched with threaded=true. */
   thread_count?: number;
   unread_in_thread?: number;
+  /** In the account's glacier -- no longer on the mail server. */
+  is_glacier?: boolean;
   /**
    * When this row entered the local mirror -- what a selection snapshot
    * compares against. Present on every list row; absent on a
@@ -71,6 +73,8 @@ export interface MessageDetail extends MessageSummary {
   has_blocked_images: boolean;
   images_allowed: boolean;
   created_at: string;
+  /** Provenance for a glaciered message: the folder it was copied out of. */
+  origin_folder_name?: string | null;
   tags: TagResponse[];
   attachments: AttachmentSummary[];
   verdict: VerdictResponse | null;
@@ -120,6 +124,9 @@ export interface MessageActionRequest {
   idempotency_key?: string;
   /** Applied only if the message is still in this folder. */
   expected_folder_id?: string;
+  /** Required for expunge on a message already in the glacier -- it is
+   * the only copy that exists. Ignored everywhere else. */
+  confirm?: boolean;
 }
 
 export interface MessageActionResponse {
@@ -201,6 +208,16 @@ export interface AccountResponse {
   /** NULL is off -- no periodic Junk sweep runs for this account. Independently
    * configurable from trash_retention_days, not the same period applied twice. */
   junk_retention_days: number | null;
+  glacier_enabled: boolean;
+  /** The glacier's synthetic folder id once assigned -- kept across a disable. */
+  glacier_folder_id: string | null;
+  /** NULL is off -- no automatic sweep moves archived mail into the glacier. */
+  glacier_auto_days: number | null;
+  /** Why the automatic sweep's last tick considering this account skipped
+   * it, or null once a tick actually proceeds. Some reasons (auto-sweep
+   * not configured) are expected; others (an unacknowledged sync
+   * failure) never self-clear on their own. */
+  glacier_sweep_last_refusal: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -235,6 +252,8 @@ export interface AccountUpdateRequest {
   spam_enabled?: boolean;
   trash_retention_days?: number | null;
   junk_retention_days?: number | null;
+  glacier_enabled?: boolean;
+  glacier_auto_days?: number | null;
 }
 
 export interface FolderResponse {
@@ -254,6 +273,8 @@ export interface FolderResponse {
   created_at: string | null;
   unread_count: number;
   total_count: number;
+  /** "glacier" for the one synthetic per-account folder representing the glacier. */
+  kind: 'imap' | 'glacier';
 }
 
 export interface FolderPrefsUpdate {
@@ -466,6 +487,8 @@ export interface FolderOrderItem {
   is_visible: boolean;
   unread_count: number;
   total_count: number;
+  /** "glacier" for the one synthetic per-account folder representing the glacier. */
+  kind: 'imap' | 'glacier';
 }
 
 export interface FolderOrderResponse {
@@ -511,6 +534,10 @@ export type BulkActionRequest = BulkActionTarget & {
    * was sent -- the server 409s naming the current count if it disagrees,
    * rather than acting on a number nobody actually confirmed. */
   confirm_message_count?: number;
+  /** Required for expunge over a selection already in the glacier -- each
+   * row is its only remaining copy. Ignored everywhere else, including an
+   * ordinary expunge. */
+  confirm?: boolean;
   /** Repeats of a request carrying the same key are answered once. */
   idempotency_key?: string;
   /** Per id, the folder it must still be in to be acted on. */
@@ -598,9 +625,12 @@ export interface SyncStatusResponse {
   updated_at: string | null;
 }
 
-// --- Outbox (send / draft) ---
+// --- Outbox (send / draft / append) ---
 
-export type OutboxKind = "send" | "draft";
+/** "append" is server-internal (the glacier's own restore mechanism) --
+ * never a kind the web's own compose flow creates, but a real value an
+ * outbox row read back from the server can carry. */
+export type OutboxKind = "send" | "draft" | "append";
 export type OutboxStatus = "pending" | "processing" | "sent" | "failed" | "dead";
 
 export interface OutboxCreateRequest {

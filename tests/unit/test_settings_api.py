@@ -162,6 +162,100 @@ class TestUpdateSettings:
         resp = client.put("/settings/ai", json={"data": {"provider": "not-a-real-provider"}})
         assert resp.status_code == 400
 
+    def test_custom_provider_without_base_url_rejected(self, client: TestClient) -> None:
+        resp = client.put("/settings/ai", json={"data": {"provider": "custom"}})
+        assert resp.status_code == 400
+
+    def test_custom_provider_with_base_url_accepted(self, client: TestClient) -> None:
+        resp = client.put(
+            "/settings/ai",
+            json={"data": {"provider": "custom", "base_url": "https://example.test/v1"}},
+        )
+        assert resp.status_code == 200
+
+    def test_custom_api_key_can_be_stored(self, client: TestClient) -> None:
+        """The 'custom' provider gets its own credential slot, the same
+        write-only shape as anthropic/openai."""
+        resp = client.put(
+            "/settings/ai", json={"data": {"custom_api_key": "sk-custom-secret"}},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "sk-custom-secret" not in resp.text
+        assert data["custom_api_key_configured"] is True
+
+
+class TestSemanticSettings:
+    """Semantic category: provider validation and the active-model freeze
+    that keeps search on the old vector space during a re-embed."""
+
+    def test_custom_provider_without_base_url_rejected(self, client: TestClient) -> None:
+        resp = client.put("/settings/semantic", json={"data": {"provider": "custom"}})
+        assert resp.status_code == 400
+
+    def test_anthropic_provider_rejected(self, client: TestClient) -> None:
+        """No embedding model of Anthropic's own -- never a valid choice."""
+        resp = client.put("/settings/semantic", json={"data": {"provider": "anthropic"}})
+        assert resp.status_code == 400
+
+    def test_changing_model_freezes_the_previously_active_identity(
+        self, client: TestClient,
+    ) -> None:
+        before = client.get("/settings/semantic").json()
+        old_model = before["model"]
+        old_provider = before["provider"]
+
+        resp = client.put("/settings/semantic", json={"data": {"model": "new-embedding-model"}})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "new-embedding-model"
+        assert data["active_model"] == old_model
+        assert data["active_provider"] == old_provider
+
+    def test_a_second_change_before_cutover_keeps_the_original_frozen_identity(
+        self, client: TestClient,
+    ) -> None:
+        """Search must keep answering from whatever completed last time,
+        not from a target that was itself never finished."""
+        before = client.get("/settings/semantic").json()
+        original_model = before["model"]
+
+        client.put("/settings/semantic", json={"data": {"model": "first-new-model"}})
+        resp = client.put("/settings/semantic", json={"data": {"model": "second-new-model"}})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "second-new-model"
+        assert data["active_model"] == original_model
+
+    def test_rewriting_the_same_model_does_not_disturb_an_unset_active_model(
+        self, client: TestClient,
+    ) -> None:
+        before = client.get("/settings/semantic").json()
+        resp = client.put("/settings/semantic", json={"data": {"model": before["model"]}})
+        assert resp.status_code == 200
+        assert resp.json()["active_model"] is None
+
+    def test_import_also_freezes_the_active_identity(self, client: TestClient) -> None:
+        """The mock's bulk_import returns a canned snapshot rather than
+        reflecting what it was called with (unlike the real service, see
+        settings/service.py), so this asserts on the call args -- the
+        same reason test_round_tripping_a_get_response_never_reaches_the_
+        settings_store above does for update()."""
+        from mail_verdict.api import settings_api as settings_api_module
+
+        before = client.get("/settings/semantic").json()
+        old_model = before["model"]
+
+        service = settings_api_module.get_settings_service()
+        resp = client.post(
+            "/settings/import",
+            json={"data": {"semantic": {"model": "imported-new-model"}}},
+        )
+        assert resp.status_code == 200
+        imported = service.bulk_import.await_args.args[0]  # type: ignore[union-attr]
+        assert imported["semantic"]["active_model"] == old_model
+
     def test_wrongly_typed_value_on_a_non_ai_category_is_a_400(self, client: TestClient) -> None:
         """
         The ai category's own validate_ai_settings() is caught explicitly,

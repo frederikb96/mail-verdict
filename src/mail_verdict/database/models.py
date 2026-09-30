@@ -366,6 +366,18 @@ class Outbox(Base):
     msg_references: Mapped[list[str] | None] = mapped_column(
         "references", ARRAY(Text), nullable=True,
     )
+    # kind='append' columns (glacier restore) are deliberately NOT
+    # mapped here. SQLAlchemy's insert-returning optimization appends
+    # every FetchedValue/server-default column of a mapped class to the
+    # INSERT's own RETURNING clause regardless of whether that INSERT's
+    # column list names it -- so mapping them on this class at all would
+    # make every ordinary send/draft insert_outbox() call fail outright
+    # against a PostIMAP that does not yet have these columns, not merely
+    # make restore unavailable. postimap/actions.py's
+    # insert_outbox_append() issues its own Core INSERT naming exactly
+    # these four columns instead, which is also the only call site: it
+    # is only ever reached once postimap.contract.supports_message_append()
+    # has confirmed they exist.
     # The message this row supersedes -- see postimap/actions.py's
     # insert_outbox(). References messages(id) with ON DELETE SET NULL on
     # PostIMAP's side; this projection carries no FK of its own, consistent
@@ -759,6 +771,219 @@ class AccountPrefs(Base):
     # setting applied to both roles, since the two periods a person
     # actually wants for Trash and Junk need not agree.
     junk_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The per-account switch for the glacier (see glacier/ for the
+    # module). False is the default and the only state in which the
+    # glacier is neither shown nor offered as a target.
+    glacier_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The synthetic folder id used everywhere a real folder_id is used
+    # (glacier_messages.folder_id, folder membership, unified views).
+    # Assigned once on first enable and never reused; kept across a
+    # disable so folder prefs and unified-view membership survive a
+    # re-enable rather than being silently orphaned and recreated.
+    glacier_folder_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, unique=True)
+    # NULL means the automatic sweep (glacier/sweep.py) is off for this
+    # account -- the switch alone, with no days set, gives a glacier that
+    # can still be moved into by hand. Age is judged against the
+    # message's own received_at, never the time spent sitting archived.
+    glacier_auto_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Why the sweep's last tick considering this account skipped it, or
+    # NULL once a tick actually proceeds -- some of these guards never
+    # self-clear on their own (an unacknowledged sync failure sits there
+    # until someone acknowledges it), so without a durable record of the
+    # reason there is nothing to explain why nothing is happening.
+    glacier_sweep_last_refusal: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GlacierMessage(Base):
+    """A message that has left the mail server for good and lives on only
+    here -- MailVerdict-owned, created by Alembic, no foreign key onto
+    anything PostIMAP owns (see docs/architecture.md).
+
+    Column-compatible with Message: every column of that table exists
+    here with the same name and type (asserted by
+    tests/unit/test_glacier_columns.py, derived from the model so a
+    column added to Message can never silently drop out of this union),
+    which is what makes every read that must span both tables a
+    mechanical union rather than a maintained parallel query.
+
+    Semantics that differ from a live row:
+      - id: this row's own identity, never a messages.id.
+      - folder_id: the account's glacier_folder_id -- a real column, so
+        every existing Message.folder_id.in_(scope) filter keeps working
+        unchanged for a glacier id.
+      - imap_uid: always NULL. The summary builders must compute
+        pending_sync=False for a glacier row rather than reading this the
+        way they do for a live message, where NULL means a move pending.
+      - expunged_at: always NULL, so every "expunged_at IS NULL" filter
+        elsewhere in the codebase passes a glacier row unchanged.
+      - is_truncated / is_deleted: always false -- a truncated message is
+        never eligible to enter the glacier in the first place.
+      - search_vector: a generated column replicating PostIMAP's own
+        definition verbatim (see the migration), so ranking behaves
+        identically to a live message's.
+      - created_at: copied from the live row at copy time, not the time
+        the glacier row itself was inserted -- the API renders this as
+        the message's own creation time, consistent with a live row.
+
+    raw_source and the parsed body_text/body_html/attachment rows are
+    both kept, doubling roughly the stored size, so a read never has to
+    parse MIME to render a list row or a reading pane -- this codebase's
+    architecture rule is zero IMAP/SMTP code, which a MIME parser on the
+    read path would violate, and parsing on every read would make every
+    list page pay for it. raw_source alone is authoritative for restore
+    and for the .eml download.
+    """
+
+    __tablename__ = "glacier_messages"
+
+    # --- Group A: every Message column, same name, same type ---
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    folder_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    imap_uid: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    thread_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    from_addr: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_addrs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    cc_addrs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    bcc_addrs: Mapped[list[Any] | None] = mapped_column(JSONB, nullable=True)
+    reply_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    in_reply_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    msg_references: Mapped[list[str] | None] = mapped_column(
+        "references", ARRAY(Text), nullable=True,
+    )
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_headers: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    raw_source: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    is_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    modseq: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    is_seen: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_flagged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_answered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_draft: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    keywords: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default="{}")
+    expunged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    search_vector: Mapped[Any] = mapped_column(TSVECTOR, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+    # --- Group B: glacier's own columns ---
+    # The durable identity (database/msg_key.py) -- the dedup gate, and
+    # what makes every step in glacier/operations.py idempotent.
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # sha256(raw_source) as recorded at copy time. The verify step
+    # (glacier/operations.py) re-reads both sides fresh rather than
+    # trusting this alone -- see that module's own warning about the
+    # comparison that looks correct and proves nothing.
+    content_sha256: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    attachment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The messages.id the copy came from -- a join hint for re-resolution
+    # after a UIDVALIDITY change (glacier/operations.py), never a key:
+    # ids are never reused, so a stale value can only ever point at
+    # nothing, never at a different message.
+    origin_message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # The folder the message was copied out of -- the default restore
+    # target if the operator picks no other.
+    origin_folder_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    # What to show as provenance ("was in Archive"), and the restore
+    # target by name if origin_folder_id no longer resolves to a folder.
+    origin_imap_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin_imap_uid: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # copied -> verified -> removing -> glaciered is the ordinary path;
+    # restoring, expunge_failed and restore_failed are the failure and
+    # restore states. See glacier/operations.py for every transition.
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="copied")
+    # NULL means invisible to every listing -- set the instant the live
+    # row's expunge is requested, in the same transaction, so a message
+    # is never in neither list nor in both at once.
+    visible_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    glaciered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    expunge_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    restore_outbox_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    restore_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    # Set on a confirmed restore -- from then on this row is a tombstone:
+    # its envelope and msg_key survive so a stale glacier id (or a later
+    # re-glaciering of the same message) can resolve against it, but its
+    # bulk (raw_source, body_*, raw_headers, attachment rows) is cleared,
+    # since the server holds the message again.
+    restored_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    glacier_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    glacier_updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "msg_key", name="uq_glacier_messages_account_msg_key"),
+        Index(
+            "idx_glacier_messages_folder_received",
+            "folder_id",
+            received_at.desc(),
+            postgresql_where=visible_at.is_not(None),
+        ),
+        Index(
+            "idx_glacier_messages_account_thread",
+            "account_id",
+            "thread_id",
+            postgresql_where=visible_at.is_not(None),
+        ),
+        Index("idx_glacier_messages_search_vector", "search_vector", postgresql_using="gin"),
+        Index(
+            "idx_glacier_messages_state", "state",
+            postgresql_where=state != "glaciered",
+        ),
+    )
+
+
+class GlacierAttachment(Base):
+    """An attachment on a glaciered message -- mirrors Attachment, plus
+    source_attachment_id, which the verify step (glacier/operations.py)
+    joins on to compare the stored copy against the live attachment it
+    came from."""
+
+    __tablename__ = "glacier_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    glacier_message_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("glacier_messages.id", ondelete="CASCADE"), nullable=False,
+    )
+    source_attachment_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    data: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+
+    __table_args__ = (Index("idx_glacier_attachments_message_id", "glacier_message_id"),)
 
 
 class RetentionEntry(Base):

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any, cast
 
-from sqlalchemy import any_, delete, insert, or_, text, update
+from sqlalchemy import any_, delete, func, insert, or_, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
@@ -1166,3 +1167,135 @@ async def expunge_guarded(session: AsyncSession, message_id: uuid.UUID) -> int:
         .values(expunged_at=text("now()"))
     )
     return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def expunge_if_matches(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    *,
+    account_id: uuid.UUID,
+    message_id_hdr: str | None,
+    size_bytes: int | None,
+    received_at: datetime | None,
+) -> int:
+    """
+    Expunge a message, but only the exact message a prior copy was
+    verified against -- the glacier's (glacier/operations.py) most
+    important guard.
+
+    A glacier row's `origin_message_id` is a join hint, not a key: ids
+    are never reused, but a UIDVALIDITY resync deletes and recreates a
+    folder's rows, so between the copy-and-verify step and this one the
+    id could in principle have drifted onto a different message under
+    the same mirror row shape. Re-checking account, the Message-ID
+    header and the envelope this glacier row was verified against, in
+    the same statement as the expunge itself, makes it structurally
+    impossible to destroy anything but the message that was actually
+    copied and verified: a mismatch on any field touches zero rows
+    rather than expunging the wrong message.
+
+    `coalesce(message_id, '') = coalesce(:message_id_hdr, '')` treats two
+    absent headers as equal rather than NULL <> NULL failing to match a
+    message against itself; size_bytes/received_at use IS NOT DISTINCT
+    FROM for the same reason -- either can legitimately be NULL and must
+    still compare equal to another NULL.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        message_id: The live messages.id believed to be the source of a
+            verified glacier copy
+        account_id: The account the copy was made under
+        message_id_hdr: The Message-ID header value recorded at copy time
+        size_bytes: The size recorded at copy time
+        received_at: The received_at recorded at copy time
+
+    Returns:
+        1 if the exact matching message was expunged, 0 if nothing
+        matched (the message is gone, already expunged, or no longer the
+        message that was copied)
+    """
+    result = await session.execute(
+        update(Message)
+        .where(
+            Message.id == message_id,
+            Message.account_id == account_id,
+            Message.expunged_at.is_(None),
+            func.coalesce(Message.message_id, "") == func.coalesce(message_id_hdr, ""),
+            Message.size_bytes.is_not_distinct_from(size_bytes),
+            Message.received_at.is_not_distinct_from(received_at),
+        )
+        .values(expunged_at=text("now()"))
+    )
+    return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+async def insert_outbox_append(
+    session: AsyncSession,
+    *,
+    account_id: uuid.UUID,
+    raw_source: bytes,
+    target_folder_id: uuid.UUID,
+    flags: list[str],
+    internal_date: datetime,
+) -> Outbox:
+    """
+    Insert an outbox row that appends exact bytes to a chosen folder --
+    the glacier's restore mechanism (glacier/restore.py), and the only
+    outbox kind that does not compose a message or send anything.
+
+    Unlike kind="send"/"draft", PostIMAP does not recompose these bytes
+    from structured fields: `raw_source` is appended verbatim, so the
+    restored message's Message-ID, DKIM signature, every received
+    header and the exact original MIME survive unchanged.
+    `target_folder_id` picks the destination directly rather than by
+    special-use, since a restore targets whichever folder the message
+    came from (or was rerouted to), not the account's Sent or Drafts.
+
+    Requires PostIMAP service_version >= the version gated by
+    postimap.contract.supports_message_append() -- an older PostIMAP has
+    none of these four columns at all, so an insert against one fails
+    with a raw "column does not exist" error rather than a permission
+    error. Gate the call site the same way every other capability here is
+    gated, before this is ever called.
+
+    Args:
+        session: Active AsyncSession (caller commits)
+        account_id: Account to append into
+        raw_source: The exact RFC822 bytes to APPEND
+        target_folder_id: Destination folder
+        flags: IMAP flags and keywords to set on the appended message
+        internal_date: The APPEND date-time argument
+
+    Returns:
+        The inserted Outbox row (flushed, not yet committed)
+    """
+    # A Core INSERT naming exactly these columns, not an ORM Outbox(...)
+    # construction: SQLAlchemy's insert-returning optimization appends
+    # every FetchedValue/server-default column of a mapped class to an
+    # ORM insert's own RETURNING clause regardless of what the column
+    # list names, which would make this fail against a PostIMAP that
+    # does not have raw_source/target_folder_id/flags/internal_date at
+    # all -- exactly the state gated on by the capability check every
+    # caller of this function must already have made. The four columns
+    # are deliberately not mapped on the Outbox class at all (see its
+    # docstring); the ordinary send/draft path never touches them.
+    outbox_id = uuid.uuid4()
+    await session.execute(
+        text(
+            """
+            INSERT INTO outbox (id, account_id, kind, raw_source, target_folder_id, flags,
+                                 internal_date)
+            VALUES (:id, :account_id, 'append', :raw_source, :target_folder_id, :flags,
+                    :internal_date)
+            """
+        ),
+        {
+            "id": outbox_id, "account_id": account_id, "raw_source": raw_source,
+            "target_folder_id": target_folder_id, "flags": flags,
+            "internal_date": internal_date,
+        },
+    )
+    await session.flush()
+    outbox = await session.get(Outbox, outbox_id)
+    assert outbox is not None
+    return outbox

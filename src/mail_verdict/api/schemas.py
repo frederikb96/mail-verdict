@@ -93,6 +93,11 @@ class MessageSummary(BaseModel):
         default=None,
         description="Unread message count in the thread, only present when threaded=true",
     )
+    is_glacier: bool = Field(
+        default=False,
+        description="This message is in the account's glacier -- it no longer exists on "
+        "the mail server and lives on only here.",
+    )
     mirrored_at: datetime = Field(
         description=(
             "When this row entered the mirror (messages.created_at). Named "
@@ -168,6 +173,16 @@ class MessageDetail(BaseModel):
     has_blocked_images: bool = False
     images_allowed: bool = False
     created_at: datetime
+    is_glacier: bool = Field(
+        default=False,
+        description="This message is in the account's glacier -- it no longer exists on "
+        "the mail server and lives on only here.",
+    )
+    origin_folder_name: str | None = Field(
+        default=None,
+        description="Provenance for a glaciered message: the folder it was copied out of, "
+        "by name. Null for an ordinary message.",
+    )
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
     verdict: VerdictResponse | None = None
@@ -225,6 +240,11 @@ class MessageActionRequest(BaseModel):
         "written and the response says applied=false. For an action queued on "
         "a device and sent later, which must not undo what happened to the "
         "message meanwhile.",
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else.",
     )
 
 
@@ -303,6 +323,11 @@ class BulkActionRequest(BaseModel):
             "nobody agreed to. Omitted, no check runs -- most actions "
             "confirm nothing and have no count to repeat back."
         ),
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else, including an ordinary expunge.",
     )
     idempotency_key: uuid.UUID | None = Field(
         default=None,
@@ -391,6 +416,15 @@ class BulkActionResponse(BaseModel):
         description=(
             "Ids from `ids` that were not acted on: gone, or no longer in the "
             "folder expected_folder_ids named for them."
+        ),
+    )
+    duplicate_count: int = Field(
+        default=0,
+        description=(
+            "Of affected_count, how many were byte-identical to a message "
+            "already in the glacier -- the server's duplicate copy was "
+            "removed rather than a new one copied. Always 0 outside a bulk "
+            "move into the glacier."
         ),
     )
 
@@ -498,6 +532,18 @@ class AccountResponse(BaseModel):
     # .junk_retention_days, independently configurable.
     trash_retention_days: int | None = None
     junk_retention_days: int | None = None
+    glacier_enabled: bool = False
+    glacier_folder_id: uuid.UUID | None = None
+    glacier_auto_days: int | None = None
+    glacier_sweep_last_refusal: str | None = Field(
+        default=None,
+        description=(
+            "Why the automatic sweep's last tick considering this account skipped it, or "
+            "null once a tick actually proceeds. Some reasons (auto-sweep not configured) "
+            "are expected; others (an unacknowledged sync failure) never self-clear on "
+            "their own until whatever caused them is fixed."
+        ),
+    )
 
     model_config = {"from_attributes": True}
 
@@ -551,6 +597,11 @@ class AccountUpdateRequest(BaseModel):
     # See AccountCreateRequest.trash_retention_days for why ge=1.
     trash_retention_days: int | None = Field(default=None, ge=1)
     junk_retention_days: int | None = Field(default=None, ge=1)
+    glacier_enabled: bool | None = None
+    # NULL turns the automatic sweep off; the switch alone (with no days
+    # set) still gives a glacier that can be moved into by hand. Same
+    # ge=1 reasoning as the two retention periods above.
+    glacier_auto_days: int | None = Field(default=None, ge=1)
 
 
 # --- Folder schemas ---
@@ -569,6 +620,11 @@ class FolderResponse(BaseModel):
     special_use: str | None = None
     mailbox_id: str | None = None
     initial_sync_done: bool = False
+    kind: Literal["imap", "glacier"] = Field(
+        default="imap",
+        description="'glacier' for the one synthetic per-account folder representing the "
+        "glacier; every real IMAP folder is 'imap'.",
+    )
     # How many messages the folder held when its first sync began: the
     # denominator for total_count while that sync runs. Set with
     # initial_sync_done false means this folder is being synced now.
@@ -942,6 +998,7 @@ class FolderOrderItem(BaseModel):
     is_visible: bool = True
     unread_count: int = 0
     total_count: int = 0
+    kind: Literal["imap", "glacier"] = "imap"
 
 
 class FolderOrderResponse(BaseModel):
@@ -1273,7 +1330,20 @@ class EmbeddingStatusResponse(BaseModel):
     embedding of its own because a sibling sharing its Message-ID header
     already holds one (see embeddings/repository.py's status()).
     coverage is reachable/in_scope, not encoded/in_scope -- a drift shows
-    up here as coverage below 1.0 instead of as an empty search.
+    up here as coverage below 1.0 instead of as an empty search. It never
+    reaches exactly 1.0 in a real mailbox (a message can permanently fail
+    to embed), so it is not what gates a migration's cutover -- see
+    outstanding/cutover_ready/cutover_blocked_reason for that.
+
+    active is whether this model is the one currently serving search and
+    the classify stage's neighbour hints (embeddings/provider.py's
+    resolve_active_embedding_model) -- distinct from being the configured
+    `semantic.model`, which can be a migration still in flight. outstanding
+    is in-scope messages with no terminal (or in-progress) accounting yet
+    under this model at all (EmbeddingStatus.outstanding). cutover_ready
+    and cutover_blocked_reason are only meaningful, and only populated,
+    when queried for a model that is not (yet) active -- see
+    EmbeddingRepository.cutover_readiness for the predicate.
     """
 
     model: str
@@ -1285,6 +1355,10 @@ class EmbeddingStatusResponse(BaseModel):
     unreachable: int
     shadowed: int
     coverage: float
+    active: bool
+    outstanding: int
+    cutover_ready: bool | None = None
+    cutover_blocked_reason: str | None = None
 
 
 class SemanticSearchResponse(BaseModel):

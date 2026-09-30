@@ -15,12 +15,15 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useAtomValue } from "jotai";
 import { GripVertical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { useAccounts } from "@/hooks/use-accounts";
 import { useMailAction } from "@/hooks/use-mail-intents";
 import { useBulkAction, useSelectionGestures } from "@/hooks/use-selection";
+import { glacierFolderIds, glacierMoveWarning, isGlacierFolder } from "@/lib/glacier";
 import { selectedAccountIdAtom, isUnifiedViewAtom } from "@/lib/atoms";
 
 interface MailDndProviderProps {
@@ -37,8 +40,18 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
   const mailAction = useMailAction();
   const bulkAction = useBulkAction();
   const { toggle } = useSelectionGestures();
+  const { data: accounts } = useAccounts();
+  const glacierIds = useMemo(() => glacierFolderIds(accounts), [accounts]);
   const [dragData, setDragData] = useState<{
     count: number;
+  } | null>(null);
+  // A drop onto the glacier is confirmed before it is sent, since it
+  // removes the dropped mail from the mail server for good -- captured
+  // here rather than acted on inside onDragEnd, which cannot itself wait
+  // on the person.
+  const [pendingGlacierDrop, setPendingGlacierDrop] = useState<{
+    count: number;
+    run: () => void;
   } | null>(null);
   // Set for the whole lifetime of a touch-activated drag -- read in
   // onDragEnd/onDragCancel to skip the move entirely, since touch never
@@ -137,10 +150,20 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
     };
 
     if (activeData.isSelectionDrag) {
-      bulkAction.mutate({
-        action: "move",
-        targetFolderId: isUnified ? targetFolderIdForAccount : dropFolderId,
-      });
+      const moveTarget = isUnified ? targetFolderIdForAccount : dropFolderId;
+      // A unified drop resolves per account server-side; the row this
+      // hover is over is still one concrete folder (overData.folderId,
+      // possibly the first of several accounts a merged view maps
+      // together), which is what's checked here -- the same folder a
+      // person actually sees themselves dropping onto.
+      if (isGlacierFolder(dropFolderId, glacierIds)) {
+        setPendingGlacierDrop({
+          count: (activeData.count as number | undefined) ?? 1,
+          run: () => bulkAction.mutate({ action: "move", targetFolderId: moveTarget, undoable: false }),
+        });
+        return;
+      }
+      bulkAction.mutate({ action: "move", targetFolderId: moveTarget });
       return;
     }
 
@@ -150,6 +173,18 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
       ? (mailAccountId && targetFolderIdForAccount(mailAccountId))
       : dropFolderId;
     if (!effectiveAccountId || !targetFolderId) return;
+
+    if (isGlacierFolder(targetFolderId, glacierIds)) {
+      setPendingGlacierDrop({
+        count: 1,
+        run: () =>
+          mailAction.perform(
+            { accountId: effectiveAccountId, mailIds: [mailId], action: "move", targetFolderId },
+            { undoable: false },
+          ),
+      });
+      return;
+    }
 
     mailAction.perform({
       accountId: effectiveAccountId, mailIds: [mailId], action: "move", targetFolderId,
@@ -203,6 +238,19 @@ export function MailDndProvider({ children }: MailDndProviderProps) {
           </div>
         )}
       </DragOverlay>
+      <ConfirmDialog
+        open={pendingGlacierDrop !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingGlacierDrop(null);
+        }}
+        title="Move to the glacier?"
+        description={glacierMoveWarning(pendingGlacierDrop?.count ?? 1)}
+        confirmLabel="Move to Glacier"
+        onConfirm={() => {
+          pendingGlacierDrop?.run();
+          setPendingGlacierDrop(null);
+        }}
+      />
     </DndContext>
   );
 }

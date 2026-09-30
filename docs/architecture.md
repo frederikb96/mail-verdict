@@ -303,6 +303,30 @@ part of a row's identity, not a separate column to keep in sync — changing it 
 settings category makes coverage for the new model start at zero rather than mixing two vector
 spaces in one index; old rows are kept, not deleted, until the new coverage completes.
 
+A model change alone would leave search reading an empty-to-partial vector space for however long
+the backfill takes, which for a real mailbox is not a moment a client should ever see. So
+`semantic.model` (the target the backfill fills toward) and `semantic.active_model` (what search
+and the classify stage's neighbour hints actually query) are two settings, not one: changing
+`model` (or `provider`/`base_url` alongside it, moving to a different compatible server) freezes
+whichever identity was previously active into `active_model`/`active_provider`/`active_base_url`
+(`api/settings_api.py`'s `update_settings`), and the backfill reconciler advances them to match
+once `EmbeddingRepository.cutover_readiness` says the new model is ready
+(`embeddings/worker.py`'s `_maybe_cutover`) — `embeddings/provider.py`'s
+`resolve_active_embedding_model`/`resolve_active_embedding_provider` are the one place either is
+read from. Readiness is never "every message embedded" — a real mailbox always has a few that
+permanently fail (no usable content, a provider refusal), so a check waiting for exact 100%
+coverage would block forever. It asks instead whether every in-scope message has been *tried* at
+least once (`EmbeddingStatus.outstanding == 0` — done, failed, or covered indirectly through a
+shadowed sibling's row) and whether the new model's own reachable count is at least what the
+active one already reaches; `GET /api/embeddings/status` reports the same predicate
+(`cutover_ready`/`cutover_blocked_reason`), computed in the one place rather than twice. A
+provider is itself a setting per category (`ai.provider`, `semantic.provider`):
+`"openai"`, `"anthropic"` (verdicts only), `"custom"` (any OpenAI-compatible server, reached at
+that category's own `base_url` with one shared credential per provider name, `settings/
+credentials.py`), or `"fake"`. A custom server speaks chat completions only, not the Responses API
+`structured_llm.py`'s `call_openai_structured` uses for real OpenAI — `call_chat_completions_structured`
+is the separate request shape a custom provider needs instead.
+
 Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and orders
 messages by cosine distance, joined back to `messages` at read time — never a denormalised copy of
 anything that changes, matching the no-foreign-key posture above. It complements the fuzzy,
@@ -487,6 +511,92 @@ new enough to grant them, checked the same way account deletion is: a service-ve
 at the call site, not the contract version, since granting a permission breaks nothing a consumer
 already does.
 
+## Glacier storage
+
+A per-account glacier is a place a message can be moved to where it leaves the mail server for
+good and lives on only in `glacier_messages`/`glacier_attachments` — MailVerdict-owned tables,
+column-compatible with `messages`/`attachments`: every column of those two exists on their glacier
+counterpart with the same name and type. That is what makes a read that must span both a
+mechanical `UNION` built per query in SQLAlchemy, rather than a maintained parallel query or a
+database `VIEW` — a view would create a dependency object on a PostIMAP-owned table that a later
+migration of PostIMAP's own could not then alter without erroring "other objects depend on it",
+from another repository, on someone else's deploy.
+
+The glacier gets a synthetic UUID used everywhere a real `folder_id` is used
+(`account_prefs.glacier_folder_id`), assigned once on first enable and kept across a disable.
+Moving a message into or out of it is the ordinary `move` action naming that id as the target — no
+new action verb — which is what lets the existing move picker, drag-and-drop and bulk move pick it
+up with no code of their own once the glacier appears in a folder listing.
+
+The write sequence (`glacier/operations.py`) is copy, verify, expunge, each its own committed
+transaction: the copy and the hash comparison never load message bytes into Python, and the
+expunge step re-checks the live message's account, Message-ID header, size and received date
+against what was recorded at copy time in the same statement that expunges it — the identity guard
+that makes it structurally impossible to remove anything but the exact message that was copied and
+verified. A verify failure never expunges; a crash between any two steps leaves the row exactly
+where the previous step left it, picked up by the next tick rather than needing a human.
+
+The row that decides whether an expunge is destructive right now — a pending move elsewhere on the
+account, an unacknowledged sync failure, the account itself not currently connected — is shared
+between claiming new work and finishing work already claimed: a manual move left mid-flight (a
+verify that did not pass first time) is progressed toward `glaciered` on every sweep tick regardless
+of whether automatic sweeping is even configured for the account, so that guard has to apply there
+too, not only to the batch of new candidates a tick considers.
+
+**Documented limit, not an oversight:** the consumer contract offers no readable positive signal
+that an EXPUNGE reached the server at all — `sync_queue`, the internal outbound work queue, carries
+no consumer grant and its schema is explicitly not part of the contract, unlike `outbox`'s own
+app-readable `status` for a send, draft or append. A row in `removing` is therefore promoted to
+`glaciered` by age (old enough, with no failure notification naming this attempt) rather than by
+positive confirmation — the best available signal, not a claimed one. Gating that further on the
+account's *current* connection state was considered and rejected: `state` can read `error` for
+reasons that have nothing to do with whether the delete queued during the grace window actually
+landed, since PostIMAP keeps retrying and processing its outbound queue independently of the
+moment-to-moment state a consumer observes.
+
+Restore (`glacier/restore.py`) is the reverse: an IMAP APPEND of the stored bytes verbatim,
+through a `kind="append"` outbox row rather than the ordinary send/draft recomposition, which
+would lose the original Message-ID, DKIM signature and every received header. It needs a PostIMAP
+capability gated the same way every other one in this codebase is
+(`postimap.contract.supports_message_append`); against an older PostIMAP it answers unavailable
+rather than falling back to some other mechanism, since none exists. Moving a message *in* is
+refused by the same gate, naming the running PostIMAP's version — restore has to work before
+removal is ever offered at all, so a deployment that cannot restore never gets the chance to
+remove anything in the first place.
+
+Listing, conversation threading, text search, semantic search and unified views all reach the
+glacier the same way: scoped to exactly the glacier folder, they query `glacier_messages` alone;
+scoped wider (an account-wide list, a unified view, an unscoped search), they union it with
+`messages` via `glacier/rows.py`'s column-compatible helpers, aliased back onto `Message` so every
+predicate, cursor and `DISTINCT ON` thread grouping downstream reads one entity regardless of
+which table a row actually came from — the same trick `database/repository.py`'s own text-search
+candidate query already used for its `to_addrs` branch before the glacier existed. A request whose
+scope cannot reach a glacier at all — a real folder alone, or an installation with the feature off
+— never builds that union, so it costs nothing. A glaciered message's semantic-search embedding
+carries no `message_id` hint at all (unlike a live message's, which is repointed on a UIDVALIDITY
+resync) — it is looked up by the same durable `(account_id, msg_key)` identity the glacier row
+itself uses, needing no hint to go stale in the first place.
+
+An id a caller already holds — a browser tab open before a move, a saved link, a drafted reply —
+keeps resolving after the message it names has moved between `messages` and `glacier_messages`:
+every read that can be reached by id (detail, thread, location, raw source, an attachment, a
+quote) falls through to `glacier/rows.py`'s `resolve_glacier_id`, which checks a glacier row's own
+id as well as its `origin_message_id` — the join hint set at copy time and never changed
+afterward for an ordinary glacier row. `database/msg_key.py`'s `resolve_by_msg_key` is the more
+general form of the same idea, for a caller holding the durable `(account_id, msg_key)` identity
+rather than a specific row id: it answers with whichever table currently holds the message, live
+or glacier, or neither.
+
+A restored message's INTERNALDATE is `received_at`, not the original server's own recorded
+INTERNALDATE value — a limit of the consumer contract, not something fixable locally. PostIMAP's
+mirror keeps no separate INTERNALDATE column at all: `received_at` is derived once, at parse time,
+from the header `Date`, falling back to the original INTERNALDATE only when that header is absent.
+For the overwhelming majority of mail the two already agree, so the restored APPEND's date matches
+what was there before; the two can only diverge for a message whose `Date` header was wrong or
+missing, and even then only by however far the sender's clock or the server's own arrival stamp
+drifted from it. Nothing upstream of the mirror preserves the true original value once it has been
+folded into `received_at` this way, so no local change can recover it either.
+
 ## Threading
 
 Conversations are grouped by a thread identifier that PostIMAP resolves from the `References` and
@@ -651,13 +761,16 @@ Two separate mechanisms that must not overlap:
 - **Settings** are application behaviour — AI provider, model, reasoning effort, spam handling,
   rules, and provider API keys. They live in the database and change at runtime through the API.
 
-Provider API keys sit inside the "ai" settings category but are write-only: settable, reportable
-as present with a last-four-character hint, never returned by any read. They are encrypted at rest
-with `security.encryption_key` (AES-256-GCM), the one config value in this system that protects a
-setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`) is the fallback for a deployment that would rather keep a key out of the database
-entirely — read fresh on every call, so switching from the env var to a stored key, or rotating a
-stored one, takes effect on the next request with no restart.
+Provider API keys are write-only: settable, reportable as present with a last-four-character hint,
+never returned by any read. One key per provider name (`settings/credentials.py`'s
+`PROVIDER_ENV_VARS`) rather than per settings category — `ai.provider` and `semantic.provider` set
+to `"custom"` share the one `"custom"` key, since a compatible deployment is one account serving
+both workloads, distinguished by whichever `base_url` each category's own settings carry. Keys are
+encrypted at rest with `security.encryption_key` (AES-256-GCM), the one config value in this system
+that protects a setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `CUSTOM_AI_API_KEY`) is the fallback for a deployment that would rather keep a key
+out of the database entirely — read fresh on every call, so switching from the env var to a stored
+key, or rotating a stored one, takes effect on the next request with no restart.
 
 ## Access
 

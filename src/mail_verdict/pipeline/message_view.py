@@ -9,10 +9,19 @@ raw_source (the full RFC822 bytea) and never selects a whole Attachment
 row -- rules/engine.py's context builder did both, which at pipeline
 concurrency is an out-of-memory pod restart in the middle of a backfill
 that looks like anything but its actual cause.
+
+`body` is bounded to _BODY_EXCERPT_CHARS, long enough to judge tone and
+intent, short enough that a 20MB message costs nothing to load -- but
+every URL the message actually links to or mentions is appended
+regardless of where in the body it fell, since a link is the strongest
+spam signal a message carries and a naive prefix cut would otherwise drop
+whichever ones happen to sit past the cut, or hide entirely behind an
+HTML anchor's visible text (see _extract_urls/_append_missing_urls).
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +36,20 @@ from mail_verdict.database.models import Attachment, Folder, FolderPrefs, MailTa
 # How much of the body a stage ever sees. Long enough for a model to judge
 # tone and intent, short enough that a 20MB message costs nothing to load.
 _BODY_EXCERPT_CHARS = 4_000
+
+# A bare URL, in either plain text or the text nh3.clean(tags=set()) below
+# leaves behind. Trailing characters a sentence or a closing bracket
+# commonly glues on are stripped by _clean_url rather than excluded here,
+# since a greedy \S+ has no other way to know where a URL actually ends.
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+', re.IGNORECASE)
+# An anchor's real target -- what nh3.clean(tags=set()) discards along
+# with the rest of the markup, so "Click here to verify your account"
+# linking to a phishing site would otherwise never reach the model at all.
+_HREF_RE = re.compile(r'href\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+_URL_TRAILING_PUNCTUATION = ".,;:!?)]}'\""
+# A newsletter's link-heavy footer must not blow the excerpt out on its
+# own -- capped, first-seen order.
+_MAX_URLS = 20
 
 
 @dataclass(frozen=True)
@@ -108,6 +131,64 @@ def _strip_html(html: str) -> str:
     """Reduce HTML to its text content -- nh3 with no allowed tags keeps
     every tag's inner text while discarding the markup itself."""
     return nh3.clean(html, tags=set()).strip()
+
+
+def _clean_url(url: str) -> str:
+    """Trim whatever a sentence or a closing bracket commonly glues onto
+    the end of a URL a regex greedily matched past its real end."""
+    return url.rstrip(_URL_TRAILING_PUNCTUATION)
+
+
+def _extract_urls(*, body_text: str | None, body_html: str | None) -> tuple[str, ...]:
+    """
+    Every http(s) URL this message actually links to or mentions -- the
+    best spam signal a message carries, so it has to reach the model
+    however the body itself is trimmed (see _append_missing_urls).
+
+    An HTML body is scanned twice: once for `href` targets, since
+    nh3.clean(tags=set()) (_strip_html) discards them along with the rest
+    of the markup and a "Click here" anchor would otherwise arrive with no
+    URL at all, and once for a bare URL typed directly into the markup
+    rather than wrapped in an anchor. A plain-text body only ever needs
+    the bare-URL pass.
+
+    Returns:
+        Deduplicated, first-seen order, capped at _MAX_URLS
+    """
+    seen: dict[str, None] = {}
+    if body_html:
+        for match in _HREF_RE.finditer(body_html):
+            url = _clean_url(match.group(1))
+            if url.lower().startswith(("http://", "https://")):
+                seen.setdefault(url, None)
+        for match in _URL_RE.finditer(body_html):
+            seen.setdefault(_clean_url(match.group(0)), None)
+    if body_text:
+        for match in _URL_RE.finditer(body_text):
+            seen.setdefault(_clean_url(match.group(0)), None)
+    return tuple(seen)[:_MAX_URLS]
+
+
+def _append_missing_urls(excerpt: str, urls: tuple[str, ...]) -> str:
+    """
+    Append whichever of `urls` the kept excerpt doesn't already show
+    verbatim -- covering both a URL trimmed off by _BODY_EXCERPT_CHARS's
+    own cut and a link whose target never appeared in the excerpt's text
+    at all (an HTML anchor's href, see _extract_urls).
+
+    The excerpt itself is trimmed to make room so the combined result
+    never exceeds _BODY_EXCERPT_CHARS -- a fixed ceiling on what reaches
+    the model regardless of how many links a message carries, and the
+    reason this always wins over losing the tail of the excerpt to a URL
+    list that would otherwise grow the body past the model's context
+    budget uncapped.
+    """
+    missing = [url for url in urls if url not in excerpt]
+    if not missing:
+        return excerpt
+    suffix = "\n[links in this message: " + ", ".join(missing) + "]"
+    budget = max(_BODY_EXCERPT_CHARS - len(suffix), 0)
+    return excerpt[:budget] + suffix
 
 
 def extract_display_name_and_addr(from_header: str) -> tuple[str, str]:
@@ -255,6 +336,9 @@ async def load_message_view(session: AsyncSession, message_id: uuid.UUID) -> Mes
         body, truncated = stripped[:_BODY_EXCERPT_CHARS], len(stripped) > _BODY_EXCERPT_CHARS
     else:
         body, truncated = "", False
+    body = _append_missing_urls(
+        body, _extract_urls(body_text=row.body_text, body_html=row.body_html),
+    )
 
     headers = row.raw_headers if isinstance(row.raw_headers, dict) else {}
     headers = {str(k).lower(): str(v) for k, v in headers.items()}

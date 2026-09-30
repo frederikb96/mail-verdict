@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import types
 import uuid
 from datetime import datetime as dt
 from datetime import timedelta, timezone
@@ -24,7 +25,6 @@ from mail_verdict.database.repository import MessageRepository
 from mail_verdict.embeddings.provider import FakeEmbeddingProvider
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.worker import (
-    CIRCUIT_NAME,
     QUEUE_NAME,
     _handle_one,
     _run_worker,
@@ -146,6 +146,23 @@ class APIConnectionError(Exception):
     pass
 
 
+class _AlwaysRateLimitedWithHeader(FakeEmbeddingProvider):
+    """Raises a RateLimitError-shaped exception carrying a real
+    Retry-After header, like openai.RateLimitError's own `.response`
+    attribute -- proves _handle_one reads it rather than backing off a
+    blind 30s guess (core/structured_llm.py's retry_after_from_exception)."""
+
+    async def embed_batch(self, texts: list[str], *, model: str) -> list[list[float]]:
+        exc = RateLimitError("429")
+        response = types.SimpleNamespace(headers={"retry-after": "7"})
+        exc.response = response  # type: ignore[attr-defined]
+        raise exc
+
+
+class RateLimitError(Exception):
+    pass
+
+
 class _SlowFakeProvider(FakeEmbeddingProvider):
     """Succeeds like FakeEmbeddingProvider, but only after a delay --
     stands in for a provider call slower than a short lease, and records
@@ -163,13 +180,16 @@ class _SlowFakeProvider(FakeEmbeddingProvider):
 
 
 @pytest.mark.asyncio
-async def test_registered_circuit_name_matches_the_one_the_worker_writes(
+async def test_registered_circuit_name_matches_the_provider_setting(
     migrated_db: DatabaseConnection,
 ) -> None:
-    """QueueManager.register's circuit_name must be the provider name
-    _handle_one's CircuitBreaker actually writes to -- otherwise the
-    observability surface reports a breaker nobody ever trips while the
-    real one goes unseen."""
+    """QueueManager.register's circuit_name is a callable resolving
+    settings.semantic.provider, not a fixed name -- it must be the same
+    breaker _handle_one's CircuitBreaker actually writes to, or the
+    observability surface reports one nobody ever trips while the real
+    one goes unseen -- checked by moving it between two values this test
+    controls, since migrated_db's settings row is shared across the whole
+    pg session and another test may already have changed the "default"."""
     queue_manager = QueueManager(migrated_db)
     settings_service = await _settings(migrated_db)
 
@@ -178,8 +198,13 @@ async def test_registered_circuit_name_matches_the_one_the_worker_writes(
         settings_service=settings_service,
     )
 
+    await settings_service.update("semantic", {"provider": "openai"})
     summary = await queue_manager.summary(QUEUE_NAME)
-    assert summary.circuit.name == CIRCUIT_NAME
+    assert summary.circuit.name == "openai"
+
+    await settings_service.update("semantic", {"provider": "custom"})
+    summary = await queue_manager.summary(QUEUE_NAME)
+    assert summary.circuit.name == "custom"
 
 
 @pytest.mark.asyncio
@@ -189,6 +214,10 @@ async def test_suspended_worker_loop_recovers_once_it_wins_a_probe(
     """The fresh-install reproduction: a breaker suspended (no key
     configured) that nothing ever probes stays suspended forever, even
     after the key is fixed. The worker loop must call try_probe itself."""
+    # _run_worker builds its own CircuitBreaker(db, provider_name) fresh
+    # every iteration from settings.semantic.provider -- this must be the
+    # same name the pre-suspended breaker below uses, for this to be a
+    # reproduction of a breaker nothing ever probes.
     circuit_name = f"provider-{uuid.uuid4().hex[:8]}"
     circuit = CircuitBreaker(migrated_db, circuit_name)
     await circuit.record_unavailable(
@@ -212,7 +241,7 @@ async def test_suspended_worker_loop_recovers_once_it_wins_a_probe(
 
     queue_manager = QueueManager(migrated_db)
     queue_manager.register(
-        QUEUE_NAME, MessageEmbedding.__table__, _unused_worker_body, circuit_name=CIRCUIT_NAME,
+        QUEUE_NAME, MessageEmbedding.__table__, _unused_worker_body, circuit_name=circuit_name,
     )
 
     import mail_verdict.embeddings.worker as worker_module
@@ -223,8 +252,9 @@ async def test_suspended_worker_loop_recovers_once_it_wins_a_probe(
     stop_event = asyncio.Event()
     loop_task = asyncio.create_task(
         _run_worker(
-            queue_manager, "recovery-worker", stop_event, embedding_repo, message_repo,
-            cred_repo=None, settings_service=_FakeSettings(), circuit=circuit,  # type: ignore[arg-type]
+            queue_manager, "recovery-worker", stop_event, migrated_db, embedding_repo,
+            message_repo, cred_repo=None,  # type: ignore[arg-type]
+            settings_service=_FakeSettings(provider=circuit_name),
         )
     )
     try:
@@ -299,6 +329,7 @@ async def test_a_persistently_retryable_failure_reaches_a_dead_letter(
         await _handle_one(
             first, "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=settings_service, circuit=circuit,  # type: ignore[arg-type]
+            db=migrated_db,
         )
 
         async with migrated_db.session() as session:
@@ -316,6 +347,7 @@ async def test_a_persistently_retryable_failure_reaches_a_dead_letter(
         await _handle_one(
             second, "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=settings_service, circuit=circuit,  # type: ignore[arg-type]
+            db=migrated_db,
         )
     finally:
         worker_module.resolve_embedding_provider = original_resolve
@@ -358,10 +390,9 @@ async def test_a_slow_item_is_never_reclaimed_out_from_under_a_still_running_wor
 
     queue_manager = QueueManager(migrated_db)
     queue_manager.register(
-        QUEUE_NAME, MessageEmbedding.__table__, _unused_worker_body, circuit_name=CIRCUIT_NAME,
+        QUEUE_NAME, MessageEmbedding.__table__, _unused_worker_body, circuit_name="fake",
     )
     work_queue = queue_manager.work_queue(QUEUE_NAME)
-    circuit = CircuitBreaker(migrated_db, f"provider-{uuid.uuid4().hex[:8]}")
 
     import mail_verdict.embeddings.worker as worker_module
 
@@ -378,8 +409,8 @@ async def test_a_slow_item_is_never_reclaimed_out_from_under_a_still_running_wor
     stop_event = asyncio.Event()
     loop_task = asyncio.create_task(
         _run_worker(
-            queue_manager, "w1", stop_event, embedding_repo, message_repo,
-            cred_repo=None, settings_service=_FakeSettings(), circuit=circuit,  # type: ignore[arg-type]
+            queue_manager, "w1", stop_event, migrated_db, embedding_repo, message_repo,
+            cred_repo=None, settings_service=_FakeSettings(),  # type: ignore[arg-type]
         )
     )
     try:
@@ -435,3 +466,71 @@ async def test_a_slow_item_is_never_reclaimed_out_from_under_a_still_running_wor
         # embedded the message twice, which is exactly why the call count
         # above, not this, is the assertion that actually catches it.
         assert row.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_a_rate_limit_backs_off_by_the_providers_own_retry_after(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A 429 is refunded uncapped (never counted against attempts) and
+    backs off the circuit by whatever the provider's own Retry-After
+    header asked for -- not a blind 30s guess."""
+    embedding_repo = EmbeddingRepository(migrated_db)
+    message_repo = MessageRepository(migrated_db)
+    model = _unique_model()
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        await _seed_message(session, account_id=account_id, folder_id=folder_id)
+        await session.commit()
+    await embedding_repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+
+    work_queue = WorkQueue(migrated_db, MessageEmbedding.__table__)
+    circuit_name = f"provider-{uuid.uuid4().hex[:8]}"
+    circuit = CircuitBreaker(migrated_db, circuit_name)
+    settings_service = _FakeSettings()
+
+    pending_ids = await _all_pending(migrated_db, model)
+    row = await _claim_specific(migrated_db, next(iter(pending_ids)), worker_id="w1")
+    import mail_verdict.embeddings.worker as worker_module
+
+    original_resolve = worker_module.resolve_embedding_provider
+    worker_module.resolve_embedding_provider = (  # type: ignore[assignment]
+        lambda *a, **k: _AlwaysRateLimitedWithHeader()
+    )
+    try:
+        await _handle_one(
+            row, "w1", work_queue, embedding_repo, message_repo,
+            cred_repo=None, settings_service=settings_service, circuit=circuit,  # type: ignore[arg-type]
+            db=migrated_db,
+        )
+    finally:
+        worker_module.resolve_embedding_provider = original_resolve
+
+    async with migrated_db.session() as session:
+        mid = (
+            await session.execute(
+                text("SELECT status, attempts FROM message_embeddings WHERE id = :id"),
+                {"id": row["id"]},
+            )
+        ).one()
+    # Refunded, uncapped -- release_untouched puts the claim itself back,
+    # so attempts reads 0 again, never counted against the row the way a
+    # persistently-retryable failure is (see _retry_or_fail's own test above).
+    assert mid.status == "pending"
+    assert mid.attempts == 0
+
+    status = await circuit.status()
+    assert status.state == CircuitState.OPEN
+    assert status.retry_after is not None
+    remaining = (status.retry_after - dt.now(timezone.utc)).total_seconds()
+    # The header said 7 seconds; a hardcoded 30s default would fail this.
+    assert 0 < remaining <= 7.5
+
+
+async def _all_pending(db: DatabaseConnection, model: str) -> set[uuid.UUID]:
+    async with db.session() as session:
+        result = await session.execute(
+            text("SELECT id FROM message_embeddings WHERE model = :m AND status = 'pending'"),
+            {"m": model},
+        )
+        return {row[0] for row in result.all()}

@@ -53,6 +53,21 @@ MIN_DAV_SERVICE_VERSION = (1, 6, 0)
 # attempted, not just before a stricter grant.
 MIN_INLINE_ATTACHMENT_SERVICE_VERSION = (1, 7, 0)
 
+# outbox.raw_source/target_folder_id/flags/internal_date, and kind="append"
+# -- an APPEND of exact bytes into a chosen folder, with none of the
+# recomposition kind="send"/"draft" do -- exist, and are granted, from this
+# PostIMAP service version onward. The glacier's restore mechanism
+# (glacier/restore.py) is the only thing that uses this.
+#
+# 🚨 Must stay above whatever PostIMAP version is actually shipping this
+# capability -- the currently pinned test image is 1.10.0 and does not
+# have it (tests/setup/images.py), so this cannot be set to anything at
+# or below that without the gate silently reporting the capability
+# available against a PostIMAP that does not actually have the columns.
+# Set this to the exact version the outbox-append change ships under
+# once that is known.
+MIN_MESSAGE_APPEND_SERVICE_VERSION = (1, 11, 0)
+
 
 class ContractMismatchError(Exception):
     """Raised when the running PostIMAP's contract_version does not match."""
@@ -213,3 +228,19 @@ def supports_inline_attachments(info: PostimapVersionInfo) -> bool:
     return (
         _parse_service_version(info.service_version) >= MIN_INLINE_ATTACHMENT_SERVICE_VERSION
     )
+
+
+def supports_message_append(info: PostimapVersionInfo) -> bool:
+    """
+    Whether the running PostIMAP grants outbox kind="append" -- an APPEND
+    of exact bytes into a chosen folder. The glacier's restore mechanism
+    needs this, and moving a message into the glacier at all is gated on
+    it too (restore must work before removal is offered).
+
+    Args:
+        info: Version info read from postimap_info
+
+    Returns:
+        True if service_version >= MIN_MESSAGE_APPEND_SERVICE_VERSION
+    """
+    return _parse_service_version(info.service_version) >= MIN_MESSAGE_APPEND_SERVICE_VERSION

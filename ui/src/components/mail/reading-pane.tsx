@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -40,10 +40,13 @@ import { mailKeys, useLoadMessageImages, useThread } from "@/hooks/use-mails";
 import { useMailAction } from "@/hooks/use-mail-intents";
 import { PENDING_MARKER_DELAY_MS } from "@/lib/mail-intents";
 import { useOpenMessage } from "@/hooks/use-open-message";
-import { useAccount } from "@/hooks/use-accounts";
+import { useAccount, useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
 import { useSelection } from "@/hooks/use-selection";
 import { useAlerts, useDismissAlert } from "@/hooks/use-alerts";
+import {
+  glacierFolderIds, glacierMoveWarning, glacierRestoreWarning, isGlacierFolder,
+} from "@/lib/glacier";
 import { cn, isEditableElement } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
@@ -74,6 +77,24 @@ export function ReadingPane() {
   const threadScrollRef = useRef<HTMLDivElement>(null);
   const scrolledForMailIdRef = useRef<string | null>(null);
   const [confirmExpunge, setConfirmExpunge] = useState(false);
+  // A glaciered message is the only copy in existence -- its own
+  // confirmation, distinct from the ordinary "empty Trash" one above,
+  // and offered whatever folder it currently sits in.
+  const [confirmExpungeGlacier, setConfirmExpungeGlacier] = useState(false);
+  // A move whose target is the glacier removes the message from the mail
+  // server for good -- confirmed here, before the intent is queued, and
+  // never offered undo once it is.
+  const [pendingGlacierMove, setPendingGlacierMove] = useState<string | null>(null);
+  // The reverse direction: Archive, Move to trash and an explicit Move
+  // to a real folder all restore a glaciered message to the mail server
+  // -- confirmed here the same way, rather than firing on the first
+  // press the way a live message's do. targetFolderId is only set for
+  // the explicit-move shape.
+  const [pendingGlacierRestore, setPendingGlacierRestore] = useState<
+    { action: "archive" | "trash" } | { action: "move"; targetFolderId: string } | null
+  >(null);
+  const { data: accounts } = useAccounts();
+  const glacierIds = useMemo(() => glacierFolderIds(accounts), [accounts]);
   const [moveOpen, setMoveOpen] = useState(false);
   // The `v` shortcut's route to the same picker the toolbar button opens --
   // see requestMoveDialogAtom's own comment. Consumed by nonce so a stale
@@ -103,6 +124,11 @@ export function ReadingPane() {
   // an already-junked message as spam again is a no-op the API doesn't need.
   const isInJunk =
     folders?.find((f) => f.id === primary?.folder_id)?.special_use === "junk";
+  // No longer on the mail server -- read/star/keywords/reply/forward keep
+  // working against the stored copy, but a spam ruling is not yet
+  // supported there, and permanent delete means destroying the only copy
+  // rather than emptying a Trash the message already left.
+  const isGlacier = primary?.is_glacier ?? false;
 
   // A conversation reads newest first. Only the opened message starts
   // expanded -- the newest one unless an older one was opened -- so every
@@ -378,12 +404,16 @@ export function ReadingPane() {
             variant="ghost"
             size="icon"
             className="h-8 w-8"
-            onClick={() =>
+            onClick={() => {
+              if (isGlacier) {
+                setPendingGlacierRestore({ action: "archive" });
+                return;
+              }
               mailAction.perform({
                 accountId: primary.account_id, mailIds: [primary.id],
                 action: "archive",
-              })
-            }
+              });
+            }}
             title="Archive"
             aria-label="Archive"
           >
@@ -394,12 +424,20 @@ export function ReadingPane() {
             currentFolderId={primary.folder_id}
             open={moveOpen}
             onOpenChange={setMoveOpen}
-            onMove={(targetFolderId) =>
+            onMove={(targetFolderId) => {
+              if (isGlacierFolder(targetFolderId, glacierIds)) {
+                setPendingGlacierMove(targetFolderId);
+                return;
+              }
+              if (isGlacier) {
+                setPendingGlacierRestore({ action: "move", targetFolderId });
+                return;
+              }
               mailAction.perform({
                 accountId: primary.account_id, mailIds: [primary.id],
                 action: "move", targetFolderId,
-              })
-            }
+              });
+            }}
             trigger={
               <Button variant="ghost" size="icon" className="h-8 w-8" title="Move to…" aria-label="Move to…">
                 <FolderInput className="h-4 w-4" />
@@ -411,7 +449,10 @@ export function ReadingPane() {
               corrects it. Which is which is decided here, once, rather
               than by four differently-labelled buttons across the two
               verdict states. */}
-          {primary.verdict && (
+          {/* Not yet supported against a glaciered message -- moving is
+              recorded but performs no ruling from the stored copy, so
+              nothing here would visibly do what it claims. */}
+          {primary.verdict && !isGlacier && (
             <>
               <Button
                 variant="ghost"
@@ -445,7 +486,7 @@ export function ReadingPane() {
               </Button>
             </>
           )}
-          {isInJunk ? (
+          {!isGlacier && (isInJunk ? (
             <Button
               variant="ghost"
               size="icon"
@@ -477,6 +518,23 @@ export function ReadingPane() {
             >
               <Ban className="h-4 w-4" />
             </Button>
+          ))}
+          {/* The glacier's own permanent delete: offered whatever folder
+              the message currently sits in, since it never reaches Trash
+              on its way there -- distinct from the isInTrash branch
+              below, which empties an ordinary Trash the server still
+              holds a copy in. */}
+          {isGlacier && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-destructive"
+              onClick={() => setConfirmExpungeGlacier(true)}
+              title="Delete forever"
+              aria-label="Delete forever"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
           )}
           {isInTrash ? (
             <Button
@@ -494,12 +552,16 @@ export function ReadingPane() {
               variant="ghost"
               size="icon"
               className="h-8 w-8"
-              onClick={() =>
+              onClick={() => {
+                if (isGlacier) {
+                  setPendingGlacierRestore({ action: "trash" });
+                  return;
+                }
                 mailAction.perform({
                   accountId: primary.account_id, mailIds: [primary.id],
                   action: "trash",
-                })
-              }
+                });
+              }}
               title="Move to trash"
               aria-label="Move to trash"
             >
@@ -519,6 +581,73 @@ export function ReadingPane() {
             accountId: primary.account_id, mailIds: [primary.id], action: "expunge",
           });
           setConfirmExpunge(false);
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmExpungeGlacier}
+        onOpenChange={setConfirmExpungeGlacier}
+        title="Delete this message forever?"
+        description="This is the only copy of this message that exists anywhere. Deleting it destroys it completely, and this cannot be undone."
+        onConfirm={() => {
+          mailAction.perform({
+            accountId: primary.account_id, mailIds: [primary.id], action: "expunge",
+            confirmed: true,
+          });
+          setConfirmExpungeGlacier(false);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingGlacierMove !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingGlacierMove(null);
+        }}
+        title="Move to the glacier?"
+        description={glacierMoveWarning(1)}
+        confirmLabel="Move to Glacier"
+        onConfirm={() => {
+          if (!pendingGlacierMove) return;
+          mailAction.perform(
+            {
+              accountId: primary.account_id, mailIds: [primary.id],
+              action: "move", targetFolderId: pendingGlacierMove,
+            },
+            { undoable: false },
+          );
+          setPendingGlacierMove(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingGlacierRestore !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingGlacierRestore(null);
+        }}
+        title={
+          pendingGlacierRestore?.action === "trash"
+            ? "Move to trash?"
+            : pendingGlacierRestore?.action === "archive"
+              ? "Archive?"
+              : "Move to this folder?"
+        }
+        description={glacierRestoreWarning(1)}
+        confirmLabel={
+          pendingGlacierRestore?.action === "trash"
+            ? "Move to Trash"
+            : pendingGlacierRestore?.action === "archive"
+              ? "Archive"
+              : "Move"
+        }
+        onConfirm={() => {
+          if (!pendingGlacierRestore) return;
+          mailAction.perform({
+            accountId: primary.account_id, mailIds: [primary.id],
+            ...(pendingGlacierRestore.action === "move"
+              ? { action: "move" as const, targetFolderId: pendingGlacierRestore.targetFolderId }
+              : { action: pendingGlacierRestore.action }),
+          });
+          setPendingGlacierRestore(null);
         }}
       />
 

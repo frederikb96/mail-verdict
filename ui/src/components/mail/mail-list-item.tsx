@@ -44,6 +44,12 @@ interface MailListItemProps {
   selectionMode: boolean;
   /** True when the row's folder is Junk -- swaps the Junk control for Remove from Junk. */
   isJunk?: boolean;
+  /** True for a message already in the glacier -- a stray hover-click
+   * here must never restore it to the mail server with no confirmation,
+   * so the row offers only what it can do without one (star, read
+   * state); Junk and a restore both need the reading pane, which has
+   * room for the confirmation either one takes. */
+  isGlacier?: boolean;
   /** A row action here is scoped to the thread's latest message only --
    * the tooltip says so rather than leaving it ambiguous. */
   isThreaded?: boolean;
@@ -78,6 +84,7 @@ export function MailListItem({
   isChecked,
   selectionMode,
   isJunk,
+  isGlacier,
   isThreaded,
   onOpen,
   onPressStart,
@@ -248,21 +255,29 @@ export function MailListItem({
                 )}
               />
             </button>
-            <button
-              className={cn(
-                "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
-                revealOnHoverClass,
-              )}
-              onClick={(e) => {
-                e.stopPropagation();
-                act("archive");
-              }}
-              title={`Archive${threadSuffix}`}
-              aria-label={`Archive${threadSuffix}`}
-            >
-              <Archive className="h-3.5 w-3.5" />
-            </button>
-            {isJunk ? (
+            {/* Archive, Junk and Move to trash all restore a glaciered
+                message to the mail server -- offered nowhere on the row,
+                which has no room for the confirmation that takes. The
+                reading pane has both the spam ruling and the restore
+                confirmation for a glacier row; this row keeps only what
+                it can do without either. */}
+            {!isGlacier && (
+              <button
+                className={cn(
+                  "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
+                  revealOnHoverClass,
+                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act("archive");
+                }}
+                title={`Archive${threadSuffix}`}
+                aria-label={`Archive${threadSuffix}`}
+              >
+                <Archive className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {!isGlacier && (isJunk ? (
               <button
                 className={cn(
                   "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors",
@@ -292,21 +307,23 @@ export function MailListItem({
               >
                 <Ban className="h-3.5 w-3.5" />
               </button>
+            ))}
+            {!isGlacier && (
+              <button
+                className={cn(
+                  "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
+                  revealOnHoverClass,
+                )}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act("trash");
+                }}
+                title={`Move to trash${threadSuffix}`}
+                aria-label={`Move to trash${threadSuffix}`}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
             )}
-            <button
-              className={cn(
-                "rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive transition-colors",
-                revealOnHoverClass,
-              )}
-              onClick={(e) => {
-                e.stopPropagation();
-                act("trash");
-              }}
-              title={`Move to trash${threadSuffix}`}
-              aria-label={`Move to trash${threadSuffix}`}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
             {/* Revealed on hover like every other row action. The dot says
                 whether the row is unread; this icon shows the action it
                 takes -- the opposite state -- so left visible it would be a
