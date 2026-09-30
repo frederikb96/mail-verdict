@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.7.0] - 2026-09-30
+
 - Glacier storage: a per-account place a message can be moved to where it leaves the mail
   server for good and lives on only in this database. It behaves like a folder -- listed,
   searchable, selectable in unified views -- can be left again (back onto a server folder), and
