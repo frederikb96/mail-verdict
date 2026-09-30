@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 QUEUE_NAME = "orders"
 
 # See this module's own docstring -- one key, no timer, so no second one.
-_ORDERS_LOCK_KEY = 761_035_100
+_ORDERS_LOCK_KEY = 761_035_200
 
 # The write call includes every mail up to this count, oldest first;
 # beyond it, the first 3 plus the newest 9 (design measured this on the
