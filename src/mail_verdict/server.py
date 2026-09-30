@@ -341,7 +341,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     from mail_verdict.glacier.sweep import build_glacier_sweep_timer
 
-    _glacier_sweeper = build_glacier_sweep_timer(db, event_ring, config.glacier)
+    _glacier_sweeper = build_glacier_sweep_timer(db, event_ring, config.glacier, vapid_repo)
     await _glacier_sweeper.start()
 
     from mail_verdict.alerts.resolve import resolve_for_message_event

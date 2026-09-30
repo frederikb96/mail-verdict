@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 
+from mail_verdict.alerts.dispatch import deliver_alert
+from mail_verdict.database.repository import AlertRepository
 from mail_verdict.glacier.operations import (
     _ELIGIBILITY_SQL,
     confirm_or_withdraw_removing,
@@ -50,6 +52,7 @@ if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
     from mail_verdict.config.loader import GlacierConfig
     from mail_verdict.database.connection import DatabaseConnection
+    from mail_verdict.push.vapid import VapidKeyRepository
 
 logger = logging.getLogger(__name__)
 
@@ -263,9 +266,49 @@ async def _progress_mid_flight(
         await expunge_message(db, glacier_id, event_ring=event_ring)
 
 
+async def _raise_glacier_conflict_alert(
+    db: DatabaseConnection,
+    event_ring: EventRing | None,
+    vapid_repo: VapidKeyRepository | None,
+    *,
+    account_id: uuid.UUID,
+    message_id: uuid.UUID,
+    reason: str,
+) -> None:
+    """
+    A duplicate_conflict outcome (operations.py's own docstring: a
+    different message already claims this identity in the glacier) is
+    correctly refused, and permanently -- nothing about the message or
+    the conflicting row changes on its own, so left to the sweep's
+    ordinary `continue` it would be reselected as a candidate and
+    silently dropped again on every tick, forever. A durable,
+    account-visible alert is the fix, deduplicated on the live
+    message's own id (outbox/stalled.py's same fires-exactly-once
+    mechanism) so it reaches a person exactly once rather than every
+    tick the message stays a candidate.
+    """
+    async with db.session() as session:
+        subject = (
+            await session.execute(
+                text("SELECT subject FROM messages WHERE id = :id"), {"id": message_id},
+            )
+        ).scalar_one_or_none()
+    alert = await AlertRepository(db).create_glacier_conflict_alert(
+        account_id=account_id, message_id=message_id,
+        title=subject or "(no subject)", body=reason,
+    )
+    if alert is None:
+        return
+    logger.warning(
+        "Glacier sweep cannot move a message -- identity already claimed",
+        extra={"account_id": str(account_id), "message_id": str(message_id), "reason": reason},
+    )
+    await deliver_alert(db, event_ring, vapid_repo, alert)
+
+
 async def _sweep_account_once(
     db: DatabaseConnection, account_id: uuid.UUID, *, event_ring: EventRing | None,
-    cfg: GlacierConfig,
+    cfg: GlacierConfig, vapid_repo: VapidKeyRepository | None = None,
 ) -> None:
     confirmed, withdrawn = await confirm_or_withdraw_removing(
         db, account_id, grace_seconds=cfg.confirm_grace_seconds,
@@ -324,7 +367,13 @@ async def _sweep_account_once(
         if outcome.status == "duplicate_removable" and outcome.glacier_id is not None:
             await resolve_duplicate(db, message_id, outcome.glacier_id)
             continue
-        if outcome.status in ("ineligible", "duplicate_conflict"):
+        if outcome.status == "duplicate_conflict":
+            await _raise_glacier_conflict_alert(
+                db, event_ring, vapid_repo, account_id=account_id, message_id=message_id,
+                reason=outcome.reason or "a different message already claims this identity",
+            )
+            continue
+        if outcome.status == "ineligible":
             continue
         if outcome.glacier_id is None:
             continue
@@ -341,6 +390,7 @@ async def _sweep_account_once(
 
 async def _sweep_once(
     db: DatabaseConnection, *, event_ring: EventRing | None, cfg: GlacierConfig,
+    vapid_repo: VapidKeyRepository | None = None,
 ) -> None:
     if not cfg.sweep_enabled:
         return
@@ -351,17 +401,20 @@ async def _sweep_once(
             )
         ).scalars().all()
     for account_id in account_ids:
-        await _sweep_account_once(db, account_id, event_ring=event_ring, cfg=cfg)
+        await _sweep_account_once(
+            db, account_id, event_ring=event_ring, cfg=cfg, vapid_repo=vapid_repo,
+        )
 
 
 def build_glacier_sweep_timer(
     db: DatabaseConnection, event_ring: EventRing | None, cfg: GlacierConfig,
+    vapid_repo: VapidKeyRepository | None = None,
 ) -> ReconciliationTimer:
     """The advisory-locked periodic pass driving both the automatic
     sweep and the bookkeeping every glaciered account needs regardless
     of whether the automatic sweep is on for it."""
 
     async def _callback() -> None:
-        await _sweep_once(db, event_ring=event_ring, cfg=cfg)
+        await _sweep_once(db, event_ring=event_ring, cfg=cfg, vapid_repo=vapid_repo)
 
     return ReconciliationTimer(db, _SWEEP_LOCK_KEY, _callback, cfg.interval_seconds)

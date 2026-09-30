@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Fixed the automatic glacier sweep silently and permanently dropping a message whose Message-ID
+  header is already claimed by a different message already in the glacier -- a real case (a
+  course-notification system reusing headers across genuinely different mail) that produced no log
+  line, no notification and no counter, so the message was reselected as a candidate and refused
+  again on every tick forever with nothing anywhere to say so. Such a message now raises a durable,
+  dismissable alert once, the same way a stalled outbox send already does, rather than disappearing
+  without a trace. Deciding whether two messages may share an identity in the glacier at all is a
+  separate, deliberately unaddressed question.
+
 ## [6.7.3] - 2026-09-30
 
 - Fixed the embedding backfill's periodic sweep getting permanently stuck on a mailbox with more
