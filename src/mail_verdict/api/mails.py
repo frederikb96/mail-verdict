@@ -2025,8 +2025,11 @@ async def _bulk_glacier_move(
         (how many actually left the server -- a resolved duplicate
         included, since its server copy genuinely was removed --
         how many of those were duplicates rather than newly copied, the
-        distinct FAILURE reasons hit, and ids left alone because they
-        had already moved elsewhere)
+        distinct FAILURE reasons hit, and every id left alone: already
+        moved elsewhere, or itself refused (ineligible, or a forged
+        duplicate conflict) -- so a caller can tell precisely which of
+        the ids it asked about actually left the server, not merely how
+        many)
     """
     landed = 0
     duplicate_count = 0
@@ -2055,8 +2058,10 @@ async def _bulk_glacier_move(
                 # `errors`, which decides response.success.
                 if outcome.reason is not None:
                     duplicate_count += 1
-            elif outcome.reason is not None:
-                reasons.setdefault(outcome.reason, None)
+            else:
+                skipped.append(mid)
+                if outcome.reason is not None:
+                    reasons.setdefault(outcome.reason, None)
     return landed, duplicate_count, list(reasons), skipped
 
 
@@ -2577,8 +2582,9 @@ async def _bulk_glacier_action(
 
     Returns:
         (how many actually applied, the distinct failure reasons hit,
-        ids that had already been restored or expunged by something else
-        between resolution and this call)
+        every id left alone: gone by something else between resolution
+        and this call, or itself refused -- so a caller can tell
+        precisely which of the ids it asked about actually applied)
     """
     landed = 0
     reasons: dict[str, None] = {}
@@ -2593,6 +2599,8 @@ async def _bulk_glacier_action(
             gone.append(gid)
         elif response.success:
             landed += 1
-        elif response.message is not None:
-            reasons.setdefault(response.message, None)
+        else:
+            gone.append(gid)
+            if response.message is not None:
+                reasons.setdefault(response.message, None)
     return landed, list(reasons), gone

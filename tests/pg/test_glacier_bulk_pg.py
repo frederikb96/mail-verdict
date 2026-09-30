@@ -505,6 +505,96 @@ async def test_bulk_move_reports_a_duplicate_separately_from_a_genuine_move(
         assert server_copies == 0
 
 
+@pytest.mark.asyncio
+async def test_a_partial_bulk_move_names_which_id_failed_and_why(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's finding: a whole-folder bulk move that partially
+    fails answered success: false with an accurate affected_count, but
+    the failed id itself was nowhere in the response -- only a bare
+    reason string, with no way to tell which of the requested ids it
+    belonged to. skipped_ids must name it, the same way an
+    already-moved-elsewhere id already does, so a caller (the web's own
+    partial-result presentation) can show precisely what happened
+    rather than a blanket failure inviting a repeat of an irreversible
+    action."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, folder_id, glacier_folder_id, message_ids = (
+            await _seed_account_with_messages(session, count=1)
+        )
+        (already_glaciered_id,) = message_ids
+        shared_hdr = (
+            await session.execute(
+                text("SELECT message_id FROM messages WHERE id = :id"),
+                {"id": already_glaciered_id},
+            )
+        ).scalar_one()
+        # A forged duplicate: same Message-ID as the message about to be
+        # glaciered first, different bytes entirely -- the identity guard
+        # must refuse this one, never silently expunge it.
+        forged_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+                " from_addr, raw_source, size_bytes, received_at) "
+                "VALUES (:id, :account_id, :folder_id, 50, :thread_id, :message_id_hdr, "
+                " 'Forged', 'attacker@example.com', :raw_source, :size_bytes, :received_at)"
+            ),
+            {
+                "id": forged_id, "account_id": account_id, "folder_id": folder_id,
+                "thread_id": forged_id, "message_id_hdr": shared_hdr,
+                "raw_source": b"forged content, not the same message at all",
+                "size_bytes": len(b"forged content, not the same message at all"),
+                "received_at": datetime.now(timezone.utc) - timedelta(days=400),
+            },
+        )
+        new_id_1, new_id_2 = (
+            await _seed_two_more_messages(session, account_id=account_id, folder_id=folder_id)
+        )
+        await session.commit()
+
+    first = await api_bulk_action(
+        account_id,
+        BulkActionRequest(action="move", target_folder_id=glacier_folder_id,
+                           ids=[already_glaciered_id]),
+    )
+    assert first.success is True, first.errors
+
+    response = await api_bulk_action(
+        account_id,
+        BulkActionRequest(
+            action="move", target_folder_id=glacier_folder_id,
+            ids=[new_id_1, new_id_2, forged_id],
+        ),
+    )
+    assert response.success is False
+    assert response.affected_count == 2
+    assert response.duplicate_count == 0
+    assert response.skipped_ids == [forged_id]
+    assert len(response.errors) == 1
+    assert "already claims this identity" in response.errors[0]
+
+    async with migrated_db.session() as session:
+        forged_still_live = (
+            await session.execute(
+                text("SELECT expunged_at FROM messages WHERE id = :id"), {"id": forged_id},
+            )
+        ).scalar_one()
+        assert forged_still_live is None
+        moved = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM messages "
+                    "WHERE id = ANY(:ids) AND expunged_at IS NOT NULL"
+                ),
+                {"ids": [new_id_1, new_id_2]},
+            )
+        ).scalar_one()
+        assert moved == 2
+
+
 async def _seed_two_more_messages(
     session: AsyncSession, *, account_id: uuid.UUID, folder_id: uuid.UUID,
 ) -> tuple[uuid.UUID, uuid.UUID]:
