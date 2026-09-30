@@ -23,6 +23,7 @@ from mail_verdict.api.mails import bulk_action as api_bulk_action
 from mail_verdict.api.schemas import BulkActionRequest, BulkActionScope
 from mail_verdict.config.loader import GlacierConfig
 from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.glacier.operations import ManualOutcome
 from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
@@ -544,6 +545,54 @@ async def test_bulk_move_reports_a_duplicate_separately_from_a_genuine_move(
             )
         ).scalar_one()
         assert server_copies == 0
+
+
+@pytest.mark.asyncio
+async def test_bulk_move_counts_only_what_actually_left_the_server(
+    migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """glacier_message_now can report success with a reason that means
+    'still in flight' (copied and verifying, verified and removing,
+    retrying after the message moved on the server) just as readily as
+    one that means a duplicate's server copy was genuinely removed -- the
+    bulk loop has to tell them apart rather than counting every reason as
+    a duplicate landed. Of three messages, one lands cleanly, one
+    resolves as a genuine duplicate, and one is still pending; only the
+    first two may count as landed, and only the second as a duplicate."""
+    async with migrated_db.session() as session:
+        account_id, _folder_id, glacier_folder_id, message_ids = (
+            await _seed_account_with_messages(session, count=3)
+        )
+        await session.commit()
+    landed_id, duplicate_id, pending_id = message_ids
+
+    fake_outcomes = {
+        landed_id: ManualOutcome(True, None, glacier_id=uuid.uuid4()),
+        duplicate_id: ManualOutcome(
+            True, "already glaciered -- removed the server's duplicate copy",
+            glacier_id=uuid.uuid4(),
+        ),
+        pending_id: ManualOutcome(
+            True, "copied; verifying and removing from the server in the background",
+            glacier_id=uuid.uuid4(), pending=True,
+        ),
+    }
+
+    async def _fake_glacier_message_now(
+        db: DatabaseConnection, message_id: uuid.UUID, *, event_ring: object = None,
+    ) -> ManualOutcome:
+        return fake_outcomes[message_id]
+
+    monkeypatch.setattr(mails_module, "glacier_message_now", _fake_glacier_message_now)
+
+    response = await api_bulk_action(
+        account_id,
+        BulkActionRequest(action="move", target_folder_id=glacier_folder_id, ids=message_ids),
+    )
+
+    assert response.success is True, response.errors
+    assert response.affected_count == 2, "the still-pending message must not count as landed"
+    assert response.duplicate_count == 1, "the still-pending message must not count as a duplicate"
 
 
 @pytest.mark.asyncio

@@ -2050,15 +2050,21 @@ async def _bulk_glacier_move(
             skipped.extend(mid for mid in ids if mid not in eligible_set)
         for mid in eligible:
             outcome = await glacier_message_now(db, mid, event_ring=get_event_ring())
-            if outcome.ok:
+            if outcome.ok and not outcome.pending:
                 landed += 1
                 # A success can still carry a reason (a duplicate whose
                 # server copy was removed rather than newly copied) --
                 # counted, never mistaken for a failure by going into
-                # `errors`, which decides response.success.
+                # `errors`, which decides response.success. `pending`
+                # above already filtered out the other three reasons a
+                # success can carry (still copied/verifying, still
+                # removing, retrying after a server-side move) -- none of
+                # those actually left the server yet, so counting them
+                # here would claim a duplicate was removed, or that the
+                # message landed, before either is true.
                 if outcome.reason is not None:
                     duplicate_count += 1
-            else:
+            elif not outcome.ok:
                 skipped.append(mid)
                 if outcome.reason is not None:
                     reasons.setdefault(outcome.reason, None)
@@ -2308,9 +2314,11 @@ async def _apply_bulk_action(
                         status_code=400, detail="target_folder_id does not belong to this account",
                     )
                 _refuse_over_manual_batch_cap(sum(len(ids) for ids in groups.values()))
-                affected, duplicate_count, glacier_errors, glacier_skipped = (
+                move_landed, move_duplicates, glacier_errors, glacier_skipped = (
                     await _bulk_glacier_move(db, groups)
                 )
+                affected += move_landed
+                duplicate_count += move_duplicates
                 errors.extend(glacier_errors)
                 skipped.extend(glacier_skipped)
             else:
