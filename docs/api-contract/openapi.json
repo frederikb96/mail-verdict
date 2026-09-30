@@ -12765,17 +12765,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/OrderDetail"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Response Detach Mail Orders  Order Id  Mails  Mail Key  Detach Post"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"

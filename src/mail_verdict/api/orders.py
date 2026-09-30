@@ -21,7 +21,7 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, desc, or_, select
 
 from mail_verdict.api.events import broadcast_event, get_event_ring
@@ -246,10 +246,10 @@ async def merge_order(order_id: uuid.UUID, request: OrderMergeRequest) -> OrderD
     return detail
 
 
-@router.post("/{order_id}/mails/{mail_key}/detach")
+@router.post("/{order_id}/mails/{mail_key}/detach", response_model=None)
 async def detach_mail(
     order_id: uuid.UUID, mail_key: uuid.UUID, request: OrderDetachRequest,
-) -> OrderDetail | None:
+) -> OrderDetail | Response:
     """Remove a mail from its order, optionally moving it to another --
     never bundled automatically again either way (uq_order_mails_account
     _msg_key holds; the job row for it is left as-is so a catch-up never
@@ -299,6 +299,8 @@ async def detach_mail(
     if request.move_to is not None:
         await _announce(request.move_to, "updated")
     await _announce(order_id, "deleted" if order_deleted else "updated")
+    if detail is None:
+        return Response(status_code=204)
     return detail
 
 
