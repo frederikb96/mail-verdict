@@ -713,3 +713,47 @@ async def test_fresh_notification_without_a_landed_revert_is_left_pending(
         ).mappings().one()
         assert row["state"] == "removing"
         assert row["raw_source"] == _RAW_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_glacier_message_now_names_a_duplicate_it_resolved(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The design's own requirement, missed the first time: glaciering a
+    live duplicate of an already-glaciered message removes the server's
+    copy silently unless the outcome says so. success stays true (the
+    server copy really was removed, correctly), but the reason must name
+    what happened rather than being None."""
+    async with migrated_db.session() as session:
+        info = await read_postimap_info(session)
+    if info is None or not supports_message_append(info):
+        pytest.skip(
+            'this PostIMAP build does not carry outbox kind="append" -- '
+            f"reports service_version={info.service_version if info else 'unknown'}"
+        )
+    shared_received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    account_id, folder_id, message_id = await _seed_ready_message(
+        migrated_db, message_id_hdr="<dup-now@example.com>", received_at=shared_received_at,
+    )
+    first = await glacier_message_now(migrated_db, message_id)
+    assert first.ok, first.reason
+
+    async with migrated_db.session() as session:
+        duplicate_id = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, imap_uid=2,
+            message_id_hdr="<dup-now@example.com>", received_at=shared_received_at,
+        )
+
+    second = await glacier_message_now(migrated_db, duplicate_id)
+    assert second.ok is True
+    assert second.glacier_id == first.glacier_id
+    assert second.reason is not None
+    assert "duplicate" in second.reason
+
+    async with migrated_db.session() as session:
+        live = (
+            await session.execute(
+                text("SELECT expunged_at FROM messages WHERE id = :id"), {"id": duplicate_id},
+            )
+        ).mappings().one()
+        assert live["expunged_at"] is not None

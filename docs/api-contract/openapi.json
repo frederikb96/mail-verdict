@@ -987,6 +987,12 @@
             "title": "Affected Count",
             "type": "integer"
           },
+          "duplicate_count": {
+            "default": 0,
+            "description": "Of affected_count, how many were byte-identical to a message already in the glacier -- the server's duplicate copy was removed rather than a new one copied. Always 0 outside a bulk move into the glacier.",
+            "title": "Duplicate Count",
+            "type": "integer"
+          },
           "errors": {
             "items": {
               "type": "string"

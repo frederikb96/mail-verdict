@@ -423,3 +423,102 @@ async def test_bulk_restore_over_the_cap_is_refused(
             )
         ).scalar_one()
         assert still_glaciered == 3
+
+
+@pytest.mark.asyncio
+async def test_bulk_move_reports_a_duplicate_separately_from_a_genuine_move(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The design's own requirement: glaciering a duplicate of a message
+    already in the glacier removes the server's copy and must say so,
+    in bulk as well as singly. A bulk move of three where one is a
+    duplicate reports all three as affected -- the duplicate's server
+    copy really was removed -- but names how many of them were
+    duplicates rather than folding it into an undifferentiated count."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, folder_id, glacier_folder_id, message_ids = (
+            await _seed_account_with_messages(session, count=2)
+        )
+        already_glaciered_id, duplicate_id = message_ids
+        shared_hdr, shared_received_at = (
+            (
+                await session.execute(
+                    text("SELECT message_id, received_at FROM messages WHERE id = :id"),
+                    {"id": already_glaciered_id},
+                )
+            ).one()
+        )
+        # A byte-identical duplicate of the message about to be glaciered
+        # first, sharing its Message-ID and received_at -- the identity
+        # copy_message's own dedup checks against.
+        await session.execute(
+            text(
+                "UPDATE messages SET message_id = :hdr, received_at = :received_at, "
+                "raw_source = (SELECT raw_source FROM messages WHERE id = :orig), "
+                "size_bytes = (SELECT size_bytes FROM messages WHERE id = :orig) "
+                "WHERE id = :dup"
+            ),
+            {
+                "hdr": shared_hdr, "received_at": shared_received_at,
+                "orig": already_glaciered_id, "dup": duplicate_id,
+            },
+        )
+        new_id_1, new_id_2 = (
+            await _seed_two_more_messages(session, account_id=account_id, folder_id=folder_id)
+        )
+        await session.commit()
+
+    first = await api_bulk_action(
+        account_id,
+        BulkActionRequest(action="move", target_folder_id=glacier_folder_id,
+                           ids=[already_glaciered_id]),
+    )
+    assert first.success is True, first.errors
+
+    response = await api_bulk_action(
+        account_id,
+        BulkActionRequest(
+            action="move", target_folder_id=glacier_folder_id,
+            ids=[new_id_1, new_id_2, duplicate_id],
+        ),
+    )
+    assert response.success is True, response.errors
+    assert response.affected_count == 3
+    assert response.duplicate_count == 1
+
+    async with migrated_db.session() as session:
+        server_copies = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM messages "
+                    "WHERE id = ANY(:ids) AND expunged_at IS NULL"
+                ),
+                {"ids": [new_id_1, new_id_2, duplicate_id]},
+            )
+        ).scalar_one()
+        assert server_copies == 0
+
+
+async def _seed_two_more_messages(
+    session: AsyncSession, *, account_id: uuid.UUID, folder_id: uuid.UUID,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    for message_id in ids:
+        await session.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+                " from_addr, raw_source, size_bytes, received_at) "
+                "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :message_id_hdr, "
+                " 'Bulk test', 'sender@example.com', :raw_source, :size_bytes, :received_at)"
+            ),
+            {
+                "id": message_id, "account_id": account_id, "folder_id": folder_id,
+                "uid": 100 + ids.index(message_id),
+                "thread_id": message_id, "message_id_hdr": f"<{message_id}@example.com>",
+                "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+                "received_at": datetime.now(timezone.utc) - timedelta(days=400),
+            },
+        )
+    return ids[0], ids[1]

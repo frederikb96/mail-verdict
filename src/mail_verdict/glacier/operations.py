@@ -872,7 +872,10 @@ async def glacier_message_now(
             return ManualOutcome(
                 False, "could not confirm the server duplicate", glacier_id=outcome.glacier_id,
             )
-        return ManualOutcome(True, None, glacier_id=outcome.glacier_id)
+        return ManualOutcome(
+            True, "already glaciered -- removed the server's duplicate copy",
+            glacier_id=outcome.glacier_id,
+        )
 
     assert outcome.glacier_id is not None and outcome.account_id is not None
     glacier_id = outcome.glacier_id

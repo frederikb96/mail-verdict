@@ -1977,7 +1977,7 @@ def _refuse_over_manual_batch_cap(count: int) -> None:
 
 async def _bulk_glacier_move(
     db: DatabaseConnection, groups: dict[uuid.UUID | None, list[uuid.UUID]],
-) -> tuple[int, list[str], list[uuid.UUID]]:
+) -> tuple[int, int, list[str], list[uuid.UUID]]:
     """Glacier every message in `groups`, one at a time -- glacier_message_
     now is a whole copy/verify/expunge sequence of its own transactions,
     not a single UPDATE, so unlike move_groups() there is no batched
@@ -1988,10 +1988,14 @@ async def _bulk_glacier_move(
     reported skipped rather than attempted.
 
     Returns:
-        (how many actually glaciered, the distinct failure reasons hit,
-        ids left alone because they had already moved elsewhere)
+        (how many actually left the server -- a resolved duplicate
+        included, since its server copy genuinely was removed --
+        how many of those were duplicates rather than newly copied, the
+        distinct FAILURE reasons hit, and ids left alone because they
+        had already moved elsewhere)
     """
     landed = 0
+    duplicate_count = 0
     reasons: dict[str, None] = {}
     skipped: list[uuid.UUID] = []
     for expected, ids in groups.items():
@@ -2011,9 +2015,15 @@ async def _bulk_glacier_move(
             outcome = await glacier_message_now(db, mid, event_ring=get_event_ring())
             if outcome.ok:
                 landed += 1
+                # A success can still carry a reason (a duplicate whose
+                # server copy was removed rather than newly copied) --
+                # counted, never mistaken for a failure by going into
+                # `errors`, which decides response.success.
+                if outcome.reason is not None:
+                    duplicate_count += 1
             elif outcome.reason is not None:
                 reasons.setdefault(outcome.reason, None)
-    return landed, list(reasons), skipped
+    return landed, duplicate_count, list(reasons), skipped
 
 
 @account_router.get("/selection", response_model=SelectionSnapshotResponse)
@@ -2197,6 +2207,7 @@ async def _apply_bulk_action(
     action = request.action
     errors: list[str] = list(glacier_errors)
     affected = glacier_affected
+    duplicate_count = 0
     target = None
 
     async def move_groups(session: AsyncSession, target: uuid.UUID) -> list[uuid.UUID]:
@@ -2254,7 +2265,9 @@ async def _apply_bulk_action(
                         status_code=400, detail="target_folder_id does not belong to this account",
                     )
                 _refuse_over_manual_batch_cap(sum(len(ids) for ids in groups.values()))
-                affected, glacier_errors, glacier_skipped = await _bulk_glacier_move(db, groups)
+                affected, duplicate_count, glacier_errors, glacier_skipped = (
+                    await _bulk_glacier_move(db, groups)
+                )
                 errors.extend(glacier_errors)
                 skipped.extend(glacier_skipped)
             else:
@@ -2308,7 +2321,7 @@ async def _apply_bulk_action(
 
     return BulkActionResponse(
         success=not errors, action=action, affected_count=affected, errors=errors,
-        sources=sources, skipped_ids=skipped,
+        sources=sources, skipped_ids=skipped, duplicate_count=duplicate_count,
         target_folder_id=target if action not in _FLAG_ACTIONS else None,
     )
 

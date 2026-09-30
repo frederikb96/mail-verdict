@@ -418,6 +418,15 @@ class BulkActionResponse(BaseModel):
             "folder expected_folder_ids named for them."
         ),
     )
+    duplicate_count: int = Field(
+        default=0,
+        description=(
+            "Of affected_count, how many were byte-identical to a message "
+            "already in the glacier -- the server's duplicate copy was "
+            "removed rather than a new one copied. Always 0 outside a bulk "
+            "move into the glacier."
+        ),
+    )
 
 
 class SelectionSnapshotResponse(BaseModel):
