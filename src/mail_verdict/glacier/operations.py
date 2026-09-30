@@ -352,6 +352,17 @@ async def resolve_duplicate(
     message's, so the same expunge_if_matches guard that protects the
     ordinary path protects this one too.
 
+    🚨 The existing row must actually have passed verify_message, and its
+    stored bytes are re-hashed here rather than trusting the recorded
+    content_sha256 -- the same reasoning verify_message's own docstring
+    states: a hash recorded at copy time agrees with itself regardless of
+    any corruption since, so comparing against it alone would let a
+    stored copy corrupted after the INSERT authorise removing the live
+    message's only other copy. Restricting to 'verified'/'removing'/
+    'glaciered' also refuses a row still 'restoring' -- a restore that
+    has landed but not yet been confirmed, which must never be treated
+    as a confirmed duplicate and expunged again.
+
     Args:
         db: Database connection
         message_id: The live duplicate
@@ -366,7 +377,9 @@ async def resolve_duplicate(
             await session.execute(
                 text(
                     "SELECT account_id, message_id, size_bytes, received_at "
-                    "FROM glacier_messages WHERE id = :gid"
+                    "FROM glacier_messages "
+                    "WHERE id = :gid AND state IN ('verified', 'removing', 'glaciered') "
+                    "  AND sha256(raw_source) = content_sha256"
                 ),
                 {"gid": existing_glacier_id},
             )

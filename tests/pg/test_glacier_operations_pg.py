@@ -453,6 +453,91 @@ async def test_forged_duplicate_with_different_content_is_never_expunged(
 
 
 @pytest.mark.asyncio
+async def test_a_corrupted_stored_copy_is_never_used_to_authorise_a_duplicate_removal(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """resolve_duplicate must not trust the existing row's recorded
+    content_sha256 alone -- verify_message's own docstring states why: a
+    hash recorded at copy time agrees with itself no matter what happens
+    to the bytes afterward. A stored copy corrupted after verify still
+    carries that original hash, so a later duplicate's live hash matches
+    it; the bytes actually on disk no longer do, and removing the only
+    other copy on that basis alone would be a real, silent loss."""
+    shared_received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    account_id, folder_id, message_id = await _seed_ready_message(
+        migrated_db, message_id_hdr="<corrupt@example.com>", received_at=shared_received_at,
+    )
+    first = await copy_message(migrated_db, message_id)
+    assert await verify_message(migrated_db, first.glacier_id) is True
+    assert await expunge_message(migrated_db, first.glacier_id) == "expunged"
+
+    async with migrated_db.session() as session:
+        # Corrupt the stored bytes after verify passed -- content_sha256
+        # still records the pre-corruption hash, so a naive comparison
+        # against it alone would still agree.
+        await session.execute(
+            text("UPDATE glacier_messages SET raw_source = :corrupted WHERE id = :gid"),
+            {"corrupted": b"corrupted bytes, not what was verified", "gid": first.glacier_id},
+        )
+        duplicate_id = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, imap_uid=2,
+            message_id_hdr="<corrupt@example.com>", received_at=shared_received_at,
+        )
+
+    second = await copy_message(migrated_db, duplicate_id)
+    assert second.status == "duplicate_removable"
+
+    removed = await resolve_duplicate(migrated_db, duplicate_id, second.glacier_id)
+    assert removed is False, "a corrupted stored copy must never authorise removing the duplicate"
+
+    async with migrated_db.session() as session:
+        live = (
+            await session.execute(
+                text("SELECT expunged_at FROM messages WHERE id = :id"), {"id": duplicate_id},
+            )
+        ).mappings().one()
+        assert live["expunged_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_unverified_existing_row_is_never_used_to_authorise_a_duplicate_removal(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A row still `copied` has never passed verify_message -- its
+    recorded content_sha256 has never once been checked against the live
+    original it was copied from. Treating it as a confirmed duplicate and
+    expunging a second live copy on that basis would remove content on
+    the strength of a hash nothing has actually verified."""
+    shared_received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    account_id, folder_id, message_id = await _seed_ready_message(
+        migrated_db, message_id_hdr="<unverified@example.com>", received_at=shared_received_at,
+    )
+    first = await copy_message(migrated_db, message_id)
+    assert first.status == "copied"
+    # Deliberately never verified -- the row stays in 'copied'.
+
+    async with migrated_db.session() as session:
+        duplicate_id = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, imap_uid=2,
+            message_id_hdr="<unverified@example.com>", received_at=shared_received_at,
+        )
+
+    second = await copy_message(migrated_db, duplicate_id)
+    assert second.status == "duplicate_removable"
+
+    removed = await resolve_duplicate(migrated_db, duplicate_id, second.glacier_id)
+    assert removed is False, "an unverified existing row must never authorise a removal"
+
+    async with migrated_db.session() as session:
+        live = (
+            await session.execute(
+                text("SELECT expunged_at FROM messages WHERE id = :id"), {"id": duplicate_id},
+            )
+        ).mappings().one()
+        assert live["expunged_at"] is None
+
+
+@pytest.mark.asyncio
 async def test_glacier_message_now_runs_the_whole_sequence(
     migrated_db: DatabaseConnection,
 ) -> None:
