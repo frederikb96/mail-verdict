@@ -214,12 +214,22 @@ async def update_account(
                     prefs_values["glacier_folder_id"] = uuid.uuid4()
             else:
                 # D7: disabling is refused while the glacier still holds
-                # the only copy of anything.
+                # the only copy of anything -- or is on its way to
+                # holding it. visible_at alone misses a row still
+                # `copied` or `verified`: the sweep does not stop
+                # working a row just because the switch went off (it
+                # selects by glacier_folder_id, not by glacier_enabled),
+                # so such a row would still be driven to expunged on a
+                # glacier no read path will surface, leaving the message
+                # readable nowhere. `state` excludes only the two
+                # tombstones (restored, expunged) -- every other state is
+                # still mid-flight toward holding the only copy.
                 held = (
                     await session.execute(
                         text(
                             "SELECT count(*) FROM glacier_messages "
-                            "WHERE account_id = :account_id AND visible_at IS NOT NULL"
+                            "WHERE account_id = :account_id "
+                            "AND state NOT IN ('restored', 'expunged')"
                         ),
                         {"account_id": account_id},
                     )

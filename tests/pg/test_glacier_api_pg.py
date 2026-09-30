@@ -323,6 +323,68 @@ async def test_disabling_glacier_while_it_holds_mail_is_refused(
 
 
 @pytest.mark.asyncio
+async def test_disabling_glacier_while_a_row_is_still_mid_flight_is_refused(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """visible_at is only set once a row reaches `removing` -- a row
+    still `copied` (verify has not even run yet) has not been expunged
+    from the server, but the sweep drives it there regardless of the
+    switch (it selects by glacier_folder_id, not by glacier_enabled), so
+    disabling has to see this row too, not only one already visible in
+    the glacier. Restore is the escape hatch here, not delete: this
+    account holds no eligible live message for a genuine move-out, so
+    the row is driven to a tombstone directly, the same terminal shape a
+    restore or a permanent delete leaves."""
+    account_id, _folder_id, message_id = await _seed_ready_message(migrated_db)
+    glacier_id = uuid.uuid4()
+    async with migrated_db.session() as session:
+        glacier_folder_id = await _glacier_folder_id(session, account_id)
+        await session.execute(
+            text(
+                "INSERT INTO glacier_messages "
+                "(id, account_id, folder_id, origin_message_id, thread_id, message_id, "
+                " subject, from_addr, to_addrs, body_text, raw_source, size_bytes, "
+                " received_at, is_seen, msg_key, state) "
+                "VALUES (:id, :account_id, :folder_id, :origin_message_id, :thread_id, "
+                " :message_id_hdr, 'Mid-flight', 'sender@example.com', "
+                " '[\"me@example.com\"]', 'Body', :raw_source, :size_bytes, "
+                " :received_at, false, :msg_key, 'copied')"
+            ),
+            {
+                "id": glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+                "origin_message_id": message_id, "thread_id": glacier_id,
+                "message_id_hdr": f"<{glacier_id}@example.com>",
+                "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+                "received_at": datetime.now(timezone.utc), "msg_key": f"msg-{glacier_id}",
+            },
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_account(account_id, AccountUpdateRequest(glacier_enabled=False))
+    assert exc_info.value.status_code == 409
+
+    async with migrated_db.session() as session:
+        state = (
+            await session.execute(
+                text("SELECT state FROM glacier_messages WHERE id = :id"), {"id": glacier_id},
+            )
+        ).scalar_one()
+        assert state == "copied", "a rejected disable must not have touched the row"
+
+        # Drive the row to a tombstone (the shape a completed restore or
+        # a permanent delete leaves) and confirm disabling now succeeds.
+        await session.execute(
+            text(
+                "UPDATE glacier_messages SET state = 'expunged', visible_at = NULL, "
+                "raw_source = NULL WHERE id = :id"
+            ),
+            {"id": glacier_id},
+        )
+
+    await update_account(account_id, AccountUpdateRequest(glacier_enabled=False))
+
+
+@pytest.mark.asyncio
 async def test_restoring_through_the_move_action(migrated_db: DatabaseConnection) -> None:
     """The refusal when the running PostIMAP lacks the capability is
     tests/pg/test_glacier_gate_pg.py's own subject, exhaustively; this
