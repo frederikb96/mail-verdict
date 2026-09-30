@@ -527,6 +527,7 @@ class AccountResponse(BaseModel):
     # AccountPrefs fields (from account_prefs table)
     emoji: str | None = None
     spam_enabled: bool = False
+    orders_enabled: bool = False
     folder_order: list[str] | None = None
     # NULL/omitted is off -- see AccountPrefs.trash_retention_days /
     # .junk_retention_days, independently configurable.
@@ -564,6 +565,7 @@ class AccountCreateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool = False
+    orders_enabled: bool = False
     # Zero means every retention_entries row already stamped is overdue,
     # and a negative period puts the threshold in the future -- either
     # clears the whole folder on the very next sweep tick. ge=1 rejects
@@ -594,6 +596,7 @@ class AccountUpdateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool | None = None
+    orders_enabled: bool | None = None
     # See AccountCreateRequest.trash_retention_days for why ge=1.
     trash_retention_days: int | None = Field(default=None, ge=1)
     junk_retention_days: int | None = Field(default=None, ge=1)
@@ -2000,3 +2003,87 @@ class ContactUpdateRequest(BaseModel):
     categories: list[str] | None = None
     # "" clears an existing photo; None (unset) leaves it untouched.
     photo_data_url: str | None = Field(default=None, max_length=_MAX_PHOTO_DATA_URL_LENGTH)
+
+
+# --- Orders schemas ---
+
+
+class OrderListItem(BaseModel):
+    """One row of the orders list -- everything a screen renders without
+    opening the order."""
+
+    id: uuid.UUID
+    merchant: str
+    subject: str
+    status: str
+    title: str
+    is_open: bool
+    icon: str
+    summary_preview: str
+    first_mail_at: datetime | None
+    last_mail_at: datetime | None
+    mail_count: int
+    account_ids: list[uuid.UUID]
+    text_stale: bool
+    updated_at: datetime
+
+
+class OrderListResponse(BaseModel):
+    items: list[OrderListItem]
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class OrderIdentifierOut(BaseModel):
+    kind: str
+    value: str
+
+
+class OrderMailOut(BaseModel):
+    key: uuid.UUID
+    account_id: uuid.UUID
+    message_id: uuid.UUID | None
+    thread_id: uuid.UUID | None
+    location: Literal["mailbox", "glacier", "gone"]
+    folder_id: uuid.UUID | None
+    is_seen: bool | None
+    subject: str
+    from_addr: str
+    received_at: datetime
+    attached_by: str
+
+
+class OrderDocumentOut(BaseModel):
+    message_id: uuid.UUID
+    attachment_id: uuid.UUID
+    filename: str
+    content_type: str
+    size_bytes: int | None
+    received_at: datetime
+
+
+class OrderDetail(OrderListItem):
+    summary: str
+    identifiers: list[OrderIdentifierOut]
+    mails: list[OrderMailOut]
+    documents: list[OrderDocumentOut]
+
+
+class OrderMergeRequest(BaseModel):
+    into: uuid.UUID
+
+
+class OrderDetachRequest(BaseModel):
+    move_to: uuid.UUID | None = None
+
+
+class OrderCatchUpRequest(BaseModel):
+    account_id: uuid.UUID
+    days: int = Field(ge=1, le=365)
+    dry_run: bool = False
+
+
+class OrderCatchUpResponse(BaseModel):
+    considered: int
+    passed: int
+    queued: int

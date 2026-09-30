@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.models import Folder, FolderPrefs, Verdict, VerdictSource
+from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.pipeline.contracts import (
     JsonValue,
     StageOutcome,
@@ -184,6 +185,7 @@ class ModelGateway:
         self,
         *,
         provider: str,
+        category: str,
         model: str,
         effort: str | None,
         max_tokens: int,
@@ -193,21 +195,39 @@ class ModelGateway:
         schema: dict[str, JsonValue],
         validate: Any = None,
         base_url: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], float]:
         """
         Issue one strict-schema request.
 
-        The circuit breaker is keyed by provider name alone, so it is
-        shared by every caller of that provider -- a future embedding
-        worker calling OpenAI trips and clears the same breaker a
-        classify stage's calls do. The same holds for "custom": whichever
-        settings category (ai, semantic) has its provider set to "custom"
-        shares one breaker with the other, since a custom deployment is
-        one account.
+        The circuit breaker is keyed by `(provider, category)`, not by
+        provider name alone: `category` is the settings category the
+        caller's model/effort/budget came from ("ai", "semantic",
+        "orders"), so two categories that happen to share one provider
+        name -- both pointed at "custom", say -- each trip and clear
+        their own breaker rather than one shared row. A misconfiguration
+        specific to one category (a garbage model name in that category's
+        own settings) therefore stalls only that category's queue. A
+        genuinely broken *credential* still stalls every category that
+        shares it, since each independently fails its own next call and
+        opens its own breaker -- just not falsely, through a row none of
+        them actually wrote to.
 
         Args:
+            category: Settings category this call's model/effort/budget
+                came from -- part of the circuit breaker's identity, never
+                used to pick the provider or credential
             base_url: Required when provider is "custom" -- the compatible
                 server's API base. Ignored otherwise.
+            timeout_seconds: Overrides the shared client's own per-request
+                timeout for this call alone. Left unset, the client's
+                default holds (core/openai_provider.py,
+                core/anthropic_provider.py) -- sized for classify and
+                embeddings' tighter queue leases. A caller with a more
+                generous lease of its own, and a workload that can
+                legitimately take longer than that shared default, passes
+                its own budget here rather than the default being widened
+                for everyone.
 
         Returns:
             (parsed response, latency in milliseconds)
@@ -228,7 +248,9 @@ class ModelGateway:
         # production safety net, not something a call against a real
         # provider needs in order to prove the request/response shape.
         self._circuit = (
-            CircuitBreaker(self._db, provider) if self._db is not None else _NullCircuit()
+            CircuitBreaker(self._db, f"{provider}:{category}")
+            if self._db is not None
+            else _NullCircuit()
         )
         if not await self._circuit.is_available():
             status = await self._circuit.status()
@@ -257,6 +279,7 @@ class ModelGateway:
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
             elif provider == "custom":
                 # A compatible server serves chat completions only, not
@@ -265,11 +288,13 @@ class ModelGateway:
                 data = await call_chat_completions_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
             else:
                 data = await call_openai_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
         except Exception as exc:
             await self._map_and_raise(provider, exc)
@@ -333,6 +358,10 @@ class RunContext:
     # read once per run by the runner so the classify stage stays free of its
     # own database access -- see pipeline/stages/classify.py.
     account_spam_enabled: bool = False
+    # account_prefs.orders_enabled, the same way -- see
+    # pipeline/stages/orders.py.
+    account_orders_enabled: bool = False
+    orders: OrderLookup | None = None
 
     def with_trace_entry(self, outcome: StageOutcome) -> RunContext:
         """A copy with `outcome` appended to the trace and its facts merged

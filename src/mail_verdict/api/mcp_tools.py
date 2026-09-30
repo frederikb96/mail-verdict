@@ -5,7 +5,8 @@ Reads from Postgres, writes through postimap/actions.py -- never touches
 IMAP/SMTP directly. Mail tools: search_mail, list_mails, get_mail,
 get_thread, list_folders, list_accounts, move_mail, mark_mail, tag_mail,
 get_verdict, submit_spam_feedback, send_mail, draft_mail, reply_mail,
-get_stats, semantic_search_mail, get_semantic_status. Calendar and contact tools:
+get_stats, semantic_search_mail, get_semantic_status, list_orders, get_order.
+Calendar and contact tools:
 list_calendars, list_events, get_event, create_event, update_event,
 delete_event, respond_to_event, list_addressbooks, list_contacts,
 search_contacts, get_contact, create_contact, update_contact,
@@ -89,6 +90,8 @@ from mail_verdict.api.mcp_reply import (
     match_identity,
     merge_addresses,
 )
+from mail_verdict.api.orders import get_order as _get_order
+from mail_verdict.api.orders import list_orders as _list_orders
 from mail_verdict.api.outbox import replay_submission, require_recipients
 from mail_verdict.api.schemas import (
     ContactAddressIO,
@@ -1991,3 +1994,64 @@ async def delete_contact(contact_id: str) -> dict[str, Any]:
     except HTTPException as exc:
         return {"success": False, **_endpoint_error(exc)}
     return {"success": True}
+
+
+@mcp.tool(
+    name="list_orders",
+    annotations={
+        "title": "List Orders",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def list_orders(state: str = "all", limit: int = 50) -> list[dict[str, Any]]:
+    """
+    List orders and tickets, newest activity first -- the register
+    bundling every mail about one purchase, ticket or booking across
+    every enabled account.
+
+    Args:
+        state: "all" or "open" (still expecting something to happen)
+        limit: Max results, 1-500 (default 50)
+
+    Returns:
+        List of orders: id, merchant, subject, status, title, is_open,
+        icon, summary_preview, first_mail_at, last_mail_at, mail_count,
+        account_ids, text_stale, updated_at
+    """
+    try:
+        result = await _list_orders(state=state, before=None, limit=min(max(limit, 1), 500))
+    except HTTPException as exc:
+        return [_endpoint_error(exc)]
+    return [item.model_dump(mode="json") for item in result.items]
+
+
+@mcp.tool(
+    name="get_order",
+    annotations={
+        "title": "Get Order",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_order(order_id: str) -> dict[str, Any]:
+    """
+    Get one order's full detail: title, markdown summary, numbers,
+    documents, and its mails in time order.
+
+    Args:
+        order_id: Order UUID (see list_orders)
+
+    Returns:
+        Everything list_orders returns for this order, plus summary,
+        identifiers, mails and documents -- or {"error": ...}
+    """
+    try:
+        detail = await _get_order(order_id=uuid.UUID(order_id))
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return detail.model_dump(mode="json")

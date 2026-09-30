@@ -41,6 +41,7 @@ from mail_verdict.settings.credentials import (
     EncryptionUnavailableError,
     get_provider_credential_repo,
 )
+from mail_verdict.settings.orders_validation import validate_orders_settings
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,13 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if category == "orders":
+        effective = {**service.get("orders"), **data}
+        try:
+            validate_orders_settings(effective)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     try:
         result = await service.update(category, data)
     except ValueError as exc:
@@ -273,6 +281,13 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         data["semantic"] = semantic_data
+
+    if "orders" in data:
+        effective = {**get_settings_service().get("orders"), **data["orders"]}
+        try:
+            validate_orders_settings(effective)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     service = get_settings_service()
     try:

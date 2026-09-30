@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Save, Loader2, Archive, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
+import { Save, Loader2, Archive, Bot, CalendarDays, Package, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,6 +38,7 @@ import { DefaultCalendarSetting } from "@/components/settings/default-calendar-s
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
   { key: "semantic", label: "Semantic search", icon: Sparkles },
+  { key: "orders", label: "Orders", icon: Package },
   { key: "retry", label: "Retry", icon: Repeat },
   { key: "pipeline", label: "Pipeline", icon: Workflow },
   { key: "outbox", label: "Outbox", icon: Undo2 },
@@ -106,6 +107,8 @@ const SETTING_LABELS: Record<string, string> = {
   mark_read_on_file_to_archive_or_junk: "Mark read when filed to Archive or Junk",
   bell_badge_counts_new_mail: "Bell badge counts new mail",
   notify_wait_seconds: "Wait before notifying (seconds)",
+  language: "Language of titles and summaries",
+  filter: "First filter (patterns)",
 };
 
 /** A raw settings key read as a sentence rather than the key itself --
@@ -158,12 +161,15 @@ function SettingField({
   }
 
   if (typeof value === "object" && value !== null) {
+    const serialized = JSON.stringify(value, null, 2);
+    const lineCount = serialized.split("\n").length;
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm" title={name}>{humanizeSettingKey(name)}</Label>
         <Textarea
-          value={JSON.stringify(value, null, 2)}
-          rows={4}
+          value={serialized}
+          rows={Math.min(30, Math.max(4, lineCount))}
+          className="font-mono text-xs"
           onChange={(e) => {
             try {
               onChange(name, JSON.parse(e.target.value));

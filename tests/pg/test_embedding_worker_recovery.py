@@ -200,11 +200,11 @@ async def test_registered_circuit_name_matches_the_provider_setting(
 
     await settings_service.update("semantic", {"provider": "openai"})
     summary = await queue_manager.summary(QUEUE_NAME)
-    assert summary.circuit.name == "openai"
+    assert summary.circuit.name == "openai:semantic"
 
     await settings_service.update("semantic", {"provider": "custom"})
     summary = await queue_manager.summary(QUEUE_NAME)
-    assert summary.circuit.name == "custom"
+    assert summary.circuit.name == "custom:semantic"
 
 
 @pytest.mark.asyncio
@@ -214,12 +214,12 @@ async def test_suspended_worker_loop_recovers_once_it_wins_a_probe(
     """The fresh-install reproduction: a breaker suspended (no key
     configured) that nothing ever probes stays suspended forever, even
     after the key is fixed. The worker loop must call try_probe itself."""
-    # _run_worker builds its own CircuitBreaker(db, provider_name) fresh
-    # every iteration from settings.semantic.provider -- this must be the
-    # same name the pre-suspended breaker below uses, for this to be a
+    # _run_worker builds its own CircuitBreaker(db, f"{provider_name}:semantic")
+    # fresh every iteration from settings.semantic.provider -- this must be
+    # the same name the pre-suspended breaker below uses, for this to be a
     # reproduction of a breaker nothing ever probes.
     circuit_name = f"provider-{uuid.uuid4().hex[:8]}"
-    circuit = CircuitBreaker(migrated_db, circuit_name)
+    circuit = CircuitBreaker(migrated_db, f"{circuit_name}:semantic")
     await circuit.record_unavailable(
         reason="no key configured", probe_interval=timedelta(seconds=0),
     )

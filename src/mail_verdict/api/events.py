@@ -58,6 +58,7 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     "mail.new",
     "mail.updated",
     "notification.new",
+    "order.updated",
     "outbox.updated",
     "pipeline.document_changed",
     "pipeline.notify",

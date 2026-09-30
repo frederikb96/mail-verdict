@@ -55,6 +55,9 @@ import type {
   MessageQuoteResponse,
   NotificationCountResponse,
   NotificationResponse,
+  OrderCatchUpResponse,
+  OrderDetail,
+  OrderListResponse,
   OutboxCreateRequest,
   OutboxCreateResult,
   OutboxResponse,
@@ -997,6 +1000,54 @@ export const api = {
     },
     delete(id: string): Promise<void> {
       return request(`/contacts/${id}`, { method: "DELETE" });
+    },
+  },
+
+  orders: {
+    /** Newest activity first, hidden until an order has its first
+     * AI-written text. */
+    list(params?: {
+      state?: "all" | "open";
+      before?: string;
+      limit?: number;
+    }): Promise<OrderListResponse> {
+      return request(`/orders${qs(params ?? {})}`);
+    },
+    get(id: string): Promise<OrderDetail> {
+      return request(`/orders/${id}`);
+    },
+    delete(id: string): Promise<void> {
+      return request(`/orders/${id}`, { method: "DELETE" });
+    },
+    /** Enqueues a fresh write call over the order's own mails. */
+    rewrite(id: string): Promise<void> {
+      return request(`/orders/${id}/rewrite`, { method: "POST" });
+    },
+    /** Moves every mail and number of `id` into `into` and deletes `id`. */
+    merge(id: string, into: string): Promise<OrderDetail> {
+      return request(`/orders/${id}/merge`, {
+        method: "POST",
+        body: JSON.stringify({ into }),
+      });
+    },
+    /** Removes one mail from its order, or moves it to another --
+     * `mailKey` is the mail's OrderMail.key (order_mails.id), not its
+     * durable msg_key. Never re-bundled automatically either way. */
+    detachMail(orderId: string, mailKey: string, moveTo?: string | null): Promise<OrderDetail | null> {
+      return request(`/orders/${orderId}/mails/${mailKey}/detach`, {
+        method: "POST",
+        body: JSON.stringify({ move_to: moveTo ?? null }),
+      });
+    },
+    catchUp(params: {
+      account_id: string;
+      days: number;
+      dry_run: boolean;
+    }): Promise<OrderCatchUpResponse> {
+      return request("/orders/catch-up", {
+        method: "POST",
+        body: JSON.stringify(params),
+      });
     },
   },
 };

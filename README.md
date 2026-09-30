@@ -92,6 +92,15 @@ mirror, which is what keeps it simple.
   message currently called spam with no ruling yet, across every account and folder including
   Junk, for confirming or correcting them singly or in bulk. Historical mail is never classified,
   and nothing is classified twice.
+- **Orders and tickets** — mail about a purchase, ticket or booking (confirmation, invoice,
+  payment, shipping, carrier notices, delivery, return, refund, customer-service conversation) is
+  bundled into one entry with an AI-written title, status and summary, across every account that
+  has the feature switched on, in a screen of its own. A carrier notice or payment receipt with no
+  order number of its own still finds its way to the right entry by merchant, timing and what is
+  already in flight; a mail is attached to an existing entry or opens a new one, never split
+  between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
+  removed, two entries merged, or the summary rewritten by hand. Recent mail can be looked through
+  after switching the feature on for an account.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,
@@ -126,8 +135,9 @@ mirror, which is what keeps it simple.
   default. Hovering a link shows where it leads. The image block does
   not extend to the message body itself: a newly arrived message's subject, sender and a
   truncated body go to the configured model provider twice, once for spam classification and once
-  for the embedding that powers semantic search — a deliberate design choice, not something a
-  setting turns off.
+  for the embedding that powers semantic search, and a third time for orders and tickets on an
+  account with that feature on and a mail that passes its first filter — a deliberate design
+  choice, not something a setting turns off.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail —
   including replying to or forwarding a message by its id, saved as a draft for you to review and
   send, with attachments — and

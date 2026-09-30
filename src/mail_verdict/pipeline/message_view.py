@@ -37,6 +37,18 @@ from mail_verdict.database.models import Attachment, Folder, FolderPrefs, MailTa
 # tone and intent, short enough that a 20MB message costs nothing to load.
 _BODY_EXCERPT_CHARS = 4_000
 
+# A second, larger excerpt of the RAW (unstripped, un-URL-rewritten) body
+# text and HTML -- what the orders stage (pipeline/stages/orders.py) runs
+# its own body preparation over (orders/content.py's prepare_body), since
+# that preparation and the classify stage's excerpt above serve different
+# purposes and must not share one truncation. Bounded, the same reasoning
+# as _BODY_EXCERPT_CHARS: body_text/body_html are already fully loaded
+# into memory by this same query regardless, so exposing a bounded slice
+# costs nothing extra to compute -- only unbounded retention across a
+# whole run would reintroduce the OOM-under-concurrency risk this
+# module's docstring warns about.
+_ORDERS_BODY_EXCERPT_CHARS = 20_000
+
 # A bare URL, in either plain text or the text nh3.clean(tags=set()) below
 # leaves behind. Trailing characters a sentence or a closing bracket
 # commonly glues on are stripped by _clean_url rather than excluded here,
@@ -87,6 +99,12 @@ class MessageView:
     attachment_types: tuple[str, ...]
     has_attachments: bool
     reply_to: str | None = None
+    thread_id: uuid.UUID | None = None
+    # Raw (unstripped) body, bounded to _ORDERS_BODY_EXCERPT_CHARS -- for
+    # the orders stage's own body preparation only (orders/content.py's
+    # prepare_body); every other stage reads `body` above.
+    body_text_raw: str | None = None
+    body_html_raw: str | None = None
 
     def with_folder(self, folder: FolderView) -> MessageView:
         """A copy with a different folder -- how the runner projects an
@@ -271,6 +289,7 @@ async def load_message_view(session: AsyncSession, message_id: uuid.UUID) -> Mes
             Message.id,
             Message.account_id,
             Message.folder_id,
+            Message.thread_id,
             Message.message_id,
             Message.subject,
             Message.from_addr,
@@ -377,4 +396,7 @@ async def load_message_view(session: AsyncSession, message_id: uuid.UUID) -> Mes
         attachment_types=attachment_types,
         has_attachments=has_attachments,
         reply_to=row.reply_to,
+        thread_id=row.thread_id,
+        body_text_raw=row.body_text[:_ORDERS_BODY_EXCERPT_CHARS] if row.body_text else None,
+        body_html_raw=row.body_html[:_ORDERS_BODY_EXCERPT_CHARS] if row.body_html else None,
     )

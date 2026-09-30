@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Moving a message in and out uses the ordinary move action; nothing else changes. Moving a
   message in is refused, naming the deployment's PostIMAP version, whenever that PostIMAP cannot
   carry it back out again -- restore must work before removal is ever offered at all.
+- A new "Orders & tickets" screen bundles every mail about one purchase, ticket or booking --
+  confirmation, invoice, shipping, carrier notices, delivery, return, refund, customer-service
+  conversation -- into one entry with an AI-written title, status and summary, across every
+  enabled account. Switched on per account, next to spam detection. A mail can be moved between
+  orders or removed, two orders merged, a summary rewritten by hand, and recent mail looked
+  through after switching the feature on. Opening one of an order's mails shows it in the normal
+  mail view, and going back returns to the order -- and to the list behind it -- at the same
+  place.
 - The AI provider for spam verdicts and for embeddings is now a setting: OpenAI as before, or any
   OpenAI-compatible server by address, key and model name. Switching the embedding model re-embeds
   the whole store in the background while search keeps answering from the old vectors, cutting
@@ -22,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   no longer holds the switch back forever. `GET /api/embeddings/status` reports whether a
   migration is ready to cut over, and why not when it isn't. A rate limit from the provider backs
   every queued item off together rather than failing any of them.
+- A queue card on the Pipeline page whose circuit is open or suspended now offers "Retry now",
+  closing it immediately instead of waiting out its own timer -- useful the moment a wrong
+  provider key or model is fixed.
 - A long message's links now always reach the spam classifier, including ones an HTML anchor's
   visible text gives no hint of and ones that would otherwise have sat past the body excerpt's cut.
 - The calendar's month view now selects a week a little above the middle of the visible rows,

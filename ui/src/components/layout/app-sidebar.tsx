@@ -14,6 +14,7 @@ import {
   Folder,
   Layers,
   Mail,
+  Package,
   Settings,
   Search,
   ShieldAlert,
@@ -595,6 +596,15 @@ export function AppSidebar() {
             >
               <Contact className="h-4 w-4" />
               <span>Contacts</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              render={<Link href="/orders" prefetch={false} />}
+              isActive={pathname === "/orders"}
+            >
+              <Package className="h-4 w-4" />
+              <span>Orders & tickets</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>

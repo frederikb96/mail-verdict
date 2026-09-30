@@ -17,6 +17,7 @@ import {
   GripVertical,
   ImageOff,
   MoreVertical,
+  Search,
   Zap,
   AlertCircle,
 } from "lucide-react";
@@ -57,6 +58,7 @@ import {
   useUpdateAccount,
 } from "@/hooks/use-accounts";
 import { useUpdateAccountEmoji } from "@/hooks/use-account-emoji";
+import { useOrderCatchUp } from "@/hooks/use-orders";
 import { accountConnectionState, useSyncStatus, useTriggerSync } from "@/hooks/use-sync-status";
 import { useToast } from "@/hooks/use-toast";
 import { formatRelativeAgo } from "@/lib/format";
@@ -109,6 +111,106 @@ function SectionTrigger({
   );
 }
 
+/** "Look through recent mail…": a number of days, a dry-run preview of how
+ * many mails the model would read, then the real sweep -- against the
+ * catch-up endpoint's own dry_run flag, so a preview never enqueues
+ * anything and Start always sees the count it just asked for. */
+function OrderCatchUpDialog({
+  accountId,
+  open,
+  onOpenChange,
+}: {
+  accountId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [days, setDays] = useState(90);
+  const [preview, setPreview] = useState<number | null>(null);
+  const [result, setResult] = useState<number | null>(null);
+  const catchUp = useOrderCatchUp();
+
+  const runPreview = () => {
+    setResult(null);
+    catchUp.mutate(
+      { account_id: accountId, days, dry_run: true },
+      { onSuccess: (r) => setPreview(r.passed) },
+    );
+  };
+
+  const runStart = () => {
+    catchUp.mutate(
+      { account_id: accountId, days, dry_run: false },
+      { onSuccess: (r) => setResult(r.queued) },
+    );
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        onOpenChange(next);
+        if (!next) {
+          setDays(90);
+          setPreview(null);
+          setResult(null);
+        }
+      }}
+    >
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>Look through recent mail</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Reads mail already in this account's mailbox for orders and tickets it missed --
+          nothing is classified twice, whatever you choose here.
+        </p>
+        <div className="grid gap-1.5">
+          <Label htmlFor="catch-up-days">Days</Label>
+          <Input
+            id="catch-up-days"
+            type="number"
+            min={1}
+            max={365}
+            value={days}
+            onChange={(e) => {
+              setDays(Number(e.target.value));
+              setPreview(null);
+              setResult(null);
+            }}
+          />
+        </div>
+        {preview !== null && result === null && (
+          <p className="text-sm">
+            {preview} mail{preview === 1 ? "" : "s"} would be read by the model.
+          </p>
+        )}
+        {result !== null && (
+          <p className="text-sm">
+            {result} mail{result === 1 ? "" : "s"} queued.
+          </p>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Close
+          </Button>
+          {result === null && (
+            <Button variant="outline" disabled={catchUp.isPending} onClick={runPreview}>
+              {catchUp.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Preview
+            </Button>
+          )}
+          {preview !== null && result === null && (
+            <Button disabled={catchUp.isPending} onClick={runStart}>
+              {catchUp.isPending && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+              Start
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AccountCard({
   account,
   onEdit,
@@ -123,6 +225,7 @@ function AccountCard({
   const triggerSync = useTriggerSync();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  const [catchUpOpen, setCatchUpOpen] = useState(false);
 
   const isRetrying = accountConnectionState(account, syncStatus) === "retrying";
 
@@ -251,6 +354,26 @@ function AccountCard({
                 )}
                 {account.spam_enabled ? "Enabled" : "Disabled"}
               </div>
+              <div className="text-muted-foreground">Orders</div>
+              <div className="flex items-center gap-1">
+                {account.orders_enabled ? (
+                  <CheckCircle2 className="h-3 w-3 text-green-500" />
+                ) : (
+                  <XCircle className="h-3 w-3 text-muted-foreground" />
+                )}
+                {account.orders_enabled ? "On" : "Off"}
+                {account.orders_enabled && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="ml-2 h-6 px-2 text-xs"
+                    onClick={() => setCatchUpOpen(true)}
+                  >
+                    <Search className="mr-1 h-3 w-3" />
+                    Look through recent mail…
+                  </Button>
+                )}
+              </div>
               <div className="text-muted-foreground">Trash retention</div>
               <div className="flex items-center gap-1">
                 {account.trash_retention_days ? (
@@ -370,6 +493,14 @@ function AccountCard({
           })
         }
       />
+
+      {account.orders_enabled && (
+        <OrderCatchUpDialog
+          accountId={account.id}
+          open={catchUpOpen}
+          onOpenChange={setCatchUpOpen}
+        />
+      )}
     </Card>
   );
 }
@@ -398,6 +529,7 @@ function AccountForm({
     const smtp_user = (form.get("smtp_user") as string) || undefined;
     const smtp_password = (form.get("smtp_password") as string) || undefined;
     const spam_enabled = form.get("spam_enabled") === "on";
+    const orders_enabled = form.get("orders_enabled") === "on";
     const trashRetentionRaw = form.get("trash_retention_days") as string;
     const trash_retention_days = trashRetentionRaw ? Number(trashRetentionRaw) : null;
     const junkRetentionRaw = form.get("junk_retention_days") as string;
@@ -416,6 +548,7 @@ function AccountForm({
         smtp_user,
         smtp_password,
         spam_enabled,
+        orders_enabled,
         trash_retention_days,
         junk_retention_days,
         glacier_enabled,
@@ -444,6 +577,7 @@ function AccountForm({
         smtp_user,
         smtp_password,
         spam_enabled,
+        orders_enabled,
         trash_retention_days,
         junk_retention_days,
       };
@@ -565,6 +699,16 @@ function AccountForm({
             className="h-4 w-4"
           />
           <Label htmlFor="spam_enabled">Enable spam detection</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            id="orders_enabled"
+            name="orders_enabled"
+            type="checkbox"
+            defaultChecked={account?.orders_enabled ?? false}
+            className="h-4 w-4"
+          />
+          <Label htmlFor="orders_enabled">Bundle orders and tickets</Label>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-1.5">

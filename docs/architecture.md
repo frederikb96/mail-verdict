@@ -239,14 +239,19 @@ A live message is embedded before it ever reaches the pipeline. `message`/`inser
 `origin = "sync"` enqueues a `message_embeddings` row, not a `pipeline_runs` row — the pipeline
 row is only inserted once that embedding reaches a terminal state, `done` or `failed`, in the same
 transaction as the write that reaches it (`embeddings/repository.py`, calling
-`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). Both the embedding call and the
-classify call hit the same provider, so gating on the first costs no real availability — if the
-provider is down, nothing downstream was going to be classified either — and it buys the
-invariant that everything in the pipeline queue has a vector, which is what neighbour hints below
-depend on. A message whose embedding permanently fails is not stranded: reaching `failed` opens
-the gate exactly as `done` does, just with no neighbour hints available, which the classify stage
-records in its own trace. Reconciliation's gap-recovery pass (a listener reconnect) respects the
-same gate, so it cannot enqueue a run ahead of a still-pending embedding.
+`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). The embedding and classify calls may
+run against entirely different providers, since `ai` and `semantic` are independently selectable
+settings — gating classify on the embedding's own terminal state costs nothing regardless: a
+permanently failing embedding still reaches `failed` and opens the gate exactly as `done` does,
+just with no neighbour hints available, so an unrelated semantic-provider outage only delays
+classification behind its own retries, never blocks it, and the gate still buys the invariant that
+everything in the pipeline queue has a vector, which is what neighbour hints below depend on. This
+is a scheduling gate, not the availability-tracking circuit breaker each of `pipeline`, `orders`
+and `embeddings` keeps for its own provider calls (`queue/circuit.py`) — a breaker is keyed by
+`(provider, settings category)`, never by provider alone, so a misconfiguration in one category's
+own settings cannot suspend another category that happens to share a provider name. Reconciliation's
+gap-recovery pass (a listener reconnect) respects the classify gate, so it cannot enqueue a run
+ahead of a still-pending embedding.
 
 Never on an update, either way. A stage reacting to a folder-move update could loop on its own
 writes: PostIMAP's `origin` field distinguishes its own sync writes from this application's, but
@@ -335,6 +340,61 @@ sender or an exact phrase, semantic search wins on a half-remembered topic with 
 words. Both accept `folder_ids`, enforced in the query itself rather than filtered afterward — a
 caller filtering the response instead would silently turn a scoped search into an unscoped one
 with a smaller page.
+
+## Orders
+
+The orders register (`orders/`, tables `orders`/`order_mails`/`order_identifiers`/`order_jobs`)
+bundles every mail about one purchase, ticket or booking into one entry with an AI-written title
+and summary, across every account that has the feature switched on
+(`account_prefs.orders_enabled`).
+
+**The pipeline stage only enqueues; it never calls a model.** `pipeline/stages/orders.py` checks
+the switch, the spam verdict, the two bypass rules (a mail whose thread already belongs to an
+order, or whose text carries a number an order of the last year holds) and the first filter
+(`orders/filter.py`, patterns in `settings.orders.filter`), then returns an `EnqueueOrder` effect
+that inserts an `order_jobs` row — nothing more. Two reasons: a burst of mail from one sender runs
+through the pipeline concurrently, and two workers deciding at once could each see no matching
+order and each open one; and a model call inside the stage would delay the new-mail alert waiting
+on the pipeline run for a decision the alert does not need.
+
+**One worker, one advisory lock, so "never split" holds by construction.** `orders/worker.py`
+registers the `orders` queue at concurrency 1, and every job additionally opens with `SELECT
+pg_advisory_xact_lock` before its reads, its model call and its writes — held for the whole job,
+not merely the write. That is what keeps two mails of one purchase from ever landing in two
+different orders even if concurrency is later raised or a second replica runs; concurrency 1 alone
+would not survive either of those.
+
+**Decide, then write, as two separate model calls.** A single call that both filed a mail and
+rewrote the order's text let the summary decay: a later mail's answer routinely dropped a fact
+only an earlier mail's own text had stated, because the model was reconstructing the whole entry
+from a shrinking transcript rather than from what it already knew. Deciding (`orders/prompts.py`'s
+decide prompt, `orders/candidates.py`'s ranked list of existing orders) and writing (the same
+module's write prompt, from the order's own mails, oldest first, with the entry's current text
+handed back in) are two calls, and the second is also what a manual rewrite and a correction reuse.
+
+**A decide call that reports no identifiers is not trusted blindly.** A small model
+measurably misses a number that is plainly present in the body more often than it misses the
+decision itself — a carrier notice's own tracking number, most commonly, since nothing else in the
+mail names it. When the model's own `identifiers` answer comes back empty, `orders/worker.py`
+deterministically rescans the mail's subject and raw body for the same order/tracking/booking/
+invoice labels `orders/filter.py`'s first pass already looks for and takes the identifier-shaped
+token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) — never overriding
+an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
+same number still finds the order rather than opening a duplicate.
+
+**Membership is `(account_id, msg_key)`, never `messages.id`** — the same durable identity
+`verdicts` and `message_embeddings` use, for the same reason: a UIDVALIDITY resync or a move made
+by another IMAP client replaces the row id, and an order keyed on it would silently lose the mail.
+`order_mails` carries no foreign key onto any PostIMAP-owned table, consistent with every other
+MailVerdict-owned table (see below) — and, unusually, none onto `orders` from `order_jobs` either:
+a job row is also the durable "was this mail ever processed" record (`uq_order_jobs_mail`), so it
+must survive its order being deleted.
+
+**What survives a mail leaving.** The detail endpoint resolves each mail afresh on every read
+(`orders/locate.py`), the same tie-break `api/mails.py`'s `locate_message` uses — a mail moved by
+another client is a different row sharing only the Message-ID header, and a purged or expunged
+mail resolves to "gone": the order keeps its snapshot (subject, sender, date, taken at attach
+time), summary and numbers, shown dimmed and unopenable, until a person deletes the order itself.
 
 ### Neighbour hints, and why the classifier's own verdicts never feed them
 

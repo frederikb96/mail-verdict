@@ -35,6 +35,7 @@ class SettingCategory(str, enum.Enum):
     CALENDAR = "calendar"
     OUTBOX = "outbox"
     MAIL = "mail"
+    ORDERS = "orders"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -207,5 +208,115 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # provider circuit breaker, short enough that a stalled provider
         # never means a silent mailbox for long.
         "notify_wait_seconds": 120.0,
+    },
+    SettingCategory.ORDERS: {
+        # The model that decides where a mail belongs and writes an
+        # order's text, called through the provider settings.ai.provider
+        # names (pipeline/context.py's ModelGateway). Empty means not
+        # chosen: an account cannot be switched on until it is (see
+        # api/accounts.py's PATCH handler).
+        "model": "",
+        # A reasoning model thinks before it answers and pays for that
+        # from max_tokens -- at a higher effort it can spend the whole
+        # budget and return nothing. Raise max_tokens together with this.
+        "reasoning_effort": "none",
+        # A ceiling, not a target -- an answer is a few hundred tokens.
+        "max_tokens": 4000,
+        # The language titles and summaries are written in.
+        "language": "English",
+        # The first filter: a cheap pattern match that lets through
+        # anything that might be an order, ticket or booking, before any
+        # model is called -- see orders/filter.py and docs/architecture.md,
+        # "Orders". Every entry is a Python regular expression, matched
+        # with IGNORECASE against the Subject header (subject), the whole
+        # From header (from) or the prepared body (body, orders/content.py).
+        # A mail passes when no exclude pattern matches and at least one
+        # include pattern does.
+        "filter": {
+            "include": {
+                "subject": [
+                    "bestell",
+                    r"\border(s|ed|ing)?\b",
+                    "auftrag",
+                    r"\bkauf|gekauft|einkauf|purchase",
+                    r"rechnung|invoice|receipt|quittung|\bbeleg",
+                    r"zahlung|bezahl|payment|\bpaid\b",
+                    "versand|versendet|verschickt|shipped|shipping|shipment|dispatch|"
+                    r"\bsent\b",
+                    "sendung|paket|päckchen|parcel|package",
+                    "liefer|deliver|zugestellt|zustell|angekommen|arriv",
+                    r"abhol|pick.?up|collect|packstation|locker",
+                    r"tracking|unterwegs|auf dem (rück)?weg|on (its|the) way",
+                    r"retoure|rücksend|ruecksend|rückgabe|\breturn|erstatt|refund|"
+                    "gutschrift|umtausch",
+                    "storn|cancel",
+                    "ticket|eintrittskarte|gästekarte|bordkarte|boarding|fahrkarte|"
+                    "fahrschein",
+                    "buchung|gebucht|booking|booked|reserv|regist|anmeldung",
+                    r"\bflug|flight|check-?in|itinerary|reiseplan|\breise|\btrip\b",
+                ],
+                "from": [
+                    r"amazon\.",
+                    r"\bdhl\b|dhl\.",
+                    r"\bdpd\b|dpd\.",
+                    "hermes",
+                    "gls-(group|pakete|germany)|gls paket",
+                    r"\bups\b|ups\.com",
+                    "fedex",
+                    "deutschepost|deutsche-post",
+                    "sendcloud",
+                    "parcel|paket|versand|shipping|tracking",
+                    "paypal",
+                    "klarna",
+                    "saferpay",
+                    "novalnet",
+                    "mollie",
+                    "stripe",
+                    "order|bestell|shop@|store@",
+                    "booking|buchung|reserv|ticket",
+                    r"bahn\.de|deutschebahn",
+                    "flixbus",
+                    "eurowings|lufthansa|ryanair|easyjet",
+                    "eurostar",
+                    "eventim|reservix|ticketmaster",
+                ],
+                "body": [
+                    r"bestell(nummer|nr)|order (number|no\.?|#)|auftrags(nummer|nr)",
+                    "sendungs(nummer|verfolgung)|tracking (number|id|code)|paketnummer",
+                    "buchungs(nummer|code|referenz)|booking (number|reference|code)|"
+                    "reservierungsnummer|confirmation number",
+                    r"rechnungs(nummer|nr)|invoice (number|no\.?)",
+                    "(your|ihre|deine) (order|bestellung|booking|buchung|reservierung|"
+                    "reservation|sendung|shipment)",
+                    "(your|ihr|dein) (parcel|package|paket|ticket|kauf|purchase)",
+                ],
+            },
+            "exclude": {
+                "from": [
+                    r"notifications@github\.com",
+                    r"noreply@github\.com",
+                ],
+            },
+        },
+        # Worker claim/lease mechanics -- see queue/work_queue.py.
+        "lease_seconds": 300,
+        "poll_interval_seconds": 2.0,
+        "max_attempts": 5,
+        "base_delay_seconds": 5.0,
+        "max_delay_seconds": 300.0,
+        # Per-model-call timeout, overriding the shared provider client's
+        # own default (core/openai_provider.py's REQUEST_TIMEOUT_SECONDS,
+        # sized for classify and embeddings' much tighter leases). A
+        # reasoning model can legitimately spend several thousand hidden
+        # tokens "thinking" before it answers even with reasoning_effort
+        # left at "none" -- measured directly against a real model, a
+        # write call routinely took 16-20 seconds, right at or past the
+        # shared 20-second default, which made retries (themselves capped
+        # by that same too-short timeout) the common case rather than the
+        # exception. Sized to stay under lease_seconds even in the
+        # pathological case where every one of settings.retry's
+        # max_retries attempts times out: max_retries * this value, plus
+        # their backoff delays, still leaves margin under the lease above.
+        "call_timeout_seconds": 40.0,
     },
 }

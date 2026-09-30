@@ -13,10 +13,12 @@ import builtins
 from mail_verdict.pipeline.contracts import Stage, StageDefinition, StageMisconfigured
 from mail_verdict.pipeline.stages.classify import ClassifyStage
 from mail_verdict.pipeline.stages.match import MatchStage
+from mail_verdict.pipeline.stages.orders import OrdersStage
 
 STAGE_TYPES: dict[str, builtins.type[Stage]] = {
     MatchStage.type: MatchStage,
     ClassifyStage.type: ClassifyStage,
+    OrdersStage.type: OrdersStage,
 }
 
 

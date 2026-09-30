@@ -103,7 +103,21 @@ class Notify:
     text: str
 
 
-Effect = Move | Trash | Expunge | SetFlags | Keywords | Tag | RecordVerdict | Notify
+@dataclass(frozen=True)
+class EnqueueOrder:
+    """Enqueue this mail for the orders worker -- never calls a model
+    itself, only inserts an order_jobs row (see pipeline/stages/orders.py
+    and orders/worker.py). `reason` is the first filter's own match
+    reason, or "thread"/"number" for one of the two bypass rules; a
+    `match` stage may also return this effect to force a sender's mail
+    into the queue regardless of the pattern filter."""
+
+    reason: str
+
+
+Effect = (
+    Move | Trash | Expunge | SetFlags | Keywords | Tag | RecordVerdict | Notify | EnqueueOrder
+)
 
 
 @dataclass(frozen=True)

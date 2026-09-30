@@ -202,6 +202,7 @@ export interface AccountResponse {
   capabilities: Record<string, unknown> | null;
   emoji: string | null;
   spam_enabled: boolean;
+  orders_enabled: boolean;
   folder_order: string[] | null;
   /** NULL is off -- no periodic Trash sweep runs for this account. */
   trash_retention_days: number | null;
@@ -233,6 +234,7 @@ export interface AccountCreateRequest {
   smtp_user?: string;
   smtp_password?: string;
   spam_enabled?: boolean;
+  orders_enabled?: boolean;
   trash_retention_days?: number | null;
   junk_retention_days?: number | null;
 }
@@ -250,6 +252,7 @@ export interface AccountUpdateRequest {
   smtp_password?: string;
   is_active?: boolean;
   spam_enabled?: boolean;
+  orders_enabled?: boolean;
   trash_retention_days?: number | null;
   junk_retention_days?: number | null;
   glacier_enabled?: boolean;
@@ -414,6 +417,9 @@ export interface SSEEvent {
   title?: string | null;
   body?: string | null;
   url?: string | null;
+  /** Present on order.updated. */
+  order_id?: string;
+  change?: "created" | "updated" | "deleted";
 }
 
 /** One alerts row -- see AlertResponse in the backend schema. */
@@ -898,6 +904,7 @@ export interface QueueResponse {
 export interface QueuePatchRequest {
   state?: "running" | "paused";
   concurrency?: number;
+  reset_circuit?: boolean;
 }
 
 // --- Calendar and contacts ---
@@ -1332,4 +1339,85 @@ export interface SpamReviewListResponse {
   items: SpamReviewItem[];
   has_more: boolean;
   next_cursor: string | null;
+}
+
+// --- Orders ---
+
+export type OrderIcon =
+  | "package"
+  | "ticket"
+  | "train"
+  | "plane"
+  | "bus"
+  | "car"
+  | "bed"
+  | "food"
+  | "download"
+  | "wrench"
+  | "receipt";
+
+export interface OrderListItem {
+  id: string;
+  merchant: string;
+  subject: string;
+  status: string;
+  /** subject + " — " + status, or just subject when status is empty. */
+  title: string;
+  is_open: boolean;
+  icon: OrderIcon;
+  summary_preview: string;
+  first_mail_at: string | null;
+  last_mail_at: string | null;
+  mail_count: number;
+  account_ids: string[];
+  text_stale: boolean;
+  updated_at: string;
+}
+
+export interface OrderListResponse {
+  items: OrderListItem[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface OrderIdentifier {
+  kind: "order_number" | "booking_code" | "tracking_number" | "invoice_number" | "ticket_number";
+  value: string;
+}
+
+export interface OrderMail {
+  /** order_mails.id -- the row's own key, not the mail's durable msg_key. */
+  key: string;
+  account_id: string;
+  message_id: string | null;
+  thread_id: string | null;
+  location: "mailbox" | "glacier" | "gone";
+  folder_id: string | null;
+  is_seen: boolean | null;
+  subject: string;
+  from_addr: string;
+  received_at: string;
+  attached_by: "ai" | "thread" | "user";
+}
+
+export interface OrderDocument {
+  message_id: string;
+  attachment_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number | null;
+  received_at: string;
+}
+
+export interface OrderDetail extends OrderListItem {
+  summary: string;
+  identifiers: OrderIdentifier[];
+  mails: OrderMail[];
+  documents: OrderDocument[];
+}
+
+export interface OrderCatchUpResponse {
+  considered: number;
+  passed: number;
+  queued: number;
 }

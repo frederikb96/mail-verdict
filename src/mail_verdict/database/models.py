@@ -12,7 +12,8 @@ MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
   calendar_links_revision, pending_sends, pending_send_attachments, alerts,
-  push_subscriptions, vapid_keypair
+  push_subscriptions, vapid_keypair, orders, order_mails, order_identifiers,
+  order_jobs
   (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
@@ -771,6 +772,10 @@ class AccountPrefs(Base):
     # setting applied to both roles, since the two periods a person
     # actually wants for Trash and Junk need not agree.
     junk_retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Whether this account's mail feeds the orders/tickets register
+    # (see pipeline/stages/orders.py). Every enabled account feeds one
+    # combined register -- candidates are never filtered by account.
+    orders_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # The per-account switch for the glacier (see glacier/ for the
     # module). False is the default and the only state in which the
     # glacier is neither shown nor offered as a target.
@@ -1868,3 +1873,197 @@ class VapidKeypair(Base):
     )
 
     __table_args__ = (CheckConstraint("id = 1", name="ck_vapid_keypair_singleton"),)
+
+
+class Order(Base):
+    """One purchase, ticket or booking, bundled from the mails about it --
+    see pipeline/stages/orders.py and orders/worker.py.
+
+    written_at is null until the first write call finishes; such an order
+    is hidden from the list endpoint (see orders/repository.py). No
+    foreign key onto a PostIMAP-owned table, per the module docstring
+    above -- order_mails below carries no foreign key onto messages
+    either, for the same reason: this register must survive a message
+    being expunged, moved by another client, or glaciered.
+    """
+
+    __tablename__ = "orders"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    merchant: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    subject: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    icon: Mapped[str] = mapped_column(Text, nullable=False, default="receipt")
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    summary_preview: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # A write job is owed -- set whenever membership changes and cleared
+    # once the write call's answer is stored (orders/worker.py).
+    text_stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_mail_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_mail_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_orders_list", last_mail_at.desc(), id.desc(),
+            postgresql_where=written_at.is_not(None),
+        ),
+    )
+
+
+class OrderMail(Base):
+    """One mail attached to one order -- membership is (account_id,
+    msg_key), never messages.id, so a mail moved by another client or
+    resynced under a new row still belongs to the same order (see
+    orders/locate.py's resolve_mails). subject/from_addr/received_at are a
+    snapshot taken at attach time, so a row still renders once its mail is
+    gone (see orders/locate.py's "gone" location).
+    """
+
+    __tablename__ = "order_mails"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("orders.id", ondelete="CASCADE"), nullable=False,
+    )
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    # Join hint only, re-resolved at read time via orders/locate.py --
+    # never trusted as this mail's current row id.
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    thread_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    from_addr: Mapped[str | None] = mapped_column(Text, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attached_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "attached_by IN ('ai', 'thread', 'user')", name="ck_order_mails_attached_by",
+        ),
+        UniqueConstraint("account_id", "msg_key", name="uq_order_mails_account_msg_key"),
+        Index("idx_order_mails_order_received", "order_id", "received_at"),
+        Index("idx_order_mails_account_thread", "account_id", "thread_id"),
+    )
+
+
+class OrderIdentifier(Base):
+    """One order/booking/tracking number the model read off one of an
+    order's mails -- what candidate retrieval (orders/candidates.py)
+    matches a later mail's text against."""
+
+    __tablename__ = "order_identifiers"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("orders.id", ondelete="CASCADE"), nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    value_norm: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('order_number', 'booking_code', 'tracking_number', "
+            "'invoice_number', 'ticket_number')",
+            name="ck_order_identifiers_kind",
+        ),
+        UniqueConstraint("order_id", "value_norm", name="uq_order_identifiers_order_value_norm"),
+        Index("idx_order_identifiers_value_norm", "value_norm"),
+    )
+
+
+class OrderJob(Base):
+    """The orders queue's own work table -- one row per mail to decide, or
+    per order text to (re)write. See orders/worker.py.
+
+    kind = 'mail': account_id/msg_key/message_id name what to decide.
+    kind = 'write': order_id names what to (re)write; no foreign key, the
+    same reasoning as order_mails/order_identifiers above -- a write job
+    must still exist and fail cleanly if its order is deleted mid-flight.
+
+    Never deleted while the account exists: rows are also the durable
+    "was this mail ever processed" record (uq_order_jobs_mail is the
+    never-twice gate, see orders/worker.py's module docstring).
+    """
+
+    __tablename__ = "order_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    msg_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    filter_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The ten columns queue/work_queue.py's WorkQueue requires.
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('mail', 'write')", name="ck_order_jobs_kind"),
+        CheckConstraint(
+            "origin IN ('live', 'thread', 'catchup', 'manual')", name="ck_order_jobs_origin",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'done', 'skipped', 'failed')",
+            name="ck_order_jobs_status",
+        ),
+        CheckConstraint(
+            "outcome IS NULL OR outcome IN "
+            "('attached', 'created', 'none', 'skipped', 'detached', 'written')",
+            name="ck_order_jobs_outcome",
+        ),
+        CheckConstraint(
+            "kind <> 'mail' OR (account_id IS NOT NULL AND msg_key IS NOT NULL)",
+            name="ck_order_jobs_mail_fields",
+        ),
+        CheckConstraint(
+            "kind <> 'write' OR order_id IS NOT NULL", name="ck_order_jobs_write_fields",
+        ),
+        Index(
+            "uq_order_jobs_mail", "account_id", "msg_key", unique=True,
+            postgresql_where=text("kind = 'mail'"),
+        ),
+        Index(
+            "uq_order_jobs_write", "order_id", unique=True,
+            postgresql_where=text("kind = 'write' AND status = 'pending'"),
+        ),
+        Index(
+            "ix_order_jobs_claim", "priority", "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
