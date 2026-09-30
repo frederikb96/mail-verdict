@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [6.7.3] - 2026-09-30
 
 - Fixed the embedding backfill's periodic sweep getting permanently stuck on a mailbox with more
   duplicate-header messages -- the same mail stored in two folders, of which only one can ever
