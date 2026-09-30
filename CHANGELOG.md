@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [6.7.4] - 2026-09-30
 
 - Fixed the automatic glacier sweep silently and permanently dropping a message whose Message-ID
   header is already claimed by a different message already in the glacier -- a real case (a
