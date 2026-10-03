@@ -1915,9 +1915,9 @@ class Order(Base):
     open_set_by: Mapped[str] = mapped_column(
         Text, nullable=False, default="ai", server_default="ai",
     )
-    # The date of the last thing still expected (event, pickup deadline,
-    # delivery), written by the write call; the automatic close counts from
-    # the later of this and the last mail.
+    # The write call's estimate of when the order is naturally over (event,
+    # pickup deadline, delivery); the automatic close counts its grace
+    # period from the later of this and the last mail.
     expected_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model: Mapped[str | None] = mapped_column(Text, nullable=True)

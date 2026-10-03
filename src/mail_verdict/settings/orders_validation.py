@@ -90,6 +90,10 @@ def validate_orders_settings(effective: dict[str, Any]) -> None:
     if auto_close_days is not None and not (0 <= int(auto_close_days) <= 3650):
         raise ValueError("orders.auto_close_days must be between 0 and 3650")
 
+    grace_days = effective.get("auto_close_grace_days")
+    if grace_days is not None and not (0 <= int(grace_days) <= 3650):
+        raise ValueError("orders.auto_close_grace_days must be between 0 and 3650")
+
     language = effective.get("language")
     if language is not None and not (1 <= len(str(language)) <= 40):
         raise ValueError("orders.language must be 1 to 40 characters")

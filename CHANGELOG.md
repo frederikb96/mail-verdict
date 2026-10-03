@@ -12,10 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   matcher, now shared). A sealed order is never offered to the order agent and takes no further
   mail, and its numbers can be claimed by a new order. A person's open/closed decision stays until
   the next mail arrives, which hands it back to the model.
-- Orders are closed automatically once nothing is expected of them: `orders.auto_close_days` (30,
-  0 turns it off) after the later of the last mail and an `expected_until` date the write call now
-  states, so a booking made months ahead stays open until after its date. Existing open orders get
-  one rewrite to fill that date in.
+- Orders are closed automatically once nothing is expected of them. The write call now estimates
+  when an order is naturally over (`expected_until`); such an order closes
+  `orders.auto_close_grace_days` (7) after the later of that date and its last mail, and one with no
+  estimate closes `orders.auto_close_days` (30) after its last mail. `auto_close_days` 0 turns it
+  off. Existing open orders get one rewrite to fill the date in.
 - A shipment number that exists only in a tracking link's target (a carrier template whose link
   text is an unfilled placeholder) now reaches the text the order agent reads and is stored as a
   tracking number, so such notices stop collapsing into one entry. The decide prompt states that a

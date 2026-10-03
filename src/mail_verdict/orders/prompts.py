@@ -172,7 +172,7 @@ WRITE_SCHEMA: dict[str, Any] = {
         "open": {"type": "boolean"},
         "expected_until": {
             "type": "string",
-            "description": "YYYY-MM-DD of the last thing still expected, or an empty string.",
+            "description": "YYYY-MM-DD when the entry is naturally over (estimate), or ''.",
         },
         "icon": {"type": "string", "enum": list(WRITE_ICONS)},
         "summary": {"type": "string", "description": "Markdown, at most 900 characters."},

@@ -224,11 +224,13 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_tokens": 4000,
         # The language titles and summaries are written in.
         "language": "English",
-        # An open order the model still owns is closed this many days after
-        # the later of its last mail and the date the model expects the last
-        # pending thing on (an event, a pickup deadline); 0 turns the
-        # automatic close off. See orders/auto_close.py.
+        # An open order the model still owns is closed automatically
+        # (orders/auto_close.py): auto_close_days after its last mail when
+        # the model estimated no end date for it, auto_close_grace_days
+        # after the later of that date and the last mail when it did.
+        # auto_close_days = 0 turns the automatic close off entirely.
         "auto_close_days": 30,
+        "auto_close_grace_days": 7,
         # The first filter: a cheap pattern match that lets through
         # anything that might be an order, ticket or booking, before any
         # model is called -- see orders/filter.py and docs/architecture.md,

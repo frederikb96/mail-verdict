@@ -397,13 +397,19 @@ class TestAutoClose:
         settings_service = await _settings_service(migrated_db)
         today = datetime.now(timezone.utc).date()
 
-        old = await _written_order(migrated_db, last_mail_age_days=31)
-        recent = await _written_order(migrated_db, last_mail_age_days=29)
+        undated_old = await _written_order(migrated_db, last_mail_age_days=31)
+        undated_recent = await _written_order(migrated_db, last_mail_age_days=29)
         future_event = await _written_order(
             migrated_db, last_mail_age_days=90, expected_until=today + timedelta(days=20),
         )
-        long_past_event = await _written_order(
-            migrated_db, last_mail_age_days=90, expected_until=today - timedelta(days=40),
+        past_by_8 = await _written_order(
+            migrated_db, last_mail_age_days=90, expected_until=today - timedelta(days=8),
+        )
+        past_by_6 = await _written_order(
+            migrated_db, last_mail_age_days=90, expected_until=today - timedelta(days=6),
+        )
+        recent_mail_after_date = await _written_order(
+            migrated_db, last_mail_age_days=3, expected_until=today - timedelta(days=20),
         )
         person_owned = await _written_order(
             migrated_db, last_mail_age_days=90, open_set_by="user",
@@ -411,27 +417,58 @@ class TestAutoClose:
         stale_text = await _written_order(migrated_db, last_mail_age_days=90, text_stale=True)
         already_closed = await _written_order(migrated_db, last_mail_age_days=90, is_open=False)
         mine = [
-            old, recent, future_event, long_past_event, person_owned, stale_text, already_closed,
+            undated_old, undated_recent, future_event, past_by_8, past_by_6,
+            recent_mail_after_date, person_owned, stale_text, already_closed,
         ]
 
         await auto_close_once(migrated_db, settings_service, None)
 
         rows = {order_id: await _order(migrated_db, order_id) for order_id in mine}
-        assert [(rows[o].is_open, rows[o].open_set_by) for o in (old, long_past_event)] == [
-            (False, "auto"), (False, "auto"),
-        ]
-        assert all(rows[o].is_open for o in (recent, future_event, person_owned, stale_text))
+        closed = [o for o in mine if not rows[o].is_open and rows[o].open_set_by == "auto"]
+        assert set(closed) == {undated_old, past_by_8}
+        assert all(
+            rows[o].is_open
+            for o in (
+                undated_recent, future_event, past_by_6, recent_mail_after_date, person_owned,
+                stale_text,
+            )
+        )
         assert rows[person_owned].open_set_by == "user"
         assert rows[already_closed].open_set_by == "ai"
+
+    @pytest.mark.asyncio
+    async def test_a_zero_grace_closes_as_soon_as_the_date_has_passed(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        settings_service = await _settings_service(migrated_db)
+        await settings_service.update("orders", {"auto_close_grace_days": 0})
+        try:
+            today = datetime.now(timezone.utc).date()
+            passed = await _written_order(
+                migrated_db, last_mail_age_days=5, expected_until=today - timedelta(days=1),
+            )
+            upcoming = await _written_order(
+                migrated_db, last_mail_age_days=5, expected_until=today + timedelta(days=1),
+            )
+            await auto_close_once(migrated_db, settings_service, None)
+            assert (await _order(migrated_db, passed)).is_open is False
+            assert (await _order(migrated_db, upcoming)).is_open is True
+        finally:
+            await settings_service.update("orders", {"auto_close_grace_days": 7})
 
     @pytest.mark.asyncio
     async def test_zero_days_turns_the_close_off(self, migrated_db: DatabaseConnection) -> None:
         settings_service = await _settings_service(migrated_db)
         await settings_service.update("orders", {"auto_close_days": 0})
         try:
-            order_id = await _written_order(migrated_db, last_mail_age_days=400)
+            undated = await _written_order(migrated_db, last_mail_age_days=400)
+            dated = await _written_order(
+                migrated_db, last_mail_age_days=400,
+                expected_until=datetime.now(timezone.utc).date() - timedelta(days=100),
+            )
             await auto_close_once(migrated_db, settings_service, None)
-            assert (await _order(migrated_db, order_id)).is_open is True
+            assert (await _order(migrated_db, undated)).is_open is True
+            assert (await _order(migrated_db, dated)).is_open is True
         finally:
             await settings_service.update("orders", {"auto_close_days": 30})
 

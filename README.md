@@ -105,8 +105,8 @@ mirror, which is what keeps it simple.
   removed, two entries merged, or the summary rewritten by hand. Entries can be marked as
   favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
   the agent adds no more mail to them; an open entry nothing is expected of any more is closed
-  automatically after a number of days (30 by default, a setting) counted from its last mail or
-  from the date the model says the last pending thing falls on, whichever is later. A shipment
+  automatically, a few days (7 by default) after the date the model estimates it is over, or 30
+  days after its last mail when it has no such date; both are settings. A shipment
   number that only a carrier's tracking link carries is read from the link. Recent mail can be
   looked through after switching the feature on for an account.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.

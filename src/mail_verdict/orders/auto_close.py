@@ -2,12 +2,14 @@
 The automatic close: an open order whose open/closed state still belongs
 to the model is closed once nothing is expected of it any more.
 
-"Nothing expected" is N days past the later of the order's last mail and
-the date the write call said the last pending thing falls on
-(orders.expected_until -- an event, a trip's last day, a pickup deadline),
-so a booking made months ahead is not closed while its date is still in
-the future. N is the orders.auto_close_days setting, 0 turning the close
-off.
+Two rules, by whether the write call estimated an end date
+(orders.expected_until -- an event, a trip's last day, a pickup deadline,
+about a week after a parcel shipped):
+- with a date: orders.auto_close_grace_days after the later of that date
+  and the last mail;
+- without one: orders.auto_close_days after the last mail.
+orders.auto_close_days = 0 turns the whole sweep off; a grace of 0 closes
+as soon as the date has passed.
 
 Skipped: an order a person opened or closed (open_set_by <> 'ai' -- a
 reopen stays open until the next mail hands the decision back to the
@@ -44,10 +46,12 @@ _CLOSE_LOCK_KEY = 761_035_300
 _CLOSE_INTERVAL_SECONDS = 3600.0
 
 
-async def close_overdue_orders(db: DatabaseConnection, *, days: int) -> list[uuid.UUID]:
+async def close_overdue_orders(
+    db: DatabaseConnection, *, days: int, grace_days: int,
+) -> list[uuid.UUID]:
     """
-    Close every open, model-owned, written, non-stale order older than
-    `days` days by the rule in this module's docstring.
+    Close every open, model-owned, written, non-stale order that is overdue
+    by the rules in this module's docstring.
 
     Returns:
         The ids of the orders closed
@@ -64,12 +68,19 @@ async def close_overdue_orders(db: DatabaseConnection, *, days: int) -> list[uui
                   AND written_at IS NOT NULL
                   AND NOT text_stale
                   AND last_mail_at IS NOT NULL
-                  AND greatest(last_mail_at, coalesce(expected_until::timestamptz, last_mail_at))
-                      < now() - make_interval(days => :days)
+                  AND CASE
+                        WHEN expected_until IS NULL
+                          THEN last_mail_at < now() - make_interval(days => :days)
+                        ELSE greatest(last_mail_at, expected_until::timestamptz)
+                          < now() - make_interval(days => :grace)
+                      END
                 RETURNING id
                 """
             ),
-            {"auto": OPEN_SET_BY_AUTO, "model": OPEN_SET_BY_MODEL, "days": days},
+            {
+                "auto": OPEN_SET_BY_AUTO, "model": OPEN_SET_BY_MODEL,
+                "days": days, "grace": grace_days,
+            },
         )
         return [row[0] for row in result.all()]
 
@@ -79,10 +90,13 @@ async def auto_close_once(
 ) -> None:
     """One pass: close what is overdue under the current setting (nothing
     when it is 0) and announce each closed order."""
-    days = int(settings_service.get("orders")["auto_close_days"])
+    settings = settings_service.get("orders")
+    days = int(settings["auto_close_days"])
     if days <= 0:
         return
-    closed = await close_overdue_orders(db, days=days)
+    closed = await close_overdue_orders(
+        db, days=days, grace_days=int(settings["auto_close_grace_days"]),
+    )
     if not closed:
         return
     logger.info("Closed %d overdue orders", len(closed))

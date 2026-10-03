@@ -402,12 +402,13 @@ PATCH) or `auto` (the automatic close). The write call changes `is_open` only wh
 new mail attached by the worker hands the decision back to the model. A person's reopen is therefore
 never auto-closed until the next mail.
 
-**Automatic close.** The write call also states `expected_until`, the date of the last thing still
-expected (an event, a trip's last day, a pickup deadline). An hourly sweep (`orders/auto_close.py`,
-advisory-locked, taking the worker's own lock while it updates) closes an open, model-owned, written,
-non-stale order `settings.orders.auto_close_days` days after the later of its last mail and that date,
-and announces it like any other order change; `0` turns it off. Counting from the mail alone would
-close a booking made months before its date.
+**Automatic close.** The write call also gives `expected_until`, its best estimate of when the order
+is naturally over (an event, a trip's last day, a pickup deadline, about a week after a parcel
+shipped). An hourly sweep (`orders/auto_close.py`, advisory-locked, taking the worker's own lock
+while it updates) closes an open, model-owned, written, non-stale order `settings.orders.auto_close_grace_days`
+after the later of that date and its last mail, or, when the model gave no date,
+`settings.orders.auto_close_days` after its last mail, and announces it like any other order change.
+`auto_close_days = 0` turns the whole sweep off.
 
 **Deleting an order leaves nothing naming it.** `repository.delete_order` (also used for a merge's
 source and an order left empty by a detach) removes the order's write jobs and clears the order
