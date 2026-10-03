@@ -7,48 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-- Fixed a webhook request giving up after 5 seconds whatever `webhooks.request_timeout_seconds`
-  said, which retried a receiver that takes longer to answer and could deliver one mail several
-  times. The setting now bounds each phase of the request and the whole of it.
-- A webhook backfill that stopped at its `limit` now continues: the response carries `next_cursor`
-  and the request takes it back as `cursor`. `truncated` is true only when mail remains.
-- Retrying a failed webhook delivery now sends to the rule's current URL, method and headers rather
-  than the ones queued with it, and `POST /api/webhooks/{name}/retry-failed` re-queues every failed
-  delivery of one webhook.
-- A mail a rule expunges in the same pass that queued its webhook is still delivered, and a mail
-  gone from the mirror and the glacier now fails the delivery with an alert instead of skipping it.
-  A delivery whose worker died on its last attempt is failed with an alert instead of waiting
-  forever.
-- The "Add rule" assistant's proposal for adding a condition now shows the existing rule's effects
-  (`effects_text`) and warns when that rule carries an `expunge`, `webhook` or pipeline effect. A
-  client disconnecting during the exchange no longer logs a server error.
-- Deleting a secret in Settings asks for confirmation. The rule assistant's condition vocabulary
-  no longer offers `List-Id` as a header example, and the docs say which headers cannot be matched.
+## [6.8.0] - 2026-10-03
 
+### Rules
+
+- Added a `webhook` rule action that sends the matching mail's raw source to a URL, with header
+  values that can reference a stored secret as `{{secret:NAME}}`. Deliveries are queued and made
+  one after another by a worker: a 2xx is final and never repeated, a 5xx or network error is
+  retried with backoff, any other response ends the delivery, and a delivery that gives up raises a
+  `webhook_failed` alert. `webhooks.request_timeout_seconds` bounds each phase of a request and the
+  whole of it. A retry sends to the rule's current URL, method and headers rather than the ones
+  queued with it, and `POST /api/webhooks/{name}/retry-failed` re-queues every failed delivery of
+  one webhook. A mail a rule expunges in the same pass that queued its webhook is still delivered,
+  a mail gone from the mirror and the glacier fails its delivery with an alert, and a delivery
+  whose worker died on its last attempt is failed with an alert instead of waiting forever. The
+  rule editor gains an "Add webhook action" button.
+- `POST /api/webhooks/{name}/backfill` sends mail that predates the rule, oldest first and only
+  once each (every folder except Drafts, Trash and Junk). A backfill that stops at its `limit`
+  continues: the response carries `next_cursor`, the request takes it back as `cursor`, and
+  `truncated` is true only while mail remains. `GET /api/webhooks/deliveries` shows what was
+  queued.
+- Added a secret store: named values encrypted at rest with the same key as provider keys, set,
+  replaced and deleted from a Secrets card in Settings (deleting asks for confirmation) or through
+  `/api/secrets`, and never returned by any endpoint.
 - Added an "Add rule" assistant: an icon in the reading pane takes one sentence about the open
   mail and proposes exactly one change to the rules -- a condition added to an existing rule, a new
-  rule at the end, or one rule replaced -- with the explanation, the change itself and how many of
-  the account's last 100 mails it would have caught, for Accept or Decline. Nothing is stored,
-  closing cancels, and it never proposes an `expunge` or `webhook` effect. It uses the `ai` model
-  settings and `POST /api/pipeline/assistant`; accepting is an ordinary pipeline write. The open
-  mail's excerpt, the rule set and a few other senders and subjects go to the model provider when
-  it is used.
+  rule at the end, or one rule replaced -- with the explanation, the change itself, the existing
+  rule's effects (`effects_text`, with a warning when it carries an `expunge`, `webhook` or
+  pipeline effect) and how many of the account's last 100 mails it would have caught, for Accept or
+  Decline. Nothing is stored, closing cancels, and it never proposes an `expunge` or `webhook`
+  effect. It uses the `ai` model settings and `POST /api/pipeline/assistant`; accepting is an
+  ordinary pipeline write. The open mail's excerpt, the rule set and a few other senders and
+  subjects go to the model provider when it is used.
 - Fixed a rule condition object that combined `all`, `any` or `not` with another key being
   accepted and silently evaluated as the composite alone, so `{"sender_match": ..., "not":
   {...}}` ignored the sender. Such a condition is now rejected on write and raises when evaluated;
-  a stored rule written that way fails its next edit until it is split with `all`.
-- Keyboard shortcuts (`e`, `Delete`, `r`, Enter and the rest) no longer act while focus is inside
-  a dialog.
+  a stored rule written that way fails validation until it is split with `all`.
+
+### Orders
+
 - The orders screen gained favorites (a star on the row and in the detail, and a Favorites view
   beside All and Open), a filter field matching every word in any order and tolerating typos, and
   Close/Reopen and Seal/Unseal for an order. One action list serves the detail's top-right menu
   and a menu on each row, opened by right-click or a touch long press. On a touch screen a row
   swipes: right to left toggles favorite, left to right toggles closed and open.
-- Orders: `PATCH /api/orders/{id}` sets a favorite, closes or reopens an order and seals it; the
-  list takes `favorites=true` and a typo-tolerant `q` text filter (the mail search fallback's own
-  matcher, now shared). A sealed order is never offered to the order agent and takes no further
-  mail, and its numbers can be claimed by a new order. A person's open/closed decision stays until
-  the next mail arrives, which hands it back to the model.
+- `PATCH /api/orders/{id}` sets a favorite, closes or reopens an order and seals it; the list takes
+  `favorites=true` and a typo-tolerant `q` text filter (the mail search fallback's own matcher, now
+  shared). A sealed order is never offered to the order agent and takes no further mail, and its
+  numbers can be claimed by a new order. A person's open/closed decision stays until the next mail
+  arrives, which hands it back to the model.
 - Orders are closed automatically once nothing is expected of them. The write call now estimates
   when an order is naturally over (`expected_until`); such an order closes
   `orders.auto_close_grace_days` (7) after the later of that date and its last mail, and one with no
@@ -61,22 +68,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Deleting an order, merging it away or emptying it removes its write jobs and clears the order
   pointer on the mail jobs, leaving nothing that names it; the mail jobs themselves stay so its
   mails are not bundled again.
-- Added a secret store: named values encrypted at rest with the same key as provider keys, set,
-  replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
-  returned by any endpoint.
-- Added a `webhook` rule action that sends the matching mail's raw source to a URL, with header
-  values that can reference a stored secret as `{{secret:NAME}}`. Deliveries are queued and made
-  one after another by a worker: a 2xx is final and never repeated, a 5xx or network error is
-  retried with backoff, any other response ends the delivery, and a delivery that gives up raises a
-  `webhook_failed` alert. `POST /api/webhooks/{name}/backfill` sends mail that predates the rule,
-  oldest first and only once each (every folder except Drafts, Trash and Junk), and `GET /api/webhooks/deliveries` shows what was queued. The
-  rule editor gains an "Add webhook action" button.
+
+### Interface
+
+- Keyboard shortcuts (`e`, `Delete`, `r`, Enter and the rest) no longer act while focus is inside
+  a dialog.
 - Fixed the unified view icon picker in Settings rendering its emoji stacked on top of each other
   in a one-column strip; it is a seven-column grid again, which also applies to the account icon
   picker that shares it.
 - The folder-to-view list in Settings is capped to a readable width with fixed-width view
   selectors, alternating row shading and a row highlight on hover, so each folder name sits next
   to its own selector.
+- The rule assistant's condition vocabulary no longer offers `List-Id` as a header example, and the
+  docs say which headers cannot be matched. A client disconnecting during an assistant exchange no
+  longer logs a server error.
 
 ## [6.7.4] - 2026-09-30
 
