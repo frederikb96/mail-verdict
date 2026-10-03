@@ -52,7 +52,7 @@ services:
     restart: "no"
 
   postimap:
-    image: ghcr.io/frederikb96/postimap:1.11.0
+    image: ghcr.io/frederikb96/postimap:1.11.3
     container_name: mv-postimap-dev
     environment:
       POSTIMAP_DATABASE_HOST: postgres
@@ -112,7 +112,7 @@ services:
   # smtp_user/smtp_password round-trips through a real exchange, and its
   # own interface shows every message the application actually sent.
   mailpit:
-    image: docker.io/axllent/mailpit:v1.28.3
+    image: docker.io/axllent/mailpit:v1.31.2
     container_name: mv-mailpit-dev
     ports:
       - "18025:8025"  # web UI
@@ -129,7 +129,7 @@ services:
   # seed a calendar and an address book before any dav_account exists,
   # the same role LMTP delivery plays for mail.
   radicale:
-    image: docker.io/tomsquest/docker-radicale:3.7.6.0
+    image: docker.io/tomsquest/docker-radicale:3.8.0.0
     container_name: mv-radicale-dev
     ports:
       - "15232:5232"
