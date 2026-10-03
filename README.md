@@ -102,9 +102,24 @@ mirror, which is what keeps it simple.
   order number of its own still finds its way to the right entry by merchant, timing and what is
   already in flight; a mail is attached to an existing entry or opens a new one, never split
   between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
-  removed, two entries merged, or the summary rewritten by hand. Recent mail can be looked through
-  after switching the feature on for an account.
-- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
+  removed, two entries merged, or the summary rewritten by hand. Entries can be marked as
+  favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
+  the agent adds no more mail to them; an open entry nothing is expected of any more is closed
+  automatically, a few days (7 by default) after the date the model estimates it is over, or 30
+  days after its last mail when it has no such date; both are settings. A shipment
+  number that only a carrier's tracking link carries is read from the link. The same actions sit in the detail's menu and in a menu on each row (right-click or long
+  press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
+  or open. Recent mail can be looked through after switching the feature on for an account.
+- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
+  it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
+  from a named secret stored encrypted in the database (set from Settings, never shown again). A
+  delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
+  and raises an alert when it gives up; mail that predates a rule can be sent once, oldest first,
+  through the API. From an open mail, the "Add rule" icon takes one sentence ("these should go to
+  Newsletter too") and proposes exactly one change to the rules — a condition added to an existing
+  rule, a new rule at the end of the list, or one rule replaced — showing the explanation, the
+  change and what it would have caught among the last 100 mails, for Accept or Decline. Nothing is
+  kept, and it never proposes permanent deletion or a webhook.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,
   body) you pick, ranked by whether the word itself matched rather than merely started a longer
@@ -140,7 +155,9 @@ mirror, which is what keeps it simple.
   truncated body go to the configured model provider twice, once for spam classification and once
   for the embedding that powers semantic search, and a third time for orders and tickets on an
   account with that feature on and a mail that passes its first filter — a deliberate design
-  choice, not something a setting turns off.
+  choice, not something a setting turns off. The "Add rule" assistant sends the open mail's
+  excerpt, the rule set, and the sender and subject of a handful of other mails to the model
+  provider each time it is used, and only then.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail —
   including replying to or forwarding a message by its id, saved as a draft for you to review and
   send, with attachments — and
