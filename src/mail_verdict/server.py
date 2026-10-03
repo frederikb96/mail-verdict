@@ -63,6 +63,7 @@ from mail_verdict.settings.credentials import (
     init_provider_credential_repo,
     reset_provider_credential_repo,
 )
+from mail_verdict.settings.secret_store import reset_secret_repo
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 logger = logging.getLogger(__name__)
@@ -178,6 +179,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         else "No ENCRYPTION_KEY set -- provider keys must come from environment variables",
     )
 
+    from mail_verdict.settings.secret_store import init_secret_repo
+
+    secret_repo = init_secret_repo(db, config.security.encryption_key)
+
     from mail_verdict.push.vapid import init_vapid_key_repo
 
     vapid_repo = init_vapid_key_repo(db, config.security.encryption_key)
@@ -277,6 +282,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from mail_verdict.orders.worker import register_orders
 
     register_orders(_queue_manager, db, cred_repo, settings_service, event_ring)
+
+    from mail_verdict.webhooks.worker import register_webhooks
+
+    register_webhooks(
+        _queue_manager, db, secret_repo, config.webhooks, event_ring, vapid_repo,
+    )
 
     await _queue_manager.start()
     await _embedding_components.start()
@@ -539,6 +550,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reset_anthropic_provider()
     reset_openai_provider()
     reset_provider_credential_repo()
+    reset_secret_repo()
     reset_vapid_key_repo()
     reset_relay_client()
     reset_settings_service()

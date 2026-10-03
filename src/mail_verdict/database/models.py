@@ -2067,3 +2067,96 @@ class OrderJob(Base):
             postgresql_where=text("status = 'pending'"),
         ),
     )
+
+
+class Secret(Base):
+    """A named, write-only secret -- an auth token a rule's webhook action
+    references by name (webhooks/spec.py's `{{secret:NAME}}`).
+
+    encrypted_value is AES-256-GCM ciphertext (core/encryption.py), the
+    same scheme as provider_credentials. Only settings/secret_store.py
+    decrypts a row, and only for the delivery worker; the API lists names
+    and never returns a value.
+    """
+
+    __tablename__ = "secrets"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    encrypted_value: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow,
+        server_default=func.now(),
+    )
+
+
+class WebhookDelivery(Base):
+    """The webhook queue's work table -- one row per (webhook name, mail),
+    and the durable record of whether that mail was ever delivered. See
+    webhooks/worker.py.
+
+    uq_webhook_deliveries_mail is the never-twice gate: a row in any
+    status, `failed` included, stops the rule from enqueueing the same
+    mail for the same webhook again, so a resync or a repeated backfill
+    never re-sends. A failed row is re-queued only by an explicit retry.
+
+    `config` is the webhook's destination as the rule declared it when the
+    row was created (url, method, header templates, received_at_param);
+    header templates hold `{{secret:NAME}}` references, never values,
+    which are resolved when the request is made. No foreign key onto
+    anything, consistent with every other MailVerdict-owned table.
+
+    generation counts manual retries; it is part of the failure alert's
+    dedupe key so a retry that fails again alerts again.
+    """
+
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    account_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    msg_key: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    origin: Mapped[str] = mapped_column(Text, nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The ten columns queue/work_queue.py's WorkQueue requires.
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    claimed_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "origin IN ('live', 'backfill')", name="ck_webhook_deliveries_origin",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'claimed', 'done', 'skipped', 'failed')",
+            name="ck_webhook_deliveries_status",
+        ),
+        Index(
+            "uq_webhook_deliveries_mail", "name", "account_id", "msg_key", unique=True,
+        ),
+        Index(
+            "ix_webhook_deliveries_claim", "priority", "next_attempt_at",
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )

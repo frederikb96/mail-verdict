@@ -810,6 +810,38 @@ event has no `ORGANIZER` at all) — bumping it on an edit to an event held only
 make the real organizer's next genuine update compare as stale against the check above and be
 silently discarded.
 
+## Webhooks
+
+A `match` stage's `webhook` effect sends the message's raw source to an HTTP endpoint. Like the
+orders stage, the effect only enqueues: it inserts a `webhook_deliveries` row and nothing in a
+rule pass waits on the network. One worker on the `webhooks` queue (`webhooks/worker.py`, one
+concurrent delivery by default) makes the request.
+
+- **Identity.** One row per `(webhook name, account, msg_key)`, kept in every status. That unique
+  key is what stops a resync, a repeated backfill or a re-evaluated rule from sending a mail
+  twice, and a delivered row is never claimed again.
+- **Outcomes.** A 2xx is final. A 5xx, 408, 429, network error or timeout is retried with
+  jittered backoff up to `webhooks.max_attempts`. Any other response, redirects included (they are
+  not followed), ends the delivery at once. Every delivery that ends failed raises a
+  `webhook_failed` alert and stays in the table, still blocking a re-enqueue until it is
+  re-queued explicitly (`POST /api/webhooks/deliveries/{id}/retry`). A timeout, or a crash after
+  the receiver processed the request, is retried and can reach a receiver without its own
+  de-duplication twice.
+- **Source.** The raw bytes come from the mirror, or from the glacier when the mail has moved
+  there since. A message PostIMAP never stored the source for (`is_truncated`) fails rather than
+  sending something partial.
+- **Secrets.** `secrets` holds named values encrypted with `security.encryption_key`, the same
+  scheme as provider keys (`settings/secret_store.py`). A rule's header values reference one as
+  `{{secret:NAME}}`; the delivery row stores the reference, and the worker substitutes the value
+  when the request is made. No value, rendered header, response body or transport error text is
+  logged or stored, and no endpoint returns a value. Deleting a secret a rule still names makes
+  that rule's next delivery fail loudly.
+- **Backfill.** `webhooks/backfill.py` evaluates the named webhook's rule conditions against mail
+  received since a date and queues the matches behind live mail, ordered by received time.
+- **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach.
+  The application has no authentication of its own and relies on the proxy in front of it, which
+  therefore also decides who can make the server send a request.
+
 ## Configuration and settings
 
 Two separate mechanisms that must not overlap:

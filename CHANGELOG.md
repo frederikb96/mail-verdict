@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Added a secret store: named values encrypted at rest with the same key as provider keys, set,
+  replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
+  returned by any endpoint.
+- Added a `webhook` rule action that sends the matching mail's raw source to a URL, with header
+  values that can reference a stored secret as `{{secret:NAME}}`. Deliveries are queued and made
+  one after another by a worker: a 2xx is final and never repeated, a 5xx or network error is
+  retried with backoff, any other response ends the delivery, and a delivery that gives up raises a
+  `webhook_failed` alert. `POST /api/webhooks/{name}/backfill` sends mail that predates the rule,
+  oldest first and only once each, and `GET /api/webhooks/deliveries` shows what was queued. The
+  rule editor gains an "Add webhook action" button.
+
 ## [6.7.4] - 2026-09-30
 
 - Fixed the automatic glacier sweep silently and permanently dropping a message whose Message-ID
