@@ -877,11 +877,15 @@ concurrent delivery by default) makes the request.
   jittered backoff up to `webhooks.max_attempts`. Any other response, redirects included (they are
   not followed), ends the delivery at once. Every delivery that ends failed raises a
   `webhook_failed` alert and stays in the table, still blocking a re-enqueue until it is
-  re-queued explicitly (`POST /api/webhooks/deliveries/{id}/retry`). A timeout, or a crash after
-  the receiver processed the request, is retried and can reach a receiver without its own
-  de-duplication twice.
-- **Source.** The raw bytes come from the mirror, or from the glacier when the mail has moved
-  there since. A message PostIMAP never stored the source for (`is_truncated`) fails rather than
+  re-queued explicitly (`POST /api/webhooks/deliveries/{id}/retry`, or `POST
+  /api/webhooks/{name}/retry-failed` for all of one webhook), which re-reads the rule's current URL,
+  method and headers. `webhooks.request_timeout_seconds` bounds the whole request. A timeout, or a
+  crash after the receiver processed the request, is retried and can reach a receiver without its
+  own de-duplication twice. A delivery whose worker died on its last attempt is failed, with the
+  alert, by a periodic sweep.
+- **Source.** The raw bytes come from the mirror, expunged rows included (a rule that sends and
+  expunges in one pass has expunged the mail before the delivery runs), or from the glacier when
+  the mail has moved there since. A mail in neither fails with an alert. A message PostIMAP never stored the source for (`is_truncated`) fails rather than
   sending something partial.
 - **Secrets.** `secrets` holds named values encrypted with `security.encryption_key`, the same
   scheme as provider keys (`settings/secret_store.py`). A rule's header values reference one as
@@ -890,7 +894,8 @@ concurrent delivery by default) makes the request.
   logged or stored, and no endpoint returns a value. Deleting a secret a rule still names makes
   that rule's next delivery fail loudly.
 - **Backfill.** `webhooks/backfill.py` evaluates the named webhook's rule conditions against mail
-  received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time.
+  received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time. A call looks at most `limit` messages
+  and returns a cursor to continue after the last one.
 - **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach.
   The application has no authentication of its own and relies on the proxy in front of it, which
   therefore also decides who can make the server send a request.

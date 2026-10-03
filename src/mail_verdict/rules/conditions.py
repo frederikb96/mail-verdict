@@ -235,7 +235,7 @@ CONDITION_SYNTAX: dict[str, str] = {
         '{"field": "from", "pattern": "regex"} -- regex searched in one raw header, '
         "display name included"
     ),
-    "header_exists": '"list-id" -- the header is present',
+    "header_exists": '"x-mailer" -- the header is present',
     "size_gt": "<integer bytes> -- the mail is larger than this",
     "size_lt": "<integer bytes> -- the mail is smaller than this",
     "has_attachment": 'true, or "pdf" -- an attachment whose type contains that text',

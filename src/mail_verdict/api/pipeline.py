@@ -36,7 +36,7 @@ import asyncio
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
 from mail_verdict.api.events import broadcast_event, get_event_ring
@@ -473,18 +473,19 @@ async def _account_id_for_mail(db: DatabaseConnection, message_id: uuid.UUID) ->
 @router.post("/assistant", response_model=RuleAssistantResponse)
 async def rule_assistant(
     body: RuleAssistantRequest, request: Request,
-) -> RuleAssistantResponse | None:
+) -> RuleAssistantResponse | Response:
     """Turn one sentence about an open mail into one proposed rule change.
 
     Nothing is stored. Accepting the proposal is the client's own write
     through `POST /pipeline/stages` (`change.is_new`) or `PATCH
     /pipeline/stages/{id}`, carrying `change.base_revision` so a rule
     edited in the meantime gets the usual 409. The exchange stops before
-    its next model call once the client has disconnected."""
+    its next model call once the client has disconnected, and answers with
+    an empty 204 nobody reads."""
     db = get_db_connection()
     try:
         async with asyncio.timeout(_ASSISTANT_DEADLINE_SECONDS):
-            return await propose(
+            proposal = await propose(
                 db=db, settings_service=get_settings_service(),
                 cred_repo=get_provider_credential_repo(), message_id=body.message_id,
                 prompt=body.prompt, is_disconnected=request.is_disconnected,
@@ -499,3 +500,6 @@ async def rule_assistant(
         raise HTTPException(
             status_code=504, detail="the assistant took too long; try again",
         ) from None
+    if proposal is None:
+        return Response(status_code=204)
+    return proposal

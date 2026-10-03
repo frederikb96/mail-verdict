@@ -16,6 +16,7 @@ from mail_verdict.database.models import WebhookDelivery
 from mail_verdict.queue.notify import WorkQueueNotifier
 
 if TYPE_CHECKING:
+    from sqlalchemy import ColumnElement
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from mail_verdict.pipeline.contracts import Webhook
@@ -94,7 +95,9 @@ async def counts_by_status(session: AsyncSession, *, name: str) -> dict[str, int
     return {status: count for status, count in rows}
 
 
-async def requeue_failed(session: AsyncSession, delivery_id: uuid.UUID) -> bool:
+async def requeue_failed(
+    session: AsyncSession, delivery_id: uuid.UUID, *, effect: Webhook | None = None,
+) -> bool:
     """
     Put a failed delivery back to pending with a fresh attempt budget.
 
@@ -102,18 +105,40 @@ async def requeue_failed(session: AsyncSession, delivery_id: uuid.UUID) -> bool:
     still pending or claimed is already on its way. Bumps `generation` so
     the retry's own failure alerts again.
 
+    Args:
+        session: Session to write on; the caller commits
+        delivery_id: The delivery to re-queue
+        effect: The rule's webhook action as it is now, whose destination
+            replaces the one snapshotted when the row was queued; None keeps
+            the snapshot (the rule no longer exists)
+
     Returns:
         Whether a failed row was found and re-queued
     """
+    return await _requeue(session, WebhookDelivery.id == delivery_id, effect) > 0
+
+
+async def requeue_all_failed(
+    session: AsyncSession, name: str, *, effect: Webhook | None = None,
+) -> int:
+    """Re-queue every failed delivery of one webhook as `requeue_failed` does
+    for one; returns how many moved."""
+    return await _requeue(session, WebhookDelivery.name == name, effect)
+
+
+async def _requeue(
+    session: AsyncSession, which: ColumnElement[bool], effect: Webhook | None,
+) -> int:
+    values: dict[str, Any] = {
+        "status": "pending", "attempts": 0, "generation": WebhookDelivery.generation + 1,
+        "next_attempt_at": datetime.now(timezone.utc), "last_error": None, "http_status": None,
+    }
+    if effect is not None:
+        values["config"] = delivery_config(effect)
     result = await session.execute(
-        update(WebhookDelivery)
-        .where(WebhookDelivery.id == delivery_id, WebhookDelivery.status == "failed")
-        .values(
-            status="pending", attempts=0, generation=WebhookDelivery.generation + 1,
-            next_attempt_at=datetime.now(timezone.utc), last_error=None, http_status=None,
-        )
+        update(WebhookDelivery).where(which, WebhookDelivery.status == "failed").values(**values)
     )
-    requeued = bool(result.rowcount)  # type: ignore[attr-defined]
+    requeued: int = result.rowcount  # type: ignore[attr-defined]
     if requeued:
         await WorkQueueNotifier.notify(session, QUEUE_NAME)
     return requeued

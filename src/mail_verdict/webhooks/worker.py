@@ -13,6 +13,10 @@ This worker owns the request, and the outcome of each response class:
   - any other response (a 4xx, a redirect): failed at once. The receiver has
     said the request itself is wrong; sending it again changes nothing.
 
+`webhooks.request_timeout_seconds` bounds every phase of the request and the
+whole of it, so a receiver that works for longer than httpx's own default
+before answering is waited for rather than retried into duplicates.
+
 Every failure that ends a delivery raises a `webhook_failed` alert, so a
 mail that never arrived is visible rather than silent. A failed row stays in
 the table and blocks re-enqueueing the same mail; re-queueing is explicit
@@ -32,6 +36,7 @@ quote the header it rejected.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from collections.abc import Mapping
@@ -75,7 +80,7 @@ class _Source:
 
 @dataclass(frozen=True)
 class _Outcome:
-    """How one attempt ended. `kind` is done, skipped, transient or permanent."""
+    """How one attempt ended. `kind` is done, transient or permanent."""
 
     kind: str
     detail: str
@@ -102,11 +107,26 @@ def register_webhooks(
                 row, worker_id, work_queue, db, secret_repo, cfg, event_ring, vapid_repo,
             )
 
-        await default_worker_loop(
-            work_queue, worker_id=worker_id, stop_event=stop_event, batch_size=1,
-            lease_seconds=cfg.lease_seconds, handle_item=handle_item,
-            poll_interval=cfg.poll_interval_seconds, max_attempts=cfg.max_attempts,
-        )
+        async def sweep_exhausted() -> None:
+            while not stop_event.is_set():
+                try:
+                    await fail_exhausted_deliveries(db, cfg, event_ring, vapid_repo)
+                except Exception:
+                    logger.exception("Sweeping exhausted webhook deliveries failed")
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(stop_event.wait(), timeout=cfg.lease_seconds)
+
+        sweeper = asyncio.create_task(sweep_exhausted())
+        try:
+            await default_worker_loop(
+                work_queue, worker_id=worker_id, stop_event=stop_event, batch_size=1,
+                lease_seconds=cfg.lease_seconds, handle_item=handle_item,
+                poll_interval=cfg.poll_interval_seconds, max_attempts=cfg.max_attempts,
+            )
+        finally:
+            sweeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweeper
 
     queue_manager.register(
         QUEUE_NAME, cast("Table", WebhookDelivery.__table__), worker_body,
@@ -129,7 +149,7 @@ async def handle_delivery(
     try:
         source = await _load_source(db, row)
         if source is None:
-            outcome = _Outcome("skipped", "message gone")
+            outcome = _Outcome("permanent", "the message is no longer in the mirror or a glacier")
         else:
             outcome = await _attempt(row, source, secret_repo, cfg)
     except Exception as exc:  # noqa: BLE001 -- anything unexpected is retried, then failed
@@ -141,10 +161,6 @@ async def handle_delivery(
 
     if outcome.kind == "done":
         await _mark_done(db, item_id, worker_id, outcome.http_status)
-        return
-    if outcome.kind == "skipped":
-        await work_queue.complete(item_id, worker_id=worker_id, status="skipped")
-        await _record_status(db, item_id, None, outcome.detail)
         return
     if outcome.kind == "transient" and row["attempts"] < cfg.max_attempts:
         delay = compute_backoff(
@@ -167,6 +183,44 @@ async def handle_delivery(
         await _raise_failure_alert(
             db, row, source.subject if source else None, reason, event_ring, vapid_repo,
         )
+
+
+async def fail_exhausted_deliveries(
+    db: DatabaseConnection, cfg: WebhooksConfig, event_ring: EventRing | None,
+    vapid_repo: VapidKeyRepository | None,
+) -> int:
+    """
+    Fail every pending delivery that has already used its last attempt, and
+    alert for each.
+
+    A worker that dies during the last attempt leaves its row to the lease
+    reaper, which returns it to pending with the attempt still counted; the
+    claim never takes a row at the cap, so without this it would wait forever
+    with nothing said.
+
+    Returns:
+        How many deliveries were failed
+    """
+    reason = f"worker stopped during the last attempt (gave up after {cfg.max_attempts} attempts)"
+    async with db.session() as session:
+        result = await session.execute(
+            text(
+                """
+                UPDATE webhook_deliveries
+                SET status = 'failed', last_error = :reason
+                WHERE status = 'pending' AND attempts >= :max_attempts
+                RETURNING id, name, account_id, message_id, msg_key, generation
+                """
+            ),
+            {"reason": reason, "max_attempts": cfg.max_attempts},
+        )
+        failed = [dict(r._mapping) for r in result.all()]
+    for row in failed:
+        source = await _load_source(db, row)
+        await _raise_failure_alert(
+            db, row, source.subject if source else None, reason, event_ring, vapid_repo,
+        )
+    return len(failed)
 
 
 async def _attempt(
@@ -198,7 +252,8 @@ async def _attempt(
         url = url.copy_add_param(param, source.received_at.astimezone(timezone.utc).isoformat())
 
     try:
-        async with httpx.AsyncClient(follow_redirects=False) as client:
+        timeout = httpx.Timeout(cfg.request_timeout_seconds)
+        async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
             response = await asyncio.wait_for(
                 client.request(config["method"], url, headers=headers, content=source.raw),
                 timeout=cfg.request_timeout_seconds,
@@ -222,7 +277,11 @@ def _is_header_safe(value: str) -> bool:
 
 async def _load_source(db: DatabaseConnection, row: Mapping[str, Any]) -> _Source | None:
     """The message's raw source from the mirror, or from the glacier when it
-    has moved there since the rule fired. None when it is in neither."""
+    has moved there since the rule fired. None when it is in neither.
+
+    An expunged row is still read: a rule that sends and expunges in one pass
+    has expunged the mail before its delivery runs, and the row keeps its
+    source until PostIMAP removes it."""
     msg_key: str = row["msg_key"]
     lookups: list[tuple[str, str, dict[str, Any]]] = []
     if row["message_id"] is not None:
@@ -236,7 +295,7 @@ async def _load_source(db: DatabaseConnection, row: Mapping[str, Any]) -> _Sourc
             result = await session.execute(
                 text(
                     f"SELECT raw_source, received_at, subject FROM {table} "  # noqa: S608 -- constants
-                    f"WHERE {where} AND expunged_at IS NULL ORDER BY received_at DESC LIMIT 1"
+                    f"WHERE {where} ORDER BY received_at DESC LIMIT 1"
                 ),
                 params,
             )

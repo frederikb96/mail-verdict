@@ -240,6 +240,9 @@ function ProposalView({
 
       {change.before_text !== null && <CodeBlock label="Now" text={change.before_text} />}
       <CodeBlock label="Proposed" text={change.after_text} />
+      {change.effects_text !== null && (
+        <CodeBlock label="What this rule does" text={change.effects_text} />
+      )}
 
       {preview && (
         <div className="text-sm">

@@ -6805,7 +6805,7 @@
         "type": "object"
       },
       "RuleAssistantChange": {
-        "description": "The one change the assistant proposes. `stage` is the complete stage\nas it should be after Accept; Accept is an ordinary pipeline write\n(`POST /pipeline/stages` when `is_new`, else `PATCH\n/pipeline/stages/{stage_id}`) carrying `base_revision`.",
+        "description": "The one change the assistant proposes. `stage` is the complete stage\nas it should be after Accept; Accept is an ordinary pipeline write\n(`POST /pipeline/stages` when `is_new`, else `PATCH\n/pipeline/stages/{stage_id}`) carrying `base_revision`. `effects_text` is\nthe existing rule's effects, set for `add_condition`, whose `after_text`\nshows only the added condition.",
         "properties": {
           "after_text": {
             "title": "After Text",
@@ -6825,6 +6825,17 @@
               }
             ],
             "title": "Before Text"
+          },
+          "effects_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effects Text"
           },
           "is_new": {
             "title": "Is New",
@@ -8388,9 +8399,40 @@
         "title": "VerdictResponse",
         "type": "object"
       },
-      "WebhookBackfillRequest": {
-        "description": "Which existing mail to queue the webhook for.",
+      "WebhookBackfillCursor": {
+        "description": "Where a truncated backfill stopped.",
         "properties": {
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "title": "Received At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "received_at",
+          "message_id"
+        ],
+        "title": "WebhookBackfillCursor",
+        "type": "object"
+      },
+      "WebhookBackfillRequest": {
+        "description": "Which existing mail to queue the webhook for. `cursor` is the previous\ncall's `next_cursor`; the same `since`, `until` and `limit` go with it.",
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WebhookBackfillCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "dry_run": {
             "default": false,
             "title": "Dry Run",
@@ -8428,7 +8470,7 @@
         "type": "object"
       },
       "WebhookBackfillResponse": {
-        "description": "What a backfill call found. Calling again after `truncated` continues\nwith the mail the first call did not reach.",
+        "description": "What a backfill call found. When `truncated`, `next_cursor` goes into\nthe next request to continue with the mail this call did not reach.",
         "properties": {
           "already_queued": {
             "title": "Already Queued",
@@ -8437,6 +8479,16 @@
           "matched": {
             "title": "Matched",
             "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WebhookBackfillCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "queued": {
             "title": "Queued",
@@ -8456,7 +8508,8 @@
           "matched",
           "queued",
           "already_queued",
-          "truncated"
+          "truncated",
+          "next_cursor"
         ],
         "title": "WebhookBackfillResponse",
         "type": "object"
@@ -13940,7 +13993,7 @@
     },
     "/pipeline/assistant": {
       "post": {
-        "description": "Turn one sentence about an open mail into one proposed rule change.\n\nNothing is stored. Accepting the proposal is the client's own write\nthrough `POST /pipeline/stages` (`change.is_new`) or `PATCH\n/pipeline/stages/{id}`, carrying `change.base_revision` so a rule\nedited in the meantime gets the usual 409. The exchange stops before\nits next model call once the client has disconnected.",
+        "description": "Turn one sentence about an open mail into one proposed rule change.\n\nNothing is stored. Accepting the proposal is the client's own write\nthrough `POST /pipeline/stages` (`change.is_new`) or `PATCH\n/pipeline/stages/{id}`, carrying `change.base_revision` so a rule\nedited in the meantime gets the usual 409. The exchange stops before\nits next model call once the client has disconnected, and answers with\nan empty 204 nobody reads.",
         "operationId": "rule_assistant_pipeline_assistant_post",
         "requestBody": {
           "content": {
@@ -15942,7 +15995,7 @@
     },
     "/webhooks/deliveries/{delivery_id}/retry": {
       "post": {
-        "description": "Re-queue a failed delivery with a fresh attempt budget. Only a failed\ndelivery moves; a delivered one is never sent again.",
+        "description": "Re-queue a failed delivery with a fresh attempt budget, aimed at the\nrule's current URL, method and headers. Only a failed delivery moves; a\ndelivered one is never sent again.",
         "operationId": "retry_delivery_webhooks_deliveries__delivery_id__retry_post",
         "parameters": [
           {
@@ -16036,6 +16089,53 @@
           }
         },
         "summary": "Backfill",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/webhooks/{name}/retry-failed": {
+      "post": {
+        "description": "Re-queue every failed delivery of one webhook, as the single retry\ndoes for one. Returns how many moved.",
+        "operationId": "retry_failed_webhooks__name__retry_failed_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Retry Failed Webhooks  Name  Retry Failed Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Failed",
         "tags": [
           "webhooks"
         ]

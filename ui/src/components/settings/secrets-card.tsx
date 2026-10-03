@@ -4,6 +4,7 @@ import { useState } from "react";
 import { KeyRound, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
@@ -21,6 +22,7 @@ export function SecretsCard() {
   const deleteSecret = useDeleteSecret();
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   const failure = putSecret.error ?? deleteSecret.error;
   const canSave = name.trim() !== "" && value !== "" && !putSecret.isPending;
@@ -80,7 +82,7 @@ export function SecretsCard() {
                     className="h-7 w-7"
                     aria-label={`Delete the ${secret.name} secret`}
                     disabled={deleteSecret.isPending}
-                    onClick={() => deleteSecret.mutate(secret.name)}
+                    onClick={() => setConfirmDelete(secret.name)}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -118,6 +120,20 @@ export function SecretsCard() {
           </p>
         )}
       </CardContent>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null);
+        }}
+        title={`Delete the ${confirmDelete ?? ""} secret?`}
+        confirmLabel="Delete secret"
+        description="The value cannot be recovered, and every webhook delivery that references this secret will fail until it is set again."
+        isConfirming={deleteSecret.isPending}
+        onConfirm={() => {
+          if (confirmDelete === null) return;
+          deleteSecret.mutate(confirmDelete, { onSettled: () => setConfirmDelete(null) });
+        }}
+      />
     </Card>
   );
 }

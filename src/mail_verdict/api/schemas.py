@@ -1511,7 +1511,9 @@ class RuleAssistantChange(BaseModel):
     """The one change the assistant proposes. `stage` is the complete stage
     as it should be after Accept; Accept is an ordinary pipeline write
     (`POST /pipeline/stages` when `is_new`, else `PATCH
-    /pipeline/stages/{stage_id}`) carrying `base_revision`."""
+    /pipeline/stages/{stage_id}`) carrying `base_revision`. `effects_text` is
+    the existing rule's effects, set for `add_condition`, whose `after_text`
+    shows only the added condition."""
 
     kind: Literal["add_condition", "new_rule", "replace_rule"]
     base_revision: int
@@ -1520,6 +1522,7 @@ class RuleAssistantChange(BaseModel):
     title: str
     before_text: str | None = None
     after_text: str
+    effects_text: str | None = None
 
 
 class RuleAssistantPreviewExample(BaseModel):
