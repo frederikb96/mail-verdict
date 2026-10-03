@@ -217,7 +217,7 @@ curl -X POST localhost:8080/api/webhooks/canteen/backfill -H 'content-type: appl
 # -> {"scanned": 61, "matched": 58, "queued": 58, "already_queued": 0, "truncated": false}
 ```
 
-Drop `dry_run` to queue them. Calling again queues only what has no delivery yet. `truncated`
+The scan covers every folder except Drafts, Trash and Junk, Archive and Sent included (a live rule pass skips those, a backfill does not); mail already moved to a glacier is not scanned. Drop `dry_run` to queue them. Calling again queues only what has no delivery yet. `truncated`
 means `limit` (default 1000, at most 5000) stopped the scan; call again to continue.
 `GET /api/webhooks/deliveries?name=canteen&status=failed` shows what gave up.
 

@@ -837,7 +837,7 @@ concurrent delivery by default) makes the request.
   logged or stored, and no endpoint returns a value. Deleting a secret a rule still names makes
   that rule's next delivery fail loudly.
 - **Backfill.** `webhooks/backfill.py` evaluates the named webhook's rule conditions against mail
-  received since a date and queues the matches behind live mail, ordered by received time.
+  received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time.
 - **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach.
   The application has no authentication of its own and relies on the proxy in front of it, which
   therefore also decides who can make the server send a request.

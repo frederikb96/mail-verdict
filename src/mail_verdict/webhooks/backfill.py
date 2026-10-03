@@ -14,8 +14,9 @@ spaced by their received order, which the single delivery worker then
 sends one after another; a delivery that has to be retried is retried
 later and does not hold up the ones behind it.
 
-Only the live mirror is scanned: mail already moved to a glacier is not a
-candidate.
+Every folder is scanned except Drafts, Trash and Junk (a live rule pass
+additionally skips Sent and Archive; a backfill does not). Only the live
+mirror is scanned: mail already moved to a glacier is not a candidate.
 """
 
 from __future__ import annotations
@@ -32,13 +33,16 @@ from mail_verdict.pipeline.context import current_verdict_for_mail
 from mail_verdict.pipeline.contracts import StageDefinition, Webhook
 from mail_verdict.pipeline.effect_codec import parse_effect
 from mail_verdict.pipeline.message_view import load_message_view
-from mail_verdict.pipeline.runner import _SKIP_FOLDER_SPECIAL_USE
 from mail_verdict.pipeline.stages.match import MatchConfig, matches_message
 from mail_verdict.webhooks.repository import enqueue_delivery
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
 
+# Unlike a live rule pass, an explicit backfill reaches Archive and Sent: mail
+# that was already read and filed is the usual target. Drafts, Trash and Junk
+# are never sent.
+_EXCLUDED_SPECIAL_USE = frozenset({"drafts", "trash", "junk"})
 # Behind live mail (priority 0) in the single worker's claim order.
 BACKFILL_PRIORITY = 100
 # Keeps the queued rows' due times strictly ordered by received time.
@@ -129,7 +133,7 @@ async def backfill_webhook(
             view = await load_message_view(session, message_id)
         if view is None or view.is_draft:
             continue
-        if (view.folder.special_use or "") in _SKIP_FOLDER_SPECIAL_USE:
+        if (view.folder.special_use or "") in _EXCLUDED_SPECIAL_USE:
             continue
         verdict = await current_verdict_for_mail(db, message_id)
         if not matches_message(when, view, verdict):

@@ -429,6 +429,8 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
         account_id = await _seed_account(session)
         inbox = await _seed_folder(session, account_id)
         junk = await _seed_folder(session, account_id, special_use="junk")
+        trash = await _seed_folder(session, account_id, special_use="trash")
+        archive = await _seed_folder(session, account_id, special_use="archive")
         # Inserted newest first, so insertion order cannot pass for received order.
         newest, _ = await _seed_message(
             session, account_id, inbox, received_at=_NOW + timedelta(days=2))
@@ -438,6 +440,9 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
         await _seed_message(
             session, account_id, inbox, subject="Something else", received_at=_NOW)
         await _seed_message(session, account_id, junk, received_at=_NOW)
+        await _seed_message(session, account_id, trash, received_at=_NOW)
+        archived, _ = await _seed_message(
+            session, account_id, archive, received_at=_NOW + timedelta(days=3))
         await _seed_message(
             session, account_id, inbox, received_at=_NOW - timedelta(days=30))  # before `since`
 
@@ -456,7 +461,7 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
 
     dry = await backfill_webhook(
         migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=True)
-    assert (dry.matched, dry.queued, dry.already_queued) == (3, 3, 0)
+    assert (dry.matched, dry.queued, dry.already_queued) == (4, 4, 0)
     async with migrated_db.session() as session:
         assert not [
             r for r in await repository.list_deliveries(
@@ -466,7 +471,7 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
 
     first = await backfill_webhook(
         migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=False)
-    assert (first.scanned, first.matched, first.queued, first.already_queued) == (5, 3, 3, 0)
+    assert (first.scanned, first.matched, first.queued, first.already_queued) == (7, 4, 4, 0)
     assert first.truncated is False
 
     async with migrated_db.session() as session:
@@ -476,13 +481,13 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
             if r.account_id == account_id
         ]
     by_due = [r.message_id for r in sorted(rows, key=lambda r: r.next_attempt_at)]
-    assert by_due == [oldest, middle, newest]
+    assert by_due == [oldest, middle, newest, archived]
     assert {r.priority for r in rows} == {BACKFILL_PRIORITY}
     assert {r.origin for r in rows} == {"backfill"}
 
     second = await backfill_webhook(
         migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=False)
-    assert (second.matched, second.queued, second.already_queued) == (3, 0, 3)
+    assert (second.matched, second.queued, second.already_queued) == (4, 0, 4)
 
 
 async def test_backfill_of_an_unknown_webhook_name_is_an_error(
