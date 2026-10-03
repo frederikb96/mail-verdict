@@ -70,6 +70,29 @@ push:
   # How long one request to a relay may take before it counts as failed.
   relay_timeout_seconds: 10
 
+# Rule-triggered webhooks (webhooks/worker.py): a rule's "webhook" action
+# queues one delivery per mail, and one worker sends them in order.
+webhooks:
+  # How long one request may take end to end. Some receivers do real work
+  # inside the request (parsing an attachment, say), so this is generous.
+  request_timeout_seconds: 60
+  # Attempts per delivery before it is marked failed and raised as an alert.
+  # Only a transient outcome (5xx, 408, 429, network error, timeout) is
+  # retried; any other response ends the delivery at once.
+  max_attempts: 6
+  # Retry delay: full-jitter exponential from the base, capped.
+  base_delay_seconds: 30
+  max_delay_seconds: 1800
+  # Largest raw message sent. A larger one fails at once instead of being
+  # rejected by the receiver after a long upload.
+  max_body_bytes: 26214400
+  # Fallback poll when the queue's wake-up notification is missed.
+  poll_interval_seconds: 2
+  # How long a claimed delivery may sit unrenewed before it is reclaimed.
+  # The worker renews it while a request is in flight, so this only
+  # matters after a crash.
+  lease_seconds: 120
+
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10
