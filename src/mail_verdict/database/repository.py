@@ -24,7 +24,6 @@ from sqlalchemy import (
     not_,
     or_,
     select,
-    text,
     union,
     update,
 )
@@ -33,6 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from mail_verdict.core.cursor import after_cursor, after_tier_cursor
+from mail_verdict.database.fuzzy import (
+    fuzzy_token_predicate,
+    ilike_escape,
+    resolve_lexemes,
+    set_word_similarity_threshold,
+)
 from mail_verdict.database.models import (
     Account,
     AccountPrefs,
@@ -317,28 +322,6 @@ SEARCH_FIELDS = frozenset({"subject", "from", "to", "body"})
 SearchSort = Literal["relevance", "chronological"]
 
 
-def _ilike_escape(token: str) -> str:
-    """Escape ILIKE's own wildcards in raw user input before wrapping it
-    in %...% -- a query containing a literal % or _ must match that
-    character, not be treated as a pattern."""
-    return token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-async def _resolve_lexemes(session: AsyncSession, query: str) -> list[str]:
-    """The distinct lexemes Postgres's own 'simple' text search parser
-    extracts from the raw query -- the single tokenization every later
-    piece of a search (the prefix tsquery, the per-field ILIKE scope, the
-    match tier, the snippet) agrees on. Splitting on whitespace in Python
-    instead would let matching and the tsvector index quietly disagree on
-    what a "token" is; going through Postgres's own parser is also what
-    makes the tsquery injection-proof -- raw user text is never
-    interpolated into tsquery syntax directly, only tokenized first.
-    """
-    lexeme_col = func.unnest(func.to_tsvector("simple", query)).table_valued("lexeme").c.lexeme
-    result = await session.execute(select(lexeme_col).distinct())
-    return [row[0] for row in result.all()]
-
-
 def _tsquery_text(tokens: list[str], *, prefix: bool = True) -> str | None:
     """AND tsquery syntax over already-tokenized lexemes (every token
     required, `:*` unless prefix=False asks for the lexeme itself).
@@ -367,7 +350,7 @@ def _field_predicate(msg: Any, tokens: list[str], fields: frozenset[str]) -> Any
     boundary match wrongly."""
     conditions = []
     for token in tokens:
-        pattern = f"%{_ilike_escape(token)}%"
+        pattern = f"%{ilike_escape(token)}%"
         parts = []
         if "subject" in fields:
             parts.append(msg.subject.ilike(pattern))
@@ -425,7 +408,7 @@ def _match_tier(msg: Any, tokens: list[str]) -> Any:
 
     def _hits(*cols: Any) -> Any:
         return and_(
-            *[or_(*[col.ilike(f"%{_ilike_escape(t)}%") for col in cols]) for t in tokens]
+            *[or_(*[col.ilike(f"%{ilike_escape(t)}%") for col in cols]) for t in tokens]
         )
 
     subject_tier = _hits(msg.subject)
@@ -512,7 +495,7 @@ async def _build_candidate_query(
     arms: list[Any] = [base.where(primary)]
     if "to" in fields:
         to_predicate = and_(
-            *[cast(Message.to_addrs, Text).ilike(f"%{_ilike_escape(t)}%") for t in tokens]
+            *[cast(Message.to_addrs, Text).ilike(f"%{ilike_escape(t)}%") for t in tokens]
         )
         arms.append(base.where(to_predicate))
 
@@ -534,7 +517,7 @@ async def _build_candidate_query(
         if "to" in fields:
             glacier_to_predicate = and_(
                 *[
-                    cast(GlacierMessage.to_addrs, Text).ilike(f"%{_ilike_escape(t)}%")
+                    cast(GlacierMessage.to_addrs, Text).ilike(f"%{ilike_escape(t)}%")
                     for t in tokens
                 ]
             )
@@ -560,41 +543,6 @@ def _row_haystack(m: Message, fields: frozenset[str]) -> str:
     if "body" in fields:
         parts.append(m.body_text or "")
     return " ".join(parts)
-
-
-def _fallback_token_predicate(token: str, entity: Any = Message) -> Any:
-    """A token matches the fallback tier literally, or -- pg_trgm's word-
-    similarity operator, never the word_similarity() function call --
-    close enough that a typo doesn't lose the hit. Subject and from_addr
-    only: body is never trigram-matched here, that is the
-    18-second-per-query cost this whole rewrite exists to stop running.
-
-    The operator form (`column %> token`) is required for a trigram index
-    to serve this at all -- verified by EXPLAIN across all three
-    spellings: `column %> 'token'` and `'token' <% column` both use the
-    index, `word_similarity(token, column) >= threshold` is a sequential
-    scan every time despite computing the identical answer. Its threshold
-    is `pg_trgm.word_similarity_threshold`, a session GUC the operator
-    reads rather than an argument it takes -- see
-    search_messages_fallback, which sets it to the 0.6 validated against
-    real typos before this runs.
-
-    An '@' token is left literal-only: two unrelated addresses sharing a
-    domain score *higher* on word similarity than a genuine typo does, so
-    there is no threshold that keeps the typo and drops the collision. An
-    address is a literal identifier someone is typing exactly, not prose
-    worth typo-tolerance over.
-    """
-    escaped = _ilike_escape(token)
-    pattern = f"%{escaped}%"
-    if "@" in token:
-        return or_(entity.subject.ilike(pattern), entity.from_addr.ilike(pattern))
-    return or_(
-        entity.subject.ilike(pattern),
-        entity.from_addr.ilike(pattern),
-        entity.subject.op("%>")(token),
-        entity.from_addr.op("%>")(token),
-    )
 
 
 def _build_snippet(haystack: str, tokens: list[str], window: int = 60) -> str | None:
@@ -833,11 +781,11 @@ class MessageRepository:
         raw search query -- computed once per request and threaded through
         search_messages, search_messages_fallback, resolve_search_cursor
         and count_search_candidates so every one of them agrees on what a
-        "token" is. See _resolve_lexemes for why this goes through
+        "token" is. See resolve_lexemes for why this goes through
         Postgres rather than a Python-side split.
         """
         async with self._db.session() as session:
-            return await _resolve_lexemes(session, query)
+            return await resolve_lexemes(session, query)
 
     async def search_date_bounds(
         self,
@@ -1139,11 +1087,11 @@ class MessageRepository:
             # pg_trgm.word_similarity_threshold is a session GUC the %>
             # operator reads rather than an argument it takes -- SET
             # LOCAL scopes the 0.6 validated against real typos to this
-            # transaction only. See _fallback_token_predicate for why the
+            # transaction only. See fuzzy_token_predicate for why the
             # operator form is required at all. It applies to both arms
             # of the union below alike -- a session GUC, not a per-table
             # setting (design section 4.4).
-            await session.execute(text("SET LOCAL pg_trgm.word_similarity_threshold = 0.6"))
+            await set_word_similarity_threshold(session)
 
             base = select(Message).where(Message.expunged_at.is_(None))
             if account_id is not None:
@@ -1156,7 +1104,9 @@ class MessageRepository:
                 base = base.where(Message.received_at <= received_before)
             if is_seen is not None:
                 base = base.where(Message.is_seen == is_seen)
-            stmt: Any = base.where(*[_fallback_token_predicate(t) for t in tokens])
+            stmt: Any = base.where(
+                *[fuzzy_token_predicate(t, (Message.subject, Message.from_addr)) for t in tokens]
+            )
 
             glacier_folders = await touches_glacier(
                 session, account_id=account_id, folder_ids=folder_ids,
@@ -1177,7 +1127,12 @@ class MessageRepository:
                 if is_seen is not None:
                     glacier_base = glacier_base.where(GlacierMessage.is_seen == is_seen)
                 glacier_stmt = glacier_base.where(
-                    *[_fallback_token_predicate(t, GlacierMessage) for t in tokens]
+                    *[
+                        fuzzy_token_predicate(
+                            t, (GlacierMessage.subject, GlacierMessage.from_addr),
+                        )
+                        for t in tokens
+                    ]
                 )
                 stmt = stmt.union(glacier_stmt)
                 entity = aliased(Message, stmt.subquery())
@@ -2052,6 +2007,44 @@ class AlertRepository:
                     body=body,
                     url=f"/?message={message_id}",
                     dedupe_key=f"glacier-conflict:{message_id}",
+                    account_id=account_id,
+                    message_id=message_id,
+                )
+                .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
+                .returning(Alert)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def create_webhook_failed_alert(
+        self, *, account_id: uuid.UUID, message_id: uuid.UUID | None, dedupe_key: str,
+        title: str, body: str,
+    ) -> Alert | None:
+        """
+        Insert a delivered "webhook_failed" alert -- see webhooks/worker.py.
+
+        A webhook delivery that gave up for good: a response that will not
+        change on retry, or a transient failure that outlasted its
+        attempts. dedupe_key carries the delivery id and its manual-retry
+        generation, so it fires once per giving-up. No folder_id, the same
+        reasoning create_outbox_stalled_alert gives.
+
+        Returns:
+            The inserted Alert, or None if this giving-up was already
+            alerted on
+        """
+        now = func.now()
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(Alert)
+                .values(
+                    kind="webhook_failed",
+                    deliver_at=now,
+                    delivered_at=now,
+                    title=title,
+                    body=body,
+                    url=f"/?message={message_id}" if message_id is not None else None,
+                    dedupe_key=dedupe_key,
                     account_id=account_id,
                     message_id=message_id,
                 )

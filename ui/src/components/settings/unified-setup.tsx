@@ -87,7 +87,7 @@ export function EmojiPicker({
         {currentEmoji || "\u{2795}"}
       </button>
       {isOpen && (
-        <div className="absolute left-0 top-10 z-50 grid grid-cols-7 gap-1 rounded-md border bg-popover p-2 shadow-md">
+        <div className="absolute left-0 top-10 z-50 grid w-[16.5rem] max-w-[calc(100vw-2rem)] grid-cols-7 gap-1 rounded-md border bg-popover p-2 shadow-md">
           {currentEmoji && (
             <button
               type="button"
@@ -342,7 +342,7 @@ function FolderViewsSelect({
           <Button
             variant="outline"
             size="sm"
-            className="h-auto min-h-8 min-w-0 max-w-[65%] justify-between gap-2 py-1"
+            className="h-auto min-h-8 w-52 min-w-0 max-w-[60%] shrink-0 justify-between gap-2 py-1"
             aria-label={`Unified views for ${label}`}
           />
         }
@@ -406,11 +406,11 @@ function AccountFolders({
 
   return (
     <div
-      className="flex flex-col gap-1.5"
+      className="flex max-w-2xl flex-col"
       data-testid="unified-account-folders"
       data-account-id={account.id}
     >
-      <div className="flex items-center gap-2 text-sm font-medium">
+      <div className="mb-1 flex items-center gap-2 text-sm font-medium">
         {account.emoji && <span aria-hidden>{account.emoji}</span>}
         <span className="truncate">{account.name}</span>
       </div>
@@ -421,7 +421,7 @@ function AccountFolders({
             key={folder.id}
             data-testid="unified-folder-row"
             data-folder-id={folder.id}
-            className="flex items-center justify-between gap-3 pl-1"
+            className="flex items-center justify-between gap-3 rounded-md px-2 py-1 odd:bg-muted/30 hover:bg-muted/60"
           >
             <span className="min-w-0 truncate text-sm text-muted-foreground">{label}</span>
             <FolderViewsSelect folder={folder} label={label} views={views} />

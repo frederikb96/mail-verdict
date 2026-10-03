@@ -5,20 +5,35 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { OrderDetail } from "@/types/api";
+import type { OrderDetail, OrderUpdateRequest } from "@/types/api";
+
+export interface OrdersListFilter {
+  state: "all" | "open";
+  favorites: boolean;
+  /** Already trimmed and debounced by the caller. */
+  q: string;
+}
 
 export const orderKeys = {
-  list: (state: "all" | "open") => ["orders", "list", state] as const,
+  list: (filter: OrdersListFilter) =>
+    ["orders", "list", filter.state, filter.favorites, filter.q] as const,
   detail: (id: string) => ["orders", "detail", id] as const,
 };
 
 /** Newest activity first, one request re-reading the whole loaded window
  * on invalidation -- the same shape every other paged list here uses. */
-export function useOrdersList(state: "all" | "open") {
+export function useOrdersList(filter: OrdersListFilter) {
+  const { state, favorites, q } = filter;
   const query = useInfiniteQuery({
-    queryKey: orderKeys.list(state),
+    queryKey: orderKeys.list({ state, favorites, q }),
     queryFn: ({ pageParam }: { pageParam: string | null }) =>
-      api.orders.list({ state, before: pageParam ?? undefined, limit: 50 }),
+      api.orders.list({
+        state,
+        favorites: favorites || undefined,
+        q: q || undefined,
+        before: pageParam ?? undefined,
+        limit: 50,
+      }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => (lastPage.has_more ? lastPage.next_cursor : undefined),
   });
@@ -48,6 +63,22 @@ export function useDeleteOrder() {
     onSuccess: (_data, id) => {
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       queryClient.removeQueries({ queryKey: orderKeys.detail(id) });
+    },
+  });
+}
+
+/** Favorite, open/closed and sealed -- one PATCH, whichever fields the
+ * patch names. The answer is the whole detail, so the open order's pane is
+ * updated from it directly; every list is re-read because a flag can move
+ * the order in or out of the Open and Favorites views. */
+export function useUpdateOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: OrderUpdateRequest }) =>
+      api.orders.update(id, patch),
+    onSuccess: (detail: OrderDetail, { id }) => {
+      queryClient.setQueryData(orderKeys.detail(id), detail);
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
     },
   });
 }

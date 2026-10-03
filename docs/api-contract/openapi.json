@@ -5138,6 +5138,18 @@
             "title": "Documents",
             "type": "array"
           },
+          "expected_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Until"
+          },
           "first_mail_at": {
             "anyOf": [
               {
@@ -5166,8 +5178,16 @@
             "title": "Identifiers",
             "type": "array"
           },
+          "is_favorite": {
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "is_open": {
             "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sealed": {
+            "title": "Is Sealed",
             "type": "boolean"
           },
           "last_mail_at": {
@@ -5195,6 +5215,15 @@
           },
           "merchant": {
             "title": "Merchant",
+            "type": "string"
+          },
+          "open_set_by": {
+            "enum": [
+              "ai",
+              "user",
+              "auto"
+            ],
+            "title": "Open Set By",
             "type": "string"
           },
           "status": {
@@ -5234,6 +5263,10 @@
           "status",
           "title",
           "is_open",
+          "is_favorite",
+          "is_sealed",
+          "open_set_by",
+          "expected_until",
           "icon",
           "summary_preview",
           "first_mail_at",
@@ -5327,6 +5360,18 @@
             "title": "Account Ids",
             "type": "array"
           },
+          "expected_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Until"
+          },
           "first_mail_at": {
             "anyOf": [
               {
@@ -5348,8 +5393,16 @@
             "title": "Id",
             "type": "string"
           },
+          "is_favorite": {
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "is_open": {
             "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sealed": {
+            "title": "Is Sealed",
             "type": "boolean"
           },
           "last_mail_at": {
@@ -5370,6 +5423,15 @@
           },
           "merchant": {
             "title": "Merchant",
+            "type": "string"
+          },
+          "open_set_by": {
+            "enum": [
+              "ai",
+              "user",
+              "auto"
+            ],
+            "title": "Open Set By",
             "type": "string"
           },
           "status": {
@@ -5405,6 +5467,10 @@
           "status",
           "title",
           "is_open",
+          "is_favorite",
+          "is_sealed",
+          "open_set_by",
+          "expected_until",
           "icon",
           "summary_preview",
           "first_mail_at",
@@ -5563,6 +5629,46 @@
           "into"
         ],
         "title": "OrderMergeRequest",
+        "type": "object"
+      },
+      "OrderUpdateRequest": {
+        "description": "A person's change to an order's flags; an omitted field is left alone.\nSetting is_open records that a person decided it.",
+        "properties": {
+          "is_favorite": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Favorite"
+          },
+          "is_open": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Open"
+          },
+          "is_sealed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Sealed"
+          }
+        },
+        "title": "OrderUpdateRequest",
         "type": "object"
       },
       "OutboxAttachmentSummary": {
@@ -6698,6 +6804,184 @@
         "title": "RespondRequest",
         "type": "object"
       },
+      "RuleAssistantChange": {
+        "description": "The one change the assistant proposes. `stage` is the complete stage\nas it should be after Accept; Accept is an ordinary pipeline write\n(`POST /pipeline/stages` when `is_new`, else `PATCH\n/pipeline/stages/{stage_id}`) carrying `base_revision`.",
+        "properties": {
+          "after_text": {
+            "title": "After Text",
+            "type": "string"
+          },
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "before_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Text"
+          },
+          "is_new": {
+            "title": "Is New",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "add_condition",
+              "new_rule",
+              "replace_rule"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/StageOut"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "base_revision",
+          "is_new",
+          "stage",
+          "title",
+          "after_text"
+        ],
+        "title": "RuleAssistantChange",
+        "type": "object"
+      },
+      "RuleAssistantPreview": {
+        "description": "What the change would have done to the account's newest mails.",
+        "properties": {
+          "examples": {
+            "items": {
+              "$ref": "#/components/schemas/RuleAssistantPreviewExample"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "matched_after": {
+            "title": "Matched After",
+            "type": "integer"
+          },
+          "matched_before": {
+            "title": "Matched Before",
+            "type": "integer"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sample_size",
+          "matched_before",
+          "matched_after",
+          "examples"
+        ],
+        "title": "RuleAssistantPreview",
+        "type": "object"
+      },
+      "RuleAssistantPreviewExample": {
+        "description": "One recent mail the changed rule newly catches.",
+        "properties": {
+          "from_addr": {
+            "title": "From Addr",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_addr",
+          "subject"
+        ],
+        "title": "RuleAssistantPreviewExample",
+        "type": "object"
+      },
+      "RuleAssistantRequest": {
+        "description": "One sentence from the owner about the open mail -- 'these should go\nto Newsletter too' -- for the rule assistant to turn into one change.",
+        "properties": {
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "prompt"
+        ],
+        "title": "RuleAssistantRequest",
+        "type": "object"
+      },
+      "RuleAssistantResponse": {
+        "description": "The assistant's answer. `change` is null when there is nothing to\naccept; `message` then says why.",
+        "properties": {
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleAssistantChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleAssistantPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message",
+          "model",
+          "model_calls"
+        ],
+        "title": "RuleAssistantResponse",
+        "type": "object"
+      },
       "SearchDateBoundsResponse": {
         "description": "The oldest and newest received_at across a search scope, with no\nquery of its own -- what the date-range control draws its axis from.\nBoth None when the scope has no dated message at all.",
         "properties": {
@@ -6959,6 +7243,65 @@
           "mirrored_at"
         ],
         "title": "SearchResult",
+        "type": "object"
+      },
+      "SecretOut": {
+        "description": "A stored secret as the API shows it: the name, never the value.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SecretOut",
+        "type": "object"
+      },
+      "SecretWrite": {
+        "description": "The one place a value travels, inbound only. Validated in the\nhandler rather than by the model, because a 422 response echoes the\nrejected input.",
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "SecretWrite",
+        "type": "object"
+      },
+      "SecretWriteResult": {
+        "description": "Outcome of a write; `created` is false when it replaced a value.",
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "created"
+        ],
+        "title": "SecretWriteResult",
         "type": "object"
       },
       "SelectionSnapshotResponse": {
@@ -8043,6 +8386,182 @@
           "created_at"
         ],
         "title": "VerdictResponse",
+        "type": "object"
+      },
+      "WebhookBackfillRequest": {
+        "description": "Which existing mail to queue the webhook for.",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 1000,
+            "maximum": 5000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "since": {
+            "format": "date-time",
+            "title": "Since",
+            "type": "string"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "since"
+        ],
+        "title": "WebhookBackfillRequest",
+        "type": "object"
+      },
+      "WebhookBackfillResponse": {
+        "description": "What a backfill call found. Calling again after `truncated` continues\nwith the mail the first call did not reach.",
+        "properties": {
+          "already_queued": {
+            "title": "Already Queued",
+            "type": "integer"
+          },
+          "matched": {
+            "title": "Matched",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          },
+          "scanned": {
+            "title": "Scanned",
+            "type": "integer"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "scanned",
+          "matched",
+          "queued",
+          "already_queued",
+          "truncated"
+        ],
+        "title": "WebhookBackfillResponse",
+        "type": "object"
+      },
+      "WebhookDeliveryOut": {
+        "description": "One queued or finished delivery.",
+        "properties": {
+          "account_id": {
+            "format": "uuid",
+            "title": "Account Id",
+            "type": "string"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "next_attempt_at": {
+            "format": "date-time",
+            "title": "Next Attempt At",
+            "type": "string"
+          },
+          "origin": {
+            "title": "Origin",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "account_id",
+          "message_id",
+          "origin",
+          "status",
+          "attempts",
+          "http_status",
+          "last_error",
+          "next_attempt_at",
+          "delivered_at",
+          "created_at"
+        ],
+        "title": "WebhookDeliveryOut",
         "type": "object"
       },
       "WeeklyTrendPoint": {
@@ -12696,7 +13215,7 @@
     },
     "/orders": {
       "get": {
-        "description": "Orders across every enabled account, newest activity first.",
+        "description": "Orders across every enabled account, newest activity first.\n\n`favorites` keeps only favorites, in any state. `q` keeps orders where\nevery token of it (any order, typo-tolerant) matches the merchant,\nsubject, status or summary -- the same tokenizer and per-token\npredicate as the mail search's fallback tier.",
         "operationId": "list_orders_orders_get",
         "parameters": [
           {
@@ -12737,6 +13256,33 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "favorites",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Favorites",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           }
         ],
@@ -12882,6 +13428,58 @@
           }
         },
         "summary": "Get Order",
+        "tags": [
+          "orders"
+        ]
+      },
+      "patch": {
+        "description": "Favorite, open/closed and sealed. A person's open/closed decision\nsticks until the next mail arrives (see orders/repository.py).",
+        "operationId": "update_order_orders__order_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Order",
         "tags": [
           "orders"
         ]
@@ -13335,6 +13933,48 @@
           }
         },
         "summary": "Replace Pipeline",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
+    "/pipeline/assistant": {
+      "post": {
+        "description": "Turn one sentence about an open mail into one proposed rule change.\n\nNothing is stored. Accepting the proposal is the client's own write\nthrough `POST /pipeline/stages` (`change.is_new`) or `PATCH\n/pipeline/stages/{id}`, carrying `change.base_revision` so a rule\nedited in the meantime gets the usual 409. The exchange stops before\nits next model call once the client has disconnected.",
+        "operationId": "rule_assistant_pipeline_assistant_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleAssistantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleAssistantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rule Assistant",
         "tags": [
           "pipeline"
         ]
@@ -14340,6 +14980,119 @@
         ]
       }
     },
+    "/secrets": {
+      "get": {
+        "description": "Every stored secret's name and timestamps, by name.",
+        "operationId": "list_secrets_secrets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SecretOut"
+                  },
+                  "title": "Response List Secrets Secrets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Secrets",
+        "tags": [
+          "secrets"
+        ]
+      }
+    },
+    "/secrets/{name}": {
+      "delete": {
+        "description": "Remove a secret.",
+        "operationId": "delete_secret_secrets__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Secret",
+        "tags": [
+          "secrets"
+        ]
+      },
+      "put": {
+        "description": "Create a secret or replace its value.",
+        "operationId": "put_secret_secrets__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SecretWrite"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretWriteResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Secret",
+        "tags": [
+          "secrets"
+        ]
+      }
+    },
     "/settings": {
       "get": {
         "description": "Get all settings grouped by category.",
@@ -15102,6 +15855,189 @@
         "summary": "List Spam Review",
         "tags": [
           "verdicts"
+        ]
+      }
+    },
+    "/webhooks/deliveries": {
+      "get": {
+        "description": "List deliveries, newest first.",
+        "operationId": "list_deliveries_webhooks_deliveries_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WebhookDeliveryOut"
+                  },
+                  "title": "Response List Deliveries Webhooks Deliveries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Deliveries",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/webhooks/deliveries/{delivery_id}/retry": {
+      "post": {
+        "description": "Re-queue a failed delivery with a fresh attempt budget. Only a failed\ndelivery moves; a delivered one is never sent again.",
+        "operationId": "retry_delivery_webhooks_deliveries__delivery_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Delivery Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Retry Delivery Webhooks Deliveries  Delivery Id  Retry Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Delivery",
+        "tags": [
+          "webhooks"
+        ]
+      }
+    },
+    "/webhooks/{name}/backfill": {
+      "post": {
+        "description": "Queue the named webhook for existing mail its rule matches, oldest\nfirst, skipping mail that already has a delivery.",
+        "operationId": "backfill_webhooks__name__backfill_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebhookBackfillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookBackfillResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Backfill",
+        "tags": [
+          "webhooks"
         ]
       }
     }

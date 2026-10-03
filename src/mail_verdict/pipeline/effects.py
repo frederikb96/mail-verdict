@@ -35,6 +35,7 @@ from mail_verdict.pipeline.contracts import (
     StageMisconfigured,
     Tag,
     Trash,
+    Webhook,
 )
 from mail_verdict.pipeline.message_view import FolderView, MessageView
 from mail_verdict.postimap.actions import (
@@ -274,6 +275,18 @@ async def apply_effects(
                 )
             )
 
+        elif isinstance(effect, Webhook):
+            if not apply:
+                applied.append(AppliedEffect(effect, True, f"would deliver to {effect.name}"))
+                continue
+            queued = await _enqueue_webhook_delivery(db, current, effect)
+            applied.append(
+                AppliedEffect(
+                    effect, queued,
+                    f"queued for {effect.name}" if queued else f"already queued for {effect.name}",
+                )
+            )
+
         else:  # pragma: no cover -- exhaustive over the Effect union above
             raise StageMisconfigured(
                 f"stage {stage_id!r}: unknown effect {effect!r}", stage_id=stage_id,
@@ -358,6 +371,27 @@ async def _enqueue_order_mail_job(
         if inserted:
             await WorkQueueNotifier.notify(session, "orders")
         return inserted
+
+
+async def _enqueue_webhook_delivery(
+    db: DatabaseConnection, view: MessageView, effect: Webhook,
+) -> bool:
+    """
+    Insert the webhook queue's delivery row (webhooks/repository.py's
+    enqueue_delivery, the one place this insert is written -- shared with
+    the backfill).
+
+    Returns:
+        True only when a new row was inserted; a mail already queued,
+        delivered or failed for this name is left exactly as it is.
+    """
+    from mail_verdict.webhooks.repository import enqueue_delivery
+
+    async with db.session() as session:
+        return await enqueue_delivery(
+            session, effect, account_id=view.account_id, msg_key=view.msg_key,
+            message_id=view.message_id, origin="live", priority=0,
+        )
 
 
 async def _record_verdict(db: DatabaseConnection, view: MessageView, effect: RecordVerdict) -> bool:

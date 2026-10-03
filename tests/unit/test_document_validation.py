@@ -50,6 +50,40 @@ class TestMultiKeyCondition:
         assert len(definitions) == 1
 
 
+class TestCompositeKeyWithSibling:
+    """`all` / `any` / `not` next to another key: the evaluator would use
+    only the composite key and silently drop the sibling, so the shape is
+    rejected exactly as a multi-key leaf is."""
+
+    @pytest.mark.parametrize("composite", [
+        {"all": [{"subject_contains": "x"}]},
+        {"any": [{"subject_contains": "x"}]},
+        {"not": {"subject_contains": "x"}},
+    ])
+    def test_composite_with_sibling_rejected(self, composite: dict) -> None:
+        document = _document({"sender_domain": "y", **composite})
+        with pytest.raises(DocumentValidationError) as exc_info:
+            validate_document(document)
+        assert "one key" in str(exc_info.value)
+
+    def test_two_composites_rejected(self) -> None:
+        document = _document({"all": [{"subject_contains": "x"}], "not": {"sender_domain": "y"}})
+        with pytest.raises(DocumentValidationError) as exc_info:
+            validate_document(document)
+        assert "one key" in str(exc_info.value)
+
+    def test_nested_composite_with_sibling_rejected(self) -> None:
+        document = _document(
+            {"any": [{"all": [{"subject_contains": "x"}], "sender_domain": "y"}]}
+        )
+        with pytest.raises(DocumentValidationError):
+            validate_document(document)
+
+    def test_lone_composites_accepted(self) -> None:
+        document = _document({"all": [{"not": {"subject_contains": "x"}}]})
+        assert len(validate_document(document)) == 1
+
+
 class TestUnknownConditionType:
     def test_rejected(self) -> None:
         document = _document({"enrichment_tag": "priority"})

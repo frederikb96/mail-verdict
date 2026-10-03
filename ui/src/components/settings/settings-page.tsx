@@ -17,6 +17,7 @@ import { useTheme } from "@/components/theme-provider";
 import { AccountOrder } from "@/components/settings/account-order";
 import { UnifiedViewsSettings } from "@/components/settings/unified-setup";
 import { AlertSettings } from "@/components/settings/alert-settings";
+import { SecretsCard } from "@/components/settings/secrets-card";
 import { CalendarLinksCard } from "@/components/settings/calendar-links";
 import { DefaultCalendarSetting } from "@/components/settings/default-calendar-setting";
 
@@ -575,6 +576,7 @@ export function SettingsPage() {
             </TabsContent>
           ))}
         </Tabs>
+        <SecretsCard />
       </div>
     </div>
   );
