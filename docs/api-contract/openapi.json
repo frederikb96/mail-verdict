@@ -5138,6 +5138,18 @@
             "title": "Documents",
             "type": "array"
           },
+          "expected_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Until"
+          },
           "first_mail_at": {
             "anyOf": [
               {
@@ -5166,8 +5178,16 @@
             "title": "Identifiers",
             "type": "array"
           },
+          "is_favorite": {
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "is_open": {
             "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sealed": {
+            "title": "Is Sealed",
             "type": "boolean"
           },
           "last_mail_at": {
@@ -5195,6 +5215,15 @@
           },
           "merchant": {
             "title": "Merchant",
+            "type": "string"
+          },
+          "open_set_by": {
+            "enum": [
+              "ai",
+              "user",
+              "auto"
+            ],
+            "title": "Open Set By",
             "type": "string"
           },
           "status": {
@@ -5234,6 +5263,10 @@
           "status",
           "title",
           "is_open",
+          "is_favorite",
+          "is_sealed",
+          "open_set_by",
+          "expected_until",
           "icon",
           "summary_preview",
           "first_mail_at",
@@ -5327,6 +5360,18 @@
             "title": "Account Ids",
             "type": "array"
           },
+          "expected_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Until"
+          },
           "first_mail_at": {
             "anyOf": [
               {
@@ -5348,8 +5393,16 @@
             "title": "Id",
             "type": "string"
           },
+          "is_favorite": {
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "is_open": {
             "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sealed": {
+            "title": "Is Sealed",
             "type": "boolean"
           },
           "last_mail_at": {
@@ -5370,6 +5423,15 @@
           },
           "merchant": {
             "title": "Merchant",
+            "type": "string"
+          },
+          "open_set_by": {
+            "enum": [
+              "ai",
+              "user",
+              "auto"
+            ],
+            "title": "Open Set By",
             "type": "string"
           },
           "status": {
@@ -5405,6 +5467,10 @@
           "status",
           "title",
           "is_open",
+          "is_favorite",
+          "is_sealed",
+          "open_set_by",
+          "expected_until",
           "icon",
           "summary_preview",
           "first_mail_at",
@@ -5563,6 +5629,46 @@
           "into"
         ],
         "title": "OrderMergeRequest",
+        "type": "object"
+      },
+      "OrderUpdateRequest": {
+        "description": "A person's change to an order's flags; an omitted field is left alone.\nSetting is_open records that a person decided it.",
+        "properties": {
+          "is_favorite": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Favorite"
+          },
+          "is_open": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Open"
+          },
+          "is_sealed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Sealed"
+          }
+        },
+        "title": "OrderUpdateRequest",
         "type": "object"
       },
       "OutboxAttachmentSummary": {
@@ -12696,7 +12802,7 @@
     },
     "/orders": {
       "get": {
-        "description": "Orders across every enabled account, newest activity first.",
+        "description": "Orders across every enabled account, newest activity first.\n\n`favorites` keeps only favorites, in any state. `q` keeps orders where\nevery token of it (any order, typo-tolerant) matches the merchant,\nsubject, status or summary -- the same tokenizer and per-token\npredicate as the mail search's fallback tier.",
         "operationId": "list_orders_orders_get",
         "parameters": [
           {
@@ -12737,6 +12843,33 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "favorites",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Favorites",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           }
         ],
@@ -12882,6 +13015,58 @@
           }
         },
         "summary": "Get Order",
+        "tags": [
+          "orders"
+        ]
+      },
+      "patch": {
+        "description": "Favorite, open/closed and sealed. A person's open/closed decision\nsticks until the next mail arrives (see orders/repository.py).",
+        "operationId": "update_order_orders__order_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Order",
         "tags": [
           "orders"
         ]

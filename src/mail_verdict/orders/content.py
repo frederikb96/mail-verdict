@@ -6,10 +6,12 @@ call (orders/prompts.py) -- so "what the filter matched against" and
 
 A DHL notice's first 1,800 characters are language-switcher URLs; after
 dropping link targets that shrinks to a few hundred characters of actual
-content (observed on real mail during design). Link targets are still
-worth keeping, just not inline: `prepare_body` also returns the raw,
-untouched text, which candidate retrieval's number search scans -- a
-tracking number sometimes lives only inside a link.
+content (observed on real mail during design). Link targets are dropped
+from the cleaned text, with one exception: a shipment number a tracking
+link carries in its query string is rendered into the text (some carrier
+templates leave the link text an unfilled placeholder, so the target is the
+only place the number exists). `prepare_body` also returns the raw,
+untouched text, which candidate retrieval's number search scans.
 """
 
 from __future__ import annotations
@@ -24,13 +26,16 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import Attachment, Message
+from mail_verdict.orders.candidates import normalize_identifier, shipment_number_in_url
 
 # Below this many characters, body_text is treated as too thin to be the
 # real content (a plain-text stub next to an HTML-only message) and
 # body_html is used instead if there is one.
 _MIN_TEXT_LENGTH = 200
 
-_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:https?://[^)]*)\)")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
+# A carrier template's unfilled merge field, e.g. {DELIVERY_PARCEL_IDENTCODE}.
+_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z0-9_]+\}")
 _BRACKETED_URL_RE = re.compile(r"\[https?://[^\]]*\]", re.IGNORECASE)
 _ANGLE_URL_RE = re.compile(r"<https?://[^>]*>", re.IGNORECASE)
 _BARE_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -52,6 +57,22 @@ class PreparedBody:
     raw: str
 
 
+def _render_link(match: re.Match[str]) -> str:
+    """A markdown link as plain text: its text, unless the target carries a
+    shipment number -- then that number replaces an empty or placeholder
+    text and is appended to any other text that does not already show it."""
+    text, url = match.group(1), match.group(2)
+    number = shipment_number_in_url(url)
+    if number is None:
+        return text
+    stripped = text.strip()
+    if not stripped or _PLACEHOLDER_RE.fullmatch(stripped):
+        return number
+    if normalize_identifier(number) in normalize_identifier(stripped):
+        return text
+    return f"{text} ({number})"
+
+
 def prepare_body(*, body_text: str | None, body_html: str | None) -> PreparedBody:
     """
     Build the text the first filter, the decide call and the write call
@@ -69,7 +90,7 @@ def prepare_body(*, body_text: str | None, body_html: str | None) -> PreparedBod
     if len(source) < _MIN_TEXT_LENGTH and body_html:
         source = nh3.clean(body_html, tags=set())
 
-    cleaned = _MD_LINK_RE.sub(r"\1", source)
+    cleaned = _MD_LINK_RE.sub(_render_link, source)
     cleaned = _BRACKETED_URL_RE.sub("", cleaned)
     cleaned = _ANGLE_URL_RE.sub("", cleaned)
     cleaned = _BARE_URL_RE.sub("", cleaned)

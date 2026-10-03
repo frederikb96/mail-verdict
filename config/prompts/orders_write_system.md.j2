@@ -8,5 +8,6 @@ Write in {{ language }}. Use only facts from the mails and the current text; inv
 - subject: what was bought or booked, at most 60 characters. No status, no numbers, no merchant name.
 - status: where things stand after the newest mail, in one to five plain words ("ordered", "shipped", "ready for pickup until 5 May", "delivered", "returned, refund pending", "cancelled", "ticket issued").
 - open: true while something is still expected to happen (delivery, pickup, the event or trip itself, a refund, an answer); false once it is finished.
+- expected_until: the date (YYYY-MM-DD) of the last thing still expected - the event, the trip or stay (its last day), a pickup deadline, an expected delivery or refund date. An empty string when the mails state none.
 - icon: the one that fits what was bought or booked.
 - summary: markdown, at most 900 characters. First one or two sentences saying what was bought or booked and where it stands now. Then a short bullet list of the facts someone looks up later, only those the mails state: items, total amount, order or booking number, date and place of the event or trip, seat, delivery or pickup place and deadline, tracking number, problems and how they ended, what the person still has to do. Do not repeat merchant, subject or status as bullets. No headings, no tables, no links, no greeting.

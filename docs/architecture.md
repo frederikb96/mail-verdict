@@ -382,6 +382,43 @@ token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) 
 an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
 same number still finds the order rather than opening a duplicate.
 
+**A shipment number inside a link target is made visible.** Some carrier templates ship an unfilled
+merge field as the link text and put the real number only in the link's query string, so after link
+targets are dropped the model reads a placeholder and no number — and every pickup notice from that
+carrier then looks like the same shipment. `orders/content.py`'s `prepare_body` renders such a number
+into the text it hands the filter and both model calls, and `extract_labeled_identifiers` stores it as
+a tracking number even when the model reports none (the parameter names are one constant in
+`orders/candidates.py`). The decide prompt adds that a carrier notice whose tracking number differs
+from the ones a candidate holds is a different shipment.
+
+**Sealing takes an order out of the agent's world.** A sealed order (`orders.is_sealed`) is never a
+candidate, never makes a mail "known" by thread or number (`orders/lookup.py`), never captures a
+sent-folder follow-up (`orders/intake.py`) and does not own its numbers, so a new order can claim
+them. All of those apply the one predicate `ACCEPTS_MAIL` in `orders/candidates.py`. A sealed order
+stays listed and editable, and sealing does not change open or closed.
+
+**Who decided open or closed.** `orders.open_set_by` is `ai` (the write call), `user` (a person's
+PATCH) or `auto` (the automatic close). The write call changes `is_open` only while it is `ai`, and a
+new mail attached by the worker hands the decision back to the model. A person's reopen is therefore
+never auto-closed until the next mail.
+
+**Automatic close.** The write call also states `expected_until`, the date of the last thing still
+expected (an event, a trip's last day, a pickup deadline). An hourly sweep (`orders/auto_close.py`,
+advisory-locked, taking the worker's own lock while it updates) closes an open, model-owned, written,
+non-stale order `settings.orders.auto_close_days` days after the later of its last mail and that date,
+and announces it like any other order change; `0` turns it off. Counting from the mail alone would
+close a booking made months before its date.
+
+**Deleting an order leaves nothing naming it.** `repository.delete_order` (also used for a merge's
+source and an order left empty by a detach) removes the order's write jobs and clears the order
+pointer on the mail jobs that bundled its mails. The mail job rows stay — they are the never-twice
+gate — so a deleted order's mails are not re-bundled.
+
+**The list filter reuses the mail search's fallback matcher.** `GET /api/orders?q=` tokenises with
+`database/fuzzy.py` (Postgres's own parser) and requires every token to match the merchant, subject,
+status or summary literally or by trigram word similarity — the same per-token predicate and
+threshold the mail search's typo-tolerant fallback uses.
+
 **Membership is `(account_id, msg_key)`, never `messages.id`** — the same durable identity
 `verdicts` and `message_embeddings` use, for the same reason: a UIDVALIDITY resync or a move made
 by another IMAP client replaces the row id, and an order keyed on it would silently lose the mail.

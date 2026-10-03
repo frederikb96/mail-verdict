@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Orders: `PATCH /api/orders/{id}` sets a favorite, closes or reopens an order and seals it; the
+  list takes `favorites=true` and a typo-tolerant `q` text filter (the mail search fallback's own
+  matcher, now shared). A sealed order is never offered to the order agent and takes no further
+  mail, and its numbers can be claimed by a new order. A person's open/closed decision stays until
+  the next mail arrives, which hands it back to the model.
+- Orders are closed automatically once nothing is expected of them: `orders.auto_close_days` (30,
+  0 turns it off) after the later of the last mail and an `expected_until` date the write call now
+  states, so a booking made months ahead stays open until after its date. Existing open orders get
+  one rewrite to fill that date in.
+- A shipment number that exists only in a tracking link's target (a carrier template whose link
+  text is an unfilled placeholder) now reaches the text the order agent reads and is stored as a
+  tracking number, so such notices stop collapsing into one entry. The decide prompt states that a
+  carrier notice with a different tracking number is a different shipment.
+- Deleting an order, merging it away or emptying it removes its write jobs and clears the order
+  pointer on the mail jobs, leaving nothing that names it; the mail jobs themselves stay so its
+  mails are not bundled again.
 - Fixed the unified view icon picker in Settings rendering its emoji stacked on top of each other
   in a one-column strip; it is a seven-column grid again, which also applies to the account icon
   picker that shares it.
