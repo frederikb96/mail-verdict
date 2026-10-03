@@ -69,6 +69,8 @@ import type {
   PipelineRunResponse,
   PipelineTestRequest,
   PipelineTestResponse,
+  RuleAssistantRequest,
+  RuleAssistantResponse,
   PipelineWriteRequest,
   QueuePatchRequest,
   QueueResponse,
@@ -797,6 +799,20 @@ export const api = {
       return request(`/pipeline/stages/${stageId}/test`, {
         method: "POST",
         body: JSON.stringify(data),
+      });
+    },
+    /** One sentence about an open mail -> one proposed rule change. Nothing is
+     * stored; accepting is `createStage`/`updateStage` with the proposal's
+     * `base_revision`. Aborting the signal stops the server's next model call. */
+    assistant(
+      data: RuleAssistantRequest,
+      signal?: AbortSignal,
+    ): Promise<RuleAssistantResponse> {
+      return request("/pipeline/assistant", {
+        method: "POST",
+        body: JSON.stringify(data),
+        signal,
+        timeoutMs: 60_000,
       });
     },
   },

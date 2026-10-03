@@ -226,6 +226,21 @@ the definition, or one stage of it, against an existing message with nothing app
 path `pipeline/runner.py`'s `dry_run`/`dry_run_stage` expose for that purpose alone, never
 registered with the queue manager.
 
+The rule assistant (`rules/assistant.py`, `POST /api/pipeline/assistant`) proposes one change to
+this document from a sentence about an open mail, and stores nothing: accepting is an ordinary
+stage write carrying the `base_revision` the proposal was computed against. It is a fixed
+two-step exchange over the same `ModelGateway` the stages use, with the `ai` model settings and a
+circuit breaker of its own. The first step makes the model name the searches it wants over the
+account's mail, the second answers with the change, and a candidate that fails validation goes
+back with the reason, up to three times. Validation is the write endpoints' own
+(`validate_document`, folder resolution) plus three checks specific to it: the change must match
+the mail that prompted it, it must not introduce an `expunge` or `webhook` effect (or one of the
+pipeline's own bookkeeping effects), and it must not catch an implausible share of the account's
+100 newest mails — the same sample the preview is computed from. The condition and effect
+vocabulary in its prompt is rendered from `CONDITION_SYNTAX` (`rules/conditions.py`) and the
+`Effect` union, so a new condition or effect cannot be left out of it unnoticed. The mail's own
+text reaches the prompt as fenced, escaped data, and the model has no tools.
+
 A stage that cannot do its job raises rather than returning a success flag — a `Move` effect
 whose target folder does not resolve is exactly the kind of failure a success-flag result type
 would let slip through as reported success on a write that did nothing. The exception type tells

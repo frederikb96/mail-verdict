@@ -1491,6 +1491,65 @@ class PipelineTestResponse(BaseModel):
     trace: list[dict[str, Any]]
 
 
+class RuleAssistantRequest(BaseModel):
+    """One sentence from the owner about the open mail -- 'these should go
+    to Newsletter too' -- for the rule assistant to turn into one change."""
+
+    message_id: uuid.UUID
+    prompt: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("prompt")
+    @classmethod
+    def _strip_prompt(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("prompt must not be empty")
+        return stripped
+
+
+class RuleAssistantChange(BaseModel):
+    """The one change the assistant proposes. `stage` is the complete stage
+    as it should be after Accept; Accept is an ordinary pipeline write
+    (`POST /pipeline/stages` when `is_new`, else `PATCH
+    /pipeline/stages/{stage_id}`) carrying `base_revision`."""
+
+    kind: Literal["add_condition", "new_rule", "replace_rule"]
+    base_revision: int
+    is_new: bool
+    stage: StageOut
+    title: str
+    before_text: str | None = None
+    after_text: str
+
+
+class RuleAssistantPreviewExample(BaseModel):
+    """One recent mail the changed rule newly catches."""
+
+    from_addr: str
+    subject: str
+
+
+class RuleAssistantPreview(BaseModel):
+    """What the change would have done to the account's newest mails."""
+
+    sample_size: int
+    matched_before: int
+    matched_after: int
+    examples: list[RuleAssistantPreviewExample]
+
+
+class RuleAssistantResponse(BaseModel):
+    """The assistant's answer. `change` is null when there is nothing to
+    accept; `message` then says why."""
+
+    message: str
+    change: RuleAssistantChange | None = None
+    preview: RuleAssistantPreview | None = None
+    warnings: list[str] = Field(default_factory=list)
+    model: str
+    model_calls: int
+
+
 # --- DAV account schemas ---
 
 DavAccountState = Literal["created", "syncing", "active", "error", "disabled"]

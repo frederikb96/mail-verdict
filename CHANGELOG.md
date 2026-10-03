@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Added an "Add rule" assistant: an icon in the reading pane takes one sentence about the open
+  mail and proposes exactly one change to the rules -- a condition added to an existing rule, a new
+  rule at the end, or one rule replaced -- with the explanation, the change itself and how many of
+  the account's last 100 mails it would have caught, for Accept or Decline. Nothing is stored,
+  closing cancels, and it never proposes an `expunge` or `webhook` effect. It uses the `ai` model
+  settings and `POST /api/pipeline/assistant`; accepting is an ordinary pipeline write. The open
+  mail's excerpt, the rule set and a few other senders and subjects go to the model provider when
+  it is used.
+- Fixed a rule condition object that combined `all`, `any` or `not` with another key being
+  accepted and silently evaluated as the composite alone, so `{"sender_match": ..., "not":
+  {...}}` ignored the sender. Such a condition is now rejected on write and raises when evaluated;
+  a stored rule written that way fails its next edit until it is split with `all`.
+- Keyboard shortcuts (`e`, `Delete`, `r`, Enter and the rest) no longer act while focus is inside
+  a dialog.
+
 - Added a secret store: named values encrypted at rest with the same key as provider keys, set,
   replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
   returned by any endpoint.
