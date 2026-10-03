@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Orders: `PATCH /api/orders/{id}` sets a favorite, closes or reopens an order and seals it; the
+  list takes `favorites=true` and a typo-tolerant `q` text filter (the mail search fallback's own
+  matcher, now shared). A sealed order is never offered to the order agent and takes no further
+  mail, and its numbers can be claimed by a new order. A person's open/closed decision stays until
+  the next mail arrives, which hands it back to the model.
+- Orders are closed automatically once nothing is expected of them. The write call now estimates
+  when an order is naturally over (`expected_until`); such an order closes
+  `orders.auto_close_grace_days` (7) after the later of that date and its last mail, and one with no
+  estimate closes `orders.auto_close_days` (30) after its last mail. `auto_close_days` 0 turns it
+  off. Existing open orders get one rewrite to fill the date in.
+- A shipment number that exists only in a tracking link's target (a carrier template whose link
+  text is an unfilled placeholder) now reaches the text the order agent reads and is stored as a
+  tracking number, so such notices stop collapsing into one entry. The decide prompt states that a
+  carrier notice with a different tracking number is a different shipment.
+- Deleting an order, merging it away or emptying it removes its write jobs and clears the order
+  pointer on the mail jobs, leaving nothing that names it; the mail jobs themselves stay so its
+  mails are not bundled again.
 - Added a secret store: named values encrypted at rest with the same key as provider keys, set,
   replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
   returned by any endpoint.

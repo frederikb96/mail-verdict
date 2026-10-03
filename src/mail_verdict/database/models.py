@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
@@ -36,6 +36,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Enum,
     FetchedValue,
@@ -1900,6 +1901,24 @@ class Order(Base):
     # A write job is owed -- set whenever membership changes and cleared
     # once the write call's answer is stored (orders/worker.py).
     text_stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_favorite: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"),
+    )
+    # A sealed order is invisible to the order agent: never offered as a
+    # candidate, never matched by thread or number, never claiming a number.
+    is_sealed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"),
+    )
+    # Who decided the current is_open: the write call ('ai'), a person
+    # ('user') or the automatic close ('auto'). Only 'ai' lets the write
+    # call or the automatic close change it.
+    open_set_by: Mapped[str] = mapped_column(
+        Text, nullable=False, default="ai", server_default="ai",
+    )
+    # The write call's estimate of when the order is naturally over (event,
+    # pickup deadline, delivery); the automatic close counts its grace
+    # period from the later of this and the last mail.
+    expected_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model: Mapped[str | None] = mapped_column(Text, nullable=True)
     mail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1913,6 +1932,7 @@ class Order(Base):
     )
 
     __table_args__ = (
+        CheckConstraint("open_set_by IN ('ai', 'user', 'auto')", name="ck_orders_open_set_by"),
         Index(
             "ix_orders_list", last_mail_at.desc(), id.desc(),
             postgresql_where=written_at.is_not(None),

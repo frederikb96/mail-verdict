@@ -16,11 +16,13 @@ the just-opened order falls off the list of 8 (observed during design).
 
 from __future__ import annotations
 
+import html
 import re
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +30,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mail_verdict.database.models import Order, OrderIdentifier, OrderMail
 
 _MAX_CANDIDATES = 8
+
+# The one rule for "this existing order may take a new mail": a sealed
+# order never does. Applied everywhere an existing order could capture a
+# mail -- candidate retrieval, the thread and number lookups
+# (orders/lookup.py), the sent-folder follow-up (orders/intake.py) and
+# number ownership (orders/repository.py's store_identifiers).
+ACCEPTS_MAIL = Order.is_sealed.is_(False)
 
 # Rules 1-6's windows, in days; rule 0 (thread) has none. Rule 3's window
 # is a special case handled inline (hours, not days).
@@ -98,6 +107,33 @@ _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./_#-]{3,39}")
 _LABEL_TO_VALUE_GAP = 40
 
 
+# Query parameter names that carry a shipment number in a tracking link
+# (DHL's `piececode` and `idc`, and the generic spellings other carriers
+# use). Matched against the lower-cased name.
+_SHIPMENT_PARAM_RE = re.compile(
+    r"piececode|idc|tracking[_-]?(?:number|id|code|no)?|sendungsnummer|sendungsnr"
+    r"|parcel[_-]?(?:number|id)|shipment[_-]?(?:number|id)"
+)
+_URL_RE = re.compile(r"https?://[^\s\"'<>)\]]+", re.IGNORECASE)
+
+
+def shipment_number_in_url(url: str) -> str | None:
+    """
+    The shipment number a tracking link carries in its query string, if it
+    names one in a known parameter and the value is a plausible identifier.
+    Some carrier templates ship an unfilled placeholder as the link text,
+    so the link target is the only place the number exists.
+    """
+    try:
+        query = urlsplit(html.unescape(url)).query
+    except ValueError:
+        return None
+    for name, value in parse_qsl(query):
+        if _SHIPMENT_PARAM_RE.fullmatch(name.lower()) and is_valid_identifier(value):
+            return value.strip()
+    return None
+
+
 def extract_labeled_identifiers(text: str) -> list[tuple[str, str]]:
     """
     Deterministic backstop for a decide call whose own `identifiers`
@@ -105,7 +141,8 @@ def extract_labeled_identifiers(text: str) -> list[tuple[str, str]]:
     a floor under a real, observed model-accuracy gap, not a second
     opinion meant to override a call that reported something. Finds a
     known order/tracking/booking/invoice label and takes the
-    identifier-shaped token immediately after it; `is_valid_identifier`
+    identifier-shaped token immediately after it, and takes the number out
+    of a tracking link's query string; `is_valid_identifier`
     rejects an unfilled template placeholder or a stray word the same way
     it already does for a model-reported value.
 
@@ -132,6 +169,14 @@ def extract_labeled_identifiers(text: str) -> list[tuple[str, str]]:
                 continue
             seen.add(norm)
             found.append((kind, value))
+    for url_match in _URL_RE.finditer(text):
+        link_value = shipment_number_in_url(url_match.group(0))
+        if link_value is None:
+            continue
+        norm = normalize_identifier(link_value)
+        if norm not in seen:
+            seen.add(norm)
+            found.append(("tracking_number", link_value))
     return found
 
 
@@ -214,15 +259,19 @@ async def find_candidates(
     thread_order_ids: set[uuid.UUID] = set()
     if thread_id is not None:
         result = await session.execute(
-            select(OrderMail.order_id.distinct()).where(
-                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id,
+            select(OrderMail.order_id.distinct())
+            .join(Order, Order.id == OrderMail.order_id)
+            .where(
+                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id, ACCEPTS_MAIL,
             )
         )
         thread_order_ids = {row[0] for row in result.all()}
 
     cutoff = now - timedelta(days=_LOAD_WINDOW_DAYS)
     windowed_result = await session.execute(
-        select(Order).where(Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff)
+        select(Order).where(
+            Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff, ACCEPTS_MAIL,
+        )
     )
     windowed_orders = list(windowed_result.scalars().all())
 
@@ -402,10 +451,12 @@ async def _load_mails(
 
 
 __all__ = [
+    "ACCEPTS_MAIL",
     "Candidate",
     "CandidateMail",
     "find_candidates",
     "is_valid_identifier",
     "normalize_identifier",
     "rank_orders",
+    "shipment_number_in_url",
 ]

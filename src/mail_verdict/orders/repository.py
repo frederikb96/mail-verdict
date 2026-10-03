@@ -15,17 +15,27 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
 
-from sqlalchemy import delete, func, insert, select, text, update
+from sqlalchemy import case, delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import Order, OrderIdentifier, OrderJob, OrderMail
-from mail_verdict.orders.candidates import is_valid_identifier, normalize_identifier
+from mail_verdict.orders.candidates import (
+    ACCEPTS_MAIL,
+    is_valid_identifier,
+    normalize_identifier,
+)
 from mail_verdict.orders.text import cut_status, cut_subject, cut_summary, summary_preview
 
 _IDENTIFIER_WINDOW_DAYS = 365
+
+# Who decided an order's is_open (orders.open_set_by).
+OPEN_SET_BY_MODEL = "ai"
+OPEN_SET_BY_USER = "user"
+OPEN_SET_BY_AUTO = "auto"
 
 
 async def create_order(session: AsyncSession) -> uuid.UUID:
@@ -114,7 +124,7 @@ async def store_identifiers(
             .join(Order, Order.id == OrderIdentifier.order_id)
             .where(
                 OrderIdentifier.value_norm == value_norm, OrderIdentifier.order_id != order_id,
-                Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff,
+                Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff, ACCEPTS_MAIL,
             )
             .limit(1)
         )
@@ -222,9 +232,14 @@ async def write_order_text(
     icon: str,
     summary: str,
     model: str | None,
+    expected_until: date | None = None,
 ) -> WriteResult | None:
     """
     Store a write call's answer.
+
+    is_open only lands while the model owns it (open_set_by = 'ai'): once
+    a person or the automatic close has decided, a rewrite leaves the
+    decision alone. expected_until is always stored.
 
     Returns:
         None if the order no longer exists (deleted mid-flight); the
@@ -243,7 +258,9 @@ async def write_order_text(
         .where(Order.id == order_id)
         .values(
             merchant=merchant.strip()[:120], subject=cut_subject(subject),
-            status=cut_status(status), is_open=is_open, icon=icon,
+            status=cut_status(status),
+            is_open=case((Order.open_set_by == OPEN_SET_BY_MODEL, is_open), else_=Order.is_open),
+            expected_until=expected_until, icon=icon,
             summary=cut_summary(summary), summary_preview=preview,
             text_stale=False, model=model, updated_at=func.now(),
             written_at=func.coalesce(Order.written_at, func.now()),
@@ -252,18 +269,73 @@ async def write_order_text(
     return WriteResult(order_id=order_id, created=created, summary_preview=preview)
 
 
+async def hand_open_state_to_model(session: AsyncSession, order_id: uuid.UUID) -> None:
+    """New mail is new evidence: whoever closed or reopened the order
+    before, the model decides again at the next write."""
+    await session.execute(
+        update(Order).where(Order.id == order_id).values(open_set_by=OPEN_SET_BY_MODEL)
+    )
+
+
+async def update_controls(
+    session: AsyncSession, order_id: uuid.UUID, *,
+    is_favorite: bool | None = None, is_open: bool | None = None, is_sealed: bool | None = None,
+) -> bool:
+    """
+    Apply a person's change to an order's flags; None leaves a flag alone.
+    Setting is_open records that a person decided it. Sealing never
+    touches open/closed.
+
+    Returns:
+        False if the order does not exist
+    """
+    values: dict[str, Any] = {}
+    if is_favorite is not None:
+        values["is_favorite"] = is_favorite
+    if is_sealed is not None:
+        values["is_sealed"] = is_sealed
+    if is_open is not None:
+        values["is_open"] = is_open
+        values["open_set_by"] = OPEN_SET_BY_USER
+    if not values:
+        exists = await session.execute(select(Order.id).where(Order.id == order_id))
+        return exists.scalar_one_or_none() is not None
+    result = await session.execute(
+        update(Order).where(Order.id == order_id).values(**values, updated_at=func.now())
+    )
+    return bool(result.rowcount)  # type: ignore[attr-defined]
+
+
 async def mark_text_stale(session: AsyncSession, order_id: uuid.UUID) -> None:
     await session.execute(
         update(Order).where(Order.id == order_id).values(text_stale=True, updated_at=func.now())
     )
 
 
+async def _release_order_jobs(session: AsyncSession, order_id: uuid.UUID) -> None:
+    """Remove what the order_jobs table (which has no foreign key onto
+    orders) still says about an order about to be deleted: its write jobs
+    go, and a mail job's recorded outcome stops pointing at it. The mail
+    job rows themselves stay -- they are the never-twice gate that keeps a
+    catch-up from bundling the same mail again."""
+    await session.execute(
+        delete(OrderJob).where(OrderJob.kind == "write", OrderJob.order_id == order_id)
+    )
+    await session.execute(
+        update(OrderJob)
+        .where(OrderJob.kind == "mail", OrderJob.order_id == order_id)
+        .values(order_id=None)
+    )
+
+
 async def delete_order_if_empty(session: AsyncSession, order_id: uuid.UUID) -> bool:
     """Delete an order left with no mail. Returns whether it was deleted."""
-    result = await session.execute(
-        delete(Order).where(Order.id == order_id, Order.mail_count == 0)
+    empty = await session.execute(
+        select(Order.id).where(Order.id == order_id, Order.mail_count == 0)
     )
-    return bool(result.rowcount)  # type: ignore[attr-defined]
+    if empty.scalar_one_or_none() is None:
+        return False
+    return await delete_order(session, order_id)
 
 
 async def detach_mail(
@@ -304,12 +376,14 @@ async def merge_order(session: AsyncSession, *, source_id: uuid.UUID, target_id:
             .on_conflict_do_nothing(constraint="uq_order_identifiers_order_value_norm")
         )
         await session.execute(stmt)
-    await session.execute(delete(Order).where(Order.id == source_id))
+    await delete_order(session, source_id)
     await recompute_aggregates(session, target_id)
 
 
 async def delete_order(session: AsyncSession, order_id: uuid.UUID) -> bool:
-    """Delete an order and its membership/numbers. No mail is touched."""
+    """Delete an order, its membership and numbers, and every job row that
+    names it. No mail is touched, and none is released for bundling again."""
+    await _release_order_jobs(session, order_id)
     result = await session.execute(delete(Order).where(Order.id == order_id))
     return bool(result.rowcount)  # type: ignore[attr-defined]
 
