@@ -2,16 +2,17 @@
 The classify stage's prompt fence: spam_user.md.j2 wraps the untrusted
 message in `<email_content>` delimiters, and json.dumps alone does not
 stop a message body from spelling the closing tag itself and breaking
-out of that fence -- pipeline/stages/classify.py's
-_escape_delimiter_breakout closes it.
+out of that fence -- core/prompts.py's
+escape_delimiter_breakout closes it.
 """
 
 from __future__ import annotations
 
 import uuid
 
+from mail_verdict.core.prompts import escape_delimiter_breakout
 from mail_verdict.pipeline.message_view import FolderView, MessageView
-from mail_verdict.pipeline.stages.classify import _build_user_prompt, _escape_delimiter_breakout
+from mail_verdict.pipeline.stages.classify import _build_user_prompt
 
 
 def _view(body: str) -> MessageView:
@@ -43,12 +44,12 @@ def _view(body: str) -> MessageView:
 
 class TestEscapeDelimiterBreakout:
     def test_angle_brackets_become_unicode_escapes(self) -> None:
-        assert _escape_delimiter_breakout('{"body": "<b>hi</b>"}') == (
+        assert escape_delimiter_breakout('{"body": "<b>hi</b>"}') == (
             '{"body": "\\u003cb\\u003ehi\\u003c/b\\u003e"}'
         )
 
     def test_output_carries_no_literal_angle_bracket(self) -> None:
-        result = _escape_delimiter_breakout("<html><script>alert(1)</script></html>")
+        result = escape_delimiter_breakout("<html><script>alert(1)</script></html>")
         assert "<" not in result
         assert ">" not in result
 
