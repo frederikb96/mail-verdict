@@ -16,6 +16,7 @@ import {
   MailOpen,
   Mail as MailIcon,
   FileDown,
+  Wand2,
   FolderInput,
   Search,
   ChevronUp,
@@ -35,6 +36,7 @@ import { DraftEditor } from "@/components/mail/draft-editor";
 import { ThreadMessage } from "@/components/mail/thread-message";
 import { BulkPanel } from "@/components/mail/bulk-panel";
 import { MoveToFolderPopover } from "@/components/mail/move-to-folder-popover";
+import { AddRuleDialog } from "@/components/mail/add-rule-dialog";
 import { api } from "@/lib/api";
 import { mailKeys, useLoadMessageImages, useThread } from "@/hooks/use-mails";
 import { useMailAction } from "@/hooks/use-mail-intents";
@@ -77,6 +79,7 @@ export function ReadingPane() {
   const threadScrollRef = useRef<HTMLDivElement>(null);
   const scrolledForMailIdRef = useRef<string | null>(null);
   const [confirmExpunge, setConfirmExpunge] = useState(false);
+  const [addRuleOpen, setAddRuleOpen] = useState(false);
   // A glaciered message is the only copy in existence -- its own
   // confirmation, distinct from the ordinary "empty Trash" one above,
   // and offered whatever folder it currently sits in.
@@ -381,8 +384,22 @@ export function ReadingPane() {
           >
             <FileDown className="h-4 w-4" />
           </a>
+          {/* A glaciered message has no rule to write: rules run on mail the
+              server delivers, and the assistant searches the mirror. */}
+          {!isGlacier && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => setAddRuleOpen(true)}
+              title="Add rule…"
+              aria-label="Add rule…"
+            >
+              <Wand2 className="h-4 w-4" />
+            </Button>
+          )}
           {/* Grouped rather than seven-plus equal icons in a row: tools
-              (find/star/download) above, state and triage below. */}
+              (find/star/download/add rule) above, state and triage below. */}
           {!isMobile && <Separator orientation="vertical" className="mx-1 h-5" />}
           <Button
             variant="ghost"
@@ -570,6 +587,10 @@ export function ReadingPane() {
           )}
         </div>
       </div>
+
+      {!isGlacier && (
+        <AddRuleDialog mailId={primary.id} open={addRuleOpen} onOpenChange={setAddRuleOpen} />
+      )}
 
       <ConfirmDialog
         open={confirmExpunge}

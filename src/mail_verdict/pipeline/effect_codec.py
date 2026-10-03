@@ -15,7 +15,11 @@ stored trace alone.
 
 from __future__ import annotations
 
+import dataclasses
+import re
+import typing
 import uuid
+from collections.abc import Collection
 from typing import Any
 
 from mail_verdict.pipeline.contracts import (
@@ -126,3 +130,29 @@ def effect_to_dict(effect: Effect) -> dict[str, Any]:
             "headers": dict(effect.headers), "received_at_param": effect.received_at_param,
         }}
     raise EffectConfigError(f"unknown effect {effect!r}")  # pragma: no cover
+
+
+def effect_kind(effect_cls: type) -> str:
+    """The `parse_effect` key of an Effect class: its snake_case name."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", effect_cls.__name__).lower()
+
+
+def effect_kinds() -> tuple[str, ...]:
+    """Every kind in the `Effect` union, in declaration order."""
+    return tuple(effect_kind(cls) for cls in typing.get_args(Effect))
+
+
+def render_effect_syntax(exclude: Collection[str] = ()) -> str:
+    """The `Effect` union as one bullet per kind -- `- {"kind": {fields}} --
+    docstring` -- derived from the dataclasses, so a new effect appears
+    here with no second table to keep in step. Kinds in `exclude` are
+    left out."""
+    lines = []
+    for cls in typing.get_args(Effect):
+        kind = effect_kind(cls)
+        if kind in exclude:
+            continue
+        fields = ", ".join(f'"{f.name}": {f.type}' for f in dataclasses.fields(cls))
+        doc = " ".join((cls.__doc__ or "").split())
+        lines.append(f'- {{"{kind}": {{{fields}}}}} -- {doc}')
+    return "\n".join(lines)

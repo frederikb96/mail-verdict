@@ -15,7 +15,7 @@ manipulate the prompt can influence exactly one verdict and nothing else
 prompt template regardless, but the real protection is the absence of
 tools. `json.dumps` escapes quotes and backslashes, not angle brackets,
 so a body containing the literal string "close-email-content-tag" would
-close the fence early were it embedded as-is; `_escape_delimiter_breakout`
+close the fence early were it embedded as-is; `escape_delimiter_breakout`
 below replaces every `<` and `>` in the JSON with its unicode escape
 first -- valid JSON, parses back to the same string, and contains no
 literal angle bracket the fence could ever be broken with.
@@ -38,7 +38,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from mail_verdict.core.prompts import load_static_prompt, render_prompt
+from mail_verdict.core.prompts import escape_delimiter_breakout, load_static_prompt, render_prompt
 from mail_verdict.embeddings.provider import resolve_active_embedding_model
 from mail_verdict.pipeline.context import RunContext
 from mail_verdict.pipeline.contracts import RecordVerdict, StageOutcome, Usage
@@ -134,23 +134,9 @@ _EVIDENCE_LABEL = {
 }
 
 
-def _escape_delimiter_breakout(json_text: str) -> str:
-    """Replace every `<` and `>` with its `\\uXXXX` escape.
-
-    Still valid JSON -- a unicode escape inside a string literal decodes
-    to the same character -- but the delimiter tags the untrusted content
-    is fenced in (spam_user.md.j2's `<email_content>`/`</email_content>`)
-    can no longer be spelled inside it, so a message body containing the
-    literal closing tag can no longer close the fence early. `json.dumps`
-    itself has no option for this: it escapes quotes and backslashes,
-    never angle brackets.
-    """
-    return json_text.replace("<", "\\u003c").replace(">", "\\u003e")
-
-
 def _build_user_prompt(msg: MessageView, neighbor_hints: tuple[NeighborHint, ...]) -> str:
     context_json = json.dumps(_build_context(msg, neighbor_hints), indent=2, ensure_ascii=False)
-    context_json = _escape_delimiter_breakout(context_json)
+    context_json = escape_delimiter_breakout(context_json)
     if len(context_json) > _MAX_CONTENT_LENGTH:
         context_json = context_json[:_MAX_CONTENT_LENGTH] + "\n... [truncated]"
     return render_prompt("spam_user.md.j2", context_json=context_json)

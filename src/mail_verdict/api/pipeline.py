@@ -14,6 +14,7 @@ POST      /api/pipeline/revisions/{n}/restore
 GET       /api/pipeline/health              -- per-stage folder resolution
 POST      /api/pipeline/test                -- dry-run the whole pipeline
 POST      /api/pipeline/stages/{id}/test    -- dry-run one stage
+POST      /api/pipeline/assistant           -- propose one rule change from a sentence
 
 Validation is split deliberately (see pipeline/document_validation.py and
 pipeline/health.py): a syntax error, an unknown stage type, an unknown
@@ -31,10 +32,11 @@ once, most notably). Omitting it writes unconditionally.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
 from mail_verdict.api.events import broadcast_event, get_event_ring
@@ -45,6 +47,8 @@ from mail_verdict.api.schemas import (
     PipelineTestRequest,
     PipelineTestResponse,
     PipelineWriteRequest,
+    RuleAssistantRequest,
+    RuleAssistantResponse,
     StageCreateRequest,
     StageOut,
     StageReorderRequest,
@@ -55,7 +59,14 @@ from mail_verdict.database.connection import DatabaseConnection, get_db_connecti
 from mail_verdict.database.models import Message
 from mail_verdict.database.repository import AccountPrefsRepository, AccountRepository
 from mail_verdict.pipeline import health as pipeline_health
-from mail_verdict.pipeline.contracts import StageDefinition, StageError
+from mail_verdict.pipeline.contracts import (
+    StageDefinition,
+    StageError,
+    StageMisconfigured,
+    StageThrottled,
+    StageTransient,
+    StageUnavailable,
+)
 from mail_verdict.pipeline.document_validation import DocumentValidationError, validate_document
 from mail_verdict.pipeline.registry import STAGE_TYPES
 from mail_verdict.pipeline.revisions import (
@@ -65,12 +76,17 @@ from mail_verdict.pipeline.revisions import (
     definition_to_document,
 )
 from mail_verdict.pipeline.runner import PipelineRunner
+from mail_verdict.rules.assistant import AssistantMessageNotFound, propose
 from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
 _EMPTY_DEFINITION = PipelineDefinition(revision=0, enabled=True, stages=())
+
+# Two model calls of up to 40 s each would already be slow; the whole
+# exchange (searches, up to three attempts) is cut off here.
+_ASSISTANT_DEADLINE_SECONDS = 55
 
 
 async def _current(repo: PipelineRevisionRepository) -> PipelineDefinition:
@@ -452,3 +468,34 @@ async def _account_id_for_mail(db: DatabaseConnection, message_id: uuid.UUID) ->
     if account_id is None:
         raise HTTPException(status_code=404, detail=f"no message {message_id}")
     return account_id
+
+
+@router.post("/assistant", response_model=RuleAssistantResponse)
+async def rule_assistant(
+    body: RuleAssistantRequest, request: Request,
+) -> RuleAssistantResponse | None:
+    """Turn one sentence about an open mail into one proposed rule change.
+
+    Nothing is stored. Accepting the proposal is the client's own write
+    through `POST /pipeline/stages` (`change.is_new`) or `PATCH
+    /pipeline/stages/{id}`, carrying `change.base_revision` so a rule
+    edited in the meantime gets the usual 409. The exchange stops before
+    its next model call once the client has disconnected."""
+    db = get_db_connection()
+    try:
+        async with asyncio.timeout(_ASSISTANT_DEADLINE_SECONDS):
+            return await propose(
+                db=db, settings_service=get_settings_service(),
+                cred_repo=get_provider_credential_repo(), message_id=body.message_id,
+                prompt=body.prompt, is_disconnected=request.is_disconnected,
+            )
+    except AssistantMessageNotFound:
+        raise HTTPException(status_code=404, detail=f"no message {body.message_id}") from None
+    except (StageUnavailable, StageMisconfigured) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except (StageThrottled, StageTransient) as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504, detail="the assistant took too long; try again",
+        ) from None

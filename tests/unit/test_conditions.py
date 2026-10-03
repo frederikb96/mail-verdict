@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from mail_verdict.rules.conditions import (
     ConditionEvaluator,
     MailContext,
@@ -282,3 +284,18 @@ class TestCompositeConditions:
         ctx = _ctx()
         evaluator = ConditionEvaluator()
         assert evaluator.evaluate({}, ctx) is False
+
+
+class TestCompositeWithSibling:
+    """A composite key next to another key is never evaluated as one --
+    raised, like a multi-key leaf, instead of silently using the
+    composite alone."""
+
+    @pytest.mark.parametrize("composite", [
+        {"all": [{"subject_contains": "x"}]},
+        {"any": [{"subject_contains": "x"}]},
+        {"not": {"subject_contains": "x"}},
+    ])
+    def test_raises(self, composite: dict[str, Any]) -> None:
+        with pytest.raises(ValueError, match="one key"):
+            evaluate_condition({"sender_domain": "y", **composite}, _ctx(subject="x"))
