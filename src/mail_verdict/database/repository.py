@@ -2016,6 +2016,44 @@ class AlertRepository:
             result = await session.execute(stmt)
             return result.scalar_one_or_none()
 
+    async def create_webhook_failed_alert(
+        self, *, account_id: uuid.UUID, message_id: uuid.UUID | None, dedupe_key: str,
+        title: str, body: str,
+    ) -> Alert | None:
+        """
+        Insert a delivered "webhook_failed" alert -- see webhooks/worker.py.
+
+        A webhook delivery that gave up for good: a response that will not
+        change on retry, or a transient failure that outlasted its
+        attempts. dedupe_key carries the delivery id and its manual-retry
+        generation, so it fires once per giving-up. No folder_id, the same
+        reasoning create_outbox_stalled_alert gives.
+
+        Returns:
+            The inserted Alert, or None if this giving-up was already
+            alerted on
+        """
+        now = func.now()
+        async with self._db.session() as session:
+            stmt = (
+                pg_insert(Alert)
+                .values(
+                    kind="webhook_failed",
+                    deliver_at=now,
+                    delivered_at=now,
+                    title=title,
+                    body=body,
+                    url=f"/?message={message_id}" if message_id is not None else None,
+                    dedupe_key=dedupe_key,
+                    account_id=account_id,
+                    message_id=message_id,
+                )
+                .on_conflict_do_nothing(constraint="uq_alerts_dedupe_key")
+                .returning(Alert)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
     async def list_recent(
         self, *, limit: int = 50, folder_ids: list[uuid.UUID] | None = None,
         unseen_only: bool = False,

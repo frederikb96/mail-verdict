@@ -317,6 +317,19 @@ class GlacierConfig(BaseModel):
     restore_timeout_seconds: int
 
 
+class WebhooksConfig(BaseModel):
+    """The webhook delivery worker's limits and retry policy
+    (webhooks/worker.py) -- see config.yaml for what each one is for."""
+
+    request_timeout_seconds: float
+    max_attempts: int
+    base_delay_seconds: float
+    max_delay_seconds: float
+    max_body_bytes: int
+    poll_interval_seconds: float
+    lease_seconds: float
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -338,6 +351,7 @@ class InfraConfig(BaseModel):
     search: SearchConfig
     push: PushConfig
     glacier: GlacierConfig
+    webhooks: WebhooksConfig
 
 
 _config_instance: InfraConfig | None = None
@@ -371,6 +385,7 @@ def get_config() -> InfraConfig:
                 search=SearchConfig(**(cfg.get("search") or {})),
                 push=PushConfig(**(cfg.get("push") or {})),
                 glacier=GlacierConfig(**(cfg.get("glacier") or {})),
+                webhooks=WebhooksConfig(**(cfg.get("webhooks") or {})),
             )
         except ValidationError as exc:
             raise ConfigError(f"Invalid configuration: {exc}") from exc

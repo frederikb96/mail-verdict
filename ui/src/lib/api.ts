@@ -45,6 +45,7 @@ import type {
   Identity,
   ImageExceptionCreate,
   ImageExceptionResponse,
+  SecretResponse,
   ImportInvitationRequest,
   Invitation,
   MessageActionRequest,
@@ -273,6 +274,20 @@ export const api = {
     },
   },
 
+  secrets: {
+    list(): Promise<SecretResponse[]> {
+      return request("/secrets");
+    },
+    put(name: string, value: string): Promise<{ name: string; created: boolean }> {
+      return request(`/secrets/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      });
+    },
+    delete(name: string): Promise<void> {
+      return request(`/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    },
+  },
   imageExceptions: {
     list(accountId: string): Promise<ImageExceptionResponse[]> {
       return request(`/accounts/${accountId}/image-exceptions`);

@@ -1,5 +1,5 @@
 """
-0042_order_controls against the state the previous release reaches: orders
+0043_order_controls against the state the previous release reaches: orders
 of every shape it produced -- written and open, written and closed, never
 written, one already owed a write -- not an empty database, where the
 backfill loop never runs.
@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from tests.pg.test_migration_from_v1 import _POSTIMAP_STUBS, _upgrade
 
-_PREVIOUS = "0041_glacier_conflict_alert"
+_PREVIOUS = "0042_webhooks"
 
 
 @pytest_asyncio.fixture()

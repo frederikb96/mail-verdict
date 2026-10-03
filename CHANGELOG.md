@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Deleting an order, merging it away or emptying it removes its write jobs and clears the order
   pointer on the mail jobs, leaving nothing that names it; the mail jobs themselves stay so its
   mails are not bundled again.
+- Added a secret store: named values encrypted at rest with the same key as provider keys, set,
+  replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
+  returned by any endpoint.
+- Added a `webhook` rule action that sends the matching mail's raw source to a URL, with header
+  values that can reference a stored secret as `{{secret:NAME}}`. Deliveries are queued and made
+  one after another by a worker: a 2xx is final and never repeated, a 5xx or network error is
+  retried with backoff, any other response ends the delivery, and a delivery that gives up raises a
+  `webhook_failed` alert. `POST /api/webhooks/{name}/backfill` sends mail that predates the rule,
+  oldest first and only once each (every folder except Drafts, Trash and Junk), and `GET /api/webhooks/deliveries` shows what was queued. The
+  rule editor gains an "Add webhook action" button.
 - Fixed the unified view icon picker in Settings rendering its emoji stacked on top of each other
   in a one-column strip; it is a seven-column grid again, which also applies to the account icon
   picker that shares it.

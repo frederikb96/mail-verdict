@@ -115,8 +115,24 @@ class EnqueueOrder:
     reason: str
 
 
+@dataclass(frozen=True)
+class Webhook:
+    """Deliver the message's raw source to an HTTP endpoint -- never makes
+    the request itself, only inserts a webhook_deliveries row for the
+    webhook worker (see webhooks/worker.py). `headers` keep their
+    `{{secret:NAME}}` references unresolved; `name` is what makes one
+    delivery per mail per destination."""
+
+    name: str
+    url: str
+    method: str = "POST"
+    headers: tuple[tuple[str, str], ...] = ()
+    received_at_param: str | None = None
+
+
 Effect = (
     Move | Trash | Expunge | SetFlags | Keywords | Tag | RecordVerdict | Notify | EnqueueOrder
+    | Webhook
 )
 
 
