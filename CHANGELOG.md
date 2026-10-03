@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Fixed the unified view icon picker in Settings rendering its emoji stacked on top of each other
+  in a one-column strip; it is a seven-column grid again, which also applies to the account icon
+  picker that shares it.
+- The folder-to-view list in Settings is capped to a readable width with fixed-width view
+  selectors, alternating row shading and a row highlight on hover, so each folder name sits next
+  to its own selector.
+
 ## [6.7.4] - 2026-09-30
 
 - Fixed the automatic glacier sweep silently and permanently dropping a message whose Message-ID
