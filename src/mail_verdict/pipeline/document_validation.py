@@ -3,7 +3,7 @@ Hard validation for a pipeline document before it becomes a revision.
 
 Two kinds of problem, and the write endpoints in api/pipeline.py treat
 them differently on purpose. A syntax error, an unknown stage type, an
-unknown effect, an unknown condition type, a condition leaf with more
+unknown effect, an unknown condition type, a condition object with more
 than one key, or a duplicate stage name can never become valid on their
 own -- these are rejected outright (400), collected all at once rather
 than stopping at the first one, since fixing them one HTTP round trip at
@@ -21,7 +21,7 @@ from typing import Any
 
 from mail_verdict.pipeline.contracts import StageDefinition, StageMisconfigured
 from mail_verdict.pipeline.registry import build_stage
-from mail_verdict.rules.conditions import KNOWN_CONDITION_TYPES
+from mail_verdict.rules.conditions import COMPOSITE_CONDITION_KEYS, KNOWN_CONDITION_TYPES
 
 
 class DocumentValidationError(ValueError):
@@ -110,6 +110,15 @@ def _validate_condition_tree(condition: Any, *, stage_id: str) -> list[str]:
     write-time one."""
     if not isinstance(condition, dict) or not condition:
         return [f"stage {stage_id!r}: condition must be a non-empty object"]
+
+    # A composite key is the whole condition -- the evaluator would use it
+    # and silently drop any sibling, so a sibling is rejected like a
+    # multi-key leaf is.
+    if len(condition) > 1 and COMPOSITE_CONDITION_KEYS & condition.keys():
+        return [
+            f"stage {stage_id!r}: a condition may only have one key, got "
+            f"{sorted(condition)!r} -- use 'all' to combine conditions"
+        ]
 
     if "all" in condition or "any" in condition:
         key = "all" if "all" in condition else "any"
