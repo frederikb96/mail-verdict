@@ -37,18 +37,20 @@ interface UseKeyboardShortcutsOptions {
   onAction: (mailId: string, action: MailRowAction, accountId?: string) => void;
 }
 
+function isInsideDialog(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest('[role="dialog"], [role="alertdialog"]') !== null
+  );
+}
+
 /** Whether an undo keystroke belongs to something other than the mail
  * actions: text being edited, a dialog, or a composer anywhere on the page
  * -- someone who clicked out of a reply to press Ctrl+Z still means its
  * text. */
 function ownsUndo(target: EventTarget | null): boolean {
   if (isEditableElement(target)) return true;
-  if (
-    target instanceof Element &&
-    target.closest('[role="dialog"], [role="alertdialog"]') !== null
-  ) {
-    return true;
-  }
+  if (isInsideDialog(target)) return true;
   return document.querySelector('[data-slot="compose-form"]') !== null;
 }
 
@@ -143,6 +145,10 @@ export function useKeyboardShortcuts({
         return;
       }
       if (isEditableElement(e.target)) return;
+      // A dialog's own buttons and fields own the keyboard: without this,
+      // `e` or Delete with Accept focused would archive or trash the mail
+      // the dialog is about, and Enter would be swallowed.
+      if (isInsideDialog(e.target)) return;
       // A shortcut is a bare keypress: ctrl+r reloads the page and cmd+e
       // belongs to the browser, so neither may be swallowed here.
       if (e.ctrlKey || e.metaKey || e.altKey) return;

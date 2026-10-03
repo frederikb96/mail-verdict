@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Package } from "lucide-react";
+import { ArrowLeft, Package, Search, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OrderDetailPane } from "@/components/orders/order-detail";
+import { useOrderActions } from "@/components/orders/order-actions";
 import { OrderRow } from "@/components/orders/order-row";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useOrdersList } from "@/hooks/use-orders";
@@ -26,21 +28,39 @@ const STATE_STORAGE_KEY = "mv.orders.state";
  * estimate. */
 const ORDER_ROW_HEIGHT = 124;
 
-function readStoredState(): "all" | "open" {
+/** What the list shows: everything, only open orders, or only favorites
+ * (in any state). One choice, persisted. */
+type OrdersView = "all" | "open" | "favorites";
+
+function readStoredView(): OrdersView {
   if (typeof window === "undefined") return "all";
-  return window.localStorage.getItem(STATE_STORAGE_KEY) === "open" ? "open" : "all";
+  const stored = window.localStorage.getItem(STATE_STORAGE_KEY);
+  return stored === "open" || stored === "favorites" ? stored : "all";
 }
 
 export function OrdersPage() {
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
-  const [state, setState] = useState<"all" | "open">("all");
+  const [view, setView] = useState<OrdersView>("all");
   const selectedId = searchParams.get("order");
 
-  useEffect(() => setState(readStoredState()), []);
+  useEffect(() => setView(readStoredView()), []);
 
-  const { items, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } =
-    useOrdersList(state);
+  // The filter field: filterText is what the input shows, debouncedFilter
+  // what the query asks for -- the same 150 ms the mail quick filter uses.
+  const [filterText, setFilterText] = useState("");
+  const [debouncedFilter, setDebouncedFilter] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedFilter(filterText), 150);
+    return () => clearTimeout(timer);
+  }, [filterText]);
+  const q = debouncedFilter.trim();
+
+  const { items, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useOrdersList({
+    state: view === "open" ? "open" : "all",
+    favorites: view === "favorites",
+    q,
+  });
   const { data: accounts } = useAccounts();
 
   // The list actually rendered, decoupled from `items` (the query's own
@@ -64,14 +84,15 @@ export function OrdersPage() {
   // effects run (order-detail.tsx's own prop comment has the rest).
   const [detailScrollEl, setDetailScrollEl] = useState<HTMLDivElement | null>(null);
 
-  // A new filter (state) is a new list, keyed on it: start over at the
-  // top rather than carrying rows from the previous filter's reconciled
-  // window.
+  // A new filter (view or text) is a new list, keyed on it: start over at
+  // the top rather than carrying rows from the previous filter's
+  // reconciled window.
   useEffect(() => {
     setShown([]);
     setHeld([]);
     atTopRef.current = true;
-  }, [state]);
+    listScrollRef.current?.scrollTo({ top: 0 });
+  }, [view, q]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -137,10 +158,16 @@ export function OrdersPage() {
     window.history.pushState(null, "", url);
   }, []);
 
-  const changeState = useCallback((next: "all" | "open") => {
-    setState(next);
+  const changeView = useCallback((next: OrdersView) => {
+    setView(next);
     window.localStorage.setItem(STATE_STORAGE_KEY, next);
   }, []);
+
+  // One runner for every entry point -- row menu, swipe, detail menu --
+  // with its dialogs rendered once, below.
+  const { run: runOrderAction, dialogs: orderActionDialogs } = useOrderActions((id) => {
+    if (id === selectedId) selectOrder(null);
+  });
 
   // Just before a mail row hands off to the normal mail view, remember
   // where both panes sat on screen -- read back on the Back navigation
@@ -220,22 +247,46 @@ export function OrdersPage() {
             <span className="text-sm font-semibold">Orders & tickets</span>
             <div className="ml-auto flex gap-1">
               <Button
-                variant={state === "all" ? "secondary" : "ghost"}
+                variant={view === "all" ? "secondary" : "ghost"}
                 size="sm"
                 className="h-7 px-2 text-xs"
-                onClick={() => changeState("all")}
+                onClick={() => changeView("all")}
               >
                 All
               </Button>
               <Button
-                variant={state === "open" ? "secondary" : "ghost"}
+                variant={view === "open" ? "secondary" : "ghost"}
                 size="sm"
                 className="h-7 px-2 text-xs"
-                onClick={() => changeState("open")}
+                onClick={() => changeView("open")}
               >
                 Open
               </Button>
+              <Button
+                variant={view === "favorites" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-7 px-2"
+                aria-label="Favorites"
+                aria-pressed={view === "favorites"}
+                title="Favorites"
+                onClick={() => changeView("favorites")}
+              >
+                <Star className="h-3.5 w-3.5" fill={view === "favorites" ? "currentColor" : "none"} />
+              </Button>
             </div>
+          </div>
+
+          <div className="relative border-b px-3 py-2">
+            <Search className="pointer-events-none absolute left-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              placeholder="Filter orders…"
+              aria-label="Filter orders by merchant, subject, status or summary"
+              data-testid="orders-filter"
+              className="h-8 pl-7 text-sm"
+              maxLength={200}
+            />
           </div>
 
           <div className="relative flex-1 overflow-hidden">
@@ -262,7 +313,21 @@ export function OrdersPage() {
                   </div>
                 ))}
 
-              {isEmpty && !anyAccountHasOrders && (
+              {isEmpty && (q !== "" || view === "favorites") && (
+                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+                  <Package className="h-12 w-12 opacity-40" />
+                  <p className="text-sm font-medium">
+                    {q !== "" ? "No matching orders" : "No favorites yet"}
+                  </p>
+                  {q === "" && (
+                    <p className="max-w-[320px] text-sm text-muted-foreground">
+                      Mark an order as favorite from its menu or the detail's top-right menu.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {isEmpty && q === "" && view !== "favorites" && !anyAccountHasOrders && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
                   <Package className="h-12 w-12 opacity-40" />
                   <p className="text-sm font-medium">No orders yet</p>
@@ -281,7 +346,7 @@ export function OrdersPage() {
                 </div>
               )}
 
-              {isEmpty && anyAccountHasOrders && (
+              {isEmpty && q === "" && view !== "favorites" && anyAccountHasOrders && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
                   <Package className="h-12 w-12 opacity-40" />
                   <p className="text-sm font-medium">Nothing bundled yet</p>
@@ -297,6 +362,7 @@ export function OrdersPage() {
                   order={order}
                   selected={order.id === selectedId}
                   onSelect={() => selectOrder(order.id)}
+                  onAction={runOrderAction}
                 />
               ))}
             </div>
@@ -322,7 +388,7 @@ export function OrdersPage() {
             <OrderDetailPane
               orderId={selectedId}
               onBack={showDetailOnly ? undefined : () => selectOrder(null)}
-              onDeleted={() => selectOrder(null)}
+              onAction={runOrderAction}
               scrollContainer={detailScrollEl}
               onBeforeOpenMail={beforeOpenMail}
             />
@@ -336,6 +402,7 @@ export function OrdersPage() {
           )}
         </div>
       )}
+      {orderActionDialogs}
     </div>
   );
 }

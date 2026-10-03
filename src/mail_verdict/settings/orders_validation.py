@@ -70,7 +70,7 @@ def validate_orders_settings(effective: dict[str, Any]) -> None:
 
     Raises:
         ValueError: If the filter is malformed, a pattern does not
-            compile, reasoning_effort/max_tokens/language is out of range
+            compile, reasoning_effort/max_tokens/auto_close_days/language is out of range
     """
     if "filter" in effective:
         _validate_filter(effective["filter"])
@@ -85,6 +85,14 @@ def validate_orders_settings(effective: dict[str, Any]) -> None:
     max_tokens = effective.get("max_tokens")
     if max_tokens is not None and not (500 <= int(max_tokens) <= 16000):
         raise ValueError("orders.max_tokens must be between 500 and 16000")
+
+    auto_close_days = effective.get("auto_close_days")
+    if auto_close_days is not None and not (0 <= int(auto_close_days) <= 3650):
+        raise ValueError("orders.auto_close_days must be between 0 and 3650")
+
+    grace_days = effective.get("auto_close_grace_days")
+    if grace_days is not None and not (0 <= int(grace_days) <= 3650):
+        raise ValueError("orders.auto_close_grace_days must be between 0 and 3650")
 
     language = effective.get("language")
     if language is not None and not (1 <= len(str(language)) <= 40):
