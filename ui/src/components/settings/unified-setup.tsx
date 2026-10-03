@@ -38,6 +38,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 import { useAccounts } from "@/hooks/use-accounts";
 import { useFolders } from "@/hooks/use-folders";
@@ -76,47 +77,51 @@ export function EmojiPicker({
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-lg hover:bg-accent"
-        onClick={() => setIsOpen(!isOpen)}
-        title={label}
-        aria-label={label}
+    <Popover open={isOpen} onOpenChange={setIsOpen}>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            className="flex h-9 w-9 items-center justify-center rounded-md border bg-background text-lg hover:bg-accent"
+            title={label}
+            aria-label={label}
+          />
+        }
       >
         {currentEmoji || "\u{2795}"}
-      </button>
-      {isOpen && (
-        <div className="absolute left-0 top-10 z-50 grid w-[16.5rem] max-w-[calc(100vw-2rem)] grid-cols-7 gap-1 rounded-md border bg-popover p-2 shadow-md">
-          {currentEmoji && (
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded text-sm hover:bg-accent"
-              onClick={() => {
-                onSelect(null);
-                setIsOpen(false);
-              }}
-              title="Clear emoji"
-            >
-              {"\u{274C}"}
-            </button>
-          )}
-          {COMMON_EMOJIS.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded text-lg hover:bg-accent"
-              onClick={() => {
-                onSelect(emoji);
-                setIsOpen(false);
-              }}
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="grid w-[16.5rem] max-w-[calc(100vw-2rem)] grid-cols-7 gap-1 p-2"
+      >
+        {currentEmoji && (
+          <button
+            type="button"
+            className="flex h-8 w-8 items-center justify-center rounded text-sm hover:bg-accent"
+            onClick={() => {
+              onSelect(null);
+              setIsOpen(false);
+            }}
+            title="Clear emoji"
+          >
+            {"\u{274C}"}
+          </button>
+        )}
+        {COMMON_EMOJIS.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            className="flex h-8 w-8 items-center justify-center rounded text-lg hover:bg-accent"
+            onClick={() => {
+              onSelect(emoji);
+              setIsOpen(false);
+            }}
+          >
+            {emoji}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 
