@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The emoji picker on an account card opens above the page instead of being cut off by the
+  card's edge.
+
 ## [6.8.0] - 2026-10-03
 
 ### Rules
