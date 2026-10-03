@@ -19,7 +19,15 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select
 
-from mail_verdict.database.models import AccountPrefs, Folder, FolderPrefs, Message, OrderMail
+from mail_verdict.database.models import (
+    AccountPrefs,
+    Folder,
+    FolderPrefs,
+    Message,
+    Order,
+    OrderMail,
+)
+from mail_verdict.orders.candidates import ACCEPTS_MAIL
 from mail_verdict.orders.repository import enqueue_mail_job
 from mail_verdict.queue.notify import WorkQueueNotifier
 
@@ -68,7 +76,11 @@ async def enqueue_thread_follow_up(db: DatabaseConnection, event: PostimapEvent)
 
         thread_result = await session.execute(
             select(OrderMail.id)
-            .where(OrderMail.account_id == account_id, OrderMail.thread_id == msg_row.thread_id)
+            .join(Order, Order.id == OrderMail.order_id)
+            .where(
+                OrderMail.account_id == account_id, OrderMail.thread_id == msg_row.thread_id,
+                ACCEPTS_MAIL,
+            )
             .limit(1)
         )
         if thread_result.scalar_one_or_none() is None:

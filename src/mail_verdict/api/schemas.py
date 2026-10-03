@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -2077,6 +2077,10 @@ class OrderListItem(BaseModel):
     status: str
     title: str
     is_open: bool
+    is_favorite: bool
+    is_sealed: bool
+    open_set_by: Literal["ai", "user", "auto"]
+    expected_until: date | None
     icon: str
     summary_preview: str
     first_mail_at: datetime | None
@@ -2126,6 +2130,24 @@ class OrderDetail(OrderListItem):
     identifiers: list[OrderIdentifierOut]
     mails: list[OrderMailOut]
     documents: list[OrderDocumentOut]
+
+
+class OrderUpdateRequest(BaseModel):
+    """A person's change to an order's flags; an omitted field is left alone.
+    Setting is_open records that a person decided it."""
+
+    is_favorite: bool | None = None
+    is_open: bool | None = None
+    is_sealed: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> OrderUpdateRequest:
+        explicit_nulls = [
+            name for name in self.model_fields_set if getattr(self, name) is None
+        ]
+        if explicit_nulls:
+            raise ValueError(f"{', '.join(sorted(explicit_nulls))} cannot be null")
+        return self
 
 
 class OrderMergeRequest(BaseModel):

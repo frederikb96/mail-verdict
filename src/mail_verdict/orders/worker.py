@@ -5,12 +5,12 @@ job, write (title/status/summary) for a `write` job.
 
 Registered at concurrency 1 (queue_state's own default for a freshly
 registered queue). Every job additionally runs inside one transaction
-that opens with `SELECT pg_advisory_xact_lock(_ORDERS_LOCK_KEY)`, held
+that opens with `SELECT pg_advisory_xact_lock(ORDERS_LOCK_KEY)`, held
 for the reads, the model call and the writes -- this is what keeps
 "never split" true by construction even if concurrency is later raised or
-a second replica runs, not merely a consequence of concurrency 1. No
-second lock key: there is no periodic timer of this module's own to
-serialise against.
+a second replica runs, not merely a consequence of concurrency 1. The
+automatic close (orders/auto_close.py) takes the same lock, so a close
+never interleaves with a mail being attached.
 
 Never processed twice: a `mail` job whose (account_id, msg_key) already
 has a row is refused at insert (uq_order_jobs_mail, see orders/
@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 QUEUE_NAME = "orders"
 
 # See this module's own docstring -- one key, no timer, so no second one.
-_ORDERS_LOCK_KEY = 761_035_200
+ORDERS_LOCK_KEY = 761_035_200
 
 # The write call includes every mail up to this count, oldest first;
 # beyond it, the first 3 plus the newest 9 (design measured this on the
@@ -241,7 +241,7 @@ async def _handle_mail_job(
     ai_settings = settings_service.get("ai")
 
     async with db.session() as session:
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ORDERS_LOCK_KEY})
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ORDERS_LOCK_KEY})
 
         content = await load_order_mail(
             session, account_id=account_id, msg_key=msg_key, message_id=message_id,
@@ -324,13 +324,15 @@ async def _handle_mail_job(
             already_written = written_row is not None and written_row.written_at is not None
 
         attached_by = "thread" if origin == "thread" else "ai"
-        await repository.attach_mail(
+        attached = await repository.attach_mail(
             session, order_id=order_id, account_id=account_id, msg_key=msg_key,
             message_id=content.message_id, thread_id=content.thread_id,
             subject=content.subject, from_addr=content.from_addr,
             received_at=content.received_at or datetime.now(timezone.utc),
             attached_by=attached_by,
         )
+        if attached:
+            await repository.hand_open_state_to_model(session, order_id)
         identifiers = [
             (item["kind"], item["value"]) for item in decision.get("identifiers", [])
             if isinstance(item, dict) and item.get("kind") and item.get("value")
@@ -395,7 +397,7 @@ async def _handle_write_job(
     language = str(orders_settings.get("language", "English"))
 
     async with db.session() as session:
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _ORDERS_LOCK_KEY})
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ORDERS_LOCK_KEY})
 
         order_result = await session.execute(
             select(
@@ -462,6 +464,7 @@ async def _handle_write_job(
             session, order_id, merchant=answer["merchant"], subject=answer["subject"],
             status=answer["status"], is_open=bool(answer["open"]), icon=answer["icon"],
             summary=answer["summary"], model=model_name,
+            expected_until=prompts.parse_expected_until(answer.get("expected_until")),
         )
         await _set_outcome(
             session, row["id"], outcome="written", model=model_name, latency_ms=int(latency_ms),

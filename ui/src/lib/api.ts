@@ -59,6 +59,7 @@ import type {
   OrderCatchUpResponse,
   OrderDetail,
   OrderListResponse,
+  OrderUpdateRequest,
   OutboxCreateRequest,
   OutboxCreateResult,
   OutboxResponse,
@@ -1041,8 +1042,18 @@ export const api = {
       state?: "all" | "open";
       before?: string;
       limit?: number;
+      /** Favorites in any state. */
+      favorites?: boolean;
+      /** Every word must match, in any order, typos tolerated. */
+      q?: string;
     }): Promise<OrderListResponse> {
       return request(`/orders${qs(params ?? {})}`);
+    },
+    update(id: string, patch: OrderUpdateRequest): Promise<OrderDetail> {
+      return request(`/orders/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
     },
     get(id: string): Promise<OrderDetail> {
       return request(`/orders/${id}`);

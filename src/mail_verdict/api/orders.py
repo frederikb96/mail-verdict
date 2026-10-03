@@ -3,6 +3,7 @@ Orders API endpoints.
 
 GET    /api/orders                                  -- list, cursor paged
 GET    /api/orders/{id}                              -- detail
+PATCH  /api/orders/{id}                              -- favorite, open/closed, sealed
 DELETE /api/orders/{id}                              -- delete
 POST   /api/orders/{id}/rewrite                      -- re-run the write call
 POST   /api/orders/{id}/merge                        -- merge into another order
@@ -36,8 +37,14 @@ from mail_verdict.api.schemas import (
     OrderListResponse,
     OrderMailOut,
     OrderMergeRequest,
+    OrderUpdateRequest,
 )
 from mail_verdict.database.connection import get_db_connection
+from mail_verdict.database.fuzzy import (
+    fuzzy_token_predicate,
+    resolve_lexemes,
+    set_word_similarity_threshold,
+)
 from mail_verdict.database.models import Attachment, Order, OrderIdentifier, OrderMail
 from mail_verdict.orders import repository
 from mail_verdict.orders.catch_up import run_catch_up
@@ -55,6 +62,7 @@ _DOCUMENT_CONTENT_TYPES = frozenset({
     "application/pdf", "application/vnd.apple.pkpass", "text/calendar", "application/ics",
 })
 _MAX_DOCUMENTS = 12
+_MAX_FILTER_LENGTH = 200
 
 
 async def _account_ids_by_order(
@@ -79,7 +87,10 @@ def _list_item(order: Order, account_ids: list[uuid.UUID]) -> OrderListItem:
     return OrderListItem(
         id=order.id, merchant=order.merchant, subject=order.subject, status=order.status,
         title=compose_title(subject=order.subject, status=order.status), is_open=order.is_open,
-        icon=order.icon, summary_preview=order.summary_preview, first_mail_at=order.first_mail_at,
+        is_favorite=order.is_favorite, is_sealed=order.is_sealed,
+        open_set_by=order.open_set_by,  # type: ignore[arg-type]
+        expected_until=order.expected_until, icon=order.icon,
+        summary_preview=order.summary_preview, first_mail_at=order.first_mail_at,
         last_mail_at=order.last_mail_at, mail_count=order.mail_count, account_ids=account_ids,
         text_stale=order.text_stale, updated_at=order.updated_at,
     )
@@ -90,8 +101,17 @@ async def list_orders(
     state: str = Query(default="all", pattern="^(all|open)$"),
     before: uuid.UUID | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
+    favorites: bool = Query(default=False),
+    q: str | None = Query(default=None, max_length=_MAX_FILTER_LENGTH),
 ) -> OrderListResponse:
-    """Orders across every enabled account, newest activity first."""
+    """
+    Orders across every enabled account, newest activity first.
+
+    `favorites` keeps only favorites, in any state. `q` keeps orders where
+    every token of it (any order, typo-tolerant) matches the merchant,
+    subject, status or summary -- the same tokenizer and per-token
+    predicate as the mail search's fallback tier.
+    """
     db = get_db_connection()
     async with db.session() as session:
         cursor_last_mail_at, cursor_id = None, None
@@ -109,6 +129,13 @@ async def list_orders(
         stmt = select(Order).where(Order.written_at.is_not(None))
         if state == "open":
             stmt = stmt.where(Order.is_open.is_(True))
+        if favorites:
+            stmt = stmt.where(Order.is_favorite.is_(True))
+        tokens = await resolve_lexemes(session, q) if q else []
+        if tokens:
+            await set_word_similarity_threshold(session)
+            columns = (Order.merchant, Order.subject, Order.status, Order.summary)
+            stmt = stmt.where(*[fuzzy_token_predicate(token, columns) for token in tokens])
         if cursor_id is not None:
             stmt = stmt.where(
                 or_(
@@ -198,6 +225,24 @@ async def get_order(order_id: uuid.UUID) -> OrderDetail:
         detail = await _load_detail(session, order_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    return detail
+
+
+@router.patch("/{order_id}", response_model=OrderDetail)
+async def update_order(order_id: uuid.UUID, request: OrderUpdateRequest) -> OrderDetail:
+    """Favorite, open/closed and sealed. A person's open/closed decision
+    sticks until the next mail arrives (see orders/repository.py)."""
+    db = get_db_connection()
+    async with db.session() as session:
+        updated = await repository.update_controls(
+            session, order_id, is_favorite=request.is_favorite, is_open=request.is_open,
+            is_sealed=request.is_sealed,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Order not found")
+        detail = await _load_detail(session, order_id)
+    assert detail is not None
+    await _announce(order_id, "updated")
     return detail
 
 
