@@ -480,6 +480,13 @@ export interface ImageExceptionResponse {
   created_at: string;
 }
 
+/** A stored secret as the server shows it: the name, never the value. */
+export interface SecretResponse {
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ImageExceptionCreate {
   type: "sender" | "domain";
   value: string;

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -49,6 +50,17 @@ export function seedConfigDefaults(schema: JsonSchema): Record<string, unknown> 
   }
   return seeded;
 }
+
+/** A webhook action ready to edit: the name identifies the destination, the
+ * Authorization header names a stored secret (Settings -> Secrets). */
+const WEBHOOK_TEMPLATE = {
+  webhook: {
+    name: "my-webhook",
+    url: "https://example.com/endpoint",
+    headers: { Authorization: "Bearer {{secret:MY_TOKEN}}" },
+    received_at_param: "received_at",
+  },
+};
 
 function JsonField({
   name,
@@ -107,6 +119,14 @@ export function StageConfigForm({
 }) {
   const properties = schema.properties ?? {};
   const entries = Object.entries(properties);
+  // Bumped when a template is appended, so the JSON field re-reads its value.
+  const [effectsVersion, setEffectsVersion] = useState(0);
+
+  const addWebhook = () => {
+    const current = Array.isArray(value.effects) ? value.effects : [];
+    onChange({ ...value, effects: [...current, WEBHOOK_TEMPLATE] });
+    setEffectsVersion((v) => v + 1);
+  };
 
   const setField = (name: string, fieldValue: unknown) => {
     onChange({ ...value, [name]: fieldValue });
@@ -201,13 +221,26 @@ export function StageConfigForm({
         }
 
         return (
-          <JsonField
-            key={name}
-            name={name}
-            label={prop.description ? `${label} — ${prop.description}` : label}
-            value={current}
-            onChange={(v) => setField(name, v)}
-          />
+          <div key={name} className="grid gap-1.5">
+            <JsonField
+              key={`${name}-${name === "effects" ? effectsVersion : 0}`}
+              name={name}
+              label={prop.description ? `${label} — ${prop.description}` : label}
+              value={current}
+              onChange={(v) => setField(name, v)}
+            />
+            {name === "effects" && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={addWebhook}>
+                  Add webhook action
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Sends the matching mail&apos;s raw source to a URL; a header can use a stored
+                  secret as {"{{secret:NAME}}"}.
+                </span>
+              </div>
+            )}
+          </div>
         );
       })}
     </div>

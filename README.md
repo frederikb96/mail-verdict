@@ -102,13 +102,20 @@ mirror, which is what keeps it simple.
   order number of its own still finds its way to the right entry by merchant, timing and what is
   already in flight; a mail is attached to an existing entry or opens a new one, never split
   between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
-  removed, two entries merged, or the summary rewritten by hand. Recent mail can be looked through
-  after switching the feature on for an account.
-  Entries can be starred and listed on their own, filtered by typing (any word order, small typos
-  tolerated), closed or reopened by hand and sealed so no further mail is added; the same actions
-  sit in the detail's menu and in a menu on each row (right-click or long press), and a row swipes
-  on a touch screen — right to left for favorite, left to right for closed or open.
-- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
+  removed, two entries merged, or the summary rewritten by hand. Entries can be marked as
+  favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
+  the agent adds no more mail to them; an open entry nothing is expected of any more is closed
+  automatically, a few days (7 by default) after the date the model estimates it is over, or 30
+  days after its last mail when it has no such date; both are settings. A shipment
+  number that only a carrier's tracking link carries is read from the link. The same actions sit in the detail's menu and in a menu on each row (right-click or long
+  press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
+  or open. Recent mail can be looked through after switching the feature on for an account.
+- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
+  it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
+  from a named secret stored encrypted in the database (set from Settings, never shown again). A
+  delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
+  and raises an alert when it gives up; mail that predates a rule can be sent once, oldest first,
+  through the API.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,
   body) you pick, ranked by whether the word itself matched rather than merely started a longer

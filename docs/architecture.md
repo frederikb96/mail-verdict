@@ -382,6 +382,44 @@ token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) 
 an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
 same number still finds the order rather than opening a duplicate.
 
+**A shipment number inside a link target is made visible.** Some carrier templates ship an unfilled
+merge field as the link text and put the real number only in the link's query string, so after link
+targets are dropped the model reads a placeholder and no number — and every pickup notice from that
+carrier then looks like the same shipment. `orders/content.py`'s `prepare_body` renders such a number
+into the text it hands the filter and both model calls, and `extract_labeled_identifiers` stores it as
+a tracking number even when the model reports none (the parameter names are one constant in
+`orders/candidates.py`). The decide prompt adds that a carrier notice whose tracking number differs
+from the ones a candidate holds is a different shipment.
+
+**Sealing takes an order out of the agent's world.** A sealed order (`orders.is_sealed`) is never a
+candidate, never makes a mail "known" by thread or number (`orders/lookup.py`), never captures a
+sent-folder follow-up (`orders/intake.py`) and does not own its numbers, so a new order can claim
+them. All of those apply the one predicate `ACCEPTS_MAIL` in `orders/candidates.py`. A sealed order
+stays listed and editable, and sealing does not change open or closed.
+
+**Who decided open or closed.** `orders.open_set_by` is `ai` (the write call), `user` (a person's
+PATCH) or `auto` (the automatic close). The write call changes `is_open` only while it is `ai`, and a
+new mail attached by the worker hands the decision back to the model. A person's reopen is therefore
+never auto-closed until the next mail.
+
+**Automatic close.** The write call also gives `expected_until`, its best estimate of when the order
+is naturally over (an event, a trip's last day, a pickup deadline, about a week after a parcel
+shipped). An hourly sweep (`orders/auto_close.py`, advisory-locked, taking the worker's own lock
+while it updates) closes an open, model-owned, written, non-stale order `settings.orders.auto_close_grace_days`
+after the later of that date and its last mail, or, when the model gave no date,
+`settings.orders.auto_close_days` after its last mail, and announces it like any other order change.
+`auto_close_days = 0` turns the whole sweep off.
+
+**Deleting an order leaves nothing naming it.** `repository.delete_order` (also used for a merge's
+source and an order left empty by a detach) removes the order's write jobs and clears the order
+pointer on the mail jobs that bundled its mails. The mail job rows stay — they are the never-twice
+gate — so a deleted order's mails are not re-bundled.
+
+**The list filter reuses the mail search's fallback matcher.** `GET /api/orders?q=` tokenises with
+`database/fuzzy.py` (Postgres's own parser) and requires every token to match the merchant, subject,
+status or summary literally or by trigram word similarity — the same per-token predicate and
+threshold the mail search's typo-tolerant fallback uses.
+
 **Membership is `(account_id, msg_key)`, never `messages.id`** — the same durable identity
 `verdicts` and `message_embeddings` use, for the same reason: a UIDVALIDITY resync or a move made
 by another IMAP client replaces the row id, and an order keyed on it would silently lose the mail.
@@ -809,6 +847,38 @@ event refuses `FREQ=SECONDLY`/`MINUTELY` outright, as a cheap first line rather 
 event has no `ORGANIZER` at all) — bumping it on an edit to an event held only as an attendee would
 make the real organizer's next genuine update compare as stale against the check above and be
 silently discarded.
+
+## Webhooks
+
+A `match` stage's `webhook` effect sends the message's raw source to an HTTP endpoint. Like the
+orders stage, the effect only enqueues: it inserts a `webhook_deliveries` row and nothing in a
+rule pass waits on the network. One worker on the `webhooks` queue (`webhooks/worker.py`, one
+concurrent delivery by default) makes the request.
+
+- **Identity.** One row per `(webhook name, account, msg_key)`, kept in every status. That unique
+  key is what stops a resync, a repeated backfill or a re-evaluated rule from sending a mail
+  twice, and a delivered row is never claimed again.
+- **Outcomes.** A 2xx is final. A 5xx, 408, 429, network error or timeout is retried with
+  jittered backoff up to `webhooks.max_attempts`. Any other response, redirects included (they are
+  not followed), ends the delivery at once. Every delivery that ends failed raises a
+  `webhook_failed` alert and stays in the table, still blocking a re-enqueue until it is
+  re-queued explicitly (`POST /api/webhooks/deliveries/{id}/retry`). A timeout, or a crash after
+  the receiver processed the request, is retried and can reach a receiver without its own
+  de-duplication twice.
+- **Source.** The raw bytes come from the mirror, or from the glacier when the mail has moved
+  there since. A message PostIMAP never stored the source for (`is_truncated`) fails rather than
+  sending something partial.
+- **Secrets.** `secrets` holds named values encrypted with `security.encryption_key`, the same
+  scheme as provider keys (`settings/secret_store.py`). A rule's header values reference one as
+  `{{secret:NAME}}`; the delivery row stores the reference, and the worker substitutes the value
+  when the request is made. No value, rendered header, response body or transport error text is
+  logged or stored, and no endpoint returns a value. Deleting a secret a rule still names makes
+  that rule's next delivery fail loudly.
+- **Backfill.** `webhooks/backfill.py` evaluates the named webhook's rule conditions against mail
+  received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time.
+- **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach.
+  The application has no authentication of its own and relies on the proxy in front of it, which
+  therefore also decides who can make the server send a request.
 
 ## Configuration and settings
 
