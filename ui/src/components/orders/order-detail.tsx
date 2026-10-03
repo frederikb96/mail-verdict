@@ -2,7 +2,7 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { format, isSameDay, isSameYear } from "date-fns";
-import { CalendarDays, FileText, MoreHorizontal, Ticket as TicketIcon } from "lucide-react";
+import { CalendarDays, FileText, Lock, MoreHorizontal, Star, Ticket as TicketIcon } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,18 +10,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AttachmentPreviewDialog } from "@/components/mail/attachment-preview-dialog";
+import { OrderMenuItems } from "@/components/orders/order-actions";
 import { OrderPickerDialog } from "@/components/orders/order-picker-dialog";
 import { OrderSummaryView } from "@/components/orders/order-summary-view";
-import {
-  useDeleteOrder,
-  useDetachMail,
-  useMergeOrder,
-  useOrderDetail,
-  useRewriteOrder,
-} from "@/hooks/use-orders";
+import { useDetachMail, useOrderDetail } from "@/hooks/use-orders";
 import { useOpenMessage } from "@/hooks/use-open-message";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
@@ -29,7 +23,8 @@ import { formatRelativeDate, formatSize } from "@/lib/format";
 import { clearOrderScrollAnchor, readOrderScrollAnchor } from "@/lib/order-scroll-anchor";
 import { orderIconEntry } from "@/lib/order-icon";
 import { cn } from "@/lib/utils";
-import type { OrderDocument, OrderMail } from "@/types/api";
+import type { OrderActionId } from "@/lib/order-actions";
+import type { OrderDocument, OrderListItem, OrderMail } from "@/types/api";
 
 function formatDateRange(first: string | null, last: string | null): string {
   if (!first && !last) return "";
@@ -59,7 +54,9 @@ const DOCUMENT_ICONS: Record<string, typeof FileText> = {
 interface OrderDetailProps {
   orderId: string;
   onBack?: () => void;
-  onDeleted: () => void;
+  /** Runs an action from the order's menu -- the same runner the list's
+   * row menu uses, which also owns the merge and delete dialogs. */
+  onAction: (order: OrderListItem, id: OrderActionId) => void;
   /** The pane's own scroll container -- one level up in orders-page.tsx,
    * since it also hosts the phone-width back bar above this component.
    *
@@ -79,21 +76,15 @@ interface OrderDetailProps {
 export function OrderDetailPane({
   orderId,
   onBack,
-  onDeleted,
+  onAction,
   scrollContainer,
   onBeforeOpenMail,
 }: OrderDetailProps) {
   const { data: order, isLoading, isError } = useOrderDetail(orderId);
   const { openMessageById } = useOpenMessage();
   const { push: pushToast } = useToast();
-  const deleteOrder = useDeleteOrder();
-  const rewriteOrder = useRewriteOrder();
-  const mergeOrder = useMergeOrder();
   const detachMail = useDetachMail();
 
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmMerge, setConfirmMerge] = useState<string | null>(null);
-  const [pickingMerge, setPickingMerge] = useState(false);
   const [movingMail, setMovingMail] = useState<OrderMail | null>(null);
   const [previewDoc, setPreviewDoc] = useState<OrderDocument | null>(null);
 
@@ -244,7 +235,14 @@ export function OrderDetailPane({
           <Icon className="h-6 w-6" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            {order.is_favorite && (
+              <Star
+                className="h-3 w-3 shrink-0 text-amber-500"
+                fill="currentColor"
+                aria-label="Favorite"
+              />
+            )}
             {order.merchant}
           </div>
           <h1 className="text-xl font-semibold leading-7 line-clamp-3">{order.subject}</h1>
@@ -263,25 +261,26 @@ export function OrderDetailPane({
               {order.mail_count} mail{order.mail_count === 1 ? "" : "s"} ·{" "}
               {formatDateRange(order.first_mail_at, order.last_mail_at)}
             </span>
+            {!order.is_open && order.open_set_by === "auto" && (
+              <span className="text-xs text-muted-foreground">· closed automatically</span>
+            )}
+            {order.is_sealed && (
+              <span
+                className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+                title="No more mail is added to this order"
+              >
+                <Lock className="h-3 w-3" />
+                Sealed
+              </span>
+            )}
           </div>
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger render={<Button variant="ghost" size="icon" aria-label="Order actions" />}>
             <MoreHorizontal className="h-4 w-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => rewriteOrder.mutate(order.id)}>
-              Rewrite summary
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => setPickingMerge(true)}>
-              Merge into another order…
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="text-destructive"
-              onClick={() => setConfirmDelete(true)}
-            >
-              Delete order…
-            </DropdownMenuItem>
+          <DropdownMenuContent align="end" className="w-auto min-w-52">
+            <OrderMenuItems order={order} onAction={onAction} />
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -426,43 +425,6 @@ export function OrderDetailPane({
           ))}
         </div>
       </div>
-
-      <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
-        title="Delete this order?"
-        description={`Its ${order.mail_count} mail${order.mail_count === 1 ? "" : "s"} stay where they are.`}
-        confirmLabel="Delete order"
-        onConfirm={() => {
-          setConfirmDelete(false);
-          deleteOrder.mutate(order.id);
-          onDeleted();
-        }}
-      />
-
-      <OrderPickerDialog
-        open={pickingMerge}
-        onOpenChange={setPickingMerge}
-        excludeId={order.id}
-        onChoose={(targetId) => setConfirmMerge(targetId)}
-      />
-      <ConfirmDialog
-        open={confirmMerge !== null}
-        onOpenChange={(open) => {
-          if (!open) setConfirmMerge(null);
-        }}
-        title="Merge this order into the chosen one?"
-        description={`Its ${order.mail_count} mail${order.mail_count === 1 ? "" : "s"} move over and this order disappears.`}
-        confirmLabel="Merge"
-        onConfirm={() => {
-          const into = confirmMerge;
-          setConfirmMerge(null);
-          if (into) {
-            mergeOrder.mutate({ id: order.id, into });
-            onDeleted();
-          }
-        }}
-      />
 
       <OrderPickerDialog
         open={movingMail !== null}

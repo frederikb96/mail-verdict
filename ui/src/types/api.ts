@@ -1371,6 +1371,13 @@ export interface OrderListItem {
   /** subject + " — " + status, or just subject when status is empty. */
   title: string;
   is_open: boolean;
+  is_favorite: boolean;
+  /** A sealed order takes no further mail. */
+  is_sealed: boolean;
+  /** Who decided `is_open`: the model, a person, or the automatic sweep. */
+  open_set_by: "ai" | "user" | "auto";
+  /** YYYY-MM-DD, the model's estimate of when the order is over. */
+  expected_until: string | null;
   icon: OrderIcon;
   summary_preview: string;
   first_mail_at: string | null;
@@ -1379,6 +1386,14 @@ export interface OrderListItem {
   account_ids: string[];
   text_stale: boolean;
   updated_at: string;
+}
+
+/** Every field optional, null never allowed -- an omitted field is left
+ * untouched. */
+export interface OrderUpdateRequest {
+  is_favorite?: boolean;
+  is_open?: boolean;
+  is_sealed?: boolean;
 }
 
 export interface OrderListResponse {

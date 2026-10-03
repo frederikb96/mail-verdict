@@ -107,8 +107,9 @@ mirror, which is what keeps it simple.
   the agent adds no more mail to them; an open entry nothing is expected of any more is closed
   automatically, a few days (7 by default) after the date the model estimates it is over, or 30
   days after its last mail when it has no such date; both are settings. A shipment
-  number that only a carrier's tracking link carries is read from the link. Recent mail can be
-  looked through after switching the feature on for an account.
+  number that only a carrier's tracking link carries is read from the link. The same actions sit in the detail's menu and in a menu on each row (right-click or long
+  press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
+  or open. Recent mail can be looked through after switching the feature on for an account.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
   it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
   from a named secret stored encrypted in the database (set from Settings, never shown again). A
