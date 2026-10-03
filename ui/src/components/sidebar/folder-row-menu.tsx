@@ -31,10 +31,19 @@ interface FolderRowMenuProps {
   folderName: string;
   badgeCount: number;
   totalCount: number;
+  /** "Mark all as read" works against the glacier the same way it does
+   * against an ordinary folder. "Empty folder" is left out for it: this
+   * component's own bulk action (useFolderBulkAction) never sends
+   * confirm: true, which the server's glacier expunge branch requires --
+   * so confirming the dialog would be refused, not acted on, even though
+   * GET .../messages/selection now resolves a glacier folder id and
+   * reports its real count. Bring it back once the bulk action sends
+   * that confirmation too. */
+  isGlacier?: boolean;
 }
 
 export function FolderRowMenu({
-  accountId, folderId, folderName, badgeCount, totalCount,
+  accountId, folderId, folderName, badgeCount, totalCount, isGlacier,
 }: FolderRowMenuProps) {
   // Minted the moment the menu item is clicked, not deferred to the
   // confirm click -- the dialog must show the same count the request
@@ -102,22 +111,27 @@ export function FolderRowMenu({
           <DropdownMenuItem
             onClick={() => {
               warnIfSlow("Marking", totalCount);
-              folderAction.mutate({ accountId, folderId, action: "mark_read" });
+              folderAction.mutate(
+                { accountId, folderId, action: "mark_read" },
+                { onError: (err) => pushToast(`Could not mark as read: ${err.message}`, "error", 0) },
+              );
             }}
           >
             Mark all as read
           </DropdownMenuItem>
-          <DropdownMenuItem
-            variant="destructive"
-            onClick={async () => {
-              const snapshot = await api.messages.selection(accountId, {
-                folder_id: folderId, filter: "all",
-              });
-              setConfirmEmpty({ snapshotAt: snapshot.snapshot_at, count: snapshot.count });
-            }}
-          >
-            Empty folder
-          </DropdownMenuItem>
+          {!isGlacier && (
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={async () => {
+                const snapshot = await api.messages.selection(accountId, {
+                  folder_id: folderId, filter: "all",
+                });
+                setConfirmEmpty({ snapshotAt: snapshot.snapshot_at, count: snapshot.count });
+              }}
+            >
+              Empty folder
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -149,7 +163,10 @@ export function FolderRowMenu({
           warnIfSlow("Deleting", confirmEmpty.count);
           folderAction.mutate(
             { accountId, folderId, action: "expunge", confirmedSnapshot: confirmEmpty },
-            { onSuccess: () => setConfirmEmpty(null) },
+            {
+              onSuccess: () => setConfirmEmpty(null),
+              onError: (err) => pushToast(`Could not empty folder: ${err.message}`, "error", 0),
+            },
           );
         }}
       />

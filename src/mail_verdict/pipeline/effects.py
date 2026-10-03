@@ -16,6 +16,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from sqlalchemy import text
@@ -24,6 +25,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from mail_verdict.database.models import MailTag, TagSource
 from mail_verdict.pipeline.contracts import (
     Effect,
+    EnqueueOrder,
     Expunge,
     Keywords,
     Move,
@@ -33,6 +35,7 @@ from mail_verdict.pipeline.contracts import (
     StageMisconfigured,
     Tag,
     Trash,
+    Webhook,
 )
 from mail_verdict.pipeline.message_view import FolderView, MessageView
 from mail_verdict.postimap.actions import (
@@ -41,6 +44,7 @@ from mail_verdict.postimap.actions import (
     set_flags_guarded,
     set_keywords_delta_guarded,
 )
+from mail_verdict.queue.notify import WorkQueueNotifier
 
 if TYPE_CHECKING:
     from mail_verdict.api.event_ring import EventRing
@@ -259,6 +263,30 @@ async def apply_effects(
                 )
             applied.append(AppliedEffect(effect, True, effect.text))
 
+        elif isinstance(effect, EnqueueOrder):
+            if not apply:
+                applied.append(AppliedEffect(effect, True, f"would queue: {effect.reason}"))
+                continue
+            inserted = await _enqueue_order_mail_job(db, current, effect)
+            applied.append(
+                AppliedEffect(
+                    effect, inserted,
+                    f"queued: {effect.reason}" if inserted else "already queued",
+                )
+            )
+
+        elif isinstance(effect, Webhook):
+            if not apply:
+                applied.append(AppliedEffect(effect, True, f"would deliver to {effect.name}"))
+                continue
+            queued = await _enqueue_webhook_delivery(db, current, effect)
+            applied.append(
+                AppliedEffect(
+                    effect, queued,
+                    f"queued for {effect.name}" if queued else f"already queued for {effect.name}",
+                )
+            )
+
         else:  # pragma: no cover -- exhaustive over the Effect union above
             raise StageMisconfigured(
                 f"stage {stage_id!r}: unknown effect {effect!r}", stage_id=stage_id,
@@ -316,6 +344,54 @@ async def _apply_tags(db: DatabaseConnection, mail_id: uuid.UUID, effect: Tag) -
                 text("DELETE FROM mail_tags WHERE mail_id = :mail_id AND tag_name = :tag_name"),
                 {"mail_id": mail_id, "tag_name": tag_name},
             )
+
+
+async def _enqueue_order_mail_job(
+    db: DatabaseConnection, view: MessageView, effect: EnqueueOrder,
+) -> bool:
+    """
+    Insert the orders queue's mail job (orders/repository.py's
+    enqueue_mail_job, the one place this insert is written -- shared with
+    the thread follow-up hook, orders/intake.py).
+
+    Returns:
+        True only when a new row was inserted -- see orders/worker.py's
+        module docstring for why a duplicate enqueue must never count as
+        having (re)applied anything.
+    """
+    from mail_verdict.orders.repository import enqueue_mail_job
+
+    async with db.session() as session:
+        inserted = await enqueue_mail_job(
+            session, account_id=view.account_id, msg_key=view.msg_key,
+            message_id=view.message_id, origin="live", priority=0,
+            filter_reason=effect.reason,
+            next_attempt_at=view.received_at or datetime.now(timezone.utc),
+        )
+        if inserted:
+            await WorkQueueNotifier.notify(session, "orders")
+        return inserted
+
+
+async def _enqueue_webhook_delivery(
+    db: DatabaseConnection, view: MessageView, effect: Webhook,
+) -> bool:
+    """
+    Insert the webhook queue's delivery row (webhooks/repository.py's
+    enqueue_delivery, the one place this insert is written -- shared with
+    the backfill).
+
+    Returns:
+        True only when a new row was inserted; a mail already queued,
+        delivered or failed for this name is left exactly as it is.
+    """
+    from mail_verdict.webhooks.repository import enqueue_delivery
+
+    async with db.session() as session:
+        return await enqueue_delivery(
+            session, effect, account_id=view.account_id, msg_key=view.msg_key,
+            message_id=view.message_id, origin="live", priority=0,
+        )
 
 
 async def _record_verdict(db: DatabaseConnection, view: MessageView, effect: RecordVerdict) -> bool:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import itertools
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
@@ -18,7 +18,7 @@ from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import EMBEDDING_DIMENSIONS, MessageEmbedding
 from mail_verdict.database.repository import MessageRepository
 from mail_verdict.embeddings.provider import FakeEmbeddingProvider
-from mail_verdict.embeddings.repository import EmbeddingRepository
+from mail_verdict.embeddings.repository import EmbeddingRepository, EmbeddingStatus
 from mail_verdict.embeddings.search import semantic_search
 from mail_verdict.embeddings.worker import _handle_one
 from mail_verdict.queue.work_queue import WorkQueue
@@ -421,7 +421,7 @@ async def test_worker_embeds_a_truncated_message_as_envelope_only(
         await _handle_one(
             claimed[0], "w1", work_queue, embedding_repo, message_repo,
             cred_repo=None, settings_service=_FakeSettings(),  # type: ignore[arg-type]
-            circuit=_NullCircuit(),  # type: ignore[arg-type]
+            circuit=_NullCircuit(), db=migrated_db,  # type: ignore[arg-type]
         )
     finally:
         worker_module.resolve_embedding_provider = original_resolve
@@ -727,6 +727,130 @@ async def test_enqueue_one_does_not_oscillate_a_duplicate_header_pair(
             )
         ).scalar_one()
     assert hint == twin_a  # unchanged -- twin_a's hint was never dead
+
+
+@pytest.mark.asyncio
+async def test_backfill_reaches_older_mail_past_a_window_full_of_shadow_twins(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """More duplicate-header twins that can never hold their own embedding
+    than one selection window holds, all newer than a batch of ordinary
+    mail -- the production shape: a whole sweep's window filled entirely
+    with rows that could never be inserted, so the newest-first ordering
+    meant the sweep never reached anything older. Runs the backfill to
+    completion (a bounded number of reconciler ticks, each followed by
+    what a worker would do with whatever it enqueued) and expects every
+    ordinary message embedded and the cutover gate open."""
+    repo = EmbeddingRepository(migrated_db)
+    target_model = _unique_model()
+    active_model = _unique_model()
+
+    window = 5
+    shadow_pair_count = 8  # more than one window holds
+    ordinary_count = 3
+
+    async with migrated_db.session() as session:
+        account_id, folder_a = await _seed_account_and_folder(session)
+        folder_b = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, initial_sync_done) "
+                "VALUES (:id, :account_id, 'Archive', true)"
+            ),
+            {"id": folder_b, "account_id": account_id},
+        )
+
+        # Newer, permanently-unresolvable duplicate-header pairs: twin_a
+        # already holds the target model's embedding (done), so twin_b's
+        # header can never get an embedding row of its own as long as
+        # twin_a stays live -- exactly the case enqueue_missing_batch
+        # must now exclude from its SQL candidate set.
+        for i in range(shadow_pair_count):
+            header = f"<shadow-{uuid.uuid4()}@example.com>"
+            received_at = datetime(2026, 6, 1, tzinfo=timezone.utc) - timedelta(days=i)
+            twin_a = await _seed_message(
+                session, account_id=account_id, folder_id=folder_a,
+                message_id_hdr=header, received_at=received_at,
+            )
+            await _seed_message(
+                session, account_id=account_id, folder_id=folder_b,
+                message_id_hdr=header, received_at=received_at,
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO message_embeddings "
+                    "(account_id, msg_key, message_id, model, status, embedding) "
+                    "VALUES (:account_id, :msg_key, :message_id, :model, 'done', "
+                    "CAST(:vec AS vector))"
+                ),
+                {
+                    "account_id": account_id, "msg_key": header, "message_id": twin_a,
+                    "model": target_model, "vec": str([0.1] * EMBEDDING_DIMENSIONS),
+                },
+            )
+
+        # Older, ordinary mail -- must eventually be offered a turn.
+        ordinary_ids = []
+        for i in range(ordinary_count):
+            mail_id = await _seed_message(
+                session, account_id=account_id, folder_id=folder_a,
+                subject=f"ordinary {i}",
+                received_at=datetime(2026, 1, 1, tzinfo=timezone.utc) - timedelta(days=i),
+            )
+            ordinary_ids.append(mail_id)
+        await session.commit()
+
+    # A bounded number of reconciler ticks, each followed by "a worker"
+    # finishing off whatever this tick enqueued -- more than enough for
+    # the fixed selection to drain shadow_pair_count + ordinary_count
+    # candidates through windows of `window` each.
+    for _ in range(10):
+        await repo.enqueue_missing_batch(
+            model=target_model, batch_size=window, account_id=account_id,
+        )
+        async with migrated_db.session() as session:
+            await session.execute(
+                text(
+                    "UPDATE message_embeddings SET status = 'done', "
+                    "embedding = CAST(:vec AS vector) "
+                    "WHERE model = :m AND account_id = :a AND status = 'pending'"
+                ),
+                {"vec": str([0.1] * EMBEDDING_DIMENSIONS), "m": target_model, "a": account_id},
+            )
+
+    async with migrated_db.session() as session:
+        for mail_id in ordinary_ids:
+            status = (
+                await session.execute(
+                    text(
+                        "SELECT status FROM message_embeddings "
+                        "WHERE model = :m AND account_id = :a AND message_id = :mid"
+                    ),
+                    {"m": target_model, "a": account_id, "mid": mail_id},
+                )
+            ).scalar_one_or_none()
+            assert status == "done", f"ordinary message {mail_id} was never even tried"
+
+    status = await repo.status(model=target_model, account_id=account_id)
+    assert status.outstanding == 0, status
+
+    # cutover_readiness itself has no account scoping -- its status()
+    # calls read every account in the shared migrated_db, which by this
+    # point in the file includes whatever every earlier test in this
+    # session left behind (see test_embedding_cutover_pg.py's module
+    # docstring for the same trap). Delegate to the real predicate
+    # unchanged, bound to a status() scoped to this test's own account,
+    # rather than asserting it against the whole database.
+    class _AccountScopedRepo:
+        async def status(self, *, model: str) -> EmbeddingStatus:
+            return await repo.status(model=model, account_id=account_id)
+
+        cutover_readiness = EmbeddingRepository.cutover_readiness
+
+    readiness = await _AccountScopedRepo().cutover_readiness(  # type: ignore[arg-type]
+        target_model=target_model, active_model=active_model,
+    )
+    assert readiness.ready, readiness.blocked_reason
 
 
 @pytest.mark.asyncio

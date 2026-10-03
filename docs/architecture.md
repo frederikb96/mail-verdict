@@ -226,6 +226,21 @@ the definition, or one stage of it, against an existing message with nothing app
 path `pipeline/runner.py`'s `dry_run`/`dry_run_stage` expose for that purpose alone, never
 registered with the queue manager.
 
+The rule assistant (`rules/assistant.py`, `POST /api/pipeline/assistant`) proposes one change to
+this document from a sentence about an open mail, and stores nothing: accepting is an ordinary
+stage write carrying the `base_revision` the proposal was computed against. It is a fixed
+two-step exchange over the same `ModelGateway` the stages use, with the `ai` model settings and a
+circuit breaker of its own. The first step makes the model name the searches it wants over the
+account's mail, the second answers with the change, and a candidate that fails validation goes
+back with the reason, up to three times. Validation is the write endpoints' own
+(`validate_document`, folder resolution) plus three checks specific to it: the change must match
+the mail that prompted it, it must not introduce an `expunge` or `webhook` effect (or one of the
+pipeline's own bookkeeping effects), and it must not catch an implausible share of the account's
+100 newest mails — the same sample the preview is computed from. The condition and effect
+vocabulary in its prompt is rendered from `CONDITION_SYNTAX` (`rules/conditions.py`) and the
+`Effect` union, so a new condition or effect cannot be left out of it unnoticed. The mail's own
+text reaches the prompt as fenced, escaped data, and the model has no tools.
+
 A stage that cannot do its job raises rather than returning a success flag — a `Move` effect
 whose target folder does not resolve is exactly the kind of failure a success-flag result type
 would let slip through as reported success on a write that did nothing. The exception type tells
@@ -239,14 +254,19 @@ A live message is embedded before it ever reaches the pipeline. `message`/`inser
 `origin = "sync"` enqueues a `message_embeddings` row, not a `pipeline_runs` row — the pipeline
 row is only inserted once that embedding reaches a terminal state, `done` or `failed`, in the same
 transaction as the write that reaches it (`embeddings/repository.py`, calling
-`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). Both the embedding call and the
-classify call hit the same provider, so gating on the first costs no real availability — if the
-provider is down, nothing downstream was going to be classified either — and it buys the
-invariant that everything in the pipeline queue has a vector, which is what neighbour hints below
-depend on. A message whose embedding permanently fails is not stranded: reaching `failed` opens
-the gate exactly as `done` does, just with no neighbour hints available, which the classify stage
-records in its own trace. Reconciliation's gap-recovery pass (a listener reconnect) respects the
-same gate, so it cannot enqueue a run ahead of a still-pending embedding.
+`pipeline.enqueue.enqueue_pipeline_run_if_live_eligible`). The embedding and classify calls may
+run against entirely different providers, since `ai` and `semantic` are independently selectable
+settings — gating classify on the embedding's own terminal state costs nothing regardless: a
+permanently failing embedding still reaches `failed` and opens the gate exactly as `done` does,
+just with no neighbour hints available, so an unrelated semantic-provider outage only delays
+classification behind its own retries, never blocks it, and the gate still buys the invariant that
+everything in the pipeline queue has a vector, which is what neighbour hints below depend on. This
+is a scheduling gate, not the availability-tracking circuit breaker each of `pipeline`, `orders`
+and `embeddings` keeps for its own provider calls (`queue/circuit.py`) — a breaker is keyed by
+`(provider, settings category)`, never by provider alone, so a misconfiguration in one category's
+own settings cannot suspend another category that happens to share a provider name. Reconciliation's
+gap-recovery pass (a listener reconnect) respects the classify gate, so it cannot enqueue a run
+ahead of a still-pending embedding.
 
 Never on an update, either way. A stage reacting to a folder-move update could loop on its own
 writes: PostIMAP's `origin` field distinguishes its own sync writes from this application's, but
@@ -303,6 +323,30 @@ part of a row's identity, not a separate column to keep in sync — changing it 
 settings category makes coverage for the new model start at zero rather than mixing two vector
 spaces in one index; old rows are kept, not deleted, until the new coverage completes.
 
+A model change alone would leave search reading an empty-to-partial vector space for however long
+the backfill takes, which for a real mailbox is not a moment a client should ever see. So
+`semantic.model` (the target the backfill fills toward) and `semantic.active_model` (what search
+and the classify stage's neighbour hints actually query) are two settings, not one: changing
+`model` (or `provider`/`base_url` alongside it, moving to a different compatible server) freezes
+whichever identity was previously active into `active_model`/`active_provider`/`active_base_url`
+(`api/settings_api.py`'s `update_settings`), and the backfill reconciler advances them to match
+once `EmbeddingRepository.cutover_readiness` says the new model is ready
+(`embeddings/worker.py`'s `_maybe_cutover`) — `embeddings/provider.py`'s
+`resolve_active_embedding_model`/`resolve_active_embedding_provider` are the one place either is
+read from. Readiness is never "every message embedded" — a real mailbox always has a few that
+permanently fail (no usable content, a provider refusal), so a check waiting for exact 100%
+coverage would block forever. It asks instead whether every in-scope message has been *tried* at
+least once (`EmbeddingStatus.outstanding == 0` — done, failed, or covered indirectly through a
+shadowed sibling's row) and whether the new model's own reachable count is at least what the
+active one already reaches; `GET /api/embeddings/status` reports the same predicate
+(`cutover_ready`/`cutover_blocked_reason`), computed in the one place rather than twice. A
+provider is itself a setting per category (`ai.provider`, `semantic.provider`):
+`"openai"`, `"anthropic"` (verdicts only), `"custom"` (any OpenAI-compatible server, reached at
+that category's own `base_url` with one shared credential per provider name, `settings/
+credentials.py`), or `"fake"`. A custom server speaks chat completions only, not the Responses API
+`structured_llm.py`'s `call_openai_structured` uses for real OpenAI — `call_chat_completions_structured`
+is the separate request shape a custom provider needs instead.
+
 Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and orders
 messages by cosine distance, joined back to `messages` at read time — never a denormalised copy of
 anything that changes, matching the no-foreign-key posture above. It complements the fuzzy,
@@ -311,6 +355,99 @@ sender or an exact phrase, semantic search wins on a half-remembered topic with 
 words. Both accept `folder_ids`, enforced in the query itself rather than filtered afterward — a
 caller filtering the response instead would silently turn a scoped search into an unscoped one
 with a smaller page.
+
+## Orders
+
+The orders register (`orders/`, tables `orders`/`order_mails`/`order_identifiers`/`order_jobs`)
+bundles every mail about one purchase, ticket or booking into one entry with an AI-written title
+and summary, across every account that has the feature switched on
+(`account_prefs.orders_enabled`).
+
+**The pipeline stage only enqueues; it never calls a model.** `pipeline/stages/orders.py` checks
+the switch, the spam verdict, the two bypass rules (a mail whose thread already belongs to an
+order, or whose text carries a number an order of the last year holds) and the first filter
+(`orders/filter.py`, patterns in `settings.orders.filter`), then returns an `EnqueueOrder` effect
+that inserts an `order_jobs` row — nothing more. Two reasons: a burst of mail from one sender runs
+through the pipeline concurrently, and two workers deciding at once could each see no matching
+order and each open one; and a model call inside the stage would delay the new-mail alert waiting
+on the pipeline run for a decision the alert does not need.
+
+**One worker, one advisory lock, so "never split" holds by construction.** `orders/worker.py`
+registers the `orders` queue at concurrency 1, and every job additionally opens with `SELECT
+pg_advisory_xact_lock` before its reads, its model call and its writes — held for the whole job,
+not merely the write. That is what keeps two mails of one purchase from ever landing in two
+different orders even if concurrency is later raised or a second replica runs; concurrency 1 alone
+would not survive either of those.
+
+**Decide, then write, as two separate model calls.** A single call that both filed a mail and
+rewrote the order's text let the summary decay: a later mail's answer routinely dropped a fact
+only an earlier mail's own text had stated, because the model was reconstructing the whole entry
+from a shrinking transcript rather than from what it already knew. Deciding (`orders/prompts.py`'s
+decide prompt, `orders/candidates.py`'s ranked list of existing orders) and writing (the same
+module's write prompt, from the order's own mails, oldest first, with the entry's current text
+handed back in) are two calls, and the second is also what a manual rewrite and a correction reuse.
+
+**A decide call that reports no identifiers is not trusted blindly.** A small model
+measurably misses a number that is plainly present in the body more often than it misses the
+decision itself — a carrier notice's own tracking number, most commonly, since nothing else in the
+mail names it. When the model's own `identifiers` answer comes back empty, `orders/worker.py`
+deterministically rescans the mail's subject and raw body for the same order/tracking/booking/
+invoice labels `orders/filter.py`'s first pass already looks for and takes the identifier-shaped
+token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) — never overriding
+an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
+same number still finds the order rather than opening a duplicate.
+
+**A shipment number inside a link target is made visible.** Some carrier templates ship an unfilled
+merge field as the link text and put the real number only in the link's query string, so after link
+targets are dropped the model reads a placeholder and no number — and every pickup notice from that
+carrier then looks like the same shipment. `orders/content.py`'s `prepare_body` renders such a number
+into the text it hands the filter and both model calls, and `extract_labeled_identifiers` stores it as
+a tracking number even when the model reports none (the parameter names are one constant in
+`orders/candidates.py`). The decide prompt adds that a carrier notice whose tracking number differs
+from the ones a candidate holds is a different shipment.
+
+**Sealing takes an order out of the agent's world.** A sealed order (`orders.is_sealed`) is never a
+candidate, never makes a mail "known" by thread or number (`orders/lookup.py`), never captures a
+sent-folder follow-up (`orders/intake.py`) and does not own its numbers, so a new order can claim
+them. All of those apply the one predicate `ACCEPTS_MAIL` in `orders/candidates.py`. A sealed order
+stays listed and editable, and sealing does not change open or closed.
+
+**Who decided open or closed.** `orders.open_set_by` is `ai` (the write call), `user` (a person's
+PATCH) or `auto` (the automatic close). The write call changes `is_open` only while it is `ai`, and a
+new mail attached by the worker hands the decision back to the model. A person's reopen is therefore
+never auto-closed until the next mail.
+
+**Automatic close.** The write call also gives `expected_until`, its best estimate of when the order
+is naturally over (an event, a trip's last day, a pickup deadline, about a week after a parcel
+shipped). An hourly sweep (`orders/auto_close.py`, advisory-locked, taking the worker's own lock
+while it updates) closes an open, model-owned, written, non-stale order `settings.orders.auto_close_grace_days`
+after the later of that date and its last mail, or, when the model gave no date,
+`settings.orders.auto_close_days` after its last mail, and announces it like any other order change.
+`auto_close_days = 0` turns the whole sweep off.
+
+**Deleting an order leaves nothing naming it.** `repository.delete_order` (also used for a merge's
+source and an order left empty by a detach) removes the order's write jobs and clears the order
+pointer on the mail jobs that bundled its mails. The mail job rows stay — they are the never-twice
+gate — so a deleted order's mails are not re-bundled.
+
+**The list filter reuses the mail search's fallback matcher.** `GET /api/orders?q=` tokenises with
+`database/fuzzy.py` (Postgres's own parser) and requires every token to match the merchant, subject,
+status or summary literally or by trigram word similarity — the same per-token predicate and
+threshold the mail search's typo-tolerant fallback uses.
+
+**Membership is `(account_id, msg_key)`, never `messages.id`** — the same durable identity
+`verdicts` and `message_embeddings` use, for the same reason: a UIDVALIDITY resync or a move made
+by another IMAP client replaces the row id, and an order keyed on it would silently lose the mail.
+`order_mails` carries no foreign key onto any PostIMAP-owned table, consistent with every other
+MailVerdict-owned table (see below) — and, unusually, none onto `orders` from `order_jobs` either:
+a job row is also the durable "was this mail ever processed" record (`uq_order_jobs_mail`), so it
+must survive its order being deleted.
+
+**What survives a mail leaving.** The detail endpoint resolves each mail afresh on every read
+(`orders/locate.py`), the same tie-break `api/mails.py`'s `locate_message` uses — a mail moved by
+another client is a different row sharing only the Message-ID header, and a purged or expunged
+mail resolves to "gone": the order keeps its snapshot (subject, sender, date, taken at attach
+time), summary and numbers, shown dimmed and unopenable, until a person deletes the order itself.
 
 ### Neighbour hints, and why the classifier's own verdicts never feed them
 
@@ -487,6 +624,92 @@ new enough to grant them, checked the same way account deletion is: a service-ve
 at the call site, not the contract version, since granting a permission breaks nothing a consumer
 already does.
 
+## Glacier storage
+
+A per-account glacier is a place a message can be moved to where it leaves the mail server for
+good and lives on only in `glacier_messages`/`glacier_attachments` — MailVerdict-owned tables,
+column-compatible with `messages`/`attachments`: every column of those two exists on their glacier
+counterpart with the same name and type. That is what makes a read that must span both a
+mechanical `UNION` built per query in SQLAlchemy, rather than a maintained parallel query or a
+database `VIEW` — a view would create a dependency object on a PostIMAP-owned table that a later
+migration of PostIMAP's own could not then alter without erroring "other objects depend on it",
+from another repository, on someone else's deploy.
+
+The glacier gets a synthetic UUID used everywhere a real `folder_id` is used
+(`account_prefs.glacier_folder_id`), assigned once on first enable and kept across a disable.
+Moving a message into or out of it is the ordinary `move` action naming that id as the target — no
+new action verb — which is what lets the existing move picker, drag-and-drop and bulk move pick it
+up with no code of their own once the glacier appears in a folder listing.
+
+The write sequence (`glacier/operations.py`) is copy, verify, expunge, each its own committed
+transaction: the copy and the hash comparison never load message bytes into Python, and the
+expunge step re-checks the live message's account, Message-ID header, size and received date
+against what was recorded at copy time in the same statement that expunges it — the identity guard
+that makes it structurally impossible to remove anything but the exact message that was copied and
+verified. A verify failure never expunges; a crash between any two steps leaves the row exactly
+where the previous step left it, picked up by the next tick rather than needing a human.
+
+The row that decides whether an expunge is destructive right now — a pending move elsewhere on the
+account, an unacknowledged sync failure, the account itself not currently connected — is shared
+between claiming new work and finishing work already claimed: a manual move left mid-flight (a
+verify that did not pass first time) is progressed toward `glaciered` on every sweep tick regardless
+of whether automatic sweeping is even configured for the account, so that guard has to apply there
+too, not only to the batch of new candidates a tick considers.
+
+**Documented limit, not an oversight:** the consumer contract offers no readable positive signal
+that an EXPUNGE reached the server at all — `sync_queue`, the internal outbound work queue, carries
+no consumer grant and its schema is explicitly not part of the contract, unlike `outbox`'s own
+app-readable `status` for a send, draft or append. A row in `removing` is therefore promoted to
+`glaciered` by age (old enough, with no failure notification naming this attempt) rather than by
+positive confirmation — the best available signal, not a claimed one. Gating that further on the
+account's *current* connection state was considered and rejected: `state` can read `error` for
+reasons that have nothing to do with whether the delete queued during the grace window actually
+landed, since PostIMAP keeps retrying and processing its outbound queue independently of the
+moment-to-moment state a consumer observes.
+
+Restore (`glacier/restore.py`) is the reverse: an IMAP APPEND of the stored bytes verbatim,
+through a `kind="append"` outbox row rather than the ordinary send/draft recomposition, which
+would lose the original Message-ID, DKIM signature and every received header. It needs a PostIMAP
+capability gated the same way every other one in this codebase is
+(`postimap.contract.supports_message_append`); against an older PostIMAP it answers unavailable
+rather than falling back to some other mechanism, since none exists. Moving a message *in* is
+refused by the same gate, naming the running PostIMAP's version — restore has to work before
+removal is ever offered at all, so a deployment that cannot restore never gets the chance to
+remove anything in the first place.
+
+Listing, conversation threading, text search, semantic search and unified views all reach the
+glacier the same way: scoped to exactly the glacier folder, they query `glacier_messages` alone;
+scoped wider (an account-wide list, a unified view, an unscoped search), they union it with
+`messages` via `glacier/rows.py`'s column-compatible helpers, aliased back onto `Message` so every
+predicate, cursor and `DISTINCT ON` thread grouping downstream reads one entity regardless of
+which table a row actually came from — the same trick `database/repository.py`'s own text-search
+candidate query already used for its `to_addrs` branch before the glacier existed. A request whose
+scope cannot reach a glacier at all — a real folder alone, or an installation with the feature off
+— never builds that union, so it costs nothing. A glaciered message's semantic-search embedding
+carries no `message_id` hint at all (unlike a live message's, which is repointed on a UIDVALIDITY
+resync) — it is looked up by the same durable `(account_id, msg_key)` identity the glacier row
+itself uses, needing no hint to go stale in the first place.
+
+An id a caller already holds — a browser tab open before a move, a saved link, a drafted reply —
+keeps resolving after the message it names has moved between `messages` and `glacier_messages`:
+every read that can be reached by id (detail, thread, location, raw source, an attachment, a
+quote) falls through to `glacier/rows.py`'s `resolve_glacier_id`, which checks a glacier row's own
+id as well as its `origin_message_id` — the join hint set at copy time and never changed
+afterward for an ordinary glacier row. `database/msg_key.py`'s `resolve_by_msg_key` is the more
+general form of the same idea, for a caller holding the durable `(account_id, msg_key)` identity
+rather than a specific row id: it answers with whichever table currently holds the message, live
+or glacier, or neither.
+
+A restored message's INTERNALDATE is `received_at`, not the original server's own recorded
+INTERNALDATE value — a limit of the consumer contract, not something fixable locally. PostIMAP's
+mirror keeps no separate INTERNALDATE column at all: `received_at` is derived once, at parse time,
+from the header `Date`, falling back to the original INTERNALDATE only when that header is absent.
+For the overwhelming majority of mail the two already agree, so the restored APPEND's date matches
+what was there before; the two can only diverge for a message whose `Date` header was wrong or
+missing, and even then only by however far the sender's clock or the server's own arrival stamp
+drifted from it. Nothing upstream of the mirror preserves the true original value once it has been
+folded into `received_at` this way, so no local change can recover it either.
+
 ## Threading
 
 Conversations are grouped by a thread identifier that PostIMAP resolves from the `References` and
@@ -640,6 +863,38 @@ event has no `ORGANIZER` at all) — bumping it on an edit to an event held only
 make the real organizer's next genuine update compare as stale against the check above and be
 silently discarded.
 
+## Webhooks
+
+A `match` stage's `webhook` effect sends the message's raw source to an HTTP endpoint. Like the
+orders stage, the effect only enqueues: it inserts a `webhook_deliveries` row and nothing in a
+rule pass waits on the network. One worker on the `webhooks` queue (`webhooks/worker.py`, one
+concurrent delivery by default) makes the request.
+
+- **Identity.** One row per `(webhook name, account, msg_key)`, kept in every status. That unique
+  key is what stops a resync, a repeated backfill or a re-evaluated rule from sending a mail
+  twice, and a delivered row is never claimed again.
+- **Outcomes.** A 2xx is final. A 5xx, 408, 429, network error or timeout is retried with
+  jittered backoff up to `webhooks.max_attempts`. Any other response, redirects included (they are
+  not followed), ends the delivery at once. Every delivery that ends failed raises a
+  `webhook_failed` alert and stays in the table, still blocking a re-enqueue until it is
+  re-queued explicitly (`POST /api/webhooks/deliveries/{id}/retry`). A timeout, or a crash after
+  the receiver processed the request, is retried and can reach a receiver without its own
+  de-duplication twice.
+- **Source.** The raw bytes come from the mirror, or from the glacier when the mail has moved
+  there since. A message PostIMAP never stored the source for (`is_truncated`) fails rather than
+  sending something partial.
+- **Secrets.** `secrets` holds named values encrypted with `security.encryption_key`, the same
+  scheme as provider keys (`settings/secret_store.py`). A rule's header values reference one as
+  `{{secret:NAME}}`; the delivery row stores the reference, and the worker substitutes the value
+  when the request is made. No value, rendered header, response body or transport error text is
+  logged or stored, and no endpoint returns a value. Deleting a secret a rule still names makes
+  that rule's next delivery fail loudly.
+- **Backfill.** `webhooks/backfill.py` evaluates the named webhook's rule conditions against mail
+  received since a date, in every folder but Drafts, Trash and Junk (unlike a live pass, Archive and Sent are included; the glacier is not scanned), and queues the matches behind live mail, ordered by received time.
+- **Reach.** The URL is whatever the rule says, so a request goes wherever the server can reach.
+  The application has no authentication of its own and relies on the proxy in front of it, which
+  therefore also decides who can make the server send a request.
+
 ## Configuration and settings
 
 Two separate mechanisms that must not overlap:
@@ -651,13 +906,16 @@ Two separate mechanisms that must not overlap:
 - **Settings** are application behaviour — AI provider, model, reasoning effort, spam handling,
   rules, and provider API keys. They live in the database and change at runtime through the API.
 
-Provider API keys sit inside the "ai" settings category but are write-only: settable, reportable
-as present with a last-four-character hint, never returned by any read. They are encrypted at rest
-with `security.encryption_key` (AES-256-GCM), the one config value in this system that protects a
-setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`) is the fallback for a deployment that would rather keep a key out of the database
-entirely — read fresh on every call, so switching from the env var to a stored key, or rotating a
-stored one, takes effect on the next request with no restart.
+Provider API keys are write-only: settable, reportable as present with a last-four-character hint,
+never returned by any read. One key per provider name (`settings/credentials.py`'s
+`PROVIDER_ENV_VARS`) rather than per settings category — `ai.provider` and `semantic.provider` set
+to `"custom"` share the one `"custom"` key, since a compatible deployment is one account serving
+both workloads, distinguished by whichever `base_url` each category's own settings carry. Keys are
+encrypted at rest with `security.encryption_key` (AES-256-GCM), the one config value in this system
+that protects a setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `CUSTOM_AI_API_KEY`) is the fallback for a deployment that would rather keep a key
+out of the database entirely — read fresh on every call, so switching from the env var to a stored
+key, or rotating a stored one, takes effect on the next request with no restart.
 
 ## Access
 

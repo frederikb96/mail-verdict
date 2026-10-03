@@ -209,7 +209,7 @@ The default, for an ordinary change — seconds to a couple of minutes:
 ruff check .
 mypy src/
 python scripts/export_api_contract.py --check
-pytest tests/unit
+pytest tests/unit -m "not llm"
 cd ui && npx tsc --noEmit && npm run build     # only if the frontend changed
 ```
 

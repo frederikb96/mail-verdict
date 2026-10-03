@@ -292,15 +292,16 @@ async def test_expunged_message_is_skipped_not_classified(migrated_db: DatabaseC
 async def test_the_queue_reports_the_breaker_a_classify_call_actually_trips(
     migrated_db: DatabaseConnection,
 ) -> None:
-    """ModelGateway names its breaker for the provider, so the queue's
-    reported circuit has to follow `ai.provider` rather than the queue's
-    own name -- otherwise the readout shows a breaker nothing writes to
-    while the real one goes unseen."""
+    """ModelGateway names its breaker for `(provider, category)`, so the
+    queue's reported circuit has to follow `ai.provider` -- paired with
+    the fixed category "ai" -- rather than the queue's own name, or the
+    readout shows a breaker nothing writes to while the real one goes
+    unseen."""
     runner = await _make_runner(migrated_db)
     manager = QueueManager(migrated_db)
     runner.register(manager)
 
-    await CircuitBreaker(migrated_db, "anthropic").record_unavailable(
+    await CircuitBreaker(migrated_db, "anthropic:ai").record_unavailable(
         reason="no key configured", probe_interval=timedelta(minutes=5),
     )
 

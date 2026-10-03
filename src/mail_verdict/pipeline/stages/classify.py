@@ -15,7 +15,7 @@ manipulate the prompt can influence exactly one verdict and nothing else
 prompt template regardless, but the real protection is the absence of
 tools. `json.dumps` escapes quotes and backslashes, not angle brackets,
 so a body containing the literal string "close-email-content-tag" would
-close the fence early were it embedded as-is; `_escape_delimiter_breakout`
+close the fence early were it embedded as-is; `escape_delimiter_breakout`
 below replaces every `<` and `>` in the JSON with its unicode escape
 first -- valid JSON, parses back to the same string, and contains no
 literal angle bracket the fence could ever be broken with.
@@ -38,8 +38,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from mail_verdict.core.prompts import load_static_prompt, render_prompt
-from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
+from mail_verdict.core.prompts import escape_delimiter_breakout, load_static_prompt, render_prompt
+from mail_verdict.embeddings.provider import resolve_active_embedding_model
 from mail_verdict.pipeline.context import RunContext
 from mail_verdict.pipeline.contracts import RecordVerdict, StageOutcome, Usage
 from mail_verdict.pipeline.message_view import MessageView, build_identity_facts
@@ -134,23 +134,9 @@ _EVIDENCE_LABEL = {
 }
 
 
-def _escape_delimiter_breakout(json_text: str) -> str:
-    """Replace every `<` and `>` with its `\\uXXXX` escape.
-
-    Still valid JSON -- a unicode escape inside a string literal decodes
-    to the same character -- but the delimiter tags the untrusted content
-    is fenced in (spam_user.md.j2's `<email_content>`/`</email_content>`)
-    can no longer be spelled inside it, so a message body containing the
-    literal closing tag can no longer close the fence early. `json.dumps`
-    itself has no option for this: it escapes quotes and backslashes,
-    never angle brackets.
-    """
-    return json_text.replace("<", "\\u003c").replace(">", "\\u003e")
-
-
 def _build_user_prompt(msg: MessageView, neighbor_hints: tuple[NeighborHint, ...]) -> str:
     context_json = json.dumps(_build_context(msg, neighbor_hints), indent=2, ensure_ascii=False)
-    context_json = _escape_delimiter_breakout(context_json)
+    context_json = escape_delimiter_breakout(context_json)
     if len(context_json) > _MAX_CONTENT_LENGTH:
         context_json = context_json[:_MAX_CONTENT_LENGTH] + "\n... [truncated]"
     return render_prompt("spam_user.md.j2", context_json=context_json)
@@ -186,14 +172,16 @@ class ClassifyStage:
         model = str(ai_settings.get("model", ""))
         effort = ai_settings.get("reasoning_effort") or None
         max_tokens = int(ai_settings.get("max_tokens", 1024))
+        base_url = ai_settings.get("base_url") or None
 
         neighbor_hints = await self._neighbor_hints(msg, ctx)
         user_prompt = _build_user_prompt(msg, neighbor_hints)
 
         data, latency_ms = await ctx.models.structured_call(
-            provider=provider, model=model, effort=effort, max_tokens=max_tokens,
+            provider=provider, category="ai", model=model, effort=effort, max_tokens=max_tokens,
             schema_name="spam_verdict", system_prompt=self._system_prompt,
             user_prompt=user_prompt, schema=CLASSIFY_SCHEMA, validate=_validate_shape,
+            base_url=base_url,
         )
 
         is_spam = data["verdict"] == "spam"
@@ -216,7 +204,10 @@ class ClassifyStage:
         see that method's docstring) or nothing in scope has a human
         label yet."""
         semantic_settings = ctx.settings.get("semantic", {})
-        embedding_model = str(semantic_settings.get("model", DEFAULT_EMBEDDING_MODEL))
+        # The model actually serving search right now, not the migration
+        # target -- a re-embed in progress must not starve every neighbour
+        # lookup of hints until it completes (embeddings/provider.py).
+        embedding_model = resolve_active_embedding_model(semantic_settings)
         k = int(semantic_settings.get("neighbor_k", 5))
         min_similarity = float(semantic_settings.get("neighbor_min_similarity", 0.75))
         hints = await ctx.neighbors.hints_for(

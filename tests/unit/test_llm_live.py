@@ -158,3 +158,33 @@ class TestAnthropicLive:
         assert spam_effect.is_spam is True
         assert ham_effect.is_spam is False
         assert spam_effect.reasoning and ham_effect.reasoning
+
+
+class TestCustomProviderLive:
+    """A "custom" OpenAI-compatible server against the real chat
+    completions API -- the request shape call_openai_structured never
+    exercises, since a compatible server rejects OpenAI's own Responses
+    API (see core/structured_llm.py's module docstring)."""
+
+    @pytest.mark.asyncio
+    async def test_classifies_spam_and_ham_correctly(self) -> None:
+        _require_key("CUSTOM_AI_API_KEY")
+        ctx = _build_ctx({
+            "provider": "custom",
+            "base_url": "https://api.infomaniak.com/2/ai/111650/openai/v1",
+            "model": "google/gemma-4-31B-it",
+            "reasoning_effort": "none",
+            "max_tokens": 512,
+        })
+        stage = ClassifyStage("classify", ClassifyConfig())
+
+        spam_outcome = await stage.execute(_load_view("spam_pharmacy.eml"), ctx)
+        ham_outcome = await stage.execute(_load_view("ham_simple.eml"), ctx)
+
+        spam_effect = spam_outcome.effects[0]
+        ham_effect = ham_outcome.effects[0]
+        assert isinstance(spam_effect, RecordVerdict)
+        assert isinstance(ham_effect, RecordVerdict)
+        assert spam_effect.is_spam is True
+        assert ham_effect.is_spam is False
+        assert spam_effect.reasoning and ham_effect.reasoning

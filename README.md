@@ -65,6 +65,17 @@ mirror, which is what keeps it simple.
   and Junk.
   An account can also be given a Trash retention and a Junk retention, each in days and set
   independently, so mail sitting in either long enough is permanently removed on its own.
+- **Glacier storage** — a per-account place mail can be moved to where it leaves the mail server
+  for good and lives on only in this application's own database: listed, searched and included in
+  unified views like any folder, since moving into or out of it is the ordinary move action. Read,
+  star, keyword, reply and forward all keep working, since none of them need the server; moving it
+  to a real folder restores it there with its original flags and, for the overwhelming majority of
+  mail, its original date — derived from the message's own `Date` header rather than the server's
+  original arrival stamp, so the two can diverge for a message whose header was wrong or missing.
+  Turning a glacier off, or
+  deleting its account, is refused while it still holds anything. A number of days set on the
+  account moves its archived mail in automatically, in small paced batches, once a message has sat
+  there that long.
 - **Notifications** — a durable, acknowledgeable record of any write that never reached the mail
   server, including a send that never left, surfaced with the reason and a live update the moment
   it happens. A message still waiting on its way out long after it should have gone raises an
@@ -84,7 +95,31 @@ mirror, which is what keeps it simple.
   message currently called spam with no ruling yet, across every account and folder including
   Junk, for confirming or correcting them singly or in bulk. Historical mail is never classified,
   and nothing is classified twice.
-- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
+- **Orders and tickets** — mail about a purchase, ticket or booking (confirmation, invoice,
+  payment, shipping, carrier notices, delivery, return, refund, customer-service conversation) is
+  bundled into one entry with an AI-written title, status and summary, across every account that
+  has the feature switched on, in a screen of its own. A carrier notice or payment receipt with no
+  order number of its own still finds its way to the right entry by merchant, timing and what is
+  already in flight; a mail is attached to an existing entry or opens a new one, never split
+  between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
+  removed, two entries merged, or the summary rewritten by hand. Entries can be marked as
+  favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
+  the agent adds no more mail to them; an open entry nothing is expected of any more is closed
+  automatically, a few days (7 by default) after the date the model estimates it is over, or 30
+  days after its last mail when it has no such date; both are settings. A shipment
+  number that only a carrier's tracking link carries is read from the link. The same actions sit in the detail's menu and in a menu on each row (right-click or long
+  press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
+  or open. Recent mail can be looked through after switching the feature on for an account.
+- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
+  it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
+  from a named secret stored encrypted in the database (set from Settings, never shown again). A
+  delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
+  and raises an alert when it gives up; mail that predates a rule can be sent once, oldest first,
+  through the API. From an open mail, the "Add rule" icon takes one sentence ("these should go to
+  Newsletter too") and proposes exactly one change to the rules — a condition added to an existing
+  rule, a new rule at the end of the list, or one rule replaced — showing the explanation, the
+  change and what it would have caught among the last 100 mails, for Accept or Decline. Nothing is
+  kept, and it never proposes permanent deletion or a webhook.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,
   body) you pick, ranked by whether the word itself matched rather than merely started a longer
@@ -118,8 +153,11 @@ mirror, which is what keeps it simple.
   default. Hovering a link shows where it leads. The image block does
   not extend to the message body itself: a newly arrived message's subject, sender and a
   truncated body go to the configured model provider twice, once for spam classification and once
-  for the embedding that powers semantic search — a deliberate design choice, not something a
-  setting turns off.
+  for the embedding that powers semantic search, and a third time for orders and tickets on an
+  account with that feature on and a mail that passes its first filter — a deliberate design
+  choice, not something a setting turns off. The "Add rule" assistant sends the open mail's
+  excerpt, the rule set, and the sender and subject of a handful of other mails to the model
+  provider each time it is used, and only then.
 - **MCP server** — connect an MCP client and let it search, read, organise and send mail —
   including replying to or forwarding a message by its id, saved as a draft for you to review and
   send, with attachments — and
@@ -168,12 +206,17 @@ Anything that changes at runtime — the AI provider and model, spam behaviour, 
 API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API or
 the Settings page, not in a file.
 
+The AI provider for spam verdicts, and separately for embeddings, is one of these settings: OpenAI,
+Anthropic (verdicts only — no embedding model of its own), or any OpenAI-compatible server by its
+own address, key and model name. A custom server needs its address set (`ai.base_url` /
+`semantic.base_url`) alongside its key below.
+
 A handful of values stay environment variables regardless, because they either gate config loading
 itself or are the fallback path for a deployment that would rather not put a key in the database:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CUSTOM_AI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
 | `MAIL_VERDICT_DATABASE_URL` | PostgreSQL connection, shared with PostIMAP |
 | `POSTGRES_PASSWORD` | Database password, used by compose |
 | `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, PostIMAP's own credential-at-rest encryption, and this server's Web Push signing key (generated on first use, never provisioned) — one key shared by all three. Optional; without it, provider keys can only come from the two env vars above, and push notifications are unavailable |

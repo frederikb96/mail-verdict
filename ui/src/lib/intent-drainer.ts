@@ -261,6 +261,7 @@ async function request(intent: MailIntent): Promise<Outcome> {
       {
         action: intent.action, target_folder_id: intent.targetFolderId, idempotency_key: intent.id,
         expected_folder_id: guards.expectedFolderIds[message.id],
+        confirm: intent.confirmed,
       },
       options,
     );
@@ -284,7 +285,13 @@ async function request(intent: MailIntent): Promise<Outcome> {
     },
     options,
   );
-  if (!response.success) {
+  // success: false with affected_count > 0 is a *partial* result, not a
+  // plain refusal -- some of the selection genuinely left the server (a
+  // glacier move is irreversible), so this must never settle as
+  // "failed" the way a wholesale refusal does: that shape offers Retry,
+  // and retrying would attempt to move the very messages that already
+  // left, an unrecoverable repeat rather than a harmless one.
+  if (!response.success && response.affected_count === 0) {
     return { refused: response.errors.join("; ") || `Could not ${intent.action}` };
   }
   const skippedIds = response.skipped_ids ?? [];

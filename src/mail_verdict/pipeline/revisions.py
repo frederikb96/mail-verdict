@@ -202,6 +202,55 @@ def definition_to_document(definition: PipelineDefinition) -> dict[str, JsonValu
     }
 
 
+# The orders stage's fixed definition -- see pipeline/stages/orders.py.
+# Config is empty: the first filter's patterns live in settings.orders.filter
+# (read fresh per run), not in stage config, because the catch-up endpoint
+# reads the same patterns and does not go through the pipeline at all.
+_ORDERS_STAGE: dict[str, Any] = {
+    "stage_id": "orders", "type": "orders", "name": "Bundle orders and tickets",
+    "config": {}, "enabled": True, "halt": False, "accounts": None,
+}
+
+
+def insert_orders_stage(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Insert the `orders` stage into a stage list, unless one is already
+    there -- so calling this twice never adds a second one.
+
+    Position: directly after the last stage whose `config.when` is
+    `{"verdict_is": "spam"}` (the stage a spam verdict routes into Junk
+    through, whatever it is named); if there is none, directly after the
+    last `classify` stage; if there is neither, first. A stage placed
+    after a `halt: true` filing stage would never see mail that stage
+    already filed, which is why "directly after move-spam" rather than
+    "last" -- every filing stage in a deployed pipeline commonly halts.
+
+    Args:
+        stages: The current stage list, each entry the same dict shape
+            `PipelineRevisionRepository`'s document stores
+
+    Returns:
+        A new list with the stage inserted, or the same stages (as a new
+        list) unchanged if one of type "orders" already exists
+    """
+    if any(s.get("type") == "orders" for s in stages):
+        return list(stages)
+
+    spam_positions = [
+        i for i, s in enumerate(stages)
+        if s.get("config", {}).get("when") == {"verdict_is": "spam"}
+    ]
+    if spam_positions:
+        insert_at = spam_positions[-1] + 1
+    else:
+        classify_positions = [i for i, s in enumerate(stages) if s.get("type") == "classify"]
+        insert_at = classify_positions[-1] + 1 if classify_positions else 0
+
+    result = list(stages)
+    result.insert(insert_at, dict(_ORDERS_STAGE))
+    return result
+
+
 def build_migrated_definition(
     *, raw_rules: list[dict[str, Any]], spam_settings: dict[str, Any],
 ) -> dict[str, Any]:
@@ -239,6 +288,8 @@ def build_migrated_definition(
             "enabled": True, "halt": False,
         }
         stages.append(move_spam_stage)
+
+    stages = insert_orders_stage(stages)
 
     return {"enabled": True, "stages": stages}
 
@@ -327,4 +378,5 @@ __all__ = [
     "build_migrated_definition",
     "definition_to_document",
     "effect_to_dict",
+    "insert_orders_stage",
 ]

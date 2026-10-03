@@ -32,7 +32,8 @@ import {
   type CalendarObjectPayload,
   resolveCalendarInvalidationTargets,
 } from "@/components/calendar/calendar-sse-targets";
-import type { EventListResponse, OutboxStatus, SSEEvent } from "@/types/api";
+import { outboxToastFor } from "@/lib/outbox-toast";
+import type { EventListResponse, OutboxKind, OutboxStatus, SSEEvent } from "@/types/api";
 
 const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_DELAY_MS = 30000;
@@ -57,17 +58,6 @@ const FLUSH_INTERVAL_MS = 500;
  * the last one trailing, still catches the message that belongs to it.
  */
 const THREAD_ARRIVAL_WINDOW_MS = 5000;
-
-const OUTBOX_TOAST: Record<OutboxStatus, { message: string; variant: "success" | "warning" | "error" } | null> = {
-  pending: null,
-  processing: null,
-  sent: { message: "Message sent", variant: "success" },
-  failed: { message: "Sending failed, retrying", variant: "warning" },
-  dead: {
-    message: "Could not send message — check SMTP settings on this account",
-    variant: "error",
-  },
-};
 
 /** Queries refetched at once after a resync -- the rest follow in turns. */
 const RESYNC_REFETCH_BATCH = 4;
@@ -503,7 +493,9 @@ export function useSSE(accountId?: string) {
             // confirming the draft copy landed in the Drafts folder, not a
             // send, so it gets none of these toasts. compose-form already
             // told the user "Draft saved" when the row was created.
-            const toast = OUTBOX_TOAST[data.status as OutboxStatus];
+            const toast = outboxToastFor(
+              data.status as OutboxStatus, data.kind as OutboxKind | undefined,
+            );
             if (toast) {
               pushToast(toast.message, toast.variant, data.status === "dead" ? 0 : 5000);
             }
@@ -587,6 +579,23 @@ export function useSSE(accountId?: string) {
         queryClient.invalidateQueries({ queryKey: ["settings"] });
         // bell_badge_counts_new_mail decides what the server badge counts.
         queryClient.invalidateQueries({ queryKey: alertKeys.count });
+      });
+
+      // Orders is a cross-account register with no account-scoped event of
+      // its own to ride -- broadcast to every ring (see api/events.py's
+      // broadcast_event). Invalidates the list (one request for the whole
+      // loaded window) and the one order's own detail, when open.
+      source.addEventListener("order.updated", (e: MessageEvent) => {
+        lastEventIdRef.current = e.lastEventId;
+        try {
+          const data: SSEEvent = JSON.parse(e.data);
+          queryClient.invalidateQueries({ queryKey: ["orders"] });
+          if (data.order_id) {
+            queryClient.invalidateQueries({ queryKey: ["orders", "detail", data.order_id] });
+          }
+        } catch {
+          // Ignore
+        }
       });
 
       // Identities are MailVerdict's own table too -- the compose "from"

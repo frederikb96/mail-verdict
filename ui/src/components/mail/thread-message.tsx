@@ -17,6 +17,7 @@ import {
   Copy,
   Loader2,
   LocateFixed,
+  Snowflake,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -291,6 +292,16 @@ export function ThreadMessage({
           </button>
         </div>
       </div>
+
+      {mail.is_glacier && (
+        <div className="flex items-center gap-2 px-4 pb-3 text-xs text-muted-foreground">
+          <Snowflake className="h-3 w-3 shrink-0" />
+          <span>
+            This message is in the glacier -- it no longer exists on the mail server
+            {mail.origin_folder_name ? ` (was in ${mail.origin_folder_name})` : ""}.
+          </span>
+        </div>
+      )}
 
       {mail.verdict && (
         <div className="flex items-center gap-2 px-4 pb-3 text-xs">

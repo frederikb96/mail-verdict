@@ -1,0 +1,917 @@
+"""
+The automatic glacier sweep (design section 8.3): each guard shown
+refusing on its own, by its own test, and the batch-size pacing shown
+on a stack of several hundred old archived messages -- one tick claims
+at most `batch_size`, never the whole backlog at once.
+
+Every guard test needs a PostIMAP capable of outbox kind="append"
+(MAIL_VERDICT_TEST_POSTIMAP_IMAGE, see tests/setup/images.py): the
+capability check is the first thing _sweep_guard_reason evaluates, so
+against the pinned default every one of these tests would see that
+refusal instead of the guard actually under test -- the same reasoning
+tests/pg/test_glacier_gate_pg.py's own docstring gives for the allow
+path in general. Skips itself, naming the running version, rather than
+either failing on every ordinary run or silently reporting a guard
+proven that never ran.
+"""
+
+from __future__ import annotations
+
+import itertools
+import logging
+import uuid
+from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mail_verdict.api.accounts import get_account
+from mail_verdict.config.loader import GlacierConfig
+from mail_verdict.database.connection import DatabaseConnection
+from mail_verdict.glacier.sweep import _sweep_account_once, _sweep_guard_reason, _sweep_once
+from mail_verdict.postimap.contract import read_postimap_info, supports_message_append
+
+_RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
+
+_imap_uid_counter = itertools.count(1)
+
+_TEST_CFG = GlacierConfig(
+    sweep_enabled=True, interval_seconds=60, batch_size=25, max_unconfirmed=500,
+    confirm_grace_seconds=600, max_manual_batch=200, restore_timeout_seconds=1800,
+)
+
+
+async def _skip_unless_append_capable(db: DatabaseConnection) -> None:
+    async with db.session() as session:
+        info = await read_postimap_info(session)
+    if info is None or not supports_message_append(info):
+        pytest.skip(
+            'this PostIMAP build does not carry outbox kind="append" -- '
+            f"reports service_version={info.service_version if info else 'unknown'}, "
+            "so the sweep is correctly refused rather than exercised here"
+        )
+
+
+async def _seed_sweepable_account(
+    session: AsyncSession, *, auto_days: int = 30, archive_message_count: int = 0,
+    archive_received_days_ago: int = 400,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """An account that satisfies every guard but is_active/state --
+    glacier enabled with auto_days set, a fully-synced archive folder, a
+    completed sync pass, no pending move, no unacknowledged failure,
+    nothing already unconfirmed. Seeded *inactive*: PostIMAP's own live
+    listener rewrites accounts.state (and can rewrite sync_state right
+    back to unsynced) for any is_active=true account the instant it
+    notices one, which a fake host can never satisfy again once it does
+    (repo CLAUDE.md's own documented pg-layer trap) -- call _activate()
+    as the very last statement before checking a guard, to keep the
+    window PostIMAP has to interfere as small as possible. Returns
+    (account_id, archive_folder_id)."""
+    account_id = uuid.uuid4()
+    archive_folder_id = uuid.uuid4()
+    # 192.0.2.1 (RFC 5737 TEST-NET-1, guaranteed unroutable) rather than
+    # imap.example.com: a real host that refuses or fails DNS gives
+    # PostIMAP's listener a fast (sub-second) failure to react to, which
+    # loses the race against _activate below often enough to make these
+    # tests flaky. An unroutable address is silently dropped, so
+    # PostIMAP's own connect attempt blocks for its full timeout
+    # instead -- long enough that a guard check run immediately after
+    # _activate always wins.
+    await session.execute(
+        text(
+            "INSERT INTO accounts "
+            "(id, name, imap_host, imap_port, imap_user, imap_password, is_active, state) "
+            "VALUES (:id, :name, '192.0.2.1', 993, 'user@example.com', "
+            "'\\x00' || convert_to('pw', 'UTF8'), false, 'active')"
+        ),
+        {"id": account_id, "name": f"acct-{account_id}"},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO folders (id, account_id, imap_name, special_use, initial_sync_done) "
+            "VALUES (:id, :account_id, 'Archive', 'archive', true)"
+        ),
+        {"id": archive_folder_id, "account_id": account_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO sync_state (account_id, last_full_sync) "
+            "VALUES (:account_id, now())"
+        ),
+        {"account_id": account_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO account_prefs (account_id, glacier_enabled, glacier_folder_id, "
+            "glacier_auto_days) VALUES (:account_id, true, :glacier_folder_id, :auto_days)"
+        ),
+        {
+            "account_id": account_id, "glacier_folder_id": uuid.uuid4(),
+            "auto_days": auto_days,
+        },
+    )
+    received_at = datetime.now(timezone.utc) - timedelta(days=archive_received_days_ago)
+    for _ in range(archive_message_count):
+        message_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+                " from_addr, raw_source, size_bytes, received_at) "
+                "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, 'Test', "
+                " 'sender@example.com', :raw_source, :size_bytes, :received_at)"
+            ),
+            {
+                "id": message_id, "account_id": account_id, "folder_id": archive_folder_id,
+                "uid": next(_imap_uid_counter),
+                "thread_id": message_id, "msg_id": f"<{message_id}@example.com>",
+                "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+                "received_at": received_at,
+            },
+        )
+    return account_id, archive_folder_id
+
+
+async def _activate(db: DatabaseConnection, account_id: uuid.UUID) -> None:
+    """Flip is_active/state to their satisfied-guard values as the very
+    last write before a guard check -- see _seed_sweepable_account's own
+    docstring for why this has to be separate and last."""
+    async with db.session() as session:
+        await session.execute(
+            text("UPDATE accounts SET is_active = true, state = 'active' WHERE id = :id"),
+            {"id": account_id},
+        )
+
+
+async def _activate_then(
+    db: DatabaseConnection, account_id: uuid.UUID, action: Callable[[], Awaitable[None]],
+    *, attempts: int = 15,
+) -> None:
+    """Re-activate and retry `action` (which reads state via the code
+    under test, not this file) until it stops seeing PostIMAP's own
+    listener win the race against _activate -- see
+    _seed_sweepable_account's docstring for the mechanism.
+    Deterministic code racing a live, concurrent, external process is
+    what this compensates for: a genuine defect in the guard logic
+    itself fails identically every attempt and still surfaces once
+    `attempts` is exhausted, rather than being silently swallowed."""
+    last_exc: AssertionError | None = None
+    for _ in range(attempts):
+        await _activate(db, account_id)
+        try:
+            await action()
+            return
+        except AssertionError as exc:
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_glaciers_an_eligible_account_when_nothing_blocks_it(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The positive control every guard test below is contrasted
+    against: with every condition satisfied, the sweep actually moves
+    mail -- proving the guard tests fail for the right reason, not
+    because nothing here works at all."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _archive_folder_id = await _seed_sweepable_account(
+            session, archive_message_count=3,
+        )
+        await session.commit()
+
+    async def _check_reason() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+        assert reason is None, reason
+
+    await _activate_then(migrated_db, account_id, _check_reason)
+
+    async def _sweep_and_check_count() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            glaciered = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM glacier_messages WHERE account_id = :id "
+                        "AND state IN ('removing', 'glaciered')"
+                    ),
+                    {"id": account_id},
+                )
+            ).scalar_one()
+        assert glaciered == 3
+
+    await _activate_then(migrated_db, account_id, _sweep_and_check_count)
+
+
+@pytest.mark.asyncio
+async def test_glacier_disabled_refuses(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session)
+        await session.execute(
+            text("UPDATE account_prefs SET glacier_enabled = false WHERE account_id = :id"),
+            {"id": account_id},
+        )
+        await session.commit()
+
+    reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+    assert reason is not None
+    assert "off" in reason
+
+
+@pytest.mark.asyncio
+async def test_no_auto_days_refuses(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session)
+        await session.execute(
+            text(
+                "UPDATE account_prefs SET glacier_auto_days = NULL WHERE account_id = :id"
+            ),
+            {"id": account_id},
+        )
+        await session.commit()
+
+    reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+    assert reason is not None
+    assert "off" in reason
+
+
+@pytest.mark.asyncio
+async def test_inactive_account_refuses(migrated_db: DatabaseConnection) -> None:
+    """Seeded inactive already (this whole file's default) -- the
+    guard under test is exactly the state a real inactive account is
+    always genuinely in, no race to win."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session)
+        await session.commit()
+
+    reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+    assert reason is not None
+    assert "active" in reason
+
+
+@pytest.mark.asyncio
+async def test_account_not_in_state_active_refuses(migrated_db: DatabaseConnection) -> None:
+    """is_active=true with a deliberately non-'active' state -- set as
+    the last write either way (by this test, or by PostIMAP's own
+    listener reacting to is_active=true against an unreachable host),
+    so this one needs no race-avoidance: any outcome that isn't
+    'active' proves the guard."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session)
+        await session.commit()
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE accounts SET is_active = true, state = 'error' WHERE id = :id"),
+            {"id": account_id},
+        )
+
+    reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+    assert reason is not None
+    assert "active" in reason
+
+
+@pytest.mark.asyncio
+async def test_never_synced_refuses(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session)
+        await session.execute(
+            text("UPDATE sync_state SET last_full_sync = NULL WHERE account_id = :id"),
+            {"id": account_id},
+        )
+        await session.commit()
+
+    async def _check() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+        assert reason is not None
+        assert "sync pass" in reason
+
+    await _activate_then(migrated_db, account_id, _check)
+
+
+@pytest.mark.asyncio
+async def test_archive_folder_not_synced_refuses(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        await session.execute(
+            text("UPDATE folders SET initial_sync_done = false WHERE id = :id"),
+            {"id": archive_folder_id},
+        )
+        await session.commit()
+
+    async def _check() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+        assert reason is not None
+        assert "archive folder" in reason
+
+    await _activate_then(migrated_db, account_id, _check)
+
+
+@pytest.mark.asyncio
+async def test_archive_folder_deleted_refuses(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        await session.execute(
+            text("UPDATE folders SET deleted_at = now() WHERE id = :id"),
+            {"id": archive_folder_id},
+        )
+        await session.commit()
+
+    async def _check() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+        assert reason is not None
+        assert "archive folder" in reason
+
+    await _activate_then(migrated_db, account_id, _check)
+
+
+@pytest.mark.asyncio
+async def test_a_pending_move_anywhere_on_the_account_refuses(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Account-wide, not scoped to the archive folder -- a pending move
+    on any message means the mirror as a whole cannot be trusted yet."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        pending_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+                " from_addr, raw_source, size_bytes, received_at) "
+                "VALUES (:id, :account_id, :folder_id, NULL, :thread_id, :msg_id, 'Pending', "
+                " 'sender@example.com', :raw_source, :size_bytes, now())"
+            ),
+            {
+                "id": pending_id, "account_id": account_id, "folder_id": archive_folder_id,
+                "thread_id": pending_id, "msg_id": f"<{pending_id}@example.com>",
+                "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+            },
+        )
+        await session.commit()
+
+    async def _check() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+        assert reason is not None
+        assert "pending" in reason
+
+    await _activate_then(migrated_db, account_id, _check)
+
+
+@pytest.mark.asyncio
+async def test_an_unacknowledged_sync_failure_refuses(migrated_db: DatabaseConnection) -> None:
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session)
+        await session.execute(
+            text(
+                "INSERT INTO sync_notifications (account_id, action, error) "
+                "VALUES (:account_id, 'delete', 'server refused')"
+            ),
+            {"account_id": account_id},
+        )
+        await session.commit()
+
+    async def _check() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=_TEST_CFG)
+        assert reason is not None
+        assert "unacknowledged" in reason
+
+    await _activate_then(migrated_db, account_id, _check)
+
+
+@pytest.mark.asyncio
+async def test_too_many_unconfirmed_removing_rows_refuses(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The circuit breaker: cfg.max_unconfirmed already reached, even
+    though every other guard is satisfied."""
+    await _skip_unless_append_capable(migrated_db)
+    cfg = GlacierConfig(
+        sweep_enabled=True, interval_seconds=60, batch_size=25, max_unconfirmed=1,
+        confirm_grace_seconds=600, max_manual_batch=200, restore_timeout_seconds=1800,
+    )
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        glacier_folder_id = (
+            await session.execute(
+                text("SELECT glacier_folder_id FROM account_prefs WHERE account_id = :id"),
+                {"id": account_id},
+            )
+        ).scalar_one()
+        glacier_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO glacier_messages "
+                "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+                " raw_source, size_bytes, received_at, msg_key, state, "
+                " expunge_requested_at) "
+                "VALUES (:id, :account_id, :folder_id, :thread_id, :msg_id, 'Stuck', "
+                " 'sender@example.com', :raw_source, :size_bytes, now(), :msg_key, "
+                " 'removing', now())"
+            ),
+            {
+                "id": glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+                "thread_id": glacier_id, "msg_id": f"<{glacier_id}@example.com>",
+                "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+                "msg_key": f"msg-{glacier_id}",
+            },
+        )
+        await session.commit()
+
+    async def _check() -> None:
+        reason = await _sweep_guard_reason(migrated_db, account_id, cfg=cfg)
+        assert reason is not None
+        assert "unconfirmed" in reason
+
+    await _activate_then(migrated_db, account_id, _check)
+
+
+@pytest.mark.asyncio
+async def test_the_global_kill_switch_stops_every_account(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """sweep_enabled=false is checked once, in _sweep_once, before any
+    per-account guard even runs -- proven by an otherwise fully eligible
+    account seeing nothing claimed."""
+    await _skip_unless_append_capable(migrated_db)
+    cfg = GlacierConfig(
+        sweep_enabled=False, interval_seconds=60, batch_size=25, max_unconfirmed=500,
+        confirm_grace_seconds=600, max_manual_batch=200, restore_timeout_seconds=1800,
+    )
+    async with migrated_db.session() as session:
+        account_id, _ = await _seed_sweepable_account(session, archive_message_count=3)
+        await session.commit()
+
+    await _sweep_once(migrated_db, event_ring=None, cfg=cfg)
+
+    async with migrated_db.session() as session:
+        glaciered = (
+            await session.execute(
+                text("SELECT count(*) FROM glacier_messages WHERE account_id = :id"),
+                {"id": account_id},
+            )
+        ).scalar_one()
+    assert glaciered == 0
+
+
+@pytest.mark.asyncio
+async def test_pacing_claims_at_most_one_batch_per_tick(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """A stack of several hundred old archived messages: one tick moves
+    exactly batch_size of them, never the whole backlog at once (design
+    section 8.3's own pacing rationale -- PostIMAP's outbound queue is
+    shared with every flag change and every send)."""
+    await _skip_unless_append_capable(migrated_db)
+    cfg = GlacierConfig(
+        sweep_enabled=True, interval_seconds=60, batch_size=25, max_unconfirmed=500,
+        confirm_grace_seconds=600, max_manual_batch=200, restore_timeout_seconds=1800,
+    )
+    async with migrated_db.session() as session:
+        account_id, _archive_folder_id = await _seed_sweepable_account(
+            session, archive_message_count=300,
+        )
+        await session.commit()
+
+    async def _glaciered_count() -> int:
+        async with migrated_db.session() as session:
+            return (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM glacier_messages WHERE account_id = :id "
+                        "AND state IN ('removing', 'glaciered')"
+                    ),
+                    {"id": account_id},
+                )
+            ).scalar_one()
+
+    async def _tick_or_retry() -> None:
+        # Only "the guard blocked, nothing was claimed" is the race this
+        # retries past -- any other count is a real defect and must
+        # fail outright rather than be retried away.
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=cfg)
+        if await _glaciered_count() == 0:
+            raise AssertionError("guard blocked this tick -- retrying")
+
+    await _activate_then(migrated_db, account_id, _tick_or_retry)
+
+    async with migrated_db.session() as session:
+        still_live = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM messages WHERE account_id = :id "
+                    "AND expunged_at IS NULL"
+                ),
+                {"id": account_id},
+            )
+        ).scalar_one()
+    assert await _glaciered_count() == cfg.batch_size
+    assert still_live == 300 - cfg.batch_size
+
+    # The next tick continues where this one stopped, rather than
+    # reclaiming the same batch -- proven by the count actually growing.
+    async def _second_tick_or_retry() -> None:
+        before = await _glaciered_count()
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=cfg)
+        if await _glaciered_count() == before:
+            raise AssertionError("guard blocked the second tick -- retrying")
+
+    await _activate_then(migrated_db, account_id, _second_tick_or_retry)
+    assert await _glaciered_count() == cfg.batch_size * 2
+
+
+async def _seed_verified_row_with_pending_move(
+    session: AsyncSession, *, account_id: uuid.UUID, archive_folder_id: uuid.UUID,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """A live message and a glacier row already 'verified' against it --
+    origin_message_id, message_id header, size_bytes and received_at
+    matching exactly, the same identity expunge_if_matches's own guard
+    checks -- plus a second, unrelated message elsewhere on the account
+    with a pending move. Returns (origin_id, glacier_id, pending_id)."""
+    origin_id = uuid.uuid4()
+    origin_message_id_hdr = f"<{origin_id}@example.com>"
+    received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    await session.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+            " from_addr, raw_source, size_bytes, received_at) "
+            "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, 'Origin', "
+            " 'sender@example.com', :raw_source, :size_bytes, :received_at)"
+        ),
+        {
+            "id": origin_id, "account_id": account_id, "folder_id": archive_folder_id,
+            "uid": next(_imap_uid_counter),
+            "thread_id": origin_id, "msg_id": origin_message_id_hdr,
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+            "received_at": received_at,
+        },
+    )
+    glacier_folder_id = (
+        await session.execute(
+            text("SELECT glacier_folder_id FROM account_prefs WHERE account_id = :id"),
+            {"id": account_id},
+        )
+    ).scalar_one()
+    glacier_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO glacier_messages "
+            "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+            " raw_source, size_bytes, received_at, msg_key, state, origin_message_id, "
+            " origin_folder_id, origin_imap_name, origin_imap_uid) "
+            "VALUES (:id, :account_id, :folder_id, :thread_id, :msg_id, 'Stuck at verified', "
+            " 'sender@example.com', :raw_source, :size_bytes, :received_at, :msg_key, "
+            " 'verified', :origin_id, :origin_folder_id, 'Archive', 1)"
+        ),
+        {
+            "id": glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+            "thread_id": glacier_id, "msg_id": origin_message_id_hdr,
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+            "received_at": received_at, "msg_key": f"msg-{glacier_id}", "origin_id": origin_id,
+            "origin_folder_id": archive_folder_id,
+        },
+    )
+    # Account-wide, not scoped to the archive folder -- a pending move on
+    # any message means the mirror as a whole is untrustworthy.
+    pending_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+            " from_addr, raw_source, size_bytes, received_at) "
+            "VALUES (:id, :account_id, :folder_id, NULL, :thread_id, :msg_id, 'Pending', "
+            " 'sender@example.com', :raw_source, :size_bytes, now())"
+        ),
+        {
+            "id": pending_id, "account_id": account_id, "folder_id": archive_folder_id,
+            "thread_id": pending_id, "msg_id": f"<{pending_id}@example.com>",
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE),
+        },
+    )
+    return origin_id, glacier_id, pending_id
+
+
+@pytest.mark.asyncio
+async def test_a_pending_move_blocks_finishing_an_already_verified_row(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's reproduction: _progress_mid_flight ran before
+    _sweep_guard_reason, so a row already sitting at 'verified' (a
+    manual move whose verify did not pass first time, say) was expunged
+    from the server on a tick where the guard itself would have refused
+    -- reachable without any lock trick, since a pending move elsewhere
+    on the account is ordinary while a manual glacier action is still
+    mid-flight. A sweep tick must expunge nothing and change no state
+    while that holds."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        origin_id, glacier_id, _pending_id = await _seed_verified_row_with_pending_move(
+            session, account_id=account_id, archive_folder_id=archive_folder_id,
+        )
+        await session.commit()
+
+    async def _tick_and_check() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            live = (
+                await session.execute(
+                    text("SELECT expunged_at FROM messages WHERE id = :id"), {"id": origin_id},
+                )
+            ).mappings().one()
+            assert live["expunged_at"] is None
+            glacier_row = (
+                await session.execute(
+                    text("SELECT state FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+            assert glacier_row["state"] == "verified"
+
+    await _activate_then(migrated_db, account_id, _tick_and_check)
+
+
+@pytest.mark.asyncio
+async def test_a_row_blocked_by_a_pending_move_never_reaches_glaciered(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The other half of the same fix, stated the way the row that never
+    got expunged actually reaches a user: since the destructive step
+    never ran, the glacier row never reaches 'removing' and therefore
+    never reaches 'glaciered' either -- confirm_or_withdraw_removing has
+    nothing to confirm, whatever the grace period. Once the pending move
+    clears, the same row progresses on the very next tick -- proving the
+    guard blocks it rather than the row being stuck for some other
+    reason."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        _origin_id, glacier_id, pending_id = await _seed_verified_row_with_pending_move(
+            session, account_id=account_id, archive_folder_id=archive_folder_id,
+        )
+        await session.commit()
+
+    async def _tick_while_pending() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            glacier_row = (
+                await session.execute(
+                    text("SELECT state FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+            assert glacier_row["state"] != "glaciered"
+            assert glacier_row["state"] == "verified"
+
+    await _activate_then(migrated_db, account_id, _tick_while_pending)
+
+    # The pending move clears -- the very next tick must finish the row,
+    # proving it was the guard holding it back and not something else.
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE messages SET imap_uid = 999 WHERE id = :id"), {"id": pending_id},
+        )
+        await session.commit()
+
+    async def _tick_after_clearing() -> None:
+        await _activate(migrated_db, account_id)
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            glacier_row = (
+                await session.execute(
+                    text("SELECT state FROM glacier_messages WHERE id = :id"),
+                    {"id": glacier_id},
+                )
+            ).mappings().one()
+            if glacier_row["state"] == "verified":
+                raise AssertionError("still blocked -- retrying")
+            assert glacier_row["state"] in ("removing", "glaciered")
+
+    for _ in range(15):
+        try:
+            await _tick_after_clearing()
+            break
+        except AssertionError:
+            continue
+    else:
+        raise AssertionError("row never progressed after the pending move cleared")
+
+
+@pytest.mark.asyncio
+async def test_sweep_refusal_is_surfaced_on_the_account_and_self_clears(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The red team's finding: the unacknowledged-notification guard
+    fires and never self-clears, but is logged at debug and surfaced
+    nowhere -- set the days, nothing happens, no explanation. The
+    account's own API answer must carry the sweep's last refusal, and
+    it must clear itself once a tick actually proceeds (here, once the
+    notification is acknowledged)."""
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, _archive_folder_id = await _seed_sweepable_account(session)
+        notification_id = (
+            await session.execute(
+                text(
+                    "INSERT INTO sync_notifications (account_id, action, error) "
+                    "VALUES (:account_id, 'delete', 'server refused') RETURNING id"
+                ),
+                {"account_id": account_id},
+            )
+        ).scalar_one()
+        await session.commit()
+
+    async def _tick_and_check_refused() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        account = await get_account(account_id)
+        assert account.glacier_sweep_last_refusal is not None
+        assert "unacknowledged" in account.glacier_sweep_last_refusal
+
+    await _activate_then(migrated_db, account_id, _tick_and_check_refused)
+
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE sync_notifications SET acknowledged_at = now() WHERE id = :id"),
+            {"id": notification_id},
+        )
+        await session.commit()
+
+    async def _tick_and_check_cleared() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        account = await get_account(account_id)
+        assert account.glacier_sweep_last_refusal is None
+
+    await _activate_then(migrated_db, account_id, _tick_and_check_cleared)
+
+
+async def _seed_duplicate_conflict(
+    session: AsyncSession, *, account_id: uuid.UUID, archive_folder_id: uuid.UUID,
+) -> tuple[uuid.UUID, str]:
+    """A live archived message old enough to be claimed, whose Message-ID
+    header is already claimed by an unrelated glacier row holding
+    different content -- operations.py's own duplicate_conflict shape
+    (two genuinely different messages sharing one header, the
+    course-notification case the defect was found against), not a
+    resync duplicate of the same message. Returns (live_message_id,
+    shared_message_id_header)."""
+    shared_header = f"<{uuid.uuid4()}@example.com>"
+    conflicting_raw_source = b"From: other@example.com\r\nSubject: Conflicting\r\n\r\nOld body\r\n"
+
+    glacier_folder_id = (
+        await session.execute(
+            text("SELECT glacier_folder_id FROM account_prefs WHERE account_id = :id"),
+            {"id": account_id},
+        )
+    ).scalar_one()
+    existing_glacier_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO glacier_messages "
+            "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+            " raw_source, size_bytes, received_at, msg_key, content_sha256, state) "
+            "VALUES (:id, :account_id, :folder_id, :thread_id, :msg_id, 'Conflicting', "
+            " 'other@example.com', :raw_source, :size_bytes, now(), :msg_key, "
+            " sha256(:raw_source), 'glaciered')"
+        ),
+        {
+            "id": existing_glacier_id, "account_id": account_id, "folder_id": glacier_folder_id,
+            "thread_id": existing_glacier_id, "msg_id": shared_header,
+            "raw_source": conflicting_raw_source, "size_bytes": len(conflicting_raw_source),
+            "msg_key": shared_header,
+        },
+    )
+
+    live_message_id = uuid.uuid4()
+    received_at = datetime.now(timezone.utc) - timedelta(days=400)
+    await session.execute(
+        text(
+            "INSERT INTO messages "
+            "(id, account_id, folder_id, imap_uid, thread_id, message_id, subject, "
+            " from_addr, raw_source, size_bytes, received_at) "
+            "VALUES (:id, :account_id, :folder_id, :uid, :thread_id, :msg_id, 'Live', "
+            " 'sender@example.com', :raw_source, :size_bytes, :received_at)"
+        ),
+        {
+            "id": live_message_id, "account_id": account_id, "folder_id": archive_folder_id,
+            "uid": next(_imap_uid_counter), "thread_id": live_message_id, "msg_id": shared_header,
+            "raw_source": _RAW_SOURCE, "size_bytes": len(_RAW_SOURCE), "received_at": received_at,
+        },
+    )
+    return live_message_id, shared_header
+
+
+class _CollectingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_duplicate_conflict_alerts_once_instead_of_vanishing(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The defect this fixes: two genuinely different messages sharing one
+    Message-ID header make the sweep's copy attempt come back
+    duplicate_conflict on every tick, forever -- the identity is never
+    going to change on its own. Before the fix, the sweep's loop
+    discarded that outcome with a bare `continue`: no log line, no
+    notification, no counter. This proves the opposite -- a durable,
+    account-visible alert appears once, a log line is emitted, nothing
+    destructive happens to either message, and a second tick raises
+    nothing new rather than alerting again forever.
+
+    A plain handler attached directly to the sweep module's own logger,
+    not pytest's caplog -- see tests/pg/test_worker_loop.py's own
+    docstring for why: fileConfig() (run as part of migrated_db's
+    migrations) disables every logger already registered at that point,
+    including this module's, which silently drops every record before
+    any handler -- caplog's or one attached here -- ever sees it.
+    """
+    await _skip_unless_append_capable(migrated_db)
+    async with migrated_db.session() as session:
+        account_id, archive_folder_id = await _seed_sweepable_account(session)
+        live_message_id, _shared_header = await _seed_duplicate_conflict(
+            session, account_id=account_id, archive_folder_id=archive_folder_id,
+        )
+        await session.commit()
+
+    records: list[logging.LogRecord] = []
+    handler = _CollectingHandler()
+    sweep_logger = logging.getLogger("mail_verdict.glacier.sweep")
+    sweep_logger.addHandler(handler)
+    was_disabled = sweep_logger.disabled
+    sweep_logger.disabled = False
+
+    async def _tick_and_check() -> None:
+        await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+        async with migrated_db.session() as session:
+            live = (
+                await session.execute(
+                    text("SELECT expunged_at, imap_uid FROM messages WHERE id = :id"),
+                    {"id": live_message_id},
+                )
+            ).mappings().one()
+            assert live["expunged_at"] is None, "the live message must never be touched"
+            assert live["imap_uid"] is not None
+            alerts = (
+                await session.execute(
+                    text(
+                        "SELECT kind, account_id, message_id, delivered_at, dismissed_at "
+                        "FROM alerts WHERE dedupe_key = :key"
+                    ),
+                    {"key": f"glacier-conflict:{live_message_id}"},
+                )
+            ).mappings().all()
+            assert len(alerts) == 1, "exactly one alert must exist for this message"
+            alert = alerts[0]
+            assert alert["kind"] == "glacier_conflict"
+            assert alert["account_id"] == account_id
+            assert alert["message_id"] == live_message_id
+            assert alert["delivered_at"] is not None
+            assert alert["dismissed_at"] is None
+        records.extend(handler.records)
+        handler.records.clear()
+        if not any("cannot move a message" in r.getMessage() for r in records):
+            raise AssertionError("guard blocked this tick -- retrying")
+
+    try:
+        await _activate_then(migrated_db, account_id, _tick_and_check)
+    finally:
+        sweep_logger.removeHandler(handler)
+        sweep_logger.disabled = was_disabled
+
+    assert any("cannot move a message" in r.getMessage() for r in records)
+
+    # A second tick must not alert again -- the whole point of the fix is
+    # that this never fires forever.
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE accounts SET is_active = true, state = 'active' WHERE id = :id"),
+            {"id": account_id},
+        )
+        await session.commit()
+    await _sweep_account_once(migrated_db, account_id, event_ring=None, cfg=_TEST_CFG)
+    async with migrated_db.session() as session:
+        count = (
+            await session.execute(
+                text("SELECT count(*) FROM alerts WHERE dedupe_key = :key"),
+                {"key": f"glacier-conflict:{live_message_id}"},
+            )
+        ).scalar_one()
+    assert count == 1, "the alert must not be raised again on a later tick"

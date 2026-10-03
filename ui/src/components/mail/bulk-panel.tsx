@@ -13,7 +13,7 @@
  * because the selection banner above the list already carries it.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Archive, Ban, ChevronDown, Mail as MailIcon, MailOpen, Star, Trash2 } from "lucide-react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Badge } from "@/components/ui/badge";
@@ -25,11 +25,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { useAccounts } from "@/hooks/use-accounts";
 import { useFolderOrder } from "@/hooks/use-folder-order";
 import { useBulkAction, useSelection } from "@/hooks/use-selection";
 import { useUnifiedFolders } from "@/hooks/use-unified-view";
 import { useToast } from "@/hooks/use-toast";
 import { folderDisplayName } from "@/lib/folders";
+import { glacierFolderIds, glacierMoveWarning, isGlacierFolder } from "@/lib/glacier";
 import { cn } from "@/lib/utils";
 import {
   claimBulkRequest,
@@ -69,6 +71,9 @@ interface PendingAction {
   action: BulkActionType;
   targetFolderId?: MoveTarget;
   label: string;
+  /** A move into the glacier: its own confirmation wording, and never
+   * offered undo once confirmed. */
+  glacier?: boolean;
 }
 
 export function BulkPanel({ compact = false }: { compact?: boolean }) {
@@ -76,6 +81,8 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
   const accountId = useAtomValue(selectedAccountIdAtom);
   const isUnifiedView = useAtomValue(isUnifiedViewAtom);
   const bulkAction = useBulkAction();
+  const { data: accounts } = useAccounts();
+  const glacierIds = useMemo(() => glacierFolderIds(accounts), [accounts]);
   // A predicate is only ever minted over one real account's folder (never
   // the unified view -- see canOfferFolder in selection-banner.tsx), so it
   // always has its own concrete accountId to scope this to. Without a
@@ -104,7 +111,9 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
   const folders = orderData?.folders ?? [];
   const showUnifiedMoveTargets = isUnifiedView && !state.predicate;
 
-  const execute = (action: BulkActionType, targetFolderId: MoveTarget | undefined, label: string) => {
+  const execute = (
+    action: BulkActionType, targetFolderId: MoveTarget | undefined, label: string, glacier?: boolean,
+  ) => {
     // A predicate write is resolved as one statement over however many
     // rows match -- measured at tens of seconds for a large folder, all
     // of it server-side before the request even returns. Say so up front
@@ -116,12 +125,18 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
         6000,
       );
     }
-    bulkAction.mutate({ action, targetFolderId });
+    bulkAction.mutate({ action, targetFolderId, undoable: glacier ? false : true });
   };
 
   const run = (action: BulkActionType, targetFolderId: MoveTarget | undefined, label: string) => {
-    if (state.predicate && DESTRUCTIVE_SCOPE_ACTIONS.includes(action)) {
-      setPending({ action, targetFolderId, label });
+    // A move into the glacier removes mail from the mail server for good
+    // -- confirmed every time, whichever kind of selection it acts on,
+    // not only when the ordinary predicate-scope guard below would apply.
+    const glacier = action === "move" && isGlacierFolder(
+      typeof targetFolderId === "string" ? targetFolderId : undefined, glacierIds,
+    );
+    if (glacier || (state.predicate && DESTRUCTIVE_SCOPE_ACTIONS.includes(action))) {
+      setPending({ action, targetFolderId, label, glacier });
       return;
     }
     execute(action, targetFolderId, label);
@@ -227,12 +242,16 @@ export function BulkPanel({ compact = false }: { compact?: boolean }) {
           if (!open) setPending(null);
         }}
         title={`${pending?.label ?? ""} ${count} messages?`}
-        description="This acts on the whole selection as it stood when you selected it, resolved again at the moment you confirm. It cannot be undone."
+        description={
+          pending?.glacier
+            ? glacierMoveWarning(count)
+            : "This acts on the whole selection as it stood when you selected it, resolved again at the moment you confirm. It cannot be undone."
+        }
         confirmLabel={pending?.label}
         isConfirming={bulkAction.isPending}
         onConfirm={() => {
           if (!pending) return;
-          execute(pending.action, pending.targetFolderId, pending.label);
+          execute(pending.action, pending.targetFolderId, pending.label, pending.glacier);
           setPending(null);
         }}
       />

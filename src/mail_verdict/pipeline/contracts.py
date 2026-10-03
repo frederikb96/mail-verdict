@@ -103,7 +103,37 @@ class Notify:
     text: str
 
 
-Effect = Move | Trash | Expunge | SetFlags | Keywords | Tag | RecordVerdict | Notify
+@dataclass(frozen=True)
+class EnqueueOrder:
+    """Enqueue this mail for the orders worker -- never calls a model
+    itself, only inserts an order_jobs row (see pipeline/stages/orders.py
+    and orders/worker.py). `reason` is the first filter's own match
+    reason, or "thread"/"number" for one of the two bypass rules; a
+    `match` stage may also return this effect to force a sender's mail
+    into the queue regardless of the pattern filter."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class Webhook:
+    """Deliver the message's raw source to an HTTP endpoint -- never makes
+    the request itself, only inserts a webhook_deliveries row for the
+    webhook worker (see webhooks/worker.py). `headers` keep their
+    `{{secret:NAME}}` references unresolved; `name` is what makes one
+    delivery per mail per destination."""
+
+    name: str
+    url: str
+    method: str = "POST"
+    headers: tuple[tuple[str, str], ...] = ()
+    received_at_param: str | None = None
+
+
+Effect = (
+    Move | Trash | Expunge | SetFlags | Keywords | Tag | RecordVerdict | Notify | EnqueueOrder
+    | Webhook
+)
 
 
 @dataclass(frozen=True)

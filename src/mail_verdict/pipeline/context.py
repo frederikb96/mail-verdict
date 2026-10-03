@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.models import Folder, FolderPrefs, Verdict, VerdictSource
+from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.pipeline.contracts import (
     JsonValue,
     StageOutcome,
@@ -184,6 +185,7 @@ class ModelGateway:
         self,
         *,
         provider: str,
+        category: str,
         model: str,
         effort: str | None,
         max_tokens: int,
@@ -192,14 +194,40 @@ class ModelGateway:
         user_prompt: str,
         schema: dict[str, JsonValue],
         validate: Any = None,
+        base_url: str | None = None,
+        timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], float]:
         """
         Issue one strict-schema request.
 
-        The circuit breaker is keyed by provider name alone, so it is
-        shared by every caller of that provider -- a future embedding
-        worker calling OpenAI trips and clears the same breaker a
-        classify stage's calls do.
+        The circuit breaker is keyed by `(provider, category)`, not by
+        provider name alone: `category` is the settings category the
+        caller's model/effort/budget came from ("ai", "semantic",
+        "orders"), so two categories that happen to share one provider
+        name -- both pointed at "custom", say -- each trip and clear
+        their own breaker rather than one shared row. A misconfiguration
+        specific to one category (a garbage model name in that category's
+        own settings) therefore stalls only that category's queue. A
+        genuinely broken *credential* still stalls every category that
+        shares it, since each independently fails its own next call and
+        opens its own breaker -- just not falsely, through a row none of
+        them actually wrote to.
+
+        Args:
+            category: Settings category this call's model/effort/budget
+                came from -- part of the circuit breaker's identity, never
+                used to pick the provider or credential
+            base_url: Required when provider is "custom" -- the compatible
+                server's API base. Ignored otherwise.
+            timeout_seconds: Overrides the shared client's own per-request
+                timeout for this call alone. Left unset, the client's
+                default holds (core/openai_provider.py,
+                core/anthropic_provider.py) -- sized for classify and
+                embeddings' tighter queue leases. A caller with a more
+                generous lease of its own, and a workload that can
+                legitimately take longer than that shared default, passes
+                its own budget here rather than the default being widened
+                for everyone.
 
         Returns:
             (parsed response, latency in milliseconds)
@@ -212,7 +240,7 @@ class ModelGateway:
         """
         from mail_verdict.pipeline.contracts import StageMisconfigured
 
-        if provider not in ("anthropic", "openai"):
+        if provider not in ("anthropic", "openai", "custom"):
             raise StageMisconfigured(f"Unknown ai.provider {provider!r}")
 
         # db is None only in a test building a ModelGateway with no database
@@ -220,7 +248,9 @@ class ModelGateway:
         # production safety net, not something a call against a real
         # provider needs in order to prove the request/response shape.
         self._circuit = (
-            CircuitBreaker(self._db, provider) if self._db is not None else _NullCircuit()
+            CircuitBreaker(self._db, f"{provider}:{category}")
+            if self._db is not None
+            else _NullCircuit()
         )
         if not await self._circuit.is_available():
             status = await self._circuit.status()
@@ -230,13 +260,14 @@ class ModelGateway:
 
         from mail_verdict.core.structured_llm import (
             call_anthropic_structured,
+            call_chat_completions_structured,
             call_openai_structured,
             resolve_client,
         )
 
         started = time.monotonic()
         try:
-            client = await resolve_client(provider, self._cred_repo)
+            client = await resolve_client(provider, self._cred_repo, base_url=base_url)
         except ProviderUnavailableError as exc:
             await self._circuit.record_unavailable(
                 reason=str(exc), probe_interval=timedelta(minutes=5),
@@ -248,11 +279,22 @@ class ModelGateway:
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
+                )
+            elif provider == "custom":
+                # A compatible server serves chat completions only, not
+                # OpenAI's own Responses API -- see
+                # core/structured_llm.py's module docstring.
+                data = await call_chat_completions_structured(
+                    client, model, effort, max_tokens, schema_name, system_prompt,
+                    user_prompt, schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
             else:
                 data = await call_openai_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
+                    timeout_seconds=timeout_seconds,
                 )
         except Exception as exc:
             await self._map_and_raise(provider, exc)
@@ -264,18 +306,29 @@ class ModelGateway:
 
     async def _map_and_raise(self, provider: str, exc: Exception) -> None:
         """Translate a provider SDK exception into the stage vocabulary,
-        recording the outcome on the shared circuit breaker."""
+        recording the outcome on the shared circuit breaker.
+
+        `retry_structured_call` (core/structured_llm.py) wraps an
+        exhausted retry loop's last error in a plain `RuntimeError`,
+        chained via `__cause__` -- unwrapped here so a rate limit that
+        outlasts that loop's own retry budget is still classified as
+        `StageThrottled` (refunded, uncapped) rather than falling through
+        to the generic `StageTransient` branch below, which counts
+        against `pipeline_runs.attempts` and can eventually dead-letter a
+        message a sustained throttle should have kept retrying forever.
+        """
+        from mail_verdict.core.structured_llm import retry_after_from_exception
         from mail_verdict.pipeline.contracts import StageTransient
 
-        name = type(exc).__name__
+        cause = exc.__cause__ if type(exc).__name__ == "RuntimeError" and exc.__cause__ else exc
+        name = type(cause).__name__
         if name == "AuthenticationError":
             await self._circuit.record_unavailable(
                 reason=f"{provider} rejected the API key", probe_interval=timedelta(minutes=5),
             )
             raise StageUnavailable(f"{provider} rejected the API key") from exc
         if name == "RateLimitError":
-            retry_after = getattr(exc, "retry_after", None)
-            delay = timedelta(seconds=retry_after) if retry_after else timedelta(seconds=30)
+            delay = retry_after_from_exception(cause, default=timedelta(seconds=30))
             await self._circuit.record_backoff(retry_after=delay, reason=f"{provider} rate limited")
             raise StageThrottled(f"{provider} rate limited", retry_after=delay) from exc
         await self._circuit.record_backoff(
@@ -305,6 +358,10 @@ class RunContext:
     # read once per run by the runner so the classify stage stays free of its
     # own database access -- see pipeline/stages/classify.py.
     account_spam_enabled: bool = False
+    # account_prefs.orders_enabled, the same way -- see
+    # pipeline/stages/orders.py.
+    account_orders_enabled: bool = False
+    orders: OrderLookup | None = None
 
     def with_trace_entry(self, outcome: StageOutcome) -> RunContext:
         """A copy with `outcome` appended to the trace and its facts merged

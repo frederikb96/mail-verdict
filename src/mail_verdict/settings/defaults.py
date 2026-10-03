@@ -35,13 +35,19 @@ class SettingCategory(str, enum.Enum):
     CALENDAR = "calendar"
     OUTBOX = "outbox"
     MAIL = "mail"
+    ORDERS = "orders"
 
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     SettingCategory.AI: {
         # "openai" and "anthropic" both need their provider's API key
         # configured (settings/credentials.py, or the matching env var).
-        # "fake" classifies on keywords alone, for local use without a key.
+        # "custom" is any OpenAI-compatible chat-completions server reached
+        # at ai.base_url with its own key (settings/credentials.py's
+        # "custom" entry) -- the same slot semantic.provider == "custom"
+        # reads, since a custom deployment is one account serving both
+        # workloads. "fake" classifies on keywords alone, for local use
+        # without a key.
         "provider": "openai",
         "model": "gpt-5.4-nano",
         # "none" matches gpt-5.4-nano's own server-side default. Raising
@@ -51,6 +57,11 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # higher setting changes anything for a given model.
         "reasoning_effort": "none",
         "max_tokens": 1024,
+        # Read only when provider == "custom" -- the compatible server's
+        # API base, e.g. "https://api.infomaniak.com/2/ai/<product_id>/
+        # openai/v1". Ignored for "openai"/"anthropic"/"fake", and required
+        # by settings/ai_validation.py whenever provider is "custom".
+        "base_url": None,
     },
     SettingCategory.RETRY: {
         "max_retries": 5,
@@ -77,12 +88,16 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "live_max_age_days": 7,
     },
     SettingCategory.SEMANTIC: {
-        # "openai" is the only real provider -- Anthropic has no embedding
-        # model of its own to select here, unlike ai.provider. "fake"
-        # produces deterministic hash-derived vectors for local use
-        # without a key.
+        # "openai" or "custom" (any OpenAI-compatible embeddings endpoint,
+        # reached at semantic.base_url) -- Anthropic has no embedding model
+        # of its own to select here, unlike ai.provider. "fake" produces
+        # deterministic hash-derived vectors for local use without a key.
         "provider": "openai",
         "model": "text-embedding-3-small",
+        # Read only when provider == "custom" -- see ai.base_url's comment;
+        # the two are independent settings, so pointing both categories at
+        # the same compatible server means setting this the same way there.
+        "base_url": None,
         # Gates the periodic reconciler that enqueues missing embeddings
         # (embeddings/worker.py) -- search and the manual backfill endpoint
         # still work with this off, they just find nothing new to fill.
@@ -122,6 +137,25 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_attempts": 5,
         "base_delay_seconds": 2.0,
         "max_delay_seconds": 60.0,
+        # The model actually serving search and the classify stage's
+        # neighbour hints right now -- distinct from `model`, which is the
+        # target new mail is embedded with and the backfill reconciler
+        # fills toward. None means "whatever `model` currently is" (the
+        # steady state, nothing mid-migration). Changing `model` freezes
+        # this to the model it resolved to just before the change
+        # (api/settings_api.py's update_settings), so search keeps
+        # answering from the old vector space until every in-scope message
+        # has a `model` embedding (embeddings/worker.py's reconciler,
+        # checked via embeddings/repository.py's coverage), at which point
+        # the reconciler advances this to match and the cutover is
+        # complete. Frozen and advanced together with `model` --
+        # embeddings/provider.py's resolve_active_embedding_model()/
+        # resolve_active_embedding_provider() are the two places that read
+        # them, for embedding a fresh search query against whichever
+        # vector space is actually complete.
+        "active_model": None,
+        "active_provider": None,
+        "active_base_url": None,
     },
     SettingCategory.CALENDAR: {
         # A click on empty grid space creates an event this long; a drag
@@ -174,5 +208,122 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # provider circuit breaker, short enough that a stalled provider
         # never means a silent mailbox for long.
         "notify_wait_seconds": 120.0,
+    },
+    SettingCategory.ORDERS: {
+        # The model that decides where a mail belongs and writes an
+        # order's text, called through the provider settings.ai.provider
+        # names (pipeline/context.py's ModelGateway). Empty means not
+        # chosen: an account cannot be switched on until it is (see
+        # api/accounts.py's PATCH handler).
+        "model": "",
+        # A reasoning model thinks before it answers and pays for that
+        # from max_tokens -- at a higher effort it can spend the whole
+        # budget and return nothing. Raise max_tokens together with this.
+        "reasoning_effort": "none",
+        # A ceiling, not a target -- an answer is a few hundred tokens.
+        "max_tokens": 4000,
+        # The language titles and summaries are written in.
+        "language": "English",
+        # An open order the model still owns is closed automatically
+        # (orders/auto_close.py): auto_close_days after its last mail when
+        # the model estimated no end date for it, auto_close_grace_days
+        # after the later of that date and the last mail when it did.
+        # auto_close_days = 0 turns the automatic close off entirely.
+        "auto_close_days": 30,
+        "auto_close_grace_days": 7,
+        # The first filter: a cheap pattern match that lets through
+        # anything that might be an order, ticket or booking, before any
+        # model is called -- see orders/filter.py and docs/architecture.md,
+        # "Orders". Every entry is a Python regular expression, matched
+        # with IGNORECASE against the Subject header (subject), the whole
+        # From header (from) or the prepared body (body, orders/content.py).
+        # A mail passes when no exclude pattern matches and at least one
+        # include pattern does.
+        "filter": {
+            "include": {
+                "subject": [
+                    "bestell",
+                    r"\border(s|ed|ing)?\b",
+                    "auftrag",
+                    r"\bkauf|gekauft|einkauf|purchase",
+                    r"rechnung|invoice|receipt|quittung|\bbeleg",
+                    r"zahlung|bezahl|payment|\bpaid\b",
+                    "versand|versendet|verschickt|shipped|shipping|shipment|dispatch|"
+                    r"\bsent\b",
+                    "sendung|paket|päckchen|parcel|package",
+                    "liefer|deliver|zugestellt|zustell|angekommen|arriv",
+                    r"abhol|pick.?up|collect|packstation|locker",
+                    r"tracking|unterwegs|auf dem (rück)?weg|on (its|the) way",
+                    r"retoure|rücksend|ruecksend|rückgabe|\breturn|erstatt|refund|"
+                    "gutschrift|umtausch",
+                    "storn|cancel",
+                    "ticket|eintrittskarte|gästekarte|bordkarte|boarding|fahrkarte|"
+                    "fahrschein",
+                    "buchung|gebucht|booking|booked|reserv|regist|anmeldung",
+                    r"\bflug|flight|check-?in|itinerary|reiseplan|\breise|\btrip\b",
+                ],
+                "from": [
+                    r"amazon\.",
+                    r"\bdhl\b|dhl\.",
+                    r"\bdpd\b|dpd\.",
+                    "hermes",
+                    "gls-(group|pakete|germany)|gls paket",
+                    r"\bups\b|ups\.com",
+                    "fedex",
+                    "deutschepost|deutsche-post",
+                    "sendcloud",
+                    "parcel|paket|versand|shipping|tracking",
+                    "paypal",
+                    "klarna",
+                    "saferpay",
+                    "novalnet",
+                    "mollie",
+                    "stripe",
+                    "order|bestell|shop@|store@",
+                    "booking|buchung|reserv|ticket",
+                    r"bahn\.de|deutschebahn",
+                    "flixbus",
+                    "eurowings|lufthansa|ryanair|easyjet",
+                    "eurostar",
+                    "eventim|reservix|ticketmaster",
+                ],
+                "body": [
+                    r"bestell(nummer|nr)|order (number|no\.?|#)|auftrags(nummer|nr)",
+                    "sendungs(nummer|verfolgung)|tracking (number|id|code)|paketnummer",
+                    "buchungs(nummer|code|referenz)|booking (number|reference|code)|"
+                    "reservierungsnummer|confirmation number",
+                    r"rechnungs(nummer|nr)|invoice (number|no\.?)",
+                    "(your|ihre|deine) (order|bestellung|booking|buchung|reservierung|"
+                    "reservation|sendung|shipment)",
+                    "(your|ihr|dein) (parcel|package|paket|ticket|kauf|purchase)",
+                ],
+            },
+            "exclude": {
+                "from": [
+                    r"notifications@github\.com",
+                    r"noreply@github\.com",
+                ],
+            },
+        },
+        # Worker claim/lease mechanics -- see queue/work_queue.py.
+        "lease_seconds": 300,
+        "poll_interval_seconds": 2.0,
+        "max_attempts": 5,
+        "base_delay_seconds": 5.0,
+        "max_delay_seconds": 300.0,
+        # Per-model-call timeout, overriding the shared provider client's
+        # own default (core/openai_provider.py's REQUEST_TIMEOUT_SECONDS,
+        # sized for classify and embeddings' much tighter leases). A
+        # reasoning model can legitimately spend several thousand hidden
+        # tokens "thinking" before it answers even with reasoning_effort
+        # left at "none" -- measured directly against a real model, a
+        # write call routinely took 16-20 seconds, right at or past the
+        # shared 20-second default, which made retries (themselves capped
+        # by that same too-short timeout) the common case rather than the
+        # exception. Sized to stay under lease_seconds even in the
+        # pathological case where every one of settings.retry's
+        # max_retries attempts times out: max_retries * this value, plus
+        # their backoff delays, still leaves margin under the lease above.
+        "call_timeout_seconds": 40.0,
     },
 }

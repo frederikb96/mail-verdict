@@ -5,7 +5,8 @@ Reads from Postgres, writes through postimap/actions.py -- never touches
 IMAP/SMTP directly. Mail tools: search_mail, list_mails, get_mail,
 get_thread, list_folders, list_accounts, move_mail, mark_mail, tag_mail,
 get_verdict, submit_spam_feedback, send_mail, draft_mail, reply_mail,
-get_stats, semantic_search_mail, get_semantic_status. Calendar and contact tools:
+get_stats, semantic_search_mail, get_semantic_status, list_orders, get_order.
+Calendar and contact tools:
 list_calendars, list_events, get_event, create_event, update_event,
 delete_event, respond_to_event, list_addressbooks, list_contacts,
 search_contacts, get_contact, create_contact, update_contact,
@@ -25,11 +26,13 @@ import base64
 import binascii
 import uuid
 from collections.abc import Sequence
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
 from typing import Any
 
 from fastapi import HTTPException
 from fastmcp import FastMCP
-from sqlalchemy import desc, select
+from sqlalchemy import select, text
 
 from mail_verdict.api.calendar_events import (
     create_event as _create_calendar_event,
@@ -74,7 +77,9 @@ from mail_verdict.api.contacts import (
     update_contact as _update_contact,
 )
 from mail_verdict.api.identities import resolve_send_from_addr
+from mail_verdict.api.mails import _announce_glacier_change
 from mail_verdict.api.mails import get_message_quote as _get_message_quote
+from mail_verdict.api.mails import list_message_page as _list_message_page
 from mail_verdict.api.mcp_reply import (
     ForwardDraft,
     ReplyDraft,
@@ -85,6 +90,8 @@ from mail_verdict.api.mcp_reply import (
     match_identity,
     merge_addresses,
 )
+from mail_verdict.api.orders import get_order as _get_order
+from mail_verdict.api.orders import list_orders as _list_orders
 from mail_verdict.api.outbox import replay_submission, require_recipients
 from mail_verdict.api.schemas import (
     ContactAddressIO,
@@ -104,13 +111,24 @@ from mail_verdict.config import get_config
 from mail_verdict.core.image_sanitizer import restore_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Account, Folder, Identity, Message, TagSource
+from mail_verdict.database.models import (
+    Account,
+    AccountPrefs,
+    Folder,
+    GlacierMessage,
+    Identity,
+    Message,
+    TagSource,
+)
 from mail_verdict.database.repository import (
     FolderRepository,
     MessageRepository,
     TagRepository,
     VerdictRepository,
 )
+from mail_verdict.glacier.operations import glacier_message_now
+from mail_verdict.glacier.restore import start_restore
+from mail_verdict.glacier.rows import glacier_ids_among, resolve_glacier_id
 from mail_verdict.outbox.submissions import record_submission
 from mail_verdict.postimap.actions import insert_outbox, move_message, set_flags
 
@@ -123,8 +141,14 @@ mcp = FastMCP(
 )
 
 
-def _message_summary(msg: Message) -> dict[str, Any]:
-    """Convert a Message model to a summary dict for MCP responses."""
+def _message_summary(msg: Message | GlacierMessage, *, is_glacier: bool = False) -> dict[str, Any]:
+    """Convert a Message (or a visible GlacierMessage -- same field names,
+    see that model's own docstring) to a summary dict for MCP responses.
+
+    `is_glacier` must be given explicitly by the caller whenever `msg`
+    could have come from a union spanning both tables -- imap_uid alone
+    cannot tell a glacier row (always NULL) from a live one with a move
+    pending (also NULL); see glacier/rows.py:glacier_ids_among."""
     return {
         "id": str(msg.id),
         "account_id": str(msg.account_id),
@@ -136,7 +160,8 @@ def _message_summary(msg: Message) -> dict[str, Any]:
         "is_seen": msg.is_seen,
         "is_flagged": msg.is_flagged,
         "is_truncated": msg.is_truncated,
-        "pending_sync": msg.imap_uid is None,
+        "pending_sync": False if is_glacier else msg.imap_uid is None,
+        "is_glacier": is_glacier,
     }
 
 
@@ -178,7 +203,12 @@ async def search_mail(
     msg_repo = MessageRepository(db)
     aid = uuid.UUID(account_id) if account_id else None
     rows = await msg_repo.search_fulltext_with_snippet(aid, query, limit=limit)
-    return [{**_message_summary(msg), "snippet": snippet} for msg, snippet in rows]
+    async with db.session() as session:
+        glacier_ids = await glacier_ids_among(session, [msg.id for msg, _snippet in rows])
+    return [
+        {**_message_summary(msg, is_glacier=msg.id in glacier_ids), "snippet": snippet}
+        for msg, snippet in rows
+    ]
 
 
 @mcp.tool(
@@ -209,18 +239,22 @@ async def list_mails(
     """
     db = get_db_connection()
     async with db.session() as session:
-        stmt = (
-            select(Message)
-            .where(Message.account_id == uuid.UUID(account_id), Message.expunged_at.is_(None))
-            .order_by(desc(Message.received_at))
-            .limit(min(limit, 100))
+        page = await _list_message_page(
+            session, account_id=uuid.UUID(account_id),
+            folder_id=uuid.UUID(folder_id) if folder_id else None,
+            folder_scope=None, threaded=False, is_seen=None, since=None,
+            before=None, after=None, around=None, limit=min(limit, 100),
         )
-        if folder_id:
-            stmt = stmt.where(Message.folder_id == uuid.UUID(folder_id))
-        result = await session.execute(stmt)
-        messages = list(result.scalars().all())
-
-    return [_message_summary(m) for m in messages]
+    return [
+        {
+            "id": str(m.id), "account_id": str(m.account_id), "folder_id": str(m.folder_id),
+            "thread_id": str(m.thread_id), "subject": m.subject, "from_addr": m.from_addr,
+            "received_at": m.received_at.isoformat() if m.received_at else None,
+            "is_seen": m.is_seen, "is_flagged": m.is_flagged, "is_truncated": m.is_truncated,
+            "pending_sync": m.pending_sync, "is_glacier": m.is_glacier,
+        }
+        for m in page.messages
+    ]
 
 
 @mcp.tool(
@@ -244,19 +278,44 @@ async def get_mail(mail_id: str) -> dict[str, Any]:
     Returns:
         Full message content, or {"error": "Message not found"}
     """
-    from mail_verdict.api.deps import get_attachment_repo
+    from mail_verdict.database.repository import list_attachments_for_mails
 
     db = get_db_connection()
+    mail_uuid = uuid.UUID(mail_id)
+    is_glacier = False
     async with db.session() as session:
-        result = await session.execute(select(Message).where(Message.id == uuid.UUID(mail_id)))
-        msg = result.scalar_one_or_none()
-    if msg is None:
-        return {"error": "Message not found"}
+        result = await session.execute(
+            select(Message).where(Message.id == mail_uuid, Message.expunged_at.is_(None))
+        )
+        msg: Message | GlacierMessage | None = result.scalar_one_or_none()
+        if msg is None:
+            # mail_id may be a glacier row's own id, or the *original*
+            # live id a message held before it was glaciered -- either
+            # way this resolves to the glacier row, whose own id is what
+            # mail_tags/verdicts/attachments are repointed to at glacier
+            # time (design section 2.5).
+            glacier_id = await resolve_glacier_id(session, mail_uuid)
+            if glacier_id is not None:
+                glacier_result = await session.execute(
+                    select(GlacierMessage).where(GlacierMessage.id == glacier_id)
+                )
+                msg = glacier_result.scalar_one_or_none()
+            is_glacier = msg is not None
+        if msg is None:
+            # Not glaciered -- an ordinary expunge (moved by another mail
+            # client). Nothing repoints tags/attachments for that case,
+            # so the expunged row's own id still keys them correctly.
+            stale_result = await session.execute(
+                select(Message).where(Message.id == mail_uuid)
+            )
+            msg = stale_result.scalar_one_or_none()
+        if msg is None:
+            return {"error": "Message not found"}
 
-    attachments = await get_attachment_repo().get_by_message_id(msg.id)
+        attachments = (await list_attachments_for_mails(session, [msg.id]))[msg.id]
 
     return {
-        **_message_summary(msg),
+        **_message_summary(msg, is_glacier=is_glacier),
         "message_id": msg.message_id,
         "to_addrs": msg.to_addrs,
         "cc_addrs": msg.cc_addrs,
@@ -296,22 +355,43 @@ async def get_thread(mail_id: str) -> list[dict[str, Any]]:
         {"error": ...} dict if the message does not exist
     """
     db = get_db_connection()
+    mail_uuid = uuid.UUID(mail_id)
     async with db.session() as session:
-        anchor = await session.execute(
-            select(Message.thread_id).where(Message.id == uuid.UUID(mail_id))
-        )
+        anchor = await session.execute(select(Message.thread_id).where(Message.id == mail_uuid))
         thread_id = anchor.scalar_one_or_none()
+        if thread_id is None:
+            glacier_anchor = await session.execute(
+                select(GlacierMessage.thread_id).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            thread_id = glacier_anchor.scalar_one_or_none()
         if thread_id is None:
             return [{"error": "Message not found"}]
 
-        result = await session.execute(
+        # A conversation is never entirely one table once any of its
+        # messages has been glaciered -- see api/mails.py's get_thread
+        # for the full reasoning (its thread_id is unchanged by
+        # glaciering, design section 3.9).
+        live_result = await session.execute(
             select(Message)
             .where(Message.thread_id == thread_id, Message.expunged_at.is_(None))
-            .order_by(Message.received_at)
         )
-        messages = list(result.scalars().all())
+        live_messages: list[Message | GlacierMessage] = list(live_result.scalars().all())
+        glacier_result = await session.execute(
+            select(GlacierMessage).where(
+                GlacierMessage.thread_id == thread_id, GlacierMessage.visible_at.is_not(None),
+            )
+        )
+        glacier_messages = list(glacier_result.scalars().all())
+        glacier_ids = {m.id for m in glacier_messages}
 
-    return [_message_summary(m) for m in messages]
+        _min_dt = _datetime.min.replace(tzinfo=_timezone.utc)
+        messages = sorted(
+            [*live_messages, *glacier_messages], key=lambda m: m.received_at or _min_dt,
+        )
+
+    return [_message_summary(m, is_glacier=m.id in glacier_ids) for m in messages]
 
 
 @mcp.tool(
@@ -337,7 +417,7 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
     db = get_db_connection()
     folder_repo = FolderRepository(db)
     folders = await folder_repo.get_by_account(uuid.UUID(account_id))
-    return [
+    result = [
         {
             "id": str(f.id),
             "imap_name": f.imap_name,
@@ -347,6 +427,20 @@ async def list_folders(account_id: str) -> list[dict[str, Any]]:
         }
         for f in folders
     ]
+    async with db.session() as session:
+        prefs = (
+            await session.execute(
+                select(AccountPrefs).where(AccountPrefs.account_id == uuid.UUID(account_id))
+            )
+        ).scalar_one_or_none()
+    if prefs is not None and prefs.glacier_enabled and prefs.glacier_folder_id is not None:
+        result.append(
+            {
+                "id": str(prefs.glacier_folder_id), "imap_name": "Glacier",
+                "display_name": None, "special_use": None, "last_synced_at": None,
+            }
+        )
+    return result
 
 
 @mcp.tool(
@@ -398,10 +492,15 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
     Move a message to a different folder by that folder's IMAP name.
 
     PostIMAP's own trigger propagates the move to IMAP asynchronously.
+    "Glacier" moves the message into the account's glacier instead --
+    off the mail server for good -- if that account has one enabled;
+    moving a message already in the glacier to any other name restores
+    it.
 
     Args:
         mail_id: Message UUID to move
-        target_folder: Target folder's IMAP name (see list_folders)
+        target_folder: Target folder's IMAP name (see list_folders), or
+            "Glacier"
 
     Returns:
         {"success": bool, "message"/"error": str}
@@ -413,7 +512,41 @@ async def move_mail(mail_id: str, target_folder: str) -> dict[str, Any]:
         )
         msg = msg_result.scalar_one_or_none()
         if msg is None:
-            return {"success": False, "error": "Message not found"}
+            glacier_row = (
+                await session.execute(
+                    select(GlacierMessage.account_id).where(
+                        GlacierMessage.id == uuid.UUID(mail_id),
+                        GlacierMessage.visible_at.is_not(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if glacier_row is None:
+                return {"success": False, "error": "Message not found"}
+            folder = (
+                await session.execute(
+                    select(Folder).where(
+                        Folder.account_id == glacier_row, Folder.imap_name == target_folder,
+                    )
+                )
+            ).scalar_one_or_none()
+            if folder is None:
+                return {"success": False, "error": f"Folder not found: {target_folder}"}
+            restore_outcome = await start_restore(db, uuid.UUID(mail_id), folder.id)
+            return {
+                "success": restore_outcome.ok,
+                "message": restore_outcome.reason or f"Restoring to {target_folder}",
+            }
+
+        if target_folder == "Glacier":
+            prefs = (
+                await session.execute(
+                    select(AccountPrefs).where(AccountPrefs.account_id == msg.account_id)
+                )
+            ).scalar_one_or_none()
+            if prefs is None or not prefs.glacier_enabled:
+                return {"success": False, "error": "This account has no glacier enabled"}
+            outcome = await glacier_message_now(db, msg.id)
+            return {"success": outcome.ok, "message": outcome.reason or "Moved to Glacier"}
 
         folder_result = await session.execute(
             select(Folder).where(
@@ -464,13 +597,33 @@ async def mark_mail(
         return {"success": False, "error": "Provide at least one of is_seen, is_flagged"}
 
     db = get_db_connection()
+    mail_uuid = uuid.UUID(mail_id)
     async with db.session() as session:
-        result = await session.execute(
-            select(Message.id).where(Message.id == uuid.UUID(mail_id))
-        )
-        if result.scalar_one_or_none() is None:
+        result = await session.execute(select(Message.id).where(Message.id == mail_uuid))
+        if result.scalar_one_or_none() is not None:
+            await set_flags(session, mail_uuid, **flags)
+            return {"success": True}
+
+        # A glaciered message has no PostIMAP-managed row to write flags
+        # onto -- MailVerdict owns these columns directly on the glacier
+        # row instead (design section 6), the same as the web API's
+        # mark_read/flag actions on one.
+        glacier_row = (
+            await session.execute(
+                select(GlacierMessage.account_id, GlacierMessage.folder_id).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+        ).one_or_none()
+        if glacier_row is None:
             return {"success": False, "error": "Message not found"}
-        await set_flags(session, uuid.UUID(mail_id), **flags)
+
+        set_clause = ", ".join(f"{column} = :{column}" for column in flags)
+        await session.execute(
+            text(f"UPDATE glacier_messages SET {set_clause} WHERE id = :id"),  # noqa: S608
+            {**flags, "id": mail_uuid},
+        )
+    await _announce_glacier_change(glacier_row.account_id, mail_uuid, glacier_row.folder_id)
 
     return {"success": True}
 
@@ -949,7 +1102,14 @@ async def reply_mail(
 
     db = get_db_connection()
     async with db.session() as session:
-        source = await session.get(Message, mail_uuid)
+        source: Message | GlacierMessage | None = await session.get(Message, mail_uuid)
+        if source is None:
+            glacier_result = await session.execute(
+                select(GlacierMessage).where(
+                    GlacierMessage.id == mail_uuid, GlacierMessage.visible_at.is_not(None),
+                )
+            )
+            source = glacier_result.scalar_one_or_none()
         if source is None:
             return {"success": False, "error": "Message not found"}
         if source.is_truncated:
@@ -985,12 +1145,15 @@ async def reply_mail(
 
     draft: ReplyDraft | ForwardDraft
     if mode == "forward":
-        from mail_verdict.api.deps import get_attachment_repo
+        from mail_verdict.database.repository import list_attachments_for_mails
 
         draft = derive_forward(source)
         recipients_to = merge_addresses([], to)
         recipients_cc = merge_addresses([], cc, exclude=recipients_to)
-        source_attachments = await get_attachment_repo().get_by_message_id(source.id)
+        async with db.session() as attachment_session:
+            source_attachments = (
+                await list_attachments_for_mails(attachment_session, [source.id])
+            )[source.id]
         outbox_attachments = [
             (a.filename or "attachment", a.content_type, a.data or b"") for a in source_attachments
         ] + decoded_attachments
@@ -1138,12 +1301,13 @@ async def semantic_search_mail(
         closer), ranked nearest first -- up to limit, or fewer if the
         rest don't clear the account's configured strictness cutoff (see
         embeddings/search.py: relative to the best match in the pool, not
-        an absolute floor). Only messages already encoded with the
-        currently configured model are searched -- see get_semantic_status
-        for coverage.
+        an absolute floor). Only messages already encoded with the model
+        currently serving search are searched -- which lags the configured
+        one during a re-embed -- see get_semantic_status for coverage.
     """
     from mail_verdict.embeddings.provider import (
-        DEFAULT_EMBEDDING_MODEL,
+        resolve_active_embedding_model,
+        resolve_active_embedding_provider,
         resolve_embedding_provider,
     )
     from mail_verdict.embeddings.search import semantic_search
@@ -1151,10 +1315,13 @@ async def semantic_search_mail(
     from mail_verdict.settings.service import get_settings_service
 
     settings = get_settings_service().get("semantic")
-    model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    # The model and provider actually serving search right now, not the
+    # migration target -- see resolve_active_embedding_model's docstring.
+    model = resolve_active_embedding_model(settings)
+    provider_name, base_url = resolve_active_embedding_provider(settings)
     strictness = settings.get("default_strictness", "balanced")
     provider = resolve_embedding_provider(
-        str(settings.get("provider", "openai")), get_provider_credential_repo(),
+        provider_name, get_provider_credential_repo(), base_url=base_url,
     )
     vectors = await provider.embed_batch([query], model=model)
 
@@ -1163,8 +1330,13 @@ async def semantic_search_mail(
         get_db_connection(), query_vector=vectors[0], model=model, account_id=aid,
         k=limit, strictness=strictness,
     )
+    async with get_db_connection().session() as session:
+        glacier_ids = await glacier_ids_among(session, [hit.message.id for hit in outcome.results])
     return [
-        {**_message_summary(hit.message), "similarity": hit.similarity}
+        {
+            **_message_summary(hit.message, is_glacier=hit.message.id in glacier_ids),
+            "similarity": hit.similarity,
+        }
         for hit in outcome.results
     ]
 
@@ -1822,3 +1994,67 @@ async def delete_contact(contact_id: str) -> dict[str, Any]:
     except HTTPException as exc:
         return {"success": False, **_endpoint_error(exc)}
     return {"success": True}
+
+
+@mcp.tool(
+    name="list_orders",
+    annotations={
+        "title": "List Orders",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def list_orders(state: str = "all", limit: int = 50) -> list[dict[str, Any]]:
+    """
+    List orders and tickets, newest activity first -- the register
+    bundling every mail about one purchase, ticket or booking across
+    every enabled account.
+
+    Args:
+        state: "all" or "open" (still expecting something to happen)
+        limit: Max results, 1-500 (default 50)
+
+    Returns:
+        List of orders: id, merchant, subject, status, title, is_open,
+        is_favorite, is_sealed, open_set_by (ai/user/auto), expected_until,
+        icon, summary_preview, first_mail_at, last_mail_at, mail_count,
+        account_ids, text_stale, updated_at
+    """
+    try:
+        result = await _list_orders(
+            state=state, before=None, limit=min(max(limit, 1), 500), favorites=False, q=None,
+        )
+    except HTTPException as exc:
+        return [_endpoint_error(exc)]
+    return [item.model_dump(mode="json") for item in result.items]
+
+
+@mcp.tool(
+    name="get_order",
+    annotations={
+        "title": "Get Order",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def get_order(order_id: str) -> dict[str, Any]:
+    """
+    Get one order's full detail: title, markdown summary, numbers,
+    documents, and its mails in time order.
+
+    Args:
+        order_id: Order UUID (see list_orders)
+
+    Returns:
+        Everything list_orders returns for this order, plus summary,
+        identifiers, mails and documents -- or {"error": ...}
+    """
+    try:
+        detail = await _get_order(order_id=uuid.UUID(order_id))
+    except HTTPException as exc:
+        return _endpoint_error(exc)
+    return detail.model_dump(mode="json")

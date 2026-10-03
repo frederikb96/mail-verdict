@@ -44,3 +44,26 @@ class TestClientConstruction:
         second = get_openai_client("sk-new")
         assert first is not second
         assert second.timeout == REQUEST_TIMEOUT_SECONDS
+
+    def test_default_base_url_is_openais_own(self) -> None:
+        """No base_url given -- the SDK's own default, not a compatible server."""
+        client = get_openai_client("sk-test")
+        assert client is not None
+        assert "api.openai.com" in str(client.base_url)
+
+    def test_a_base_url_points_the_client_at_a_compatible_server(self) -> None:
+        client = get_openai_client("sk-test", base_url="https://example.test/v1")
+        assert client is not None
+        assert str(client.base_url).rstrip("/") == "https://example.test/v1"
+
+    def test_same_key_and_base_url_reuses_the_cached_client(self) -> None:
+        first = get_openai_client("sk-test", base_url="https://example.test/v1")
+        second = get_openai_client("sk-test", base_url="https://example.test/v1")
+        assert first is second
+
+    def test_a_changed_base_url_rebuilds_the_client(self) -> None:
+        """Same key, different server -- must not reuse the wrong client."""
+        first = get_openai_client("sk-test", base_url="https://a.example.test/v1")
+        second = get_openai_client("sk-test", base_url="https://b.example.test/v1")
+        assert first is not second
+        assert str(second.base_url).rstrip("/") == "https://b.example.test/v1"

@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from mail_verdict.database.models import Identity, Message
+from mail_verdict.database.models import GlacierMessage, Identity, Message
 
 _QUOTE_BAR_STYLE = "margin:0 0 0 .8ex;border-left:1px #ccc solid;padding-left:1ex"
 
@@ -125,7 +125,7 @@ def _format_attribution_date(received_at: datetime | None) -> str:
     return f"{received_at:%a}, {received_at.day} {received_at:%b %Y, %H:%M}"
 
 
-def _reply_attribution(source: Message) -> str:
+def _reply_attribution(source: Message | GlacierMessage) -> str:
     sender = _extract_sender_name(source.from_addr)
     date = _format_attribution_date(source.received_at)
     return f"On {date}, {sender} wrote:"
@@ -187,7 +187,7 @@ class ForwardDraft:
 
 
 def derive_reply(
-    source: Message, own_addresses: list[str], mode: Literal["reply", "reply_all"],
+    source: Message | GlacierMessage, own_addresses: list[str], mode: Literal["reply", "reply_all"],
 ) -> ReplyDraft:
     """Recipients, subject and threading headers for a reply or
     reply-all, mirroring reply.ts's buildReply. own_addresses are left out
@@ -231,7 +231,7 @@ def derive_reply(
     )
 
 
-def derive_forward(source: Message) -> ForwardDraft:
+def derive_forward(source: Message | GlacierMessage) -> ForwardDraft:
     """Subject and forwarded-message attribution, mirroring reply.ts's
     buildForward. Carries no In-Reply-To/References -- a forward starts a
     thread of its own with whoever it goes to, the same as buildForward's

@@ -45,6 +45,7 @@ import type {
   Identity,
   ImageExceptionCreate,
   ImageExceptionResponse,
+  SecretResponse,
   ImportInvitationRequest,
   Invitation,
   MessageActionRequest,
@@ -55,6 +56,10 @@ import type {
   MessageQuoteResponse,
   NotificationCountResponse,
   NotificationResponse,
+  OrderCatchUpResponse,
+  OrderDetail,
+  OrderListResponse,
+  OrderUpdateRequest,
   OutboxCreateRequest,
   OutboxCreateResult,
   OutboxResponse,
@@ -65,6 +70,8 @@ import type {
   PipelineRunResponse,
   PipelineTestRequest,
   PipelineTestResponse,
+  RuleAssistantRequest,
+  RuleAssistantResponse,
   PipelineWriteRequest,
   QueuePatchRequest,
   QueueResponse,
@@ -270,6 +277,20 @@ export const api = {
     },
   },
 
+  secrets: {
+    list(): Promise<SecretResponse[]> {
+      return request("/secrets");
+    },
+    put(name: string, value: string): Promise<{ name: string; created: boolean }> {
+      return request(`/secrets/${encodeURIComponent(name)}`, {
+        method: "PUT",
+        body: JSON.stringify({ value }),
+      });
+    },
+    delete(name: string): Promise<void> {
+      return request(`/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    },
+  },
   imageExceptions: {
     list(accountId: string): Promise<ImageExceptionResponse[]> {
       return request(`/accounts/${accountId}/image-exceptions`);
@@ -781,6 +802,20 @@ export const api = {
         body: JSON.stringify(data),
       });
     },
+    /** One sentence about an open mail -> one proposed rule change. Nothing is
+     * stored; accepting is `createStage`/`updateStage` with the proposal's
+     * `base_revision`. Aborting the signal stops the server's next model call. */
+    assistant(
+      data: RuleAssistantRequest,
+      signal?: AbortSignal,
+    ): Promise<RuleAssistantResponse> {
+      return request("/pipeline/assistant", {
+        method: "POST",
+        body: JSON.stringify(data),
+        signal,
+        timeoutMs: 60_000,
+      });
+    },
   },
 
   queues: {
@@ -997,6 +1032,64 @@ export const api = {
     },
     delete(id: string): Promise<void> {
       return request(`/contacts/${id}`, { method: "DELETE" });
+    },
+  },
+
+  orders: {
+    /** Newest activity first, hidden until an order has its first
+     * AI-written text. */
+    list(params?: {
+      state?: "all" | "open";
+      before?: string;
+      limit?: number;
+      /** Favorites in any state. */
+      favorites?: boolean;
+      /** Every word must match, in any order, typos tolerated. */
+      q?: string;
+    }): Promise<OrderListResponse> {
+      return request(`/orders${qs(params ?? {})}`);
+    },
+    update(id: string, patch: OrderUpdateRequest): Promise<OrderDetail> {
+      return request(`/orders/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+    },
+    get(id: string): Promise<OrderDetail> {
+      return request(`/orders/${id}`);
+    },
+    delete(id: string): Promise<void> {
+      return request(`/orders/${id}`, { method: "DELETE" });
+    },
+    /** Enqueues a fresh write call over the order's own mails. */
+    rewrite(id: string): Promise<void> {
+      return request(`/orders/${id}/rewrite`, { method: "POST" });
+    },
+    /** Moves every mail and number of `id` into `into` and deletes `id`. */
+    merge(id: string, into: string): Promise<OrderDetail> {
+      return request(`/orders/${id}/merge`, {
+        method: "POST",
+        body: JSON.stringify({ into }),
+      });
+    },
+    /** Removes one mail from its order, or moves it to another --
+     * `mailKey` is the mail's OrderMail.key (order_mails.id), not its
+     * durable msg_key. Never re-bundled automatically either way. */
+    detachMail(orderId: string, mailKey: string, moveTo?: string | null): Promise<OrderDetail | null> {
+      return request(`/orders/${orderId}/mails/${mailKey}/detach`, {
+        method: "POST",
+        body: JSON.stringify({ move_to: moveTo ?? null }),
+      });
+    },
+    catchUp(params: {
+      account_id: string;
+      days: number;
+      dry_run: boolean;
+    }): Promise<OrderCatchUpResponse> {
+      return request("/orders/catch-up", {
+        method: "POST",
+        body: JSON.stringify(params),
+      });
     },
   },
 };

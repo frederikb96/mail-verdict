@@ -33,6 +33,7 @@ from sqlalchemy import Table, select, text
 
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.database.models import Message, PipelineRun, VerdictSource
+from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.pipeline import effect_codec
 from mail_verdict.pipeline.context import (
     BoundLog,
@@ -127,11 +128,11 @@ class PipelineRunner:
     def _circuit_name(self) -> str:
         """The breaker a classify stage's calls actually trip.
 
-        `ModelGateway` names its breaker for the provider, which is the
-        live `ai.provider` setting rather than the queue -- so this is
-        resolved per call, not captured at registration.
+        `ModelGateway` names its breaker for `(provider, category)`, the
+        live `ai.provider` setting and the fixed category "ai" -- so this
+        is resolved per call, not captured at registration.
         """
-        return str(self._settings.get("ai")["provider"]).lower()
+        return f"{str(self._settings.get('ai')['provider']).lower()}:ai"
 
     async def dry_run(
         self, *, account_id: uuid.UUID, message_id: uuid.UUID,
@@ -207,6 +208,8 @@ class PipelineRunner:
             models=ModelGateway(self._db, self._cred_repo, retry_config),
             log=BoundLog(logger, run_id="dry-run-stage"),
             account_spam_enabled=bool(account_prefs and account_prefs.spam_enabled),
+            account_orders_enabled=bool(account_prefs and account_prefs.orders_enabled),
+            orders=OrderLookup(self._db),
         )
 
         stage = build_stage(stage_def)
@@ -318,6 +321,8 @@ class PipelineRunner:
             models=ModelGateway(self._db, self._cred_repo, retry_config),
             log=BoundLog(logger, run_id=str(run_id)),
             account_spam_enabled=bool(account_prefs and account_prefs.spam_enabled),
+            account_orders_enabled=bool(account_prefs and account_prefs.orders_enabled),
+            orders=OrderLookup(self._db),
         )
 
         trace: list[dict[str, Any]] = []

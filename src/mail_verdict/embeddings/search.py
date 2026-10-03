@@ -39,11 +39,13 @@ import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from sqlalchemy import and_, select, text
+from sqlalchemy import and_, desc, select, text
+from sqlalchemy.orm import aliased
 
-from mail_verdict.database.models import Message, MessageEmbedding
+from mail_verdict.database.models import GlacierMessage, Message, MessageEmbedding
+from mail_verdict.glacier.rows import glacier_as_message_select, touches_glacier
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -164,7 +166,7 @@ async def semantic_search(
         distance = MessageEmbedding.embedding.cosine_distance(query_vector)
         similarity = (1 - distance).label("similarity")
 
-        stmt = (
+        live_stmt = (
             select(Message, similarity)
             .join(
                 MessageEmbedding,
@@ -178,17 +180,60 @@ async def semantic_search(
                 MessageEmbedding.status == "done",
                 Message.expunged_at.is_(None),
             )
-            .order_by(distance)
-            .limit(k)
         )
         if account_id is not None:
-            stmt = stmt.where(Message.account_id == account_id)
+            live_stmt = live_stmt.where(Message.account_id == account_id)
         if folder_ids is not None:
-            stmt = stmt.where(Message.folder_id.in_(folder_ids))
+            live_stmt = live_stmt.where(Message.folder_id.in_(folder_ids))
         if received_after is not None:
-            stmt = stmt.where(Message.received_at >= received_after)
+            live_stmt = live_stmt.where(Message.received_at >= received_after)
         if received_before is not None:
-            stmt = stmt.where(Message.received_at <= received_before)
+            live_stmt = live_stmt.where(Message.received_at <= received_before)
+
+        # A glaciered message's embedding hint is NULL by design (design
+        # section 4.7 -- see GlacierMessage's own docstring), so it can
+        # never be found through the live join above; joined here
+        # instead on the durable (account_id, msg_key) identity, which
+        # needs no hint at all. Only added when this search's own scope
+        # can reach a glacier at all -- glacier_folders empty means the
+        # union below never runs, the same "pays nothing" guarantee
+        # database/repository.py's own text-search union gives.
+        glacier_folders = await touches_glacier(
+            session, account_id=account_id, folder_ids=folder_ids,
+        )
+        stmt: Any
+        order_col: Any
+        if glacier_folders:
+            glacier_distance = MessageEmbedding.embedding.cosine_distance(query_vector)
+            glacier_similarity = (1 - glacier_distance).label("similarity")
+            glacier_stmt = (
+                glacier_as_message_select()
+                .add_columns(glacier_similarity)
+                .join(
+                    MessageEmbedding,
+                    and_(
+                        MessageEmbedding.account_id == GlacierMessage.account_id,
+                        MessageEmbedding.msg_key == GlacierMessage.msg_key,
+                    ),
+                )
+                .where(
+                    MessageEmbedding.model == model, MessageEmbedding.status == "done",
+                    GlacierMessage.folder_id.in_(glacier_folders),
+                )
+            )
+            if received_after is not None:
+                glacier_stmt = glacier_stmt.where(GlacierMessage.received_at >= received_after)
+            if received_before is not None:
+                glacier_stmt = glacier_stmt.where(GlacierMessage.received_at <= received_before)
+            sub = live_stmt.union_all(glacier_stmt).subquery()
+            entity = aliased(Message, sub)
+            stmt = select(entity, sub.c.similarity)
+            order_col = desc(sub.c.similarity)
+        else:
+            stmt = live_stmt
+            order_col = distance
+
+        stmt = stmt.order_by(order_col).limit(k)
 
         pool = [
             SemanticSearchResult(message=row[0], similarity=row[1])

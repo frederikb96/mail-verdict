@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Save, Loader2, Archive, Bot, CalendarDays, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
+import { Save, Loader2, Archive, Bot, CalendarDays, Package, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import { useTheme } from "@/components/theme-provider";
 import { AccountOrder } from "@/components/settings/account-order";
 import { UnifiedViewsSettings } from "@/components/settings/unified-setup";
 import { AlertSettings } from "@/components/settings/alert-settings";
+import { SecretsCard } from "@/components/settings/secrets-card";
 import { CalendarLinksCard } from "@/components/settings/calendar-links";
 import { DefaultCalendarSetting } from "@/components/settings/default-calendar-setting";
 
@@ -38,6 +39,7 @@ import { DefaultCalendarSetting } from "@/components/settings/default-calendar-s
 const CATEGORIES = [
   { key: "ai", label: "AI", icon: Bot },
   { key: "semantic", label: "Semantic search", icon: Sparkles },
+  { key: "orders", label: "Orders", icon: Package },
   { key: "retry", label: "Retry", icon: Repeat },
   { key: "pipeline", label: "Pipeline", icon: Workflow },
   { key: "outbox", label: "Outbox", icon: Undo2 },
@@ -56,12 +58,19 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
     "anthropic_api_key_hint",
     "openai_api_key_configured",
     "openai_api_key_hint",
+    "custom_api_key_configured",
+    "custom_api_key_hint",
   ],
   // Rendered by DefaultCalendarSetting instead, below -- a bare calendar
   // id typed into a text box is not a control anyone can use; it needs
   // the same enabled/writable calendar list the event editor itself
   // offers.
   calendar: ["default_calendar_id"],
+  // active_model/active_provider/active_base_url are managed by the
+  // backfill reconciler, not something to type into -- see
+  // embeddings/provider.py's resolve_active_embedding_model. Shown
+  // read-only above the form instead (EmbeddingMigrationStatus below).
+  semantic: ["active_model", "active_provider", "active_base_url"],
 };
 
 /** A hand-authored label for a settings field whose raw key doesn't
@@ -75,6 +84,7 @@ const COMPUTED_SETTINGS: Record<string, string[]> = {
 const SETTING_LABELS: Record<string, string> = {
   provider: "Provider",
   model: "Model",
+  base_url: "Server address (custom provider only)",
   reasoning_effort: "Reasoning effort",
   max_tokens: "Max tokens",
   max_retries: "Max retries",
@@ -98,6 +108,8 @@ const SETTING_LABELS: Record<string, string> = {
   mark_read_on_file_to_archive_or_junk: "Mark read when filed to Archive or Junk",
   bell_badge_counts_new_mail: "Bell badge counts new mail",
   notify_wait_seconds: "Wait before notifying (seconds)",
+  language: "Language of titles and summaries",
+  filter: "First filter (patterns)",
 };
 
 /** A raw settings key read as a sentence rather than the key itself --
@@ -150,12 +162,15 @@ function SettingField({
   }
 
   if (typeof value === "object" && value !== null) {
+    const serialized = JSON.stringify(value, null, 2);
+    const lineCount = serialized.split("\n").length;
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm" title={name}>{humanizeSettingKey(name)}</Label>
         <Textarea
-          value={JSON.stringify(value, null, 2)}
-          rows={4}
+          value={serialized}
+          rows={Math.min(30, Math.max(4, lineCount))}
+          className="font-mono text-xs"
           onChange={(e) => {
             try {
               onChange(name, JSON.parse(e.target.value));
@@ -325,11 +340,15 @@ function ProviderKeyField({
 }
 
 /** Every provider key, each its own field -- the fields `CategorySettings`
- * deliberately excludes above. */
+ * deliberately excludes above. One shared "custom" key serves any category
+ * (AI, Semantic search) whose own provider field is set to "custom" -- a
+ * compatible deployment is one account, reached at that category's own
+ * server-address field. */
 function ProviderKeySettings({ settings }: { settings: Record<string, unknown> }) {
   const providers: { key: string; label: string }[] = [
     { key: "anthropic", label: "Anthropic" },
     { key: "openai", label: "OpenAI" },
+    { key: "custom", label: "Custom (OpenAI-compatible)" },
   ];
   return (
     <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3 text-sm">
@@ -338,8 +357,30 @@ function ProviderKeySettings({ settings }: { settings: Record<string, unknown> }
       ))}
       <p className="text-xs text-muted-foreground">
         Keys are encrypted at rest and never shown again once saved -- clearing one falls back to
-        the matching environment variable, if set.
+        the matching environment variable, if set. The Custom key and server address are shared by
+        any category set to the Custom provider, so set them here once.
       </p>
+    </div>
+  );
+}
+
+/**
+ * A read-only line showing whether a re-embed is in progress -- present
+ * only while active_model differs from the configured model, i.e. while
+ * the backfill reconciler is still filling the new model's coverage and
+ * search is still answering from the old one (see
+ * embeddings/provider.py's resolve_active_embedding_model).
+ */
+function EmbeddingMigrationStatus({ settings }: { settings: Record<string, unknown> }) {
+  const activeModel = settings.active_model;
+  const targetModel = settings.model;
+  if (!activeModel || activeModel === targetModel) return null;
+  return (
+    <div className="rounded-md border bg-muted/30 p-3 text-sm">
+      Re-embedding in progress: search still answers from{" "}
+      <span className="font-mono">{String(activeModel)}</span> while every message is embedded
+      with <span className="font-mono">{String(targetModel)}</span>. Switches over automatically
+      once coverage is complete.
     </div>
   );
 }
@@ -519,6 +560,9 @@ export function SettingsPage() {
                   {key === "ai" && allSettings?.ai && (
                     <ProviderKeySettings settings={allSettings.ai} />
                   )}
+                  {key === "semantic" && allSettings?.semantic && (
+                    <EmbeddingMigrationStatus settings={allSettings.semantic} />
+                  )}
                   {allSettings?.[key] ? (
                     <CategorySettings category={key} settings={allSettings[key]} />
                   ) : (
@@ -532,6 +576,7 @@ export function SettingsPage() {
             </TabsContent>
           ))}
         </Tabs>
+        <SecretsCard />
       </div>
     </div>
   );

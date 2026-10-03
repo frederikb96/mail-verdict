@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Added an "Add rule" assistant: an icon in the reading pane takes one sentence about the open
+  mail and proposes exactly one change to the rules -- a condition added to an existing rule, a new
+  rule at the end, or one rule replaced -- with the explanation, the change itself and how many of
+  the account's last 100 mails it would have caught, for Accept or Decline. Nothing is stored,
+  closing cancels, and it never proposes an `expunge` or `webhook` effect. It uses the `ai` model
+  settings and `POST /api/pipeline/assistant`; accepting is an ordinary pipeline write. The open
+  mail's excerpt, the rule set and a few other senders and subjects go to the model provider when
+  it is used.
+- Fixed a rule condition object that combined `all`, `any` or `not` with another key being
+  accepted and silently evaluated as the composite alone, so `{"sender_match": ..., "not":
+  {...}}` ignored the sender. Such a condition is now rejected on write and raises when evaluated;
+  a stored rule written that way fails its next edit until it is split with `all`.
+- Keyboard shortcuts (`e`, `Delete`, `r`, Enter and the rest) no longer act while focus is inside
+  a dialog.
+- The orders screen gained favorites (a star on the row and in the detail, and a Favorites view
+  beside All and Open), a filter field matching every word in any order and tolerating typos, and
+  Close/Reopen and Seal/Unseal for an order. One action list serves the detail's top-right menu
+  and a menu on each row, opened by right-click or a touch long press. On a touch screen a row
+  swipes: right to left toggles favorite, left to right toggles closed and open.
+- Orders: `PATCH /api/orders/{id}` sets a favorite, closes or reopens an order and seals it; the
+  list takes `favorites=true` and a typo-tolerant `q` text filter (the mail search fallback's own
+  matcher, now shared). A sealed order is never offered to the order agent and takes no further
+  mail, and its numbers can be claimed by a new order. A person's open/closed decision stays until
+  the next mail arrives, which hands it back to the model.
+- Orders are closed automatically once nothing is expected of them. The write call now estimates
+  when an order is naturally over (`expected_until`); such an order closes
+  `orders.auto_close_grace_days` (7) after the later of that date and its last mail, and one with no
+  estimate closes `orders.auto_close_days` (30) after its last mail. `auto_close_days` 0 turns it
+  off. Existing open orders get one rewrite to fill the date in.
+- A shipment number that exists only in a tracking link's target (a carrier template whose link
+  text is an unfilled placeholder) now reaches the text the order agent reads and is stored as a
+  tracking number, so such notices stop collapsing into one entry. The decide prompt states that a
+  carrier notice with a different tracking number is a different shipment.
+- Deleting an order, merging it away or emptying it removes its write jobs and clears the order
+  pointer on the mail jobs, leaving nothing that names it; the mail jobs themselves stay so its
+  mails are not bundled again.
+- Added a secret store: named values encrypted at rest with the same key as provider keys, set,
+  replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
+  returned by any endpoint.
+- Added a `webhook` rule action that sends the matching mail's raw source to a URL, with header
+  values that can reference a stored secret as `{{secret:NAME}}`. Deliveries are queued and made
+  one after another by a worker: a 2xx is final and never repeated, a 5xx or network error is
+  retried with backoff, any other response ends the delivery, and a delivery that gives up raises a
+  `webhook_failed` alert. `POST /api/webhooks/{name}/backfill` sends mail that predates the rule,
+  oldest first and only once each (every folder except Drafts, Trash and Junk), and `GET /api/webhooks/deliveries` shows what was queued. The
+  rule editor gains an "Add webhook action" button.
+- Fixed the unified view icon picker in Settings rendering its emoji stacked on top of each other
+  in a one-column strip; it is a seven-column grid again, which also applies to the account icon
+  picker that shares it.
+- The folder-to-view list in Settings is capped to a readable width with fixed-width view
+  selectors, alternating row shading and a row highlight on hover, so each folder name sits next
+  to its own selector.
+
+## [6.7.4] - 2026-09-30
+
+- Fixed the automatic glacier sweep silently and permanently dropping a message whose Message-ID
+  header is already claimed by a different message already in the glacier -- a real case (a
+  course-notification system reusing headers across genuinely different mail) that produced no log
+  line, no notification and no counter, so the message was reselected as a candidate and refused
+  again on every tick forever with nothing anywhere to say so. Such a message now raises a durable,
+  dismissable alert once, the same way a stalled outbox send already does, rather than disappearing
+  without a trace. Deciding whether two messages may share an identity in the glacier at all is a
+  separate, deliberately unaddressed question.
+
+## [6.7.3] - 2026-09-30
+
+- Fixed the embedding backfill's periodic sweep getting permanently stuck on a mailbox with more
+  duplicate-header messages -- the same mail stored in two folders, of which only one can ever
+  hold a vector -- than its selection window holds: since those messages never get an embedding
+  row of their own, they kept reappearing as candidates on every sweep, and once there were enough
+  of them the newest-first window filled entirely with rows that could never be inserted, leaving
+  everything older than them never offered a single time. Such messages are now excluded from the
+  selection itself rather than merely skipped after being selected, so the sweep always reaches
+  every other message regardless of how many duplicates accumulate.
+
+## [6.7.2] - 2026-09-30
+
+- Fixed a provider API key sent to a settings category other than AI -- the semantic search
+  category's own shared custom-server key, among others -- being merged into that category's
+  stored settings and returned by every later read, instead of masked the way an AI provider key
+  always was. Masking now applies to every settings category by the shape of the field rather than
+  by an enumerated list of which categories carry one, so this closes for whichever category might
+  need a key next as well. A key already stored this way is removed on upgrade.
+
+## [6.7.1] - 2026-09-30
+
+- Fixed the orders migration writing the pipeline's current revision as JSON text instead of a
+  JSON object, which made the pipeline page, its health check and spam classification of new mail
+  fail after upgrading. A database that already ran the broken migration is repaired automatically
+  on upgrade, with its pipeline stages left exactly as they were.
+
+## [6.7.0] - 2026-09-30
+
+- Glacier storage: a per-account place a message can be moved to where it leaves the mail
+  server for good and lives on only in this database. It behaves like a folder -- listed,
+  searchable, selectable in unified views -- can be left again (back onto a server folder), and
+  can fill itself from an account's archive automatically after a configured number of days.
+  Moving a message in and out uses the ordinary move action; nothing else changes. Moving a
+  message in is refused, naming the deployment's PostIMAP version, whenever that PostIMAP cannot
+  carry it back out again -- restore must work before removal is ever offered at all.
+- A new "Orders & tickets" screen bundles every mail about one purchase, ticket or booking --
+  confirmation, invoice, shipping, carrier notices, delivery, return, refund, customer-service
+  conversation -- into one entry with an AI-written title, status and summary, across every
+  enabled account. Switched on per account, next to spam detection. A mail can be moved between
+  orders or removed, two orders merged, a summary rewritten by hand, and recent mail looked
+  through after switching the feature on. Opening one of an order's mails shows it in the normal
+  mail view, and going back returns to the order -- and to the list behind it -- at the same
+  place.
+- The AI provider for spam verdicts and for embeddings is now a setting: OpenAI as before, or any
+  OpenAI-compatible server by address, key and model name. Switching the embedding model re-embeds
+  the whole store in the background while search keeps answering from the old vectors, cutting
+  over automatically once every message has been tried under the new model and it reaches at
+  least as much of the mailbox as the old one did -- a message that will never embed successfully
+  no longer holds the switch back forever. `GET /api/embeddings/status` reports whether a
+  migration is ready to cut over, and why not when it isn't. A rate limit from the provider backs
+  every queued item off together rather than failing any of them.
+- A queue card on the Pipeline page whose circuit is open or suspended now offers "Retry now",
+  closing it immediately instead of waiting out its own timer -- useful the moment a wrong
+  provider key or model is fixed.
+- A long message's links now always reach the spam classifier, including ones an HTML anchor's
+  visible text gives no hint of and ones that would otherwise have sat past the body excerpt's cut.
+- The calendar's month view now selects a week a little above the middle of the visible rows,
+  not the topmost one -- the header and the currently-selected date always agree on that same
+  row, and jumping to a date (Today, the mini-month, a link) lands its week there too.
+
 ## [6.6.1] - 2026-09-28
 
 - A new mail shows one desktop notification again on a browser that also has push switched

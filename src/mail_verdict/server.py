@@ -63,6 +63,7 @@ from mail_verdict.settings.credentials import (
     init_provider_credential_repo,
     reset_provider_credential_repo,
 )
+from mail_verdict.settings.secret_store import reset_secret_repo
 from mail_verdict.settings.service import init_settings_service, reset_settings_service
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,8 @@ _stalled_outbox_timer: Any | None = None
 _action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
+_order_auto_closer: Any | None = None
+_glacier_sweeper: Any | None = None
 _read_state_reconciler: Any | None = None
 _contract_ok: bool = False
 _liveness_server: ThreadingHTTPServer | None = None
@@ -144,7 +147,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _queue_manager, _pipeline_notifier, _pipeline_reconciler
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
-    global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler
+    global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler, _glacier_sweeper
+    global _order_auto_closer
     global _stalled_outbox_timer, _action_submission_pruner
 
     config = get_config()
@@ -176,6 +180,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if config.security.encryption_key
         else "No ENCRYPTION_KEY set -- provider keys must come from environment variables",
     )
+
+    from mail_verdict.settings.secret_store import init_secret_repo
+
+    secret_repo = init_secret_repo(db, config.security.encryption_key)
 
     from mail_verdict.push.vapid import init_vapid_key_repo
 
@@ -216,6 +224,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
     from mail_verdict.embeddings.repository import EmbeddingRepository
     from mail_verdict.embeddings.worker import register_embeddings
+    from mail_verdict.orders.intake import enqueue_thread_follow_up
     from mail_verdict.pipeline.enqueue import (
         build_reconciliation_timer,
         enqueue_live_arrival,
@@ -270,6 +279,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # have to be running for anything to move.
     _embedding_components = register_embeddings(
         _queue_manager, db, cred_repo, settings_service,
+    )
+
+    from mail_verdict.orders.worker import register_orders
+
+    register_orders(_queue_manager, db, cred_repo, settings_service, event_ring)
+
+    from mail_verdict.webhooks.worker import register_webhooks
+
+    register_webhooks(
+        _queue_manager, db, secret_repo, config.webhooks, event_ring, vapid_repo,
     )
 
     await _queue_manager.start()
@@ -333,6 +352,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _retention_sweeper = build_retention_timer(db)
     await _retention_sweeper.start()
 
+    from mail_verdict.orders.auto_close import build_auto_close_timer
+
+    _order_auto_closer = build_auto_close_timer(db, settings_service, event_ring)
+    await _order_auto_closer.start()
+
+    from mail_verdict.glacier.sweep import build_glacier_sweep_timer
+
+    _glacier_sweeper = build_glacier_sweep_timer(db, event_ring, config.glacier, vapid_repo)
+    await _glacier_sweeper.start()
+
     from mail_verdict.alerts.resolve import resolve_for_message_event
     from mail_verdict.filing.read_state import build_read_state_timer, mark_read_on_landing
     from mail_verdict.outbox.stalled import resolve_stalled_for_outbox_event
@@ -363,6 +392,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     # that alert resolves at birth instead of announcing.
                     await mark_read_on_landing(db, settings_service, event)
                     await enqueue_live_arrival(db, event, settings_service)
+                    await enqueue_thread_follow_up(db, event)
                     if _calendar_intake_handler:
                         await _calendar_intake_handler.handle_message_event(event)
                     try:
@@ -494,6 +524,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _action_submission_pruner.stop()
     if _retention_sweeper:
         await _retention_sweeper.stop()
+    if _glacier_sweeper:
+        await _glacier_sweeper.stop()
+    if _order_auto_closer:
+        await _order_auto_closer.stop()
     if _read_state_reconciler:
         await _read_state_reconciler.stop()
     if _embedding_components:
@@ -513,6 +547,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _action_submission_pruner = None
     _mail_alert_finalizer = None
     _retention_sweeper = None
+    _glacier_sweeper = None
+    _order_auto_closer = None
     _read_state_reconciler = None
     _contract_ok = False
 
@@ -524,6 +560,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reset_anthropic_provider()
     reset_openai_provider()
     reset_provider_credential_repo()
+    reset_secret_repo()
     reset_vapid_key_repo()
     reset_relay_client()
     reset_settings_service()

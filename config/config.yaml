@@ -70,6 +70,29 @@ push:
   # How long one request to a relay may take before it counts as failed.
   relay_timeout_seconds: 10
 
+# Rule-triggered webhooks (webhooks/worker.py): a rule's "webhook" action
+# queues one delivery per mail, and one worker sends them in order.
+webhooks:
+  # How long one request may take end to end. Some receivers do real work
+  # inside the request (parsing an attachment, say), so this is generous.
+  request_timeout_seconds: 60
+  # Attempts per delivery before it is marked failed and raised as an alert.
+  # Only a transient outcome (5xx, 408, 429, network error, timeout) is
+  # retried; any other response ends the delivery at once.
+  max_attempts: 6
+  # Retry delay: full-jitter exponential from the base, capped.
+  base_delay_seconds: 30
+  max_delay_seconds: 1800
+  # Largest raw message sent. A larger one fails at once instead of being
+  # rejected by the receiver after a long upload.
+  max_body_bytes: 26214400
+  # Fallback poll when the queue's wake-up notification is missed.
+  poll_interval_seconds: 2
+  # How long a claimed delivery may sit unrenewed before it is reclaimed.
+  # The worker renews it while a request is in flight, so this only
+  # matters after a crash.
+  lease_seconds: 120
+
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10
@@ -92,3 +115,42 @@ search:
   # startup against this ceiling; above it, the exact scan should be
   # measured again rather than assumed to still be the right choice.
   exact_scan_row_ceiling: 200000
+
+# The glacier: a per-account place a message can be moved to where it
+# leaves the mail server for good and lives on only in this database
+# (glacier/). Every write it makes to the mail server -- an EXPUNGE, an
+# APPEND on restore -- goes through the same small, paced steps whether
+# triggered by hand or by the automatic sweep below.
+glacier:
+  # The global kill switch for the automatic sweep. Manual glaciering
+  # and restore are unaffected -- this only stops the periodic pass that
+  # moves an account's own archive in on its own schedule.
+  sweep_enabled: true
+  # How often the sweep ticks, per process (one replica actually runs it
+  # at a time, via an advisory lock).
+  interval_seconds: 60
+  # How many messages one tick may newly glacier, per account. Paced
+  # deliberately low: each glaciered message becomes one queued IMAP
+  # EXPUNGE in PostIMAP's outbound queue, ahead of every flag change and
+  # send that account makes meanwhile -- a flood here would stall the
+  # interactive app. At this rate a mailbox with thousands of archived
+  # messages finishes in a few hours, not in one tick.
+  batch_size: 25
+  # The sweep's circuit breaker: an account with this many messages
+  # already sitting unconfirmed in the "removing" state is skipped
+  # entirely until some of them resolve, rather than piling on more.
+  max_unconfirmed: 500
+  # How long a message must have sat in "removing" with no matching
+  # sync_notifications failure before its expunge counts as confirmed --
+  # the contract offers no positive "this landed" signal, so the end is
+  # detected by age instead of by enumerating every way it can fail.
+  confirm_grace_seconds: 600
+  # The largest manual move-into-the-glacier a single request may make.
+  # The copy itself is cheap, but each message becomes one queued IMAP
+  # EXPUNGE, so a large manual selection is refused in favour of turning
+  # on the automatic sweep instead.
+  max_manual_batch: 200
+  # How long a restore (the APPEND syncing back as a live message) may
+  # take before it is treated as failed, with an alert raised and the
+  # glacier copy left intact for a retry.
+  restore_timeout_seconds: 1800

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -93,6 +93,11 @@ class MessageSummary(BaseModel):
         default=None,
         description="Unread message count in the thread, only present when threaded=true",
     )
+    is_glacier: bool = Field(
+        default=False,
+        description="This message is in the account's glacier -- it no longer exists on "
+        "the mail server and lives on only here.",
+    )
     mirrored_at: datetime = Field(
         description=(
             "When this row entered the mirror (messages.created_at). Named "
@@ -168,6 +173,16 @@ class MessageDetail(BaseModel):
     has_blocked_images: bool = False
     images_allowed: bool = False
     created_at: datetime
+    is_glacier: bool = Field(
+        default=False,
+        description="This message is in the account's glacier -- it no longer exists on "
+        "the mail server and lives on only here.",
+    )
+    origin_folder_name: str | None = Field(
+        default=None,
+        description="Provenance for a glaciered message: the folder it was copied out of, "
+        "by name. Null for an ordinary message.",
+    )
     tags: list[TagResponse] = Field(default_factory=list)
     attachments: list[AttachmentSummary] = Field(default_factory=list)
     verdict: VerdictResponse | None = None
@@ -225,6 +240,11 @@ class MessageActionRequest(BaseModel):
         "written and the response says applied=false. For an action queued on "
         "a device and sent later, which must not undo what happened to the "
         "message meanwhile.",
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else.",
     )
 
 
@@ -303,6 +323,11 @@ class BulkActionRequest(BaseModel):
             "nobody agreed to. Omitted, no check runs -- most actions "
             "confirm nothing and have no count to repeat back."
         ),
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Required for expunge on a message already in the glacier -- it is the "
+        "only copy in existence. Ignored everywhere else, including an ordinary expunge.",
     )
     idempotency_key: uuid.UUID | None = Field(
         default=None,
@@ -391,6 +416,15 @@ class BulkActionResponse(BaseModel):
         description=(
             "Ids from `ids` that were not acted on: gone, or no longer in the "
             "folder expected_folder_ids named for them."
+        ),
+    )
+    duplicate_count: int = Field(
+        default=0,
+        description=(
+            "Of affected_count, how many were byte-identical to a message "
+            "already in the glacier -- the server's duplicate copy was "
+            "removed rather than a new one copied. Always 0 outside a bulk "
+            "move into the glacier."
         ),
     )
 
@@ -493,11 +527,24 @@ class AccountResponse(BaseModel):
     # AccountPrefs fields (from account_prefs table)
     emoji: str | None = None
     spam_enabled: bool = False
+    orders_enabled: bool = False
     folder_order: list[str] | None = None
     # NULL/omitted is off -- see AccountPrefs.trash_retention_days /
     # .junk_retention_days, independently configurable.
     trash_retention_days: int | None = None
     junk_retention_days: int | None = None
+    glacier_enabled: bool = False
+    glacier_folder_id: uuid.UUID | None = None
+    glacier_auto_days: int | None = None
+    glacier_sweep_last_refusal: str | None = Field(
+        default=None,
+        description=(
+            "Why the automatic sweep's last tick considering this account skipped it, or "
+            "null once a tick actually proceeds. Some reasons (auto-sweep not configured) "
+            "are expected; others (an unacknowledged sync failure) never self-clear on "
+            "their own until whatever caused them is fixed."
+        ),
+    )
 
     model_config = {"from_attributes": True}
 
@@ -518,6 +565,7 @@ class AccountCreateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool = False
+    orders_enabled: bool = False
     # Zero means every retention_entries row already stamped is overdue,
     # and a negative period puts the threshold in the future -- either
     # clears the whole folder on the very next sweep tick. ge=1 rejects
@@ -548,9 +596,15 @@ class AccountUpdateRequest(BaseModel):
     # AccountPrefs fields
     emoji: str | None = None
     spam_enabled: bool | None = None
+    orders_enabled: bool | None = None
     # See AccountCreateRequest.trash_retention_days for why ge=1.
     trash_retention_days: int | None = Field(default=None, ge=1)
     junk_retention_days: int | None = Field(default=None, ge=1)
+    glacier_enabled: bool | None = None
+    # NULL turns the automatic sweep off; the switch alone (with no days
+    # set) still gives a glacier that can be moved into by hand. Same
+    # ge=1 reasoning as the two retention periods above.
+    glacier_auto_days: int | None = Field(default=None, ge=1)
 
 
 # --- Folder schemas ---
@@ -569,6 +623,11 @@ class FolderResponse(BaseModel):
     special_use: str | None = None
     mailbox_id: str | None = None
     initial_sync_done: bool = False
+    kind: Literal["imap", "glacier"] = Field(
+        default="imap",
+        description="'glacier' for the one synthetic per-account folder representing the "
+        "glacier; every real IMAP folder is 'imap'.",
+    )
     # How many messages the folder held when its first sync began: the
     # denominator for total_count while that sync runs. Set with
     # initial_sync_done false means this folder is being synced now.
@@ -942,6 +1001,7 @@ class FolderOrderItem(BaseModel):
     is_visible: bool = True
     unread_count: int = 0
     total_count: int = 0
+    kind: Literal["imap", "glacier"] = "imap"
 
 
 class FolderOrderResponse(BaseModel):
@@ -1273,7 +1333,20 @@ class EmbeddingStatusResponse(BaseModel):
     embedding of its own because a sibling sharing its Message-ID header
     already holds one (see embeddings/repository.py's status()).
     coverage is reachable/in_scope, not encoded/in_scope -- a drift shows
-    up here as coverage below 1.0 instead of as an empty search.
+    up here as coverage below 1.0 instead of as an empty search. It never
+    reaches exactly 1.0 in a real mailbox (a message can permanently fail
+    to embed), so it is not what gates a migration's cutover -- see
+    outstanding/cutover_ready/cutover_blocked_reason for that.
+
+    active is whether this model is the one currently serving search and
+    the classify stage's neighbour hints (embeddings/provider.py's
+    resolve_active_embedding_model) -- distinct from being the configured
+    `semantic.model`, which can be a migration still in flight. outstanding
+    is in-scope messages with no terminal (or in-progress) accounting yet
+    under this model at all (EmbeddingStatus.outstanding). cutover_ready
+    and cutover_blocked_reason are only meaningful, and only populated,
+    when queried for a model that is not (yet) active -- see
+    EmbeddingRepository.cutover_readiness for the predicate.
     """
 
     model: str
@@ -1285,6 +1358,10 @@ class EmbeddingStatusResponse(BaseModel):
     unreachable: int
     shadowed: int
     coverage: float
+    active: bool
+    outstanding: int
+    cutover_ready: bool | None = None
+    cutover_blocked_reason: str | None = None
 
 
 class SemanticSearchResponse(BaseModel):
@@ -1412,6 +1489,65 @@ class PipelineTestResponse(BaseModel):
     status: str
     skip_reason: str | None = None
     trace: list[dict[str, Any]]
+
+
+class RuleAssistantRequest(BaseModel):
+    """One sentence from the owner about the open mail -- 'these should go
+    to Newsletter too' -- for the rule assistant to turn into one change."""
+
+    message_id: uuid.UUID
+    prompt: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("prompt")
+    @classmethod
+    def _strip_prompt(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("prompt must not be empty")
+        return stripped
+
+
+class RuleAssistantChange(BaseModel):
+    """The one change the assistant proposes. `stage` is the complete stage
+    as it should be after Accept; Accept is an ordinary pipeline write
+    (`POST /pipeline/stages` when `is_new`, else `PATCH
+    /pipeline/stages/{stage_id}`) carrying `base_revision`."""
+
+    kind: Literal["add_condition", "new_rule", "replace_rule"]
+    base_revision: int
+    is_new: bool
+    stage: StageOut
+    title: str
+    before_text: str | None = None
+    after_text: str
+
+
+class RuleAssistantPreviewExample(BaseModel):
+    """One recent mail the changed rule newly catches."""
+
+    from_addr: str
+    subject: str
+
+
+class RuleAssistantPreview(BaseModel):
+    """What the change would have done to the account's newest mails."""
+
+    sample_size: int
+    matched_before: int
+    matched_after: int
+    examples: list[RuleAssistantPreviewExample]
+
+
+class RuleAssistantResponse(BaseModel):
+    """The assistant's answer. `change` is null when there is nothing to
+    accept; `message` then says why."""
+
+    message: str
+    change: RuleAssistantChange | None = None
+    preview: RuleAssistantPreview | None = None
+    warnings: list[str] = Field(default_factory=list)
+    model: str
+    model_calls: int
 
 
 # --- DAV account schemas ---
@@ -1926,3 +2062,109 @@ class ContactUpdateRequest(BaseModel):
     categories: list[str] | None = None
     # "" clears an existing photo; None (unset) leaves it untouched.
     photo_data_url: str | None = Field(default=None, max_length=_MAX_PHOTO_DATA_URL_LENGTH)
+
+
+# --- Orders schemas ---
+
+
+class OrderListItem(BaseModel):
+    """One row of the orders list -- everything a screen renders without
+    opening the order."""
+
+    id: uuid.UUID
+    merchant: str
+    subject: str
+    status: str
+    title: str
+    is_open: bool
+    is_favorite: bool
+    is_sealed: bool
+    open_set_by: Literal["ai", "user", "auto"]
+    expected_until: date | None
+    icon: str
+    summary_preview: str
+    first_mail_at: datetime | None
+    last_mail_at: datetime | None
+    mail_count: int
+    account_ids: list[uuid.UUID]
+    text_stale: bool
+    updated_at: datetime
+
+
+class OrderListResponse(BaseModel):
+    items: list[OrderListItem]
+    has_more: bool
+    next_cursor: str | None = None
+
+
+class OrderIdentifierOut(BaseModel):
+    kind: str
+    value: str
+
+
+class OrderMailOut(BaseModel):
+    key: uuid.UUID
+    account_id: uuid.UUID
+    message_id: uuid.UUID | None
+    thread_id: uuid.UUID | None
+    location: Literal["mailbox", "glacier", "gone"]
+    folder_id: uuid.UUID | None
+    is_seen: bool | None
+    subject: str
+    from_addr: str
+    received_at: datetime
+    attached_by: str
+
+
+class OrderDocumentOut(BaseModel):
+    message_id: uuid.UUID
+    attachment_id: uuid.UUID
+    filename: str
+    content_type: str
+    size_bytes: int | None
+    received_at: datetime
+
+
+class OrderDetail(OrderListItem):
+    summary: str
+    identifiers: list[OrderIdentifierOut]
+    mails: list[OrderMailOut]
+    documents: list[OrderDocumentOut]
+
+
+class OrderUpdateRequest(BaseModel):
+    """A person's change to an order's flags; an omitted field is left alone.
+    Setting is_open records that a person decided it."""
+
+    is_favorite: bool | None = None
+    is_open: bool | None = None
+    is_sealed: bool | None = None
+
+    @model_validator(mode="after")
+    def _no_explicit_nulls(self) -> OrderUpdateRequest:
+        explicit_nulls = [
+            name for name in self.model_fields_set if getattr(self, name) is None
+        ]
+        if explicit_nulls:
+            raise ValueError(f"{', '.join(sorted(explicit_nulls))} cannot be null")
+        return self
+
+
+class OrderMergeRequest(BaseModel):
+    into: uuid.UUID
+
+
+class OrderDetachRequest(BaseModel):
+    move_to: uuid.UUID | None = None
+
+
+class OrderCatchUpRequest(BaseModel):
+    account_id: uuid.UUID
+    days: int = Field(ge=1, le=365)
+    dry_run: bool = False
+
+
+class OrderCatchUpResponse(BaseModel):
+    considered: int
+    passed: int
+    queued: int
