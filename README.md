@@ -104,6 +104,10 @@ mirror, which is what keeps it simple.
   between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
   removed, two entries merged, or the summary rewritten by hand. Recent mail can be looked through
   after switching the feature on for an account.
+  Entries can be starred and listed on their own, filtered by typing (any word order, small typos
+  tolerated), closed or reopened by hand and sealed so no further mail is added; the same actions
+  sit in the detail's menu and in a menu on each row (right-click or long press), and a row swipes
+  on a touch screen — right to left for favorite, left to right for closed or open.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,

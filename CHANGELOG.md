@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- The orders screen gained favorites (a star on the row and in the detail, and a Favorites view
+  beside All and Open), a filter field matching every word in any order and tolerating typos, and
+  Close/Reopen and Seal/Unseal for an order. One action list serves the detail's top-right menu
+  and a menu on each row, opened by right-click or a touch long press. On a touch screen a row
+  swipes: right to left toggles favorite, left to right toggles closed and open.
 - Fixed the unified view icon picker in Settings rendering its emoji stacked on top of each other
   in a one-column strip; it is a seven-column grid again, which also applies to the account icon
   picker that shares it.
