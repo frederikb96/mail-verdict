@@ -19,6 +19,7 @@ containing the literal string "</new_mail>" cannot close the fence early.
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from mail_verdict.core.prompts import load_static_prompt, render_prompt
@@ -169,10 +170,14 @@ WRITE_SCHEMA: dict[str, Any] = {
         "subject": {"type": "string", "description": "At most 60 characters."},
         "status": {"type": "string", "description": "One to five words."},
         "open": {"type": "boolean"},
+        "expected_until": {
+            "type": "string",
+            "description": "YYYY-MM-DD when the entry is naturally over (estimate), or ''.",
+        },
         "icon": {"type": "string", "enum": list(WRITE_ICONS)},
         "summary": {"type": "string", "description": "Markdown, at most 900 characters."},
     },
-    "required": ["merchant", "subject", "status", "open", "icon", "summary"],
+    "required": ["merchant", "subject", "status", "open", "expected_until", "icon", "summary"],
     "additionalProperties": False,
 }
 
@@ -184,6 +189,17 @@ def validate_write_response(data: dict[str, Any]) -> None:
         raise ValueError("Missing or empty 'status' in response")
     if not isinstance(data.get("summary"), str) or not data["summary"]:
         raise ValueError("Missing or empty 'summary' in response")
+
+
+def parse_expected_until(value: Any) -> date | None:
+    """The write call's expected_until as a date; the empty string it uses
+    for "none", and anything that is not an ISO date, read as None."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
 
 
 def build_write_system_prompt(*, language: str) -> str:

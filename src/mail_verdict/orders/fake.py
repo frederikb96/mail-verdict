@@ -69,6 +69,7 @@ def fake_write(*, mails: list[dict[str, Any]]) -> dict[str, Any]:
         "subject": first["subject"][:60],
         "status": "updated",
         "open": True,
+        "expected_until": "",
         "icon": "package",
         "summary": bullets,
     }
