@@ -33,11 +33,13 @@ from mail_verdict.api.pipeline import router as pipeline_router
 from mail_verdict.api.queues import router as queues_router
 from mail_verdict.api.runs import router as runs_router
 from mail_verdict.api.search import router as search_router
+from mail_verdict.api.secrets import router as secrets_router
 from mail_verdict.api.settings_api import router as settings_router
 from mail_verdict.api.stats import router as stats_router
 from mail_verdict.api.unified import account_router as unified_account_router
 from mail_verdict.api.unified import unified_router
 from mail_verdict.api.verdicts import router as verdicts_router
+from mail_verdict.api.webhooks import router as webhooks_router
 
 # Aggregate all API routers
 all_routers: list[APIRouter] = [
@@ -56,6 +58,8 @@ all_routers: list[APIRouter] = [
     unified_account_router,
     unified_router,
     settings_router,
+    secrets_router,
+    webhooks_router,
     verdicts_router,
     stats_router,
     queues_router,

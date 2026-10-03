@@ -176,6 +176,51 @@ accepts an optional `base_revision`: supply the revision your edit was computed 
 `409` on a stale write instead of silently clobbering a concurrent editor — the browser UI and an
 agent editing at the same time, most notably. Omit it to write unconditionally.
 
+### Send matching mail to a webhook
+
+A `match` stage can carry a `webhook` effect. Store the token first, then reference it by name in
+a header:
+
+```bash
+curl -X PUT localhost:8080/api/secrets/CANTEEN_TOKEN -H 'content-type: application/json' \
+  -d '{"value": "..."}'
+
+curl -X POST localhost:8080/api/pipeline/stages -H 'content-type: application/json' -d '{
+  "stage_id": "canteen",
+  "type": "match",
+  "name": "Forward the canteen menu",
+  "config": {
+    "when": {"subject_contains": "Guten Appetit"},
+    "effects": [{"webhook": {
+      "name": "canteen",
+      "url": "https://example.com/api/canteen/mails",
+      "headers": {"Authorization": "Bearer {{secret:CANTEEN_TOKEN}}"},
+      "received_at_param": "received_at"
+    }}]
+  }
+}'
+```
+
+The request body is the message's raw RFC 822 source, unmodified, with `Content-Type:
+message/rfc822`; `received_at_param` adds the message's received time to the query string as an
+ISO 8601 timestamp with offset. `name` identifies the destination: one delivery per mail per name.
+A header whose name suggests a credential (`Authorization`, anything with `token`, `key`,
+`secret`, `cookie` or `password`) must reference a stored secret, so a token is never written into
+the rule itself.
+
+Rules act on arriving mail only. To send mail that is already there, oldest first, one after
+another:
+
+```bash
+curl -X POST localhost:8080/api/webhooks/canteen/backfill -H 'content-type: application/json' \
+  -d '{"since": "2026-08-01T00:00:00Z", "dry_run": true}'
+# -> {"scanned": 61, "matched": 58, "queued": 58, "already_queued": 0, "truncated": false}
+```
+
+The scan covers every folder except Drafts, Trash and Junk, Archive and Sent included (a live rule pass skips those, a backfill does not); mail already moved to a glacier is not scanned. Drop `dry_run` to queue them. Calling again queues only what has no delivery yet. `truncated`
+means `limit` (default 1000, at most 5000) stopped the scan; call again to continue.
+`GET /api/webhooks/deliveries?name=canteen&status=failed` shows what gave up.
+
 ### Search semantically
 
 ```bash
@@ -220,12 +265,14 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Search | `/search`, `/embeddings/search` | Field-scoped text search ranked by field tier, cursor-paginated, and semantic search, respectively — both scopeable to a set of folders |
 | Verdicts | `/verdicts`, `/verdicts/spam-review`, `/mails/{id}/verdict`, `/mails/{id}/feedback` | Spam verdict history, the user-correction feedback loop, and `/verdicts/spam-review` -- every message currently classified spam with no user ruling yet, cursor-paginated across every account and folder |
 | Pipeline | `/pipeline` | Read/replace the whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |
+| Secrets | `/secrets` | Named secrets, write-only: `GET` lists names and timestamps, `PUT /secrets/{name}` with `{"value": ...}` creates or replaces, `DELETE` removes (`400` without `ENCRYPTION_KEY`). No endpoint returns a value, and none is offered through MCP. A rule's webhook action references one as `{{secret:NAME}}` in a header value. |
+| Webhooks | `/webhooks` | What a rule's webhook action has queued: `GET /webhooks/deliveries` (`name`, `status` filters), `POST /webhooks/deliveries/{id}/retry` re-queues a failed one, and `POST /webhooks/{name}/backfill` queues the webhook for mail that predates its rule (see the quickstart). See [architecture.md](architecture.md#webhooks). |
 | Pipeline runs | `/runs`, `/mails/{id}/runs` | Per-message pipeline execution history and trace — "why did this message get that treatment"; retry a failed run |
 | Queues | `/queues` | Every registered background queue's state (embedding, pipeline), live concurrency control |
 | Embeddings | `/embeddings` | Coverage status, on-demand backfill, semantic search (see above) |
 | Settings | `/settings` | Every runtime-configurable behaviour by category, plus the write-only provider-key extension on `ai` — see [Config and settings never overlap](../README.md#configuration). `PUT /settings/{category}` takes the fields to change wrapped as `{"data": {...}}`, not the bare object — the "Set a provider key" example above shows the shape; a bare dict is a `422` |
 | Image exceptions | `/accounts/{id}/image-exceptions` | Per-sender/per-domain allowlist for remote image loading |
-| Alerts | `/alerts` | The durable, in-app alert list (`kind` is `mail` for new mail, `outbox_stalled` for a message stuck on its way out) and its dismiss surface, scoped to the caller's own folder preference the same way the SSE and push paths already are: `folder_ids` plus `folder_scoped=true` restricts it, omitted or `folder_scoped=false` leaves it unrestricted; `GET /alerts/unseen-count` reports the unseen total and `by_kind`, and `POST /alerts/dismiss-all` takes repeatable `kind` parameters to dismiss only those kinds; `GET /alerts/vapid-public-key` and `/alerts/subscriptions` are the Web Push half — the applicationServerKey a browser passes to `PushManager.subscribe()`, and registering, updating (`alert_folder_ids`, `muted_channels`) or removing that browser's own subscription. `available: false` on the VAPID endpoint means no `ENCRYPTION_KEY` is configured server-side, the same condition that keeps a provider API key from being stored. The native half: `GET /alerts/native-push` says whether a native app can register here and through which relays (`reason` when not), `POST /alerts/subscriptions/native` registers or refreshes a device under its `installation_id` (the relay ticket and a base64 32-byte content key, both write-only; `400` for a relay not in `push.apns_relay_urls`, `503` when native push is unavailable), and `POST /alerts/subscriptions/{id}/test` sends one device a test push (`410` if it turned out to be gone, `502` if refused). A subscription's `transport` is `webpush` or `apns`. `GET /alerts/badge` is the notification badge — `?subscription_id=` for a registered device's own scope, or `folder_ids`/`folder_scoped` as on the list — and `POST /alerts/lookup` returns which of up to 200 alert ids still exist, dismissed or not. See [architecture.md](architecture.md#alerts-and-push-notifications) |
+| Alerts | `/alerts` | The durable, in-app alert list (`kind` is `mail` for new mail, `outbox_stalled` for a message stuck on its way out, `webhook_failed` for a webhook delivery that gave up) and its dismiss surface, scoped to the caller's own folder preference the same way the SSE and push paths already are: `folder_ids` plus `folder_scoped=true` restricts it, omitted or `folder_scoped=false` leaves it unrestricted; `GET /alerts/unseen-count` reports the unseen total and `by_kind`, and `POST /alerts/dismiss-all` takes repeatable `kind` parameters to dismiss only those kinds; `GET /alerts/vapid-public-key` and `/alerts/subscriptions` are the Web Push half — the applicationServerKey a browser passes to `PushManager.subscribe()`, and registering, updating (`alert_folder_ids`, `muted_channels`) or removing that browser's own subscription. `available: false` on the VAPID endpoint means no `ENCRYPTION_KEY` is configured server-side, the same condition that keeps a provider API key from being stored. The native half: `GET /alerts/native-push` says whether a native app can register here and through which relays (`reason` when not), `POST /alerts/subscriptions/native` registers or refreshes a device under its `installation_id` (the relay ticket and a base64 32-byte content key, both write-only; `400` for a relay not in `push.apns_relay_urls`, `503` when native push is unavailable), and `POST /alerts/subscriptions/{id}/test` sends one device a test push (`410` if it turned out to be gone, `502` if refused). A subscription's `transport` is `webpush` or `apns`. `GET /alerts/badge` is the notification badge — `?subscription_id=` for a registered device's own scope, or `folder_ids`/`folder_scoped` as on the list — and `POST /alerts/lookup` returns which of up to 200 alert ids still exist, dismissed or not. See [architecture.md](architecture.md#alerts-and-push-notifications) |
 | Notifications | `/accounts/{id}/notifications`, `/notifications` | The durable, acknowledgeable record of a write that never reached the server — see [architecture.md](architecture.md#notifications). `GET /notifications` lists every account's at once, inactive accounts included, newest first |
 | Unified view | `/unified`, `/accounts/{id}/emoji` | Views merging any set of folders across accounts. `/unified/views` creates, renames (the name is how the mail URL and `GET /unified/mails?folder_name=` address a view, so it is unique -- 409 otherwise), sets or clears an emoji on, and deletes a view; deleting one touches no folder or message. `/unified/folders` lists every view in sidebar order with its member folders and counts (an active account's undeleted folders only), and `/unified/folder-order` reads and writes that order by name. Which views a folder belongs to is `unified_view_ids` on the folder itself, set as a complete list through `PATCH /folders/{id}/prefs` -- one folder may sit in several views. `/unified/mails` lists one view's messages and pages, threads and filters (`threaded`, `is_seen`, `before`/`after`/`around`) exactly as `/accounts/{id}/messages` does, a conversation spanning two member folders being one row |
 | Orders | `/orders` | The orders/tickets register — see [architecture.md](architecture.md#orders). `GET /orders` lists entries newest activity first, cursor-paginated, hidden until an order has its first AI-written text; `?state=open` narrows to ones still expecting something to happen. `GET /orders/{id}` returns the full detail: title, markdown summary, numbers, documents (PDFs, Wallet passes, calendar files — never an inline image) and its mails in time order, each resolved fresh to where it is now (`mailbox`/`glacier`/`gone`). `DELETE /orders/{id}` deletes the entry without touching any mail. `POST /orders/{id}/rewrite` re-runs the write call. `POST /orders/{id}/merge` (`{"into": "<order id>"}`) moves every mail and number into another entry and deletes this one — the repair for one purchase split into two. `POST /orders/{id}/mails/{mail_key}/detach` (`mail_key` is the mail's own row id, not its durable key; body `{"move_to": "<order id>" \| null}`) removes a mail, or moves it to another entry — that mail is never bundled automatically again either way — and answers the detail of the order the mail left, or 204 with no body when removing the last mail deleted it. `POST /orders/catch-up` (`{"account_id", "days", "dry_run"}`) sweeps recent mail after switching the feature on for an account, or after widening the window; `dry_run` answers a count with nothing enqueued |

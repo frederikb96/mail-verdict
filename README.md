@@ -104,7 +104,12 @@ mirror, which is what keeps it simple.
   between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
   removed, two entries merged, or the summary rewritten by hand. Recent mail can be looked through
   after switching the feature on for an account.
-- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it.
+- **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
+  it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
+  from a named secret stored encrypted in the database (set from Settings, never shown again). A
+  delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
+  and raises an alert when it gives up; mail that predates a rule can be sent once, oldest first,
+  through the API.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,
   body) you pick, ranked by whether the word itself matched rather than merely started a longer

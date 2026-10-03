@@ -5,6 +5,7 @@ stage's `config.effects` list and a run's stored trace both use.
     {"move": {"special_use": "junk"}}
     {"set_flags": {"seen": true}}
     {"record_verdict": {"is_spam": true, "reasoning": "...", "model": "..."}}
+    {"webhook": {"name": "canteen", "url": "https://...", "headers": {...}}}
 
 A single definition here is what keeps a stage's configured effects and a
 run's recorded trace speaking the same vocabulary -- encoding drift
@@ -28,6 +29,7 @@ from mail_verdict.pipeline.contracts import (
     SetFlags,
     Tag,
     Trash,
+    Webhook,
 )
 
 
@@ -71,6 +73,22 @@ def parse_effect(raw: dict[str, Any]) -> Effect:
         return Notify(text=str(value.get("text", "")))
     if kind == "enqueue_order":
         return EnqueueOrder(reason=str(value.get("reason", "")))
+    if kind == "webhook":
+        from pydantic import ValidationError
+
+        from mail_verdict.webhooks.spec import WebhookSpec
+
+        try:
+            spec = WebhookSpec.model_validate(value)
+        except ValidationError as exc:
+            problems = "; ".join(
+                f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
+            )
+            raise EffectConfigError(f"webhook: {problems}") from None
+        return Webhook(
+            name=spec.name, url=spec.url, method=spec.method,
+            headers=tuple(spec.headers.items()), received_at_param=spec.received_at_param,
+        )
     raise EffectConfigError(f"unknown effect type {kind!r}")
 
 
@@ -102,4 +120,9 @@ def effect_to_dict(effect: Effect) -> dict[str, Any]:
         return {"notify": {"text": effect.text}}
     if isinstance(effect, EnqueueOrder):
         return {"enqueue_order": {"reason": effect.reason}}
+    if isinstance(effect, Webhook):
+        return {"webhook": {
+            "name": effect.name, "url": effect.url, "method": effect.method,
+            "headers": dict(effect.headers), "received_at_param": effect.received_at_param,
+        }}
     raise EffectConfigError(f"unknown effect {effect!r}")  # pragma: no cover
