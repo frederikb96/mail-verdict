@@ -6,9 +6,13 @@ it. This is the supported way to send it: the named webhook's rule
 conditions are evaluated against the mail received since a date, and a
 delivery is queued for every match, oldest first.
 
+A call looks at most `limit` messages and, when more remain, returns a
+cursor; passing it back continues after the last message looked at. Calling
+again without it starts over from `since`.
+
 Safe to repeat. A delivery row blocks the same (webhook, mail) from being
-queued again whatever its status, so a second call queues only what the
-first did not reach -- mail that arrived since, or mail whose rule now
+queued again whatever its status, so a repeated call queues only what the
+earlier ones did not reach -- mail that arrived since, or mail whose rule now
 matches. The queued rows carry a lower priority than live mail and are
 spaced by their received order, which the single delivery worker then
 sends one after another; a delivery that has to be retried is retried
@@ -26,7 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, select, tuple_
 
 from mail_verdict.database.models import Message, WebhookDelivery
 from mail_verdict.pipeline.context import current_verdict_for_mail
@@ -54,17 +58,27 @@ class WebhookNotConfiguredError(LookupError):
 
 
 @dataclass(frozen=True)
+class BackfillCursor:
+    """The last message a call looked at, in (received_at, id) order."""
+
+    received_at: datetime
+    message_id: uuid.UUID
+
+
+@dataclass(frozen=True)
 class BackfillResult:
     """What a backfill found and did. `queued` counts rows inserted (or that
     would be, in a dry run); `already_queued` are matches that already had a
     delivery of any status. `truncated` is true when `limit` stopped the
-    scan, so a further call continues where it left off."""
+    scan, and `next_cursor` is then where a further call continues; it is
+    None otherwise."""
 
     scanned: int
     matched: int
     queued: int
     already_queued: int
     truncated: bool
+    next_cursor: BackfillCursor | None
 
 
 def find_webhook(
@@ -89,6 +103,7 @@ def find_webhook(
 async def backfill_webhook(
     db: DatabaseConnection, stages: tuple[StageDefinition, ...], name: str, *,
     since: datetime, until: datetime | None, limit: int, dry_run: bool,
+    after: BackfillCursor | None = None,
 ) -> BackfillResult:
     """
     Queue the named webhook's deliveries for existing matching mail.
@@ -101,6 +116,7 @@ async def backfill_webhook(
         until: Only mail received before this, or None for no upper bound
         limit: Most candidate messages to look at in this call
         dry_run: Count what would be queued without queueing it
+        after: Continue after this message, from a previous call's `next_cursor`
 
     Raises:
         WebhookNotConfiguredError: no enabled rule carries that webhook
@@ -109,21 +125,28 @@ async def backfill_webhook(
     when = MatchConfig.model_validate(dict(stage.config)).when
 
     stmt = (
-        select(Message.id)
+        select(Message.id, Message.received_at)
         .where(
             Message.received_at >= since, Message.expunged_at.is_(None),
             Message.is_draft.is_(False),
         )
         .order_by(Message.received_at, Message.id)
-        .limit(limit)
+        .limit(limit + 1)
     )
+    if after is not None:
+        stmt = stmt.where(
+            tuple_(Message.received_at, Message.id) > (after.received_at, after.message_id)
+        )
     if until is not None:
         stmt = stmt.where(Message.received_at < until)
     if stage.accounts:
         stmt = stmt.where(Message.account_id.in_(list(stage.accounts)))
 
     async with db.session() as session:
-        candidate_ids: list[uuid.UUID] = list((await session.execute(stmt)).scalars().all())
+        fetched = list((await session.execute(stmt)).all())
+    truncated = len(fetched) > limit
+    candidates = fetched[:limit]
+    candidate_ids = [row.id for row in candidates]
 
     scanned = matched = queued = already = 0
     base = datetime.now(timezone.utc)
@@ -166,5 +189,8 @@ async def backfill_webhook(
             already += 1
     return BackfillResult(
         scanned=scanned, matched=matched, queued=queued, already_queued=already,
-        truncated=len(candidate_ids) >= limit,
+        truncated=truncated,
+        next_cursor=(
+            BackfillCursor(candidates[-1].received_at, candidates[-1].id) if truncated else None
+        ),
     )

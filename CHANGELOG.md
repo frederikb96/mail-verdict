@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Fixed a webhook request giving up after 5 seconds whatever `webhooks.request_timeout_seconds`
+  said, which retried a receiver that takes longer to answer and could deliver one mail several
+  times. The setting now bounds each phase of the request and the whole of it.
+- A webhook backfill that stopped at its `limit` now continues: the response carries `next_cursor`
+  and the request takes it back as `cursor`. `truncated` is true only when mail remains.
+- Retrying a failed webhook delivery now sends to the rule's current URL, method and headers rather
+  than the ones queued with it, and `POST /api/webhooks/{name}/retry-failed` re-queues every failed
+  delivery of one webhook.
+- A mail a rule expunges in the same pass that queued its webhook is still delivered, and a mail
+  gone from the mirror and the glacier now fails the delivery with an alert instead of skipping it.
+  A delivery whose worker died on its last attempt is failed with an alert instead of waiting
+  forever.
+- The "Add rule" assistant's proposal for adding a condition now shows the existing rule's effects
+  (`effects_text`) and warns when that rule carries an `expunge`, `webhook` or pipeline effect. A
+  client disconnecting during the exchange no longer logs a server error.
+- Deleting a secret in Settings asks for confirmation. The rule assistant's condition vocabulary
+  no longer offers `List-Id` as a header example, and the docs say which headers cannot be matched.
+
 - Added an "Add rule" assistant: an icon in the reading pane takes one sentence about the open
   mail and proposes exactly one change to the rules -- a condition added to an existing rule, a new
   rule at the end, or one rule replaced -- with the explanation, the change itself and how many of

@@ -880,6 +880,8 @@ export interface RuleAssistantChange {
   /** The rule's config as it is now -- only for `replace_rule`. */
   before_text: string | null;
   after_text: string;
+  /** The existing rule's effects -- only for `add_condition`, whose `after_text` is the added condition alone. */
+  effects_text: string | null;
 }
 
 export interface RuleAssistantPreview {

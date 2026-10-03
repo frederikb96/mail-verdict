@@ -97,7 +97,8 @@ _PREVIEW_EXAMPLES = 5
 # untrusted mail text and a careless Accept of any of these is not undoable
 # (expunge, webhook) or is not what a person writing a rule means
 # (the pipeline's own bookkeeping effects). A rule that already carries one
-# can still be extended with another condition -- nothing is introduced.
+# can still be extended with another condition -- nothing is introduced --
+# and the proposal then shows the rule's effects and warns (_warnings).
 ASSISTANT_DENIED_EFFECTS = frozenset(
     {"record_verdict", "enqueue_order", "notify", "expunge", "webhook"}
 )
@@ -493,10 +494,23 @@ def _preview(scene: _Scene, candidate: _Candidate) -> RuleAssistantPreview | Non
 
 
 def _warnings(scene: _Scene, candidate: _Candidate, matched_today: list[str]) -> list[str]:
-    """Never errors: a new rule goes last, so an earlier rule that stops
-    this mail means the new one is never reached for it."""
+    """Never errors. A change to a rule that already carries a denied effect
+    (a webhook, an expunge) makes that effect act on more mail; a new rule
+    goes last, so an earlier rule that stops this mail means the new one is
+    never reached for it."""
     if candidate.kind != "new_rule":
-        return []
+        kinds = sorted(
+            {
+                kind for effect in _effects_of(candidate.before) if isinstance(effect, dict)
+                for kind in set(effect) & ASSISTANT_DENIED_EFFECTS
+            }
+        )
+        if not kinds:
+            return []
+        return [
+            f'Rule "{candidate.before["name"] if candidate.before else ""}" carries '
+            f"{', '.join(kinds)}, so this change can make it act on mail it does not act on now."
+        ]
     blocking = [
         s for s in scene.stages
         if s["stage_id"] in matched_today and s.get("enabled", True) and s.get("halt")
@@ -724,6 +738,10 @@ async def propose(
                 if candidate.kind == "replace_rule" and candidate.before else None
             ),
             after_text=candidate.after_text,
+            effects_text=(
+                _json_text(_effects_of(candidate.before))
+                if candidate.kind == "add_condition" and candidate.before else None
+            ),
         )
         return RuleAssistantResponse(
             message=message or candidate.title, change=change,

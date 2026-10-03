@@ -154,7 +154,7 @@ podDisruptionBudget:
 
 # -- Restricts egress traffic from the pod. Only useful with a CNI that
 # enforces NetworkPolicy (e.g. Cilium, Calico). MailVerdict only ever makes
-# outbound connections (to PostgreSQL and to the Anthropic API) and serves
+# outbound connections (to PostgreSQL, the Anthropic API and the destinations of rule webhooks) and serves
 # inbound HTTP on `service.port` only, so this is a reasonable workload to
 # lock down.
 networkPolicy:
@@ -172,7 +172,7 @@ networkPolicy:
   # -- Egress rules, `NetworkPolicySpec.egress` syntax. Narrow this to your
   # PostgreSQL destination and the Anthropic API -- and, for notifications
   # on the iPhone app, to every push relay in `config.push.apns_relay_urls`
-  # (HTTPS, port 443).
+  # (HTTPS, port 443), and to the destination of every webhook a rule sends to.
   egress: []
   # - to:
   #     - podSelector:

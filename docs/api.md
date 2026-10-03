@@ -188,7 +188,8 @@ curl -X POST localhost:8080/api/pipeline/assistant -H 'content-type: application
 
 The answer carries a `message` for the person, a `change` (`kind` `add_condition`, `new_rule` or
 `replace_rule`; the complete resulting `stage`; `title`, `before_text`, `after_text` for display;
-`is_new` and the `base_revision` it was computed against), a `preview` of what the changed rule
+`is_new` and the `base_revision` it was computed against; `effects_text` shows the existing rule's
+effects for `add_condition`, whose `after_text` is only the added condition), a `preview` of what the changed rule
 would have caught among the account's 100 newest mails, and `warnings`. `change` is `null` when
 there is nothing to accept, and `message` says why.
 
@@ -197,7 +198,9 @@ Nothing is stored. Accepting is an ordinary pipeline write carrying the proposal
 /api/pipeline/stages/{stage_id}` with its `name`, `config` and `halt`. A rule edited in the
 meantime answers `409`. A new rule is appended at the end of the stage list, with a warning when an
 earlier rule that stops processing already catches the mail. The assistant never introduces an
-`expunge` or `webhook` effect, nor the pipeline's own `record_verdict`, `enqueue_order` or `notify`.
+`expunge` or `webhook` effect, nor the pipeline's own `record_verdict`, `enqueue_order` or `notify`;
+a condition added to a rule that already carries one of those is allowed, and the answer then
+warns that the rule will act on more mail.
 
 Errors: `404` for an unknown or glaciered message, `422` for an empty prompt (at most 1000
 characters), `503` when the provider has no usable key, `502` when it fails or throttles, `504`
@@ -235,18 +238,29 @@ A header whose name suggests a credential (`Authorization`, anything with `token
 `secret`, `cookie` or `password`) must reference a stored secret, so a token is never written into
 the rule itself.
 
+`header_match` and `header_exists` read the headers PostIMAP stores. It stores a header it parses
+into a structure as `[object Object]`, which includes every `List-*` header (`List-Id`,
+`List-Unsubscribe`) and `Content-Type`, so those cannot be matched until PostIMAP stores them as
+text.
+
 Rules act on arriving mail only. To send mail that is already there, oldest first, one after
 another:
 
 ```bash
 curl -X POST localhost:8080/api/webhooks/canteen/backfill -H 'content-type: application/json' \
   -d '{"since": "2026-08-01T00:00:00Z", "dry_run": true}'
-# -> {"scanned": 61, "matched": 58, "queued": 58, "already_queued": 0, "truncated": false}
+# -> {"scanned": 61, "matched": 58, "queued": 58, "already_queued": 0, "truncated": false,
+#     "next_cursor": null}
 ```
 
 The scan covers every folder except Drafts, Trash and Junk, Archive and Sent included (a live rule pass skips those, a backfill does not); mail already moved to a glacier is not scanned. Drop `dry_run` to queue them. Calling again queues only what has no delivery yet. `truncated`
-means `limit` (default 1000, at most 5000) stopped the scan; call again to continue.
+means `limit` (default 1000, at most 5000) stopped the scan, and `next_cursor` then marks where: send
+it back as `cursor` in the next request, with the same `since`, `until` and `limit`, to continue
+after the last message looked at. A request without it starts over from `since`.
 `GET /api/webhooks/deliveries?name=canteen&status=failed` shows what gave up.
+`POST /api/webhooks/deliveries/{id}/retry` re-queues one failed delivery and
+`POST /api/webhooks/{name}/retry-failed` all of one webhook's; both send to the URL, method and
+headers the rule has now, falling back to what was queued when no enabled rule carries the name.
 
 ### Search semantically
 
@@ -293,7 +307,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Verdicts | `/verdicts`, `/verdicts/spam-review`, `/mails/{id}/verdict`, `/mails/{id}/feedback` | Spam verdict history, the user-correction feedback loop, and `/verdicts/spam-review` -- every message currently classified spam with no user ruling yet, cursor-paginated across every account and folder |
 | Pipeline | `/pipeline` | Read/replace the whole stage document, per-stage CRUD and reorder, stage-type schemas, revision history and restore, health, dry-run testing, and `POST /pipeline/assistant` (a rule proposed from one sentence) — see the quickstart above and [architecture.md](architecture.md#the-message-pipeline) |
 | Secrets | `/secrets` | Named secrets, write-only: `GET` lists names and timestamps, `PUT /secrets/{name}` with `{"value": ...}` creates or replaces, `DELETE` removes (`400` without `ENCRYPTION_KEY`). No endpoint returns a value, and none is offered through MCP. A rule's webhook action references one as `{{secret:NAME}}` in a header value. |
-| Webhooks | `/webhooks` | What a rule's webhook action has queued: `GET /webhooks/deliveries` (`name`, `status` filters), `POST /webhooks/deliveries/{id}/retry` re-queues a failed one, and `POST /webhooks/{name}/backfill` queues the webhook for mail that predates its rule (see the quickstart). See [architecture.md](architecture.md#webhooks). |
+| Webhooks | `/webhooks` | What a rule's webhook action has queued: `GET /webhooks/deliveries` (`name`, `status` filters), `POST /webhooks/deliveries/{id}/retry` re-queues a failed one and `POST /webhooks/{name}/retry-failed` every failed one of that webhook, and `POST /webhooks/{name}/backfill` queues the webhook for mail that predates its rule (see the quickstart). See [architecture.md](architecture.md#webhooks). |
 | Pipeline runs | `/runs`, `/mails/{id}/runs` | Per-message pipeline execution history and trace — "why did this message get that treatment"; retry a failed run |
 | Queues | `/queues` | Every registered background queue's state (embedding, pipeline), live concurrency control |
 | Embeddings | `/embeddings` | Coverage status, on-demand backfill, semantic search (see above) |

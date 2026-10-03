@@ -260,6 +260,29 @@ class TestNewRule:
         assert assistant._warnings(scene, candidate, matched_today=["earlier"]) == []
 
 
+class TestWideningARuleWithADeniedEffect:
+    WEBHOOK = [{"webhook": {"name": "canteen", "url": "https://example.com/in"}}]
+
+    @pytest.mark.parametrize("kind", ["add_condition", "replace_rule"])
+    def test_warns_naming_the_rule_and_the_effect(self, kind: str) -> None:
+        effects = [*FLAG, *self.WEBHOOK, {"expunge": {}}]
+        scene = _scene([_match_stage("send", SENDER, effects)])
+        answer = (
+            _answer(kind, "send", SENDER) if kind == "add_condition"
+            else _answer(kind, "send", {"config": {"when": SENDER, "effects": effects}})
+        )
+        candidate = _run(scene, answer)
+        warnings = assistant._warnings(scene, candidate, matched_today=[])
+        assert len(warnings) == 1
+        assert 'Rule "Rule send"' in warnings[0]
+        assert "expunge, webhook" in warnings[0]
+
+    def test_a_rule_without_one_does_not_warn(self) -> None:
+        scene = _scene([_match_stage("file", SENDER, FLAG)])
+        candidate = _run(scene, _answer("add_condition", "file", SENDER))
+        assert assistant._warnings(scene, candidate, matched_today=[]) == []
+
+
 class TestReplaceRule:
     def test_keeps_identity_fields_from_the_current_stage(self) -> None:
         current = _match_stage("file", SENDER, FLAG, enabled=False)

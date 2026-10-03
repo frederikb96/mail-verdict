@@ -4,6 +4,7 @@ failed delivery, and the backfill over existing mail.
 
 GET  /api/webhooks/deliveries               -- newest first; ?name= &status= &limit=
 POST /api/webhooks/deliveries/{id}/retry    -- re-queue a failed delivery
+POST /api/webhooks/{name}/retry-failed      -- re-queue every failed delivery of one webhook
 POST /api/webhooks/{name}/backfill          -- queue the webhook for existing mail
 
 Deliveries are made by the webhooks queue's worker (webhooks/worker.py);
@@ -28,9 +29,15 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from mail_verdict.database.connection import get_db_connection
+from mail_verdict.database.models import WebhookDelivery
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository
 from mail_verdict.webhooks import repository
-from mail_verdict.webhooks.backfill import WebhookNotConfiguredError, backfill_webhook
+from mail_verdict.webhooks.backfill import (
+    BackfillCursor,
+    WebhookNotConfiguredError,
+    backfill_webhook,
+    find_webhook,
+)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
@@ -54,24 +61,46 @@ class WebhookDeliveryOut(BaseModel):
     created_at: datetime
 
 
+class WebhookBackfillCursor(BaseModel):
+    """Where a truncated backfill stopped."""
+
+    received_at: datetime
+    message_id: uuid.UUID
+
+
 class WebhookBackfillRequest(BaseModel):
-    """Which existing mail to queue the webhook for."""
+    """Which existing mail to queue the webhook for. `cursor` is the previous
+    call's `next_cursor`; the same `since`, `until` and `limit` go with it."""
 
     since: datetime
     until: datetime | None = None
     limit: int = Field(default=1000, ge=1, le=_MAX_BACKFILL_MESSAGES)
     dry_run: bool = False
+    cursor: WebhookBackfillCursor | None = None
 
 
 class WebhookBackfillResponse(BaseModel):
-    """What a backfill call found. Calling again after `truncated` continues
-    with the mail the first call did not reach."""
+    """What a backfill call found. When `truncated`, `next_cursor` goes into
+    the next request to continue with the mail this call did not reach."""
 
     scanned: int
     matched: int
     queued: int
     already_queued: int
     truncated: bool
+    next_cursor: WebhookBackfillCursor | None
+
+
+async def _current_effect(name: str) -> Any:
+    """The webhook action `name` as the live rules define it, or None when
+    no enabled rule carries it (a retry then keeps the queued snapshot)."""
+    definition = await PipelineRevisionRepository(get_db_connection()).current()
+    if definition is None:
+        return None
+    try:
+        return find_webhook(definition.stages, name)[1]
+    except WebhookNotConfiguredError:
+        return None
 
 
 def _to_out(row: Any) -> WebhookDeliveryOut:
@@ -92,12 +121,27 @@ async def list_deliveries(
 
 @router.post("/deliveries/{delivery_id}/retry", status_code=202)
 async def retry_delivery(delivery_id: uuid.UUID) -> dict[str, str]:
-    """Re-queue a failed delivery with a fresh attempt budget. Only a failed
-    delivery moves; a delivered one is never sent again."""
+    """Re-queue a failed delivery with a fresh attempt budget, aimed at the
+    rule's current URL, method and headers. Only a failed delivery moves; a
+    delivered one is never sent again."""
     async with get_db_connection().session() as session:
-        if not await repository.requeue_failed(session, delivery_id):
+        row = await session.get(WebhookDelivery, delivery_id)
+    if row is None:
+        raise HTTPException(status_code=409, detail="no failed delivery with that id")
+    effect = await _current_effect(row.name)
+    async with get_db_connection().session() as session:
+        if not await repository.requeue_failed(session, delivery_id, effect=effect):
             raise HTTPException(status_code=409, detail="no failed delivery with that id")
     return {"status": "queued"}
+
+
+@router.post("/{name}/retry-failed", status_code=202)
+async def retry_failed(name: str) -> dict[str, int]:
+    """Re-queue every failed delivery of one webhook, as the single retry
+    does for one. Returns how many moved."""
+    effect = await _current_effect(name)
+    async with get_db_connection().session() as session:
+        return {"requeued": await repository.requeue_all_failed(session, name, effect=effect)}
 
 
 @router.post("/{name}/backfill", response_model=WebhookBackfillResponse)
@@ -112,10 +156,20 @@ async def backfill(name: str, request: WebhookBackfillRequest) -> WebhookBackfil
         result = await backfill_webhook(
             db, definition.stages, name, since=request.since, until=request.until,
             limit=request.limit, dry_run=request.dry_run,
+            after=(
+                BackfillCursor(request.cursor.received_at, request.cursor.message_id)
+                if request.cursor else None
+            ),
         )
     except WebhookNotConfiguredError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return WebhookBackfillResponse(
         scanned=result.scanned, matched=result.matched, queued=result.queued,
         already_queued=result.already_queued, truncated=result.truncated,
+        next_cursor=(
+            WebhookBackfillCursor(
+                received_at=result.next_cursor.received_at,
+                message_id=result.next_cursor.message_id,
+            ) if result.next_cursor else None
+        ),
     )

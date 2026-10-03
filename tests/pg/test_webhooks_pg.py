@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import itertools
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,7 @@ from mail_verdict.queue.work_queue import WorkQueue
 from mail_verdict.settings.secret_store import SecretRepository
 from mail_verdict.webhooks import repository
 from mail_verdict.webhooks.backfill import BACKFILL_PRIORITY, backfill_webhook
-from mail_verdict.webhooks.worker import handle_delivery
+from mail_verdict.webhooks.worker import fail_exhausted_deliveries, handle_delivery
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,7 +47,7 @@ _RAW = b"From: kitchen@example.com\r\nSubject: Guten Appetit\r\n\r\nSchnitzel \x
 class _Stub:
     """Records every request and answers from a scripted status list."""
 
-    def __init__(self, statuses: list[int]) -> None:
+    def __init__(self, statuses: list[int], delay: float = 0.0) -> None:
         self.statuses = list(statuses)
         self.requests: list[dict[str, Any]] = []
         stub = self
@@ -58,6 +59,7 @@ class _Stub:
                     "path": self.path, "headers": dict(self.headers.items()),
                     "body": self.rfile.read(length),
                 })
+                time.sleep(delay)
                 status = stub.statuses.pop(0) if len(stub.statuses) > 1 else stub.statuses[0]
                 self.send_response(status)
                 self.send_header("Content-Length", "0")
@@ -79,8 +81,8 @@ class _Stub:
 def stub_factory() -> Iterator[Any]:
     stubs: list[_Stub] = []
 
-    def make(statuses: list[int]) -> _Stub:
-        stubs.append(_Stub(statuses))
+    def make(statuses: list[int], delay: float = 0.0) -> _Stub:
+        stubs.append(_Stub(statuses, delay))
         return stubs[-1]
 
     yield make
@@ -88,11 +90,11 @@ def stub_factory() -> Iterator[Any]:
         s.close()
 
 
-def _cfg(max_attempts: int = 3) -> WebhooksConfig:
+def _cfg(max_attempts: int = 3, request_timeout_seconds: float = 5) -> WebhooksConfig:
     return WebhooksConfig(
-        request_timeout_seconds=5, max_attempts=max_attempts, base_delay_seconds=0,
-        max_delay_seconds=0, max_body_bytes=1_000_000, poll_interval_seconds=0.1,
-        lease_seconds=60,
+        request_timeout_seconds=request_timeout_seconds, max_attempts=max_attempts,
+        base_delay_seconds=0, max_delay_seconds=0, max_body_bytes=1_000_000,
+        poll_interval_seconds=0.1, lease_seconds=60,
     )
 
 
@@ -376,13 +378,14 @@ async def test_a_message_whose_raw_source_was_never_stored_fails_without_a_reque
     assert len(await _alerts(migrated_db, account_id)) == 1
 
 
-async def test_a_vanished_message_is_skipped_quietly(
+async def test_a_mail_expunged_before_its_delivery_is_still_delivered(
     migrated_db: DatabaseConnection, stub_factory: Any,
 ) -> None:
     stub = stub_factory([201])
     secrets = await _secrets(migrated_db)
     account_id, message_id, header = await _setup(migrated_db)
     await _enqueue(migrated_db, _effect(stub.url), account_id, message_id, header)
+    # A rule [webhook, expunge] expunges the mail in the same pass that queued it.
     async with migrated_db.session() as session:
         await session.execute(
             text("UPDATE messages SET expunged_at = now() WHERE id = :id"), {"id": message_id},
@@ -390,9 +393,135 @@ async def test_a_vanished_message_is_skipped_quietly(
 
     await _drain(migrated_db, secrets, _cfg())
 
-    assert stub.requests == []
-    assert (await _row(migrated_db, account_id)).status == "skipped"
+    assert len(stub.requests) == 1
+    assert stub.requests[0]["body"] == _RAW
+    assert (await _row(migrated_db, account_id)).status == "done"
     assert await _alerts(migrated_db, account_id) == []
+
+
+async def test_a_mail_gone_from_the_mirror_fails_with_an_alert(
+    migrated_db: DatabaseConnection, stub_factory: Any,
+) -> None:
+    stub = stub_factory([201])
+    secrets = await _secrets(migrated_db)
+    account_id, message_id, header = await _setup(migrated_db)
+    await _enqueue(migrated_db, _effect(stub.url), account_id, message_id, header)
+    async with migrated_db.session() as session:
+        await session.execute(text("DELETE FROM messages WHERE id = :id"), {"id": message_id})
+
+    await _drain(migrated_db, secrets, _cfg())
+
+    assert stub.requests == []
+    assert (await _row(migrated_db, account_id)).status == "failed"
+    assert len(await _alerts(migrated_db, account_id)) == 1
+
+
+async def test_a_response_slower_than_five_seconds_is_one_request_within_the_configured_timeout(
+    migrated_db: DatabaseConnection, stub_factory: Any,
+) -> None:
+    stub = stub_factory([201], delay=6.0)
+    secrets = await _secrets(migrated_db)
+    account_id, message_id, header = await _setup(migrated_db)
+    await _enqueue(migrated_db, _effect(stub.url), account_id, message_id, header)
+
+    await _drain(migrated_db, secrets, _cfg(request_timeout_seconds=30))
+
+    assert len(stub.requests) == 1
+    row = await _row(migrated_db, account_id)
+    assert (row.status, row.attempts) == ("done", 1)
+
+
+async def test_a_response_slower_than_the_configured_timeout_is_a_transient_failure(
+    migrated_db: DatabaseConnection, stub_factory: Any,
+) -> None:
+    stub = stub_factory([201], delay=3.0)
+    secrets = await _secrets(migrated_db)
+    account_id, message_id, header = await _setup(migrated_db)
+    await _enqueue(migrated_db, _effect(stub.url), account_id, message_id, header)
+
+    await _drain(migrated_db, secrets, _cfg(max_attempts=1, request_timeout_seconds=1))
+
+    row = await _row(migrated_db, account_id)
+    assert row.status == "failed"
+    assert "timed out" in row.last_error or "Timeout" in row.last_error
+
+
+async def test_a_delivery_left_pending_at_its_last_attempt_is_failed_and_alerted(
+    migrated_db: DatabaseConnection, stub_factory: Any,
+) -> None:
+    stub = stub_factory([201])
+    secrets = await _secrets(migrated_db)
+    account_id, message_id, header = await _setup(migrated_db)
+    await _enqueue(migrated_db, _effect(stub.url), account_id, message_id, header)
+    # What the lease reaper leaves behind when the worker died on the last attempt.
+    async with migrated_db.session() as session:
+        await session.execute(
+            text("UPDATE webhook_deliveries SET attempts = 3 WHERE account_id = :a"),
+            {"a": account_id},
+        )
+
+    assert await _drain(migrated_db, secrets, _cfg(max_attempts=3)) == 0
+    assert (await fail_exhausted_deliveries(migrated_db, _cfg(max_attempts=3), None, None)) >= 1
+
+    assert stub.requests == []
+    row = await _row(migrated_db, account_id)
+    assert row.status == "failed"
+    assert "gave up after 3 attempts" in row.last_error
+    assert [a.kind for a in await _alerts(migrated_db, account_id)] == ["webhook_failed"]
+    # Once failed it is not swept again.
+    assert await fail_exhausted_deliveries(migrated_db, _cfg(max_attempts=3), None, None) == 0
+    assert len(await _alerts(migrated_db, account_id)) == 1
+
+
+async def test_a_retry_uses_the_rules_current_destination(
+    migrated_db: DatabaseConnection, stub_factory: Any,
+) -> None:
+    broken, fixed = stub_factory([400]), stub_factory([201])
+    secrets = await _secrets(migrated_db)
+    account_id, message_id, header = await _setup(migrated_db)
+    await _enqueue(migrated_db, _effect(broken.url), account_id, message_id, header)
+    await _drain(migrated_db, secrets, _cfg())
+    row = await _row(migrated_db, account_id)
+    assert row.status == "failed"
+
+    async with migrated_db.session() as session:
+        assert await repository.requeue_failed(session, row.id, effect=_effect(fixed.url)) is True
+    await _drain(migrated_db, secrets, _cfg())
+
+    assert len(broken.requests) == 1
+    assert len(fixed.requests) == 1
+    assert (await _row(migrated_db, account_id)).status == "done"
+
+
+async def test_retry_all_failed_requeues_every_failed_delivery_of_one_webhook(
+    migrated_db: DatabaseConnection, stub_factory: Any,
+) -> None:
+    broken, fixed = stub_factory([400]), stub_factory([201])
+    name = f"canteen-{uuid.uuid4().hex[:8]}"
+    secrets = await _secrets(migrated_db)
+    account_id, first, first_header = await _setup(migrated_db)
+    async with migrated_db.session() as session:
+        folder_id = await _seed_folder(session, account_id, special_use="archive")
+        second, second_header = await _seed_message(session, account_id, folder_id)
+    other = _effect(broken.url, name="other")
+    await _enqueue(migrated_db, _effect(broken.url, name=name), account_id, first, first_header)
+    await _enqueue(migrated_db, _effect(broken.url, name=name), account_id, second, second_header)
+    await _enqueue(migrated_db, other, account_id, first, first_header)
+    await _drain(migrated_db, secrets, _cfg())
+
+    async with migrated_db.session() as session:
+        count = await repository.requeue_all_failed(
+            session, name, effect=_effect(fixed.url, name=name))
+    assert count == 2
+    await _drain(migrated_db, secrets, _cfg())
+
+    assert len(fixed.requests) == 2
+    async with migrated_db.session() as session:
+        rows = await repository.list_deliveries(session, name=None, status=None, limit=500)
+    by_name = {
+        (r.name, r.status) for r in rows if r.account_id == account_id
+    }
+    assert by_name == {(name, "done"), ("other", "failed")}
 
 
 async def test_the_rule_effect_queues_one_delivery_and_a_dry_run_queues_none(
@@ -488,6 +617,58 @@ async def test_backfill_queues_matches_oldest_first_and_only_once(
     second = await backfill_webhook(
         migrated_db, (stage,), "canteen", since=since, until=None, limit=100, dry_run=False)
     assert (second.matched, second.queued, second.already_queued) == (4, 0, 4)
+
+
+async def test_a_truncated_backfill_continues_from_its_cursor(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        inbox = await _seed_folder(session, account_id)
+        ids = [
+            (await _seed_message(
+                session, account_id, inbox, received_at=_NOW + timedelta(hours=n)))[0]
+            for n in range(5)
+        ]
+        # Same instant as the third: the cursor has to break the tie by id.
+        ids.append((await _seed_message(
+            session, account_id, inbox, received_at=_NOW + timedelta(hours=2)))[0])
+    stage = StageDefinition(
+        stage_id="canteen", type="match", name="canteen",
+        config={
+            "when": {"subject_contains": "Guten Appetit"},
+            "effects": [{"webhook": {"name": "canteen", "url": "http://127.0.0.1:9/never"}}],
+        },
+        accounts=(account_id,),
+    )
+    since = _NOW - timedelta(days=1)
+
+    seen = 0
+    cursor = None
+    calls = 0
+    while True:
+        result = await backfill_webhook(
+            migrated_db, (stage,), "canteen", since=since, until=None, limit=2, dry_run=False,
+            after=cursor,
+        )
+        calls += 1
+        seen += result.scanned
+        assert result.queued == result.scanned
+        if not result.truncated:
+            assert result.next_cursor is None
+            break
+        assert result.next_cursor is not None
+        cursor = result.next_cursor
+        assert calls < 10
+    assert (seen, calls) == (6, 3)
+
+    async with migrated_db.session() as session:
+        rows = [
+            r for r in await repository.list_deliveries(
+                session, name="canteen", status=None, limit=500)
+            if r.account_id == account_id
+        ]
+    assert sorted(r.message_id for r in rows) == sorted(ids)
 
 
 async def test_backfill_of_an_unknown_webhook_name_is_an_error(
