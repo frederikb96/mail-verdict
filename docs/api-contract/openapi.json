@@ -5138,6 +5138,18 @@
             "title": "Documents",
             "type": "array"
           },
+          "expected_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Until"
+          },
           "first_mail_at": {
             "anyOf": [
               {
@@ -5166,8 +5178,16 @@
             "title": "Identifiers",
             "type": "array"
           },
+          "is_favorite": {
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "is_open": {
             "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sealed": {
+            "title": "Is Sealed",
             "type": "boolean"
           },
           "last_mail_at": {
@@ -5195,6 +5215,15 @@
           },
           "merchant": {
             "title": "Merchant",
+            "type": "string"
+          },
+          "open_set_by": {
+            "enum": [
+              "ai",
+              "user",
+              "auto"
+            ],
+            "title": "Open Set By",
             "type": "string"
           },
           "status": {
@@ -5234,6 +5263,10 @@
           "status",
           "title",
           "is_open",
+          "is_favorite",
+          "is_sealed",
+          "open_set_by",
+          "expected_until",
           "icon",
           "summary_preview",
           "first_mail_at",
@@ -5327,6 +5360,18 @@
             "title": "Account Ids",
             "type": "array"
           },
+          "expected_until": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Until"
+          },
           "first_mail_at": {
             "anyOf": [
               {
@@ -5348,8 +5393,16 @@
             "title": "Id",
             "type": "string"
           },
+          "is_favorite": {
+            "title": "Is Favorite",
+            "type": "boolean"
+          },
           "is_open": {
             "title": "Is Open",
+            "type": "boolean"
+          },
+          "is_sealed": {
+            "title": "Is Sealed",
             "type": "boolean"
           },
           "last_mail_at": {
@@ -5370,6 +5423,15 @@
           },
           "merchant": {
             "title": "Merchant",
+            "type": "string"
+          },
+          "open_set_by": {
+            "enum": [
+              "ai",
+              "user",
+              "auto"
+            ],
+            "title": "Open Set By",
             "type": "string"
           },
           "status": {
@@ -5405,6 +5467,10 @@
           "status",
           "title",
           "is_open",
+          "is_favorite",
+          "is_sealed",
+          "open_set_by",
+          "expected_until",
           "icon",
           "summary_preview",
           "first_mail_at",
@@ -5563,6 +5629,46 @@
           "into"
         ],
         "title": "OrderMergeRequest",
+        "type": "object"
+      },
+      "OrderUpdateRequest": {
+        "description": "A person's change to an order's flags; an omitted field is left alone.\nSetting is_open records that a person decided it.",
+        "properties": {
+          "is_favorite": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Favorite"
+          },
+          "is_open": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Open"
+          },
+          "is_sealed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Sealed"
+          }
+        },
+        "title": "OrderUpdateRequest",
         "type": "object"
       },
       "OutboxAttachmentSummary": {
@@ -6696,6 +6802,184 @@
           "partstat"
         ],
         "title": "RespondRequest",
+        "type": "object"
+      },
+      "RuleAssistantChange": {
+        "description": "The one change the assistant proposes. `stage` is the complete stage\nas it should be after Accept; Accept is an ordinary pipeline write\n(`POST /pipeline/stages` when `is_new`, else `PATCH\n/pipeline/stages/{stage_id}`) carrying `base_revision`.",
+        "properties": {
+          "after_text": {
+            "title": "After Text",
+            "type": "string"
+          },
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "before_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Text"
+          },
+          "is_new": {
+            "title": "Is New",
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "add_condition",
+              "new_rule",
+              "replace_rule"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/StageOut"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "base_revision",
+          "is_new",
+          "stage",
+          "title",
+          "after_text"
+        ],
+        "title": "RuleAssistantChange",
+        "type": "object"
+      },
+      "RuleAssistantPreview": {
+        "description": "What the change would have done to the account's newest mails.",
+        "properties": {
+          "examples": {
+            "items": {
+              "$ref": "#/components/schemas/RuleAssistantPreviewExample"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "matched_after": {
+            "title": "Matched After",
+            "type": "integer"
+          },
+          "matched_before": {
+            "title": "Matched Before",
+            "type": "integer"
+          },
+          "sample_size": {
+            "title": "Sample Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sample_size",
+          "matched_before",
+          "matched_after",
+          "examples"
+        ],
+        "title": "RuleAssistantPreview",
+        "type": "object"
+      },
+      "RuleAssistantPreviewExample": {
+        "description": "One recent mail the changed rule newly catches.",
+        "properties": {
+          "from_addr": {
+            "title": "From Addr",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_addr",
+          "subject"
+        ],
+        "title": "RuleAssistantPreviewExample",
+        "type": "object"
+      },
+      "RuleAssistantRequest": {
+        "description": "One sentence from the owner about the open mail -- 'these should go\nto Newsletter too' -- for the rule assistant to turn into one change.",
+        "properties": {
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "prompt": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "prompt"
+        ],
+        "title": "RuleAssistantRequest",
+        "type": "object"
+      },
+      "RuleAssistantResponse": {
+        "description": "The assistant's answer. `change` is null when there is nothing to\naccept; `message` then says why.",
+        "properties": {
+          "change": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleAssistantChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuleAssistantPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "message",
+          "model",
+          "model_calls"
+        ],
+        "title": "RuleAssistantResponse",
         "type": "object"
       },
       "SearchDateBoundsResponse": {
@@ -12931,7 +13215,7 @@
     },
     "/orders": {
       "get": {
-        "description": "Orders across every enabled account, newest activity first.",
+        "description": "Orders across every enabled account, newest activity first.\n\n`favorites` keeps only favorites, in any state. `q` keeps orders where\nevery token of it (any order, typo-tolerant) matches the merchant,\nsubject, status or summary -- the same tokenizer and per-token\npredicate as the mail search's fallback tier.",
         "operationId": "list_orders_orders_get",
         "parameters": [
           {
@@ -12972,6 +13256,33 @@
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "favorites",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Favorites",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
             }
           }
         ],
@@ -13117,6 +13428,58 @@
           }
         },
         "summary": "Get Order",
+        "tags": [
+          "orders"
+        ]
+      },
+      "patch": {
+        "description": "Favorite, open/closed and sealed. A person's open/closed decision\nsticks until the next mail arrives (see orders/repository.py).",
+        "operationId": "update_order_orders__order_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrderUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Order",
         "tags": [
           "orders"
         ]
@@ -13570,6 +13933,48 @@
           }
         },
         "summary": "Replace Pipeline",
+        "tags": [
+          "pipeline"
+        ]
+      }
+    },
+    "/pipeline/assistant": {
+      "post": {
+        "description": "Turn one sentence about an open mail into one proposed rule change.\n\nNothing is stored. Accepting the proposal is the client's own write\nthrough `POST /pipeline/stages` (`change.is_new`) or `PATCH\n/pipeline/stages/{id}`, carrying `change.base_revision` so a rule\nedited in the meantime gets the usual 409. The exchange stops before\nits next model call once the client has disconnected.",
+        "operationId": "rule_assistant_pipeline_assistant_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuleAssistantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuleAssistantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rule Assistant",
         "tags": [
           "pipeline"
         ]

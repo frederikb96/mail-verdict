@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- Added an "Add rule" assistant: an icon in the reading pane takes one sentence about the open
+  mail and proposes exactly one change to the rules -- a condition added to an existing rule, a new
+  rule at the end, or one rule replaced -- with the explanation, the change itself and how many of
+  the account's last 100 mails it would have caught, for Accept or Decline. Nothing is stored,
+  closing cancels, and it never proposes an `expunge` or `webhook` effect. It uses the `ai` model
+  settings and `POST /api/pipeline/assistant`; accepting is an ordinary pipeline write. The open
+  mail's excerpt, the rule set and a few other senders and subjects go to the model provider when
+  it is used.
+- Fixed a rule condition object that combined `all`, `any` or `not` with another key being
+  accepted and silently evaluated as the composite alone, so `{"sender_match": ..., "not":
+  {...}}` ignored the sender. Such a condition is now rejected on write and raises when evaluated;
+  a stored rule written that way fails its next edit until it is split with `all`.
+- Keyboard shortcuts (`e`, `Delete`, `r`, Enter and the rest) no longer act while focus is inside
+  a dialog.
+- The orders screen gained favorites (a star on the row and in the detail, and a Favorites view
+  beside All and Open), a filter field matching every word in any order and tolerating typos, and
+  Close/Reopen and Seal/Unseal for an order. One action list serves the detail's top-right menu
+  and a menu on each row, opened by right-click or a touch long press. On a touch screen a row
+  swipes: right to left toggles favorite, left to right toggles closed and open.
+- Orders: `PATCH /api/orders/{id}` sets a favorite, closes or reopens an order and seals it; the
+  list takes `favorites=true` and a typo-tolerant `q` text filter (the mail search fallback's own
+  matcher, now shared). A sealed order is never offered to the order agent and takes no further
+  mail, and its numbers can be claimed by a new order. A person's open/closed decision stays until
+  the next mail arrives, which hands it back to the model.
+- Orders are closed automatically once nothing is expected of them. The write call now estimates
+  when an order is naturally over (`expected_until`); such an order closes
+  `orders.auto_close_grace_days` (7) after the later of that date and its last mail, and one with no
+  estimate closes `orders.auto_close_days` (30) after its last mail. `auto_close_days` 0 turns it
+  off. Existing open orders get one rewrite to fill the date in.
+- A shipment number that exists only in a tracking link's target (a carrier template whose link
+  text is an unfilled placeholder) now reaches the text the order agent reads and is stored as a
+  tracking number, so such notices stop collapsing into one entry. The decide prompt states that a
+  carrier notice with a different tracking number is a different shipment.
+- Deleting an order, merging it away or emptying it removes its write jobs and clears the order
+  pointer on the mail jobs, leaving nothing that names it; the mail jobs themselves stay so its
+  mails are not bundled again.
 - Added a secret store: named values encrypted at rest with the same key as provider keys, set,
   replaced and deleted from a Secrets card in Settings or through `/api/secrets`, and never
   returned by any endpoint.

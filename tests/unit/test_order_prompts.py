@@ -85,3 +85,29 @@ def test_write_user_prompt_escapes_a_mail_body_containing_the_delimiter() -> Non
     # Exactly one real </mail> close tag -- the one this function emits,
     # never one smuggled in from the untrusted body.
     assert prompt.count("</mail>") == 1
+
+
+def test_the_write_schema_requires_expected_until() -> None:
+    from mail_verdict.orders.prompts import WRITE_SCHEMA
+
+    assert "expected_until" in WRITE_SCHEMA["required"]
+    assert set(WRITE_SCHEMA["required"]) == set(WRITE_SCHEMA["properties"])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2026-11-12", "2026-11-12"),
+        (" 2026-11-12 ", "2026-11-12"),
+        ("", None),
+        ("next week", None),
+        ("2026-13-45", None),
+        (None, None),
+        (20261112, None),
+    ],
+)
+def test_parse_expected_until(value: object, expected: str | None) -> None:
+    from mail_verdict.orders.prompts import parse_expected_until
+
+    parsed = parse_expected_until(value)
+    assert (parsed.isoformat() if parsed else None) == expected

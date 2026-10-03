@@ -226,6 +226,21 @@ the definition, or one stage of it, against an existing message with nothing app
 path `pipeline/runner.py`'s `dry_run`/`dry_run_stage` expose for that purpose alone, never
 registered with the queue manager.
 
+The rule assistant (`rules/assistant.py`, `POST /api/pipeline/assistant`) proposes one change to
+this document from a sentence about an open mail, and stores nothing: accepting is an ordinary
+stage write carrying the `base_revision` the proposal was computed against. It is a fixed
+two-step exchange over the same `ModelGateway` the stages use, with the `ai` model settings and a
+circuit breaker of its own. The first step makes the model name the searches it wants over the
+account's mail, the second answers with the change, and a candidate that fails validation goes
+back with the reason, up to three times. Validation is the write endpoints' own
+(`validate_document`, folder resolution) plus three checks specific to it: the change must match
+the mail that prompted it, it must not introduce an `expunge` or `webhook` effect (or one of the
+pipeline's own bookkeeping effects), and it must not catch an implausible share of the account's
+100 newest mails — the same sample the preview is computed from. The condition and effect
+vocabulary in its prompt is rendered from `CONDITION_SYNTAX` (`rules/conditions.py`) and the
+`Effect` union, so a new condition or effect cannot be left out of it unnoticed. The mail's own
+text reaches the prompt as fenced, escaped data, and the model has no tools.
+
 A stage that cannot do its job raises rather than returning a success flag — a `Move` effect
 whose target folder does not resolve is exactly the kind of failure a success-flag result type
 would let slip through as reported success on a write that did nothing. The exception type tells
@@ -381,6 +396,44 @@ invoice labels `orders/filter.py`'s first pass already looks for and takes the i
 token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) — never overriding
 an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
 same number still finds the order rather than opening a duplicate.
+
+**A shipment number inside a link target is made visible.** Some carrier templates ship an unfilled
+merge field as the link text and put the real number only in the link's query string, so after link
+targets are dropped the model reads a placeholder and no number — and every pickup notice from that
+carrier then looks like the same shipment. `orders/content.py`'s `prepare_body` renders such a number
+into the text it hands the filter and both model calls, and `extract_labeled_identifiers` stores it as
+a tracking number even when the model reports none (the parameter names are one constant in
+`orders/candidates.py`). The decide prompt adds that a carrier notice whose tracking number differs
+from the ones a candidate holds is a different shipment.
+
+**Sealing takes an order out of the agent's world.** A sealed order (`orders.is_sealed`) is never a
+candidate, never makes a mail "known" by thread or number (`orders/lookup.py`), never captures a
+sent-folder follow-up (`orders/intake.py`) and does not own its numbers, so a new order can claim
+them. All of those apply the one predicate `ACCEPTS_MAIL` in `orders/candidates.py`. A sealed order
+stays listed and editable, and sealing does not change open or closed.
+
+**Who decided open or closed.** `orders.open_set_by` is `ai` (the write call), `user` (a person's
+PATCH) or `auto` (the automatic close). The write call changes `is_open` only while it is `ai`, and a
+new mail attached by the worker hands the decision back to the model. A person's reopen is therefore
+never auto-closed until the next mail.
+
+**Automatic close.** The write call also gives `expected_until`, its best estimate of when the order
+is naturally over (an event, a trip's last day, a pickup deadline, about a week after a parcel
+shipped). An hourly sweep (`orders/auto_close.py`, advisory-locked, taking the worker's own lock
+while it updates) closes an open, model-owned, written, non-stale order `settings.orders.auto_close_grace_days`
+after the later of that date and its last mail, or, when the model gave no date,
+`settings.orders.auto_close_days` after its last mail, and announces it like any other order change.
+`auto_close_days = 0` turns the whole sweep off.
+
+**Deleting an order leaves nothing naming it.** `repository.delete_order` (also used for a merge's
+source and an order left empty by a detach) removes the order's write jobs and clears the order
+pointer on the mail jobs that bundled its mails. The mail job rows stay — they are the never-twice
+gate — so a deleted order's mails are not re-bundled.
+
+**The list filter reuses the mail search's fallback matcher.** `GET /api/orders?q=` tokenises with
+`database/fuzzy.py` (Postgres's own parser) and requires every token to match the merchant, subject,
+status or summary literally or by trigram word similarity — the same per-token predicate and
+threshold the mail search's typo-tolerant fallback uses.
 
 **Membership is `(account_id, msg_key)`, never `messages.id`** — the same durable identity
 `verdicts` and `message_embeddings` use, for the same reason: a UIDVALIDITY resync or a move made

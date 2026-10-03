@@ -59,6 +59,7 @@ import type {
   OrderCatchUpResponse,
   OrderDetail,
   OrderListResponse,
+  OrderUpdateRequest,
   OutboxCreateRequest,
   OutboxCreateResult,
   OutboxResponse,
@@ -69,6 +70,8 @@ import type {
   PipelineRunResponse,
   PipelineTestRequest,
   PipelineTestResponse,
+  RuleAssistantRequest,
+  RuleAssistantResponse,
   PipelineWriteRequest,
   QueuePatchRequest,
   QueueResponse,
@@ -799,6 +802,20 @@ export const api = {
         body: JSON.stringify(data),
       });
     },
+    /** One sentence about an open mail -> one proposed rule change. Nothing is
+     * stored; accepting is `createStage`/`updateStage` with the proposal's
+     * `base_revision`. Aborting the signal stops the server's next model call. */
+    assistant(
+      data: RuleAssistantRequest,
+      signal?: AbortSignal,
+    ): Promise<RuleAssistantResponse> {
+      return request("/pipeline/assistant", {
+        method: "POST",
+        body: JSON.stringify(data),
+        signal,
+        timeoutMs: 60_000,
+      });
+    },
   },
 
   queues: {
@@ -1025,8 +1042,18 @@ export const api = {
       state?: "all" | "open";
       before?: string;
       limit?: number;
+      /** Favorites in any state. */
+      favorites?: boolean;
+      /** Every word must match, in any order, typos tolerated. */
+      q?: string;
     }): Promise<OrderListResponse> {
       return request(`/orders${qs(params ?? {})}`);
+    },
+    update(id: string, patch: OrderUpdateRequest): Promise<OrderDetail> {
+      return request(`/orders/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
     },
     get(id: string): Promise<OrderDetail> {
       return request(`/orders/${id}`);

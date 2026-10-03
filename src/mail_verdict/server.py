@@ -80,6 +80,7 @@ _stalled_outbox_timer: Any | None = None
 _action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
+_order_auto_closer: Any | None = None
 _glacier_sweeper: Any | None = None
 _read_state_reconciler: Any | None = None
 _contract_ok: bool = False
@@ -147,6 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _embedding_components, _calendar_intake_handler
     global _liveness_server, _liveness_thread, _pending_send_timer
     global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler, _glacier_sweeper
+    global _order_auto_closer
     global _stalled_outbox_timer, _action_submission_pruner
 
     config = get_config()
@@ -350,6 +352,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _retention_sweeper = build_retention_timer(db)
     await _retention_sweeper.start()
 
+    from mail_verdict.orders.auto_close import build_auto_close_timer
+
+    _order_auto_closer = build_auto_close_timer(db, settings_service, event_ring)
+    await _order_auto_closer.start()
+
     from mail_verdict.glacier.sweep import build_glacier_sweep_timer
 
     _glacier_sweeper = build_glacier_sweep_timer(db, event_ring, config.glacier, vapid_repo)
@@ -519,6 +526,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _retention_sweeper.stop()
     if _glacier_sweeper:
         await _glacier_sweeper.stop()
+    if _order_auto_closer:
+        await _order_auto_closer.stop()
     if _read_state_reconciler:
         await _read_state_reconciler.stop()
     if _embedding_components:
@@ -539,6 +548,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _mail_alert_finalizer = None
     _retention_sweeper = None
     _glacier_sweeper = None
+    _order_auto_closer = None
     _read_state_reconciler = None
     _contract_ok = False
 

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from mail_verdict.database.models import Order
 from mail_verdict.orders.candidates import (
     OrderMails,
+    extract_labeled_identifiers,
     is_valid_identifier,
     normalize_identifier,
     rank_orders,
@@ -132,3 +133,30 @@ def test_merchant_name_match_fires_for_a_long_enough_name() -> None:
 def test_an_order_with_no_matching_rule_is_not_a_candidate() -> None:
     order = _order(last_mail_at=_NOW - timedelta(days=400))
     assert _rank([order]) == []
+
+
+def test_the_backstop_takes_a_shipment_number_from_a_link_target() -> None:
+    raw = (
+        "Your shipment [{DELIVERY_PARCEL_IDENTCODE}]"
+        "(https://track.example.com/app/track?piececode=00340000000000000001) is ready."
+    )
+    assert extract_labeled_identifiers(raw) == [("tracking_number", "00340000000000000001")]
+
+
+def test_the_backstop_reads_a_link_target_inside_html_with_encoded_ampersands() -> None:
+    raw = '<a href="https://track.example.com/t?lang=en&amp;idc=00340000000000000002">x</a>'
+    assert extract_labeled_identifiers(raw) == [("tracking_number", "00340000000000000002")]
+
+
+def test_a_candidate_holding_a_linked_number_ranks_first() -> None:
+    held = _order(last_mail_at=_NOW - timedelta(days=5), merchant="Some Shop")
+    other = _order(last_mail_at=_NOW - timedelta(days=1), merchant="Another Shop")
+    candidates = _rank(
+        [held, other],
+        identifiers_by_order={
+            held.id: [("tracking_number", "00340000000000000001", "00340000000000000001")],
+        },
+        haystack_raw="https://track.example.com/app/track?piececode=00340000000000000001",
+    )
+    assert candidates[0].order_id == held.id
+    assert any("00340000000000000001" in reason for reason in candidates[0].reasons)

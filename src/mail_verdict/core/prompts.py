@@ -102,3 +102,17 @@ def load_static_prompt(template_name: str) -> str:
         Prompt content string
     """
     return render_prompt(template_name)
+
+
+def escape_delimiter_breakout(json_text: str) -> str:
+    """Replace every `<` and `>` with its `\\uXXXX` escape.
+
+    Still valid JSON -- a unicode escape inside a string literal decodes
+    to the same character -- but the delimiter tags the untrusted content
+    is fenced in (spam_user.md.j2's `<email_content>`/`</email_content>`)
+    can no longer be spelled inside it, so a message body containing the
+    literal closing tag can no longer close the fence early. `json.dumps`
+    itself has no option for this: it escapes quotes and backslashes,
+    never angle brackets.
+    """
+    return json_text.replace("<", "\\u003c").replace(">", "\\u003e")

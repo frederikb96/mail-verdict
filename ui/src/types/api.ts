@@ -864,6 +864,41 @@ export interface PipelineTestResponse {
   trace: PipelineTraceEntry[];
 }
 
+export interface RuleAssistantRequest {
+  message_id: string;
+  prompt: string;
+}
+
+export interface RuleAssistantChange {
+  kind: "add_condition" | "new_rule" | "replace_rule";
+  /** The revision the proposal was computed against; sent back on Accept. */
+  base_revision: number;
+  is_new: boolean;
+  /** The complete stage as it should be after Accept. */
+  stage: StageOut;
+  title: string;
+  /** The rule's config as it is now -- only for `replace_rule`. */
+  before_text: string | null;
+  after_text: string;
+}
+
+export interface RuleAssistantPreview {
+  sample_size: number;
+  matched_before: number;
+  matched_after: number;
+  examples: { from_addr: string; subject: string }[];
+}
+
+export interface RuleAssistantResponse {
+  message: string;
+  /** Null when there is nothing to accept; `message` says why. */
+  change: RuleAssistantChange | null;
+  preview: RuleAssistantPreview | null;
+  warnings: string[];
+  model: string;
+  model_calls: number;
+}
+
 export interface PipelineRunResponse {
   id: string;
   account_id: string;
@@ -1371,6 +1406,13 @@ export interface OrderListItem {
   /** subject + " — " + status, or just subject when status is empty. */
   title: string;
   is_open: boolean;
+  is_favorite: boolean;
+  /** A sealed order takes no further mail. */
+  is_sealed: boolean;
+  /** Who decided `is_open`: the model, a person, or the automatic sweep. */
+  open_set_by: "ai" | "user" | "auto";
+  /** YYYY-MM-DD, the model's estimate of when the order is over. */
+  expected_until: string | null;
   icon: OrderIcon;
   summary_preview: string;
   first_mail_at: string | null;
@@ -1379,6 +1421,14 @@ export interface OrderListItem {
   account_ids: string[];
   text_stale: boolean;
   updated_at: string;
+}
+
+/** Every field optional, null never allowed -- an omitted field is left
+ * untouched. */
+export interface OrderUpdateRequest {
+  is_favorite?: boolean;
+  is_open?: boolean;
+  is_sealed?: boolean;
 }
 
 export interface OrderListResponse {
