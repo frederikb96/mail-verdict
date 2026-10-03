@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import Order, OrderIdentifier, OrderMail
-from mail_verdict.orders.candidates import normalize_identifier
+from mail_verdict.orders.candidates import ACCEPTS_MAIL, normalize_identifier
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -63,7 +63,10 @@ class OrderLookup:
     ) -> bool:
         result = await session.execute(
             select(OrderMail.id)
-            .where(OrderMail.account_id == account_id, OrderMail.thread_id == thread_id)
+            .join(Order, Order.id == OrderMail.order_id)
+            .where(
+                OrderMail.account_id == account_id, OrderMail.thread_id == thread_id, ACCEPTS_MAIL,
+            )
             .limit(1)
         )
         return result.scalar_one_or_none() is not None
@@ -77,7 +80,9 @@ class OrderLookup:
         result = await session.execute(
             select(OrderIdentifier.value_norm)
             .join(Order, Order.id == OrderIdentifier.order_id)
-            .where(Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff)
+            .where(
+                Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff, ACCEPTS_MAIL,
+            )
         )
         for (value_norm,) in result.all():
             if value_norm and len(value_norm) >= 5 and value_norm in haystack_norm:

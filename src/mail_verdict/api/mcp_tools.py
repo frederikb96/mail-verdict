@@ -2018,11 +2018,14 @@ async def list_orders(state: str = "all", limit: int = 50) -> list[dict[str, Any
 
     Returns:
         List of orders: id, merchant, subject, status, title, is_open,
+        is_favorite, is_sealed, open_set_by (ai/user/auto), expected_until,
         icon, summary_preview, first_mail_at, last_mail_at, mail_count,
         account_ids, text_stale, updated_at
     """
     try:
-        result = await _list_orders(state=state, before=None, limit=min(max(limit, 1), 500))
+        result = await _list_orders(
+            state=state, before=None, limit=min(max(limit, 1), 500), favorites=False, q=None,
+        )
     except HTTPException as exc:
         return [_endpoint_error(exc)]
     return [item.model_dump(mode="json") for item in result.items]

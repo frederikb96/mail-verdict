@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from mail_verdict.pipeline.context import RunContext
+from mail_verdict.pipeline.context import RunContext, VerdictView
 from mail_verdict.pipeline.contracts import StageOutcome
 from mail_verdict.pipeline.effect_codec import parse_effect
 from mail_verdict.pipeline.message_view import MessageView, extract_display_name_and_addr
@@ -47,8 +47,7 @@ class MatchStage:
         self._effects = tuple(parse_effect(e) for e in config.effects)
 
     async def execute(self, msg: MessageView, ctx: RunContext) -> StageOutcome:
-        mail_ctx = _to_mail_context(msg, ctx)
-        matched = evaluate_condition(self._config.when, mail_ctx) if self._config.when else True
+        matched = matches_message(self._config.when, msg, ctx.verdict)
         if not matched:
             return StageOutcome(matched=False, detail="conditions did not match")
         return StageOutcome(
@@ -57,7 +56,18 @@ class MatchStage:
         )
 
 
+def matches_message(when: dict[str, Any], msg: MessageView, verdict: VerdictView | None) -> bool:
+    """Whether a `match` stage's condition tree holds for one message --
+    the same evaluation `execute` makes, for a caller (the webhook
+    backfill) that has no run in flight. An empty tree always matches."""
+    return evaluate_condition(when, _mail_context(msg, verdict)) if when else True
+
+
 def _to_mail_context(msg: MessageView, ctx: RunContext) -> MailContext:
+    return _mail_context(msg, ctx.verdict)
+
+
+def _mail_context(msg: MessageView, verdict: VerdictView | None) -> MailContext:
     # msg.from_addr is the raw From header -- display name and all, e.g.
     # '"Acme Billing" <invoice+statements@mail.acme-billing.example>'. sender_match
     # and sender_domain compare against a bare address, so a display name
@@ -79,5 +89,5 @@ def _to_mail_context(msg: MessageView, ctx: RunContext) -> MailContext:
         attachment_types=list(msg.attachment_types),
         folder=msg.folder.imap_name,
         tags=list(msg.tags),
-        verdict_is_spam=ctx.verdict.is_spam if ctx.verdict is not None else None,
+        verdict_is_spam=verdict.is_spam if verdict is not None else None,
     )

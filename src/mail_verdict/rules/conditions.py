@@ -213,6 +213,46 @@ class ConditionEvaluator:
 # evaluator or a MailContext just to ask what it knows.
 KNOWN_CONDITION_TYPES: frozenset[str] = ConditionEvaluator.KNOWN_TYPES
 
+# The keys that make a condition object a composite; such an object carries
+# exactly that one key.
+COMPOSITE_CONDITION_KEYS: frozenset[str] = frozenset({"all", "any", "not"})
+
+# One line per condition type: the shape of its value, then what it
+# means, separated by " -- ". Rendered into the rule assistant's prompt
+# (rules/assistant.py), so a model sees the vocabulary exactly as the
+# evaluators implement it; a test requires an entry for every type.
+CONDITION_SYNTAX: dict[str, str] = {
+    "subject_contains": '"text" -- substring of the subject, case-insensitive',
+    "body_contains": '"text" -- substring of the body text, case-insensitive',
+    "subject_matches": '"regex" -- regular expression searched in the subject, case-insensitive',
+    "body_matches": '"regex" -- regular expression searched in the body text, case-insensitive',
+    "sender_match": (
+        '"user@example.com" or "example.com" -- the exact sender address, or any sender '
+        "at that domain"
+    ),
+    "sender_domain": '"example.com" -- any sender at exactly that domain',
+    "header_match": (
+        '{"field": "from", "pattern": "regex"} -- regex searched in one raw header, '
+        "display name included"
+    ),
+    "header_exists": '"list-id" -- the header is present',
+    "size_gt": "<integer bytes> -- the mail is larger than this",
+    "size_lt": "<integer bytes> -- the mail is smaller than this",
+    "has_attachment": 'true, or "pdf" -- an attachment whose type contains that text',
+    "folder_is": '"INBOX" -- the folder the mail is in',
+    "tag_is": '"name" -- the mail carries that tag',
+    "verdict_is": '"spam" or "not-spam" -- the spam verdict; never true for unclassified mail',
+}
+
+
+def render_condition_syntax() -> str:
+    """CONDITION_SYNTAX as one bullet per type, `- {"key": <shape>} -- meaning`."""
+    lines = []
+    for key, text in CONDITION_SYNTAX.items():
+        shape, _, meaning = text.partition(" -- ")
+        lines.append(f'- {{"{key}": {shape}}} -- {meaning}')
+    return "\n".join(lines)
+
 
 def evaluate_condition(
     condition: dict[str, Any],
@@ -235,9 +275,20 @@ def evaluate_condition(
 
     Returns:
         True if condition matches
+
+    Raises:
+        ValueError: a condition object carries more than one key
     """
     if evaluator is None:
         evaluator = ConditionEvaluator()
+
+    # A composite key next to any other key would silently win; the
+    # leaf evaluator already raises for the same shape.
+    if len(condition) > 1 and COMPOSITE_CONDITION_KEYS & condition.keys():
+        raise ValueError(
+            f"a condition may only have one key, got {sorted(condition)!r} -- "
+            "use 'all' to combine conditions"
+        )
 
     # Composite: all (AND)
     if "all" in condition:
