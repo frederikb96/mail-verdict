@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.9.0] - 2026-10-05
+
 ### Changed
 
 - The "Add rule" assistant can propose bigger changes: one proposal may add, change, reorder or
