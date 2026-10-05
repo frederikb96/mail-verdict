@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The "Add rule" assistant can propose bigger changes: one proposal may add, change, reorder or
+  remove several rules at once, for example replacing one rule with two. The model edits the rule
+  list as JSON text with find-and-replace blocks, and the result passes the same validation as
+  before plus a check that the pipeline's other stages come back unchanged. The dialog shows every
+  affected rule as it is and as it would be, and Accept saves the whole list with one `PUT
+  /api/pipeline`. **API change:** `change` now carries `enabled`, `stages` and `rules` in place of
+  `kind`, `is_new`, `stage`, `before_text`, `after_text` and `effects_text`. The exchange may take
+  up to 150 seconds.
+
 ## [6.8.1] - 2026-10-03
 
 ### Fixed

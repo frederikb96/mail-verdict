@@ -115,11 +115,12 @@ mirror, which is what keeps it simple.
   from a named secret stored encrypted in the database (set from Settings, never shown again). A
   delivery is queued, retried when the receiver is unavailable, never repeated once it succeeded,
   and raises an alert when it gives up; mail that predates a rule can be sent once, oldest first,
-  through the API. From an open mail, the "Add rule" icon takes one sentence ("these should go to
-  Newsletter too") and proposes exactly one change to the rules — a condition added to an existing
-  rule, a new rule at the end of the list, or one rule replaced — showing the explanation, the
-  change and what it would have caught among the last 100 mails, for Accept or Decline. Nothing is
-  kept, and it never proposes permanent deletion or a webhook.
+  through the API. From an open mail, the "Add rule" icon takes a sentence ("these should go to
+  Newsletter too", "split this rule by sender") and proposes one change to the rules, which may
+  add, change, reorder or remove several rules at once — showing the explanation, each affected
+  rule as it is and as it would be, and what the touched rules would have caught among the last
+  100 mails, for Accept or Decline as a whole. Nothing is kept, and it never proposes permanent
+  deletion or a webhook.
 - **Search** — a field in the top header on every page (`/` focuses it) jumps straight to a
   result; text search scoped to whichever accounts, folders and fields (subject, from, to,
   body) you pick, ranked by whether the word itself matched rather than merely started a longer

@@ -14,7 +14,7 @@ POST      /api/pipeline/revisions/{n}/restore
 GET       /api/pipeline/health              -- per-stage folder resolution
 POST      /api/pipeline/test                -- dry-run the whole pipeline
 POST      /api/pipeline/stages/{id}/test    -- dry-run one stage
-POST      /api/pipeline/assistant           -- propose one rule change from a sentence
+POST      /api/pipeline/assistant           -- propose a change to the rules from a sentence
 
 Validation is split deliberately (see pipeline/document_validation.py and
 pipeline/health.py): a syntax error, an unknown stage type, an unknown
@@ -84,9 +84,9 @@ router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
 _EMPTY_DEFINITION = PipelineDefinition(revision=0, enabled=True, stages=())
 
-# Two model calls of up to 40 s each would already be slow; the whole
-# exchange (searches, up to three attempts) is cut off here.
-_ASSISTANT_DEADLINE_SECONDS = 55
+# A search call plus a change call is the ordinary exchange; the whole of
+# it, retries included, is cut off here.
+_ASSISTANT_DEADLINE_SECONDS = 150
 
 
 async def _current(repo: PipelineRevisionRepository) -> PipelineDefinition:
@@ -474,12 +474,13 @@ async def _account_id_for_mail(db: DatabaseConnection, message_id: uuid.UUID) ->
 async def rule_assistant(
     body: RuleAssistantRequest, request: Request,
 ) -> RuleAssistantResponse | Response:
-    """Turn one sentence about an open mail into one proposed rule change.
+    """Turn one sentence about an open mail into one proposed change to
+    the rules -- any number of rules added, changed, moved or removed.
 
-    Nothing is stored. Accepting the proposal is the client's own write
-    through `POST /pipeline/stages` (`change.is_new`) or `PATCH
-    /pipeline/stages/{id}`, carrying `change.base_revision` so a rule
-    edited in the meantime gets the usual 409. The exchange stops before
+    Nothing is stored. Accepting the proposal is the client's own `PUT
+    /pipeline` with `change.enabled` and `change.stages`, carrying
+    `change.base_revision` so rules edited in the meantime get the usual
+    409. The exchange stops before
     its next model call once the client has disconnected, and answers with
     an empty 204 nobody reads."""
     db = get_db_connection()

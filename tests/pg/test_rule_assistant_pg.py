@@ -89,13 +89,16 @@ def test_proposal_then_accept_is_an_ordinary_pipeline_write(
         body = resp.json()
 
         change = body["change"]
-        assert change["kind"] == "new_rule" and change["is_new"] is True
         assert change["base_revision"] == base["revision"]
-        stage = change["stage"]
-        assert stage["stage_id"].startswith(f"assistant-{str(mail_id)[:8]}")
-        assert stage["type"] == "match" and stage["enabled"] is True
-        assert stage["accounts"] == [str(account_id)]
-        assert change["before_text"] is None and stage["stage_id"] in change["after_text"]
+        (rule,) = change["rules"]
+        assert rule["kind"] == "added" and rule["before_text"] is None
+        assert rule["stage_id"].startswith(f"assistant-{str(mail_id)[:8]}")
+        assert rule["stage_id"] in rule["after_text"]
+        stages = change["stages"]
+        assert [s["stage_id"] for s in stages] == ["earlier", rule["stage_id"]]
+        added = stages[-1]
+        assert added["type"] == "match" and added["enabled"] is True
+        assert added["accounts"] == [str(account_id)]
         assert body["model"] == "fake" and body["model_calls"] == 0
 
         # Scoped to the account this test seeded: one mail, which the rule catches.
@@ -111,21 +114,24 @@ def test_proposal_then_accept_is_an_ordinary_pipeline_write(
         # Nothing was stored by asking.
         assert client.get("/pipeline").json()["revision"] == base["revision"]
 
-        # Accept: the existing create-stage endpoint with the proposal's base_revision.
-        accept = {**stage, "base_revision": change["base_revision"]}
-        written = client.post("/pipeline/stages", json=accept)
+        # Accept: the ordinary whole-document write with the proposal's base_revision.
+        accept = {
+            "base_revision": change["base_revision"], "enabled": change["enabled"],
+            "stages": stages,
+        }
+        written = client.put("/pipeline", json=accept)
         assert written.status_code == 200, written.text
         stage_ids = [s["stage_id"] for s in written.json()["stages"]]
-        assert stage_ids == ["earlier", stage["stage_id"]]
+        assert stage_ids == ["earlier", rule["stage_id"]]
 
         # The same proposal accepted twice finds the rules changed meanwhile.
-        assert client.post("/pipeline/stages", json=accept).status_code == 409
+        assert client.put("/pipeline", json=accept).status_code == 409
 
         # Asking again now proposes a different, still-free id.
         again = client.post(
             "/pipeline/assistant", json={"message_id": str(mail_id), "prompt": "again"},
         ).json()
-        assert again["change"]["stage"]["stage_id"] not in stage_ids
+        assert again["change"]["rules"][0]["stage_id"] not in stage_ids
 
 
 def test_unknown_message_is_404_and_an_empty_prompt_is_refused(

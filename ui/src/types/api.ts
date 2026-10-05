@@ -869,19 +869,25 @@ export interface RuleAssistantRequest {
   prompt: string;
 }
 
+export interface RuleAssistantRuleChange {
+  kind: "added" | "changed" | "moved" | "removed";
+  stage_id: string;
+  name: string;
+  /** The whole stage as JSON before the change -- null for an added or moved rule. */
+  before_text: string | null;
+  /** The whole stage as JSON after the change -- null for a removed rule. */
+  after_text: string | null;
+}
+
 export interface RuleAssistantChange {
-  kind: "add_condition" | "new_rule" | "replace_rule";
   /** The revision the proposal was computed against; sent back on Accept. */
   base_revision: number;
-  is_new: boolean;
-  /** The complete stage as it should be after Accept. */
-  stage: StageOut;
+  enabled: boolean;
+  /** The complete stage list as it should be after Accept. */
+  stages: StageOut[];
   title: string;
-  /** The rule's config as it is now -- only for `replace_rule`. */
-  before_text: string | null;
-  after_text: string;
-  /** The existing rule's effects -- only for `add_condition`, whose `after_text` is the added condition alone. */
-  effects_text: string | null;
+  /** The rules that differ from the current stage list. */
+  rules: RuleAssistantRuleChange[];
 }
 
 export interface RuleAssistantPreview {
