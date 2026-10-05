@@ -1493,7 +1493,8 @@ class PipelineTestResponse(BaseModel):
 
 class RuleAssistantRequest(BaseModel):
     """One sentence from the owner about the open mail -- 'these should go
-    to Newsletter too' -- for the rule assistant to turn into one change."""
+    to Newsletter too' -- for the rule assistant to turn into one proposed
+    change to the rules."""
 
     message_id: uuid.UUID
     prompt: str = Field(min_length=1, max_length=1000)
@@ -1507,33 +1508,41 @@ class RuleAssistantRequest(BaseModel):
         return stripped
 
 
-class RuleAssistantChange(BaseModel):
-    """The one change the assistant proposes. `stage` is the complete stage
-    as it should be after Accept; Accept is an ordinary pipeline write
-    (`POST /pipeline/stages` when `is_new`, else `PATCH
-    /pipeline/stages/{stage_id}`) carrying `base_revision`. `effects_text` is
-    the existing rule's effects, set for `add_condition`, whose `after_text`
-    shows only the added condition."""
+class RuleAssistantRuleChange(BaseModel):
+    """One rule the proposal adds, changes, moves or removes. The texts are
+    the whole stage as JSON: `before_text` is null for an added or moved
+    rule, `after_text` null for a removed one."""
 
-    kind: Literal["add_condition", "new_rule", "replace_rule"]
-    base_revision: int
-    is_new: bool
-    stage: StageOut
-    title: str
+    kind: Literal["added", "changed", "moved", "removed"]
+    stage_id: str
+    name: str
     before_text: str | None = None
-    after_text: str
-    effects_text: str | None = None
+    after_text: str | None = None
+
+
+class RuleAssistantChange(BaseModel):
+    """The change the assistant proposes: the complete pipeline document
+    as it should be after Accept, and the rules in it that differ from the
+    current one. Accept is an ordinary `PUT /pipeline` with `enabled`,
+    `stages` and `base_revision`."""
+
+    base_revision: int
+    enabled: bool
+    stages: list[StageOut]
+    title: str
+    rules: list[RuleAssistantRuleChange]
 
 
 class RuleAssistantPreviewExample(BaseModel):
-    """One recent mail the changed rule newly catches."""
+    """One recent mail the changed rules newly catch."""
 
     from_addr: str
     subject: str
 
 
 class RuleAssistantPreview(BaseModel):
-    """What the change would have done to the account's newest mails."""
+    """What the rules the change touches catch among the account's newest
+    mails, taken together, before and after it."""
 
     sample_size: int
     matched_before: int

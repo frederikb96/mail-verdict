@@ -15,7 +15,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, ApiError } from "@/lib/api";
 import { pipelineKeys } from "@/hooks/use-pipeline";
 import { useToast } from "@/hooks/use-toast";
-import type { RuleAssistantChange, RuleAssistantResponse } from "@/types/api";
+import type {
+  RuleAssistantChange,
+  RuleAssistantResponse,
+  RuleAssistantRuleChange,
+} from "@/types/api";
 
 const MAX_PROMPT_CHARS = 1000;
 
@@ -47,7 +51,8 @@ function describeError(err: unknown): string {
 
 /**
  * One sentence about the open mail becomes one proposed change to the
- * rules, which is accepted or declined -- no history, no second prompt.
+ * rules -- any number of rules added, changed, moved or removed -- which is
+ * accepted or declined as a whole -- no history, no second prompt.
  * Closing the dialog by any route aborts a request still running, and the
  * server stops before its next model call.
  */
@@ -107,30 +112,15 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
     if (busyRef.current) return;
     busyRef.current = true;
     setAccepting(true);
-    const { stage } = change;
     try {
-      if (change.is_new) {
-        await api.pipeline.createStage({
-          stage_id: stage.stage_id,
-          type: stage.type,
-          name: stage.name,
-          config: stage.config,
-          enabled: stage.enabled,
-          halt: stage.halt,
-          accounts: stage.accounts,
-          base_revision: change.base_revision,
-        });
-      } else {
-        await api.pipeline.updateStage(stage.stage_id, {
-          name: stage.name,
-          config: stage.config,
-          halt: stage.halt,
-          base_revision: change.base_revision,
-        });
-      }
+      await api.pipeline.replace({
+        base_revision: change.base_revision,
+        enabled: change.enabled,
+        stages: change.stages as unknown as Record<string, unknown>[],
+      });
       qc.invalidateQueries({ queryKey: pipelineKeys.document });
       qc.invalidateQueries({ queryKey: pipelineKeys.health });
-      pushToast("Rule saved", "success");
+      pushToast("Rules saved", "success");
       handleOpenChange(false);
     } catch (err) {
       setView({
@@ -148,7 +138,7 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent size="lg">
+      <DialogContent size="lg" className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add rule</DialogTitle>
         </DialogHeader>
@@ -156,7 +146,8 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
         {view.kind === "prompt" && (
           <div className="flex flex-col gap-3">
             <p className="text-sm text-muted-foreground">
-              Say in one sentence what should happen to mail like the one you have open.
+              Say in a sentence what should happen to mail like the one you have open. The
+              assistant may add, change, reorder or remove several rules at once.
             </p>
             <Textarea
               autoFocus
@@ -176,7 +167,7 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
                 Cancel
               </Button>
               <Button disabled={!prompt.trim()} onClick={() => void send()}>
-                Propose rule
+                Propose change
               </Button>
             </div>
           </div>
@@ -185,7 +176,7 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
         {view.kind === "running" && (
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Working out a rule…
+            Working out a change…
           </div>
         )}
 
@@ -238,11 +229,9 @@ function ProposalView({
       <p className="text-sm">{response.message}</p>
       <h3 className="text-sm font-medium">{change.title}</h3>
 
-      {change.before_text !== null && <CodeBlock label="Now" text={change.before_text} />}
-      <CodeBlock label="Proposed" text={change.after_text} />
-      {change.effects_text !== null && (
-        <CodeBlock label="What this rule does" text={change.effects_text} />
-      )}
+      {change.rules.map((rule) => (
+        <RuleChangeView key={`${rule.kind}-${rule.stage_id}`} rule={rule} />
+      ))}
 
       {preview && (
         <div className="text-sm">
@@ -278,6 +267,27 @@ function ProposalView({
         </Button>
       </div>
     </div>
+  );
+}
+
+const KIND_LABEL: Record<RuleAssistantRuleChange["kind"], string> = {
+  added: "New",
+  changed: "Changed",
+  moved: "Moved",
+  removed: "Removed",
+};
+
+function RuleChangeView({ rule }: { rule: RuleAssistantRuleChange }) {
+  return (
+    <section className="flex min-w-0 flex-col gap-2 rounded-md border p-2">
+      <p className="text-sm">
+        <span className="font-medium">{KIND_LABEL[rule.kind]}</span> — {rule.name}
+      </p>
+      {rule.before_text !== null && <CodeBlock label="Now" text={rule.before_text} />}
+      {rule.after_text !== null && (
+        <CodeBlock label={rule.kind === "moved" ? "Unchanged" : "Proposed"} text={rule.after_text} />
+      )}
+    </section>
   );
 }
 

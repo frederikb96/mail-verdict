@@ -6805,53 +6805,29 @@
         "type": "object"
       },
       "RuleAssistantChange": {
-        "description": "The one change the assistant proposes. `stage` is the complete stage\nas it should be after Accept; Accept is an ordinary pipeline write\n(`POST /pipeline/stages` when `is_new`, else `PATCH\n/pipeline/stages/{stage_id}`) carrying `base_revision`. `effects_text` is\nthe existing rule's effects, set for `add_condition`, whose `after_text`\nshows only the added condition.",
+        "description": "The change the assistant proposes: the complete pipeline document\nas it should be after Accept, and the rules in it that differ from the\ncurrent one. Accept is an ordinary `PUT /pipeline` with `enabled`,\n`stages` and `base_revision`.",
         "properties": {
-          "after_text": {
-            "title": "After Text",
-            "type": "string"
-          },
           "base_revision": {
             "title": "Base Revision",
             "type": "integer"
           },
-          "before_text": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Before Text"
-          },
-          "effects_text": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Effects Text"
-          },
-          "is_new": {
-            "title": "Is New",
+          "enabled": {
+            "title": "Enabled",
             "type": "boolean"
           },
-          "kind": {
-            "enum": [
-              "add_condition",
-              "new_rule",
-              "replace_rule"
-            ],
-            "title": "Kind",
-            "type": "string"
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/RuleAssistantRuleChange"
+            },
+            "title": "Rules",
+            "type": "array"
           },
-          "stage": {
-            "$ref": "#/components/schemas/StageOut"
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/StageOut"
+            },
+            "title": "Stages",
+            "type": "array"
           },
           "title": {
             "title": "Title",
@@ -6859,18 +6835,17 @@
           }
         },
         "required": [
-          "kind",
           "base_revision",
-          "is_new",
-          "stage",
+          "enabled",
+          "stages",
           "title",
-          "after_text"
+          "rules"
         ],
         "title": "RuleAssistantChange",
         "type": "object"
       },
       "RuleAssistantPreview": {
-        "description": "What the change would have done to the account's newest mails.",
+        "description": "What the rules the change touches catch among the account's newest\nmails, taken together, before and after it.",
         "properties": {
           "examples": {
             "items": {
@@ -6902,7 +6877,7 @@
         "type": "object"
       },
       "RuleAssistantPreviewExample": {
-        "description": "One recent mail the changed rule newly catches.",
+        "description": "One recent mail the changed rules newly catch.",
         "properties": {
           "from_addr": {
             "title": "From Addr",
@@ -6921,7 +6896,7 @@
         "type": "object"
       },
       "RuleAssistantRequest": {
-        "description": "One sentence from the owner about the open mail -- 'these should go\nto Newsletter too' -- for the rule assistant to turn into one change.",
+        "description": "One sentence from the owner about the open mail -- 'these should go\nto Newsletter too' -- for the rule assistant to turn into one proposed\nchange to the rules.",
         "properties": {
           "message_id": {
             "format": "uuid",
@@ -6991,6 +6966,58 @@
           "model_calls"
         ],
         "title": "RuleAssistantResponse",
+        "type": "object"
+      },
+      "RuleAssistantRuleChange": {
+        "description": "One rule the proposal adds, changes, moves or removes. The texts are\nthe whole stage as JSON: `before_text` is null for an added or moved\nrule, `after_text` null for a removed one.",
+        "properties": {
+          "after_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Text"
+          },
+          "before_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Text"
+          },
+          "kind": {
+            "enum": [
+              "added",
+              "changed",
+              "moved",
+              "removed"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "stage_id": {
+            "title": "Stage Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "stage_id",
+          "name"
+        ],
+        "title": "RuleAssistantRuleChange",
         "type": "object"
       },
       "SearchDateBoundsResponse": {
@@ -13993,7 +14020,7 @@
     },
     "/pipeline/assistant": {
       "post": {
-        "description": "Turn one sentence about an open mail into one proposed rule change.\n\nNothing is stored. Accepting the proposal is the client's own write\nthrough `POST /pipeline/stages` (`change.is_new`) or `PATCH\n/pipeline/stages/{id}`, carrying `change.base_revision` so a rule\nedited in the meantime gets the usual 409. The exchange stops before\nits next model call once the client has disconnected, and answers with\nan empty 204 nobody reads.",
+        "description": "Turn one sentence about an open mail into one proposed change to\nthe rules -- any number of rules added, changed, moved or removed.\n\nNothing is stored. Accepting the proposal is the client's own `PUT\n/pipeline` with `change.enabled` and `change.stages`, carrying\n`change.base_revision` so rules edited in the meantime get the usual\n409. The exchange stops before\nits next model call once the client has disconnected, and answers with\nan empty 204 nobody reads.",
         "operationId": "rule_assistant_pipeline_assistant_post",
         "requestBody": {
           "content": {

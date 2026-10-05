@@ -1,24 +1,29 @@
 """
 The "Add rule" assistant: one sentence from the owner about the mail he has
-open becomes exactly one proposed change to his rules, which he accepts or
-declines. Nothing is stored -- Accept is the client making an ordinary
-pipeline write with the `base_revision` the proposal was computed against.
+open becomes one proposed change to his rules, which he accepts or
+declines. Nothing is stored -- Accept is the client replacing the pipeline
+document with the proposed one, carrying the `base_revision` the proposal
+was computed against.
 
-A rule is a `match` stage of the pipeline document, so a change is one of
-three things: a condition OR-ed onto an existing rule, a new rule appended
-at the end, or one rule replaced.
+A rule is a `match` stage of the pipeline document. The model sees the
+whole stage list as JSON text and answers with find-and-replace edits over
+that text: each names a piece of the current text, which must occur exactly
+once, and what replaces it -- nothing, to delete. So one proposal can add,
+change, remove and reorder any number of rules at once, and the edit format
+stays as simple as quoting what is there. The pipeline's other stages
+appear in the text in a shortened form and must come back unchanged.
 
 The exchange is fixed rather than a free tool loop. Left to itself a model
 never looks at other mail, so step one forces the question "which searches
-do you want?", the searches run, and step two answers with the change. A
+do you want?", the searches run, and step two answers with the edits. A
 candidate that fails validation goes back to the model with the reason, up
 to `_MAX_ATTEMPTS` times; the person only ever sees one that passed.
 
 Validation is everything the write endpoints would check plus what only
-this feature needs: the change must match the mail that prompted it, must
-not introduce an effect the assistant may not propose, and must not catch
-an implausible share of the account's newest mail. That control set also
-feeds the preview shown beside the proposal.
+this feature needs: the change must concern the mail that prompted it, must
+not introduce an effect the assistant may not propose, and no rule it adds
+or changes may catch an implausible share of the account's newest mail.
+That control set also feeds the preview shown beside the proposal.
 
 The mail content in the model's input is untrusted. The model has no tools
 and one answer per call, the input is fenced and escaped like the spam
@@ -43,6 +48,7 @@ from mail_verdict.api.schemas import (
     RuleAssistantPreview,
     RuleAssistantPreviewExample,
     RuleAssistantResponse,
+    RuleAssistantRuleChange,
     StageOut,
 )
 from mail_verdict.core.prompts import escape_delimiter_breakout, render_prompt
@@ -83,10 +89,10 @@ logger = logging.getLogger(__name__)
 _CONTROL_SIZE = 100
 _MAX_SEARCHES = 3
 _MAX_ATTEMPTS = 3
-# The settings.ai budget is sized for a one-word verdict; re-emitting a
-# whole rule needs more.
-_MAX_TOKENS = 4000
-_CALL_TIMEOUT_SECONDS = 40.0
+# The settings.ai budget is sized for a one-word verdict; edits quoting and
+# re-emitting several rules need more.
+_MAX_TOKENS = 8000
+_CALL_TIMEOUT_SECONDS = 60.0
 _BODY_EXCERPT_CHARS = 1200
 _SEARCH_SAMPLE_SIZE = 8
 _SEARCH_TERM_CHARS = 100
@@ -97,13 +103,14 @@ _PREVIEW_EXAMPLES = 5
 # untrusted mail text and a careless Accept of any of these is not undoable
 # (expunge, webhook) or is not what a person writing a rule means
 # (the pipeline's own bookkeeping effects). A rule that already carries one
-# can still be extended with another condition -- nothing is introduced --
-# and the proposal then shows the rule's effects and warns (_warnings).
+# can still be changed or removed -- nothing is introduced -- and the
+# proposal then warns (_warnings).
 ASSISTANT_DENIED_EFFECTS = frozenset(
     {"record_verdict", "enqueue_order", "notify", "expunge", "webhook"}
 )
 
-_ACTIONS = ("add_condition", "new_rule", "replace_rule", "none")
+# The keys a match stage may carry; anything else is a model invention.
+_STAGE_KEYS = frozenset({"stage_id", "type", "name", "config", "enabled", "halt", "accounts"})
 
 SEARCH_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -129,11 +136,20 @@ SEARCH_SCHEMA: dict[str, Any] = {
 CHANGE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["action", "stage_id", "json", "message"],
+    "required": ["edits", "message"],
     "properties": {
-        "action": {"type": "string", "enum": list(_ACTIONS)},
-        "stage_id": {"type": "string"},
-        "json": {"type": "string"},
+        "edits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["old", "new"],
+                "properties": {
+                    "old": {"type": "string"},
+                    "new": {"type": "string"},
+                },
+            },
+        },
         "message": {"type": "string"},
     },
 }
@@ -153,14 +169,30 @@ class _Disconnected(Exception):
 
 
 @dataclass(frozen=True)
-class _Candidate:
-    """A validated change, ready to show."""
+class _RuleChange:
+    """One rule the proposal touches. `before` is None for an added rule,
+    `after` None for a removed one; a moved rule has both, identical."""
 
     kind: str
-    stage: dict[str, Any]
     before: dict[str, Any] | None
-    title: str
-    after_text: str
+    after: dict[str, Any] | None
+
+    @property
+    def stage_id(self) -> str:
+        return cast("str", (self.after or self.before or {})["stage_id"])
+
+    @property
+    def name(self) -> str:
+        return cast("str", (self.after or self.before or {})["name"])
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """A validated change, ready to show: the complete new stage list and
+    the rules in it that differ from the current one."""
+
+    stages: list[dict[str, Any]]
+    changes: list[_RuleChange]
     message: str
 
 
@@ -278,9 +310,16 @@ def user_prompt(model_input: dict[str, Any]) -> str:
 
 
 def _model_view_of_stage(stage: dict[str, Any]) -> dict[str, Any]:
+    """A match stage whole; any other stage shortened to what identifies it,
+    since the assistant may not change it."""
     if stage.get("type") == "match":
         return stage
     return {"stage_id": stage["stage_id"], "type": stage["type"], "name": stage.get("name")}
+
+
+def rules_text(stages: list[dict[str, Any]]) -> str:
+    """The stage list as the JSON text the model edits."""
+    return _json_text([_model_view_of_stage(s) for s in stages])
 
 
 # --- Validation of one candidate ---------------------------------------------
@@ -316,92 +355,130 @@ def _stage_out(stage: dict[str, Any]) -> StageOut:
     )
 
 
-def _find_match_stage(scene: _Scene, stage_id: Any) -> dict[str, Any]:
-    stage = next((s for s in scene.stages if s["stage_id"] == stage_id), None)
-    if stage is None or stage["type"] != "match":
-        match_ids = sorted(s["stage_id"] for s in scene.stages if s["type"] == "match")
-        raise _Rejected(f"no match rule {stage_id!r}; existing rules: {match_ids}")
-    return stage
+def apply_edits(text: str, edits: Any) -> str:
+    """Apply find-and-replace edits in order, each to the text the ones
+    before it left. Each `old` must occur exactly once."""
+    if not isinstance(edits, list):
+        raise _Rejected("'edits' must be a list")
+    for number, edit in enumerate(edits, start=1):
+        old = edit.get("old") if isinstance(edit, dict) else None
+        new = edit.get("new") if isinstance(edit, dict) else None
+        if not isinstance(old, str) or not old or not isinstance(new, str):
+            raise _Rejected(f"edit {number}: 'old' must be non-empty text and 'new' text")
+        count = text.count(old)
+        if count == 0:
+            raise _Rejected(
+                f"edit {number}: its 'old' text does not occur in rules_json as the edits "
+                "before it left it -- copy it exactly, indentation included"
+            )
+        if count > 1:
+            raise _Rejected(
+                f"edit {number}: its 'old' text occurs {count} times -- include more of the "
+                "surrounding text, such as the rule's stage_id line, so it occurs once"
+            )
+        text = text.replace(old, new, 1)
+    return text
 
 
-def _parse_payload(data: dict[str, Any]) -> Any:
+def _parse_stages(scene: _Scene, text: str) -> list[dict[str, Any]]:
+    """The edited text back as a complete stage list: other stages restored
+    from their shortened form, match stages checked for shape unless they
+    came back exactly as they were."""
     try:
-        return json.loads(data.get("json") or "")
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise _Rejected(f"'json' is not valid JSON: {exc}") from None
+        raise _Rejected(f"after the edits, rules_json is not valid JSON: {exc}") from None
+    if not isinstance(parsed, list) or not all(isinstance(s, dict) for s in parsed):
+        raise _Rejected("after the edits, rules_json must still be a list of stage objects")
 
-
-def _build_candidate(scene: _Scene, data: dict[str, Any]) -> tuple[str, dict[str, Any], str]:
-    """Apply the model's answer to the current document without
-    validating the result: (kind, new stage, text shown as 'Proposed')."""
-    kind = data.get("action")
-    payload = _parse_payload(data)
-    account_id = str(scene.view.account_id)
-
-    if kind == "add_condition":
-        target = _find_match_stage(scene, data.get("stage_id"))
-        if not isinstance(payload, dict) or not payload:
-            raise _Rejected("'json' must be one condition object")
-        when = target["config"].get("when")
-        if not when:
-            raise _Rejected(
-                f"rule {target['stage_id']!r} has no condition and already matches every mail"
-            )
-        new_when = (
-            {"any": [*when["any"], payload]}
-            if isinstance(when, dict) and set(when) == {"any"} and isinstance(when["any"], list)
-            else {"any": [when, payload]}
-        )
-        new_stage = copy.deepcopy(target)
-        new_stage["config"]["when"] = new_when
-        return kind, new_stage, _json_text(payload)
-
-    if kind == "new_rule":
-        if not isinstance(payload, dict):
-            raise _Rejected("'json' must be a complete stage object")
-        stage_id = payload.get("stage_id")
-        taken = sorted(s["stage_id"] for s in scene.stages)
-        if not isinstance(stage_id, str) or not stage_id or stage_id in taken:
-            raise _Rejected(
-                f"stage_id {stage_id!r} is empty or already taken; taken ids: {taken}"
-            )
-        name = payload.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise _Rejected("the rule needs a non-empty 'name'")
-        known = {a["id"] for a in scene.accounts}
-        accounts = payload.get("accounts", [account_id])
-        if accounts is not None:
-            if not isinstance(accounts, list) or not all(str(a) in known for a in accounts):
+    current = {s["stage_id"]: s for s in scene.stages}
+    others = [s["stage_id"] for s in scene.stages if s["type"] != "match"]
+    stages: list[dict[str, Any]] = []
+    kept_others: list[Any] = []
+    for raw in parsed:
+        stage_id = raw.get("stage_id")
+        original = current.get(stage_id) if isinstance(stage_id, str) else None
+        if raw.get("type") != "match" or (original is not None and original["type"] != "match"):
+            if original is None or raw != _model_view_of_stage(original):
                 raise _Rejected(
-                    f"'accounts' must be null or a list of account ids from {sorted(known)}"
+                    f"only match rules may be changed; stage {stage_id!r} must stay exactly "
+                    "as it was in rules_json"
                 )
-            accounts = [str(a) for a in accounts] or None
-            if accounts is not None and account_id not in accounts:
-                raise _Rejected("'accounts' must include the account of the open mail")
-        config = payload.get("config")
-        _require_condition_and_effects(config)
-        new_stage = {
-            "stage_id": stage_id, "type": "match", "name": name.strip(), "config": config,
-            "enabled": True, "halt": bool(payload.get("halt", False)), "accounts": accounts,
-        }
-        return kind, new_stage, _json_text(new_stage)
+            kept_others.append(stage_id)
+            stages.append(copy.deepcopy(original))
+        elif original is not None and raw == original:
+            stages.append(copy.deepcopy(original))
+        else:
+            stages.append(_checked_rule(scene, raw))
+    if kept_others != others:
+        raise _Rejected(f"the stages {others} must all stay, in this order")
+    ids = [s["stage_id"] for s in stages]
+    duplicates = sorted({i for i in ids if ids.count(i) > 1})
+    if duplicates:
+        raise _Rejected(f"stage_id {duplicates[0]!r} is used twice; every rule needs its own")
+    return stages
 
-    if kind == "replace_rule":
-        target = _find_match_stage(scene, data.get("stage_id"))
-        if not isinstance(payload, dict):
-            raise _Rejected("'json' must be a complete stage object")
-        config = payload.get("config")
-        _require_condition_and_effects(config)
-        new_stage = copy.deepcopy(target)
-        name = payload.get("name", target["name"])
-        if not isinstance(name, str) or not name.strip():
-            raise _Rejected("the rule needs a non-empty 'name'")
-        new_stage["name"] = name.strip()
-        new_stage["config"] = config
-        new_stage["halt"] = bool(payload.get("halt", target["halt"]))
-        return kind, new_stage, _json_text(config)
 
-    raise _Rejected(f"'action' must be one of {list(_ACTIONS)}")
+def _checked_rule(scene: _Scene, raw: dict[str, Any]) -> dict[str, Any]:
+    """A new or changed match stage, its shape checked field by field."""
+    stage_id = raw.get("stage_id")
+    if not isinstance(stage_id, str) or not stage_id:
+        raise _Rejected("every rule needs a non-empty 'stage_id'")
+    unknown = sorted(set(raw) - _STAGE_KEYS)
+    if unknown:
+        raise _Rejected(f"rule {stage_id!r}: unknown keys {unknown}")
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise _Rejected(f"rule {stage_id!r} needs a non-empty 'name'")
+    for flag in ("enabled", "halt"):
+        if not isinstance(raw.get(flag), bool):
+            raise _Rejected(f"rule {stage_id!r}: {flag!r} must be true or false")
+    known = {a["id"] for a in scene.accounts}
+    accounts = raw.get("accounts", "missing")
+    if accounts is not None and (
+        not isinstance(accounts, list) or not accounts
+        or not all(str(a) in known for a in accounts)
+    ):
+        raise _Rejected(
+            f"rule {stage_id!r}: 'accounts' must be null (every account) or a non-empty list "
+            f"of account ids from {sorted(known)}"
+        )
+    config = raw.get("config")
+    try:
+        _require_condition_and_effects(config)
+    except _Rejected as exc:
+        raise _Rejected(f"rule {stage_id!r}: {exc}") from None
+    return {
+        "stage_id": stage_id, "type": "match", "name": name.strip(), "config": config,
+        "enabled": raw["enabled"], "halt": raw["halt"],
+        "accounts": [str(a) for a in accounts] if accounts else None,
+    }
+
+
+def _rule_changes(
+    before: list[dict[str, Any]], after: list[dict[str, Any]],
+) -> list[_RuleChange]:
+    """Every rule that differs, in the new order, removed ones last. A rule
+    is moved when its content is unchanged but its place among the rules
+    both lists share is not."""
+    old = {s["stage_id"]: s for s in before}
+    new = {s["stage_id"]: s for s in after}
+    shared_before = [i for i in old if i in new]
+    shared_after = [i for i in new if i in old]
+    changes: list[_RuleChange] = []
+    for stage in after:
+        previous = old.get(stage["stage_id"])
+        if previous is None:
+            changes.append(_RuleChange("added", None, stage))
+        elif previous != stage:
+            changes.append(_RuleChange("changed", previous, stage))
+        elif (
+            stage["type"] == "match"
+            and shared_before.index(stage["stage_id"]) != shared_after.index(stage["stage_id"])
+        ):
+            changes.append(_RuleChange("moved", previous, stage))
+    changes.extend(_RuleChange("removed", s, None) for s in before if s["stage_id"] not in new)
+    return changes
 
 
 def _require_condition_and_effects(config: Any) -> None:
@@ -416,72 +493,99 @@ def _require_condition_and_effects(config: Any) -> None:
 async def _validate(
     db: DatabaseConnection, scene: _Scene, data: dict[str, Any],
 ) -> _Candidate:
-    """Turn the model's answer into a checked candidate or raise `_Rejected`
+    """Turn the model's edits into a checked candidate or raise `_Rejected`
     with the reason, in the order the model can most easily act on."""
-    kind, new_stage, after_text = _build_candidate(scene, data)
-    before = next((s for s in scene.stages if s["stage_id"] == new_stage["stage_id"]), None)
+    stages = _parse_stages(scene, apply_edits(rules_text(scene.stages), data.get("edits")))
+    changes = _rule_changes(scene.stages, stages)
+    if not changes:
+        raise _Rejected("the edits change nothing; answer with no edits if nothing should change")
+    written = [c.after for c in changes if c.after is not None and c.kind != "moved"]
 
-    denied = _introduced_denied_kinds(before, new_stage)
-    if denied:
-        raise _Rejected(
-            f"the effect(s) {denied} may not be introduced by this assistant; "
-            "use only the effect types listed"
+    for stage in written:
+        denied = _introduced_denied_kinds(
+            next((c.before for c in changes if c.after is stage), None), stage,
         )
+        if denied:
+            raise _Rejected(
+                f"rule {stage['stage_id']!r}: the effect(s) {denied} may not be introduced by "
+                "this assistant; use only the effect types listed"
+            )
 
-    document: dict[str, Any] = {
-        "enabled": scene.definition.enabled,
-        "stages": [
-            new_stage if s["stage_id"] == new_stage["stage_id"] else s for s in scene.stages
-        ],
-    }
-    if before is None:
-        document["stages"].append(new_stage)
     try:
-        definitions = validate_document(document)
+        definitions = validate_document({"enabled": scene.definition.enabled, "stages": stages})
     except DocumentValidationError as exc:
         raise _Rejected("; ".join(exc.problems)) from None
 
-    definition = next(d for d in definitions if d.stage_id == new_stage["stage_id"])
+    written_ids = {s["stage_id"] for s in written}
     unresolved = [
         e for e in await pipeline_health.compute_health(
-            db, [definition], account_ids=[scene.view.account_id],
+            db, [d for d in definitions if d.stage_id in written_ids],
+            account_ids=[uuid.UUID(a["id"]) for a in scene.accounts],
         ) if not e.ok
     ]
     if unresolved:
+        entry = unresolved[0]
         names = sorted(scene.folder_names.values())
         raise _Rejected(
-            f"folder {unresolved[0].reference!r} does not exist in this account; folders: {names}"
+            f"rule {entry.stage_id!r}: folder {entry.reference!r} does not exist in account "
+            f"{entry.account_id}; folders of the open mail's account: {names}"
         )
 
-    if kind != "replace_rule" and not stage_matches(new_stage, scene.view, scene.verdict):
-        raise _Rejected("the rule does not match the open mail")
-
-    before_hits = _hits(before, scene.control)
-    after_hits = _hits(new_stage, scene.control)
-    newly = sum(after_hits) - sum(before_hits)
-    if newly > _CONTROL_SIZE // 2:
+    if not any(
+        stage is not None and stage_matches(stage, scene.view, scene.verdict)
+        for change in changes for stage in (change.before, change.after)
+    ):
         raise _Rejected(
-            f"the change matches {sum(after_hits)} of the last {len(scene.control)} mails "
-            f"(before: {sum(before_hits)}) -- far too broad"
+            "none of the rules the edits add, change, move or remove match the open mail, "
+            "before or after the change"
         )
 
-    name = new_stage["name"]
-    title = {
-        "add_condition": f'Add a condition to "{name}"',
-        "new_rule": f'New rule "{name}"',
-        "replace_rule": f'Change rule "{name}"',
-    }[kind]
+    for change in changes:
+        if change.after is None or change.kind == "moved":
+            continue
+        caught = sum(_hits(change.after, scene.control))
+        newly = caught - sum(_hits(change.before, scene.control))
+        if newly > _CONTROL_SIZE // 2:
+            raise _Rejected(
+                f"rule {change.stage_id!r} matches {caught} of the last {len(scene.control)} "
+                "mails -- far too broad"
+            )
+
     return _Candidate(
-        kind=kind, stage=new_stage, before=before, title=title, after_text=after_text,
-        message=str(data.get("message") or "").strip(),
+        stages=stages, changes=changes, message=str(data.get("message") or "").strip(),
     )
 
 
+def _title(changes: list[_RuleChange]) -> str:
+    if len(changes) == 1:
+        change = changes[0]
+        verb = {
+            "added": "New rule", "changed": "Change rule", "moved": "Move rule",
+            "removed": "Remove rule",
+        }[change.kind]
+        return f'{verb} "{change.name}"'
+    counts = [
+        f"{n} {kind}" for kind in ("added", "changed", "moved", "removed")
+        if (n := sum(c.kind == kind for c in changes))
+    ]
+    return f"Change {len(changes)} rules: {', '.join(counts)}"
+
+
+def _caught_by_any(stages: list[dict[str, Any]], control: list[MessageView]) -> list[bool]:
+    return [any(stage_matches(stage, view, None) for stage in stages) for view in control]
+
+
 def _preview(scene: _Scene, candidate: _Candidate) -> RuleAssistantPreview | None:
+    """What the touched rules catch among the newest mails, together,
+    before and after."""
     if not scene.control:
         return None
-    before_hits = _hits(candidate.before, scene.control)
-    after_hits = _hits(candidate.stage, scene.control)
+    before_hits = _caught_by_any(
+        [c.before for c in candidate.changes if c.before is not None], scene.control,
+    )
+    after_hits = _caught_by_any(
+        [c.after for c in candidate.changes if c.after is not None], scene.control,
+    )
     examples = [
         RuleAssistantPreviewExample(from_addr=view.from_addr, subject=view.subject)
         for view, was, now in zip(scene.control, before_hits, after_hits, strict=True)
@@ -493,34 +597,46 @@ def _preview(scene: _Scene, candidate: _Candidate) -> RuleAssistantPreview | Non
     )
 
 
-def _warnings(scene: _Scene, candidate: _Candidate, matched_today: list[str]) -> list[str]:
-    """Never errors. A change to a rule that already carries a denied effect
-    (a webhook, an expunge) makes that effect act on more mail; a new rule
-    goes last, so an earlier rule that stops this mail means the new one is
-    never reached for it."""
-    if candidate.kind != "new_rule":
-        kinds = sorted(
-            {
-                kind for effect in _effects_of(candidate.before) if isinstance(effect, dict)
-                for kind in set(effect) & ASSISTANT_DENIED_EFFECTS
-            }
-        )
-        if not kinds:
-            return []
-        return [
-            f'Rule "{candidate.before["name"] if candidate.before else ""}" carries '
-            f"{', '.join(kinds)}, so this change can make it act on mail it does not act on now."
-        ]
-    blocking = [
-        s for s in scene.stages
-        if s["stage_id"] in matched_today and s.get("enabled", True) and s.get("halt")
-    ]
-    if not blocking:
-        return []
-    return [
-        f'Rule "{blocking[0]["name"]}" already stops this mail earlier in the list, '
-        "so the new rule would not be reached for it."
-    ]
+def _denied_kinds_of(stage: dict[str, Any] | None) -> list[str]:
+    return sorted(
+        {
+            kind for effect in _effects_of(stage) if isinstance(effect, dict)
+            for kind in set(effect) & ASSISTANT_DENIED_EFFECTS
+        }
+    )
+
+
+def _warnings(scene: _Scene, candidate: _Candidate) -> list[str]:
+    """Never errors. A changed rule that already carries a denied effect (a
+    webhook, an expunge) can make that effect act on more mail; a removed
+    one stops doing it; and a rule that catches the open mail is never
+    reached for it when an earlier rule stops the pipeline first."""
+    warnings: list[str] = []
+    for change in candidate.changes:
+        kinds = _denied_kinds_of(change.before)
+        if not kinds or change.kind == "moved":
+            continue
+        if change.kind == "removed":
+            warnings.append(f'Rule "{change.name}" carries {", ".join(kinds)} and is removed.')
+        else:
+            warnings.append(
+                f'Rule "{change.name}" carries {", ".join(kinds)}, so this change can make it '
+                "act on mail it does not act on now."
+            )
+
+    touched = {c.stage_id for c in candidate.changes if c.after is not None}
+    stoppers: list[dict[str, Any]] = []
+    for stage in candidate.stages:
+        if not (stage.get("enabled", True) and stage_matches(stage, scene.view, scene.verdict)):
+            continue
+        if stage["stage_id"] in touched and stoppers:
+            warnings.append(
+                f'Rule "{stoppers[0]["name"]}" already stops this mail earlier in the list, '
+                f'so "{stage["name"]}" would not be reached for it.'
+            )
+        if stage.get("halt"):
+            stoppers.append(stage)
+    return warnings
 
 
 # --- The exchange --------------------------------------------------------------
@@ -644,16 +760,18 @@ def _fake_answer(scene: _Scene) -> dict[str, Any]:
     while stage_id in taken:
         stage_id, suffix = f"{base}-{suffix}", suffix + 1
     stage = {
-        "stage_id": stage_id, "name": f"Mail from {bare}",
+        "stage_id": stage_id, "type": "match", "name": f"Mail from {bare}",
         "config": {
             "when": {"sender_match": bare}, "effects": [{"set_flags": {"flagged": True}}],
         },
-        "halt": False, "accounts": [str(scene.view.account_id)],
+        "enabled": True, "halt": False, "accounts": [str(scene.view.account_id)],
     }
-    return {
-        "action": "new_rule", "stage_id": "", "json": json.dumps(stage),
-        "message": f"Mail from {bare} will be flagged.",
-    }
+    rendered = _json_text([stage])[1:-1].strip("\n")
+    edit = (
+        {"old": "[]", "new": f"[\n{rendered}\n]"} if not scene.stages
+        else {"old": "\n]", "new": f",\n{rendered}\n]"}
+    )
+    return {"edits": [edit], "message": f"Mail from {bare} will be flagged."}
 
 
 def _model_input(
@@ -677,7 +795,7 @@ def _model_input(
             ],
         },
         "accounts": scene.accounts, "folders": sorted(scene.folder_names.values()),
-        "rules": [_model_view_of_stage(s) for s in scene.stages], "searches": [],
+        "rules_json": rules_text(scene.stages), "searches": [],
     }
 
 
@@ -730,23 +848,25 @@ async def propose(
                 message=message, model=model.name, model_calls=model.calls,
             )
         change = RuleAssistantChange(
-            kind=candidate.kind,  # type: ignore[arg-type]
-            base_revision=revision, is_new=candidate.before is None,
-            stage=_stage_out(candidate.stage), title=candidate.title,
-            before_text=(
-                _json_text(candidate.before["config"])
-                if candidate.kind == "replace_rule" and candidate.before else None
-            ),
-            after_text=candidate.after_text,
-            effects_text=(
-                _json_text(_effects_of(candidate.before))
-                if candidate.kind == "add_condition" and candidate.before else None
-            ),
+            base_revision=revision, enabled=scene.definition.enabled,
+            stages=[_stage_out(s) for s in candidate.stages],
+            title=_title(candidate.changes),
+            rules=[
+                RuleAssistantRuleChange(
+                    kind=c.kind,  # type: ignore[arg-type]
+                    stage_id=c.stage_id, name=c.name,
+                    before_text=(
+                        _json_text(c.before) if c.before is not None and c.kind != "moved"
+                        else None
+                    ),
+                    after_text=_json_text(c.after) if c.after is not None else None,
+                )
+                for c in candidate.changes
+            ],
         )
         return RuleAssistantResponse(
-            message=message or candidate.title, change=change,
-            preview=_preview(scene, candidate),
-            warnings=_warnings(scene, candidate, matched_today),
+            message=message or change.title, change=change,
+            preview=_preview(scene, candidate), warnings=_warnings(scene, candidate),
             model=model.name, model_calls=model.calls,
         )
 
@@ -777,7 +897,7 @@ async def propose(
                     step="change", schema_name="rule_change", schema=CHANGE_SCHEMA,
                     model_input=model_input,
                 )
-            if answer.get("action") == "none":
+            if answer.get("edits") == []:
                 return respond(str(answer.get("message") or "").strip() or "No change needed.")
             try:
                 candidate = await _validate(db, scene, answer)

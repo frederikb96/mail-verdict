@@ -179,32 +179,34 @@ agent editing at the same time, most notably. Omit it to write unconditionally.
 ### Ask the assistant for a rule
 
 `POST /api/pipeline/assistant` turns one sentence about a mail into one proposed change to the
-rules, using the model from the `ai` settings:
+rules — any number of rules added, changed, reordered or removed — using the model from the `ai`
+settings:
 
 ```bash
 curl -X POST localhost:8080/api/pipeline/assistant -H 'content-type: application/json' \
   -d '{"message_id": "...", "prompt": "these should go to Newsletter too"}'
 ```
 
-The answer carries a `message` for the person, a `change` (`kind` `add_condition`, `new_rule` or
-`replace_rule`; the complete resulting `stage`; `title`, `before_text`, `after_text` for display;
-`is_new` and the `base_revision` it was computed against; `effects_text` shows the existing rule's
-effects for `add_condition`, whose `after_text` is only the added condition), a `preview` of what the changed rule
-would have caught among the account's 100 newest mails, and `warnings`. `change` is `null` when
-there is nothing to accept, and `message` says why.
+The answer carries a `message` for the person, a `change`, a `preview` of what the rules the
+change touches would have caught together among the account's 100 newest mails, before and after,
+and `warnings`. `change` holds the complete document as it would be after Accept (`enabled`,
+`stages`), the `base_revision` it was computed against, a `title`, and `rules`: one entry per rule
+that differs, with its `kind` (`added`, `changed`, `moved`, `removed`), `stage_id`, `name`, and the
+whole stage as JSON in `before_text` and `after_text` (`before_text` is `null` for an added or moved
+rule, `after_text` for a removed one). `change` is `null` when there is nothing to accept, and
+`message` says why.
 
-Nothing is stored. Accepting is an ordinary pipeline write carrying the proposal's
-`base_revision`: `POST /api/pipeline/stages` with the `stage` when `is_new`, otherwise `PATCH
-/api/pipeline/stages/{stage_id}` with its `name`, `config` and `halt`. A rule edited in the
-meantime answers `409`. A new rule is appended at the end of the stage list, with a warning when an
-earlier rule that stops processing already catches the mail. The assistant never introduces an
-`expunge` or `webhook` effect, nor the pipeline's own `record_verdict`, `enqueue_order` or `notify`;
-a condition added to a rule that already carries one of those is allowed, and the answer then
-warns that the rule will act on more mail.
+Nothing is stored. Accepting is an ordinary `PUT /api/pipeline` with the change's `enabled`,
+`stages` and `base_revision`; rules edited in the meantime answer `409`. Stages other than `match`
+rules always come back unchanged. A warning says when an earlier rule that stops processing
+already catches the mail before a rule the change adds or changes. The assistant never introduces
+an `expunge` or `webhook` effect, nor the pipeline's own `record_verdict`, `enqueue_order` or
+`notify`; changing or removing a rule that already carries one of those is allowed, and the answer
+then warns about it.
 
 Errors: `404` for an unknown or glaciered message, `422` for an empty prompt (at most 1000
 characters), `503` when the provider has no usable key, `502` when it fails or throttles, `504`
-after 55 seconds. A client that disconnects stops the work before its next model call.
+after 150 seconds. A client that disconnects stops the work before its next model call.
 
 ### Send matching mail to a webhook
 
