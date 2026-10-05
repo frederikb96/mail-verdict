@@ -22,7 +22,7 @@ import {
   useMailAction,
   useMarkConversationRead,
 } from "@/hooks/use-mail-intents";
-import { projectRows, type RowIntentMarks } from "@/lib/mail-intents";
+import { leavesFolder, projectRows, type RowIntentMarks } from "@/lib/mail-intents";
 import { clearKeptWhileUnread } from "@/lib/mail-list-window";
 import { useFolders } from "@/hooks/use-folders";
 import { useAccount, useAccounts } from "@/hooks/use-accounts";
@@ -586,9 +586,19 @@ export function MailList() {
         void markConversationRead(conversation, true, conversationScope);
         return;
       }
-      perform({ accountId: account, mailIds: [mailId], action });
+      // A conversation row stands for every message of its conversation in
+      // this folder, so taking it out of the list takes all of them, as
+      // ticking it and acting on the selection does.
+      const expandThreads = threaded && !isFiltering && leavesFolder(action);
+      perform({
+        accountId: account, mailIds: [mailId], action,
+        ...(expandThreads ? { bulk: true, expandThreads: true } : {}),
+      });
     },
-    [accountId, perform, conversationWithOtherUnread, markConversationRead, conversationScope],
+    [
+      accountId, perform, conversationWithOtherUnread, markConversationRead, conversationScope,
+      threaded, isFiltering,
+    ],
   );
 
   // Keyed on the opened message, however it was opened -- a click, keyboard
