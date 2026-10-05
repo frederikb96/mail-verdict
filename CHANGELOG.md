@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.9.1] - 2026-10-05
+
+### Fixed
+
+- Archiving, deleting, moving to Junk or marking Not Junk from a conversation row's own buttons or
+  keyboard shortcut in a grouped list acts on every message of that conversation in the folder,
+  not only the newest one, so the row no longer comes straight back.
+
 ## [6.9.0] - 2026-10-05
 
 ### Changed
