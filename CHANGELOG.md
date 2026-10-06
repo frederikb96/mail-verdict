@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.9.2] - 2026-10-06
+
 ### Fixed
 
 - Coming back to the month view from a day or week opened from it lands exactly where it was left,
