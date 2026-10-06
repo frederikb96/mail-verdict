@@ -3,7 +3,7 @@ name = "mail-verdict"
 version = "6.9.2"
 description = "AI-powered email management: spam detection, smart rules, and vector search"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 license = {text = "MIT"}
 authors = [{name = "Frederik Berg"}]
 dependencies = [
@@ -75,13 +75,13 @@ addopts = "--screenshot only-on-failure --video retain-on-failure --output tests
 
 [tool.ruff]
 line-length = 100
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
