@@ -309,7 +309,10 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       if (!pending) return;
       const weekTop = (pending.week - WEEK_INDEX_MIN) * next;
       const anchorPoint = weekTop + pending.fraction * next;
-      const top = anchorPoint - anchorOffset(h);
+      // Whole pixels, as the browser stores scrollTop: a restored fraction
+      // carries float error, and the browser truncating 4211.9999 to 4211
+      // is a pixel lost per round trip.
+      const top = Math.round(anchorPoint - anchorOffset(h));
       // Same reasoning as scrollToWeek's own write below: this is our own
       // repositioning, not a reader scroll, and the target week is already
       // known -- currentWeekRef.current, untouched. Guarding it the same
