@@ -46,7 +46,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 # =============================================================================
 # UI build stage: Next.js static export
 # =============================================================================
-FROM node:22-slim AS ui-build
+FROM node:24-slim AS ui-build
 
 WORKDIR /ui
 COPY ui/package.json ui/package-lock.json ./
