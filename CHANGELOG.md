@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.10.0] - 2026-10-06
+
+### Security
+
+- Updated `next` to 16.3.6 and `dompurify` to 3.4.16, both security releases.
+
+### Changed
+
+- The server and image run on Python 3.14 (`requires-python` is now `>=3.14`); the UI builds with Node 24.
+- Updated the UI's React to 19.3, TypeScript to 7, lucide-react to 1, tiptap to 3.31.4 and virtua to 0.52, along with smaller patch and minor updates.
+- The development stack runs PostIMAP 1.11.4, which stores `List-*` and `Content-Type` headers correctly.
+
 ## [6.9.2] - 2026-10-06
 
 ### Fixed
