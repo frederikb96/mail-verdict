@@ -65,6 +65,48 @@ export function scrollTopForAnchorWeek(
   return (week - min) * rowHeight - anchorOffset(viewportHeight);
 }
 
+/** A scroll position as identity: the week under the anchor line and how far
+ * through that week's row the line falls (0..1), plus the weeks fully or
+ * partly on screen. Independent of rowHeight, so it survives a remount at a
+ * different size. */
+export interface ScrollPosition {
+  week: number;
+  fraction: number;
+  firstVisible: number;
+  lastVisible: number;
+}
+
+export function positionAt(
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  min: number,
+): ScrollPosition {
+  const week = computeAnchorWeek(scrollTop, viewportHeight, rowHeight, min);
+  if (rowHeight <= 0) return { week, fraction: 0, firstVisible: week, lastVisible: week };
+  const anchorPoint = scrollTop + anchorOffset(viewportHeight);
+  return {
+    week,
+    fraction: (anchorPoint - (week - min) * rowHeight) / rowHeight,
+    firstVisible: Math.floor(scrollTop / rowHeight) + min,
+    lastVisible: Math.floor((scrollTop + Math.max(0, viewportHeight - 1)) / rowHeight) + min,
+  };
+}
+
+/** Where a (re)mounting scroller should put its anchor line for `targetWeek`:
+ * exactly where the reader left it when `targetWeek` was on screen then --
+ * coming back from a day or week opened from this view -- otherwise that
+ * week's row top, the same place external navigation lands. */
+export function restorePosition(
+  saved: ScrollPosition | null,
+  targetWeek: number,
+): { week: number; fraction: number } {
+  if (saved && saved.firstVisible <= targetWeek && targetWeek <= saved.lastVisible) {
+    return { week: saved.week, fraction: saved.fraction };
+  }
+  return { week: targetWeek, fraction: 0 };
+}
+
 /** True when two ranges cover exactly the same weeks -- the caller's cue to
  * keep the previous object rather than replace it, so a `setState` bails
  * out instead of forcing a commit. */

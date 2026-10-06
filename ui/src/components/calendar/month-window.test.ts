@@ -7,6 +7,8 @@ import {
   computeFetchWindow,
   computeRenderRange,
   monthsForRenderRange,
+  positionAt,
+  restorePosition,
   sameMonthSet,
   sameRange,
   scrollTopForAnchorWeek,
@@ -132,4 +134,33 @@ test("scrollTopForAnchorWeek scales with viewport height, not just row height", 
   // A taller viewport pushes the anchor line further down, so the row it
   // targets has to start further up (a smaller, more negative scrollTop).
   assert.ok(wide < compact);
+});
+
+test("positionAt round-trips through scrollTopForAnchorWeek at any fraction", () => {
+  const week = dateToWeekIndex(new Date(2026, 9, 6));
+  const top = scrollTopForAnchorWeek(week, 757, ROW_HEIGHT, WEEK_INDEX_MIN) + 37;
+  const pos = positionAt(top, 757, ROW_HEIGHT, WEEK_INDEX_MIN);
+  assert.equal(pos.week, week);
+  assert.equal(pos.fraction, 37 / ROW_HEIGHT);
+  const restoredTop = (pos.week - WEEK_INDEX_MIN) * ROW_HEIGHT + pos.fraction * ROW_HEIGHT - anchorOffset(757);
+  assert.equal(restoredTop, top);
+});
+
+test("positionAt reports the weeks on screen, partly visible rows included", () => {
+  const top = 10 * ROW_HEIGHT + 50;
+  const pos = positionAt(top, 720, ROW_HEIGHT, WEEK_INDEX_MIN);
+  assert.equal(pos.firstVisible, WEEK_INDEX_MIN + 10);
+  assert.equal(pos.lastVisible, WEEK_INDEX_MIN + 16);
+});
+
+test("restorePosition keeps the exact position for a week that was on screen", () => {
+  const saved = { week: 500, fraction: 0.3, firstVisible: 497, lastVisible: 503 };
+  assert.deepEqual(restorePosition(saved, 497), { week: 500, fraction: 0.3 });
+  assert.deepEqual(restorePosition(saved, 503), { week: 500, fraction: 0.3 });
+});
+
+test("restorePosition lands on the target week's row top for anything else", () => {
+  const saved = { week: 500, fraction: 0.3, firstVisible: 497, lastVisible: 503 };
+  assert.deepEqual(restorePosition(saved, 504), { week: 504, fraction: 0 });
+  assert.deepEqual(restorePosition(null, 500), { week: 500, fraction: 0 });
 });

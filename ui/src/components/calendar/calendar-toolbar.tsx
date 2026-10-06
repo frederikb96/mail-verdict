@@ -18,7 +18,7 @@ import {
 import { addDays, addMonths, addWeeks, format, monthChunkKey, startOfWeek, weekNumber } from "@/lib/dates";
 import { useCalendarNavigate } from "@/hooks/use-calendar-navigate";
 import { useCalendarShortcuts } from "@/hooks/use-calendar-shortcuts";
-import { useEventChunk } from "@/hooks/use-events";
+import { useCachedEventChunk } from "@/hooks/use-events";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const VIEWS: { value: CalendarViewMode; label: string }[] = [
@@ -48,9 +48,9 @@ export function CalendarToolbar() {
   // calendarDateAtom tracks the month view's own scroll position (see
   // month-scroller.tsx), so it is already a good proxy for "the month
   // currently on screen" even before the toolbar's own navigation moves
-  // it -- reading the same chunk the month view itself renders from
-  // rather than fetching a second time.
-  const { data: monthEvents } = useEventChunk(monthChunkKey(date));
+  // it -- reading the same chunk the month view itself renders from,
+  // never fetching it.
+  const { data: monthEvents } = useCachedEventChunk(monthChunkKey(date));
   // Month reads its own anchor chunk directly, the same one it is already
   // subscribed to for other reasons (see the comment above); every other
   // view reports through calendarTruncatedAtom instead, since the toolbar

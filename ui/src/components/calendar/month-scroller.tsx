@@ -30,14 +30,18 @@
  *   all). `MonthWeekRow` is memoized on top of that, so even the rare
  *   range-changing commit only re-renders the rows that actually entered
  *   or left, never the whole grid.
- * - The URL and the *fetch* window (which months are actually requested)
- *   only catch up once scrolling **settles** -- a fixed quiet period with
+ * - The URL only catches up once scrolling **settles** -- a fixed quiet period with
  *   no scroll event, reset on every one. This is deliberately NOT the
  *   native `scrollend` event: it fires after every discrete wheel tick,
  *   not only when scrolling truly stops (measured -- a rapid series of
  *   plain wheel ticks each got their own `scrollend`, which turned every
  *   tick into a full URL write and cascaded into an app-wide re-render,
  *   far worse than the per-pixel state churn this file exists to avoid).
+ *   The *fetch* window (which months are actually requested) commits at
+ *   settle too, and additionally whenever the render range moves while
+ *   scrolling slower than a fling -- so reading at a steady pace, which
+ *   never pauses long enough to settle, finds each month already loaded
+ *   by the time its rows scroll into view.
  *   The same timer also fixes the unrelated Safari bug the settle
  *   mechanism used to have: `programmaticScrollRef` was previously cleared
  *   only by `onScrollEnd`, which Safari never fires at all, so it stayed
@@ -64,10 +68,13 @@ import {
 import { MonthWeekRow } from "@/components/calendar/month-week-row";
 import {
   type RenderRange,
+  type ScrollPosition,
   anchorOffset,
   computeAnchorWeek,
   computeFetchWindow,
   computeRenderRange,
+  positionAt,
+  restorePosition,
   sameMonthSet,
   sameRange,
   scrollTopForAnchorWeek,
@@ -94,6 +101,16 @@ const SCROLL_SETTLE_MS = 200;
 const FLING_PX_PER_MS = 3;
 
 const WEEKDAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** Where each shape of the scroller last was, kept across unmounts: opening
+ * a day or week replaces this view, and coming back has to land exactly
+ * where the reader left it, not on the anchor week's row top. Module scope
+ * because nothing else outlives the unmount; keyed by shape since the two
+ * lay out different numbers of rows. */
+const lastPosition: Record<"desktop" | "compact", ScrollPosition | null> = {
+  desktop: null,
+  compact: null,
+};
 
 const INITIAL_RENDER_RANGE = computeRenderRange(
   0, 0, MIN_ROW_HEIGHT, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX,
@@ -143,14 +160,24 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
   const renderRangeRef = useRef(renderRange);
   renderRangeRef.current = renderRange;
 
-  const currentWeekRef = useRef<number>(dateToWeekIndex(calendarDate));
+  const shape = compact ? "compact" : "desktop";
+  /** Where this mount starts: the saved position when the week being
+   * opened was on screen when the reader left, else that week's row top. */
+  const [initial] = useState(() => restorePosition(lastPosition[shape], dateToWeekIndex(calendarDate)));
+  const currentWeekRef = useRef<number>(initial.week);
   /** The Date objects `handleScroll` itself wrote into calendarDateAtom.
    * A render carrying one of them can commit after the scroll has already
    * moved `currentWeekRef` a row further on, so comparing week numbers
    * alone reads that stale render as a navigation and scrolls back a row.
    * Identity is exact: every external write is a Date this component never
    * saw. */
-  const selfWrittenDatesRef = useRef(new WeakSet<Date>());
+  const selfWrittenDatesRef = useRef<WeakSet<Date>>(null!);
+  if (selfWrittenDatesRef.current === null) {
+    // A restored position's anchor week can differ from calendarDate's own
+    // (a day opened from the top row, then Back): that date is already
+    // satisfied by the restore and must not read as a navigation.
+    selfWrittenDatesRef.current = new WeakSet([calendarDate]);
+  }
   const mountedRef = useRef(false);
   /** True from the moment `scrollToWeek` issues a programmatic scroll until
    * it settles. While true, `handleScroll` still tracks the viewport for
@@ -164,10 +191,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
    * the effect that applies it knows which week to restore and how far
    * through that row the reader was -- an absolute value computed from a
    * pre-mutation snapshot, never an increment. */
-  const pendingScrollRef = useRef<{ week: number; fraction: number } | null>({
-    week: currentWeekRef.current,
-    fraction: 0,
-  });
+  const pendingScrollRef = useRef<{ week: number; fraction: number } | null>(initial);
 
   const totalHeight = (WEEK_INDEX_MAX - WEEK_INDEX_MIN + 1) * rowHeight;
 
@@ -296,6 +320,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       container!.scrollTop = top;
       pendingScrollRef.current = null;
       scrollTopRef.current = top;
+      lastPosition[shape] = positionAt(top, h, next, WEEK_INDEX_MIN);
       updateMonthLabel(top, h, next);
       const range = computeRenderRange(top, h, next, RENDER_MARGIN_ROWS, WEEK_INDEX_MIN, WEEK_INDEX_MAX);
       setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
@@ -315,7 +340,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     observer.observe(container);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [compact, updateMonthLabel, commitFetchWindow]);
+  }, [compact, shape, updateMonthLabel, commitFetchWindow]);
 
   const scrollToWeek = useCallback(
     (week: number, behavior: ScrollBehavior) => {
@@ -352,11 +377,23 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     scrollToWeek(week, mountedRef.current ? "smooth" : "instant");
   }, [calendarDate, scrollToWeek]);
 
+  // A restored anchor week can differ from calendarDate's own week; move the
+  // atom onto it once, as the scroll listener would have, so the toolbar and
+  // the header name the same month.
+  useEffect(() => {
+    if (initial.week === dateToWeekIndex(calendarDate)) return;
+    const date = weekIndexToDate(initial.week);
+    selfWrittenDatesRef.current.add(date);
+    setCalendarDate(date);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleScroll = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
     const top = container.scrollTop;
     scrollTopRef.current = top;
+    lastPosition[shape] = positionAt(top, viewportHeightRef.current, rowHeightRef.current, WEEK_INDEX_MIN);
     updateMonthLabel(top, viewportHeightRef.current, rowHeightRef.current);
 
     const range = computeRenderRange(
@@ -367,6 +404,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     // holds is an Object.is match, so it bails out before re-rendering
     // anything -- the mechanism behind "zero commits for a wheel movement
     // that stays inside one row".
+    const rangeMoved = !sameRange(renderRangeRef.current, range);
     setRenderRange((prev) => (sameRange(prev, range) ? prev : range));
 
     // Velocity from the last two scroll events -- a fling mounts rows light
@@ -377,6 +415,10 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
     if (sample && now > sample.at) {
       const velocity = Math.abs(top - sample.top) / (now - sample.at);
       if (velocity > FLING_PX_PER_MS) setFlinging(true);
+      // Reading pace: fetch the months the new rows need now, not at the
+      // settle a steady scroll never reaches. commitFetchWindow bails out
+      // unless a month actually entered, so this is a request per month.
+      else if (rangeMoved) commitFetchWindowRef.current(range);
     }
     lastScrollSampleRef.current = { top, at: now };
 
@@ -394,7 +436,7 @@ export function MonthScroller({ compact = false, onSelectEvent, onSelectDay, onS
       selfWrittenDatesRef.current.add(date);
       setCalendarDate(date);
     }
-  }, [updateMonthLabel, resetSettleTimer, setCalendarDate]);
+  }, [shape, updateMonthLabel, resetSettleTimer, setCalendarDate]);
 
   const renderedWeeks: number[] = [];
   for (let w = renderRange.start; w <= renderRange.end; w++) renderedWeeks.push(w);

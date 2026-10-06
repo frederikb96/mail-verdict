@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Coming back to the month view from a day or week opened from it lands exactly where it was left,
+  to the pixel, whether by Back or by the Month tab. It previously snapped the anchor week to its
+  row top, up to a row away.
+- Scrolling the month view no longer requests each month it passes: the toolbar read the month
+  under the scroll position with a fetching query of its own, which fired one request per month
+  scrolled through, mid-scroll, and re-rendered the rows when each landed.
+
+### Changed
+
+- Scrolling the month view at reading pace loads each month as its rows come into range, rather
+  than only once scrolling pauses, so steady scrolling no longer meets empty placeholder cells. A
+  fast flick still defers loading until it stops.
+
 ## [6.9.1] - 2026-10-05
 
 ### Fixed

@@ -69,8 +69,13 @@ function chunkQueryOptions(month: string) {
   };
 }
 
-export function useEventChunk(month: string) {
-  return useQuery(chunkQueryOptions(month));
+/** One month chunk, read from the cache and never fetched: the month
+ * scroller owns fetching (useKeepEventChunksWarm, on its fetch
+ * window). Its caller follows calendarDateAtom, which moves on every week
+ * the scroller passes, so a fetching observer here would request every month
+ * scrolled through, mid-scroll. */
+export function useCachedEventChunk(month: string) {
+  return useQuery({ ...chunkQueryOptions(month), enabled: false });
 }
 
 /** The full instance for the popover/editor -- fetched directly rather than
