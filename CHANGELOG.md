@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.11.0] - 2026-10-08
+
+### Added
+
+- The reading pane has a "Copy link to this message" control; the link opens that message wherever it has been filed since.
+
+### Changed
+
+- The reading pane's tool icons read Find, Star, Add rule, Copy link, Download.
+
+### Fixed
+
+- Creating an event by dragging in the week or day view opens on the calendar the last new event went to, the same as New event, instead of always the first calendar.
+
 ## [6.10.0] - 2026-10-06
 
 ### Security

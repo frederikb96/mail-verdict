@@ -16,6 +16,7 @@ import {
   MailOpen,
   Mail as MailIcon,
   FileDown,
+  Link2,
   Wand2,
   FolderInput,
   Search,
@@ -51,12 +52,20 @@ import {
 } from "@/lib/glacier";
 import { cn, isEditableElement } from "@/lib/utils";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useToast } from "@/hooks/use-toast";
 import {
   explicitlyUnreadMailIdAtom,
   requestMoveDialogAtom,
   requestSelectMailAtom,
   selectedMailIdAtom,
 } from "@/lib/atoms";
+
+/** `?message=` alone is a complete link: the mail view looks the message's
+ * account and folder up itself (`use-mail-url-sync.ts`), so the link keeps
+ * finding it after a move. */
+function messageLink(id: string): string {
+  return `${window.location.origin}/?message=${encodeURIComponent(id)}`;
+}
 
 export function ReadingPane() {
   const mailId = useAtomValue(selectedMailIdAtom);
@@ -66,6 +75,7 @@ export function ReadingPane() {
   const qc = useQueryClient();
   const { openMessageById } = useOpenMessage();
   const mailAction = useMailAction();
+  const { push: pushToast } = useToast();
   const loadMessageImages = useLoadMessageImages();
   const isMobile = useIsMobile();
   const { data: alerts } = useAlerts();
@@ -375,15 +385,6 @@ export function ReadingPane() {
               }
             />
           </Button>
-          <a
-            href={api.mails.rawUrl(primary.id)}
-            download={`${primary.subject ?? "message"}.eml`}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Download as .eml"
-            aria-label="Download as .eml"
-          >
-            <FileDown className="h-4 w-4" />
-          </a>
           {/* A glaciered message has no rule to write: rules run on mail the
               server delivers, and the assistant searches the mirror. */}
           {!isGlacier && (
@@ -398,8 +399,33 @@ export function ReadingPane() {
               <Wand2 className="h-4 w-4" />
             </Button>
           )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => {
+              const written = navigator.clipboard?.writeText(messageLink(primary.id)) ?? Promise.reject();
+              written.then(
+                () => pushToast("Link copied", "info", 2000),
+                () => pushToast("Could not copy to the clipboard", "error"),
+              );
+            }}
+            title="Copy link to this message"
+            aria-label="Copy link to this message"
+          >
+            <Link2 className="h-4 w-4" />
+          </Button>
+          <a
+            href={api.mails.rawUrl(primary.id)}
+            download={`${primary.subject ?? "message"}.eml`}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            title="Download as .eml"
+            aria-label="Download as .eml"
+          >
+            <FileDown className="h-4 w-4" />
+          </a>
           {/* Grouped rather than seven-plus equal icons in a row: tools
-              (find/star/download/add rule) above, state and triage below. */}
+              (find/star/add rule/link/download) above, state and triage below. */}
           {!isMobile && <Separator orientation="vertical" className="mx-1 h-5" />}
           <Button
             variant="ghost"

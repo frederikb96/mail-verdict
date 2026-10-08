@@ -44,7 +44,8 @@ mirror, which is what keeps it simple.
   after pressing Send, held durably on the server rather than in the browser, and Undo reopens the
   composer with everything that was written, attachments and pasted images included, rather than
   only cancelling the send. Any message can
-  be downloaded as a raw `.eml` file.
+  be downloaded as a raw `.eml` file, or its link copied -- the link opens that message wherever it
+  has been filed since.
 - **Actions** — read/unread, flag, archive, trash, permanent delete (with confirmation, since it
   is irreversible), keywords, drag-and-drop moves (a long press selects instead of dragging on a
   touch device) or a type-to-filter "Move to..." picker in the reading pane, and bulk actions over

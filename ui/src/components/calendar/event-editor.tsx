@@ -152,7 +152,6 @@ interface EventEditorProps {
   onOpenChange: (open: boolean) => void;
   mode: "create" | "edit";
   event?: EventInstance;
-  defaultCalendarId?: string;
   defaultDate?: Date;
   /** The exact range a create-by-drag dragged out, preferred over
    * defaultDate's rounded default when present. Absent for the toolbar's
@@ -166,7 +165,6 @@ export function EventEditor({
   onOpenChange,
   mode,
   event,
-  defaultCalendarId,
   defaultDate,
   dragRange,
   onDeleted,
@@ -209,7 +207,7 @@ export function EventEditor({
   const [allDay, setAllDay] = useState(event?.all_day ?? false);
   const [range, setRange] = useState(() => toDisplayRange(event, durationMinutes, defaultDate, dragRange));
   const [calendarId, setCalendarId] = useState(
-    event?.calendar_id ?? defaultCalendarId ?? validLastCreatedCalendarId ??
+    event?.calendar_id ?? validLastCreatedCalendarId ??
       validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
   );
   const [location, setLocation] = useState(event?.location ?? "");
@@ -273,7 +271,7 @@ export function EventEditor({
     setAllDay(nextAllDay);
     setRange(nextRange);
     setCalendarId(
-      event?.calendar_id ?? defaultCalendarId ?? validLastCreatedCalendarId ??
+      event?.calendar_id ?? validLastCreatedCalendarId ??
         validDefaultCalendarSetting ?? writableCalendars[0]?.id ?? "",
     );
     setLocation(nextLocation);
@@ -330,7 +328,7 @@ export function EventEditor({
     if (!open) return;
     setCalendarId(
       (current) =>
-        current || event?.calendar_id || defaultCalendarId ||
+        current || event?.calendar_id ||
         validLastCreatedCalendarId || validDefaultCalendarSetting || writableCalendars[0]?.id || "",
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -19,7 +19,7 @@ import {
   type SpanningItem,
 } from "@/components/calendar/layout";
 import { useCalendars } from "@/hooks/use-calendars";
-import { useDefaultCalendarId, useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
+import { useDefaultEventDurationMinutes } from "@/hooks/use-calendar-settings";
 import { useEventsForRange, useUpdateEvent } from "@/hooks/use-events";
 import { useGridDrag, type GridGhost } from "@/hooks/use-grid-drag";
 import { useToast } from "@/hooks/use-toast";
@@ -67,17 +67,11 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
   const { push: pushToast } = useToast();
   const { data: calendars } = useCalendars();
   const defaultDurationMinutes = useDefaultEventDurationMinutes();
-  const defaultCalendarSetting = useDefaultCalendarId();
   const calendarById = useMemo(() => new Map((calendars ?? []).map((c) => [c.id, c])), [calendars]);
-  // Same enabled/writable list and same default-calendar setting the
-  // event editor itself honours -- click-to-create built its own,
-  // independent "first calendar" pick here, which is exactly the B13
-  // bug reached a second way: whichever calendar sorts first, not the
-  // one actually chosen as the default.
-  const writableCalendars = (calendars ?? []).filter((c) => !c.read_only && c.is_enabled);
-  const validDefaultCalendarSetting = writableCalendars.some((c) => c.id === defaultCalendarSetting)
-    ? defaultCalendarSetting
-    : undefined;
+  // Only whether any calendar can take a new event is decided here; which
+  // one the editor opens on is the editor's own resolution, so a drag and
+  // the toolbar's New event land on the same calendar.
+  const hasWritableCalendar = (calendars ?? []).some((c) => !c.read_only && c.is_enabled);
   const updateEvent = useUpdateEvent();
   const [pendingScope, setPendingScope] = useState<{
     ghost: GridGhost;
@@ -86,7 +80,7 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
     original: EventInstance | undefined;
   } | null>(null);
   const [createDefaults, setCreateDefaults] = useState<
-    { start: Date; end: Date; calendarId: string } | null
+    { start: Date; end: Date } | null
   >(null);
 
   const days = useMemo(() => {
@@ -219,14 +213,13 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
       start.setHours(0, ghost.startMin, 0, 0);
       const end = new Date(day);
       end.setHours(0, ghost.endMin, 0, 0);
-      const defaultCalendarId = validDefaultCalendarSetting ?? writableCalendars[0]?.id;
-      if (!defaultCalendarId) {
+      if (!hasWritableCalendar) {
         pushToast("Add a calendar before creating events", "warning");
         return;
       }
       // Nothing is created here -- the editor opens prefilled and the user
       // still has to press Save, same as the toolbar's New event button.
-      setCreateDefaults({ start, end, calendarId: defaultCalendarId });
+      setCreateDefaults({ start, end });
     },
   });
 
@@ -473,7 +466,6 @@ export function TimeGrid({ dayCount, onSelectEvent }: TimeGridProps) {
         mode="create"
         defaultDate={createDefaults?.start}
         dragRange={createDefaults ?? undefined}
-        defaultCalendarId={createDefaults?.calendarId}
       />
     </div>
   );
