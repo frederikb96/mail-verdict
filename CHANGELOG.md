@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.11.1] - 2026-10-08
+
+### Security
+
+- Updated `next` to 16.3.8, a security release.
+
 ## [6.11.0] - 2026-10-08
 
 ### Added
