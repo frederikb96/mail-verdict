@@ -215,8 +215,9 @@ cd ui && npx tsc --noEmit && npm run build     # only if the frontend changed
 
 Then push, and let CI run the rest: it covers lint, the unit, pg and e2e layers, the UI type
 check, its unit tests and the production build, and the image and chart builds, as parallel jobs
-in about eight minutes. A release is cut from a tag, not from a push, so a red run is caught with
-nothing shipped.
+in about four minutes. Checks run on pull requests only; `main` accepts rebase merges of a branch
+whose `CI ok` check passed against the current `main`, and a release is cut from a tag, so a red run
+is caught with nothing shipped.
 
 Add the layer that covers what the change actually touched — `pytest tests/pg` for a query or a
 migration, `pytest tests/e2e` for a route, the one or two `tests/ui` modules covering a screen you
@@ -294,9 +295,8 @@ python scripts/check_release_versions.py v1.2.3
 The order matters and is not optional:
 
 - Bump the version and move the changelog's unreleased section under it
-- Commit and push the commit
-- Wait for CI to pass
-- Only then push the tag
+- Open a pull request with the bump and rebase-merge it once CI is green
+- Fast-forward the local `main`, then tag the merged commit and push the tag
 
-The tag is what publishes the image, the chart and the release. Tagging before CI means publishing
-something that was never green.
+The tag is what publishes the image, the chart and the release. Tagging before the merge means
+publishing something that was never green.
