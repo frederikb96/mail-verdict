@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Updated SQLAlchemy to 2.1.
+- The compose files run PostIMAP 1.11.6 and Radicale 3.8.3.0.
+
 ## [6.11.1] - 2026-10-08
 
 ### Security

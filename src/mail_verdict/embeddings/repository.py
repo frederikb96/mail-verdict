@@ -664,7 +664,9 @@ class EmbeddingRepository:
                     MessageEmbedding.account_id == account_id
                 )
             done_hint_ids = {
-                row[0] for row in (await session.execute(done_hint_ids_stmt)).all()
+                row[0]
+                for row in (await session.execute(done_hint_ids_stmt)).all()
+                if row[0] is not None
             }
             reachable = 0
             if done_hint_ids:

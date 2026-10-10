@@ -279,13 +279,12 @@ async def update_account(
 
     # Re-fetch to return updated state
     async with db.session() as session:
-        result = await session.execute(
+        refreshed = await session.execute(
             select(Account, AccountPrefs)
             .outerjoin(AccountPrefs, Account.id == AccountPrefs.account_id)
             .where(Account.id == account_id)
         )
-        row = result.one()
-        acct, prefs = row
+        acct, prefs = refreshed.one()
         return _build_account_response(acct, prefs)
 
 

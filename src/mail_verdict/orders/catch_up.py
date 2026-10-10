@@ -194,4 +194,4 @@ async def _already_queued_keys(
             OrderJob.account_id == account_id, OrderJob.msg_key.in_(msg_keys),
         )
     )
-    return {row[0] for row in result.all()}
+    return {row[0] for row in result.all() if row[0] is not None}

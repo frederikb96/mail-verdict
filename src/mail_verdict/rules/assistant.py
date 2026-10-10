@@ -246,7 +246,7 @@ def _search_filters(
 
 def search_sample_statement(
     account_id: uuid.UUID, from_contains: str, subject_contains: str,
-) -> Select[Any]:
+) -> Select[str | None, str | None, uuid.UUID]:
     """Newest mails whose sender and/or subject contain the given text."""
     return (
         select(Message.from_addr, Message.subject, Message.folder_id)
