@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.11.2] - 2026-10-10
+
 ### Changed
 
 - Updated SQLAlchemy to 2.1 and jotai to v3.
