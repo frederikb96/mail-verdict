@@ -22,13 +22,12 @@ env:
 jobs:
   guard:
     name: Version guard
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
 
-      # The runner image is bare: anything invoking python needs this.
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
@@ -55,7 +54,7 @@ jobs:
   image:
     name: Build and push image
     needs: guard
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -90,7 +89,7 @@ jobs:
   chart:
     name: Package and push Helm chart
     needs: guard
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -115,7 +114,7 @@ jobs:
   publish:
     name: Publish GitHub release
     needs: [guard, image, chart]
-    runs-on: arc-runner-mail-verdict
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -123,8 +122,6 @@ jobs:
         with:
           name: release-notes
 
-      # A JS action rather than the gh CLI: the runner image is bare and does not
-      # ship gh, but it always has the node that actions run on.
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
