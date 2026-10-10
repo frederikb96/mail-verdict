@@ -46,7 +46,7 @@ async def glacier_folder_ids(session: AsyncSession) -> dict[uuid.UUID, uuid.UUID
     return {row.glacier_folder_id: row.account_id for row in result.all()}
 
 
-def glacier_branch() -> Select[tuple[GlacierMessage]]:
+def glacier_branch() -> Select[GlacierMessage]:
     """A Select over glacier_messages, visible rows only (D8), for a
     caller that wants full GlacierMessage rows -- the manual actions in
     api/mails.py that already resolve a glacier id directly. For a UNION

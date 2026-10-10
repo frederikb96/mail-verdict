@@ -12,7 +12,7 @@ dependencies = [
     # 2.1 reworks the typing of Select and Row, which this code's
     # annotations predate, and drops the mypy plugin the type check
     # below still loads. Both are their own piece of work.
-    "sqlalchemy[asyncio]>=2.0.0,<2.1",
+    "sqlalchemy[asyncio]>=2.1.1,<2.2",
     "asyncpg>=0.30.0",
     "alembic>=1.14.0",
     "pydantic>=2.0.0",
@@ -85,7 +85,6 @@ python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
-plugins = ["sqlalchemy.ext.mypy.plugin"]
 
 [[tool.mypy.overrides]]
 module = [

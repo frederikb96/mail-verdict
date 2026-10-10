@@ -307,6 +307,7 @@ async def list_unified_folders() -> list[UnifiedFolderResponse]:
     for view_id, account_id, glacier_folder_id, account_name, account_emoji, total, unread in (
         glacier_rows
     ):
+        assert glacier_folder_id is not None  # joined on equality
         members.setdefault(view_id, []).append((
             UnifiedFolderSource(
                 account_id=account_id,
