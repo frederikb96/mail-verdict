@@ -6,8 +6,7 @@
 # self-hosted runner here would hand them a shell inside the cluster that runner lives in.
 #
 # Standard GitHub-hosted runners are unmetered on public repositories, so there is no cost
-# argument for doing otherwise. release.yaml triggers on push, which requires write access to
-# reach, so it still uses the self-hosted runner.
+# argument for doing otherwise. release.yaml runs on them too.
 #
 # Pull requests only: main takes nothing but rebase merges of a branch that passed `CI ok` with
 # the up-to-date requirement, so a run on main would repeat the tree that was just tested.
