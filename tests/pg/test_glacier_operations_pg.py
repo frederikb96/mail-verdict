@@ -1,6 +1,6 @@
 """
 The glacier's copy/verify/expunge sequence against a real Postgres
-schema. Freddy intends to move thousands of real messages through this
+schema. It is meant to move thousands of real messages through this
 path, so the destructive guards below are the tests this feature exists
 for: a corrupted stored copy must never be followed by a removal, and a
 removal must only ever be able to touch the exact message that was

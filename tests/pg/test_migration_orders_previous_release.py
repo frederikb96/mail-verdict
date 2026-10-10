@@ -2,8 +2,7 @@
 0038_orders against the state the previous release reaches: a real,
 multi-stage pipeline revision already in place (classify, a filing rule,
 move-spam) -- not an empty database, which is the one shape this
-migration's own data-migration step cannot fail in (see the "Every
-migration test runs against an empty database" note in .claude/CLAUDE.md).
+migration's own data-migration step cannot fail in.
 The migration must insert the `orders` stage directly after the last
 move-spam-shaped stage, as a new appended revision, leaving the filing
 rule and classify stages untouched and the pipeline_revisions history

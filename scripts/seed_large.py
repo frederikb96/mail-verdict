@@ -71,7 +71,7 @@ MAIL_FOLDERS: list[tuple[str, float]] = [
 ]
 MESSAGE_COUNT = 1200
 
-# The proportions are Freddy's own account, measured: 25 of 30 collections are
+# The proportions are a real personal account, measured: 25 of 30 collections are
 # to-do-only and hold roughly 70% of all objects, which is exactly the shape
 # that made the month view fetch thousands of objects that could never produce
 # an event.

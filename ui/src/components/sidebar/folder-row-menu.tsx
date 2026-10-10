@@ -2,8 +2,7 @@
 
 /**
  * Sits where a folder row's unread badge normally shows, swapping to a
- * three-dot control on hover -- Freddy pointed at this exact Outlook
- * pattern. Rendered as a sibling of the folder's own SidebarMenuButton,
+ * three-dot control on hover, the Outlook pattern. Rendered as a sibling of the folder's own SidebarMenuButton,
  * never nested inside it: a dropdown trigger button cannot live inside
  * another button.
  */

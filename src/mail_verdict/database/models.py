@@ -600,9 +600,8 @@ class DavCollection(Base):
     # Update-only (deleting a collection), not insert-granted -- like every
     # other column here that create_collection() never sets, this needs
     # FetchedValue() or the ORM insert sends it explicitly as NULL and the
-    # missing grant turns that into "permission denied" (see CLAUDE.md's
-    # note on this trap: a plain nullable column with no default of any
-    # kind is still named in an ORM insert).
+    # missing grant turns that into "permission denied" (a plain nullable
+    # column with no default of any kind is still named in an ORM insert).
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, server_default=FetchedValue(),
     )

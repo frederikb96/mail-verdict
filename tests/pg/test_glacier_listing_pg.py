@@ -66,7 +66,7 @@ _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
 
 async def _seed_account(session: AsyncSession, *, is_active: bool = False) -> uuid.UUID:
     # Inactive by default -- PostIMAP leaves such an account entirely
-    # alone (repo CLAUDE.md's own documented pg-layer workaround), which
+    # alone (the pg layer runs a live PostIMAP), which
     # every read-only listing test here can rely on. A unified view's
     # own membership queries filter Account.is_active themselves
     # (api/unified.py), so the one test asserting a glacier's presence

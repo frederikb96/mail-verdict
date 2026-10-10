@@ -1,5 +1,5 @@
 """
-The thread follow-up hook: a reply Freddy sends inside an order's
+The thread follow-up hook: a reply the user sends inside an order's
 conversation, and the shop's own answer to it, join that order even when
 neither mail's subject says anything about orders, tickets or bookings.
 

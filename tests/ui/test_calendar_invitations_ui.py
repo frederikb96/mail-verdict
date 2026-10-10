@@ -50,9 +50,8 @@ def _build_invitation_eml(
     *, organizer_email: str, attendee_email: str, summary: str, uid: str, method: str = "REQUEST",
 ) -> bytes:
     """A REQUEST three days out, one attendee (the recipient) and the
-    organizer as chair -- the same shape .claude/deliver_invitation.py
-    uses for manual driving, rebuilt here so the committed suite carries
-    no dependency on that personal-path script."""
+    organizer as chair -- built here so the suite carries no dependency
+    on any script outside the repository."""
     start = (
         datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
         + timedelta(days=3, hours=12)
