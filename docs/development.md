@@ -215,7 +215,7 @@ cd ui && npx tsc --noEmit && npm run build     # only if the frontend changed
 
 Then push, and let CI run the rest: it covers lint, the unit, pg and e2e layers, the UI type
 check, its unit tests and the production build, and the image and chart builds, as parallel jobs
-in about four minutes. Checks run on pull requests only; `main` accepts rebase merges of a branch
+in about two minutes. Checks run on pull requests only; `main` accepts rebase merges of a branch
 whose `CI ok` check passed against the current `main`, and a release is cut from a tag, so a red run
 is caught with nothing shipped.
 
