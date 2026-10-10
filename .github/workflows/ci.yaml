@@ -140,6 +140,7 @@ jobs:
       - name: pg-layer tests (shard ${{ matrix.shard }}/4)
         run: |
           files=$(ls -S tests/pg/test_*.py | awk 'NR % 4 == ${{ matrix.shard }} % 4')
+          [ -n "$files" ] || exit 0
           pytest $files -v --tb=short
 
   e2e:
@@ -172,6 +173,7 @@ jobs:
       - name: e2e tests (shard ${{ matrix.shard }}/4)
         run: |
           files=$(ls -S tests/e2e/test_*.py | awk 'NR % 4 == ${{ matrix.shard }} % 4')
+          [ -n "$files" ] || exit 0
           pytest $files -v --tb=short
 
   ui:
@@ -258,18 +260,11 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if any required job failed
+      - name: Fail if any required job did not succeed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          for result in \
-            "${{ needs.lint.result }}" \
-            "${{ needs.unit.result }}" \
-            "${{ needs.pg.result }}" \
-            "${{ needs.e2e.result }}" \
-            "${{ needs.ui.result }}" \
-            "${{ needs.image.result }}" \
-            "${{ needs.chart.result }}"; do
-            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
-              echo "A required job did not succeed: $result"
-              exit 1
-            fi
-          done
+          echo "results: $RESULTS"
+          case " $RESULTS " in
+            *" failure "*|*" cancelled "*) exit 1 ;;
+          esac
