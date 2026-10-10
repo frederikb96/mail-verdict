@@ -850,8 +850,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   verdict" / "Correct this verdict") rather than for an outcome.
 - Confirming a verdict on the review screen moves the message into Junk; correcting one moves it
   back to the folder it came from.
-- Freddy's own past rulings are always in front of the model when it classifies a message that
-  resembles one he already ruled on, with no setting anywhere that can turn this off.
+- The user's own past rulings are always in front of the model when it classifies a message that
+  resembles one they already ruled on, with no setting anywhere that can turn this off.
 - A ruling that fails to move its message (an account with no Junk or Inbox folder) now reports the
   failure rather than claiming success while quietly doing nothing.
 
@@ -861,7 +861,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   waits on a network round trip or refetches anything.
 - Dates and times are entered and shown day-first in a 24-hour clock, in an app-owned text field
   with a popover picker, instead of the browser's own date/time input.
-- An event can carry any number of reminders and say whether it makes Freddy free or busy; a
+- An event can carry any number of reminders and say whether it shows the owner as free or busy; a
   calendar's own default reminder can override or switch off the global one. An absolute (rather
   than relative) reminder written by another calendar client now shows read-only instead of being
   silently rewritten as a relative one the moment the event is opened.
