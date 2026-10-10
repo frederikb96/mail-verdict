@@ -42,6 +42,9 @@ POSTGRES_PASSWORD = "postimap-test"  # noqa: S105 -- throwaway, container-local 
 
 POSTIMAP_HEALTH_PORT = 8090
 POSTIMAP_READY_TIMEOUT_S = 60
+# PostIMAP backfills a newly discovered folder on its periodic sync, 60 s by default;
+# a short interval keeps tests that wait for a folder's first sync from idling on it.
+POSTIMAP_SYNC_INTERVAL_S = 5
 
 # Any username authenticates against this one shared password and gets its
 # mailbox created on first login -- there is no account-provisioning API on
@@ -133,6 +136,7 @@ def build_postimap_container(network: Network) -> DockerContainer:
         .with_env("POSTIMAP_DATABASE_NAME", POSTGRES_DB)
         .with_env("POSTIMAP_DATABASE_USER", POSTGRES_USER)
         .with_env("POSTIMAP_IMAP_TLS_REJECT_UNAUTHORIZED", "false")
+        .with_env("POSTIMAP_SYNC_INTERVAL_SECONDS", str(POSTIMAP_SYNC_INTERVAL_S))
         .with_exposed_ports(POSTIMAP_HEALTH_PORT)
         .with_kwargs(labels=owner_labels())
     )
