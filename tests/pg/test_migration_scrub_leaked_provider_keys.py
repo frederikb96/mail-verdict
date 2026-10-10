@@ -2,9 +2,8 @@
 0040's cleanup, run against the state a released deployment actually
 reaches: a settings row already carrying a provider-key-shaped field the
 API merged into its JSONB blob before this masking was made universal
-(see the "Every migration test runs against an empty database" note in
-.claude/CLAUDE.md -- migrating an empty database to head cannot exercise
-this at all, since the UPDATE matches nothing).
+(migrating an empty database to head cannot exercise this at all, since
+the UPDATE matches nothing).
 
 Two shapes, both seen in practice: a field still holding a live-looking
 value, and one already emptied to "" by an operator working around the

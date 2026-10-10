@@ -393,9 +393,8 @@ class TestGlacierRowAndReadingPaneUi:
         wording, never as a send.
 
         Trash rather than Archive: this module's own account has no
-        Archive folder (CLAUDE.md's "The `ui` layer's account has no
-        Archive folder" -- Archive would fail with "No archive folder
-        found for this account" before the restore is even attempted)."""
+        Archive folder, so Archive would fail with "No archive folder
+        found for this account" before the restore is even attempted."""
         target = _deliver_to_inbox(
             api_client, dovecot_endpoint, ui_account["id"], ui_account["email"],
             inbox_folder["id"], f"Glacier reading pane restore {uuid.uuid4()}",

@@ -520,7 +520,7 @@ class TestImport:
     async def test_two_identities_invited_to_the_same_event_never_duplicate(
         self, migrated_db: DatabaseConnection,
     ) -> None:
-        """The second of Freddy's own addresses invited to the same
+        """The second of the user's own addresses invited to the same
         event resolves by UID to the object already there -- never a
         second copy -- even though a REQUEST against an existing object
         is never applied automatically and needs confirming either way.

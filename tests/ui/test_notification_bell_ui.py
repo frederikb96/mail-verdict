@@ -740,8 +740,8 @@ class TestPushSubscriptionSettings:
     ) -> None:
         """A device that has never touched this checklist gets a scope of
         the folders mail actually arrives in -- not literally every
-        folder, which would notify Freddy about his own mail landing in
-        Sent every time he pressed Send."""
+        folder, which would notify the user about their own mail landing in
+        Sent every time they pressed Send."""
         account_email = _seed_account_with_inbox(postgres_url)
 
         context = browser.new_context()

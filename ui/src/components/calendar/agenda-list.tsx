@@ -3,8 +3,8 @@
 /**
  * A VList of day-header rows and event rows -- the phone's landing view,
  * and optionally the desktop's list alternative. Uniform row heights (32px
- * header, 32px event), so this is exactly the "library handles it" case the
- * scrolling skill describes, unlike the month view.
+ * header, 32px event), so this is exactly the "library handles it" case,
+ * unlike the month view.
  */
 
 import { useEffect, useMemo, useRef } from "react";

@@ -65,7 +65,7 @@ async def _seed_sweepable_account(
     listener rewrites accounts.state (and can rewrite sync_state right
     back to unsynced) for any is_active=true account the instant it
     notices one, which a fake host can never satisfy again once it does
-    (repo CLAUDE.md's own documented pg-layer trap) -- call _activate()
+    (a live PostIMAP owns every active account's state) -- call _activate()
     as the very last statement before checking a guard, to keep the
     window PostIMAP has to interfere as small as possible. Returns
     (account_id, archive_folder_id)."""

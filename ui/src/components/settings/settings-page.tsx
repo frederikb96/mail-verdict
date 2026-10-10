@@ -22,7 +22,7 @@ import { CalendarLinksCard } from "@/components/settings/calendar-links";
 import { DefaultCalendarSetting } from "@/components/settings/default-calendar-setting";
 
 /**
- * Settings groups into three things Freddy actually goes looking for,
+ * Settings groups into three things people actually go looking for,
  * rather than one long unlabelled scroll of cards: Appearance (how the
  * interface looks), Mail (cross-account behaviour), Calendar (everything
  * about invitations and events in one place, where it used to be split
