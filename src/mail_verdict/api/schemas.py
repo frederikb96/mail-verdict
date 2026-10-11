@@ -164,6 +164,11 @@ class MessageDetail(BaseModel):
     cc_addrs: Any | None = None
     bcc_addrs: Any | None = None
     reply_to: str | None = None
+    envelope_sender: str | None = Field(
+        default=None,
+        description="Bare address the message was sent from at the SMTP level (the "
+        "Return-Path header), which can differ from from_addr. Null when unknown.",
+    )
     in_reply_to: str | None = None
     references: list[str] | None = None
     body_text: str | None = None
@@ -712,6 +717,11 @@ class SpamReviewItem(BaseModel):
     )
     subject: str | None = None
     from_addr: str | None = None
+    envelope_sender: str | None = Field(
+        default=None,
+        description="Bare address the message was sent from at the SMTP level (the "
+        "Return-Path header), which can differ from from_addr. Null when unknown.",
+    )
     received_at: datetime | None = None
     snippet: str | None = None
     verdict_id: uuid.UUID

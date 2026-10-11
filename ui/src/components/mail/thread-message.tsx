@@ -36,6 +36,7 @@ import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import {
   extractSenderName,
+  ENVELOPE_SENDER_HINT,
   extractEmail,
   formatFullDate,
   formatRelativeDate,
@@ -304,13 +305,24 @@ export function ThreadMessage({
       )}
 
       {mail.verdict && (
-        <div className="flex items-center gap-2 px-4 pb-3 text-xs">
-          <Badge variant={mail.verdict.is_spam ? "destructive" : "outline"}>
-            {mail.verdict.is_spam ? "Flagged as spam" : "Not spam"}
-          </Badge>
-          <span className="text-muted-foreground">
-            {mail.verdict.reasoning}
-          </span>
+        <div className="flex flex-col gap-1 px-4 pb-3 text-xs">
+          <div className="flex items-center gap-2">
+            <Badge variant={mail.verdict.is_spam ? "destructive" : "outline"}>
+              {mail.verdict.is_spam ? "Flagged as spam" : "Not spam"}
+            </Badge>
+            <span className="text-muted-foreground">
+              {mail.verdict.reasoning}
+            </span>
+          </div>
+          {mail.envelope_sender && (
+            <span
+              data-testid="thread-message-envelope-sender"
+              className="text-muted-foreground"
+              title={ENVELOPE_SENDER_HINT}
+            >
+              Envelope sender: {mail.envelope_sender}
+            </span>
+          )}
         </div>
       )}
 

@@ -26,6 +26,7 @@ function makeMessage(overrides: Partial<MessageDetail>): MessageDetail {
     cc_addrs: null,
     bcc_addrs: null,
     reply_to: null,
+    envelope_sender: null,
     in_reply_to: null,
     references: null,
     body_text: "Sure, what time?",

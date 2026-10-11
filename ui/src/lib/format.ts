@@ -83,6 +83,12 @@ export function extractSenderName(from: string | null): string {
   return from.split("@")[0];
 }
 
+/** Tooltip for an envelope sender wherever one is shown. */
+export const ENVELOPE_SENDER_HINT =
+  "Envelope sender (Return-Path): the address the mail was actually sent from. " +
+  "The From address is written by the sender and can be anything; bounces go here, " +
+  "and mailing services legitimately use their own.";
+
 /** Extract email address from sender string. */
 export function extractEmail(from: string | null): string {
   if (!from) return "";

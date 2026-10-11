@@ -64,6 +64,9 @@ export interface MessageDetail extends MessageSummary {
   cc_addrs: string[] | null;
   bcc_addrs: string[] | null;
   reply_to: string | null;
+  /** Bare address the message was sent from at the SMTP level (the
+   * Return-Path header) -- can differ from from_addr. */
+  envelope_sender: string | null;
   in_reply_to: string | null;
   references: string[] | null;
   body_text: string | null;
@@ -1377,6 +1380,9 @@ export interface SpamReviewItem {
   is_junk: boolean;
   subject: string | null;
   from_addr: string | null;
+  /** Bare address the message was sent from at the SMTP level (the
+   * Return-Path header) -- can differ from from_addr. */
+  envelope_sender: string | null;
   received_at: string | null;
   snippet: string | null;
   verdict_id: string;

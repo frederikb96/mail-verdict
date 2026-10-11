@@ -23,6 +23,10 @@ from tests.e2e.helpers import unique_email, wait_for, wait_for_account_active, w
 from tests.setup.containers import DOVECOT_ALIAS, DOVECOT_IMAP_PORT, DOVECOT_PASSWORD
 from tests.setup.mail_delivery import build_eml, deliver_message
 
+# The SMTP envelope sender the seeds are delivered with, deliberately not
+# their From header -- what the receiving server records as Return-Path.
+ENVELOPE_SENDER = "bounce@bulk.example.net"
+
 
 @pytest.fixture(scope="module")
 def synced_account(
@@ -38,7 +42,7 @@ def synced_account(
             sender="sender@example.com", recipient=email, subject=f"Spam review seed {i}",
             message_id=f"<spam-review-seed-{uuid.uuid4()}@example.com>",
         )
-        deliver_message(message, host, lmtp_port, sender="sender@example.com", recipient=email)
+        deliver_message(message, host, lmtp_port, sender=ENVELOPE_SENDER, recipient=email)
 
     resp = app_client.post(
         "/api/accounts",
@@ -128,6 +132,12 @@ class TestSpamReview:
         assert item["is_junk"] is False
         assert item["model_used"] == "test-model"
         assert item["reasoning"] == "looks spammy"
+        assert item["from_addr"] and "sender@example.com" in item["from_addr"]
+        assert item["envelope_sender"] == ENVELOPE_SENDER
+
+        detail = app_client.get(f"/api/messages/{message_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["envelope_sender"] == ENVELOPE_SENDER
 
     @pytest.mark.asyncio
     async def test_accepting_a_spam_verdict_moves_it_to_junk(

@@ -52,7 +52,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, query_expression
 
 
 class Base(DeclarativeBase):
@@ -261,6 +261,9 @@ class Message(Base):
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_headers: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # The Return-Path header value, loaded only where a query asks for it
+    # (core/envelope_sender.py's return_path_option) -- never the whole raw_headers.
+    return_path: Mapped[str | None] = query_expression()
     raw_source: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     is_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     received_at: Mapped[datetime | None] = mapped_column(
@@ -861,6 +864,9 @@ class GlacierMessage(Base):
     body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     body_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_headers: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # The Return-Path header value, loaded only where a query asks for it
+    # (core/envelope_sender.py's return_path_option) -- never the whole raw_headers.
+    return_path: Mapped[str | None] = query_expression()
     raw_source: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     is_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     received_at: Mapped[datetime | None] = mapped_column(
