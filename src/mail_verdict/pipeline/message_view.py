@@ -31,6 +31,7 @@ import nh3
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mail_verdict.core.envelope_sender import RETURN_PATH_HEADER, envelope_sender
 from mail_verdict.database.models import Attachment, Folder, FolderPrefs, MailTag, Message
 
 # How much of the body a stage ever sees. Long enough for a model to judge
@@ -228,8 +229,7 @@ def build_identity_facts(view: MessageView) -> dict[str, object]:
     into a score here.
     """
     display_name, from_addr = extract_display_name_and_addr(view.from_addr)
-    return_path = _header(view.headers, "return-path")
-    return_path_addr = parseaddr(return_path)[1] if return_path else None
+    return_path_addr = envelope_sender(_header(view.headers, RETURN_PATH_HEADER))
     reply_to = view.reply_to or _header(view.headers, "reply-to")
     reply_to_addr = parseaddr(reply_to)[1] if reply_to else None
 

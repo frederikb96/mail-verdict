@@ -56,6 +56,7 @@ from mail_verdict.api.schemas import (
 from mail_verdict.config import get_config
 from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.core.cursor import after_cursor, before_cursor
+from mail_verdict.core.envelope_sender import envelope_sender, return_path_option
 from mail_verdict.core.image_sanitizer import restore_remote_images, strip_remote_images
 from mail_verdict.core.outbound_sanitizer import sanitize_outbound_html
 from mail_verdict.core.sanitizer import (
@@ -131,14 +132,15 @@ _LIST_DEFERRED_COLUMNS = (
 )
 
 # MessageDetail renders body_text/body_html but never raw_source (the
-# entire RFC822 bytea, its own GET .../raw endpoint) or raw_headers (used
-# only by the pipeline's MessageView, never by this response). Without
+# entire RFC822 bytea, its own GET .../raw endpoint) or raw_headers -- only
+# its Return-Path, extracted in SQL for envelope_sender. Without
 # this, get_message and get_thread pull the full raw message for every
 # row just to produce about a kilobyte of JSON -- the thread endpoint
 # doing it once per message in the conversation.
 _DETAIL_DEFERRED_COLUMNS = (
     defer(Message.raw_source),
     defer(Message.raw_headers),
+    return_path_option(Message),
 )
 
 
@@ -985,6 +987,7 @@ def _to_message_detail(
         cc_addrs=m.cc_addrs,
         bcc_addrs=m.bcc_addrs,
         reply_to=m.reply_to,
+        envelope_sender=envelope_sender(m.return_path),
         in_reply_to=m.in_reply_to,
         references=m.msg_references,
         body_text=m.body_text,
@@ -1062,7 +1065,9 @@ async def get_message(
             glacier_id = await resolve_glacier_id(session, message_id)
             if glacier_id is not None:
                 glacier_result = await session.execute(
-                    select(GlacierMessage).where(GlacierMessage.id == glacier_id)
+                    select(GlacierMessage)
+                    .options(return_path_option(GlacierMessage))
+                    .where(GlacierMessage.id == glacier_id)
                 )
                 msg = glacier_result.scalar_one_or_none()
             if msg is not None:
@@ -1243,7 +1248,9 @@ async def get_thread(
         )
         live_messages: list[Message | GlacierMessage] = list(live_result.scalars().all())
         glacier_result = await session.execute(
-            select(GlacierMessage).where(
+            select(GlacierMessage)
+            .options(return_path_option(GlacierMessage))
+            .where(
                 GlacierMessage.thread_id == thread_id, GlacierMessage.visible_at.is_not(None),
             )
         )

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Spam review shows the sender's address next to the display name, and the envelope sender
+  (Return-Path) when it differs from the From address. An opened message's verdict line shows
+  its envelope sender. Both are in the API as `envelope_sender`.
+
 ### Changed
 
 - The compose files run PostIMAP 1.11.7.

@@ -4318,6 +4318,18 @@
             "title": "Created At",
             "type": "string"
           },
+          "envelope_sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bare address the message was sent from at the SMTP level (the Return-Path header), which can differ from from_addr. Null when unknown.",
+            "title": "Envelope Sender"
+          },
           "folder_id": {
             "format": "uuid",
             "title": "Folder Id",
@@ -7444,6 +7456,18 @@
             "format": "uuid",
             "title": "Account Id",
             "type": "string"
+          },
+          "envelope_sender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bare address the message was sent from at the SMTP level (the Return-Path header), which can differ from from_addr. Null when unknown.",
+            "title": "Envelope Sender"
           },
           "folder_id": {
             "format": "uuid",

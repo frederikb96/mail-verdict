@@ -25,6 +25,7 @@ from mail_verdict.api.schemas import (
     SpamReviewListResponse,
     VerdictResponse,
 )
+from mail_verdict.core.envelope_sender import envelope_sender, return_path_option
 from mail_verdict.core.snippet import build_snippet
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.models import Folder, Message, Verdict, VerdictSource
@@ -121,7 +122,7 @@ async def list_spam_review(
 
         stmt = (
             select(Message, latest, Folder.special_use)
-            .options(*_LIST_DEFERRED_COLUMNS)
+            .options(*_LIST_DEFERRED_COLUMNS, return_path_option(Message))
             .join(latest, latest.mail_id == Message.id)
             .join(Folder, Folder.id == Message.folder_id)
             .where(
@@ -152,6 +153,7 @@ async def list_spam_review(
             is_junk=special_use == "junk",
             subject=m.subject,
             from_addr=m.from_addr,
+            envelope_sender=envelope_sender(m.return_path),
             received_at=m.received_at,
             snippet=build_snippet(m.body_text),
             verdict_id=v.id,

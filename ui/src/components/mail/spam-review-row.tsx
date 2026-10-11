@@ -3,7 +3,12 @@
 import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { extractSenderName, formatRelativeDate } from "@/lib/format";
+import {
+  ENVELOPE_SENDER_HINT,
+  extractEmail,
+  extractSenderName,
+  formatRelativeDate,
+} from "@/lib/format";
 import { useAccounts } from "@/hooks/use-accounts";
 import type { SpamReviewItem } from "@/types/api";
 
@@ -20,6 +25,14 @@ interface SpamReviewRowProps {
  * to Junk. */
 export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) {
   const senderName = extractSenderName(item.from_addr);
+  const senderEmail = extractEmail(item.from_addr);
+  // Shown only when it says something the From address does not: a
+  // display name, a From address and an envelope sender that all differ
+  // are exactly what a phishing mail impersonating the account looks like.
+  const envelopeSender =
+    item.envelope_sender && item.envelope_sender.toLowerCase() !== senderEmail.toLowerCase()
+      ? item.envelope_sender
+      : null;
 
   // This view spans every account with no folder in common (Junk in one,
   // the inbox in another) -- the account label is only worth showing at
@@ -35,7 +48,17 @@ export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) 
     <div className="flex items-start gap-3 border-b px-4 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-foreground">{senderName}</span>
+          <span className="flex min-w-0 items-baseline gap-1 truncate">
+            <span className="truncate text-sm font-medium text-foreground">{senderName}</span>
+            {senderEmail && (
+              <span
+                data-testid="spam-review-sender-email"
+                className="truncate text-xs text-muted-foreground"
+              >
+                &lt;{senderEmail}&gt;
+              </span>
+            )}
+          </span>
           {item.is_junk && (
             <Badge variant="secondary" className="h-4 shrink-0 px-1 text-[10px]">
               Junk
@@ -50,6 +73,15 @@ export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) 
             {formatRelativeDate(item.received_at)}
           </span>
         </div>
+        {envelopeSender && (
+          <div
+            data-testid="spam-review-envelope-sender"
+            className="truncate text-xs text-muted-foreground"
+            title={ENVELOPE_SENDER_HINT}
+          >
+            Envelope sender: {envelopeSender}
+          </div>
+        )}
         <div className="truncate text-sm text-muted-foreground">
           {item.subject ?? "(no subject)"}
         </div>
