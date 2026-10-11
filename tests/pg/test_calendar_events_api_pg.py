@@ -27,6 +27,11 @@ from mail_verdict.settings.service import init_settings_service, reset_settings_
 _TARGET = "mail_verdict.api.calendar_events.get_db_connection"
 _CALENDARS_TARGET = "mail_verdict.api.calendars.get_db_connection"
 
+# A starvation test repeats its burst, up to this many times, until its poller
+# has a handful of samples: a burst that finishes quickly on a fast machine
+# otherwise leaves too few to judge, which is not starvation.
+_MAX_BURSTS = 20
+
 
 # Shaped like what a real CalDAV server (Nextcloud, or an Outlook
 # invitation) actually emits for a timezone-bound recurring series: a
@@ -1944,7 +1949,10 @@ class TestEventLoopNotBlocked:
                 httpx.AsyncClient(transport=transport, base_url="http://test") as poll_client,
             ):
                 poller = asyncio.create_task(poll_live(poll_client))
-                await asyncio.gather(*(fetch_month(burst_client, m) for m in months))
+                for _ in range(_MAX_BURSTS):
+                    await asyncio.gather(*(fetch_month(burst_client, m) for m in months))
+                    if len(live_timings) > 5:
+                        break
                 burst_done.set()
                 await poller
 

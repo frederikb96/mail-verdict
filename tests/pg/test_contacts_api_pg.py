@@ -25,6 +25,11 @@ from mail_verdict.database.connection import DatabaseConnection
 
 _TARGET = "mail_verdict.api.contacts.get_db_connection"
 
+# A starvation test repeats its burst, up to this many times, until its poller
+# has a handful of samples: a burst that finishes quickly on a fast machine
+# otherwise leaves too few to judge, which is not starvation.
+_MAX_BURSTS = 20
+
 
 @pytest.fixture()
 def client() -> Iterator[TestClient]:
@@ -560,7 +565,10 @@ class TestPhotoIndexDoesNotStarveTheServer:
                 httpx.AsyncClient(transport=transport, base_url="http://test") as poll_client,
             ):
                 poller = asyncio.create_task(poll_live(poll_client))
-                await fetch_photo_index(burst_client)
+                for _ in range(_MAX_BURSTS):
+                    await fetch_photo_index(burst_client)
+                    if len(live_timings) > 5:
+                        break
                 burst_done.set()
                 await poller
 
@@ -956,7 +964,10 @@ class TestListingContactsDoesNotStarveTheServer:
                 httpx.AsyncClient(transport=transport, base_url="http://test") as poll_client,
             ):
                 poller = asyncio.create_task(poll_live(poll_client))
-                await fetch_page(burst_client)
+                for _ in range(_MAX_BURSTS):
+                    await fetch_page(burst_client)
+                    if len(live_timings) > 5:
+                        break
                 burst_done.set()
                 await poller
 
