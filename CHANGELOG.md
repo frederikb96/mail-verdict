@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.12.0] - 2026-10-11
+
 ### Added
 
 - Spam review shows the sender's address next to the display name, and the envelope sender
