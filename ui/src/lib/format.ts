@@ -89,6 +89,16 @@ export const ENVELOPE_SENDER_HINT =
   "The From address is written by the sender and can be anything; bounces go here, " +
   "and mailing services legitimately use their own.";
 
+/** The envelope sender worth showing beside a From header: null when it is
+ * missing or is the From address itself, since then it says nothing new. */
+export function distinctEnvelopeSender(
+  envelopeSender: string | null,
+  from: string | null,
+): string | null {
+  if (!envelopeSender) return null;
+  return envelopeSender.toLowerCase() === extractEmail(from).toLowerCase() ? null : envelopeSender;
+}
+
 /** Extract email address from sender string. */
 export function extractEmail(from: string | null): string {
   if (!from) return "";

@@ -37,6 +37,7 @@ import { api } from "@/lib/api";
 import {
   extractSenderName,
   ENVELOPE_SENDER_HINT,
+  distinctEnvelopeSender,
   extractEmail,
   formatFullDate,
   formatRelativeDate,
@@ -159,6 +160,7 @@ export function ThreadMessage({
   const { push: pushToast } = useToast();
   const senderName = extractSenderName(mail.from_addr);
   const senderEmail = extractEmail(mail.from_addr);
+  const envelopeSender = distinctEnvelopeSender(mail.envelope_sender, mail.from_addr);
 
   const { data: senderContact } = useContactByEmail(senderEmail);
   // An embedded photo is a data: URI already in the mirror -- free to
@@ -314,13 +316,13 @@ export function ThreadMessage({
               {mail.verdict.reasoning}
             </span>
           </div>
-          {mail.envelope_sender && (
+          {envelopeSender && (
             <span
               data-testid="thread-message-envelope-sender"
               className="text-muted-foreground"
               title={ENVELOPE_SENDER_HINT}
             >
-              Envelope sender: {mail.envelope_sender}
+              Envelope sender: {envelopeSender}
             </span>
           )}
         </div>

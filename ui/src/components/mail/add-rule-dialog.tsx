@@ -16,6 +16,7 @@ import { api, ApiError } from "@/lib/api";
 import { pipelineKeys } from "@/hooks/use-pipeline";
 import { useToast } from "@/hooks/use-toast";
 import type {
+  DiffRow,
   RuleAssistantChange,
   RuleAssistantResponse,
   RuleAssistantRuleChange,
@@ -283,21 +284,73 @@ function RuleChangeView({ rule }: { rule: RuleAssistantRuleChange }) {
       <p className="text-sm">
         <span className="font-medium">{KIND_LABEL[rule.kind]}</span> — {rule.name}
       </p>
-      {rule.before_text !== null && <CodeBlock label="Now" text={rule.before_text} />}
-      {rule.after_text !== null && (
-        <CodeBlock label={rule.kind === "moved" ? "Unchanged" : "Proposed"} text={rule.after_text} />
+      {rule.kind === "moved" ? (
+        <p className="text-xs text-muted-foreground">
+          Only its place in the rule order changes; the rule itself stays as it is.
+        </p>
+      ) : (
+        <DiffView rows={rule.diff} />
       )}
     </section>
   );
 }
 
-function CodeBlock({ label, text }: { label: string; text: string }) {
+const ROW_STYLE: Record<DiffRow["op"], { sign: string; row: string; mark: string }> = {
+  added: {
+    sign: "+",
+    row: "bg-green-500/15 text-green-900 dark:text-green-200",
+    mark: "rounded-sm bg-green-500/40",
+  },
+  removed: {
+    sign: "−",
+    row: "bg-red-500/15 text-red-900 dark:text-red-200",
+    mark: "rounded-sm bg-red-500/40",
+  },
+  context: { sign: " ", row: "text-muted-foreground", mark: "" },
+  gap: { sign: "", row: "", mark: "" },
+};
+
+/** The rule's JSON as a diff: removed lines red, added green, the changed
+ * characters inside a replaced line marked, and long unchanged stretches
+ * folded into a count. */
+function DiffView({ rows }: { rows: DiffRow[] }) {
   return (
-    <div>
-      <p className="mb-1 text-xs font-medium text-muted-foreground">{label}</p>
-      <pre className="max-h-48 overflow-auto rounded-md bg-muted p-2 font-mono text-xs whitespace-pre-wrap break-words">
-        {text}
-      </pre>
+    <div
+      data-testid="rule-diff"
+      className="max-h-80 overflow-auto rounded-md border bg-muted/40 py-1 font-mono text-xs"
+    >
+      {rows.map((row, i) => {
+        if (row.op === "gap") {
+          return (
+            <div key={i} className="px-2 py-0.5 text-muted-foreground/70 select-none">
+              ⋯ {row.skipped} unchanged line{row.skipped === 1 ? "" : "s"}
+            </div>
+          );
+        }
+        const style = ROW_STYLE[row.op];
+        return (
+          <div
+            key={i}
+            data-op={row.op}
+            className={`flex gap-2 px-2 whitespace-pre-wrap break-all ${style.row}`}
+          >
+            <span aria-hidden className="w-2 shrink-0 select-none">
+              {style.sign}
+            </span>
+            <span className="min-w-0">
+              {row.segments.map((segment, j) =>
+                segment.changed ? (
+                  <mark key={j} className={`text-inherit ${style.mark}`}>
+                    {segment.text}
+                  </mark>
+                ) : (
+                  <span key={j}>{segment.text}</span>
+                ),
+              )}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

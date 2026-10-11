@@ -94,6 +94,8 @@ def test_proposal_then_accept_is_an_ordinary_pipeline_write(
         assert rule["kind"] == "added" and rule["before_text"] is None
         assert rule["stage_id"].startswith(f"assistant-{str(mail_id)[:8]}")
         assert rule["stage_id"] in rule["after_text"]
+        assert {row["op"] for row in rule["diff"]} == {"added"}
+        assert len(rule["diff"]) == len(rule["after_text"].splitlines())
         stages = change["stages"]
         assert [s["stage_id"] for s in stages] == ["earlier", rule["stage_id"]]
         added = stages[-1]
