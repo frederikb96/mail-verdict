@@ -2490,6 +2490,58 @@
         "title": "DavCollectionSummary",
         "type": "object"
       },
+      "DiffRow": {
+        "description": "One row of a line diff. A `gap` row stands for `skipped` unchanged\nlines and has no segments.",
+        "properties": {
+          "op": {
+            "enum": [
+              "context",
+              "added",
+              "removed",
+              "gap"
+            ],
+            "title": "Op",
+            "type": "string"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/DiffSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          },
+          "skipped": {
+            "default": 0,
+            "title": "Skipped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "op",
+          "segments"
+        ],
+        "title": "DiffRow",
+        "type": "object"
+      },
+      "DiffSegment": {
+        "description": "Part of a diff line; `changed` marks the characters that differ from\nthe line it replaces or is replaced by.",
+        "properties": {
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "changed"
+        ],
+        "title": "DiffSegment",
+        "type": "object"
+      },
       "EmbeddingStatusResponse": {
         "description": "Coverage snapshot for one embedding model.\n\nencoded/pending/failed are message_embeddings row counts by status.\nreachable/unreachable/shadowed further split \"done\": reachable is a\ndone row whose message_id join hint resolves to a live, non-expunged\nmessage (what semantic search can actually return); unreachable is a\ndone row whose hint is dead; shadowed is an in-scope message with no\nembedding of its own because a sibling sharing its Message-ID header\nalready holds one (see embeddings/repository.py's status()).\ncoverage is reachable/in_scope, not encoded/in_scope -- a drift shows\nup here as coverage below 1.0 instead of as an empty search. It never\nreaches exactly 1.0 in a real mailbox (a message can permanently fail\nto embed), so it is not what gates a migration's cutover -- see\noutstanding/cutover_ready/cutover_blocked_reason for that.\n\nactive is whether this model is the one currently serving search and\nthe classify stage's neighbour hints (embeddings/provider.py's\nresolve_active_embedding_model) -- distinct from being the configured\n`semantic.model`, which can be a migration still in flight. outstanding\nis in-scope messages with no terminal (or in-progress) accounting yet\nunder this model at all (EmbeddingStatus.outstanding). cutover_ready\nand cutover_blocked_reason are only meaningful, and only populated,\nwhen queried for a model that is not (yet) active -- see\nEmbeddingRepository.cutover_readiness for the predicate.",
         "properties": {
@@ -6981,7 +7033,7 @@
         "type": "object"
       },
       "RuleAssistantRuleChange": {
-        "description": "One rule the proposal adds, changes, moves or removes. The texts are\nthe whole stage as JSON: `before_text` is null for an added or moved\nrule, `after_text` null for a removed one.",
+        "description": "One rule the proposal adds, changes, moves or removes. The texts are\nthe whole stage as JSON: `before_text` is null for an added or moved\nrule, `after_text` null for a removed one. `diff` is the line diff from\none to the other with unchanged runs collapsed (core/line_diff.py),\nempty for a moved rule, whose content does not change.",
         "properties": {
           "after_text": {
             "anyOf": [
@@ -7004,6 +7056,13 @@
               }
             ],
             "title": "Before Text"
+          },
+          "diff": {
+            "items": {
+              "$ref": "#/components/schemas/DiffRow"
+            },
+            "title": "Diff",
+            "type": "array"
           },
           "kind": {
             "enum": [

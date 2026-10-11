@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.13.0] - 2026-10-11
+
+### Changed
+
+- Add Rule shows a proposed rule change as a diff: removed lines red, added lines green, the
+  changed characters inside a line marked, and long unchanged stretches folded away. The API
+  carries it as `diff` on each rule change.
+- An opened message shows its envelope sender only when it differs from the From address.
+
+### Added
+
+- Clicking a row in Spam review opens the message.
+
 ## [6.12.0] - 2026-10-11
 
 ### Added

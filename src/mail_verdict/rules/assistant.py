@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import Select, func, select
 
 from mail_verdict.api.schemas import (
+    DiffRow,
     RuleAssistantChange,
     RuleAssistantPreview,
     RuleAssistantPreviewExample,
@@ -51,6 +52,7 @@ from mail_verdict.api.schemas import (
     RuleAssistantRuleChange,
     StageOut,
 )
+from mail_verdict.core.line_diff import line_diff
 from mail_verdict.core.prompts import escape_delimiter_breakout, render_prompt
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.database.models import Folder, Message
@@ -344,6 +346,19 @@ def _introduced_denied_kinds(before: dict[str, Any] | None, after: dict[str, Any
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False)
+
+
+def _rule_change_out(c: _RuleChange) -> RuleAssistantRuleChange:
+    before = _json_text(c.before) if c.before is not None and c.kind != "moved" else None
+    after = _json_text(c.after) if c.after is not None else None
+    return RuleAssistantRuleChange(
+        kind=c.kind,  # type: ignore[arg-type]
+        stage_id=c.stage_id, name=c.name, before_text=before, after_text=after,
+        diff=(
+            [] if c.kind == "moved"
+            else [DiffRow.model_validate(row) for row in line_diff(before, after)]
+        ),
+    )
 
 
 def _stage_out(stage: dict[str, Any]) -> StageOut:
@@ -852,16 +867,7 @@ async def propose(
             stages=[_stage_out(s) for s in candidate.stages],
             title=_title(candidate.changes),
             rules=[
-                RuleAssistantRuleChange(
-                    kind=c.kind,  # type: ignore[arg-type]
-                    stage_id=c.stage_id, name=c.name,
-                    before_text=(
-                        _json_text(c.before) if c.before is not None and c.kind != "moved"
-                        else None
-                    ),
-                    after_text=_json_text(c.after) if c.after is not None else None,
-                )
-                for c in candidate.changes
+                _rule_change_out(c) for c in candidate.changes
             ],
         )
         return RuleAssistantResponse(

@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatFullDate, formatRecipientList, formatRelativeAgo, formatRelativeDate } from "./format.ts";
+import {
+  distinctEnvelopeSender,
+  formatFullDate,
+  formatRecipientList,
+  formatRelativeAgo,
+  formatRelativeDate,
+} from "./format.ts";
 
 /** "Now" for every test below: a Thursday, well clear of midnight so the
  * day-boundary cases (today/yesterday) land unambiguously. */
@@ -99,4 +105,11 @@ test("formatRecipientList: truncates with a count tail past the max", () => {
 test("formatRecipientList: empty or missing renders nothing", () => {
   assert.equal(formatRecipientList(null), null);
   assert.equal(formatRecipientList([]), null);
+});
+
+test("distinctEnvelopeSender shows an envelope sender only when it differs from From", () => {
+  const from = "Jane Doe <Jane@example.com>";
+  assert.equal(distinctEnvelopeSender("bounce@mailer.example", from), "bounce@mailer.example");
+  assert.equal(distinctEnvelopeSender("jane@example.com", from), null);
+  assert.equal(distinctEnvelopeSender(null, from), null);
 });

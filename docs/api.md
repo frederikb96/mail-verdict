@@ -193,8 +193,10 @@ and `warnings`. `change` holds the complete document as it would be after Accept
 `stages`), the `base_revision` it was computed against, a `title`, and `rules`: one entry per rule
 that differs, with its `kind` (`added`, `changed`, `moved`, `removed`), `stage_id`, `name`, and the
 whole stage as JSON in `before_text` and `after_text` (`before_text` is `null` for an added or moved
-rule, `after_text` for a removed one). `change` is `null` when there is nothing to accept, and
-`message` says why.
+rule, `after_text` for a removed one), and `diff`: the line diff between the two, as rows of
+`context`, `added`, `removed` and `gap` (a count of unchanged lines folded away), with the changed
+characters inside a replaced line marked; empty for a moved rule. `change` is `null` when there is
+nothing to accept, and `message` says why.
 
 Nothing is stored. Accepting is an ordinary `PUT /api/pipeline` with the change's `enabled`,
 `stages` and `base_revision`; rules edited in the meantime answer `409`. Stages other than `match`

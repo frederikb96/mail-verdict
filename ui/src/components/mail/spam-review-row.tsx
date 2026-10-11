@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ENVELOPE_SENDER_HINT,
+  distinctEnvelopeSender,
   extractEmail,
   extractSenderName,
   formatRelativeDate,
@@ -15,6 +16,7 @@ import type { SpamReviewItem } from "@/types/api";
 interface SpamReviewRowProps {
   item: SpamReviewItem;
   onDecide: (item: SpamReviewItem, agree: boolean) => void;
+  onOpen: (item: SpamReviewItem) => void;
   disabled: boolean;
 }
 
@@ -23,16 +25,10 @@ interface SpamReviewRowProps {
  * move, reject records the correction and (see use-spam-review.ts) moves
  * the message back to the inbox when the pipeline had already moved it
  * to Junk. */
-export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) {
+export function SpamReviewRow({ item, onDecide, onOpen, disabled }: SpamReviewRowProps) {
   const senderName = extractSenderName(item.from_addr);
   const senderEmail = extractEmail(item.from_addr);
-  // Shown only when it says something the From address does not: a
-  // display name, a From address and an envelope sender that all differ
-  // are exactly what a phishing mail impersonating the account looks like.
-  const envelopeSender =
-    item.envelope_sender && item.envelope_sender.toLowerCase() !== senderEmail.toLowerCase()
-      ? item.envelope_sender
-      : null;
+  const envelopeSender = distinctEnvelopeSender(item.envelope_sender, item.from_addr);
 
   // This view spans every account with no folder in common (Junk in one,
   // the inbox in another) -- the account label is only worth showing at
@@ -46,7 +42,19 @@ export function SpamReviewRow({ item, onDecide, disabled }: SpamReviewRowProps) 
 
   return (
     <div className="flex items-start gap-3 border-b px-4 py-3">
-      <div className="min-w-0 flex-1">
+      <div
+        role="button"
+        tabIndex={0}
+        aria-label={`Open message: ${item.subject ?? "(no subject)"}`}
+        data-testid="spam-review-open"
+        onClick={() => onOpen(item)}
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" && e.key !== " ") return;
+          e.preventDefault();
+          onOpen(item);
+        }}
+        className="min-w-0 flex-1 cursor-pointer rounded-sm"
+      >
         <div className="flex items-center gap-2">
           <span className="flex min-w-0 items-baseline gap-1 truncate">
             <span className="truncate text-sm font-medium text-foreground">{senderName}</span>

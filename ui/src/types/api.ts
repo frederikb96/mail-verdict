@@ -880,6 +880,22 @@ export interface RuleAssistantRuleChange {
   before_text: string | null;
   /** The whole stage as JSON after the change -- null for a removed rule. */
   after_text: string | null;
+  /** Line diff from before_text to after_text, unchanged runs collapsed;
+   * empty for a moved rule. */
+  diff: DiffRow[];
+}
+
+export interface DiffSegment {
+  text: string;
+  /** The characters that differ from the paired removed/added line. */
+  changed: boolean;
+}
+
+export interface DiffRow {
+  op: "context" | "added" | "removed" | "gap";
+  segments: DiffSegment[];
+  /** Unchanged lines a gap row stands for. */
+  skipped: number;
 }
 
 export interface RuleAssistantChange {

@@ -1518,16 +1518,36 @@ class RuleAssistantRequest(BaseModel):
         return stripped
 
 
+class DiffSegment(BaseModel):
+    """Part of a diff line; `changed` marks the characters that differ from
+    the line it replaces or is replaced by."""
+
+    text: str
+    changed: bool
+
+
+class DiffRow(BaseModel):
+    """One row of a line diff. A `gap` row stands for `skipped` unchanged
+    lines and has no segments."""
+
+    op: Literal["context", "added", "removed", "gap"]
+    segments: list[DiffSegment]
+    skipped: int = 0
+
+
 class RuleAssistantRuleChange(BaseModel):
     """One rule the proposal adds, changes, moves or removes. The texts are
     the whole stage as JSON: `before_text` is null for an added or moved
-    rule, `after_text` null for a removed one."""
+    rule, `after_text` null for a removed one. `diff` is the line diff from
+    one to the other with unchanged runs collapsed (core/line_diff.py),
+    empty for a moved rule, whose content does not change."""
 
     kind: Literal["added", "changed", "moved", "removed"]
     stage_id: str
     name: str
     before_text: str | None = None
     after_text: str | None = None
+    diff: list[DiffRow] = Field(default_factory=list)
 
 
 class RuleAssistantChange(BaseModel):

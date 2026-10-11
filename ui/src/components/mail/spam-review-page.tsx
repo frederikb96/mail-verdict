@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SpamReviewRow } from "@/components/mail/spam-review-row";
+import { useOpenMessage } from "@/hooks/use-open-message";
 import { useSpamReviewDecision, useSpamReviewList } from "@/hooks/use-spam-review";
 import { useToast } from "@/hooks/use-toast";
 import type { SpamReviewItem } from "@/types/api";
@@ -27,6 +28,7 @@ type BulkKind = "accept" | "reject";
 export function SpamReviewPage() {
   const { items, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useSpamReviewList();
   const { decide } = useSpamReviewDecision();
+  const { openMessageById } = useOpenMessage();
   const { push: pushToast } = useToast();
   const vlistRef = useRef<VListHandle>(null);
   const [pendingBulk, setPendingBulk] = useState<BulkKind | null>(null);
@@ -60,6 +62,11 @@ export function SpamReviewPage() {
       );
     },
     [items, decide, pushToast],
+  );
+
+  const openOne = useCallback(
+    (item: SpamReviewItem) => void openMessageById(item.message_id),
+    [openMessageById],
   );
 
   const decideOne = useCallback(
@@ -117,6 +124,7 @@ export function SpamReviewPage() {
                 key={item.message_id}
                 item={item}
                 onDecide={decideOne}
+                onOpen={openOne}
                 disabled={false}
               />
             ))}
