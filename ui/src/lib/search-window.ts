@@ -97,16 +97,51 @@ export function sliderStops(window: SearchWindow | null, now: Date): [number, nu
   return [a, Math.min(SLIDER_WEEKS, Math.max(a + 1, b))];
 }
 
-/** Month labels along the slider axis: the stop of each month's first week. */
-export function monthTicks(now: Date): { stop: number; label: string }[] {
-  const ticks: { stop: number; label: string }[] = [];
+export interface MonthTick {
+  stop: number;
+  /** The year for January, the short month name otherwise. */
+  label: string;
+  isYear: boolean;
+}
+
+/** One tick per month along the slider axis, at the stop of the month's
+ * first week; January carries the year so the axis orients by year. */
+export function monthTicks(now: Date): MonthTick[] {
+  const ticks: MonthTick[] = [];
   for (let p = 0; p <= SLIDER_WEEKS; p++) {
     const date = sliderStopDate(p, now);
     if (date.getDate() <= 7) {
-      ticks.push({ stop: p, label: date.toLocaleString("en", { month: "short" }) });
+      const isYear = date.getMonth() === 0;
+      ticks.push({
+        stop: p,
+        label: isYear ? String(date.getFullYear()) : date.toLocaleString("en", { month: "short" }),
+        isYear,
+      });
     }
   }
   return ticks;
+}
+
+const YEAR_LABEL_PX = 34;
+const MONTH_LABEL_PX = 26;
+const LABEL_GAP_PX = 8;
+
+/** The ticks of `ticks` whose labels fit on an axis `widthPx` wide without
+ * touching: year labels claim their place first, months fill what is left.
+ * Every tick keeps its mark; only the text is dropped. */
+export function labelledTicks(ticks: MonthTick[], widthPx: number): Set<number> {
+  const shown: { x: number; half: number }[] = [];
+  const stops = new Set<number>();
+  const byPriority = [...ticks.filter((t) => t.isYear), ...ticks.filter((t) => !t.isYear)];
+  for (const tick of byPriority) {
+    const x = (tick.stop / SLIDER_WEEKS) * widthPx;
+    const half = (tick.isYear ? YEAR_LABEL_PX : MONTH_LABEL_PX) / 2;
+    if (shown.every((s) => Math.abs(s.x - x) >= s.half + half + LABEL_GAP_PX)) {
+      shown.push({ x, half });
+      stops.add(tick.stop);
+    }
+  }
+  return stops;
 }
 
 /** The instants a window stands for right now, as the ISO strings both

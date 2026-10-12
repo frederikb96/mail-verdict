@@ -7,7 +7,7 @@
  * clock, lives in lib/search-window.ts.
  */
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Clock, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ import {
   SLIDER_WEEKS,
   WINDOW_PRESETS,
   formatDay,
+  labelledTicks,
   monthTicks,
   parseDay,
   resolveWindow,
@@ -199,19 +200,45 @@ function SliderBody({
           onValueChange={(next) => setStops([next[0], next[1]])}
           onValueCommitted={(next) => onChange(sliderWindow(next[0], next[1], new Date()))}
         />
-        <div className="relative mt-1 h-4 text-xs text-muted-foreground">
-          {monthTicks(now).map((tick) => (
-            <span
-              key={tick.stop}
-              className="absolute -translate-x-1/2"
-              style={{ left: `${(tick.stop / SLIDER_WEEKS) * 100}%` }}
-            >
-              {tick.label}
-            </span>
-          ))}
-        </div>
+        <MonthAxis now={now} />
       </div>
     </>
+  );
+}
+
+/** One mark per month under the slider; labels only where they fit the
+ * width the axis has (a phone shows fewer than a desktop). */
+function MonthAxis({ now }: { now: Date }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    setWidth(el.clientWidth);
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const ticks = monthTicks(now);
+  const labelled = labelledTicks(ticks, width);
+  return (
+    <div ref={ref} className="relative mt-1 h-8 text-xs text-muted-foreground" aria-hidden>
+      {ticks.map((tick) => (
+        <div
+          key={tick.stop}
+          className="absolute top-0 flex -translate-x-1/2 flex-col items-center gap-0.5"
+          style={{ left: `${(tick.stop / SLIDER_WEEKS) * 100}%` }}
+        >
+          <span className={cn("w-px bg-border", tick.isYear ? "h-2.5 bg-foreground/50" : "h-1.5")} />
+          {labelled.has(tick.stop) && (
+            <span className={cn("whitespace-nowrap", tick.isYear && "font-medium text-foreground")}>
+              {tick.label}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 

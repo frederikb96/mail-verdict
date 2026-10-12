@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.14.1] - 2026-10-12
+
+### Changed
+
+- Semantic search keeps the embedding vector of recent queries in memory (`search.query_cache_size`
+  in `config.yaml`, least recently used out first), so changing the time window, toggling
+  semantic search or coming back to the page no longer waits on the embedding provider again.
+  Queries differing only in case or spacing share one entry. The MCP tool `semantic_search_mail`
+  uses the same cache.
+- The time slider's axis marks every month and labels as many as fit the width: January shows the
+  year, and a phone shows fewer month names instead of running them together.
+
 ## [6.14.0] - 2026-10-12
 
 ### Changed

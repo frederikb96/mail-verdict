@@ -35,13 +35,11 @@ from mail_verdict.database.repository import list_row_marks
 from mail_verdict.embeddings.provider import (
     DEFAULT_EMBEDDING_MODEL,
     resolve_active_embedding_model,
-    resolve_active_embedding_provider,
-    resolve_embedding_provider,
 )
+from mail_verdict.embeddings.query import embed_search_query
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.search import semantic_search
 from mail_verdict.glacier.rows import glacier_ids_among
-from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
 
 logger = logging.getLogger(__name__)
@@ -162,18 +160,8 @@ async def search(
     it -- literal search wins for a known sender or an exact phrase,
     this wins for a half-remembered topic with no exact words in common.
     """
-    settings = get_settings_service().get("semantic")
-    # The model currently serving search, which is settings.semantic.model
-    # except mid-migration -- see resolve_active_embedding_model. Embedding
-    # the query with anything else would compare it against a vector space
-    # it was never placed in.
-    model = resolve_active_embedding_model(settings)
-    provider_name, base_url = resolve_active_embedding_provider(settings)
-    cred_repo = get_provider_credential_repo()
-
     try:
-        provider = resolve_embedding_provider(provider_name, cred_repo, base_url=base_url)
-        vectors = await provider.embed_batch([q], model=model)
+        model, query_vector = await embed_search_query(q)
     except ProviderUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
     except Exception as exc:
@@ -181,7 +169,7 @@ async def search(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     hits = await semantic_search(
-        get_db_connection(), query_vector=vectors[0], model=model,
+        get_db_connection(), query_vector=query_vector, model=model,
         account_id=account_id, folder_ids=folder_ids,
         received_after=received_after, received_before=received_before,
     )

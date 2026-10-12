@@ -280,13 +280,12 @@ class OutboxConfig(BaseModel):
 
 
 class SearchConfig(BaseModel):
-    """The scale ceiling semantic search's exact scan is measured against
-    -- see config.yaml's own comment for the numbers. Not a behaviour
-    switch; nothing currently reads this to change what it does, it is
-    the threshold the startup log line (server.py) compares the embedded
-    message count against."""
+    """Semantic search settings -- see config.yaml's own comments.
+    exact_scan_row_ceiling is the threshold the startup log line (server.py)
+    compares the embedded message count against; it changes no behaviour."""
 
     exact_scan_row_ceiling: int
+    query_cache_size: int
 
 
 class PushConfig(BaseModel):
