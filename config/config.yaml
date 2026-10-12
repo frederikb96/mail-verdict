@@ -141,7 +141,7 @@ search:
   # (the superseded model's vectors are about half the table and its index).
   # Switching back to a model whose rows were deleted means embedding every
   # message again.
-  prune_superseded_models: false
+  prune_superseded_models: true
 
 # The glacier: a per-account place a message can be moved to where it
 # leaves the mail server for good and lives on only in this database
