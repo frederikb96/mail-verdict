@@ -25,11 +25,12 @@ function's docstring for what "live-eligible" means.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select, tuple_, update
+from sqlalchemy import delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -47,6 +48,11 @@ if TYPE_CHECKING:
 # the loop terminate even when a handful of candidates keep reappearing
 # (see enqueue_missing_batch's docstring).
 EnqueueBatchResult = tuple[int, int]
+
+
+# Rows deleted per statement when pruning a superseded model, so no single
+# statement holds locks or the write-ahead log for long.
+_PRUNE_BATCH_SIZE = 2000
 
 
 @dataclass(frozen=True)
@@ -318,6 +324,7 @@ class EmbeddingRepository:
                         to_insert.append({
                             "account_id": row.account_id, "msg_key": key,
                             "message_id": row.id, "model": model,
+                            "received_at": row.received_at,
                         })
                     elif found.message_id != row.id:
                         # Repoint only when the existing hint is dead (NULL,
@@ -339,7 +346,7 @@ class EmbeddingRepository:
                             await session.execute(
                                 update(MessageEmbedding)
                                 .where(MessageEmbedding.id == found.id)
-                                .values(message_id=row.id)
+                                .values(message_id=row.id, received_at=row.received_at)
                             )
 
             # A visible glacier row (design section 4.7): a message
@@ -360,7 +367,10 @@ class EmbeddingRepository:
                 MessageEmbedding.model == model,
             ).exists()
             glacier_stmt = (
-                select(GlacierMessage.id, GlacierMessage.account_id, GlacierMessage.msg_key)
+                select(
+                    GlacierMessage.id, GlacierMessage.account_id, GlacierMessage.msg_key,
+                    GlacierMessage.received_at,
+                )
                 .where(GlacierMessage.visible_at.is_not(None), glacier_not_embedded)
                 .order_by(GlacierMessage.received_at.desc().nulls_last(), GlacierMessage.id)
                 .limit(batch_size)
@@ -371,7 +381,7 @@ class EmbeddingRepository:
             for glacier_row in glacier_candidates:
                 to_insert.append({
                     "account_id": glacier_row.account_id, "msg_key": glacier_row.msg_key,
-                    "message_id": None, "model": model,
+                    "message_id": None, "model": model, "received_at": glacier_row.received_at,
                 })
 
             inserted = 0
@@ -444,19 +454,19 @@ class EmbeddingRepository:
                         await session.execute(
                             update(MessageEmbedding)
                             .where(MessageEmbedding.id == existing.id)
-                            .values(message_id=message_id)
+                            .values(message_id=message_id, received_at=row.received_at)
                         )
                 elif existing.message_id is None:
                     await session.execute(
                         update(MessageEmbedding)
                         .where(MessageEmbedding.id == existing.id)
-                        .values(message_id=message_id)
+                        .values(message_id=message_id, received_at=row.received_at)
                     )
                 return False
 
             stmt_ins = pg_insert(MessageEmbedding).values(
                 account_id=account_id, msg_key=key, message_id=message_id,
-                model=model, priority=priority,
+                model=model, priority=priority, received_at=row.received_at,
             )
             stmt_ins = stmt_ins.on_conflict_do_nothing(
                 index_elements=["account_id", "msg_key", "model"],
@@ -740,6 +750,36 @@ class EmbeddingRepository:
                 encoded=counts.encoded, pending=counts.pending, failed=counts.failed,
                 reachable=reachable, unreachable=unreachable, shadowed=shadowed,
             )
+
+    async def prune_models_other_than(
+        self, keep: Collection[str], *, batch_size: int = _PRUNE_BATCH_SIZE,
+    ) -> int:
+        """
+        Delete the embeddings of every model not named in `keep`, in
+        batches that each commit on their own. A row a worker currently
+        holds a claim on is left for a later call.
+
+        Args:
+            keep: The models whose rows stay (the active and the target)
+            batch_size: Rows deleted per statement
+
+        Returns:
+            How many rows were deleted
+        """
+        deleted = 0
+        while True:
+            async with self._db.session() as session:
+                batch = select(MessageEmbedding.id).where(
+                    MessageEmbedding.model.not_in(list(keep)),
+                    MessageEmbedding.status != "claimed",
+                ).limit(batch_size)
+                result = await session.execute(
+                    delete(MessageEmbedding).where(MessageEmbedding.id.in_(batch))
+                )
+                removed = result.rowcount or 0  # type: ignore[attr-defined]
+            deleted += removed
+            if removed < batch_size:
+                return deleted
 
     async def cutover_readiness(
         self, *, target_model: str, active_model: str,

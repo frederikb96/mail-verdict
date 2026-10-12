@@ -280,13 +280,13 @@ class OutboxConfig(BaseModel):
 
 
 class SearchConfig(BaseModel):
-    """Semantic search settings -- see config.yaml's own comments.
-    exact_scan_row_ceiling is the threshold the startup log line (server.py)
-    compares the embedded message count against; it changes no behaviour."""
+    """Semantic search settings -- see config.yaml's own comments."""
 
-    exact_scan_row_ceiling: int
+    exact_scan_max_rows: int
     query_cache_size: int
-    use_hnsw_index: bool
+    query_timeout_seconds: float
+    query_rate_limit_retry_seconds: float
+    prune_superseded_models: bool
 
 
 class PushConfig(BaseModel):

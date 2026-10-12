@@ -20,11 +20,14 @@ from sqlalchemy import (
     cast,
     delete,
     desc,
+    false,
     func,
     not_,
     or_,
     select,
+    true,
     union,
+    union_all,
     update,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -56,6 +59,7 @@ from mail_verdict.database.models import (
     VerdictSource,
 )
 from mail_verdict.database.msg_key import compute_msg_key
+from mail_verdict.database.projection import DISPLAY_COLUMNS, MessageDisplay
 from mail_verdict.glacier.rows import glacier_as_message_select, touches_glacier
 from mail_verdict.push.channels import channel_for_kind
 
@@ -419,6 +423,26 @@ def _match_tier(msg: Any, tokens: list[str]) -> Any:
     return field_tier + case((whole_word, 0), else_=_FIELD_TIERS)
 
 
+# What a candidate row carries through the union of arms: the columns a
+# result row shows, plus the two the match predicates and the tier read.
+# Never the raw source, the HTML body or the headers -- a candidate set of
+# hundreds of rows would otherwise drag them through the sort and the dedup.
+_CANDIDATE_COLUMNS: tuple[str, ...] = (*DISPLAY_COLUMNS, "body_text", "search_vector")
+
+
+def _candidate_select(table: Any, *, is_glacier: bool) -> Any:
+    """One arm of the candidate union over messages or glacier_messages."""
+    return select(
+        *[table.__table__.c[name] for name in _CANDIDATE_COLUMNS],
+        (true() if is_glacier else false()).label("is_glacier"),
+    )
+
+
+def _display(row: Any) -> MessageDisplay:
+    """A candidate or result row as the display record."""
+    return MessageDisplay(**{name: getattr(row, name) for name in (*DISPLAY_COLUMNS, "is_glacier")})
+
+
 async def _build_candidate_query(
     session: AsyncSession,
     account_id: uuid.UUID | None,
@@ -442,14 +466,10 @@ async def _build_candidate_query(
     measured 44x slower (647ms vs 14.7ms) -- it defeats the GIN index and
     forces a full detoast of every row.
 
-    Every arm of the union is wrapped in one subquery and re-aliased onto
-    Message so a caller can layer the per-field restriction and the tier
-    computation on top of one thing, the same shape regardless of how
-    many arms actually ran. Aliasing a bare glacier-only select fails
-    (SQLAlchemy cannot correlate an entity to a selectable with no ORM
-    anchor of its own -- see api/mails.py's _resolve_list_entity for the
-    full explanation); the live arm is always present here, so this
-    never hits that case.
+    Every arm of the union is wrapped in one subquery, whose columns a
+    caller layers the per-field restriction and the tier computation on top
+    of -- the same shape regardless of how many arms actually ran. The arms
+    carry only _CANDIDATE_COLUMNS, not whole message rows.
 
     🚨 Every arm is collected into a list and unioned exactly once at the
     end. `Select.union()` returns a `CompoundSelect`, which has no
@@ -467,7 +487,7 @@ async def _build_candidate_query(
     against, so it is excluded rather than assumed in or out of range.
 
     Returns:
-        (subquery, aliased Message), or None when the query has no
+        (subquery, its column collection), or None when the query has no
         lexemes at all -- nothing to build a candidate set from.
     """
     tsquery_text = _tsquery_text(tokens)
@@ -475,7 +495,7 @@ async def _build_candidate_query(
         return None
     primary = Message.search_vector.op("@@")(func.to_tsquery("simple", tsquery_text))
 
-    base = select(Message).where(Message.expunged_at.is_(None))
+    base = _candidate_select(Message, is_glacier=False).where(Message.expunged_at.is_(None))
     if account_id is not None:
         base = base.where(Message.account_id == account_id)
     if folder_ids is not None:
@@ -499,8 +519,8 @@ async def _build_candidate_query(
         glacier_primary = GlacierMessage.search_vector.op("@@")(
             func.to_tsquery("simple", tsquery_text)
         )
-        glacier_base = glacier_as_message_select().where(
-            GlacierMessage.folder_id.in_(glacier_folders)
+        glacier_base = _candidate_select(GlacierMessage, is_glacier=True).where(
+            GlacierMessage.visible_at.is_not(None), GlacierMessage.folder_id.in_(glacier_folders),
         )
         if received_after is not None:
             glacier_base = glacier_base.where(GlacierMessage.received_at >= received_after)
@@ -520,14 +540,26 @@ async def _build_candidate_query(
 
     candidate_stmt: Any = arms[0] if len(arms) == 1 else union(*arms)
     sub = candidate_stmt.subquery()
-    return sub, aliased(Message, sub)
+    return sub, sub.c
 
 
-def _row_haystack(m: Message, fields: frozenset[str]) -> str:
+async def _bodies_of(session: AsyncSession, ids: list[uuid.UUID]) -> dict[uuid.UUID, str | None]:
+    """body_text of the live or glaciered messages with these ids -- for the
+    handful of rows on a result page, whose snippets are cut from it."""
+    if not ids:
+        return {}
+    live = select(Message.id, Message.body_text).where(Message.id.in_(ids))
+    glacier = select(GlacierMessage.id, GlacierMessage.body_text).where(
+        GlacierMessage.id.in_(ids), GlacierMessage.visible_at.is_not(None),
+    )
+    rows = (await session.execute(union_all(live, glacier))).all()
+    return {row.id: row.body_text for row in rows}
+
+
+def _row_haystack(m: MessageDisplay, body_text: str | None, fields: frozenset[str]) -> str:
     """The same fields _field_predicate scoped to, concatenated for
-    _build_snippet -- built from the already-fetched ORM row rather than
-    a second SQL-computed column, since the candidate query already
-    returns full Message objects."""
+    _build_snippet -- built from the fetched row and, when the body is
+    searched, the body fetched for the page's rows alone."""
     parts: list[str] = []
     if "subject" in fields:
         parts.append(m.subject or "")
@@ -536,7 +568,7 @@ def _row_haystack(m: Message, fields: frozenset[str]) -> str:
     if "to" in fields:
         parts.append(" ".join(m.to_addrs) if m.to_addrs else "")
     if "body" in fields:
-        parts.append(m.body_text or "")
+        parts.append(body_text or "")
     return " ".join(parts)
 
 
@@ -864,7 +896,7 @@ class MessageRepository:
         cursor_id: uuid.UUID | None = None,
         cursor_tier: int | None = None,
         limit: int = 50,
-    ) -> list[tuple[Message, str | None, int]]:
+    ) -> list[tuple[MessageDisplay, str | None, int]]:
         """
         Field- and folder-scoped search, ranked by field tier then newest
         first, keyset-paged.
@@ -913,7 +945,7 @@ class MessageRepository:
             limit: Max rows
 
         Returns:
-            (Message, snippet, tier) triples ordered (tier ASC,
+            (display row, snippet, tier) triples ordered (tier ASC,
             received_at DESC NULLS LAST, id DESC). snippet is None only
             when the matched text was empty.
         """
@@ -931,7 +963,10 @@ class MessageRepository:
             tier = _match_tier(msg, tokens)
 
             stmt = (
-                select(msg, tier.label("tier"))
+                select(
+                    *[msg[name] for name in DISPLAY_COLUMNS], msg.is_glacier,
+                    tier.label("tier"),
+                )
                 .where(field_pred)
                 .order_by(tier, desc(msg.received_at).nulls_last(), desc(msg.id))
             )
@@ -945,11 +980,16 @@ class MessageRepository:
                 )
             stmt = stmt.limit(limit)
 
-            result = await session.execute(stmt)
-            return [
-                (m, _build_snippet(_row_haystack(m, fields), tokens), tier_value)
-                for m, tier_value in result.all()
-            ]
+            rows = (await session.execute(stmt)).all()
+            bodies = (
+                await _bodies_of(session, [row.id for row in rows]) if "body" in fields else {}
+            )
+            results = []
+            for row in rows:
+                shown = _display(row)
+                haystack = _row_haystack(shown, bodies.get(row.id), fields)
+                results.append((shown, _build_snippet(haystack, tokens), row.tier))
+            return results
 
     async def search_messages_fallback(
         self,
@@ -961,7 +1001,7 @@ class MessageRepository:
         received_before: datetime | None = None,
         is_seen: bool | None = None,
         limit: int = 50,
-    ) -> list[tuple[Message, str | None]]:
+    ) -> list[tuple[MessageDisplay, str | None]]:
         """
         The trigram fallback tier: subject + from only, fired by the
         endpoint solely when search_messages' first page came back empty
@@ -993,7 +1033,10 @@ class MessageRepository:
             # setting (design section 4.4).
             await set_word_similarity_threshold(session)
 
-            base = select(Message).where(Message.expunged_at.is_(None))
+            base = select(
+                *[Message.__table__.c[name] for name in DISPLAY_COLUMNS],
+                false().label("is_glacier"),
+            ).where(Message.expunged_at.is_(None))
             if account_id is not None:
                 base = base.where(Message.account_id == account_id)
             if folder_ids is not None:
@@ -1011,10 +1054,14 @@ class MessageRepository:
             glacier_folders = await touches_glacier(
                 session, account_id=account_id, folder_ids=folder_ids,
             )
-            entity: Any = Message
+            ordered: Any = Message
             if glacier_folders:
-                glacier_base = glacier_as_message_select().where(
-                    GlacierMessage.folder_id.in_(glacier_folders)
+                glacier_base = select(
+                    *[GlacierMessage.__table__.c[name] for name in DISPLAY_COLUMNS],
+                    true().label("is_glacier"),
+                ).where(
+                    GlacierMessage.visible_at.is_not(None),
+                    GlacierMessage.folder_id.in_(glacier_folders),
                 )
                 if received_after is not None:
                     glacier_base = glacier_base.where(
@@ -1034,17 +1081,20 @@ class MessageRepository:
                         for t in tokens
                     ]
                 )
-                stmt = stmt.union(glacier_stmt)
-                entity = aliased(Message, stmt.subquery())
-                stmt = select(entity)
+                union_sub = stmt.union(glacier_stmt).subquery()
+                ordered = union_sub.c
+                stmt = select(union_sub)
 
             stmt = stmt.order_by(
-                desc(entity.received_at).nulls_last(), desc(entity.id),
+                desc(ordered.received_at).nulls_last(), desc(ordered.id),
             ).limit(limit)
             result = await session.execute(stmt)
             return [
-                (m, _build_snippet(f"{m.subject or ''} {m.from_addr or ''}", tokens))
-                for m in result.scalars().all()
+                (
+                    _display(row),
+                    _build_snippet(f"{row.subject or ''} {row.from_addr or ''}", tokens),
+                )
+                for row in result.all()
             ]
 
 

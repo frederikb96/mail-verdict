@@ -9,7 +9,7 @@ stored subject/from/body, never a live `messages` row.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import text
@@ -25,6 +25,14 @@ from mail_verdict.embeddings.worker import _handle_one
 from mail_verdict.queue.work_queue import WorkQueue
 
 _RAW_SOURCE = b"From: sender@example.com\r\nSubject: Test\r\n\r\nBody\r\n"
+
+
+# semantic_search ranks a scope of at most this many messages exactly and asks
+# the HNSW index for anything wider; a maximum of 0 sends every non-empty
+# scope through the index.
+_BOTH_PATHS = pytest.mark.parametrize(
+    "exact_scan_max_rows", [5000, 0], ids=["exact", "index"],
+)
 
 
 def _unique_model() -> str:
@@ -126,10 +134,10 @@ async def _claim_one(db: DatabaseConnection, item_id: uuid.UUID) -> dict[str, ob
         return dict(row)
 
 
-@pytest.mark.parametrize("use_index", [False, True])
+@_BOTH_PATHS
 @pytest.mark.asyncio
 async def test_semantic_search_finds_a_glaciered_message(
-    migrated_db: DatabaseConnection, use_index: bool,
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     """An embedding row whose hint is NULL because its message was
     glaciered is still found, joined by (account_id, msg_key) instead."""
@@ -153,7 +161,7 @@ async def test_semantic_search_finds_a_glaciered_message(
         )
 
     results = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=query_vector, model=model, account_id=account_id, k=10,
     )
     assert len(results) == 1
@@ -161,44 +169,55 @@ async def test_semantic_search_finds_a_glaciered_message(
 
 
 @pytest.mark.asyncio
-async def test_the_index_path_resolves_a_glaciered_candidate_without_the_exact_scan(
+async def test_the_index_path_finds_a_glaciered_message_inside_a_window(
     migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Resolved by msg_key from the index's candidates, with the window
+    answered from the embedding row's own copy of received_at."""
     from mail_verdict.embeddings import search as search_module
 
     async def refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the exact scan ran although the index should have sufficed")
+        raise AssertionError("the exact scan ran although the index path was meant")
 
     model = _unique_model()
+    received = datetime(2026, 5, 1, tzinfo=timezone.utc)
     async with migrated_db.session() as session:
         account_id = await _seed_account(session)
         glacier_folder_id = await _enable_glacier(session, account_id)
         glacier_id, msg_key = await _seed_glacier_message(
             session, account_id=account_id, glacier_folder_id=glacier_folder_id,
+            received_at=received,
         )
         await session.commit()
-
-    query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
     async with migrated_db.session() as session:
         await session.execute(
             MessageEmbedding.__table__.insert().values(
-                account_id=account_id, msg_key=msg_key, message_id=None,
-                model=model, status="done", embedding=[0.99] + [0.01] * (EMBEDDING_DIMENSIONS - 1),
+                account_id=account_id, msg_key=msg_key, message_id=None, model=model,
+                status="done", embedding=[0.99] + [0.01] * (EMBEDDING_DIMENSIONS - 1),
+                received_at=received,
             )
         )
-
+    query_vector = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
     monkeypatch.setattr(search_module, "_pool_exact", refuse)
-    results = await semantic_search(
-        migrated_db, use_index=True, query_vector=query_vector, model=model,
-        account_id=account_id, k=1,
+
+    inside = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        exact_scan_max_rows=0, k=10,
+        received_after=received - timedelta(days=1), received_before=received + timedelta(days=1),
     )
-    assert [r.message.id for r in results] == [glacier_id]
+    outside = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
+        exact_scan_max_rows=0, k=10, received_after=received + timedelta(days=1),
+    )
+
+    assert [(r.message.id, r.message.is_glacier) for r in inside] == [(glacier_id, True)]
+    assert outside == []
 
 
-@pytest.mark.parametrize("use_index", [False, True])
+@_BOTH_PATHS
 @pytest.mark.asyncio
 async def test_semantic_search_scoped_to_nothing_still_finds_it(
-    migrated_db: DatabaseConnection, use_index: bool,
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     model = _unique_model()
     async with migrated_db.session() as session:
@@ -220,7 +239,7 @@ async def test_semantic_search_scoped_to_nothing_still_finds_it(
         )
 
     results = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=query_vector, model=model, account_id=None, k=10,
     )
     assert glacier_id in {r.message.id for r in results}

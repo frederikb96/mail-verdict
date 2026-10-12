@@ -29,23 +29,26 @@ from mail_verdict.api.schemas import (
     SemanticSearchHit,
     SemanticSearchResponse,
 )
-from mail_verdict.config import get_config
-from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import list_row_marks
 from mail_verdict.embeddings.provider import (
     DEFAULT_EMBEDDING_MODEL,
     resolve_active_embedding_model,
 )
-from mail_verdict.embeddings.query import embed_search_query
+from mail_verdict.embeddings.query import SemanticUnavailableError
 from mail_verdict.embeddings.repository import EmbeddingRepository
-from mail_verdict.embeddings.search import semantic_search
-from mail_verdict.glacier.rows import glacier_ids_among
+from mail_verdict.embeddings.service import search_by_meaning
 from mail_verdict.settings.service import get_settings_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
+
+# The detail of the 503 a search answers when the query could not be
+# embedded in time (provider rate limit, error or timeout, or no provider
+# configured); clients keep their text results and say semantic search is
+# unavailable.
+SEMANTIC_UNAVAILABLE = "semantic_unavailable"
 
 # One enqueue call reconsiders this many candidates; the loop below keeps
 # calling until a call returns fewer than this, which is what makes it
@@ -162,23 +165,16 @@ async def search(
     this wins for a half-remembered topic with no exact words in common.
     """
     try:
-        model, query_vector = await embed_search_query(q)
-    except ProviderUnavailableError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from None
-    except Exception as exc:
-        logger.exception("Semantic search query embedding failed")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        model, hits = await search_by_meaning(
+            get_db_connection(), q, account_id=account_id, folder_ids=folder_ids,
+            received_after=received_after, received_before=received_before,
+        )
+    except SemanticUnavailableError:
+        # The detail is the code clients match on; the cause is in the log.
+        raise HTTPException(status_code=503, detail=SEMANTIC_UNAVAILABLE) from None
 
-    hits = await semantic_search(
-        get_db_connection(), query_vector=query_vector, model=model,
-        account_id=account_id, folder_ids=folder_ids,
-        use_index=get_config().search.use_hnsw_index,
-        received_after=received_after, received_before=received_before,
-    )
-    result_ids = [hit.message.id for hit in hits]
     async with get_db_connection().session() as session:
-        marks = await list_row_marks(session, result_ids)
-        glacier_ids = await glacier_ids_among(session, result_ids)
+        marks = await list_row_marks(session, [hit.message.id for hit in hits])
     return SemanticSearchResponse(
         results=[
             SemanticSearchHit(
@@ -190,12 +186,10 @@ async def search(
                 to_addrs=hit.message.to_addrs, received_at=hit.message.received_at,
                 is_seen=hit.message.is_seen, is_flagged=hit.message.is_flagged,
                 is_answered=hit.message.is_answered, is_draft=hit.message.is_draft,
-                pending_sync=(
-                    False if hit.message.id in glacier_ids else hit.message.imap_uid is None
-                ),
+                pending_sync=False if hit.message.is_glacier else hit.message.imap_uid is None,
                 is_truncated=hit.message.is_truncated, mirrored_at=hit.message.created_at,
                 tier=hit.tier,
-                is_glacier=hit.message.id in glacier_ids,
+                is_glacier=hit.message.is_glacier,
             )
             for hit in hits
         ],

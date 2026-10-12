@@ -28,7 +28,7 @@ from mail_verdict.api.schemas import (
     SearchResult,
 )
 from mail_verdict.database.connection import get_db_connection
-from mail_verdict.database.models import Message
+from mail_verdict.database.projection import MessageDisplay
 from mail_verdict.database.repository import (
     FALLBACK_MATCH_TIER,
     SEARCH_FIELDS,
@@ -36,7 +36,6 @@ from mail_verdict.database.repository import (
     RowMarks,
     list_row_marks,
 )
-from mail_verdict.glacier.rows import glacier_ids_among
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +43,11 @@ router = APIRouter(prefix="/search", tags=["search"])
 
 
 def _to_search_result(
-    msg: Message, snippet: str | None, tier: int, marks: dict[uuid.UUID, RowMarks],
-    glacier_ids: frozenset[uuid.UUID] = frozenset(),
+    msg: MessageDisplay, snippet: str | None, tier: int, marks: dict[uuid.UUID, RowMarks],
 ) -> SearchResult:
     """A search hit is a MessageSummary plus how the query matched it --
-    see SearchResult's docstring for why the two are one shape.
-
-    `glacier_ids` is which of this page's own ids are actually a glacier
-    row -- a union search's own rows are all plain Message instances
-    regardless of which table they came from (see
-    glacier/rows.py:glacier_ids_among), so imap_uid alone cannot tell a
-    glacier row (always NULL) from a live one with a move pending."""
-    is_glacier = msg.id in glacier_ids
+    see SearchResult's docstring for why the two are one shape."""
+    is_glacier = msg.is_glacier
     return SearchResult(
         has_attachments=marks[msg.id].has_attachments,
         verdict_is_spam=marks[msg.id].verdict_is_spam,
@@ -83,11 +75,6 @@ def _to_search_result(
 async def _row_marks(message_ids: list[uuid.UUID]) -> dict[uuid.UUID, RowMarks]:
     async with get_db_connection().session() as session:
         return await list_row_marks(session, message_ids)
-
-
-async def _glacier_ids(message_ids: list[uuid.UUID]) -> frozenset[uuid.UUID]:
-    async with get_db_connection().session() as session:
-        return await glacier_ids_among(session, message_ids)
 
 
 @router.get("", response_model=SearchResponse)
@@ -188,11 +175,8 @@ async def search_messages(
         )
         fallback_ids = [msg.id for msg, _snippet in fallback_rows]
         fallback_marks = await _row_marks(fallback_ids)
-        fallback_glacier_ids = await _glacier_ids(fallback_ids)
         results = [
-            _to_search_result(
-                msg, snippet, FALLBACK_MATCH_TIER, fallback_marks, fallback_glacier_ids,
-            )
+            _to_search_result(msg, snippet, FALLBACK_MATCH_TIER, fallback_marks)
             for msg, snippet in fallback_rows
         ]
         # The fallback is a single, unpaginated page -- its own count is
@@ -203,9 +187,8 @@ async def search_messages(
 
     row_ids = [msg.id for msg, _snippet, _tier in rows]
     marks = await _row_marks(row_ids)
-    glacier_ids = await _glacier_ids(row_ids)
     results = [
-        _to_search_result(msg, snippet, tier, marks, glacier_ids) for msg, snippet, tier in rows
+        _to_search_result(msg, snippet, tier, marks) for msg, snippet, tier in rows
     ]
     next_cursor = str(results[-1].id) if has_more and results else None
 

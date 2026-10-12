@@ -30,7 +30,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
-from pgvector.sqlalchemy import Vector
+from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
     ARRAY,
     BigInteger,
@@ -76,8 +76,9 @@ def _value_enum(enum_cls: type[enum.Enum]) -> Enum:
     return Enum(enum_cls, native_enum=False, values_callable=lambda cls: [e.value for e in cls])
 
 
-# pgvector's HNSW index cannot be built above 2000 dimensions for the
-# `vector` type. 1536 is text-embedding-3-small's native size; every
+# The vectors are stored as 16-bit `halfvec` (half the size of `vector`,
+# and its HNSW index half as large) and compared at that precision.
+# 1536 is text-embedding-3-small's native size; every
 # embedding provider is asked to truncate to this via its API's own
 # dimensions parameter, so the column never has to know which model
 # produced a given row's vector -- see message_embeddings.model for that.
@@ -967,6 +968,10 @@ class GlacierMessage(Base):
             "thread_id",
             postgresql_where=visible_at.is_not(None),
         ),
+        Index(
+            "idx_glacier_messages_account_received", "account_id", "received_at",
+            postgresql_where=visible_at.is_not(None),
+        ),
         Index("idx_glacier_messages_search_vector", "search_vector", postgresql_using="gin"),
         Index(
             "idx_glacier_messages_state", "state",
@@ -1458,7 +1463,15 @@ class MessageEmbedding(Base):
     content_level: Mapped[str] = mapped_column(Text, nullable=False, default="full")
     source_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(EMBEDDING_DIMENSIONS), nullable=True,
+        HALFVEC(EMBEDDING_DIMENSIONS), nullable=True,
+    )
+    # The message's received_at, copied once when the row is enqueued. It is
+    # read from the message's Date header and never changes, which is what
+    # lets a time window be applied
+    # inside the vector index scan rather than by joining every candidate
+    # back to its message. NULL when the message has no Date header.
+    received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1488,6 +1501,15 @@ class MessageEmbedding(Base):
             "account_id", "msg_key", "model", name="uq_message_embeddings_account_msgkey_model",
         ),
         Index("ix_message_embeddings_account", "account_id", "model"),
+        # The exact scan joins a time window's messages to their vectors by
+        # the live join hint; without this the planner hashes the whole table.
+        Index("ix_message_embeddings_message_id", "message_id"),
+        # Lets a window's rows be found without the messages table (the HNSW
+        # candidate query filters on received_at inside the index scan).
+        Index(
+            "ix_message_embeddings_account_received", "account_id", "received_at",
+            postgresql_where=text("status = 'done'"),
+        ),
     )
 
 
