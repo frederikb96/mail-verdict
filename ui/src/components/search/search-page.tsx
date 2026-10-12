@@ -355,7 +355,13 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
 
   // A failed query reads as "No results found" otherwise -- a lie the user
   // will act on by rephrasing or giving up on the feature.
-  const showError = !showEmptyPrompt && !showNoFolderSelected && view.error !== null;
+  const showError =
+    !showEmptyPrompt && !showNoFolderSelected && !isLoading && view.error !== null &&
+    results.length === 0;
+  // The text results stay when only the search by meaning failed.
+  const showErrorBesideResults =
+    !showEmptyPrompt && !showNoFolderSelected && !isLoading && view.error !== null &&
+    results.length > 0;
   const errorMessage = view.error || "Search failed.";
   const showNoResults =
     !showEmptyPrompt &&
@@ -464,6 +470,14 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
             data-testid="search-semantic-unavailable"
           >
             Semantic search is unavailable right now
+          </div>
+        )}
+        {showErrorBesideResults && (
+          <div
+            className="shrink-0 border-b px-4 py-1.5 text-xs text-muted-foreground"
+            data-testid="search-semantic-failed"
+          >
+            Search by meaning failed: {errorMessage}
           </div>
         )}
         {isLoading && (

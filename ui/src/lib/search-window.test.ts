@@ -96,22 +96,21 @@ test("month ticks mark each month once", () => {
   assert.ok(ticks.every((t, i) => i === 0 || t.stop > ticks[i - 1].stop));
   assert.ok(ticks.every((t) => t.stop >= 0 && t.stop <= SLIDER_WEEKS));
   assert.ok(ticks.length >= 12 && ticks.length <= 13);
-  // January carries the year, every other month its short name.
+  // The first tick and January carry the year, every other month its short name.
   assert.deepEqual(
     ticks.filter((t) => t.isYear).map((t) => t.label),
-    ["2026"],
+    ["Sep 2025", "Jan 2026"],
   );
   assert.ok(ticks.some((t) => t.label === "Oct"));
 });
 
 test("labels that would touch are dropped, years first", () => {
   const ticks = monthTicks(NOW);
-  const wide = labelledTicks(ticks, 700);
+  const wide = labelledTicks(ticks, 900);
   assert.equal(wide.size, ticks.length);
 
   const narrow = labelledTicks(ticks, 320);
-  const year = ticks.find((t) => t.isYear)!;
-  assert.ok(narrow.has(year.stop));
+  for (const year of ticks.filter((t) => t.isYear)) assert.ok(narrow.has(year.stop));
   assert.ok(narrow.size < ticks.length);
   // No two shown labels overlap.
   const xs = ticks.filter((t) => narrow.has(t.stop)).map((t) => (t.stop / SLIDER_WEEKS) * 320);

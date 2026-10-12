@@ -1504,12 +1504,6 @@ class MessageEmbedding(Base):
         # The exact scan joins a time window's messages to their vectors by
         # the live join hint; without this the planner hashes the whole table.
         Index("ix_message_embeddings_message_id", "message_id"),
-        # Lets a window's rows be found without the messages table (the HNSW
-        # candidate query filters on received_at inside the index scan).
-        Index(
-            "ix_message_embeddings_account_received", "account_id", "received_at",
-            postgresql_where=text("status = 'done'"),
-        ),
     )
 
 

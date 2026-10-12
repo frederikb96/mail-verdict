@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.15.1] - 2026-10-12
+
+### Fixed
+
+- A failed semantic search no longer blanks the web search results: for any error, not only
+  `503`, the text matches stay on screen and the error is shown beside them.
+- Embedding rows that lack `received_at` although their message has a date (written by a build
+  that did not set it, between the 6.15.0 migration and the new build starting) are filled in on
+  the embedding queue's next sweep; without it they would never match a time window.
+- The slider axis writes month and year at its first tick and at each January ("Jan 2026"), like
+  the other clients.
+
+### Changed
+
+- The exact ranking path is ordered by the similarity expression instead of the distance itself
+  and no longer switches off index scans, so a narrow time window can nest its loop through the
+  join-hint btree.
+- The unused `(account_id, received_at)` btree on `message_embeddings` is dropped (migration
+  `0046`); the others added in 6.15.0 are used.
+- The releasing notes say that a migration makes rolling back to the previous image one-way.
+
 ## [6.15.0] - 2026-10-12
 
 ### Changed

@@ -371,3 +371,64 @@ async def test_worker_embeds_a_glaciered_message_from_its_own_stored_fields(
     status = await embedding_repo.status(model=model, account_id=account_id)
     assert status.reachable == 1
     assert status.unreachable == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_received_at_is_filled_from_the_live_and_the_glacier_message(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Rows written by a build that did not set it. A message with no date
+    leaves its row as it is."""
+    model = _unique_model()
+    live_at = datetime(2026, 4, 1, tzinfo=timezone.utc)
+    glacier_at = datetime(2025, 8, 2, tzinfo=timezone.utc)
+    async with migrated_db.session() as session:
+        account_id = await _seed_account(session)
+        glacier_folder_id = await _enable_glacier(session, account_id)
+        _glacier_id, glacier_key = await _seed_glacier_message(
+            session, account_id=account_id, glacier_folder_id=glacier_folder_id,
+            received_at=glacier_at,
+        )
+        folder_id = uuid.uuid4()
+        await session.execute(
+            text(
+                "INSERT INTO folders (id, account_id, imap_name, initial_sync_done) "
+                "VALUES (:id, :a, 'INBOX', true)"
+            ),
+            {"id": folder_id, "a": account_id},
+        )
+        live_id, dateless_id = uuid.uuid4(), uuid.uuid4()
+        for message_id, received in ((live_id, live_at), (dateless_id, None)):
+            await session.execute(
+                text(
+                    "INSERT INTO messages (id, account_id, folder_id, imap_uid, thread_id, "
+                    "message_id, received_at) VALUES (:id, :a, :f, :uid, :id, :hdr, :at)"
+                ),
+                {
+                    "id": message_id, "a": account_id, "f": folder_id,
+                    "uid": 1 if message_id == live_id else 2,
+                    "hdr": f"<{message_id}@example.com>", "at": received,
+                },
+            )
+        await session.commit()
+    async with migrated_db.session() as session:
+        for key, hint in (("live", live_id), ("dateless", dateless_id), (glacier_key, None)):
+            await session.execute(
+                MessageEmbedding.__table__.insert().values(
+                    account_id=account_id, msg_key=key, message_id=hint, model=model,
+                    status="done", embedding=[1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1),
+                )
+            )
+
+    filled = await EmbeddingRepository(migrated_db).fill_missing_received_at()
+
+    async with migrated_db.session() as session:
+        rows = {
+            row.msg_key: row.received_at
+            for row in await session.execute(
+                text("SELECT msg_key, received_at FROM message_embeddings WHERE model = :m"),
+                {"m": model},
+            )
+        }
+    assert rows == {"live": live_at, "dateless": None, glacier_key: glacier_at}
+    assert filled >= 2

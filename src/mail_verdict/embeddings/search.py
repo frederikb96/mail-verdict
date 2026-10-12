@@ -326,21 +326,18 @@ async def _count_in_scope(session: AsyncSession, scope: _Scope, limit: int) -> i
     return int(total)
 
 
-async def _pool_exact(session: AsyncSession, scope: _Scope, k: int) -> Pool:
+def _exact_statement(scope: _Scope, glacier_folders: Any, k: int) -> Select[Any]:
     """
-    The k eligible messages nearest the query as (message id, similarity),
-    nearest first, from an exact scan.
+    The k eligible messages nearest the query, ranked exactly: the scope's
+    messages (live, and glaciered ones through msg_key) joined to their
+    vectors before any distance is computed.
 
-    The scope is joined in before the ranking, so only the vectors of the
-    messages inside it are read.
+    Ordered by the similarity expression, never by `embedding <=> q`
+    itself: only the second form can be answered by the HNSW index, and
+    this statement must rank every vector in the scope. The planner is
+    otherwise free, so a narrow scope can nest its loop through the
+    btrees on the join hint and on received_at.
     """
-    # The pgvector HNSW index on this column is approximate; these two
-    # GUCs, scoped to this transaction only (a session autobegins its
-    # transaction on the first statement), force Postgres to scan the
-    # table exactly instead of consulting it.
-    await session.execute(text("SET LOCAL enable_indexscan = off"))
-    await session.execute(text("SET LOCAL enable_bitmapscan = off"))
-
     distance = MessageEmbedding.embedding.cosine_distance(scope.query_vector)
     similarity = (1 - distance).label("similarity")
 
@@ -356,6 +353,10 @@ async def _pool_exact(session: AsyncSession, scope: _Scope, k: int) -> Pool:
         )
         .where(MessageEmbedding.model == scope.model, MessageEmbedding.status == "done"),
     )
+    ranked: Select[Any]
+    if not glacier_folders:
+        ranked = live_stmt.order_by(desc(similarity)).limit(k)
+        return ranked
 
     # A glaciered message's embedding hint is NULL by design (design
     # section 4.7 -- see GlacierMessage's own docstring), so it can
@@ -365,29 +366,34 @@ async def _pool_exact(session: AsyncSession, scope: _Scope, k: int) -> Pool:
     # can reach a glacier at all -- glacier_folders empty means the
     # union below never runs, the same "pays nothing" guarantee
     # database/repository.py's own text-search union gives.
+    glacier_stmt = _glacier_scope(
+        scope,
+        select(GlacierMessage.id, (1 - distance).label("similarity"))
+        .join(
+            MessageEmbedding,
+            and_(
+                MessageEmbedding.account_id == GlacierMessage.account_id,
+                MessageEmbedding.msg_key == GlacierMessage.msg_key,
+            ),
+        )
+        .where(MessageEmbedding.model == scope.model, MessageEmbedding.status == "done"),
+        glacier_folders,
+    )
+    union = live_stmt.union_all(glacier_stmt).subquery()
+    ranked = select(union.c.id, union.c.similarity).order_by(desc(union.c.similarity)).limit(k)
+    return ranked
+
+
+async def _pool_exact(session: AsyncSession, scope: _Scope, k: int) -> Pool:
+    """
+    The k eligible messages nearest the query as (message id, similarity),
+    nearest first, from an exact scan (see _exact_statement).
+    """
     glacier_folders = await touches_glacier(
         session, account_id=scope.account_id, folder_ids=scope.folder_ids,
     )
-    stmt: Any
-    if glacier_folders:
-        glacier_stmt = _glacier_scope(
-            scope,
-            select(GlacierMessage.id, (1 - distance).label("similarity"))
-            .join(
-                MessageEmbedding,
-                and_(
-                    MessageEmbedding.account_id == GlacierMessage.account_id,
-                    MessageEmbedding.msg_key == GlacierMessage.msg_key,
-                ),
-            )
-            .where(MessageEmbedding.model == scope.model, MessageEmbedding.status == "done"),
-            glacier_folders,
-        )
-        union = live_stmt.union_all(glacier_stmt).subquery()
-        stmt = select(union.c.id, union.c.similarity).order_by(desc(union.c.similarity))
-    else:
-        stmt = live_stmt.order_by(distance)
-    return [(row[0], float(row[1])) for row in (await session.execute(stmt.limit(k))).all()]
+    stmt = _exact_statement(scope, glacier_folders, k)
+    return [(row[0], float(row[1])) for row in (await session.execute(stmt)).all()]
 
 
 # The planner settings of the index query. The vectors are stored out of

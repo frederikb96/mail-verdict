@@ -156,6 +156,9 @@ def register_embeddings(
         # coverage can complete purely from rows earlier sweeps already
         # queued, independent of whether this one found anything new.
         await _maybe_cutover(embedding_repo, settings_service, model)
+        filled = await embedding_repo.fill_missing_received_at()
+        if filled:
+            logger.info("Filled received_at on embedding rows", extra={"rows": filled})
         await _maybe_prune(
             embedding_repo, settings_service, model,
             enabled=get_config().search.prune_superseded_models,

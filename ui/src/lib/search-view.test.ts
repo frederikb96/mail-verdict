@@ -60,11 +60,19 @@ test("a 503 before the text results have arrived waits for them", () => {
   assert.equal(view.notice, "unavailable");
 });
 
-test("any other failure is an error, not a fallback", () => {
+test("any other failure keeps the text list and shows the error beside it", () => {
   const meaning: Fetched<string> = { key: KEY, status: "error", errorStatus: 500, errorMessage: "boom" };
   const view = chooseSearchView({ semantic: true, currentKey: KEY, text: textHits, meaning });
   assert.equal(view.error, "boom");
-  assert.deepEqual(view.items, []);
+  assert.deepEqual(view.items, ["text-1", "text-2"]);
+  assert.equal(view.muted, false);
+});
+
+test("any other failure with no text results yet is the error alone", () => {
+  const meaning: Fetched<string> = { key: KEY, status: "error", errorStatus: 500, errorMessage: "boom" };
+  const view = chooseSearchView({ semantic: true, currentKey: KEY, text: pending(), meaning });
+  assert.equal(view.error, "boom");
+  assert.equal(view.loading, true);
 });
 
 test("a response to an earlier query is ignored", () => {

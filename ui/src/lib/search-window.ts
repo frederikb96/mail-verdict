@@ -99,22 +99,25 @@ export function sliderStops(window: SearchWindow | null, now: Date): [number, nu
 
 export interface MonthTick {
   stop: number;
-  /** The year for January, the short month name otherwise. */
+  /** "Jan 2026" at the first tick and at each January, the short month name otherwise. */
   label: string;
+  /** Carries the year, so its label is the wider one and is placed first. */
   isYear: boolean;
 }
 
 /** One tick per month along the slider axis, at the stop of the month's
- * first week; January carries the year so the axis orients by year. */
+ * first week. The first tick and every January carry the year, so the axis
+ * orients by year. */
 export function monthTicks(now: Date): MonthTick[] {
   const ticks: MonthTick[] = [];
   for (let p = 0; p <= SLIDER_WEEKS; p++) {
     const date = sliderStopDate(p, now);
     if (date.getDate() <= 7) {
-      const isYear = date.getMonth() === 0;
+      const month = date.toLocaleString("en", { month: "short" });
+      const isYear = ticks.length === 0 || date.getMonth() === 0;
       ticks.push({
         stop: p,
-        label: isYear ? String(date.getFullYear()) : date.toLocaleString("en", { month: "short" }),
+        label: isYear ? `${month} ${date.getFullYear()}` : month,
         isYear,
       });
     }
@@ -122,7 +125,7 @@ export function monthTicks(now: Date): MonthTick[] {
   return ticks;
 }
 
-const YEAR_LABEL_PX = 34;
+const YEAR_LABEL_PX = 60;
 const MONTH_LABEL_PX = 26;
 const LABEL_GAP_PX = 8;
 

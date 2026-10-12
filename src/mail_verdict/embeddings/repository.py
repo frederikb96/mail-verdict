@@ -751,6 +751,41 @@ class EmbeddingRepository:
                 reachable=reachable, unreachable=unreachable, shadowed=shadowed,
             )
 
+    async def fill_missing_received_at(self) -> int:
+        """
+        Copy received_at onto embedding rows that lack it although their
+        message has one: rows written by a build that did not set it, between
+        a migration's backfill and that build being replaced. Without it such
+        a row never matches a time window on the index path. Live messages
+        are found through the join hint, glaciered ones through msg_key.
+
+        Returns:
+            How many rows were filled
+        """
+        async with self._db.session() as session:
+            live = await session.execute(
+                update(MessageEmbedding)
+                .where(
+                    MessageEmbedding.received_at.is_(None),
+                    MessageEmbedding.account_id == Message.account_id,
+                    MessageEmbedding.message_id == Message.id,
+                    Message.received_at.is_not(None),
+                )
+                .values(received_at=Message.received_at)
+            )
+            glacier = await session.execute(
+                update(MessageEmbedding)
+                .where(
+                    MessageEmbedding.received_at.is_(None),
+                    MessageEmbedding.message_id.is_(None),
+                    MessageEmbedding.account_id == GlacierMessage.account_id,
+                    MessageEmbedding.msg_key == GlacierMessage.msg_key,
+                    GlacierMessage.received_at.is_not(None),
+                )
+                .values(received_at=GlacierMessage.received_at)
+            )
+        return (live.rowcount or 0) + (glacier.rowcount or 0)  # type: ignore[attr-defined]
+
     async def prune_models_other_than(
         self, keep: Collection[str], *, batch_size: int = _PRUNE_BATCH_SIZE,
     ) -> int:
