@@ -121,6 +121,13 @@ search:
   # the time window changes or the page is revisited. One vector is about
   # 12 KB at 1536 dimensions.
   query_cache_size: 256
+  # Whether semantic search first asks the HNSW index for the nearest
+  # vectors (fast: it reads a few hundred vectors instead of all of them)
+  # instead of always ranking every vector exactly. The index is approximate;
+  # searches it cannot fill a whole pool for fall back to the exact scan
+  # either way. Turn off to get exact results at the cost of reading every
+  # vector on each search.
+  use_hnsw_index: true
 
 # The glacier: a per-account place a message can be moved to where it
 # leaves the mail server for good and lives on only in this database

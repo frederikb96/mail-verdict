@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.14.2] - 2026-10-12
+
+### Changed
+
+- Semantic search is faster. It ranks messages by id and score alone and loads full rows only for
+  the ones that end up in a tier, where it used to carry every message body through the ranking.
+  It also asks the table's HNSW index for the nearest vectors and checks just those against the
+  scope, instead of reading every vector of the model; a scope narrow enough to leave too few of
+  them (a short time window, one folder) is answered by the exact scan. `search.use_hnsw_index`
+  in `config.yaml` turns the index path off.
+
 ## [6.14.1] - 2026-10-12
 
 ### Changed

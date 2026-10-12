@@ -29,6 +29,7 @@ from mail_verdict.api.schemas import (
     SemanticSearchHit,
     SemanticSearchResponse,
 )
+from mail_verdict.config import get_config
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import list_row_marks
@@ -171,6 +172,7 @@ async def search(
     hits = await semantic_search(
         get_db_connection(), query_vector=query_vector, model=model,
         account_id=account_id, folder_ids=folder_ids,
+        use_index=get_config().search.use_hnsw_index,
         received_after=received_after, received_before=received_before,
     )
     result_ids = [hit.message.id for hit in hits]

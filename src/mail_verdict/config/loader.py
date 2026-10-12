@@ -286,6 +286,7 @@ class SearchConfig(BaseModel):
 
     exact_scan_row_ceiling: int
     query_cache_size: int
+    use_hnsw_index: bool
 
 
 class PushConfig(BaseModel):
