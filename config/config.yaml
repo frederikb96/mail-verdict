@@ -115,6 +115,12 @@ search:
   # startup against this ceiling; above it, the exact scan should be
   # measured again rather than assumed to still be the right choice.
   exact_scan_row_ceiling: 200000
+  # How many distinct search queries keep their embedding vector in memory
+  # (least recently used first out). The provider round trip is nearly all of
+  # a semantic search's latency, and the same query is re-submitted whenever
+  # the time window changes or the page is revisited. One vector is about
+  # 12 KB at 1536 dimensions.
+  query_cache_size: 256
 
 # The glacier: a per-account place a message can be moved to where it
 # leaves the mail server for good and lives on only in this database

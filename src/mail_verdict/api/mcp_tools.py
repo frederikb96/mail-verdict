@@ -1304,29 +1304,15 @@ async def semantic_search_mail(
         currently serving search are searched -- which lags the configured
         one during a re-embed -- see get_semantic_status for coverage.
     """
-    from mail_verdict.embeddings.provider import (
-        resolve_active_embedding_model,
-        resolve_active_embedding_provider,
-        resolve_embedding_provider,
-    )
+    from mail_verdict.embeddings.query import embed_search_query
     from mail_verdict.embeddings.search import semantic_search
-    from mail_verdict.settings.credentials import get_provider_credential_repo
-    from mail_verdict.settings.service import get_settings_service
 
-    settings = get_settings_service().get("semantic")
-    # The model and provider actually serving search right now, not the
-    # migration target -- see resolve_active_embedding_model's docstring.
-    model = resolve_active_embedding_model(settings)
-    provider_name, base_url = resolve_active_embedding_provider(settings)
-    provider = resolve_embedding_provider(
-        provider_name, get_provider_credential_repo(), base_url=base_url,
-    )
-    vectors = await provider.embed_batch([query], model=model)
+    model, query_vector = await embed_search_query(query)
 
     aid = uuid.UUID(account_id) if account_id else None
     hits = (
         await semantic_search(
-            get_db_connection(), query_vector=vectors[0], model=model, account_id=aid,
+            get_db_connection(), query_vector=query_vector, model=model, account_id=aid,
         )
     )[:limit]
     async with get_db_connection().session() as session:
