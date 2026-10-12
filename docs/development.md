@@ -300,3 +300,9 @@ The order matters and is not optional:
 
 The tag is what publishes the image, the chart and the release. Tagging before the merge means
 publishing something that was never green.
+
+A release that carries a migration cannot be undone by deploying the previous image. The image
+runs `alembic upgrade head` when it starts, the database already holds a revision that image does
+not contain, and alembic stops with `Can't locate revision`, so the pod never becomes ready. To go
+back, run `alembic downgrade <previous revision>` from the newer image first (a downgrade that
+rewrites a column takes about as long as the upgrade did), then deploy the previous image.

@@ -5,7 +5,8 @@
  * In semantic mode the text result renders at once (muted, with a note that
  * the meaning search is still running) and is replaced by the tiered list
  * when that lands; if the server answers 503 the text list stays, with a note
- * that semantic search is unavailable. A response that belongs to an earlier
+ * that semantic search is unavailable (any other failure keeps it too, with
+ * the error shown). A response that belongs to an earlier
  * query or window than the one now on screen is ignored.
  */
 
@@ -66,7 +67,9 @@ export function chooseSearchView<T>(args: {
   }
   if (meaning.status === "error") {
     if (meaning.errorStatus === SEMANTIC_UNAVAILABLE_STATUS) return textView("unavailable", false);
-    return { ...nothing<T>(), error: meaning.errorMessage ?? "Search failed." };
+    // Any other failure keeps the text results too; the error shows beside them.
+    const shown = textView(null, false);
+    return { ...shown, error: meaning.errorMessage ?? "Search failed." };
   }
   return textView("searching", true);
 }
