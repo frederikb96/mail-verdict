@@ -12510,6 +12510,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "description": "`semantic_unavailable`: the query could not be embedded in time (provider rate limit, error or timeout, or no provider configured). Clients keep their text results."
           }
         },
         "summary": "Search",

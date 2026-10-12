@@ -112,10 +112,14 @@ search:
   # inside the scope. Above it, it asks the HNSW index for the nearest
   # vectors with the time window and account applied inside the index scan,
   # because ranking a wide scope exactly reads every vector in it. The
-  # break-even sits where the exact path's cost, linear in the scope's size,
-  # passes the index path's roughly constant cost: measured at about 50 us
-  # per message in scope (halfvec, 1536 dimensions, warm), so 5,000 messages
-  # is a few hundred milliseconds in the worst case.
+  # point where the exact path's cost, linear in the scope's size, passes the
+  # index path's: on a 25,000-message mailbox with the vectors in memory the
+  # exact path measured about 10 ms per 1,000 messages in scope plus a few
+  # milliseconds (40 ms at 300 messages, 130 ms at 7,000, 270 ms at 21,000)
+  # and the index path 60 to 320 ms, so at this size the two meet only above
+  # the threshold. Exact cost keeps growing with the mailbox; the index path
+  # does not, which is why the threshold is a fixed size and not a share of
+  # the mailbox.
   exact_scan_max_rows: 5000
   # How many distinct search queries keep their embedding vector in memory
   # (least recently used first out). The provider round trip is nearly all of

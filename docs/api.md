@@ -280,7 +280,9 @@ folders, enforced in the query itself, and `received_after`/`received_before` (i
 the time window — on semantic search before the results are tiered, so the tiers are drawn within
 the window. Full-text results are always ordered by field tier, then newest first.
 
-Semantic search is single-page and has no tuning parameters. Each result carries `tier`: `1` for
+Semantic search is single-page and has no tuning parameters. When the query cannot be embedded
+in time (the provider rate-limits twice, errors, times out, or none is configured) it answers `503`
+with the detail `semantic_unavailable`; a client keeps showing its text results then. Each result carries `tier`: `1` for
 a likely match, `2` for a less likely one. The response lists tier 1 first, then tier 2, each
 newest first (a message without a date last); anything less related than that is left out, and a
 query with three or fewer candidates is all tier 1. Tiers are relative to the query's own score
