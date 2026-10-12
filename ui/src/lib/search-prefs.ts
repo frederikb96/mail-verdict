@@ -8,7 +8,8 @@
 
 import { atomWithStorage } from "jotai/utils";
 import type { CacheSnapshot } from "virtua";
-import type { SearchField, SearchSort, SearchStrictness } from "@/types/api";
+import type { SearchWindow } from "@/lib/search-window";
+import type { SearchField } from "@/types/api";
 
 export const ALL_SEARCH_FIELDS: SearchField[] = ["subject", "from", "to", "body"];
 
@@ -48,26 +49,11 @@ export const searchSemanticModeAtom = atomWithStorage<boolean>(
   false,
 );
 
-/** "relevance" (field tier then newest, or nearest-first for semantic --
- * the historical default for each) vs "chronological" (newest first, no
- * ranking at all). A cursor is never reused across a mode switch -- same
- * convention as every other control here, see search-page.tsx's
- * listIdentity. */
-export const searchSortModeAtom = atomWithStorage<SearchSort>(
-  "mailverdict:search-sort",
-  "relevance",
-);
-
-/** A stretch of received_at, both ends inclusive -- null means the full
- * range (no filter applied). ISO strings, not Date objects: this is what
- * both search endpoints take directly and what survives atomWithStorage's
- * JSON round-trip without a custom (de)serializer. */
-export interface SearchDateRange {
-  after: string | null;
-  before: string | null;
-}
-export const searchDateRangeAtom = atomWithStorage<SearchDateRange | null>(
-  "mailverdict:search-date-range",
+/** The time window a search covers, null for all time. Presets stay
+ * presets here and resolve against the clock when a query runs (see
+ * lib/search-window.ts). */
+export const searchWindowAtom = atomWithStorage<SearchWindow | null>(
+  "mailverdict:search-window",
   null,
 );
 
@@ -76,18 +62,9 @@ export const searchDateRangeAtom = atomWithStorage<SearchDateRange | null>(
  * empty box; the other two already survived a Back, this one did not. */
 export const searchQueryAtom = atomWithStorage<string>("mailverdict:search-query", "");
 
-/** How tightly semantic results cluster around the best match -- a
- * position name, not a float: the underlying cutoff is relative to the
- * best match in the pool, so a raw number would read as an absolute
- * threshold it isn't (see the backend's embeddings/search.py). */
-export const searchStrictnessAtom = atomWithStorage<SearchStrictness>(
-  "mailverdict:search-strictness",
-  "balanced",
-);
-
 /** The result row at the top of the viewport, captured on scroll and
  * restored on mount -- listIdentity ties it to the exact search it was
- * captured under (query, mode, fields, folders, strictness -- the same
+ * captured under (query, mode, fields, folders, window -- the same
  * key search-page.tsx keys its VList on), so a return to a *different*
  * search can never apply a stale anchor left over from another one. */
 export interface SearchScrollAnchor {

@@ -101,7 +101,6 @@ const SETTING_LABELS: Record<string, string> = {
   batch_size: "Backfill batch size",
   neighbor_k: "Similar past messages consulted",
   neighbor_min_similarity: "Minimum similarity",
-  default_strictness: "Default strictness",
   default_event_duration_minutes: "Default event duration (minutes)",
   default_reminder_minutes: "Default reminder (minutes)",
   undo_send_seconds: "Undo window after Send (seconds)",

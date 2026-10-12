@@ -146,19 +146,18 @@ export interface MessageActionResponse {
 /** Which parts of a message the fulltext search endpoint scans. */
 export type SearchField = "subject" | "from" | "to" | "body";
 
-/** How tightly semantic results cluster around the best match -- relative
- * to that match, not an absolute similarity floor (see the backend's
- * embeddings/search.py). */
-export type SearchStrictness = "loose" | "balanced" | "strict";
-
 /** One search hit: MessageSummary's full shape (so a result carries the
  * same row actions a mail-list row does) plus how the query matched it.
  * Shared by both search endpoints -- match_tier ranks a fulltext hit for
  * GET /api/search (lower is a better match), and is always its default
- * for GET /api/embeddings/search, which reports similarity instead. */
+ * for GET /api/embeddings/search, which reports a tier instead. */
 export interface SearchResult extends MessageSummary {
   match_tier: number;
-  similarity: number | null;
+}
+
+/** A semantic hit: 1 is a likely match, 2 a less likely one. */
+export interface SemanticSearchHit extends SearchResult {
+  tier: 1 | 2;
 }
 
 export interface SearchResponse {
@@ -169,25 +168,10 @@ export interface SearchResponse {
   total: number;
 }
 
-/** "relevance" (field tier then newest, or nearest-first for semantic --
- * the default for each) or "chronological" (date alone, ranking ignored
- * entirely). */
-export type SearchSort = "relevance" | "chronological";
-
 export interface SemanticSearchResponse {
-  results: SearchResult[];
+  results: SemanticSearchHit[];
   query: string;
   model: string;
-  strictness: SearchStrictness;
-  min_similarity_applied: number;
-}
-
-/** The oldest and newest received_at across a search scope, with no
- * query of its own -- the date-range control's own axis. Both null when
- * the scope has no dated message at all. */
-export interface SearchDateBoundsResponse {
-  oldest: string | null;
-  newest: string | null;
 }
 
 export interface AccountResponse {
