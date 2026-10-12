@@ -294,10 +294,12 @@ async def _pool_exact(session: AsyncSession, scope: _Scope) -> list[tuple[uuid.U
 # neighbourhood wide. With sequential and bitmap scans off the planner has
 # no cheaper way to order by distance than the HNSW index; left on, it
 # prefers a bitmap scan of every vector of the model followed by a sort,
-# which is the exact scan again.
+# which is the exact scan again. The index scan's cost estimate is high enough
+# to trigger JIT compilation, which costs more than this query saves.
 _INDEX_SETTINGS = (
     "enable_seqscan = off",
     "enable_bitmapscan = off",
+    "jit = off",
     "hnsw.ef_search = 1000",
     "hnsw.iterative_scan = strict_order",
 )
