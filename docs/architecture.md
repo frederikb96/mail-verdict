@@ -351,9 +351,13 @@ credentials.py`), or `"fake"`. A custom server speaks chat completions only, not
 `structured_llm.py`'s `call_openai_structured` uses for real OpenAI — `call_chat_completions_structured`
 is the separate request shape a custom provider needs instead.
 
-Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and orders
-messages by cosine distance, joined back to `messages` at read time — never a denormalised copy of
-anything that changes, matching the no-foreign-key posture above. It complements the fuzzy,
+Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`) embeds the query text and scans
+the 400 nearest messages by cosine distance (exactly, not through the approximate index), joined
+back to `messages` at read time — never a denormalised copy of anything that changes, matching the
+no-foreign-key posture above. Raw cosine scores mean little across queries, so the pool is tiered
+by its own spread (`assign_tiers` in `embeddings/search.py`): a hit's position between the median
+candidate and the third-best one decides tier 1, tier 2 or dropped, and the result is ordered by
+tier, then newest first. A time window narrows the pool before tiering. It complements the fuzzy,
 field-scoped text search at `GET /api/search` rather than replacing it: text search wins on a known
 sender or an exact phrase, semantic search wins on a half-remembered topic with none of the same
 words. Both accept `folder_ids`, enforced in the query itself rather than filtered afterward — a

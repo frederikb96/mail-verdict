@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.api.search import search_date_bounds, search_messages
+from mail_verdict.api.search import search_messages
 from mail_verdict.database.connection import DatabaseConnection
 
 
@@ -187,27 +187,6 @@ async def test_search_scoped_to_the_glacier_folder_alone(
         fields=["subject"], before=None, limit=50,
     )
     assert {r.id for r in page.results} == {glacier_id}
-
-
-@pytest.mark.asyncio
-async def test_date_bounds_include_the_glacier(migrated_db: DatabaseConnection) -> None:
-    now = datetime.now(timezone.utc)
-    async with migrated_db.session() as session:
-        account_id = await _seed_account(session)
-        glacier_folder_id = await _enable_glacier(session, account_id)
-        live_folder_id = await _seed_folder(session, account_id)
-        await _seed_live_message(
-            session, account_id=account_id, folder_id=live_folder_id,
-            subject="Newer", received_at=now,
-        )
-        await _seed_glacier_message(
-            session, account_id=account_id, glacier_folder_id=glacier_folder_id,
-            subject="Much older", received_at=now - timedelta(days=1000),
-        )
-
-    bounds = await search_date_bounds(account_id, folder_ids=None)
-    assert bounds.oldest is not None
-    assert (now - bounds.oldest).days >= 999
 
 
 @pytest.mark.asyncio

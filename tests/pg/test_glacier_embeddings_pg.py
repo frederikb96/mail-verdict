@@ -151,12 +151,11 @@ async def test_semantic_search_finds_a_glaciered_message(
             )
         )
 
-    outcome = await semantic_search(
-        migrated_db, query_vector=query_vector, model=model, account_id=account_id,
-        k=10, strictness="loose",
+    results = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=account_id, k=10,
     )
-    assert len(outcome.results) == 1
-    assert outcome.results[0].message.id == glacier_id
+    assert len(results) == 1
+    assert results[0].message.id == glacier_id
 
 
 @pytest.mark.asyncio
@@ -182,11 +181,10 @@ async def test_semantic_search_scoped_to_nothing_still_finds_it(
             )
         )
 
-    outcome = await semantic_search(
-        migrated_db, query_vector=query_vector, model=model, account_id=None,
-        k=10, strictness="loose",
+    results = await semantic_search(
+        migrated_db, query_vector=query_vector, model=model, account_id=None, k=10,
     )
-    assert glacier_id in {r.message.id for r in outcome.results}
+    assert glacier_id in {r.message.id for r in results}
 
 
 @pytest.mark.asyncio

@@ -1297,11 +1297,10 @@ async def semantic_search_mail(
         limit: Max results, 1-100 (default 20)
 
     Returns:
-        List of message summaries with a similarity score (0-1, higher is
-        closer), ranked nearest first -- up to limit, or fewer if the
-        rest don't clear the account's configured strictness cutoff (see
-        embeddings/search.py: relative to the best match in the pool, not
-        an absolute floor). Only messages already encoded with the model
+        List of message summaries, each with a tier: 1 for a likely match,
+        2 for a less likely one (see embeddings/search.py). Tier 1 comes
+        first, each tier newest first -- up to limit, and fewer when the
+        query has fewer matches. Only messages already encoded with the model
         currently serving search are searched -- which lags the configured
         one during a re-embed -- see get_semantic_status for coverage.
     """
@@ -1319,25 +1318,25 @@ async def semantic_search_mail(
     # migration target -- see resolve_active_embedding_model's docstring.
     model = resolve_active_embedding_model(settings)
     provider_name, base_url = resolve_active_embedding_provider(settings)
-    strictness = settings.get("default_strictness", "balanced")
     provider = resolve_embedding_provider(
         provider_name, get_provider_credential_repo(), base_url=base_url,
     )
     vectors = await provider.embed_batch([query], model=model)
 
     aid = uuid.UUID(account_id) if account_id else None
-    outcome = await semantic_search(
-        get_db_connection(), query_vector=vectors[0], model=model, account_id=aid,
-        k=limit, strictness=strictness,
-    )
+    hits = (
+        await semantic_search(
+            get_db_connection(), query_vector=vectors[0], model=model, account_id=aid,
+        )
+    )[:limit]
     async with get_db_connection().session() as session:
-        glacier_ids = await glacier_ids_among(session, [hit.message.id for hit in outcome.results])
+        glacier_ids = await glacier_ids_among(session, [hit.message.id for hit in hits])
     return [
         {
             **_message_summary(hit.message, is_glacier=hit.message.id in glacier_ids),
-            "similarity": hit.similarity,
+            "tier": hit.tier,
         }
-        for hit in outcome.results
+        for hit in hits
     ]
 
 

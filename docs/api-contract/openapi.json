@@ -7091,37 +7091,6 @@
         "title": "RuleAssistantRuleChange",
         "type": "object"
       },
-      "SearchDateBoundsResponse": {
-        "description": "The oldest and newest received_at across a search scope, with no\nquery of its own -- what the date-range control draws its axis from.\nBoth None when the scope has no dated message at all.",
-        "properties": {
-          "newest": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Newest"
-          },
-          "oldest": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldest"
-          }
-        },
-        "title": "SearchDateBoundsResponse",
-        "type": "object"
-      },
       "SearchResponse": {
         "description": "Paginated fulltext search results, ranked by field tier then\nnewest first.",
         "properties": {
@@ -7166,7 +7135,7 @@
         "type": "object"
       },
       "SearchResult": {
-        "description": "One search hit: MessageSummary's full shape (so a result carries\nthe same row actions a mail-list row does -- flag, archive, spam,\ntrash, not just read/flagged display) plus how the query matched it.\n\nShared by both search endpoints: GET /api/search (match_tier\nmeaningful -- see MessageRepository's _match_tier for what each value\nmeans, and FALLBACK_MATCH_TIER for the trigram stage's own) and GET\n/api/embeddings/search (similarity\nmeaningful, match_tier always its default -- a semantic hit has no\nfield-tier concept of its own).",
+        "description": "One search hit: MessageSummary's full shape (so a result carries\nthe same row actions a mail-list row does -- flag, archive, spam,\ntrash, not just read/flagged display) plus how the query matched it.\n\nShared by both search endpoints: GET /api/search (match_tier\nmeaningful -- see MessageRepository's _match_tier for what each value\nmeans, and FALLBACK_MATCH_TIER for the trigram stage's own) and GET\n/api/embeddings/search (match_tier always its default -- a semantic\nhit has no field-tier concept of its own; see SemanticSearchHit).",
         "properties": {
           "account_id": {
             "format": "uuid",
@@ -7257,17 +7226,6 @@
               }
             ],
             "title": "Received At"
-          },
-          "similarity": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Similarity"
           },
           "snippet": {
             "anyOf": [
@@ -7433,13 +7391,196 @@
         "title": "SelectionSnapshotResponse",
         "type": "object"
       },
-      "SemanticSearchResponse": {
-        "description": "Semantic search results, nearest first. Single-page: the\nstrictness cutoff (see embeddings/search.py) bounds the result set\nnaturally, so there is no further page to fetch. min_similarity_applied\nis what the relative strictness cutoff resolved to for this query, so\nthe UI can say why a result set came back small.",
+      "SemanticSearchHit": {
+        "description": "A semantic hit: 1 for a likely match, 2 for a less likely one.",
         "properties": {
-          "min_similarity_applied": {
-            "title": "Min Similarity Applied",
-            "type": "number"
+          "account_id": {
+            "format": "uuid",
+            "title": "Account Id",
+            "type": "string"
           },
+          "folder_id": {
+            "format": "uuid",
+            "title": "Folder Id",
+            "type": "string"
+          },
+          "from_addr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Addr"
+          },
+          "has_attachments": {
+            "description": "The message has at least one attachment",
+            "title": "Has Attachments",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_answered": {
+            "default": false,
+            "title": "Is Answered",
+            "type": "boolean"
+          },
+          "is_draft": {
+            "default": false,
+            "title": "Is Draft",
+            "type": "boolean"
+          },
+          "is_flagged": {
+            "default": false,
+            "title": "Is Flagged",
+            "type": "boolean"
+          },
+          "is_glacier": {
+            "default": false,
+            "description": "This message is in the account's glacier -- it no longer exists on the mail server and lives on only here.",
+            "title": "Is Glacier",
+            "type": "boolean"
+          },
+          "is_seen": {
+            "default": false,
+            "title": "Is Seen",
+            "type": "boolean"
+          },
+          "is_truncated": {
+            "default": false,
+            "title": "Is Truncated",
+            "type": "boolean"
+          },
+          "match_tier": {
+            "default": 0,
+            "title": "Match Tier",
+            "type": "integer"
+          },
+          "mirrored_at": {
+            "description": "When this row entered the mirror (messages.created_at). Named distinctly from received_at -- it is what a selection snapshot compares against, not when the sender sent the message.",
+            "format": "date-time",
+            "title": "Mirrored At",
+            "type": "string"
+          },
+          "pending_sync": {
+            "default": false,
+            "title": "Pending Sync",
+            "type": "boolean"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "thread_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Number of messages in the thread, only present when threaded=true",
+            "title": "Thread Count"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "tier": {
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Tier",
+            "type": "integer"
+          },
+          "to_addrs": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Addrs"
+          },
+          "unread_in_thread": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Unread message count in the thread, only present when threaded=true",
+            "title": "Unread In Thread"
+          },
+          "verdict_is_spam": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest spam verdict for this message; null if never classified",
+            "title": "Verdict Is Spam"
+          }
+        },
+        "required": [
+          "id",
+          "account_id",
+          "folder_id",
+          "thread_id",
+          "has_attachments",
+          "verdict_is_spam",
+          "mirrored_at",
+          "tier"
+        ],
+        "title": "SemanticSearchHit",
+        "type": "object"
+      },
+      "SemanticSearchResponse": {
+        "description": "Semantic search results: tier 1 then tier 2, each newest first.\nSingle-page: the tiering (see embeddings/search.py) bounds the result\nset naturally, so there is no further page to fetch.",
+        "properties": {
           "model": {
             "title": "Model",
             "type": "string"
@@ -7450,27 +7591,16 @@
           },
           "results": {
             "items": {
-              "$ref": "#/components/schemas/SearchResult"
+              "$ref": "#/components/schemas/SemanticSearchHit"
             },
             "title": "Results",
             "type": "array"
-          },
-          "strictness": {
-            "enum": [
-              "loose",
-              "balanced",
-              "strict"
-            ],
-            "title": "Strictness",
-            "type": "string"
           }
         },
         "required": [
           "results",
           "query",
-          "model",
-          "strictness",
-          "min_similarity_applied"
+          "model"
         ],
         "title": "SemanticSearchResponse",
         "type": "object"
@@ -12269,7 +12399,7 @@
     },
     "/embeddings/search": {
       "get": {
-        "description": "Semantic search: nearest messages to the meaning of the query text,\ncut down by strictness (relative to the best match, not an absolute\nsimilarity floor -- see embeddings/search.py). Single-page: the\nstrictness cutoff bounds the result set naturally.\n\nComplements full-text search (GET /api/search) rather than replacing\nit -- literal search wins for a known sender or an exact phrase,\nthis wins for a half-remembered topic with no exact words in common.",
+        "description": "Semantic search: the messages closest in meaning to the query text,\nin two tiers -- likely hits first, then less likely ones, each newest\nfirst (see embeddings/search.py for how the tiers are drawn). The\nreceived_after/received_before window narrows the candidates before\ntiering. Single-page: the tiering bounds the result set naturally.\n\nComplements full-text search (GET /api/search) rather than replacing\nit -- literal search wins for a known sender or an exact phrase,\nthis wins for a half-remembered topic with no exact words in common.",
         "operationId": "search_embeddings_search_get",
         "parameters": [
           {
@@ -12319,45 +12449,6 @@
               ],
               "description": "Restrict to these folders; omit for no restriction",
               "title": "Folder Ids"
-            }
-          },
-          {
-            "description": "How tightly results cluster around the best match: loose/balanced/strict. Omit to use semantic.default_strictness.",
-            "in": "query",
-            "name": "strictness",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "enum": [
-                    "loose",
-                    "balanced",
-                    "strict"
-                  ],
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "How tightly results cluster around the best match: loose/balanced/strict. Omit to use semantic.default_strictness.",
-              "title": "Strictness"
-            }
-          },
-          {
-            "description": "'relevance' (nearest first, the default) or 'chronological' (newest first, over the same strictness-cut pool)",
-            "in": "query",
-            "name": "sort",
-            "required": false,
-            "schema": {
-              "default": "relevance",
-              "description": "'relevance' (nearest first, the default) or 'chronological' (newest first, over the same strictness-cut pool)",
-              "enum": [
-                "relevance",
-                "chronological"
-              ],
-              "title": "Sort",
-              "type": "string"
             }
           },
           {
@@ -14859,7 +14950,7 @@
     },
     "/search": {
       "get": {
-        "description": "Search over the toggled fields, scoped to the given folders and, if\ngiven, a received_at range, ranked by field tier then newest first or\nby date alone (sort). See MessageRepository.search_messages for the\nmatching and ranking rule itself; this endpoint resolves the cursor,\nfalls back to the trigram tier when the primary stage's first page is\nempty, and shapes the response.\n\nreceived_after/received_before are named distinctly from `before` (the\npagination cursor) deliberately -- both are dates, but one bounds the\nsearch and the other continues it, and the two must never be confused.",
+        "description": "Search over the toggled fields, scoped to the given folders and, if\ngiven, a received_at range, ranked by field tier then newest first.\nSee MessageRepository.search_messages for the\nmatching and ranking rule itself; this endpoint resolves the cursor,\nfalls back to the trigram tier when the primary stage's first page is\nempty, and shapes the response.\n\nreceived_after/received_before are named distinctly from `before` (the\npagination cursor) deliberately -- both are dates, but one bounds the\nsearch and the other continues it, and the two must never be confused.",
         "operationId": "search_messages_search_get",
         "parameters": [
           {
@@ -14970,22 +15061,6 @@
             }
           },
           {
-            "description": "'relevance' (field tier then newest, the default) or 'chronological' (newest first, tier ignored entirely)",
-            "in": "query",
-            "name": "sort",
-            "required": false,
-            "schema": {
-              "default": "relevance",
-              "description": "'relevance' (field tier then newest, the default) or 'chronological' (newest first, tier ignored entirely)",
-              "enum": [
-                "relevance",
-                "chronological"
-              ],
-              "title": "Sort",
-              "type": "string"
-            }
-          },
-          {
             "description": "Only messages received at or after this instant",
             "in": "query",
             "name": "received_after",
@@ -15065,79 +15140,6 @@
           }
         },
         "summary": "Search Messages",
-        "tags": [
-          "search"
-        ]
-      }
-    },
-    "/search/date-bounds": {
-      "get": {
-        "description": "The oldest and newest received_at across a scope, independent of any\nsearch query -- what the date-range control draws its axis from\nbefore a word has been typed. Registered ahead of the bare \"\" route\nbelow only by file order, not by necessity: \"/date-bounds\" and \"\" can\nnever collide since one names a distinct sub-path.",
-        "operationId": "search_date_bounds_search_date_bounds_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "account_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Account Id"
-            }
-          },
-          {
-            "description": "Restrict to these folders; omit for no restriction",
-            "in": "query",
-            "name": "folder_ids",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "items": {
-                    "format": "uuid",
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Restrict to these folders; omit for no restriction",
-              "title": "Folder Ids"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchDateBoundsResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Search Date Bounds",
         "tags": [
           "search"
         ]

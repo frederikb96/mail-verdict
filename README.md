@@ -127,8 +127,10 @@ mirror, which is what keeps it simple.
   body) you pick, ranked by whether the word itself matched rather than merely started a longer
   one, then by where the match lands and newest first within that, with a typo-tolerant fallback
   for a query the primary match misses entirely; plus semantic search over an embedding of every
-  message, with a Loose/Balanced/Strict control, for finding mail by meaning rather than exact
-  words. Both remember the account and folder scope you chose, independent of whichever account
+  message, for finding mail by meaning rather than exact words: the likely hits first, then a
+  "Less likely" group, each newest first, with nothing to tune. A clock button narrows either
+  search to a time window: today, since yesterday, the last 7 or 30 days, a slider over the last
+  52 weeks, or a custom range of days. Both remember the account and folder scope you chose, independent of whichever account
   the sidebar shows. Opening a result lands on that message in its
   folder wherever it sits, however far back, rather than only reaching whatever the newest page
   happens to include.

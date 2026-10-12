@@ -31,7 +31,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from mail_verdict.core.cursor import after_cursor, after_tier_cursor
+from mail_verdict.core.cursor import after_tier_cursor
 from mail_verdict.database.fuzzy import (
     fuzzy_token_predicate,
     ilike_escape,
@@ -315,11 +315,6 @@ class FolderPrefsRepository:
 # so casting the JSONB array to text and matching against that finds a hit
 # in either the name or the address of any recipient, without unnesting.
 SEARCH_FIELDS = frozenset({"subject", "from", "to", "body"})
-
-# "relevance" (field tier then date, the historical and still-default
-# behaviour) or "chronological" (date alone, ignoring tier entirely) --
-# see search_messages for what each does to the ORDER BY and the cursor.
-SearchSort = Literal["relevance", "chronological"]
 
 
 def _tsquery_text(tokens: list[str], *, prefix: bool = True) -> str | None:
@@ -787,101 +782,37 @@ class MessageRepository:
         async with self._db.session() as session:
             return await resolve_lexemes(session, query)
 
-    async def search_date_bounds(
-        self,
-        account_id: uuid.UUID | None,
-        *,
-        folder_ids: Sequence[uuid.UUID] | None = None,
-    ) -> tuple[datetime | None, datetime | None]:
-        """
-        (oldest, newest) received_at across the given scope -- independent
-        of any query text, since the date-range control's own slider needs
-        an axis to draw before a word has been typed. Dateless messages
-        (received_at IS NULL) never affect either bound: MIN/MAX already
-        ignore NULL, the same way the range predicate itself excludes them.
-
-        Args:
-            account_id: Account scope, or None for every account
-            folder_ids: Restrict to these folders, or None for no restriction
-
-        Returns:
-            (None, None) when the scope has no dated messages at all
-        """
-        stmt = select(
-            func.min(Message.received_at), func.max(Message.received_at),
-        ).where(Message.expunged_at.is_(None))
-        if account_id is not None:
-            stmt = stmt.where(Message.account_id == account_id)
-        if folder_ids is not None:
-            stmt = stmt.where(Message.folder_id.in_(folder_ids))
-        async with self._db.session() as session:
-            row = (await session.execute(stmt)).one()
-            oldest, newest = row[0], row[1]
-
-            glacier_folders = await touches_glacier(
-                session, account_id=account_id, folder_ids=folder_ids,
-            )
-            if glacier_folders:
-                glacier_stmt = select(
-                    func.min(GlacierMessage.received_at), func.max(GlacierMessage.received_at),
-                ).where(GlacierMessage.folder_id.in_(glacier_folders))
-                glacier_row = (await session.execute(glacier_stmt)).one()
-                if glacier_row[0] is not None and (oldest is None or glacier_row[0] < oldest):
-                    oldest = glacier_row[0]
-                if glacier_row[1] is not None and (newest is None or glacier_row[1] > newest):
-                    newest = glacier_row[1]
-            return (oldest, newest)
-
     async def resolve_search_cursor(
-        self, message_id: uuid.UUID, tokens: list[str], *, sort: SearchSort = "relevance",
-    ) -> tuple[datetime | None, uuid.UUID, int | None] | None:
+        self, message_id: uuid.UUID, tokens: list[str],
+    ) -> tuple[datetime | None, uuid.UUID, int] | None:
         """
-        (received_at, id, tier) for a keyset cursor row -- tier only in
-        "relevance" mode, since that is the only mode search_messages
-        orders by it at all; a chronological cursor needs nothing but the
-        two ordinary keyset columns, so tier is None rather than computed
-        and then ignored.
+        (received_at, id, tier) for a keyset cursor row.
 
         Args:
             message_id: The cursor row (GET /api/search's `before`)
             tokens: This search's tokens, from tokenize()
-            sort: The mode the cursor is being resolved for -- must match
-                the mode the page it continues was fetched under; see
-                search_messages, which never mixes the two.
 
         Returns:
             None if the message does not exist (an invalid cursor)
         """
         async with self._db.session() as session:
-            if sort == "relevance":
-                tier = _match_tier(Message, tokens)
-                stmt = select(Message.received_at, Message.id, tier).where(
-                    Message.id == message_id
-                )
-                row = (await session.execute(stmt)).one_or_none()
-                if row is not None:
-                    return (row[0], row[1], row[2])
-                # A cursor pointing at a glaciered result -- the message
-                # exists, just not in `messages` (design section 4.4).
-                glacier_tier = _match_tier(GlacierMessage, tokens)
-                glacier_stmt = select(
-                    GlacierMessage.received_at, GlacierMessage.id, glacier_tier,
-                ).where(GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None))
-                glacier_row = (await session.execute(glacier_stmt)).one_or_none()
-                if glacier_row is None:
-                    return None
-                return (glacier_row[0], glacier_row[1], glacier_row[2])
-            stmt = select(Message.received_at, Message.id).where(Message.id == message_id)
+            tier = _match_tier(Message, tokens)
+            stmt = select(Message.received_at, Message.id, tier).where(
+                Message.id == message_id
+            )
             row = (await session.execute(stmt)).one_or_none()
             if row is not None:
-                return (row[0], row[1], None)
-            glacier_stmt = select(GlacierMessage.received_at, GlacierMessage.id).where(
-                GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None),
-            )
+                return (row[0], row[1], row[2])
+            # A cursor pointing at a glaciered result -- the message
+            # exists, just not in `messages` (design section 4.4).
+            glacier_tier = _match_tier(GlacierMessage, tokens)
+            glacier_stmt = select(
+                GlacierMessage.received_at, GlacierMessage.id, glacier_tier,
+            ).where(GlacierMessage.id == message_id, GlacierMessage.visible_at.is_not(None))
             glacier_row = (await session.execute(glacier_stmt)).one_or_none()
             if glacier_row is None:
                 return None
-            return (glacier_row[0], glacier_row[1], None)
+            return (glacier_row[0], glacier_row[1], glacier_row[2])
 
     async def count_search_candidates(
         self,
@@ -897,9 +828,7 @@ class MessageRepository:
         """
         An exact count over the same candidate predicate search_messages
         pages through -- computed once, not by summing pages, so the
-        number a person sees does not move as they scroll. Sort mode
-        never affects the candidate set, only its order, so this takes
-        no sort argument.
+        number a person sees does not move as they scroll.
 
         Args:
             account_id, tokens, folder_ids, fields: As in search_messages
@@ -928,7 +857,6 @@ class MessageRepository:
         *,
         folder_ids: Sequence[uuid.UUID] | None = None,
         fields: frozenset[str] = SEARCH_FIELDS,
-        sort: SearchSort = "relevance",
         received_after: datetime | None = None,
         received_before: datetime | None = None,
         is_seen: bool | None = None,
@@ -939,8 +867,7 @@ class MessageRepository:
     ) -> list[tuple[Message, str | None, int]]:
         """
         Field- and folder-scoped search, ranked by field tier then newest
-        first (sort="relevance") or by date alone (sort="chronological"),
-        keyset-paged.
+        first, keyset-paged.
 
         The recall stage is a prefix-AND tsquery over search_vector
         (subject, from_addr and body_text -- what PostIMAP's generated
@@ -967,12 +894,6 @@ class MessageRepository:
         received_after/received_before narrow the candidate query rather
         than filtering the page.
 
-        sort="chronological" drops tier from both the ORDER BY and the
-        keyset predicate entirely -- a cursor produced under one mode is
-        never valid to continue under the other, matching every other
-        search-page control already: changing scope restarts pagination
-        from scratch rather than reusing a cursor.
-
         A query with no lexemes at all (tokens == []) returns no rows --
         the caller (GET /api/search) is expected to have already checked
         this via tokenize() before running search_messages_fallback or
@@ -983,23 +904,18 @@ class MessageRepository:
             tokens: This search's tokens, from tokenize()
             folder_ids: Restrict to these folders, or None for no restriction
             fields: Which of "subject"/"from"/"to"/"body" to search
-            sort: "relevance" (tier then date, the default) or
-                "chronological" (date alone, ranking tier ignored)
             received_after, received_before: Inclusive bounds on
                 received_at; a message with no Date header matches
                 neither and is excluded once either bound is given
             is_seen: Only read (True) or only unread (False) messages
             cursor_received_at, cursor_id, cursor_tier: Keyset cursor, from
-                resolve_search_cursor under the same sort mode
+                resolve_search_cursor
             limit: Max rows
 
         Returns:
-            (Message, snippet, tier) triples. In "relevance" mode ordered
-            (tier ASC, received_at DESC NULLS LAST, id DESC); in
-            "chronological" mode ordered (received_at DESC NULLS LAST, id
-            DESC) and tier is still returned (for display) but plays no
-            part in the order. snippet is None only when the matched text
-            was empty.
+            (Message, snippet, tier) triples ordered (tier ASC,
+            received_at DESC NULLS LAST, id DESC). snippet is None only
+            when the matched text was empty.
         """
         async with self._db.session() as session:
             built = await _build_candidate_query(
@@ -1014,33 +930,19 @@ class MessageRepository:
             field_pred = _field_predicate(msg, tokens, fields)
             tier = _match_tier(msg, tokens)
 
-            if sort == "chronological":
-                stmt = (
-                    select(msg, tier.label("tier"))
-                    .where(field_pred)
-                    .order_by(desc(msg.received_at).nulls_last(), desc(msg.id))
-                )
-                if cursor_id is not None:
-                    stmt = stmt.where(
-                        after_cursor(
-                            msg.received_at, msg.id,
-                            cursor_received_at, cursor_id, nulls_last=True,
-                        )
+            stmt = (
+                select(msg, tier.label("tier"))
+                .where(field_pred)
+                .order_by(tier, desc(msg.received_at).nulls_last(), desc(msg.id))
+            )
+            if cursor_id is not None:
+                stmt = stmt.where(
+                    after_tier_cursor(
+                        tier, msg.received_at, msg.id,
+                        cursor_tier if cursor_tier is not None else 0,
+                        cursor_received_at, cursor_id,
                     )
-            else:
-                stmt = (
-                    select(msg, tier.label("tier"))
-                    .where(field_pred)
-                    .order_by(tier, desc(msg.received_at).nulls_last(), desc(msg.id))
                 )
-                if cursor_id is not None:
-                    stmt = stmt.where(
-                        after_tier_cursor(
-                            tier, msg.received_at, msg.id,
-                            cursor_tier if cursor_tier is not None else 0,
-                            cursor_received_at, cursor_id,
-                        )
-                    )
             stmt = stmt.limit(limit)
 
             result = await session.execute(stmt)
@@ -1066,9 +968,7 @@ class MessageRepository:
         (and only for the first page -- a cursor never reaches this).
         Body is deliberately never trigram-matched here, which is the
         18-second-per-query cost the tsquery path above exists to avoid.
-        Already newest-first with no tier of its own, so sort mode is not
-        a parameter here -- a chronological search misses this stage
-        exactly as often as a relevance one does.
+        Already newest-first with no tier of its own.
 
         Args:
             account_id: Account scope, or None to search across every account
