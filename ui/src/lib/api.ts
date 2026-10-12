@@ -76,11 +76,8 @@ import type {
   QueuePatchRequest,
   QueueResponse,
   RespondRequest,
-  SearchDateBoundsResponse,
   SearchField,
   SearchResponse,
-  SearchSort,
-  SearchStrictness,
   SelectionSnapshotResponse,
   SemanticSearchResponse,
   SpamReviewListResponse,
@@ -503,7 +500,6 @@ export const api = {
         fields?: SearchField[];
         before?: string;
         limit?: number;
-        sort?: SearchSort;
         received_after?: string;
         received_before?: string;
         is_seen?: boolean;
@@ -512,28 +508,19 @@ export const api = {
     ): Promise<SearchResponse> {
       return request(`/search${qs(params)}`, { signal });
     },
-    /** Single-page: the strictness cutoff bounds the result set naturally,
-     * so there is no limit/before to page with here. */
+    /** Single-page: the tiering bounds the result set naturally, so there
+     * is no limit/before to page with here. */
     semantic(
       params: {
         q: string;
         account_id?: string;
         folder_ids?: string[];
-        strictness?: SearchStrictness;
-        sort?: SearchSort;
         received_after?: string;
         received_before?: string;
       },
       signal?: AbortSignal,
     ): Promise<SemanticSearchResponse> {
       return request(`/embeddings/search${qs(params)}`, { signal });
-    },
-    /** The date-range control's own axis, independent of any query text. */
-    dateBounds(params: {
-      account_id?: string;
-      folder_ids?: string[];
-    }): Promise<SearchDateBoundsResponse> {
-      return request(`/search/date-bounds${qs(params)}`);
     },
   },
 

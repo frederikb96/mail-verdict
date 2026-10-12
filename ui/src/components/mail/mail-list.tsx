@@ -279,10 +279,7 @@ export function MailList() {
   // mail reader would expect a filter to check, and to unread mail while
   // unread-only is on. (An empty folderIds array is the hook's own way to
   // stay disabled, the same state an explicitly-cleared folder scope on
-  // the search page already means.) Always chronological, with no toggle:
-  // a filter over one open list is expected to read strictly
-  // newest-first, unlike the full search page, which defaults to relevance
-  // ranking and offers a switch to override it.
+  // the search page already means.)
   const filterResult = useSearchResults({
     query: trimmedFilter,
     accountId: isUnifiedView ? undefined : accountId ?? undefined,
@@ -290,8 +287,6 @@ export function MailList() {
     isSeen: unreadOnly ? false : undefined,
     fields: ["subject", "from", "to"],
     semantic: false,
-    strictness: "balanced",
-    sort: "chronological",
   });
 
   const result = isUnifiedView ? unifiedResult : singleAccountResult;

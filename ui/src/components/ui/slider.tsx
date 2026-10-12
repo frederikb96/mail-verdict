@@ -7,19 +7,24 @@ import { cn } from "@/lib/utils";
 interface SliderProps<Value extends number | readonly number[]>
   extends React.ComponentPropsWithoutRef<typeof SliderPrimitive.Root<Value>> {
   className?: string;
+  /** Sizing for a slider that has to be easy to hit with a finger. */
+  thumbClassName?: string;
+  trackClassName?: string;
   /** One thumb, or one per entry for a range slider (two, here). */
   thumbCount?: number;
 }
 
 function Slider<Value extends number | readonly number[]>({
   className,
+  thumbClassName,
+  trackClassName,
   thumbCount = 1,
   ...props
 }: SliderProps<Value>) {
   return (
     <SliderPrimitive.Root className={cn("relative flex w-full touch-none select-none items-center", className)} {...props}>
       <SliderPrimitive.Control className="relative flex w-full items-center py-2">
-        <SliderPrimitive.Track className="relative h-1.5 w-full grow rounded-full bg-muted">
+        <SliderPrimitive.Track className={cn("relative h-1.5 w-full grow rounded-full bg-muted", trackClassName)}>
           <SliderPrimitive.Indicator className="absolute h-full rounded-full bg-primary" />
           {Array.from({ length: thumbCount }).map((_, i) => (
             <SliderPrimitive.Thumb
@@ -28,6 +33,7 @@ function Slider<Value extends number | readonly number[]>({
               className={cn(
                 "block h-4 w-4 rounded-full border-2 border-primary bg-background shadow",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                thumbClassName,
               )}
             />
           ))}

@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FolderPicker } from "@/components/search/folder-picker";
-import { DateRangePicker } from "@/components/search/date-range-picker";
+import { TimePicker, TimeWindowChip } from "@/components/search/time-picker";
 import { SearchResultRow } from "@/components/search/search-result-row";
 
 import { api, ApiError } from "@/lib/api";
@@ -23,18 +23,17 @@ import { useAccounts } from "@/hooks/use-accounts";
 import {
   ALL_SEARCH_FIELDS,
   searchAccountIdAtom,
-  searchDateRangeAtom,
   searchFieldsAtom,
   searchFolderIdsAtom,
   searchQueryAtom,
   searchScrollAnchorAtom,
   searchScrollCacheAtom,
   searchSemanticModeAtom,
-  searchSortModeAtom,
-  searchStrictnessAtom,
+  searchWindowAtom,
 } from "@/lib/search-prefs";
+import { windowKey } from "@/lib/search-window";
 import { useOpenMessage } from "@/hooks/use-open-message";
-import type { SearchField, SearchStrictness } from "@/types/api";
+import type { SearchField } from "@/types/api";
 
 const ALL_ACCOUNTS_VALUE = "__all__";
 
@@ -45,13 +44,8 @@ const FIELD_LABELS: Record<SearchField, string> = {
   body: "Body",
 };
 
-const STRICTNESS_LABELS: Record<SearchStrictness, string> = {
-  loose: "Loose",
-  balanced: "Balanced",
-  strict: "Strict",
-};
-
 const LOAD_MORE_SENTINEL_KEY = "__search-load-more__";
+const LESS_LIKELY_KEY = "__search-less-likely__";
 
 interface SearchPageProps {
   /** From the global header's search field (`?q=` on navigating here) --
@@ -78,9 +72,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
   const [fields, setFields] = useAtom(searchFieldsAtom);
   const [folderIds, setFolderIds] = useAtom(searchFolderIdsAtom);
   const [semantic, setSemantic] = useAtom(searchSemanticModeAtom);
-  const [strictness, setStrictness] = useAtom(searchStrictnessAtom);
-  const [sort, setSort] = useAtom(searchSortModeAtom);
-  const [dateRange, setDateRange] = useAtom(searchDateRangeAtom);
+  const [timeWindow, setTimeWindow] = useAtom(searchWindowAtom);
   const [scrollAnchor, setScrollAnchor] = useAtom(searchScrollAnchorAtom);
   const [scrollCache, setScrollCache] = useAtom(searchScrollCacheAtom);
   // The search page's own account scope -- deliberately independent of
@@ -125,11 +117,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
       folderIds,
       fields,
       semantic,
-      strictness,
-      sort,
-      dateRange: dateRange
-        ? { after: dateRange.after ?? undefined, before: dateRange.before ?? undefined }
-        : undefined,
+      window: timeWindow,
     });
 
   // The picker's own options, scoped the same way the search itself is --
@@ -158,6 +146,21 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
 
   const results = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data]);
   const total = data?.pages[0]?.total ?? 0;
+  // Semantic results arrive tier 1 first; the first tier-2 row is preceded
+  // by one "Less likely" divider row in the list. Row indices below are
+  // list positions (divider included), result indices are positions in
+  // `results`.
+  const dividerResultIndex = useMemo(() => results.findIndex((r) => r.tier === 2), [results]);
+  const listIndexOf = useCallback(
+    (resultIndex: number) =>
+      dividerResultIndex !== -1 && resultIndex >= dividerResultIndex ? resultIndex + 1 : resultIndex,
+    [dividerResultIndex],
+  );
+  const resultIndexOf = useCallback(
+    (listIndex: number) =>
+      dividerResultIndex !== -1 && listIndex > dividerResultIndex ? listIndex - 1 : listIndex,
+    [dividerResultIndex],
+  );
 
   // A search result carries no account/folder context for opening -- it's
   // resolved from the message itself, then handed to the mail view's own
@@ -185,11 +188,10 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
         query,
         searchAccountId ?? "all",
         (folderIds ?? []).slice().sort().join(","),
-        semantic ? strictness : [...fields].sort().join(","),
-        sort,
-        dateRange?.after ?? "", dateRange?.before ?? "",
+        semantic ? "" : [...fields].sort().join(","),
+        windowKey(timeWindow),
       ].join("|"),
-    [semantic, query, searchAccountId, folderIds, strictness, fields, sort, dateRange],
+    [semantic, query, searchAccountId, folderIds, fields, timeWindow],
   );
 
   // --- Scroll position restore-and-hold (SKILL.md) ---
@@ -223,9 +225,9 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
   const writeScrollToIndex = useCallback((index: number) => {
     const handle = vlistRef.current;
     if (!handle) return;
-    handle.scrollToIndex(index, { align: "start" });
+    handle.scrollToIndex(listIndexOf(index), { align: "start" });
     ownWriteOffsetRef.current = handle.scrollOffset;
-  }, []);
+  }, [listIndexOf]);
 
   useEffect(() => {
     if (restoreAttemptedRef.current) return;
@@ -259,7 +261,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
     (offset: number) => {
       const handle = vlistRef.current;
       if (!handle) return;
-      const index = handle.findItemIndex(offset);
+      const index = resultIndexOf(handle.findItemIndex(offset));
       const row = results[index];
       if (!row) return;
       setScrollAnchor((prev) =>
@@ -269,7 +271,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
       );
       setScrollCache({ listIdentity, cache: handle.cache });
     },
-    [results, listIdentity, setScrollAnchor, setScrollCache],
+    [results, listIdentity, resultIndexOf, setScrollAnchor, setScrollCache],
   );
 
   const handleScroll = useCallback(
@@ -339,14 +341,21 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
         )}
       </div>
 
-      <div className="relative">
-        <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={rawQuery}
-          onChange={(e) => setRawQuery(e.target.value)}
-          placeholder="Search messages…"
-          className="pl-9"
-        />
+      <div className="flex items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <SearchIcon className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={rawQuery}
+            onChange={(e) => setRawQuery(e.target.value)}
+            placeholder="Search messages…"
+            className="pl-9"
+          />
+        </div>
+        <TimePicker value={timeWindow} onChange={setTimeWindow} />
+        <label className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+          <Switch checked={semantic} onCheckedChange={setSemantic} />
+          Semantic search
+        </label>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -382,41 +391,6 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
 
         <FolderPicker selectedIds={folderIds} onChange={setFolderIds} accountId={searchAccountId} />
 
-        <DateRangePicker
-          value={dateRange}
-          onChange={setDateRange}
-          accountId={searchAccountId}
-          folderIds={folderIds}
-        />
-
-        <div className="flex gap-1" data-testid="search-sort-mode">
-          <button
-            type="button"
-            onClick={() => setSort("relevance")}
-            className={cn(
-              "rounded-full border px-2 py-0.5 text-xs",
-              sort === "relevance" ? "border-primary bg-primary/10" : "text-muted-foreground",
-            )}
-          >
-            Best match
-          </button>
-          <button
-            type="button"
-            onClick={() => setSort("chronological")}
-            className={cn(
-              "rounded-full border px-2 py-0.5 text-xs",
-              sort === "chronological" ? "border-primary bg-primary/10" : "text-muted-foreground",
-            )}
-          >
-            Newest first
-          </button>
-        </div>
-
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Switch checked={semantic} onCheckedChange={setSemantic} />
-          Semantic search
-        </label>
-
         {!semantic && (
           <div className="flex flex-wrap gap-1">
             {ALL_SEARCH_FIELDS.map((field) => (
@@ -435,23 +409,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
           </div>
         )}
 
-        {semantic && (
-          <div className="flex flex-wrap gap-1" data-testid="search-strictness">
-            {(Object.keys(STRICTNESS_LABELS) as SearchStrictness[]).map((level) => (
-              <button
-                key={level}
-                type="button"
-                onClick={() => setStrictness(level)}
-                className={cn(
-                  "rounded-full border px-2 py-0.5 text-xs",
-                  strictness === level ? "border-primary bg-primary/10" : "text-muted-foreground",
-                )}
-              >
-                {STRICTNESS_LABELS[level]}
-              </button>
-            ))}
-          </div>
-        )}
+        {timeWindow && <TimeWindowChip value={timeWindow} onClear={() => setTimeWindow(null)} />}
       </div>
 
       <div className="flex-1 overflow-hidden rounded-lg border">
@@ -505,9 +463,23 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
             onScroll={handleScroll}
           >
             {[
-              ...results.map((result) => (
-                <SearchResultRow key={result.id} result={result} onOpen={openResult.mutate} />
-              )),
+              ...results.flatMap((result, i) => {
+                const row = (
+                  <SearchResultRow key={result.id} result={result} onOpen={openResult.mutate} />
+                );
+                return i === dividerResultIndex
+                  ? [
+                      <div
+                        key={LESS_LIKELY_KEY}
+                        data-testid="search-less-likely"
+                        className="border-b bg-muted/40 px-4 py-1.5 text-xs font-medium text-muted-foreground"
+                      >
+                        Less likely
+                      </div>,
+                      row,
+                    ]
+                  : [row];
+              }),
               // A sentinel row inside the list, not a sibling below it --
               // "I scroll further down and see just a spinner there" is
               // what a load-more indicator sitting inside the scrollable
