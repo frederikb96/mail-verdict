@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.14.0] - 2026-10-12
+
 ### Changed
 
 - Semantic search has no strictness control or sort toggle any more: results come in two groups,
