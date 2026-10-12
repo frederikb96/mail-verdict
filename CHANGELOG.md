@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.15.2] - 2026-10-12
+
+### Changed
+
+- `search.prune_superseded_models` is on by default: once a cutover has completed, the embedding
+  reconcile pass deletes the vectors of every model that is neither the active nor the target one,
+  2,000 rows per statement. Switching back to a deleted model means embedding every message again.
+- The architecture notes say how a provider outage plays out: the queues suspend and resume when
+  the provider answers again, and the provider and model change only when the operator decides.
+
 ## [6.15.1] - 2026-10-12
 
 ### Fixed

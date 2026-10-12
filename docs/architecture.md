@@ -268,7 +268,9 @@ everything in the pipeline queue has a vector, which is what neighbour hints bel
 is a scheduling gate, not the availability-tracking circuit breaker each of `pipeline`, `orders`
 and `embeddings` keeps for its own provider calls (`queue/circuit.py`) — a breaker is keyed by
 `(provider, settings category)`, never by provider alone, so a misconfiguration in one category's
-own settings cannot suspend another category that happens to share a provider name. Reconciliation's
+own settings cannot suspend another category that happens to share a provider name. A provider outage suspends the breaker and the
+queue resumes when the provider answers again; nothing switches provider or model in response —
+that is the operator's decision. Reconciliation's
 gap-recovery pass (a listener reconnect) respects the classify gate, so it cannot enqueue a run
 ahead of a still-pending embedding.
 
