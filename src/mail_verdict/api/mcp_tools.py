@@ -1313,6 +1313,7 @@ async def semantic_search_mail(
     hits = (
         await semantic_search(
             get_db_connection(), query_vector=query_vector, model=model, account_id=aid,
+            use_index=get_config().search.use_hnsw_index,
         )
     )[:limit]
     async with get_db_connection().session() as session:
