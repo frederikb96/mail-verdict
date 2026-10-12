@@ -105,29 +105,39 @@ database:
   reserved_for_requests: 3
 
 search:
-  # Semantic search scans message_embeddings exactly rather than through
-  # its approximate HNSW index (embeddings/search.py) -- an approximate
-  # scan can silently return the wrong neighbourhood for a query far from
-  # every document, where an exact one cannot. Cost is linear in embedded
-  # message count, measured at roughly 18 microseconds per vector at 1536
-  # dimensions: 14,000 embedded messages took 254ms, 50,000 would take
-  # roughly 900ms, 200,000 roughly 3.6s. The embedding count is logged at
-  # startup against this ceiling; above it, the exact scan should be
-  # measured again rather than assumed to still be the right choice.
-  exact_scan_row_ceiling: 200000
+  # Semantic search finds its pool of nearest messages one of two ways
+  # (embeddings/search.py). Inside a scope (account, folders, time window)
+  # of at most this many messages it ranks exactly those messages' vectors:
+  # complete by construction, and it only reads the vectors of the messages
+  # inside the scope. Above it, it asks the HNSW index for the nearest
+  # vectors with the time window and account applied inside the index scan,
+  # because ranking a wide scope exactly reads every vector in it. The
+  # break-even sits where the exact path's cost, linear in the scope's size,
+  # passes the index path's roughly constant cost: measured at about 50 us
+  # per message in scope (halfvec, 1536 dimensions, warm), so 5,000 messages
+  # is a few hundred milliseconds in the worst case.
+  exact_scan_max_rows: 5000
   # How many distinct search queries keep their embedding vector in memory
   # (least recently used first out). The provider round trip is nearly all of
   # a semantic search's latency, and the same query is re-submitted whenever
   # the time window changes or the page is revisited. One vector is about
   # 12 KB at 1536 dimensions.
   query_cache_size: 256
-  # Whether semantic search first asks the HNSW index for the nearest
-  # vectors (fast: it reads a few hundred vectors instead of all of them)
-  # instead of always ranking every vector exactly. The index is approximate;
-  # searches it cannot fill a whole pool for fall back to the exact scan
-  # either way. Turn off to get exact results at the cost of reading every
-  # vector on each search.
-  use_hnsw_index: true
+  # How long a search waits for the provider to embed its query before the
+  # search answers 503 semantic_unavailable. Stored messages are embedded by
+  # the queue worker with its own, longer timeouts.
+  query_timeout_seconds: 10
+  # A rate-limited query embedding is retried once after this many seconds;
+  # a second rate limit answers 503 semantic_unavailable. A search must not
+  # wait out the longer backoff the queue worker uses.
+  query_rate_limit_retry_seconds: 1
+  # Whether embeddings of models that are neither the active nor the target
+  # model are deleted once the target has taken over. They are never read
+  # by search or by neighbour hints, and cost memory the active vectors need
+  # (the superseded model's vectors are about half the table and its index).
+  # Switching back to a model whose rows were deleted means embedding every
+  # message again.
+  prune_superseded_models: false
 
 # The glacier: a per-account place a message can be moved to where it
 # leaves the mail server for good and lives on only in this database

@@ -120,6 +120,7 @@ from mail_verdict.database.models import (
     Message,
     TagSource,
 )
+from mail_verdict.database.projection import MessageDisplay
 from mail_verdict.database.repository import (
     FolderRepository,
     MessageRepository,
@@ -141,7 +142,17 @@ mcp = FastMCP(
 )
 
 
-def _message_summary(msg: Message | GlacierMessage, *, is_glacier: bool = False) -> dict[str, Any]:
+def _parse_instant(value: str | None) -> _datetime | None:
+    """An ISO 8601 time from a tool argument; without an offset it is UTC."""
+    if not value:
+        return None
+    parsed = _datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=_timezone.utc)
+
+
+def _message_summary(
+    msg: Message | GlacierMessage | MessageDisplay, *, is_glacier: bool = False,
+) -> dict[str, Any]:
     """Convert a Message (or a visible GlacierMessage -- same field names,
     see that model's own docstring) to a summary dict for MCP responses.
 
@@ -1284,6 +1295,8 @@ async def semantic_search_mail(
     query: str,
     account_id: str | None = None,
     limit: int = 20,
+    received_after: str | None = None,
+    received_before: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Find mail by meaning rather than exact words -- "that email about the
@@ -1295,6 +1308,10 @@ async def semantic_search_mail(
         query: What to search for, in plain language
         account_id: Optional account UUID to scope the search to one account
         limit: Max results, 1-100 (default 20)
+        received_after: Only mail received at or after this ISO 8601 time
+            (a time without an offset is read as UTC); the likely/less
+            likely tiers are drawn within this window
+        received_before: Only mail received at or before this ISO 8601 time
 
     Returns:
         List of message summaries, each with a tier: 1 for a likely match,
@@ -1304,26 +1321,17 @@ async def semantic_search_mail(
         currently serving search are searched -- which lags the configured
         one during a re-embed -- see get_semantic_status for coverage.
     """
-    from mail_verdict.embeddings.query import embed_search_query
-    from mail_verdict.embeddings.search import semantic_search
+    from mail_verdict.embeddings.service import search_by_meaning
 
-    model, query_vector = await embed_search_query(query)
-
-    aid = uuid.UUID(account_id) if account_id else None
-    hits = (
-        await semantic_search(
-            get_db_connection(), query_vector=query_vector, model=model, account_id=aid,
-            use_index=get_config().search.use_hnsw_index,
-        )
-    )[:limit]
-    async with get_db_connection().session() as session:
-        glacier_ids = await glacier_ids_among(session, [hit.message.id for hit in hits])
+    _model, hits = await search_by_meaning(
+        get_db_connection(), query,
+        account_id=uuid.UUID(account_id) if account_id else None,
+        received_after=_parse_instant(received_after),
+        received_before=_parse_instant(received_before),
+    )
     return [
-        {
-            **_message_summary(hit.message, is_glacier=hit.message.id in glacier_ids),
-            "tier": hit.tier,
-        }
-        for hit in hits
+        {**_message_summary(hit.message, is_glacier=hit.message.is_glacier), "tier": hit.tier}
+        for hit in hits[:limit]
     ]
 
 

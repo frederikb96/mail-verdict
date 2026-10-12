@@ -153,6 +153,38 @@ async def test_enqueue_missing_batch_finds_in_scope_messages(
 
 
 @pytest.mark.asyncio
+async def test_enqueueing_copies_the_messages_received_at_onto_the_row(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """Both the sweep and the live-arrival path: the time window of a search
+    is answered from this copy."""
+    repo = EmbeddingRepository(migrated_db)
+    model = _unique_model()
+    swept_at = datetime(2026, 2, 3, 4, 5, tzinfo=timezone.utc)
+    live_at = datetime(2026, 6, 7, 8, 9, tzinfo=timezone.utc)
+    async with migrated_db.session() as session:
+        account_id, folder_id = await _seed_account_and_folder(session)
+        swept = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, received_at=swept_at,
+        )
+        await session.commit()
+    await repo.enqueue_missing_batch(model=model, batch_size=50, account_id=account_id)
+    async with migrated_db.session() as session:
+        live = await _seed_message(
+            session, account_id=account_id, folder_id=folder_id, received_at=live_at,
+        )
+        await session.commit()
+    assert await repo.enqueue_one(account_id=account_id, message_id=live, model=model)
+
+    async with migrated_db.session() as session:
+        rows = (await session.execute(
+            text("SELECT message_id, received_at FROM message_embeddings WHERE model = :m"),
+            {"m": model},
+        )).all()
+    assert {row.message_id: row.received_at for row in rows} == {swept: swept_at, live: live_at}
+
+
+@pytest.mark.asyncio
 async def test_enqueue_missing_batch_excludes_unsynced_folder(
     migrated_db: DatabaseConnection,
 ) -> None:
@@ -461,6 +493,15 @@ def _vector_at(cosine: float) -> list[float]:
 
 _QUERY_VECTOR = [1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1)
 
+# semantic_search ranks a scope of at most this many messages exactly and
+# asks the HNSW index for anything wider, so a maximum of 0 sends every
+# non-empty scope through the index and a large one keeps it on the exact scan.
+_EXACT = 5000
+_INDEX = 0
+_BOTH_PATHS = pytest.mark.parametrize(
+    "exact_scan_max_rows", [_EXACT, _INDEX], ids=["exact", "index"],
+)
+
 # Eight scores whose tiers, per assign_tiers, are [1, 1, 1, 2, None, None,
 # None, None].
 _SCORES = (0.70, 0.68, 0.66, 0.60, 0.55, 0.50, 0.45, 0.40)
@@ -471,8 +512,12 @@ async def _seed_scored_pool(
     model: str,
     scores: tuple[float, ...],
     received: list[datetime | None],
+    *,
+    copy_received_at: bool = True,
 ) -> tuple[uuid.UUID, list[uuid.UUID]]:
-    """One message per score, embedded at exactly that cosine to the query."""
+    """One message per score, embedded at exactly that cosine to the query.
+    Each embedding row carries its message's received_at, as enqueueing
+    writes it, unless `copy_received_at` is off."""
     async with db.session() as session:
         account_id, folder_id = await _seed_account_and_folder(session)
         ids: list[uuid.UUID] = []
@@ -484,11 +529,12 @@ async def _seed_scored_pool(
             ids.append(mail_id)
         await session.commit()
     async with db.session() as session:
-        for mail_id, score in zip(ids, scores, strict=True):
+        for mail_id, score, when in zip(ids, scores, received, strict=True):
             await session.execute(
                 MessageEmbedding.__table__.insert().values(
                     account_id=account_id, msg_key=str(mail_id), message_id=mail_id,
                     model=model, status="done", embedding=_vector_at(score),
+                    received_at=when if copy_received_at else None,
                 )
             )
     return account_id, ids
@@ -498,10 +544,10 @@ def _day(month: int, day: int = 1) -> datetime:
     return datetime(2026, month, day, tzinfo=timezone.utc)
 
 
-@pytest.mark.parametrize("use_index", [False, True])
+@_BOTH_PATHS
 @pytest.mark.asyncio
 async def test_semantic_search_returns_tier_one_then_tier_two_each_newest_first(
-    migrated_db: DatabaseConnection, use_index: bool,
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     """The nearest hit is not the first row: within a tier the order is by
     date, and the hits below tier two are dropped."""
@@ -511,7 +557,7 @@ async def test_semantic_search_returns_tier_one_then_tier_two_each_newest_first(
     account_id, ids = await _seed_scored_pool(migrated_db, model, _SCORES, received)
 
     results = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
     )
 
@@ -520,10 +566,10 @@ async def test_semantic_search_returns_tier_one_then_tier_two_each_newest_first(
     ]
 
 
-@pytest.mark.parametrize("use_index", [False, True])
+@_BOTH_PATHS
 @pytest.mark.asyncio
 async def test_a_small_pool_is_all_tier_one_even_for_a_noise_level_hit(
-    migrated_db: DatabaseConnection, use_index: bool,
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     """With three candidates or fewer there is no spread to judge by, so
     the search shows everything rather than nothing."""
@@ -533,24 +579,24 @@ async def test_a_small_pool_is_all_tier_one_even_for_a_noise_level_hit(
     )
 
     results = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
     )
 
     assert [(r.message.id, r.tier) for r in results] == [(ids[1], 1), (ids[0], 1)]
 
 
-@pytest.mark.parametrize("use_index", [False, True])
+@_BOTH_PATHS
 @pytest.mark.asyncio
 async def test_a_message_without_a_date_sorts_last_within_its_tier(
-    migrated_db: DatabaseConnection, use_index: bool,
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     model = _unique_model()
     received = [None, _day(2), _day(1), _day(6), _day(7), _day(8), _day(9), _day(10)]
     account_id, ids = await _seed_scored_pool(migrated_db, model, _SCORES, received)
 
     results = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
     )
 
@@ -559,10 +605,10 @@ async def test_a_message_without_a_date_sorts_last_within_its_tier(
     ]
 
 
-@pytest.mark.parametrize("use_index", [False, True])
+@_BOTH_PATHS
 @pytest.mark.asyncio
 async def test_date_range_narrows_the_pool_before_tiering(
-    migrated_db: DatabaseConnection, use_index: bool,
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
 ) -> None:
     """A hit the full pool drops can be tier one inside a window: the
     window removes candidates before the tiers are computed, it does not
@@ -573,13 +619,13 @@ async def test_date_range_narrows_the_pool_before_tiering(
     account_id, ids = await _seed_scored_pool(migrated_db, model, _SCORES, received)
 
     everything = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
     )
     assert ids[4] not in {r.message.id for r in everything}
 
     windowed = await semantic_search(
-        migrated_db, use_index=use_index,
+        migrated_db, exact_scan_max_rows=exact_scan_max_rows,
         query_vector=_QUERY_VECTOR, model=model, account_id=account_id, k=10,
         received_after=_day(3), received_before=_day(7),
     )
@@ -593,113 +639,181 @@ def _spread_dates() -> list[datetime | None]:
     return [datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=i) for i in range(30)]
 
 
-class _ExactScanSpy:
-    """Counts the exact scan's runs, optionally refusing to run it at all."""
+def _forbid_the_exact_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mail_verdict.embeddings import search as search_module
 
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, allow: bool) -> None:
-        from mail_verdict.embeddings import search as search_module
+    async def refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the exact scan ran although the index path was meant")
 
-        self.calls = 0
-        original = search_module._pool_exact
-
-        async def spy(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-            self.calls += 1
-            assert allow, "the exact scan ran although the index should have sufficed"
-            return await original(*args, **kwargs)  # type: ignore[arg-type]
-
-        monkeypatch.setattr(search_module, "_pool_exact", spy)
+    monkeypatch.setattr(search_module, "_pool_exact", refuse)
 
 
-async def _both_ways(
-    db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch, **kwargs: object,
-) -> tuple[list[tuple[uuid.UUID, int]], list[tuple[uuid.UUID, int]], int]:
-    """(exact result, index result, exact scans the index run needed)."""
-    exact = await semantic_search(db, use_index=False, query_vector=_QUERY_VECTOR, **kwargs)  # type: ignore[arg-type]
-    spy = _ExactScanSpy(monkeypatch, allow=True)
-    indexed = await semantic_search(db, use_index=True, query_vector=_QUERY_VECTOR, **kwargs)  # type: ignore[arg-type]
-    return (
-        [(r.message.id, r.tier) for r in exact],
-        [(r.message.id, r.tier) for r in indexed],
-        spy.calls,
+async def _search(
+    db: DatabaseConnection, model: str, exact_scan_max_rows: int, **kwargs: object,
+) -> list[tuple[uuid.UUID, int]]:
+    results = await semantic_search(
+        db, query_vector=_QUERY_VECTOR, model=model, exact_scan_max_rows=exact_scan_max_rows,
+        **kwargs,  # type: ignore[arg-type]
     )
+    return [(r.message.id, r.tier) for r in results]
 
 
 @pytest.mark.asyncio
-async def test_the_index_path_gives_the_exact_scans_result_without_running_it(
+async def test_the_index_path_gives_the_exact_scans_result(
     migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = _unique_model()
     account_id, _ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
+    exact = await _search(migrated_db, model, _EXACT, account_id=account_id, k=10)
 
-    exact, indexed, exact_runs = await _both_ways(
-        migrated_db, monkeypatch, model=model, account_id=account_id, k=10,
-    )
+    _forbid_the_exact_scan(monkeypatch)
+    indexed = await _search(migrated_db, model, _INDEX, account_id=account_id, k=10)
 
-    assert indexed == exact
     assert len(exact) > 0
-    assert exact_runs == 0
+    assert indexed == exact
 
 
 @pytest.mark.asyncio
-async def test_the_index_path_asks_the_hnsw_index(migrated_db: DatabaseConnection) -> None:
-    """Without the planner settings it falls back to a bitmap scan and a
-    sort, which is the exact scan under another name."""
-    from mail_verdict.embeddings.search import _INDEX_SETTINGS, _index_candidates_stmt, _Scope
-
-    scope = _Scope(
-        model=_unique_model(), query_vector=_QUERY_VECTOR, account_id=None, folder_ids=None,
-        received_after=None, received_before=None, k=10,
-    )
-    compiled = _index_candidates_stmt(scope).compile(
-        dialect=migrated_db.engine.dialect, compile_kwargs={"literal_binds": True},
-    )
-    async with migrated_db.session() as session:
-        for setting in _INDEX_SETTINGS:
-            await session.execute(text(f"SET LOCAL {setting}"))
-        plan = "\n".join(
-            row[0] for row in await session.execute(text(f"EXPLAIN {compiled}"))
-        )
-    assert "ix_message_embeddings_hnsw" in plan, plan
-
-
-@pytest.mark.asyncio
-async def test_the_index_path_skips_expunged_messages_like_the_exact_scan(
+async def test_the_index_path_skips_expunged_messages_and_refills_the_pool(
     migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The twelve nearest messages are expunged, so the first index round
+    (the pool size, 10) holds nothing eligible; only the second, wider
+    round can fill it."""
     model = _unique_model()
     account_id, ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
     async with migrated_db.session() as session:
         await session.execute(
-            text("UPDATE messages SET expunged_at = now() WHERE id = :id"), {"id": ids[0]},
+            text("UPDATE messages SET expunged_at = now() WHERE id = ANY(:ids)"),
+            {"ids": ids[:12]},
         )
+    exact = await _search(migrated_db, model, _EXACT, account_id=account_id, k=10)
 
-    exact, indexed, exact_runs = await _both_ways(
-        migrated_db, monkeypatch, model=model, account_id=account_id, k=10,
-    )
+    _forbid_the_exact_scan(monkeypatch)
+    indexed = await _search(migrated_db, model, _INDEX, account_id=account_id, k=10)
 
     assert indexed == exact
-    assert ids[0] not in {message_id for message_id, _ in indexed}
-    assert exact_runs == 0
+    assert indexed and not {message_id for message_id, _ in indexed} & set(ids[:12])
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_a_window_never_lets_a_message_outside_it_through(
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
+) -> None:
+    model = _unique_model()
+    account_id, ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
+    after = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=10)
+    before = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=20)
+
+    results = await semantic_search(
+        migrated_db, query_vector=_QUERY_VECTOR, model=model, account_id=account_id,
+        exact_scan_max_rows=exact_scan_max_rows, k=10,
+        received_after=after, received_before=before,
+    )
+
+    assert results
+    assert all(after <= r.message.received_at <= before for r in results if r.message.received_at)
+    assert {r.message.id for r in results} <= set(ids[10:21])
+
+
+@_BOTH_PATHS
+@pytest.mark.asyncio
+async def test_a_folder_scope_holds_on_both_paths(
+    migrated_db: DatabaseConnection, exact_scan_max_rows: int,
+) -> None:
+    model = _unique_model()
+    account_id, _ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
+
+    elsewhere = await _search(
+        migrated_db, model, exact_scan_max_rows, account_id=account_id, k=10,
+        folder_ids=[uuid.uuid4()],
+    )
+
+    assert elsewhere == []
+
+
+async def _seed_production_shaped_table(
+    db: DatabaseConnection, models: tuple[str, str],
+) -> uuid.UUID:
+    """A few thousand vectors of two models in one account, spread over time:
+    enough for the planner to prefer reading them all (a bitmap scan on the
+    window, or a sequential scan) over the HNSW index. The rows are copies
+    of a few random vectors with no message behind them."""
+    account_id = uuid.uuid4()
+    async with db.session() as session:
+        await session.execute(text(
+            "CREATE TEMP TABLE bases AS SELECT g AS i, "
+            "(SELECT array_agg((random() - 0.5)::real) FROM generate_series(1, 1536))"
+            "::halfvec(1536) AS v FROM generate_series(1, 100) g"
+        ))
+        await session.execute(
+            text(
+                "INSERT INTO message_embeddings "
+                "(id, account_id, msg_key, message_id, model, status, embedding, received_at) "
+                "SELECT gen_random_uuid(), :account, 'shape-' || g, gen_random_uuid(), "
+                "CASE WHEN g % 2 = 0 THEN :first ELSE :second END, 'done', "
+                "(SELECT v FROM bases WHERE i = 1 + g % 100), now() - (g || ' hours')::interval "
+                "FROM generate_series(1, 3000) g"
+            ),
+            {"account": account_id, "first": models[0], "second": models[1]},
+        )
+        await session.execute(text("ANALYZE message_embeddings"))
+    return account_id
 
 
 @pytest.mark.asyncio
-async def test_a_window_too_narrow_for_the_candidates_is_answered_exactly(
-    migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
+async def test_the_index_query_is_answered_by_the_hnsw_index_not_by_a_scan_of_the_vectors(
+    migrated_db: DatabaseConnection,
 ) -> None:
-    """Only the three oldest messages are inside the window, and they are
-    the three least similar: the nearest candidates are all outside it, so
-    the index cannot fill a pool and the exact scan has to."""
-    model = _unique_model()
-    account_id, ids = await _seed_scored_pool(migrated_db, model, _SPREAD, _spread_dates())
+    """The production shape: two models in the table, the model, account and
+    window in the query. Without the planner settings Postgres reads the
+    window's vectors from a bitmap scan and sorts them -- the exact scan
+    under another name, which the cost model prefers because it cannot see
+    that the vectors live out of line."""
+    from mail_verdict.embeddings.search import _apply_index_settings, _index_candidates_stmt, _Scope
 
-    exact, indexed, exact_runs = await _both_ways(
-        migrated_db, monkeypatch, model=model, account_id=account_id, k=10,
-        received_before=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=2),
+    models = (_unique_model(), _unique_model())
+    account_id = await _seed_production_shaped_table(migrated_db, models)
+    scope = _Scope(
+        model=models[0], query_vector=_QUERY_VECTOR, account_id=account_id, folder_ids=None,
+        received_after=datetime.now(timezone.utc) - timedelta(days=90), received_before=None,
     )
+    statement = _index_candidates_stmt(scope, 400).compile(
+        dialect=migrated_db.engine.dialect, compile_kwargs={"literal_binds": True},
+    )
+    try:
+        async with migrated_db.session() as session:
+            await _apply_index_settings(session, 400)
+            plan = "\n".join(row[0] for row in await session.execute(text(f"EXPLAIN {statement}")))
+    finally:
+        async with migrated_db.session() as session:
+            await session.execute(
+                text("DELETE FROM message_embeddings WHERE model = ANY(:models)"),
+                {"models": list(models)},
+            )
 
-    assert exact_runs == 1
-    assert indexed == exact
-    assert {message_id for message_id, _ in exact} == set(ids[:3])
+    assert "Index Scan using ix_message_embeddings_hnsw" in plan, plan
+
+
+@pytest.mark.asyncio
+async def test_the_index_path_leaves_out_a_row_whose_copy_of_received_at_is_missing(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The window is answered from the embedding row inside the index scan,
+    so a row enqueued without received_at cannot match one. The migration
+    and every enqueue path write it; this pins what a missing one means."""
+    model = _unique_model()
+    account_id, ids = await _seed_scored_pool(
+        migrated_db, model, _SPREAD, _spread_dates(), copy_received_at=False,
+    )
+    window = {
+        "received_after": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "received_before": datetime(2026, 3, 1, tzinfo=timezone.utc),
+    }
+
+    assert await _search(migrated_db, model, _INDEX, account_id=account_id, k=10, **window) == []
+    assert await _search(migrated_db, model, _EXACT, account_id=account_id, k=10, **window)
 
 
 @pytest.mark.asyncio

@@ -22,6 +22,7 @@ from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, cast
 
+from mail_verdict.config import get_config
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.core.structured_llm import retry_after_from_exception
 from mail_verdict.database.models import MessageEmbedding
@@ -155,6 +156,10 @@ def register_embeddings(
         # coverage can complete purely from rows earlier sweeps already
         # queued, independent of whether this one found anything new.
         await _maybe_cutover(embedding_repo, settings_service, model)
+        await _maybe_prune(
+            embedding_repo, settings_service, model,
+            enabled=get_config().search.prune_superseded_models,
+        )
 
     backfill_timer = ReconciliationTimer(
         db, _BACKFILL_LOCK_KEY, _reconcile, backfill_interval_seconds,
@@ -205,6 +210,33 @@ async def _maybe_cutover(
         "Embedding cutover complete -- search now answers from the new model",
         extra={"model": target_model, "in_scope": readiness.target.in_scope},
     )
+
+
+async def _maybe_prune(
+    embedding_repo: EmbeddingRepository, settings_service: SettingsService, target_model: str,
+    *, enabled: bool,
+) -> None:
+    """
+    Delete the embeddings of models that are neither the active nor the
+    target one, once the target has taken over (active == target) and
+    config.search.prune_superseded_models says so. While a migration is in
+    flight the active model's rows are what search answers from, so nothing
+    is deleted then.
+
+    Idempotent: it runs on every tick and deletes nothing once the table
+    holds only the two models.
+    """
+    if not enabled:
+        return
+    active_model = resolve_active_embedding_model(settings_service.get("semantic"))
+    if active_model != target_model:
+        return
+    deleted = await embedding_repo.prune_models_other_than({active_model, target_model})
+    if deleted:
+        logger.info(
+            "Pruned embeddings of superseded models",
+            extra={"deleted": deleted, "kept_model": active_model},
+        )
 
 
 async def _run_worker(

@@ -85,13 +85,17 @@ class EmbeddingProvider(ABC):
     """Abstract base for turning text into vectors."""
 
     @abstractmethod
-    async def embed_batch(self, texts: list[str], *, model: str) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], *, model: str, timeout: float | None = None,
+    ) -> list[list[float]]:
         """
         Embed a batch of texts in one request.
 
         Args:
             texts: Texts to embed, in order
             model: Provider model name to embed with
+            timeout: Seconds to wait for the response; None keeps the
+                client's own timeout
 
         Returns:
             One vector per input text, same order, each of
@@ -135,7 +139,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self._provider = provider
         self._base_url = base_url
 
-    async def embed_batch(self, texts: list[str], *, model: str) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], *, model: str, timeout: float | None = None,
+    ) -> list[list[float]]:
         """
         Embed a batch, resolving the API key fresh.
 
@@ -148,6 +154,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         client = await resolve_client(self._provider, self._cred_repo, base_url=self._base_url)
         response = await client.embeddings.create(
             model=model, input=texts, dimensions=EMBEDDING_DIMENSIONS,
+            **({} if timeout is None else {"timeout": timeout}),
         )
         logger.debug(
             "Embedded batch",
@@ -167,7 +174,9 @@ class FakeEmbeddingProvider(EmbeddingProvider):
     ordering in tests without an API key.
     """
 
-    async def embed_batch(self, texts: list[str], *, model: str) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], *, model: str, timeout: float | None = None,
+    ) -> list[list[float]]:
         """Derive a deterministic vector per text from its hash."""
         return [_fake_vector(text) for text in texts]
 
