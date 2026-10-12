@@ -17,7 +17,7 @@ import { SearchResultRow } from "@/components/search/search-result-row";
 
 import { api, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { useSearchResults } from "@/hooks/use-search";
+import { useSearchResults, useSemanticResults } from "@/hooks/use-search";
 import { useSearchFolders } from "@/hooks/use-search-folders";
 import { useAccounts } from "@/hooks/use-accounts";
 import {
@@ -31,8 +31,10 @@ import {
   searchSemanticModeAtom,
   searchWindowAtom,
 } from "@/lib/search-prefs";
+import { chooseSearchView, type Fetched } from "@/lib/search-view";
 import { windowKey } from "@/lib/search-window";
 import { useOpenMessage } from "@/hooks/use-open-message";
+import type { SearchResultItem } from "@/hooks/use-search";
 import type { SearchField } from "@/types/api";
 
 const ALL_ACCOUNTS_VALUE = "__all__";
@@ -84,12 +86,11 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
 
   const vlistRef = useRef<VListHandle>(null);
 
-  // The backend is now single-digit-to-low-double-digit milliseconds
-  // (the trigram-over-every-body query this replaced was the thing that
-  // needed 250ms of debounce); 150ms still absorbs ordinary typing
-  // without a request per keystroke.
+  // Typing is absorbed for 300 ms before a search is sent: a semantic search
+  // embeds each distinct text, and every search field in the apps waits the
+  // same.
   useEffect(() => {
-    const timer = setTimeout(() => setQuery(rawQuery), 150);
+    const timer = setTimeout(() => setQuery(rawQuery), 300);
     return () => clearTimeout(timer);
   }, [rawQuery]);
 
@@ -104,21 +105,52 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
   const searchAccountId = searchScopeAccountId ?? undefined;
 
   // An explicitly-cleared folder scope ([] -- see search-prefs.ts) means
-  // "search nothing", distinct from null ("every folder"). useSearchResults
-  // itself refuses to run the query in this state; this is only what the
+  // "search nothing", distinct from null ("every folder"). The search hooks
+  // themselves refuse to run the query in this state; this is only what the
   // page shows instead of "No results found", which would read as a
   // real, contentful answer rather than as nothing having been asked yet.
   const hasFolderScope = folderIds === null || folderIds.length > 0;
 
-  const { data, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage, isError, error } =
-    useSearchResults({
-      query,
-      accountId: searchAccountId,
-      folderIds,
-      fields,
-      semantic,
-      window: timeWindow,
-    });
+  // In semantic mode both searches run for the same text: the text one
+  // answers in milliseconds and is shown at once, the one by meaning replaces
+  // it when it lands (see lib/search-view.ts).
+  const text = useSearchResults({
+    query,
+    accountId: searchAccountId,
+    folderIds,
+    fields,
+    window: timeWindow,
+  });
+  const meaning = useSemanticResults({
+    query,
+    accountId: searchAccountId,
+    folderIds,
+    window: timeWindow,
+    enabled: semantic,
+  });
+  const { isFetchingNextPage, hasNextPage, fetchNextPage } = text;
+  const queryKey = [
+    query.trim(), searchAccountId ?? "all", (folderIds ?? []).slice().sort().join(","),
+    windowKey(timeWindow),
+  ].join("|");
+  const textItems = useMemo(() => text.data?.pages.flatMap((p) => p.items) ?? [], [text.data]);
+  const view = chooseSearchView({
+    semantic,
+    currentKey: queryKey,
+    text: {
+      key: queryKey,
+      status: text.isError ? "error" : text.data ? "success" : "pending",
+      items: textItems,
+      errorMessage: text.error?.message,
+    } satisfies Fetched<SearchResultItem>,
+    meaning: {
+      key: queryKey,
+      status: meaning.isError ? "error" : meaning.data ? "success" : "pending",
+      items: meaning.data,
+      errorStatus: meaning.error instanceof ApiError ? meaning.error.status : undefined,
+      errorMessage: meaning.error?.message,
+    } satisfies Fetched<SearchResultItem>,
+  });
 
   // The picker's own options, scoped the same way the search itself is --
   // an explicit folder selection made under a different account can name
@@ -144,8 +176,11 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchAccountId, scopedFoldersLoading]);
 
-  const results = useMemo(() => data?.pages.flatMap((p) => p.items) ?? [], [data]);
-  const total = data?.pages[0]?.total ?? 0;
+  const showEmptyPrompt = query.trim().length < 2 && hasFolderScope;
+  const showNoFolderSelected = !showEmptyPrompt && !hasFolderScope;
+  const isLoading = view.loading && !showEmptyPrompt && !showNoFolderSelected;
+  const results = view.items;
+  const total = view.source === "text" ? (text.data?.pages[0]?.total ?? 0) : results.length;
   // Semantic results arrive tier 1 first; the first tier-2 row is preceded
   // by one "Less likely" divider row in the list. Row indices below are
   // list positions (divider included), result indices are positions in
@@ -184,14 +219,14 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
   const listIdentity = useMemo(
     () =>
       [
-        semantic ? "semantic" : "fulltext",
+        view.source,
         query,
         searchAccountId ?? "all",
         (folderIds ?? []).slice().sort().join(","),
-        semantic ? "" : [...fields].sort().join(","),
+        view.source === "text" ? [...fields].sort().join(",") : "",
         windowKey(timeWindow),
       ].join("|"),
-    [semantic, query, searchAccountId, folderIds, fields, timeWindow],
+    [view.source, query, searchAccountId, folderIds, fields, timeWindow],
   );
 
   // --- Scroll position restore-and-hold (SKILL.md) ---
@@ -296,13 +331,14 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
       const { scrollSize, viewportSize } = vlistRef.current;
       if (
         scrollSize - offset - viewportSize < viewportSize * 1.5 &&
+        view.source === "text" &&
         hasNextPage &&
         !isFetchingNextPage
       ) {
         fetchNextPage();
       }
     },
-    [hasNextPage, isFetchingNextPage, fetchNextPage, persistAnchor],
+    [view.source, hasNextPage, isFetchingNextPage, fetchNextPage, persistAnchor],
   );
 
   const toggleField = (field: SearchField) => {
@@ -317,24 +353,23 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
     });
   };
 
-  const showEmptyPrompt = query.trim().length < 2 && hasFolderScope;
-  const showNoFolderSelected = !showEmptyPrompt && !hasFolderScope;
-  // A failed query (a semantic search with no provider configured, most
-  // commonly) reads as "No results found" otherwise -- a lie the user
+  // A failed query reads as "No results found" otherwise -- a lie the user
   // will act on by rephrasing or giving up on the feature.
-  const showError = !showEmptyPrompt && !showNoFolderSelected && isError;
+  const showError = !showEmptyPrompt && !showNoFolderSelected && view.error !== null;
+  const errorMessage = view.error || "Search failed.";
   const showNoResults =
-    !showEmptyPrompt && !showNoFolderSelected && !isLoading && !showError && results.length === 0;
-  const errorMessage =
-    semantic && error instanceof ApiError && error.status === 503
-      ? "Semantic search is unavailable — no AI provider is configured for it."
-      : error?.message || "Search failed.";
+    !showEmptyPrompt &&
+    !showNoFolderSelected &&
+    !isLoading &&
+    !showError &&
+    view.notice !== "searching" &&
+    results.length === 0;
 
   return (
     <div className="flex h-full flex-col gap-3 p-4">
       <div className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Search</h1>
-        {!showEmptyPrompt && !showNoFolderSelected && !isLoading && !showError && (
+        {!showEmptyPrompt && !showNoFolderSelected && !isLoading && !showError && !view.muted && (
           <span className="text-xs text-muted-foreground" data-testid="search-result-count">
             {total} {total === 1 ? "result" : "results"}
           </span>
@@ -412,7 +447,25 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
         {timeWindow && <TimeWindowChip value={timeWindow} onClear={() => setTimeWindow(null)} />}
       </div>
 
-      <div className="flex-1 overflow-hidden rounded-lg border">
+      <div className="flex flex-1 flex-col overflow-hidden rounded-lg border">
+        {/* Static text, no animation: the text results below stand in until the
+            search by meaning lands. */}
+        {view.notice === "searching" && !isLoading && (
+          <div
+            className="shrink-0 border-b px-4 py-1.5 text-xs text-muted-foreground"
+            data-testid="search-by-meaning-notice"
+          >
+            Searching by meaning…
+          </div>
+        )}
+        {view.notice === "unavailable" && !isLoading && (
+          <div
+            className="shrink-0 border-b px-4 py-1.5 text-xs text-muted-foreground"
+            data-testid="search-semantic-unavailable"
+          >
+            Semantic search is unavailable right now
+          </div>
+        )}
         {isLoading && (
           <div className="flex flex-col gap-3 p-4">
             {Array.from({ length: 6 }).map((_, i) => (
@@ -422,7 +475,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
         )}
 
         {showEmptyPrompt && !isLoading && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
             <SearchIcon className="h-12 w-12 opacity-50" />
             <p>Enter at least 2 characters to search</p>
           </div>
@@ -430,7 +483,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
 
         {showNoFolderSelected && (
           <div
-            className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground"
+            className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground"
             data-testid="search-no-folder-selected"
           >
             <FolderIcon className="h-12 w-12 opacity-50" />
@@ -439,14 +492,14 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
         )}
 
         {showError && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
             <AlertCircle className="h-12 w-12 opacity-50" />
             <p>{errorMessage}</p>
           </div>
         )}
 
         {showNoResults && (
-          <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-muted-foreground">
             <SearchIcon className="h-12 w-12 opacity-50" />
             <p>No results found</p>
           </div>
@@ -457,7 +510,7 @@ export function SearchPage({ initialQuery }: SearchPageProps = {}) {
             key={listIdentity}
             id="search-results-list"
             ref={vlistRef}
-            className="h-full"
+            className={cn("min-h-0 flex-1", view.muted && "opacity-60")}
             itemSize={72}
             cache={restorableCache}
             onScroll={handleScroll}

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.15.0] - 2026-10-12
+
+### Changed
+
+- Semantic search answers in a fraction of a second once the query is embedded. Vectors are stored
+  as `halfvec(1536)`, half the size, and each embedding row carries its message's `received_at`.
+  The search counts the messages in its scope first: a scope of up to `search.exact_scan_max_rows`
+  messages is ranked exactly over just those messages' vectors; a wider one asks the HNSW index,
+  with the time window and account applied inside the index scan, and checks the facts that can
+  change on the candidates. The index is now actually used: the planner settings that make it
+  choose the HNSW index are applied to the query and a test asserts the plan. `search.use_hnsw_index`
+  and `search.exact_scan_row_ceiling` are replaced by `search.exact_scan_max_rows`.
+- The upgrade rewrites `message_embeddings` (a migration that takes the table exclusively for a few
+  seconds, then builds the new index without blocking writes) and adds `received_at`. Run it while
+  nothing is being embedded; downgrading restores `vector(1536)`.
+- Search result rows, semantic and full-text, are loaded through a narrow projection without bodies
+  or raw source, and full-text candidates no longer carry them through the union.
+- Queries to models that have one are embedded with the model's query instruction (the Qwen3
+  embedding model, with a one-line task description in front of the query), which separates
+  topics better; stored messages are embedded as before.
+- A search no longer waits out a rate-limited embedding call: it retries once after a second, and
+  a second rate limit, a provider error or a timeout answers `503` with the detail
+  `semantic_unavailable`. `search.query_timeout_seconds` and `search.query_rate_limit_retry_seconds`
+  set the two waits.
+- The MCP tool `semantic_search_mail` takes `received_after` and `received_before` and goes through
+  the same function as the endpoint.
+- In semantic mode the web search shows the text matches at once, muted, under "Searching by
+  meaning…", and replaces them with the tiered list when it arrives; on `503` it keeps the text
+  matches and says semantic search is unavailable right now. Typing waits 300 ms before searching.
+
+### Added
+
+- `search.prune_superseded_models` (off): deletes the embeddings of models that are neither the
+  active nor the target one once a cutover has completed. They are never read by search or
+  neighbour hints, and make up about half of the table and its index.
+
 ## [6.14.2] - 2026-10-12
 
 ### Changed

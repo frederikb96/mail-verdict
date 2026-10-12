@@ -286,7 +286,6 @@ export function MailList() {
     folderIds: isUnifiedView ? viewFolderIds : folderId ? [folderId] : [],
     isSeen: unreadOnly ? false : undefined,
     fields: ["subject", "from", "to"],
-    semantic: false,
   });
 
   const result = isUnifiedView ? unifiedResult : singleAccountResult;

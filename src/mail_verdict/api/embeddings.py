@@ -136,7 +136,19 @@ async def trigger_backfill(
     return await _status_response(repo, model=model, account_id=account_id)
 
 
-@router.get("/search", response_model=SemanticSearchResponse)
+@router.get(
+    "/search",
+    response_model=SemanticSearchResponse,
+    responses={
+        503: {
+            "description": (
+                f"`{SEMANTIC_UNAVAILABLE}`: the query could not be embedded in time (provider "
+                "rate limit, error or timeout, or no provider configured). Clients keep their "
+                "text results."
+            ),
+        },
+    },
+)
 async def search(
     q: str = Query(min_length=1),
     account_id: uuid.UUID | None = Query(default=None),

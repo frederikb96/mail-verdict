@@ -66,6 +66,11 @@ def _build_hnsw(operator_class: str) -> None:
 
 
 def upgrade() -> None:
+    # Before anything touches the rows: updating a row of a table that has the
+    # HNSW index inserts it into the graph again, which takes minutes. The old
+    # index is on the vector type and cannot follow the column anyway.
+    with op.get_context().autocommit_block():
+        op.execute("DROP INDEX IF EXISTS ix_message_embeddings_hnsw")
     op.execute("ALTER TABLE message_embeddings ADD COLUMN IF NOT EXISTS received_at timestamptz")
     op.execute(
         "UPDATE message_embeddings me SET received_at = m.received_at "
@@ -77,8 +82,6 @@ def upgrade() -> None:
         "AND me.account_id = g.account_id AND me.msg_key = g.msg_key"
     )
 
-    # The old index is on the vector type and cannot follow the column.
-    op.execute("DROP INDEX IF EXISTS ix_message_embeddings_hnsw")
     with op.get_context().autocommit_block():
         if _embedding_type() != f"halfvec({_DIMENSIONS})":
             op.execute(
