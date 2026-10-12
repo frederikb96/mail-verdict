@@ -23,7 +23,6 @@ from fastapi import APIRouter, HTTPException, Query
 
 from mail_verdict.api.deps import get_message_repo
 from mail_verdict.api.schemas import (
-    SearchDateBoundsResponse,
     SearchField,
     SearchResponse,
     SearchResult,
@@ -35,7 +34,6 @@ from mail_verdict.database.repository import (
     SEARCH_FIELDS,
     MessageRepository,
     RowMarks,
-    SearchSort,
     list_row_marks,
 )
 from mail_verdict.glacier.rows import glacier_ids_among
@@ -92,25 +90,6 @@ async def _glacier_ids(message_ids: list[uuid.UUID]) -> frozenset[uuid.UUID]:
         return await glacier_ids_among(session, message_ids)
 
 
-@router.get("/date-bounds", response_model=SearchDateBoundsResponse)
-async def search_date_bounds(
-    account_id: uuid.UUID | None = Query(default=None),
-    folder_ids: list[uuid.UUID] | None = Query(
-        default=None, description="Restrict to these folders; omit for no restriction",
-    ),
-) -> SearchDateBoundsResponse:
-    """
-    The oldest and newest received_at across a scope, independent of any
-    search query -- what the date-range control draws its axis from
-    before a word has been typed. Registered ahead of the bare "" route
-    below only by file order, not by necessity: "/date-bounds" and "" can
-    never collide since one names a distinct sub-path.
-    """
-    msg_repo: MessageRepository = get_message_repo()
-    oldest, newest = await msg_repo.search_date_bounds(account_id, folder_ids=folder_ids)
-    return SearchDateBoundsResponse(oldest=oldest, newest=newest)
-
-
 @router.get("", response_model=SearchResponse)
 async def search_messages(
     q: str = Query(min_length=1),
@@ -133,15 +112,6 @@ async def search_messages(
     # OpenAPI metadata, so a direct call that omits the parameter behaves
     # like an ordinary Python default rather than passing that descriptor
     # straight through to the repository layer.
-    sort: Annotated[
-        SearchSort,
-        Query(
-            description=(
-                "'relevance' (field tier then newest, the default) or "
-                "'chronological' (newest first, tier ignored entirely)"
-            ),
-        ),
-    ] = "relevance",
     received_after: Annotated[
         datetime | None, Query(description="Only messages received at or after this instant"),
     ] = None,
@@ -154,8 +124,8 @@ async def search_messages(
 ) -> SearchResponse:
     """
     Search over the toggled fields, scoped to the given folders and, if
-    given, a received_at range, ranked by field tier then newest first or
-    by date alone (sort). See MessageRepository.search_messages for the
+    given, a received_at range, ranked by field tier then newest first.
+    See MessageRepository.search_messages for the
     matching and ranking rule itself; this endpoint resolves the cursor,
     falls back to the trigram tier when the primary stage's first page is
     empty, and shapes the response.
@@ -177,7 +147,7 @@ async def search_messages(
 
     cursor_received_at, cursor_id, cursor_tier = None, None, None
     if before is not None:
-        cursor_row = await msg_repo.resolve_search_cursor(before, tokens, sort=sort)
+        cursor_row = await msg_repo.resolve_search_cursor(before, tokens)
         if cursor_row is None:
             raise HTTPException(
                 status_code=400, detail=f"Invalid cursor: message {before} not found"
@@ -189,7 +159,6 @@ async def search_messages(
         tokens,
         folder_ids=folder_ids,
         fields=field_set,
-        sort=sort,
         received_after=received_after,
         received_before=received_before,
         is_seen=is_seen,

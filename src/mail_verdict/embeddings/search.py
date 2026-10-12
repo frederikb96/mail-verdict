@@ -52,52 +52,62 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-Strictness = Literal["loose", "balanced", "strict"]
+_EPOCH = datetime.min.replace(tzinfo=timezone.utc)
 
-# "relevance" (nearest-first, the historical and still-default behaviour)
-# or "chronological" (newest first, over the same strictness-cut pool --
-# see semantic_search's own docstring for why this is applied to the pool
-# rather than the ranking itself).
-SemanticSort = Literal["relevance", "chronological"]
+# Tier cut-offs on a hit's position between the pool's background level
+# (the median score: what an unrelated message scores for this query) and
+# its anchor (the third-best score, so one outlier hit cannot squash
+# everything else): 1.0 is the anchor, 0.0 the background. Raw cosine
+# similarity is meaningless across queries -- the best hit of a real query
+# lands anywhere from 0.42 to 0.79 depending on its language, length and
+# the corpus -- so tiers are relative to the pool's own spread. Calibrated
+# against real mailbox queries: typically 5-40 hits in each tier.
+TIER1_MIN = 0.55
+TIER2_MIN = 0.25
 
-# Relative-to-best-match factor per strictness position: an absolute
-# similarity floor cannot work here --
-# observed top similarity for a real query moves between 0.41 and 0.59
-# depending on query length and language, so a fixed cutoff returns
-# everything for one query and nothing for another. Relative-to-the-best-
-# match adapts to that automatically: a narrow topic comes back tight, a
-# genuinely broad one comes back broad.
-_STRICTNESS_FACTORS: dict[Strictness, float] = {"loose": 0.60, "balanced": 0.75, "strict": 0.88}
+# The nearest neighbours the exact scan pulls before tiering. The median is
+# only a background level when the pool is large, and near-duplicate mail
+# clusters (hundreds of identical alert subjects) fill a small pool with a
+# single topic; the scan costs the same either way.
+_CANDIDATE_POOL_SIZE = 400
 
-# Absolute floor beneath the relative cutoff, regardless of strictness --
-# justified by the observed noise level of a query that lands far from
-# every document (an HNSW-trapped result scored 0.17-0.18 on the same
-# corpus this was measured against).
-_ABSOLUTE_SIMILARITY_FLOOR = 0.25
 
-# How many nearest neighbours the exact scan pulls before the strictness
-# cutoff narrows them -- generous enough that "loose" and a broad query
-# together aren't starved of rows to keep.
-_CANDIDATE_POOL_SIZE = 200
+Tier = Literal[1, 2]
+
+
+def assign_tiers(scores: list[float]) -> list[Tier | None]:
+    """
+    The tier of each score within its pool: 1 (likely), 2 (less likely) or
+    None (dropped). Input order is preserved; a pool of three or fewer, or
+    one with no spread, is all tier 1 -- the search always shows something.
+    """
+    n = len(scores)
+    if n <= 3:
+        return [1] * n
+    ranked = sorted(scores, reverse=True)
+    anchor = ranked[2]
+    background = ranked[n // 2]
+    span = anchor - background
+    if span <= 0:
+        return [1] * n
+
+    def tier(score: float) -> Tier | None:
+        position = (score - background) / span
+        if position >= TIER1_MIN:
+            return 1
+        if position >= TIER2_MIN:
+            return 2
+        return None
+
+    return [tier(score) for score in scores]
 
 
 @dataclass(frozen=True)
 class SemanticSearchResult:
-    """One nearest-neighbour hit: the message and how close it was."""
+    """One hit: the message and the tier (1 or 2) it landed in."""
 
     message: Message
-    similarity: float
-
-
-@dataclass(frozen=True)
-class SemanticSearchOutcome:
-    """A semantic search's results plus what the relative strictness
-    cutoff resolved to for this particular query -- min_similarity_applied
-    is what the UI reports back to explain a small result set, since the
-    number itself means nothing outside the query it was computed for."""
-
-    results: list[SemanticSearchResult]
-    min_similarity_applied: float
+    tier: Tier
 
 
 async def semantic_search(
@@ -108,25 +118,21 @@ async def semantic_search(
     account_id: uuid.UUID | None = None,
     folder_ids: list[uuid.UUID] | None = None,
     k: int = _CANDIDATE_POOL_SIZE,
-    strictness: Strictness = "balanced",
-    sort: SemanticSort = "relevance",
     received_after: datetime | None = None,
     received_before: datetime | None = None,
-) -> SemanticSearchOutcome:
+) -> list[SemanticSearchResult]:
     """
     Find the messages whose current-model vector is closest to a query
-    vector, cut down by a strictness level relative to the best match in
-    this pool rather than an absolute floor (see the module docstring).
+    vector and sort them into tiers (see assign_tiers): likely hits first,
+    then less likely ones, each tier newest first. Messages below the
+    second tier are dropped, so a query always returns its best hits and
+    never a wall of noise.
 
     received_after/received_before narrow the nearest-neighbour pool
-    itself, applied before the k-nearest cut -- the same choice
-    search_messages makes for fulltext search, and for the same reason:
-    a date range is a real restriction on what can match at all, not a
-    filter over an already-decided page. sort="chronological" re-orders
-    the pool that survives the strictness cutoff by received_at instead
-    of by distance -- applied after the cutoff, never before, since the
-    cutoff is what "matches this query at all" means here and a message
-    outside it is not a worse-ranked hit, it is not a hit.
+    itself, applied before the k-nearest cut and so before tiering -- the
+    same choice search_messages makes for fulltext search, and for the same
+    reason: a date range is a real restriction on what can match at all,
+    not a filter over an already-decided page.
 
     Args:
         db: Database connection
@@ -135,19 +141,13 @@ async def semantic_search(
             vector spaces from two models in one ranking
         account_id: Scope to one account, or None to search every account
         folder_ids: Restrict to these folders, or None for no restriction
-        k: Size of the nearest-neighbour pool the strictness cutoff is
-            computed over
-        strictness: How much of the pool the cutoff keeps -- "loose",
-            "balanced" (default) or "strict"
-        sort: "relevance" (nearest first, the default) or "chronological"
-            (newest first, over the same cutoff pool)
+        k: Size of the nearest-neighbour pool the tiers are computed over
         received_after, received_before: Inclusive bounds on received_at;
             a message with no Date header matches neither
 
     Returns:
-        Results ordered nearest first (or newest first under
-        sort="chronological"), and the absolute similarity the relative
-        cutoff resolved to for this query
+        Tier 1 hits then tier 2 hits, each newest first; a message without
+        a date sorts last within its tier
     """
     async with db.session() as session:
         # The pgvector HNSW index on this column returns at most
@@ -235,31 +235,17 @@ async def semantic_search(
 
         stmt = stmt.order_by(order_col).limit(k)
 
-        pool = [
-            SemanticSearchResult(message=row[0], similarity=row[1])
-            for row in (await session.execute(stmt)).all()
+        pool: list[tuple[Message, float]] = [
+            (row[0], float(row[1])) for row in (await session.execute(stmt)).all()
         ]
 
-    if not pool:
-        return SemanticSearchOutcome(results=[], min_similarity_applied=_ABSOLUTE_SIMILARITY_FLOOR)
-
-    best = pool[0].similarity  # already ordered nearest-first by the query above
-    factor = _STRICTNESS_FACTORS[strictness]
-    min_similarity_applied = max(best * factor, _ABSOLUTE_SIMILARITY_FLOOR)
-    results = [r for r in pool if r.similarity >= min_similarity_applied]
-    if sort == "chronological":
-        # nulls_last: a dateless message still belongs in the result set
-        # (the cutoff above already decided that), it just sorts behind
-        # every dated one rather than in front -- the same placement
-        # search text's own chronological mode gives it.
-        _EPOCH = datetime.min.replace(tzinfo=timezone.utc)  # never actually used -- see below
-        dated = sorted(
-            (r for r in results if r.message.received_at is not None),
-            # The `or _EPOCH` is unreachable given the filter above; it
-            # only satisfies the type checker, which cannot narrow
-            # received_at's Optional-ness across the generator boundary.
-            key=lambda r: r.message.received_at or _EPOCH, reverse=True,
-        )
-        dateless = [r for r in results if r.message.received_at is None]
-        results = dated + dateless
-    return SemanticSearchOutcome(results=results, min_similarity_applied=min_similarity_applied)
+    tiers = assign_tiers([similarity for _, similarity in pool])
+    kept = [
+        SemanticSearchResult(message=message, tier=tier)
+        for (message, _), tier in zip(pool, tiers, strict=True)
+        if tier is not None
+    ]
+    # Dateless messages stay in their tier but sort behind every dated one.
+    kept.sort(key=lambda r: r.message.received_at or _EPOCH, reverse=True)
+    kept.sort(key=lambda r: (r.tier, r.message.received_at is None))
+    return kept

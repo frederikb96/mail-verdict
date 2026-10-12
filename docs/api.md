@@ -269,17 +269,23 @@ headers the rule has now, falling back to what was queued when no enabled rule c
 ### Search semantically
 
 ```bash
-curl 'localhost:8080/api/embeddings/search?q=that+invoice+about+the+conference+trip&strictness=strict'
+curl 'localhost:8080/api/embeddings/search?q=that+invoice+about+the+conference+trip&received_after=2026-01-01T00:00:00Z'
 ```
 
 Complements `GET /api/search` (field- and folder-scoped text matching, ranked by field tier then
 newest first, cursor-paginated with `folder_ids`/`fields`/`before`, plus an exact `total`) rather
 than replacing it — semantic search wins on a half-remembered topic with none of the same words,
 full-text wins on a known sender or an exact phrase; both accept `folder_ids` to scope to a set of
-folders, enforced in the query itself. Semantic search is single-page: `strictness`
-(`loose`/`balanced`/`strict`, default `balanced`) keeps results whose similarity is within a factor
-of the best match in the pool rather than filtering by an absolute number, which the response
-echoes back as `min_similarity_applied` so a caller can say why a result set came back small.
+folders, enforced in the query itself, and `received_after`/`received_before` (inclusive) to narrow
+the time window — on semantic search before the results are tiered, so the tiers are drawn within
+the window. Full-text results are always ordered by field tier, then newest first.
+
+Semantic search is single-page and has no tuning parameters. Each result carries `tier`: `1` for
+a likely match, `2` for a less likely one. The response lists tier 1 first, then tier 2, each
+newest first (a message without a date last); anything less related than that is left out, and a
+query with three or fewer candidates is all tier 1. Tiers are relative to the query's own score
+spread (the best hits against the median candidate, over the 400 nearest), so a similarity score
+is deliberately not returned.
 Coverage is never assumed complete: `GET /api/embeddings/status` reports `reachable` (what search
 can actually return) against `in_scope`, plus `unreachable` and `shadowed` for a join drift that
 would otherwise show up only as an empty search; `POST /api/embeddings/backfill` enqueues whatever

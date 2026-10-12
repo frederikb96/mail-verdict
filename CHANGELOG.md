@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Semantic search has no strictness control or sort toggle any more: results come in two groups,
+  the likely hits first and then a "Less likely" group, each newest first, and a query always
+  shows its best hits. The API reports `tier` (1 or 2) on each semantic result in place of
+  `similarity`, drops `strictness`, `sort` and `min_similarity_applied`, and looks at the 400
+  nearest messages instead of 200. The `semantic.default_strictness` setting is removed. The MCP
+  tool `semantic_search_mail` returns `tier` instead of `similarity`.
+- Full-text search always ranks by field tier, then newest first; the `sort` parameter and the
+  "Newest first" toggle are removed.
+- The search page's date-range slider is replaced by a clock button with presets (today, since
+  yesterday, last 7 days, last 30 days), a slider over the last 52 weeks and a custom range of
+  days.
+
+### Removed
+
+- `GET /api/search/date-bounds`, which only fed the old date-range slider.
+
 ## [6.13.0] - 2026-10-11
 
 ### Changed

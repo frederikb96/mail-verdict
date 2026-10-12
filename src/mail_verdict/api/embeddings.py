@@ -6,7 +6,8 @@ POST /api/embeddings/backfill  -- enqueue every message missing a current
                                    embedding, right now, rather than waiting
                                    out the periodic reconciler
 GET  /api/embeddings/search    -- semantic search: embeds the query text
-                                   and returns the nearest messages
+                                   and returns the likely hits, then the
+                                   less likely ones, each newest first
 
 Start/stop and concurrency for the embedding queue itself are not
 duplicated here -- it registers under the name "embeddings" with the
@@ -23,7 +24,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query
 
-from mail_verdict.api.schemas import EmbeddingStatusResponse, SearchResult, SemanticSearchResponse
+from mail_verdict.api.schemas import (
+    EmbeddingStatusResponse,
+    SemanticSearchHit,
+    SemanticSearchResponse,
+)
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import list_row_marks
@@ -34,7 +39,7 @@ from mail_verdict.embeddings.provider import (
     resolve_embedding_provider,
 )
 from mail_verdict.embeddings.repository import EmbeddingRepository
-from mail_verdict.embeddings.search import SemanticSort, Strictness, semantic_search
+from mail_verdict.embeddings.search import semantic_search
 from mail_verdict.glacier.rows import glacier_ids_among
 from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
@@ -136,25 +141,9 @@ async def search(
     folder_ids: list[uuid.UUID] | None = Query(
         default=None, description="Restrict to these folders; omit for no restriction",
     ),
-    strictness: Strictness | None = Query(
-        default=None,
-        description=(
-            "How tightly results cluster around the best match: "
-            "loose/balanced/strict. Omit to use semantic.default_strictness."
-        ),
-    ),
     # Annotated, not `= Query(default=...)`: see the identical comment in
     # api/search.py -- keeps a direct call's real default a plain Python
     # value rather than an unresolved FastAPI descriptor.
-    sort: Annotated[
-        SemanticSort,
-        Query(
-            description=(
-                "'relevance' (nearest first, the default) or 'chronological' "
-                "(newest first, over the same strictness-cut pool)"
-            ),
-        ),
-    ] = "relevance",
     received_after: Annotated[
         datetime | None, Query(description="Only messages received at or after this instant"),
     ] = None,
@@ -163,10 +152,11 @@ async def search(
     ] = None,
 ) -> SemanticSearchResponse:
     """
-    Semantic search: nearest messages to the meaning of the query text,
-    cut down by strictness (relative to the best match, not an absolute
-    similarity floor -- see embeddings/search.py). Single-page: the
-    strictness cutoff bounds the result set naturally.
+    Semantic search: the messages closest in meaning to the query text,
+    in two tiers -- likely hits first, then less likely ones, each newest
+    first (see embeddings/search.py for how the tiers are drawn). The
+    received_after/received_before window narrows the candidates before
+    tiering. Single-page: the tiering bounds the result set naturally.
 
     Complements full-text search (GET /api/search) rather than replacing
     it -- literal search wins for a known sender or an exact phrase,
@@ -179,7 +169,6 @@ async def search(
     # it was never placed in.
     model = resolve_active_embedding_model(settings)
     provider_name, base_url = resolve_active_embedding_provider(settings)
-    resolved_strictness: Strictness = strictness or settings.get("default_strictness", "balanced")
     cred_repo = get_provider_credential_repo()
 
     try:
@@ -191,18 +180,18 @@ async def search(
         logger.exception("Semantic search query embedding failed")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    outcome = await semantic_search(
+    hits = await semantic_search(
         get_db_connection(), query_vector=vectors[0], model=model,
-        account_id=account_id, folder_ids=folder_ids, strictness=resolved_strictness,
-        sort=sort, received_after=received_after, received_before=received_before,
+        account_id=account_id, folder_ids=folder_ids,
+        received_after=received_after, received_before=received_before,
     )
-    result_ids = [hit.message.id for hit in outcome.results]
+    result_ids = [hit.message.id for hit in hits]
     async with get_db_connection().session() as session:
         marks = await list_row_marks(session, result_ids)
         glacier_ids = await glacier_ids_among(session, result_ids)
     return SemanticSearchResponse(
         results=[
-            SearchResult(
+            SemanticSearchHit(
                 has_attachments=marks[hit.message.id].has_attachments,
                 verdict_is_spam=marks[hit.message.id].verdict_is_spam,
                 id=hit.message.id, account_id=hit.message.account_id,
@@ -215,11 +204,10 @@ async def search(
                     False if hit.message.id in glacier_ids else hit.message.imap_uid is None
                 ),
                 is_truncated=hit.message.is_truncated, mirrored_at=hit.message.created_at,
-                similarity=hit.similarity,
+                tier=hit.tier,
                 is_glacier=hit.message.id in glacier_ids,
             )
-            for hit in outcome.results
+            for hit in hits
         ],
         query=q, model=model,
-        strictness=resolved_strictness, min_similarity_applied=outcome.min_similarity_applied,
     )

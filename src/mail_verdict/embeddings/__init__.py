@@ -19,8 +19,8 @@ from mail_verdict.embeddings.provider import (
 )
 from mail_verdict.embeddings.repository import EmbeddingRepository, EmbeddingStatus
 from mail_verdict.embeddings.search import (
-    SemanticSearchOutcome,
     SemanticSearchResult,
+    assign_tiers,
     semantic_search,
 )
 from mail_verdict.embeddings.worker import EmbeddingComponents, register_embeddings
@@ -34,8 +34,8 @@ __all__ = [
     "EmbeddingStatus",
     "FakeEmbeddingProvider",
     "OpenAIEmbeddingProvider",
-    "SemanticSearchOutcome",
     "SemanticSearchResult",
+    "assign_tiers",
     "build_embedding_input",
     "register_embeddings",
     "resolve_embedding_provider",

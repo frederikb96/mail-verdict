@@ -458,13 +458,11 @@ class SearchResult(MessageSummary):
     Shared by both search endpoints: GET /api/search (match_tier
     meaningful -- see MessageRepository's _match_tier for what each value
     means, and FALLBACK_MATCH_TIER for the trigram stage's own) and GET
-    /api/embeddings/search (similarity
-    meaningful, match_tier always its default -- a semantic hit has no
-    field-tier concept of its own).
+    /api/embeddings/search (match_tier always its default -- a semantic
+    hit has no field-tier concept of its own; see SemanticSearchHit).
     """
 
     match_tier: int = 0
-    similarity: float | None = None
 
 
 class SearchResponse(BaseModel):
@@ -476,15 +474,6 @@ class SearchResponse(BaseModel):
     next_cursor: str | None = None
     query: str
     total: int
-
-
-class SearchDateBoundsResponse(BaseModel):
-    """The oldest and newest received_at across a search scope, with no
-    query of its own -- what the date-range control draws its axis from.
-    Both None when the scope has no dated message at all."""
-
-    oldest: datetime | None = None
-    newest: datetime | None = None
 
 
 # --- Account schemas ---
@@ -1374,18 +1363,20 @@ class EmbeddingStatusResponse(BaseModel):
     cutover_blocked_reason: str | None = None
 
 
-class SemanticSearchResponse(BaseModel):
-    """Semantic search results, nearest first. Single-page: the
-    strictness cutoff (see embeddings/search.py) bounds the result set
-    naturally, so there is no further page to fetch. min_similarity_applied
-    is what the relative strictness cutoff resolved to for this query, so
-    the UI can say why a result set came back small."""
+class SemanticSearchHit(SearchResult):
+    """A semantic hit: 1 for a likely match, 2 for a less likely one."""
 
-    results: list[SearchResult]
+    tier: Literal[1, 2]
+
+
+class SemanticSearchResponse(BaseModel):
+    """Semantic search results: tier 1 then tier 2, each newest first.
+    Single-page: the tiering (see embeddings/search.py) bounds the result
+    set naturally, so there is no further page to fetch."""
+
+    results: list[SemanticSearchHit]
     query: str
     model: str
-    strictness: Literal["loose", "balanced", "strict"]
-    min_similarity_applied: float
 
 
 # --- Pipeline configuration schemas ---
