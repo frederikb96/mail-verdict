@@ -347,6 +347,10 @@ are deliberately not evented); the two things a client integrating against it ne
   query parameter for a client that manages its own connection. A gap too large to replay from
   the in-memory ring sends a `resync` event instead of the missed ones — treat it as "invalidate
   everything you cached from this stream," not as one more event to interpret.
+- An idle stream carries a `ping` event every 15 seconds. It has no id and is not in the event
+  list below: it only proves the connection is alive, which a client that hides SSE comment lines
+  (a browser's `EventSource` does) cannot learn from a plain keep-alive. Treat a stream that has
+  pinged and then goes silent for a few intervals as dead and reconnect with the last event id.
 
 Every event name the stream can carry is listed in
 [`api-contract/sse-events.json`](api-contract/sse-events.json).

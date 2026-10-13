@@ -94,6 +94,16 @@ Two deliberate details:
   The list endpoints' `limit` ceiling is what makes one request enough for a deep list. Only the
   lists showing a folder the change touched are re-read: message events name their folder, and
   `mail.updated` for a move also names the folder it left (`old_folder_id`).
+- **A client's own action is re-read once.** The server does not tag an event with who caused
+  it, so the browser recognises the echo of its own request by message id and timing
+  (`ui/src/lib/mail-event-buffer.ts`): an event for a message it has a request out for, arriving
+  between the request leaving and a short grace after its answer, is dropped, because the
+  re-read that follows the answer already covers it. Other clients' events never match and are
+  handled as before.
+- **The browser notices a dead stream.** An idle stream carries a `ping` event every 15
+  seconds. A stream that has pinged and then stays silent is closed and reopened, as is one
+  whose page comes back into view or whose network returns; the last event id replays the gap or
+  answers resync.
 - **A listener reconnect emits a resync event.** Notifications sent while the connection was down
   are gone for good, so clients are told once to invalidate everything rather than silently
   holding stale data.

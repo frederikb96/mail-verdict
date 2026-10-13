@@ -177,3 +177,24 @@ class TestSSEAccountIdCaseInsensitive:
             pass
 
         assert captured["account_id"] == str(account_id)
+
+
+class TestSSEHeartbeat:
+    """An idle stream carries a named `ping` event: EventSource hides comment
+    lines, so a page could not otherwise tell a quiet stream from a dead one."""
+
+    @pytest.mark.asyncio
+    async def test_idle_stream_yields_a_ping_event_without_an_id(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(events_module, "KEEPALIVE_INTERVAL_S", 0.05)
+
+        ring = EventRing()
+        gen = _sse_generator(ring, str(uuid.uuid4()), None, _CountingRequest(disconnect_after=50))
+
+        assert (await gen.__anext__()).startswith("id: ")
+        heartbeat = await gen.__anext__()
+
+        assert heartbeat.startswith("event: ping\n")
+        assert "id:" not in heartbeat
+        await gen.aclose()

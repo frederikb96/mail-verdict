@@ -25,7 +25,20 @@ import { useEffectiveAlertFolderIds } from "@/hooks/use-push";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { networkRecovered } from "@/lib/intent-drainer";
+import { getLedgerSnapshot } from "@/lib/intent-ledger";
+import {
+  type BufferedMailEvent,
+  bufferMailEvent,
+  ownEcho,
+  planMailRefresh,
+  triageMailEvents,
+} from "@/lib/mail-event-buffer";
 import { recordObservedChange } from "@/lib/observed-changes";
+import {
+  type StreamActivity,
+  WATCHDOG_INTERVAL_MS,
+  streamIsStale,
+} from "@/lib/stream-watchdog";
 import { folderAlertsEnabled } from "@/lib/alert-prefs";
 import { closeResolvedNotifications, showAlertNotification } from "@/lib/live-notifications";
 import {
@@ -96,16 +109,11 @@ export function useSSE(accountId?: string) {
   const reconnectDelayRef = useRef(RECONNECT_DELAY_MS);
   const sourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activityRef = useRef<StreamActivity>({ lastAt: 0, pinged: false });
 
-  // Buffered mail.new/mail.updated/mail.deleted state -- see FLUSH_INTERVAL_MS.
+  // Buffered mail.new/mail.updated/mail.deleted events -- see FLUSH_INTERVAL_MS.
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingNewOrMovedRef = useRef(false);
-  const pendingUpdatedIdsRef = useRef<Set<string>>(new Set());
-  const pendingRemovedIdsRef = useRef<Set<string>>(new Set());
-  const pendingFolderCountsRef = useRef(false);
-  // The folders the buffered events touched -- null once one arrived that
-  // names none, which refreshes every open list.
-  const pendingFoldersRef = useRef<Set<string> | null>(new Set());
+  const pendingMailEventsRef = useRef<BufferedMailEvent[]>([]);
   const threadArrivalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const threadArrivalPendingRef = useRef(false);
 
@@ -121,37 +129,42 @@ export function useSSE(accountId?: string) {
   useEffect(() => {
     function flushPending() {
       flushTimerRef.current = null;
-      const removed = pendingRemovedIdsRef.current;
-      const updated = pendingUpdatedIdsRef.current;
-      const hadNewOrMoved = pendingNewOrMovedRef.current;
-      const hadFolderCounts = pendingFolderCountsRef.current;
-      const folders = pendingFoldersRef.current;
-      pendingFoldersRef.current = new Set();
-      pendingRemovedIdsRef.current = new Set();
-      pendingUpdatedIdsRef.current = new Set();
-      pendingNewOrMovedRef.current = false;
-      pendingFolderCountsRef.current = false;
+      // An event for a message this browser has a request out for is the echo
+      // of that request, which re-reads everything it touched once answered:
+      // the answered ones are dropped, the unanswered ones wait for it.
+      const { apply, hold } = triageMailEvents(
+        pendingMailEventsRef.current, getLedgerSnapshot().intents, Date.now(),
+      );
+      pendingMailEventsRef.current = hold;
+      if (hold.length > 0) scheduleFlush();
+      const plan = planMailRefresh(apply);
 
       // Rows that changed, arrived or left, and every count, are re-read
       // together by refreshMailViews -- one request per open list showing a
       // folder the events touched, however deep it is scrolled, so the list
       // and the counts never disagree.
-      for (const id of updated) queryClient.invalidateQueries({ queryKey: mailKeys.detail(id) });
-      refreshThreads(queryClient, new Set([...updated, ...removed]), false);
-      if (hadNewOrMoved) scheduleThreadArrivalRefresh();
-      if (hadFolderCounts || hadNewOrMoved || removed.size > 0 || updated.size > 0) {
-        refreshMailViews(queryClient, folders ? { folderIds: folders } : null);
+      for (const id of plan.updatedIds) {
+        queryClient.invalidateQueries({ queryKey: mailKeys.detail(id) });
+      }
+      refreshThreads(queryClient, new Set([...plan.updatedIds, ...plan.removedIds]), false);
+      if (plan.newOrMoved) scheduleThreadArrivalRefresh();
+      if (plan.folderCounts || plan.newOrMoved || plan.removedIds.size > 0 || plan.updatedIds.size > 0) {
+        refreshMailViews(queryClient, plan.folders ? { folderIds: plan.folders } : null);
       }
     }
 
-    /** Remember the folders an event names, or that it named none. */
-    function noteFolders(...folderIds: Array<string | null | undefined>) {
-      const known = folderIds.filter((id): id is string => !!id);
-      if (known.length === 0) {
-        pendingFoldersRef.current = null;
-        return;
-      }
-      for (const id of known) pendingFoldersRef.current?.add(id);
+    /** Buffer a mail event for the next flush. */
+    function bufferEvent(kind: BufferedMailEvent["kind"], data: SSEEvent | null) {
+      pendingMailEventsRef.current.push(bufferMailEvent(kind, data, Date.now()));
+      scheduleFlush();
+    }
+
+    /** Hide a message other clients moved or removed from every list at
+     * once -- unless this browser's own request is what moved it, which its
+     * own projection already shows. */
+    function observeChange(id: string, from: string | null, to: string | null) {
+      if (ownEcho(id, Date.now(), getLedgerSnapshot().intents) !== "none") return;
+      recordObservedChange(id, from, to);
     }
 
     function scheduleFlush() {
@@ -249,6 +262,20 @@ export function useSSE(accountId?: string) {
 
       const source = new EventSource(url);
       sourceRef.current = source;
+      activityRef.current = { lastAt: Date.now(), pinged: false };
+
+      // Everything the server sends counts as the stream being alive.
+      const listen = (type: string, handler: (e: MessageEvent) => void) =>
+        source.addEventListener(type, (e) => {
+          activityRef.current.lastAt = Date.now();
+          handler(e as MessageEvent);
+        });
+
+      // The server's heartbeat: EventSource hides comment lines, so a quiet
+      // stream is only told from a dead one by this named event.
+      listen("ping", () => {
+        activityRef.current.pinged = true;
+      });
 
       source.onopen = () => {
         reconnectDelayRef.current = RECONNECT_DELAY_MS;
@@ -276,7 +303,7 @@ export function useSSE(accountId?: string) {
       // reached it still reconnects with an id the server can replay from --
       // without one, the reconnect is a fresh connection and everything
       // that happened during the gap is lost.
-      source.addEventListener("connected", (e: MessageEvent) => {
+      listen("connected", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
       });
 
@@ -284,7 +311,7 @@ export function useSSE(accountId?: string) {
       // invalidate everything once rather than trust a stale cache. The mail
       // lists are refreshed as windows instead -- invalidating one would
       // re-read every page it has loaded, one request at a time.
-      source.addEventListener("resync", (e: MessageEvent) => {
+      listen("resync", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         refreshMailLists(queryClient);
         void refetchStaggered(queryClient);
@@ -297,75 +324,56 @@ export function useSSE(accountId?: string) {
       // FLUSH_INTERVAL_MS. Each handler below only records into the
       // pending buffer and schedules a flush; flushPending is what
       // actually touches the cache.
-      source.addEventListener("mail.new", (e: MessageEvent) => {
+      listen("mail.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
+        let data: SSEEvent | null = null;
         try {
-          const data: SSEEvent = JSON.parse(e.data);
-          pendingNewOrMovedRef.current = true;
-          noteFolders(data.folder_id);
-          if (data.folder_id) pendingFolderCountsRef.current = true;
-          if (data.id && data.account_id && data.folder_id) {
-            setMailArrived({ accountId: data.account_id, folderId: data.folder_id, messageId: data.id });
-          }
+          data = JSON.parse(e.data);
         } catch {
-          noteFolders();
+          // Buffered as unreadable: every open list is re-read.
         }
-        scheduleFlush();
+        if (data?.id && data.account_id && data.folder_id) {
+          setMailArrived({ accountId: data.account_id, folderId: data.folder_id, messageId: data.id });
+        }
+        bufferEvent("new", data);
       });
 
-      source.addEventListener("mail.updated", (e: MessageEvent) => {
+      listen("mail.updated", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
+        let data: SSEEvent | null = null;
         try {
-          const data: SSEEvent = JSON.parse(e.data);
-          // Message events carry the row's id as `id`, not `message_id`
-          // (that name is verdict.issued's own convention). The
-          // conversations holding it are refreshed at flush time, with
-          // the rest of the burst (refreshThreads).
-          noteFolders(data.folder_id, data.old_folder_id);
-          if (data.id) {
-            if (data.changed?.includes("folder_id")) {
-              // Both ends of the move are in the event (old_folder_id), so
-              // the flush re-reads the lists showing either.
-              pendingRemovedIdsRef.current.add(data.id);
-              pendingNewOrMovedRef.current = true;
-              // Gone from its old folder's lists at once, not a re-read later.
-              if (data.folder_id) {
-                recordObservedChange(data.id, data.old_folder_id ?? null, data.folder_id);
-              }
-            } else {
-              pendingUpdatedIdsRef.current.add(data.id);
-            }
-          }
-          pendingFolderCountsRef.current = true;
+          data = JSON.parse(e.data);
         } catch {
-          noteFolders();
+          // Buffered as unreadable: every open list is re-read.
         }
-        scheduleFlush();
+        // Message events carry the row's id as `id`, not `message_id`
+        // (that name is verdict.issued's own convention). The conversations
+        // holding it are refreshed at flush time, with the rest of the burst
+        // (refreshThreads). A move names both ends (old_folder_id), so the
+        // flush re-reads the lists showing either; the row is gone from its
+        // old folder's lists at once, not a re-read later.
+        if (data?.id && data.folder_id && data.changed?.includes("folder_id")) {
+          observeChange(data.id, data.old_folder_id ?? null, data.folder_id);
+        }
+        bufferEvent("updated", data);
       });
 
-      source.addEventListener("mail.deleted", (e: MessageEvent) => {
+      // invalidateAllFolderCaches (folders, folder-order, and unified
+      // together) already covers a delete's counts on the batched flush --
+      // no separate immediate call needed.
+      listen("mail.deleted", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
+        let data: SSEEvent | null = null;
         try {
-          const data: SSEEvent = JSON.parse(e.data);
-          noteFolders(data.folder_id);
-          if (data.id) {
-            pendingRemovedIdsRef.current.add(data.id);
-            recordObservedChange(data.id, data.folder_id ?? null, null);
-          } else {
-            pendingNewOrMovedRef.current = true;
-          }
+          data = JSON.parse(e.data);
         } catch {
-          pendingNewOrMovedRef.current = true;
-          noteFolders();
+          // Buffered as unreadable: every open list is re-read.
         }
-        // invalidateAllFolderCaches (folders, folder-order, and unified
-        // together) already covers this on the batched flush below --
-        // no separate immediate call needed.
-        pendingFolderCountsRef.current = true;
-        scheduleFlush();
+        if (data?.id) observeChange(data.id, data.folder_id ?? null, null);
+        bufferEvent("deleted", data);
       });
 
-      source.addEventListener("verdict.issued", (e: MessageEvent) => {
+      listen("verdict.issued", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
@@ -391,7 +399,7 @@ export function useSSE(accountId?: string) {
       // tab being focused: an unfocused tab is exactly the case a
       // notification exists for, and a focused one simply gets both the
       // popup and the already-visible bell update.
-      source.addEventListener("alert.new", (e: MessageEvent) => {
+      listen("alert.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: alertKeys.list });
         queryClient.invalidateQueries({ queryKey: alertKeys.count });
@@ -422,7 +430,7 @@ export function useSSE(accountId?: string) {
       // notification already displayed is closed by reading back which
       // alerts are still undismissed and closing whatever no longer
       // belongs to that set, rather than trying to parse one out of here.
-      source.addEventListener("alert.dismissed", (e: MessageEvent) => {
+      listen("alert.dismissed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: alertKeys.list });
         queryClient.invalidateQueries({ queryKey: alertKeys.count });
@@ -443,7 +451,7 @@ export function useSSE(accountId?: string) {
 
       // A write PostIMAP gave up on permanently -- refresh the notification
       // centre's unread count and list.
-      source.addEventListener("notification.new", (e: MessageEvent) => {
+      listen("notification.new", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["notifications"] });
         // The bell's badge counts write failures too (useBellBadge).
@@ -451,7 +459,7 @@ export function useSSE(accountId?: string) {
       });
 
       // Account state events
-      source.addEventListener("account.changed", (e: MessageEvent) => {
+      listen("account.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["accounts"] });
         queryClient.invalidateQueries({ queryKey: ["account-order"] });
@@ -460,7 +468,7 @@ export function useSSE(accountId?: string) {
 
       // A folder finished syncing (including initial backfill) -- a resync
       // can change any row, which is exactly what a window refresh re-reads.
-      source.addEventListener("folder.synced", (e: MessageEvent) => {
+      listen("folder.synced", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         let folderId: string | undefined;
         try {
@@ -471,13 +479,13 @@ export function useSSE(accountId?: string) {
         refreshMailViews(queryClient, folderId ? { folderIds: new Set([folderId]) } : null);
       });
 
-      source.addEventListener("folder.changed", (e: MessageEvent) => {
+      listen("folder.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         invalidateAllFolderCaches(queryClient);
       });
 
       // Send/draft status: toast + refresh the outbox list.
-      source.addEventListener("outbox.updated", (e: MessageEvent) => {
+      listen("outbox.updated", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
@@ -511,7 +519,7 @@ export function useSSE(accountId?: string) {
 
       // One line per finished run -- the pipeline live tail and failures
       // table refresh from this rather than polling alone.
-      source.addEventListener("pipeline.run_finished", (e: MessageEvent) => {
+      listen("pipeline.run_finished", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["runs"] });
         queryClient.invalidateQueries({ queryKey: ["queues"] });
@@ -519,7 +527,7 @@ export function useSSE(accountId?: string) {
 
       // Calendar sync is polling-based (60s) on the backend, so this only
       // refreshes what a poll already changed -- it doesn't shorten the lag.
-      source.addEventListener("calendar.object", (e: MessageEvent) => {
+      listen("calendar.object", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
@@ -541,7 +549,7 @@ export function useSSE(accountId?: string) {
         scheduleCalendarFlush();
       });
 
-      source.addEventListener("calendar.collection", (e: MessageEvent) => {
+      listen("calendar.collection", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["calendars"] });
       });
@@ -550,22 +558,22 @@ export function useSSE(accountId?: string) {
       // instance, replaced wholesale, and a viewer holds the base_revision
       // its own next save is checked against -- so a second browser that
       // missed this would have its save refused rather than merged.
-      source.addEventListener("calendar.links_changed", (e: MessageEvent) => {
+      listen("calendar.links_changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["calendar-links"] });
       });
 
-      source.addEventListener("calendar.account", (e: MessageEvent) => {
+      listen("calendar.account", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["dav-accounts"] });
       });
 
-      source.addEventListener("contact.object", (e: MessageEvent) => {
+      listen("contact.object", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["contacts"] });
       });
 
-      source.addEventListener("contact.collection", (e: MessageEvent) => {
+      listen("contact.collection", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["addressbooks"] });
       });
@@ -574,7 +582,7 @@ export function useSSE(accountId?: string) {
       // a write to it, so a category changed in another tab reaches this
       // one only via this event. Invalidating the bare ["settings"] prefix
       // covers both the all-categories query and the single-category one.
-      source.addEventListener("settings.changed", (e: MessageEvent) => {
+      listen("settings.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["settings"] });
         // bell_badge_counts_new_mail decides what the server badge counts.
@@ -585,7 +593,7 @@ export function useSSE(accountId?: string) {
       // its own to ride -- broadcast to every ring (see api/events.py's
       // broadcast_event). Invalidates the list (one request for the whole
       // loaded window) and the one order's own detail, when open.
-      source.addEventListener("order.updated", (e: MessageEvent) => {
+      listen("order.updated", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         try {
           const data: SSEEvent = JSON.parse(e.data);
@@ -600,7 +608,7 @@ export function useSSE(accountId?: string) {
 
       // Identities are MailVerdict's own table too -- the compose "from"
       // selector, reply/forward and RSVP all read the same list.
-      source.addEventListener("identity.changed", (e: MessageEvent) => {
+      listen("identity.changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         queryClient.invalidateQueries({ queryKey: ["identities"] });
       });
@@ -610,7 +618,7 @@ export function useSSE(accountId?: string) {
       // once -- an agent and the UI, most notably -- so a second viewer
       // needs the current revision pushed to it rather than finding out
       // only when its own next save gets a 409.
-      source.addEventListener("pipeline.document_changed", (e: MessageEvent) => {
+      listen("pipeline.document_changed", (e: MessageEvent) => {
         lastEventIdRef.current = e.lastEventId;
         // Every pipeline query key is nested under this one prefix
         // (document, health, revisions, stage-types), so one invalidate
@@ -620,9 +628,36 @@ export function useSSE(accountId?: string) {
       });
     }
 
+    /** Open a fresh stream now instead of waiting out a backoff or a dead
+     * socket; the last event id replays what was missed, or answers resync. */
+    function reconnectNow() {
+      reconnectDelayRef.current = RECONNECT_DELAY_MS;
+      setConnectionState("reconnecting");
+      connect();
+    }
+
+    function reconnectIfStale() {
+      if (sourceRef.current && streamIsStale(activityRef.current, Date.now())) reconnectNow();
+    }
+
+    // A network change leaves the old socket unusable without the browser
+    // necessarily noticing; a page coming back into view after a sleep finds
+    // the same, or sits in a backoff that no longer applies.
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (sourceRef.current) reconnectIfStale();
+      else reconnectNow();
+    };
+    const watchdog = setInterval(reconnectIfStale, WATCHDOG_INTERVAL_MS);
+    window.addEventListener("online", reconnectNow);
+    document.addEventListener("visibilitychange", onVisible);
+
     connect();
 
     return () => {
+      clearInterval(watchdog);
+      window.removeEventListener("online", reconnectNow);
+      document.removeEventListener("visibilitychange", onVisible);
       if (sourceRef.current) {
         sourceRef.current.close();
         sourceRef.current = null;
@@ -635,6 +670,7 @@ export function useSSE(accountId?: string) {
         clearTimeout(flushTimerRef.current);
         flushTimerRef.current = null;
       }
+      pendingMailEventsRef.current = [];
       if (calFlushTimerRef.current) {
         clearTimeout(calFlushTimerRef.current);
         calFlushTimerRef.current = null;
