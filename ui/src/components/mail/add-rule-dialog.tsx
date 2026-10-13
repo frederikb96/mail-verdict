@@ -53,7 +53,9 @@ function describeError(err: unknown): string {
 /**
  * One sentence about the open mail becomes one proposed change to the
  * rules -- any number of rules added, changed, moved or removed -- which is
- * accepted or declined as a whole -- no history, no second prompt.
+ * accepted or declined as a whole. Once an answer is shown the sentence
+ * stays editable, and Run again asks afresh with what it says now: a new,
+ * independent request that carries nothing over from the previous one.
  * Closing the dialog by any route aborts a request still running, and the
  * server stops before its next model call.
  */
@@ -150,19 +152,7 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
               Say in a sentence what should happen to mail like the one you have open. The
               assistant may add, change, reorder or remove several rules at once.
             </p>
-            <Textarea
-              autoFocus
-              value={prompt}
-              maxLength={MAX_PROMPT_CHARS}
-              placeholder="These should go to Newsletter too"
-              aria-label="What should the rule do?"
-              onChange={(e) => setPrompt(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
-                e.preventDefault();
-                void send();
-              }}
-            />
+            <PromptField autoFocus value={prompt} onChange={setPrompt} onSubmit={() => void send()} />
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => handleOpenChange(false)}>
                 Cancel
@@ -178,6 +168,22 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
           <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             Working out a change…
+          </div>
+        )}
+
+        {(view.kind === "result" || view.kind === "empty" || view.kind === "error") && (
+          <div className="flex flex-col gap-2 border-b pb-3">
+            <PromptField value={prompt} onChange={setPrompt} onSubmit={() => void send()} />
+            <div className="flex justify-end">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!prompt.trim() || accepting}
+                onClick={() => void send()}
+              >
+                Run again
+              </Button>
+            </div>
           </div>
         )}
 
@@ -208,6 +214,34 @@ export function AddRuleDialog({ mailId, open, onOpenChange }: AddRuleDialogProps
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PromptField({
+  value,
+  onChange,
+  onSubmit,
+  autoFocus,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  autoFocus?: boolean;
+}) {
+  return (
+    <Textarea
+      autoFocus={autoFocus}
+      value={value}
+      maxLength={MAX_PROMPT_CHARS}
+      placeholder="These should go to Newsletter too"
+      aria-label="What should the rule do?"
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+        e.preventDefault();
+        onSubmit();
+      }}
+    />
   );
 }
 
