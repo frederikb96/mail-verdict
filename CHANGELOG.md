@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.17.0] - 2026-10-13
+
 ### Added
 
 - The event stream sends a `ping` event every 15 seconds while idle, in place of the comment
