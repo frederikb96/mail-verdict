@@ -5,6 +5,7 @@
 import { useMemo } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { withFields } from "@/lib/query-result";
 import type { OrderDetail, OrderUpdateRequest } from "@/types/api";
 
 export interface OrdersListFilter {
@@ -45,7 +46,7 @@ export function useOrdersList(filter: OrdersListFilter) {
     () => query.data?.pages.flatMap((p) => p.items) ?? [],
     [query.data],
   );
-  return { ...query, items };
+  return withFields(query, { items });
 }
 
 export function useOrderDetail(id: string | null) {

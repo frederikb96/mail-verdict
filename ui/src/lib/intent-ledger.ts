@@ -243,9 +243,12 @@ export function addIntents(
   });
   // A fresh intents array once the pending marker is due, so every
   // projection re-runs and rows showing the marker re-render without a
-  // clock of their own.
+  // clock of their own -- only while one of these is still unanswered: an
+  // answered one shows no marker, and a write re-renders every mail view.
   if (intents.length > 0 && typeof window !== "undefined") {
+    const ids = new Set(intents.map((i) => i.id));
     window.setTimeout(() => {
+      if (!snapshot.intents.some((i) => ids.has(i.id) && i.state !== "done")) return;
       snapshot = { ...snapshot, intents: [...snapshot.intents] };
       emit();
     }, PENDING_MARKER_DELAY_MS + 50);

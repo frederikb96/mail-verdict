@@ -26,6 +26,7 @@ import {
 import { projectThreadMessages, type RowIntentMarks } from "@/lib/mail-intents";
 import { isMailListQuery } from "@/lib/query-persister";
 import { readTimeOf, recordRead, timedRead } from "@/lib/read-clock";
+import { withFields } from "@/lib/query-result";
 import type {
   MessageDetail,
   MessageListResponse,
@@ -396,7 +397,7 @@ export function useMailList(
     ),
   );
   useRefreshWindowOnMount(queryKey, listWindow !== undefined);
-  return { ...query, readAt: readTimeOf(queryKey, query.dataUpdatedAt) };
+  return withFields(query, { readAt: readTimeOf(queryKey, query.dataUpdatedAt) });
 }
 
 export function useMailDetail(mailId: string | null) {
@@ -441,7 +442,7 @@ export function useThread(mailId: string | null) {
     const messages = projectThreadMessages(query.data.messages, intents, readAt);
     return messages === query.data.messages ? query.data : { ...query.data, messages };
   }, [query.data, readAt, intents]);
-  return { ...query, data };
+  return withFields(query, { data });
 }
 
 /** Starts fetching a conversation ahead of its opening; a no-op while fresh. */

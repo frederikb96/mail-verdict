@@ -11,6 +11,7 @@ import { useProjectionIntents } from "@/hooks/use-intent-ledger";
 import { useMailAction } from "@/hooks/use-mail-intents";
 import { appliesTo } from "@/lib/mail-intents";
 import { readTimeOf, timedRead } from "@/lib/read-clock";
+import { withFields } from "@/lib/query-result";
 import type { SpamReviewItem } from "@/types/api";
 
 export const spamReviewKeys = {
@@ -41,7 +42,7 @@ export function useSpamReviewList() {
     );
     return ruled.size === 0 ? all : all.filter((item) => !ruled.has(item.message_id));
   }, [query.data, intents, readAt]);
-  return { ...query, items };
+  return withFields(query, { items });
 }
 
 /**

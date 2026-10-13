@@ -1,6 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps,
+} from "react";
 import { VList, type VListHandle } from "virtua";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { AlertCircle, Loader2, Inbox as InboxIcon, Layers, Mail as MailIcon } from "lucide-react";
@@ -654,6 +656,22 @@ export function MailList() {
     [allMailIds, rowsById, shiftRange, toggle],
   );
 
+  // The rows are memoized, so each handler reaches them as one stable
+  // function reading the current one when called: a handler that changes
+  // with the open row would otherwise re-render every row on each move.
+  const rowHandlersRef = useRef({ handleOpen, handleAction, handleCheckToggle });
+  rowHandlersRef.current = { handleOpen, handleAction, handleCheckToggle };
+  const openRow = useCallback((mailId: string) => rowHandlersRef.current.handleOpen(mailId), []);
+  const actOnRow = useCallback(
+    (mailId: string, action: MailRowAction, mailAccountId?: string) =>
+      rowHandlersRef.current.handleAction(mailId, action, mailAccountId),
+    [],
+  );
+  const toggleRowCheck = useCallback(
+    (mailId: string, shiftKey: boolean) => rowHandlersRef.current.handleCheckToggle(mailId, shiftKey),
+    [],
+  );
+
   useKeyboardShortcuts({
     mails: allMails as MessageSummary[],
     openMailId: openRowId,
@@ -842,26 +860,25 @@ export function MailList() {
           onScroll={handleScroll}
         >
           {allMails.map((mail, index) => (
-            <DragMail key={mail.id} row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
-              <MailListItem
-                mail={mail as MessageSummary}
-                accountEmoji={isUnifiedView ? accountsById.get(mail.account_id)?.emoji : undefined}
-                accountName={isUnifiedView ? accountsById.get(mail.account_id)?.name : undefined}
-                isSelected={mail.id === openRowId}
-                isFocused={index === focusedIndex}
-                isChecked={isSelected(mail)}
-                selectionMode={selectionMode}
-                isJunk={isUnifiedView ? viewJunkFolderIds.has(mail.folder_id) : isJunkFolder}
-                isGlacier={mail.is_glacier}
-                isThreaded={!isFiltering && threaded}
-                onOpen={handleOpen}
-                onPressStart={handlePressStart}
-                onCheckToggle={handleCheckToggle}
-                onAction={handleAction}
-                onRetryIntent={retryIntent}
-                onDiscardIntent={discardIntent}
-              />
-            </DragMail>
+            <MailRow
+              key={mail.id}
+              mail={mail as MessageSummary}
+              accountEmoji={isUnifiedView ? accountsById.get(mail.account_id)?.emoji : undefined}
+              accountName={isUnifiedView ? accountsById.get(mail.account_id)?.name : undefined}
+              isSelected={mail.id === openRowId}
+              isFocused={index === focusedIndex}
+              isChecked={isSelected(mail)}
+              selectionMode={selectionMode}
+              isJunk={isUnifiedView ? viewJunkFolderIds.has(mail.folder_id) : isJunkFolder}
+              isGlacier={mail.is_glacier}
+              isThreaded={!isFiltering && threaded}
+              onOpen={openRow}
+              onPressStart={handlePressStart}
+              onCheckToggle={toggleRowCheck}
+              onAction={actOnRow}
+              onRetryIntent={retryIntent}
+              onDiscardIntent={discardIntent}
+            />
           ))}
         </VList>
       )}
@@ -873,3 +890,17 @@ export function MailList() {
     </div>
   );
 }
+
+/** One list row, re-rendered only when its own props change: a list
+ * re-renders on every mail action and every move between messages, and
+ * redrawing each mounted row for that dominated the cost. */
+function MailRowImpl(props: ComponentProps<typeof MailListItem>) {
+  const { mail } = props;
+  return (
+    <DragMail row={mail} accountId={mail.account_id} folderId={mail.folder_id}>
+      <MailListItem {...props} />
+    </DragMail>
+  );
+}
+
+const MailRow = memo(MailRowImpl);

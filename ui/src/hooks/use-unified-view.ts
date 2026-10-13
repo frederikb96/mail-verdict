@@ -15,6 +15,7 @@ import {
   refreshMailViews,
   useRefreshWindowOnMount,
 } from "@/hooks/use-mails";
+import { withFields } from "@/lib/query-result";
 import type { UnifiedFolderResponse } from "@/types/api";
 
 export const unifiedKeys = {
@@ -39,7 +40,7 @@ export function useUnifiedFolders() {
     query.data, (view) => view.folders.map((f) => f.folder_id), unifiedKeys.folders,
     query.dataUpdatedAt,
   );
-  return { ...query, data };
+  return withFields(query, { data });
 }
 
 /** One view's mail -- paged, threaded, filtered, centred on a message and
@@ -70,7 +71,7 @@ export function useUnifiedMails(
     ),
   );
   useRefreshWindowOnMount(queryKey, listWindow !== undefined);
-  return { ...query, readAt: readTimeOf(queryKey, query.dataUpdatedAt) };
+  return withFields(query, { readAt: readTimeOf(queryKey, query.dataUpdatedAt) });
 }
 
 /** Fetch unified folder display order. */

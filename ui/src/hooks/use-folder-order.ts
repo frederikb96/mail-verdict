@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useProjectedCounts } from "@/hooks/use-intent-ledger";
 import { timedRead } from "@/lib/read-clock";
+import { withFields } from "@/lib/query-result";
 
 export const folderOrderKeys = {
   get: (accountId: string) => ["folder-order", accountId] as const,
@@ -27,7 +28,7 @@ export function useFolderOrder(accountId: string | null) {
     () => (query.data && folders !== query.data.folders ? { ...query.data, folders: folders! } : query.data),
     [query.data, folders],
   );
-  return { ...query, data };
+  return withFields(query, { data });
 }
 
 export function useUpdateFolderOrder() {

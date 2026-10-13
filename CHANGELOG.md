@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The mail view runs about half as much script while it is being used. Every mail action
+  passes through several states, and each of them re-rendered the sidebar with every folder row and
+  its menu, every visible mail row, the notification bell and the compose dialog. The folder counts
+  and the folder delete guard now follow only the part of the action ledger they show, mail and
+  folder rows re-render only when their own row changes, and the hooks that put projected data over
+  a query result no longer subscribe their components to its fetch state, which re-rendered them
+  twice per refetch. The ledger's delayed redraw for the pending marker is skipped once the action
+  has been answered.
+
 ### Fixed
 
 - `scripts/devstack.py --large` seeds again: the large mail seeder logs in to the test mail server
