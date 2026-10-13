@@ -39,6 +39,7 @@ import base64
 import email.utils
 import imaplib
 import random
+import ssl
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -194,7 +195,12 @@ def seed_mail(
     APPEND rather than LMTP because LMTP can only ever deliver to INBOX, and a
     single folder is the one shape a folder tree cannot be tested in."""
     rng = _rng(seed)
+    # The test Dovecot refuses a cleartext login, and its certificate is self-signed.
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     imap = imaplib.IMAP4(host, port)
+    imap.starttls(ssl_context=context)
     imap.login(mailbox, password)
     per_folder = {name: max(1, int(count * share)) for name, share in MAIL_FOLDERS}
     written: dict[str, int] = {}

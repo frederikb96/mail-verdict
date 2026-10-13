@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `scripts/devstack.py --large` seeds again: the large mail seeder logs in to the test mail server
+  over STARTTLS, which it requires.
+
 ## [6.15.2] - 2026-10-12
 
 ### Changed
