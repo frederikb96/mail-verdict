@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.16.0] - 2026-10-13
+
 ### Added
 
 - Add rule keeps the instruction on screen after an answer, editable, with Run again: a new,
