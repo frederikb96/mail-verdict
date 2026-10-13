@@ -10,6 +10,7 @@ import {
 import { api } from "@/lib/api";
 import { useProjectedCounts } from "@/hooks/use-intent-ledger";
 import { timedRead } from "@/lib/read-clock";
+import { withFields } from "@/lib/query-result";
 import type { FolderCreateRequest } from "@/types/api";
 
 export const folderKeys = {
@@ -24,7 +25,7 @@ export function useFolders(accountId: string | null) {
   const data = useProjectedCounts(
     query.data, (f) => [f.id], folderKeys.list(accountId!), query.dataUpdatedAt,
   );
-  return { ...query, data };
+  return withFields(query, { data });
 }
 
 /** An account's folders with the counts exactly as the server last gave them. */

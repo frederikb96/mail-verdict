@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { withFields } from "@/lib/query-result";
 import type { AccountCreateRequest, AccountResponse, AccountUpdateRequest } from "@/types/api";
 
 export const accountKeys = {
@@ -64,7 +65,7 @@ export function useAccounts() {
     [accountsQuery.data, order],
   );
 
-  return { ...accountsQuery, data };
+  return withFields(accountsQuery, { data });
 }
 
 export function useAccount(id: string | null) {

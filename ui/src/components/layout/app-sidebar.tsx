@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
   Inbox,
@@ -138,6 +138,129 @@ function getContributingAccounts(
   }
   return result;
 }
+
+// The sidebar re-renders whenever a folder count, the selection or the route
+// changes; these take nothing from it that changes then, so they sit those
+// renders out.
+const SidebarNotificationBell = memo(NotificationBell);
+const SidebarComposeDialog = memo(ComposeDialog);
+const SidebarFolderManageDialog = memo(FolderManageDialog);
+
+interface FolderRowProps {
+  accountId: string | null;
+  folderId: string;
+  name: string;
+  imapName: string;
+  icon: typeof Inbox;
+  isActive: boolean;
+  badgeCount: number;
+  totalCount: number;
+  isGlacier: boolean;
+  onSelect: (folderId: string) => void;
+}
+
+/** One folder of an account, re-rendered only when its own props change --
+ * a count changing in one folder leaves every other row alone. */
+function FolderRowImpl({
+  accountId, folderId, name, imapName, icon: Icon, isActive, badgeCount, totalCount, isGlacier,
+  onSelect,
+}: FolderRowProps) {
+  return (
+    <DroppableFolder folderId={folderId} folderName={name}>
+      <SidebarMenuItem className="flex items-center gap-1">
+        <SidebarMenuButton isActive={isActive} onClick={() => onSelect(folderId)} tooltip={imapName}>
+          <Icon className="h-4 w-4" />
+          <Truncate text={name} className="flex-1" />
+        </SidebarMenuButton>
+        {accountId && (
+          <FolderRowMenu
+            accountId={accountId}
+            folderId={folderId}
+            folderName={name}
+            badgeCount={badgeCount}
+            totalCount={totalCount}
+            isGlacier={isGlacier}
+          />
+        )}
+      </SidebarMenuItem>
+    </DroppableFolder>
+  );
+}
+
+const FolderRow = memo(FolderRowImpl);
+
+/** One unified view, re-rendered only when its own props change. */
+function UnifiedFolderRowImpl({
+  view: uf,
+  accounts,
+  isActive,
+  onSelect,
+}: {
+  view: UnifiedFolderResponse;
+  accounts: AccountResponse[] | undefined;
+  isActive: boolean;
+  onSelect: (folderName: string) => void;
+}) {
+  const folderMapping = useMemo(
+    () => uf.folders.map((f) => ({ account_id: f.account_id, folder_id: f.folder_id })),
+    [uf.folders],
+  );
+  const contributing = getContributingAccounts(uf, accounts);
+  return (
+    <DroppableFolder
+      folderId={folderMapping[0]?.folder_id ?? uf.unified_name}
+      folderName={uf.unified_name}
+      folderMapping={folderMapping}
+    >
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          isActive={isActive}
+          onClick={() => onSelect(uf.unified_name)}
+          tooltip={`${uf.unified_name} (${uf.folders.length} folder${uf.folders.length === 1 ? "" : "s"})`}
+        >
+          {uf.emoji ? (
+            <span
+              data-testid="unified-view-emoji"
+              aria-hidden
+              className="flex h-4 w-4 shrink-0 items-center justify-center text-sm leading-none"
+            >
+              {uf.emoji}
+            </span>
+          ) : (
+            <Layers className="h-4 w-4" />
+          )}
+          <Truncate text={uf.unified_name} className="flex-1" />
+          {/* Which accounts merged into this row -- the
+              tooltip above only ever gave a count, not
+              visible without hovering. */}
+          {contributing.length > 1 && (
+            <span className="flex shrink-0 items-center -space-x-1 group-data-[collapsible=icon]:hidden">
+              {contributing.map((a) => (
+                <span
+                  key={a.id}
+                  title={a.name}
+                  className="text-[11px] leading-none"
+                >
+                  {a.emoji ?? "✉️"}
+                </span>
+              ))}
+            </span>
+          )}
+          {uf.unread_count > 0 && (
+            <Badge
+              variant="secondary"
+              className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
+            >
+              {uf.unread_count}
+            </Badge>
+          )}
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+    </DroppableFolder>
+  );
+}
+
+const UnifiedFolderRow = memo(UnifiedFolderRowImpl);
 
 /**
  * Drafts never carry an unread state, so the unread-count badge that every
@@ -289,6 +412,17 @@ export function AppSidebar() {
     }
   };
 
+  // The rows are memoized, so the select handlers reach them as stable
+  // functions reading the current ones when called.
+  const selectHandlersRef = useRef({ handleFolderSelect, handleUnifiedFolderSelect });
+  selectHandlersRef.current = { handleFolderSelect, handleUnifiedFolderSelect };
+  const selectFolder = useCallback(
+    (folderId: string) => selectHandlersRef.current.handleFolderSelect(folderId), [],
+  );
+  const selectUnifiedFolder = useCallback(
+    (folderName: string) => selectHandlersRef.current.handleUnifiedFolderSelect(folderName), [],
+  );
+
   // Client-only: every selection below can start from a value restored
   // out of localStorage (initialMailboxSelection, atoms.ts), which the
   // static export's prerender cannot see. Rendering the same markup on
@@ -364,7 +498,7 @@ export function AppSidebar() {
               </DropdownMenuContent>
             </DropdownMenu>
             <div className="flex items-center gap-1 group-data-[collapsible=icon]:hidden">
-              <NotificationBell />
+              <SidebarNotificationBell />
             </div>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -375,7 +509,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <ComposeDialog />
+                <SidebarComposeDialog />
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
@@ -399,141 +533,54 @@ export function AppSidebar() {
           <SidebarGroupLabel className="flex items-center justify-between gap-2 pr-1">
             <span>{isUnified ? "Unified Folders" : "Folders"}</span>
             {!isUnified && selectedAccountId && (
-              <FolderManageDialog accountId={selectedAccountId} />
+              <SidebarFolderManageDialog accountId={selectedAccountId} />
             )}
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {isUnified
                 ? /* Unified view: merged folders */
-                  (unifiedFolders ?? []).map((uf) => {
-                    const isActive =
-                      selectedUnifiedFolder === uf.unified_name;
-                    const folderMapping = uf.folders.map((f) => ({
-                      account_id: f.account_id,
-                      folder_id: f.folder_id,
-                    }));
-                    const contributing = getContributingAccounts(uf, accounts);
-                    return (
-                      <DroppableFolder
-                        key={uf.unified_name}
-                        folderId={folderMapping[0]?.folder_id ?? uf.unified_name}
-                        folderName={uf.unified_name}
-                        folderMapping={folderMapping}
-                      >
-                        <SidebarMenuItem>
-                          <SidebarMenuButton
-                            isActive={isActive}
-                            onClick={() => handleUnifiedFolderSelect(uf.unified_name)}
-                            tooltip={`${uf.unified_name} (${uf.folders.length} folder${uf.folders.length === 1 ? "" : "s"})`}
-                          >
-                            {uf.emoji ? (
-                              <span
-                                data-testid="unified-view-emoji"
-                                aria-hidden
-                                className="flex h-4 w-4 shrink-0 items-center justify-center text-sm leading-none"
-                              >
-                                {uf.emoji}
-                              </span>
-                            ) : (
-                              <Layers className="h-4 w-4" />
-                            )}
-                            <Truncate text={uf.unified_name} className="flex-1" />
-                            {/* Which accounts merged into this row -- the
-                                tooltip above only ever gave a count, not
-                                visible without hovering. */}
-                            {contributing.length > 1 && (
-                              <span className="flex shrink-0 items-center -space-x-1 group-data-[collapsible=icon]:hidden">
-                                {contributing.map((a) => (
-                                  <span
-                                    key={a.id}
-                                    title={a.name}
-                                    className="text-[11px] leading-none"
-                                  >
-                                    {a.emoji ?? "✉️"}
-                                  </span>
-                                ))}
-                              </span>
-                            )}
-                            {uf.unread_count > 0 && (
-                              <Badge
-                                variant="secondary"
-                                className="ml-auto h-5 min-w-5 justify-center px-1 text-xs"
-                              >
-                                {uf.unread_count}
-                              </Badge>
-                            )}
-                          </SidebarMenuButton>
-                        </SidebarMenuItem>
-                      </DroppableFolder>
-                    );
-                  })
+                  (unifiedFolders ?? []).map((uf) => (
+                    <UnifiedFolderRow
+                      key={uf.unified_name}
+                      view={uf}
+                      accounts={accounts}
+                      isActive={selectedUnifiedFolder === uf.unified_name}
+                      onSelect={selectUnifiedFolder}
+                    />
+                  ))
                 : /* Single-account view */
                   orderedFolders
-                  ? orderedFolders.map((folder) => {
-                      const Icon = getFolderIcon(folder);
-                      const isActive = folder.folder_id === selectedFolderId;
-                      return (
-                        <DroppableFolder
-                          key={folder.folder_id}
-                          folderId={folder.folder_id}
-                          folderName={folderDisplayName(folder)}
-                        >
-                          <SidebarMenuItem className="flex items-center gap-1">
-                            <SidebarMenuButton
-                              isActive={isActive}
-                              onClick={() => handleFolderSelect(folder.folder_id)}
-                              tooltip={folder.imap_name}
-                            >
-                              <Icon className="h-4 w-4" />
-                              <Truncate text={folderDisplayName(folder)} className="flex-1" />
-                            </SidebarMenuButton>
-                            {selectedAccountId && (
-                              <FolderRowMenu
-                                accountId={selectedAccountId}
-                                folderId={folder.folder_id}
-                                folderName={folderDisplayName(folder)}
-                                badgeCount={getFolderBadgeCount(folder)}
-                                totalCount={folder.total_count}
-                                isGlacier={folder.kind === "glacier"}
-                              />
-                            )}
-                          </SidebarMenuItem>
-                        </DroppableFolder>
-                      );
-                    })
-                  : sortedFolders.map((folder) => {
-                      const Icon = getFolderIcon(folder);
-                      const isActive = folder.id === selectedFolderId;
-                      return (
-                        <DroppableFolder
-                          key={folder.id}
-                          folderId={folder.id}
-                          folderName={folderDisplayName(folder)}
-                        >
-                          <SidebarMenuItem className="flex items-center gap-1">
-                            <SidebarMenuButton
-                              isActive={isActive}
-                              onClick={() => handleFolderSelect(folder.id)}
-                              tooltip={folder.imap_name}
-                            >
-                              <Icon className="h-4 w-4" />
-                              <Truncate text={folderDisplayName(folder)} className="flex-1" />
-                            </SidebarMenuButton>
-                            {selectedAccountId && (
-                              <FolderRowMenu
-                                accountId={selectedAccountId}
-                                folderId={folder.id}
-                                folderName={folderDisplayName(folder)}
-                                badgeCount={getFolderBadgeCount(folder)}
-                                totalCount={folder.total_count}
-                                isGlacier={folder.kind === "glacier"}
-                              />
-                            )}
-                          </SidebarMenuItem>
-                        </DroppableFolder>
-                      );
-                    })}
+                  ? orderedFolders.map((folder) => (
+                      <FolderRow
+                        key={folder.folder_id}
+                        accountId={selectedAccountId}
+                        folderId={folder.folder_id}
+                        name={folderDisplayName(folder)}
+                        imapName={folder.imap_name}
+                        icon={getFolderIcon(folder)}
+                        isActive={folder.folder_id === selectedFolderId}
+                        badgeCount={getFolderBadgeCount(folder)}
+                        totalCount={folder.total_count}
+                        isGlacier={folder.kind === "glacier"}
+                        onSelect={selectFolder}
+                      />
+                    ))
+                  : sortedFolders.map((folder) => (
+                      <FolderRow
+                        key={folder.id}
+                        accountId={selectedAccountId}
+                        folderId={folder.id}
+                        name={folderDisplayName(folder)}
+                        imapName={folder.imap_name}
+                        icon={getFolderIcon(folder)}
+                        isActive={folder.id === selectedFolderId}
+                        badgeCount={getFolderBadgeCount(folder)}
+                        totalCount={folder.total_count}
+                        isGlacier={folder.kind === "glacier"}
+                        onSelect={selectFolder}
+                      />
+                    ))}
               {!isUnified && !orderedFolders && sortedFolders.length === 0 && !selectedAccountId && (
                 <div className="px-4 py-3 text-sm text-muted-foreground">
                   Select an account to view folders

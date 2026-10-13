@@ -5,6 +5,7 @@ import { api, ApiError } from "@/lib/api";
 import { readTimeOf, timedRead } from "@/lib/read-clock";
 import { SEMANTIC_UNAVAILABLE_STATUS } from "@/lib/search-view";
 import { resolveWindow, windowKey, type SearchWindow } from "@/lib/search-window";
+import { withFields } from "@/lib/query-result";
 import type { SearchField, SearchResult, SemanticSearchHit } from "@/types/api";
 
 /** The fulltext and semantic endpoints already return the same shape --
@@ -93,7 +94,7 @@ export function useSearchResults(params: {
     staleTime: 30_000,
   });
   // When the results were read, for the mail actions shown over them.
-  return { ...results, readAt: readTimeOf(queryKey, results.dataUpdatedAt) };
+  return withFields(results, { readAt: readTimeOf(queryKey, results.dataUpdatedAt) });
 
   async function readPage(pageParam: string | null, signal: AbortSignal): Promise<SearchResultPage> {
     const range = window ? resolveWindow(window, new Date()) : undefined;
@@ -153,5 +154,5 @@ export function useSemanticResults(params: {
       !(error instanceof ApiError && error.status === SEMANTIC_UNAVAILABLE_STATUS) &&
       failureCount < 1,
   });
-  return { ...results, readAt: readTimeOf(queryKey, results.dataUpdatedAt) };
+  return withFields(results, { readAt: readTimeOf(queryKey, results.dataUpdatedAt) });
 }
