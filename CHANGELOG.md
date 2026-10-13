@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The event stream sends a `ping` event every 15 seconds while idle, in place of the comment
+  line. The browser reconnects when the stream has pinged and then goes silent, when the network
+  comes back, and when the page returns to view after the stream died or was waiting out a
+  retry delay.
+
+### Changed
+
+- A mail action is re-read once instead of twice in the browser: the event announcing its own
+  change is recognised and skipped, since re-reading after the server answered already covers it.
+  This also removes a flicker when an archive is undone at once.
+
 ## [6.16.0] - 2026-10-13
 
 ### Added

@@ -71,7 +71,13 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
 # Global EventRing instance (set during lifespan)
 _event_ring: EventRing | None = None
 
+# How often an idle stream carries a heartbeat. It is a named `ping` event
+# rather than a comment line because EventSource hides comments from the page,
+# so a browser could not tell a quiet stream from a dead one. It is not a ring
+# event: it has no id (a client's Last-Event-ID stays what it was) and is not
+# in SSE_EVENT_TYPES.
 KEEPALIVE_INTERVAL_S = 15
+PING_FRAME = "event: ping\ndata: {}\n\n"
 
 
 def init_event_ring(ring: EventRing) -> None:
@@ -200,7 +206,7 @@ async def _sse_generator(
 
     On first connect (no Last-Event-ID): sends connected event, then live.
     On reconnect (with Last-Event-ID): replays missed events, then live.
-    Sends keepalive every 15s.
+    Sends a `ping` heartbeat event every KEEPALIVE_INTERVAL_S while idle.
 
     Args:
         event_ring: Ring buffer to read events from
@@ -265,7 +271,7 @@ async def _sse_generator(
                 try:
                     await asyncio.wait_for(waiter.wait(), timeout=KEEPALIVE_INTERVAL_S)
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    yield PING_FRAME
                     continue
                 new_events = await event_ring.replay_from(last_seen, account_id)
 
