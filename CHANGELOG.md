@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Add rule keeps the instruction on screen after an answer, editable, with Run again: a new,
+  independent request with whatever the instruction says now, after a proposal, an answer without
+  one, an error, or a rule change that came in meanwhile.
+
 ### Changed
 
 - The mail view runs about half as much script while it is being used. Every mail action
