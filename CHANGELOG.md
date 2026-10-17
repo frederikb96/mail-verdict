@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.17.1] - 2026-10-17
+
+### Changed
+
+- Updated the UI's React to 19.3.1, `dompurify` to 3.4.17 (sanitizer hardening), TanStack Query to
+  5.104.3 and react-resizable-panels to 4.14.2.
+- The development stack runs Mailpit 1.31.6.
+
 ## [6.17.0] - 2026-10-13
 
 ### Added
