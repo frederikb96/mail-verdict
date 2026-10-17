@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The compose files run PostIMAP 1.11.8.
+
 ## [6.17.1] - 2026-10-17
 
 ### Changed
