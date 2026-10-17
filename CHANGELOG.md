@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.17.2] - 2026-10-17
+
 ### Changed
 
+- Updated the UI's `pdfjs-dist` to 6.4.299 for attachment previews (fixes a CPU exhaustion when
+  auto-sizing PDF text fields) and TanStack Query to 5.104.4.
 - The compose files run PostIMAP 1.11.8.
 
 ## [6.17.1] - 2026-10-17
