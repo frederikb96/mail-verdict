@@ -49,9 +49,9 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # workloads. "fake" classifies on keywords alone, for local use
         # without a key.
         "provider": "openai",
-        "model": "gpt-5.4-nano",
-        # "none" matches gpt-5.4-nano's own server-side default. Raising
-        # this is a per-model gamble, not a guaranteed quality lever: a
+        "model": "gpt-6-luna",
+        # Sent explicitly: gpt-6-luna reasons at "medium" when the field is
+        # absent. Raising this is a per-model gamble, not a guaranteed quality lever: a
         # lightweight classification task may not spend any reasoning
         # tokens at higher effort either, so measure before assuming a
         # higher setting changes anything for a given model.

@@ -20,6 +20,9 @@ class TestValidCombinations:
     def test_openai_with_valid_effort(self) -> None:
         validate_ai_settings({"provider": "openai", "reasoning_effort": "minimal"})
 
+    def test_openai_accepts_max(self) -> None:
+        validate_ai_settings({"provider": "openai", "reasoning_effort": "max"})
+
     def test_no_effort_specified_is_valid(self) -> None:
         validate_ai_settings({"provider": "openai"})
 
