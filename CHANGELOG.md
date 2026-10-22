@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.17.3] - 2026-10-22
+
+### Security
+
+- Updated the UI's Next.js to 16.4.2, which fixes GHSA-p3m5-59mp-jv5r (CVE-2026-94482, a denial of
+  service through Server Actions) and two remote code execution advisories. The UI is a static
+  export without Server Actions, image optimization or `use cache`, so the shipped image was not
+  exposed; the fixes reach the build toolchain.
+
+### Changed
+
+- Updated the UI's lucide-react to 1.53.0, virtua to 0.53.6, react-resizable-panels to 4.14.8 and
+  TanStack Query to 5.104.5.
+- The compose files run PostIMAP 1.11.9.
+
 ## [6.17.2] - 2026-10-17
 
 ### Changed
