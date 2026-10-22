@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The default AI model for a new account is `gpt-6-luna`; OpenAI retires `gpt-5.4-nano` on
+  2027-04-01. An account with its own model setting keeps it. `max` is accepted as an OpenAI
+  reasoning effort.
+
 ## [6.17.3] - 2026-10-22
 
 ### Security

@@ -124,7 +124,7 @@ class TestOpenAILive:
     @pytest.mark.asyncio
     async def test_classifies_spam_and_ham_correctly(self) -> None:
         _require_key("OPENAI_API_KEY")
-        ctx = _build_ctx({"provider": "openai", "model": "gpt-5.4-nano", "max_tokens": 512})
+        ctx = _build_ctx({"provider": "openai", "model": "gpt-6-luna", "max_tokens": 512})
         stage = ClassifyStage("classify", ClassifyConfig())
 
         spam_outcome = await stage.execute(_load_view("spam_pharmacy.eml"), ctx)

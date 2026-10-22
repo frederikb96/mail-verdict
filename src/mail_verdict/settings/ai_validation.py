@@ -21,13 +21,13 @@ SEMANTIC_KNOWN_PROVIDERS = frozenset({"openai", "custom", "fake"})
 ANTHROPIC_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
 
 # OpenAI's reasoning.effort levels across the gpt-5 family. Which subset a
-# given model actually accepts varies -- gpt-5.4-nano rejects "minimal"
-# with a 400 naming its five accepted values (none/low/medium/high/xhigh),
-# while "minimal" is documented for other gpt-5 variants. This is the union
+# given model actually accepts varies -- gpt-6-luna rejects "minimal"
+# with a 400 naming its six accepted values (none/low/medium/high/xhigh/max),
+# while "minimal" is documented for older gpt-5 variants. This is the union
 # across the family, checked at the provider level; an unsupported level
 # for one specific model still surfaces as a clear provider error rather
 # than a validation failure here.
-OPENAI_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+OPENAI_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 # "custom" covers any OpenAI-compatible server, and which reasoning_effort
 # values (if any) a given deployment's model accepts is unknowable here --
