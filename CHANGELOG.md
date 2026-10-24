@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.18.1] - 2026-10-24
+
+### Changed
+
+- UI dependency updates: Next.js 16.4.3, Base UI 1.9.0, lucide-react 1.54.0.
+- The compose files run PostIMAP 1.11.10.
+
+### Security
+
+- Updated the build-time `source-map-js` to 1.2.2, which fixes an event-loop denial of service
+  through indexed source-map section offsets. It runs only inside PostCSS during the build and is
+  not part of the shipped static UI.
+
 ## [6.18.0] - 2026-10-23
 
 ### Changed
