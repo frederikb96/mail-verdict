@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [6.18.2] - 2026-10-24
+
 ### Changed
 
+- The server and image run on Python 3.15 (`requires-python` is now `>=3.15`).
 - The compose files run PostIMAP 1.11.13, which updates its HTTP client (undici) with security
   fixes and imapflow to 2.4.0.
 
