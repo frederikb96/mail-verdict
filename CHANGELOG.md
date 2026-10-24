@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- The compose files run PostIMAP 1.11.12, which updates its HTTP client (undici) with security
-  fixes.
+- The compose files run PostIMAP 1.11.13, which updates its HTTP client (undici) with security
+  fixes and imapflow to 2.4.0.
 
 ## [6.18.1] - 2026-10-24
 
