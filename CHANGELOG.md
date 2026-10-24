@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The compose files run PostIMAP 1.11.12, which updates its HTTP client (undici) with security
+  fixes.
+
 ## [6.18.1] - 2026-10-24
 
 ### Changed
