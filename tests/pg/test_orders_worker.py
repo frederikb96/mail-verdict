@@ -517,3 +517,9 @@ class TestTasksChooseTheirOwnProvider:
         assert (await CircuitBreaker(migrated_db, "fake:orders.decide").status()).state == (
             CircuitState.CLOSED
         )
+
+        # The shared database outlives this test; leave no suspended breaker behind.
+        async with migrated_db.session() as session:
+            await session.execute(
+                text("DELETE FROM circuit_breakers WHERE name = 'custom:orders.write'")
+            )
