@@ -114,7 +114,10 @@ mirror, which is what keeps it simple.
   days after its last mail when it has no such date; both are settings. A shipment
   number that only a carrier's tracking link carries is read from the link. The same actions sit in the detail's menu and in a menu on each row (right-click or long
   press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
-  or open. Recent mail can be looked through after switching the feature on for an account.
+  or open. The screen shows all entries, only orders or only tickets (one click), with Open and
+  Favorites toggles on top; the choice is remembered. Tickets form a timeline around a today line,
+  later events above and earlier ones below. A ticket's codes open fullscreen on a white page for
+  scanning. Recent mail can be looked through after switching the feature on for an account.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
   it to a webhook: the message's raw source is posted to a URL, with a header that can take its value
   from a named secret stored encrypted in the database (set from Settings, never shown again). A
