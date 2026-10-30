@@ -403,7 +403,7 @@ export function ThreadMessage({
 
       {previewAttachment && (
         <AttachmentPreviewDialog
-          messageId={mail.id}
+          url={api.mails.attachmentUrl(mail.id, previewAttachment.id)}
           attachment={previewAttachment}
           onOpenChange={(open) => {
             if (!open) setPreviewAttachment(null);

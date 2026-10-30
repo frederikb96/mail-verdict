@@ -1412,6 +1412,8 @@ export type OrderIcon =
   | "wrench"
   | "receipt";
 
+export type OrderKind = "ticket" | "order" | "other";
+
 export interface OrderListItem {
   id: string;
   merchant: string;
@@ -1429,9 +1431,24 @@ export interface OrderListItem {
   expected_until: string | null;
   icon: OrderIcon;
   summary_preview: string;
+  /** What the entry is: something attended (ticket), something handed
+   * over (order), or anything else (a subscription, a claim, a case). */
+  kind: OrderKind;
+  /** Who decided `kind`: the model or a person. */
+  kind_set_by: "ai" | "user";
+  /** YYYY-MM-DD, the first day of a ticket's event or stay. */
+  event_start: string | null;
+  event_end: string | null;
+  /** YYYY-MM-DD, where the entry sits on the tickets timeline: the event
+   * start, else the date its first mail or file arrived. Computed by the
+   * server; a client never derives its own. */
+  timeline_date: string | null;
   first_mail_at: string | null;
   last_mail_at: string | null;
+  first_activity_at: string | null;
+  last_activity_at: string | null;
   mail_count: number;
+  file_count: number;
   account_ids: string[];
   text_stale: boolean;
   updated_at: string;
@@ -1443,6 +1460,7 @@ export interface OrderUpdateRequest {
   is_favorite?: boolean;
   is_open?: boolean;
   is_sealed?: boolean;
+  kind?: OrderKind;
 }
 
 export interface OrderListResponse {
@@ -1451,9 +1469,44 @@ export interface OrderListResponse {
   next_cursor: string | null;
 }
 
-export interface OrderIdentifier {
-  kind: "order_number" | "booking_code" | "tracking_number" | "invoice_number" | "ticket_number";
+export type OrderFactKind =
+  | "order_number"
+  | "booking_code"
+  | "ticket_number"
+  | "invoice_number"
+  | "tracking_number"
+  | "date"
+  | "time"
+  | "amount"
+  | "place"
+  | "seat"
+  | "person"
+  | "code"
+  | "link"
+  | "other";
+
+/** A barcode a document carries, as the fact it belongs to shows it. */
+export interface OrderCode {
+  format: string;
+  /** The decoded text when it is printable, else null (binary payloads). */
+  payload_text: string | null;
+  /** The code drawn as a PNG (`?scale=` 1..16 sets the module size). */
+  image_url: string;
+  page: number | null;
+}
+
+/** One entry of an order's Key facts. */
+export interface OrderFact {
+  id: string;
+  kind: OrderFactKind;
+  label: string;
   value: string;
+  carrier: string | null;
+  /** Built by the server from carrier and number; null without a public
+   * tracking page. */
+  tracking_url: string | null;
+  code: OrderCode | null;
+  document_id: string | null;
 }
 
 export interface OrderMail {
@@ -1471,20 +1524,39 @@ export interface OrderMail {
   attached_by: "ai" | "thread" | "user";
 }
 
+/** A mail attachment or a file added by hand. */
 export interface OrderDocument {
-  message_id: string;
-  attachment_id: string;
+  id: string;
+  source: "mail" | "file";
+  message_id: string | null;
+  attachment_id: string | null;
+  file_id: string | null;
   filename: string;
   content_type: string;
   size_bytes: number | null;
   received_at: string;
+  page_count: number | null;
+  method: string;
+  barcode_count: number;
+  /** Where the bytes are; null when a mail attachment cannot be found
+   * any more. */
+  download_url: string | null;
 }
 
 export interface OrderDetail extends OrderListItem {
   summary: string;
-  identifiers: OrderIdentifier[];
+  facts: OrderFact[];
   mails: OrderMail[];
   documents: OrderDocument[];
+}
+
+/** Where a file added by hand stands: `pending` until placed in an entry,
+ * `attached` once it belongs to `order_id`, `failed` with `last_error`. */
+export interface OrderFileStatus {
+  file_id: string;
+  order_id: string | null;
+  status: "pending" | "attached" | "failed";
+  last_error: string | null;
 }
 
 export interface OrderCatchUpResponse {

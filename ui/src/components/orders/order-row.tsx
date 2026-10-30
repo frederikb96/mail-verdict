@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
 import { format, isSameDay, isSameYear } from "date-fns";
-import { CircleCheck, Lock, RotateCcw, Star } from "lucide-react";
+import { CircleCheck, Lock, RotateCcw, Star, Ticket } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { OrderMenuItems } from "@/components/orders/order-actions";
 import type { OrderActionId } from "@/lib/order-actions";
+import { formatEventRange } from "@/lib/order-dates";
 import { orderIconEntry } from "@/lib/order-icon";
 import { swipeAction, swipeAxis, swipeOffset } from "@/lib/order-swipe";
 import { cn } from "@/lib/utils";
@@ -24,8 +25,30 @@ function formatDateRange(first: string | null, last: string | null): string {
   return fmt((start ?? end) as Date);
 }
 
+/** The date at the row's top right: a ticket's event, else the span of
+ * mail and file activity. */
+function rowDate(order: OrderListItem): string {
+  if (order.kind === "ticket" && order.event_start) {
+    return formatEventRange(order.event_start, order.event_end, new Date());
+  }
+  return formatDateRange(order.first_activity_at, order.last_activity_at);
+}
+
+/** "2 mails · 1 file" -- an entry made from an uploaded file has no mails. */
+function rowCounts(order: OrderListItem): string {
+  const parts: string[] = [];
+  if (order.mail_count > 0 || order.file_count === 0) {
+    parts.push(`${order.mail_count} mail${order.mail_count === 1 ? "" : "s"}`);
+  }
+  if (order.file_count > 0) parts.push(`${order.file_count} file${order.file_count === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
 interface OrderRowProps {
   order: OrderListItem;
+  /** Say what kind an entry is when it is not an ordinary order -- on in
+   * the views that mix kinds. */
+  showKind: boolean;
   selected: boolean;
   onSelect: () => void;
   onAction: (order: OrderListItem, id: OrderActionId) => void;
@@ -48,7 +71,7 @@ interface Gesture {
   locked: boolean;
 }
 
-export function OrderRow({ order, selected, onSelect, onAction }: OrderRowProps) {
+export function OrderRow({ order, showKind, selected, onSelect, onAction }: OrderRowProps) {
   const { Icon, tileClass } = orderIconEntry(order.icon);
   const contentRef = useRef<HTMLButtonElement>(null);
   const gestureRef = useRef<Gesture | null>(null);
@@ -215,7 +238,7 @@ export function OrderRow({ order, selected, onSelect, onAction }: OrderRowProps)
                 <span className="truncate">{order.merchant}</span>
               </span>
               <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-                {formatDateRange(order.first_mail_at, order.last_mail_at)}
+                {rowDate(order)}
               </span>
             </div>
             <div className="mt-0.5 text-sm font-semibold text-foreground truncate leading-5">
@@ -232,9 +255,13 @@ export function OrderRow({ order, selected, onSelect, onAction }: OrderRowProps)
               >
                 {order.status || (order.is_open ? "open" : "finished")}
               </span>
-              <span className="text-xs text-muted-foreground">
-                · {order.mail_count} mail{order.mail_count === 1 ? "" : "s"}
-              </span>
+              {showKind && order.kind !== "order" && (
+                <span className="inline-flex h-5 items-center gap-1 rounded-full border px-1.5 text-xs text-muted-foreground">
+                  {order.kind === "ticket" && <Ticket className="h-3 w-3" />}
+                  {order.kind === "ticket" ? "Ticket" : "Other"}
+                </span>
+              )}
+              <span className="truncate text-xs text-muted-foreground">· {rowCounts(order)}</span>
               {order.is_sealed && (
                 <Lock
                   className="h-3 w-3 text-muted-foreground"

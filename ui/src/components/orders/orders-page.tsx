@@ -1,14 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Package, Search, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OrderDetailPane } from "@/components/orders/order-detail";
 import { useOrderActions } from "@/components/orders/order-actions";
+import { OrderFileUploadButton } from "@/components/orders/order-file-upload";
 import { OrderRow } from "@/components/orders/order-row";
+import {
+  TIMELINE_DIVIDER_HEIGHT,
+  TodayDivider,
+  useTimelineScroll,
+} from "@/components/orders/order-timeline";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useOrdersList } from "@/hooks/use-orders";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -17,34 +24,73 @@ import {
   readOrderScrollAnchor,
   writeOrderScrollAnchor,
 } from "@/lib/order-scroll-anchor";
+import {
+  DEFAULT_ORDERS_VIEW,
+  type OrderKindFilter,
+  type OrdersView,
+  readOrdersView,
+  writeOrdersView,
+} from "@/lib/order-view-state";
+import { buildTimelineRows, timelineSplitIndex, todayString } from "@/lib/order-timeline";
 import { stableOrder } from "@/lib/stable-order";
+import { cn } from "@/lib/utils";
 import type { OrderListItem } from "@/types/api";
 import Link from "next/link";
-
-const STATE_STORAGE_KEY = "mv.orders.state";
 
 /** Every row is exactly this tall (order-row.tsx) -- what makes the list
  * and the scroll-anchor restore's arithmetic exact rather than an
  * estimate. */
 const ORDER_ROW_HEIGHT = 124;
 
-/** What the list shows: everything, only open orders, or only favorites
- * (in any state). One choice, persisted. */
-type OrdersView = "all" | "open" | "favorites";
+function loadView(): OrdersView {
+  try {
+    return readOrdersView(window.localStorage);
+  } catch {
+    return DEFAULT_ORDERS_VIEW;
+  }
+}
 
-function readStoredView(): OrdersView {
-  if (typeof window === "undefined") return "all";
-  const stored = window.localStorage.getItem(STATE_STORAGE_KEY);
-  return stored === "open" || stored === "favorites" ? stored : "all";
+/** The empty list's message: what the filters leave out, or -- with no
+ * filter at all -- why there is nothing yet. */
+function emptyMessage(
+  view: OrdersView,
+  q: string,
+): { title: string; hint?: string } | null {
+  if (q !== "") return { title: "No matching orders" };
+  if (view.favorites) {
+    return {
+      title: "No favorites yet",
+      hint: "Mark an order as favorite from its menu or the detail's top-right menu.",
+    };
+  }
+  if (view.kind === "ticket") {
+    return {
+      title: view.open ? "No open tickets" : "No tickets yet",
+      hint: "Trains, events, stays and appointments show up here on a timeline.",
+    };
+  }
+  if (view.kind === "order") return { title: view.open ? "No open orders" : "No orders yet" };
+  if (view.open) return { title: "Nothing open" };
+  return null;
 }
 
 export function OrdersPage() {
   const searchParams = useSearchParams();
   const isMobile = useIsMobile();
-  const [view, setView] = useState<OrdersView>("all");
+  // Read on the first render: the page is client-only, and starting from
+  // the defaults would fetch the wrong list before switching to the saved one.
+  const [view, setView] = useState<OrdersView>(loadView);
   const selectedId = searchParams.get("order");
+  const isTimeline = view.kind === "ticket";
 
-  useEffect(() => setView(readStoredView()), []);
+  // The day the timeline's line sits on; re-read when the page comes back
+  // to the foreground so a tab left open overnight moves it.
+  const [today, setToday] = useState(() => todayString(new Date()));
+  useEffect(() => {
+    const refresh = () => setToday(todayString(new Date()));
+    document.addEventListener("visibilitychange", refresh);
+    return () => document.removeEventListener("visibilitychange", refresh);
+  }, []);
 
   // The filter field: filterText is what the input shows, debouncedFilter
   // what the query asks for -- the same 150 ms the mail quick filter uses.
@@ -57,9 +103,11 @@ export function OrdersPage() {
   const q = debouncedFilter.trim();
 
   const { items, isLoading, isFetchingNextPage, hasNextPage, fetchNextPage } = useOrdersList({
-    state: view === "open" ? "open" : "all",
-    favorites: view === "favorites",
+    state: view.open ? "open" : "all",
+    kind: view.kind === "all" ? undefined : view.kind,
+    favorites: view.favorites,
     q,
+    sort: isTimeline ? "event" : "activity",
   });
   const { data: accounts } = useAccounts();
 
@@ -74,10 +122,18 @@ export function OrdersPage() {
   shownRef.current = shown;
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const listItemsRef = useRef<OrderListItem[]>([]);
   const atTopRef = useRef(true);
   const isPaginatingRef = useRef(false);
 
-  const listScrollRef = useRef<HTMLDivElement>(null);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  // The list's scroll container as state as well: the timeline hook has to
+  // see it appear and disappear (it is unmounted under the detail on a phone).
+  const [listScrollEl, setListScrollEl] = useState<HTMLDivElement | null>(null);
+  const setListScroll = useCallback((el: HTMLDivElement | null) => {
+    listScrollRef.current = el;
+    setListScrollEl(el);
+  }, []);
   // The detail pane's scroll container as state rather than a ref: the
   // pane's own scroll restore needs the element during its first layout
   // pass, and a parent's ref is not attached yet while a child's layout
@@ -86,16 +142,22 @@ export function OrdersPage() {
 
   // A new filter (view or text) is a new list, keyed on it: start over at
   // the top rather than carrying rows from the previous filter's
-  // reconciled window.
+  // reconciled window. The timeline starts at today instead, which its own
+  // hook places.
   useEffect(() => {
     setShown([]);
     setHeld([]);
+    // The rows effect below runs in this same commit and must not see the
+    // previous filter's rows through the ref.
+    shownRef.current = [];
+    isPaginatingRef.current = false;
     atTopRef.current = true;
-    listScrollRef.current?.scrollTo({ top: 0 });
+    if (view.kind !== "ticket") listScrollRef.current?.scrollTo({ top: 0 });
   }, [view, q]);
 
   useEffect(() => {
-    if (isLoading) return;
+    // The timeline shows the query's own order; nothing is held back.
+    if (isTimeline || isLoading) return;
 
     if (isPaginatingRef.current) {
       isPaginatingRef.current = false;
@@ -116,7 +178,7 @@ export function OrdersPage() {
     const result = stableOrder(shownRef.current, items, atTopRef.current);
     setShown(result.rows);
     setHeld(result.held);
-  }, [items, isLoading]);
+  }, [items, isLoading, isTimeline]);
 
   const takeOverFresh = useCallback(() => {
     setShown(itemsRef.current);
@@ -140,11 +202,41 @@ export function OrdersPage() {
         hasNextPage &&
         !isFetchingNextPage
       ) {
-        isPaginatingRef.current = true;
+        isPaginatingRef.current = !isTimeline;
         fetchNextPage();
       }
     },
-    [held.length, takeOverFresh, hasNextPage, isFetchingNextPage, fetchNextPage],
+    [held.length, takeOverFresh, hasNextPage, isFetchingNextPage, fetchNextPage, isTimeline],
+  );
+
+  // What is on screen: the timeline reads the query directly, the ordinary
+  // list its reconciled window.
+  const listItems = isTimeline ? items : shown;
+  listItemsRef.current = listItems;
+  const splitIndex = useMemo(
+    () => (isTimeline ? timelineSplitIndex(items, today) : 0),
+    [isTimeline, items, today],
+  );
+  const timelineRows = useMemo(
+    () => (isTimeline && items.length > 0 ? buildTimelineRows(items, today) : []),
+    [isTimeline, items, today],
+  );
+  const { release: releaseTimelineHold } = useTimelineScroll({
+    active: isTimeline,
+    scrollEl: listScrollEl,
+    items,
+    splitIndex,
+    rowHeight: ORDER_ROW_HEIGHT,
+    ready: !isLoading,
+    resetKey: `${view.kind}|${view.open}|${view.favorites}|${q}`,
+  });
+
+  /** Where a row's top edge sits in the list's content; the timeline's
+   * today line pushes everything below it down. */
+  const rowTopOf = useCallback(
+    (index: number) =>
+      index * ORDER_ROW_HEIGHT + (isTimeline && index >= splitIndex ? TIMELINE_DIVIDER_HEIGHT : 0),
+    [isTimeline, splitIndex],
   );
 
   // The one writer of this route's URL -- window.history.pushState only,
@@ -158,9 +250,12 @@ export function OrdersPage() {
     window.history.pushState(null, "", url);
   }, []);
 
-  const changeView = useCallback((next: OrdersView) => {
-    setView(next);
-    window.localStorage.setItem(STATE_STORAGE_KEY, next);
+  const changeView = useCallback((patch: Partial<OrdersView>) => {
+    setView((prev) => {
+      const next = { ...prev, ...patch };
+      writeOrdersView(window.localStorage, next);
+      return next;
+    });
   }, []);
 
   // One runner for every entry point -- row menu, swipe, detail menu --
@@ -175,12 +270,12 @@ export function OrdersPage() {
   const beforeOpenMail = useCallback(
     (mailKey: string, rowTop: number) => {
       if (!selectedId) return;
-      const index = shownRef.current.findIndex((o) => o.id === selectedId);
+      const index = listItemsRef.current.findIndex((o) => o.id === selectedId);
       const el = listScrollRef.current;
-      const listRowTop = index >= 0 && el ? index * ORDER_ROW_HEIGHT - el.scrollTop : 0;
+      const listRowTop = index >= 0 && el ? rowTopOf(index) - el.scrollTop : 0;
       writeOrderScrollAnchor({ orderId: selectedId, mailKey, rowTop, listIndex: index, listRowTop });
     },
-    [selectedId],
+    [selectedId, rowTopOf],
   );
 
   // Restoring the list's own scroll position on the Back navigation that
@@ -215,9 +310,11 @@ export function OrdersPage() {
       const anchorKey = `${anchor.orderId}:${anchor.mailKey}`;
       if (restoredAnchorKeyRef.current === anchorKey) return;
       const el = listScrollRef.current;
-      if (!el || shown.length === 0) return;
+      if (!el || listItems.length === 0) return;
       restoredAnchorKeyRef.current = anchorKey;
-      const target = anchor.listIndex * ORDER_ROW_HEIGHT - anchor.listRowTop;
+      // The saved position replaces centring on today.
+      releaseTimelineHold();
+      const target = rowTopOf(anchor.listIndex) - anchor.listRowTop;
       const max = Math.max(0, el.scrollHeight - el.clientHeight);
       el.scrollTop = Math.max(0, Math.min(target, max));
     };
@@ -231,49 +328,56 @@ export function OrdersPage() {
       window.removeEventListener("pageshow", tryRestore);
       document.removeEventListener("visibilitychange", tryRestore);
     };
-  }, [selectedId, shown]);
+  }, [selectedId, listItems, rowTopOf, releaseTimelineHold]);
 
   const showDetailOnly = isMobile && selectedId !== null;
   const showListOnly = isMobile && selectedId === null;
 
   const anyAccountHasOrders = (accounts ?? []).some((a) => a.orders_enabled);
-  const isEmpty = !isLoading && shown.length === 0;
+  const isEmpty = !isLoading && listItems.length === 0;
+  const empty = emptyMessage(view, q);
 
   return (
     <div className="flex h-full">
       {(!isMobile || showListOnly) && (
         <div className="flex h-full w-full flex-col md:w-[400px] md:min-w-[320px] md:max-w-[480px] md:border-r">
-          <div className="flex h-12 items-center border-b px-4">
+          <div className="flex h-12 items-center gap-2 border-b px-4">
             <span className="text-sm font-semibold">Orders & tickets</span>
-            <div className="ml-auto flex gap-1">
-              <Button
-                variant={view === "all" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => changeView("all")}
-              >
-                All
-              </Button>
-              <Button
-                variant={view === "open" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2 text-xs"
-                onClick={() => changeView("open")}
-              >
-                Open
-              </Button>
-              <Button
-                variant={view === "favorites" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 px-2"
-                aria-label="Favorites"
-                aria-pressed={view === "favorites"}
-                title="Favorites"
-                onClick={() => changeView("favorites")}
-              >
-                <Star className="h-3.5 w-3.5" fill={view === "favorites" ? "currentColor" : "none"} />
-              </Button>
-            </div>
+            <OrderFileUploadButton className="ml-auto h-7 px-2 text-xs" />
+          </div>
+
+          <div className="flex items-center gap-2 border-b px-3 py-2">
+            <Tabs
+              value={view.kind}
+              onValueChange={(next) => changeView({ kind: next as OrderKindFilter })}
+              className="min-w-0 flex-1"
+            >
+              <TabsList className="w-full" aria-label="Show">
+                <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="order">Orders</TabsTrigger>
+                <TabsTrigger value="ticket">Tickets</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <Button
+              variant={view.open ? "secondary" : "ghost"}
+              size="sm"
+              className={cn("h-8 px-2.5 text-xs", view.open && "ring-1 ring-foreground/10")}
+              aria-pressed={view.open}
+              onClick={() => changeView({ open: !view.open })}
+            >
+              Open
+            </Button>
+            <Button
+              variant={view.favorites ? "secondary" : "ghost"}
+              size="sm"
+              className={cn("h-8 px-2.5", view.favorites && "ring-1 ring-foreground/10")}
+              aria-label="Favorites"
+              aria-pressed={view.favorites}
+              title="Favorites"
+              onClick={() => changeView({ favorites: !view.favorites })}
+            >
+              <Star className="h-3.5 w-3.5" fill={view.favorites ? "currentColor" : "none"} />
+            </Button>
           </div>
 
           <div className="relative border-b px-3 py-2">
@@ -301,7 +405,7 @@ export function OrdersPage() {
               </button>
             )}
             <div
-              ref={listScrollRef}
+              ref={setListScroll}
               data-testid="orders-list-scroll"
               className="h-full overflow-y-auto [overflow-anchor:none]"
               onScroll={handleListScroll}
@@ -313,21 +417,17 @@ export function OrdersPage() {
                   </div>
                 ))}
 
-              {isEmpty && (q !== "" || view === "favorites") && (
+              {isEmpty && empty && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
                   <Package className="h-12 w-12 opacity-40" />
-                  <p className="text-sm font-medium">
-                    {q !== "" ? "No matching orders" : "No favorites yet"}
-                  </p>
-                  {q === "" && (
-                    <p className="max-w-[320px] text-sm text-muted-foreground">
-                      Mark an order as favorite from its menu or the detail's top-right menu.
-                    </p>
+                  <p className="text-sm font-medium">{empty.title}</p>
+                  {empty.hint && (
+                    <p className="max-w-[320px] text-sm text-muted-foreground">{empty.hint}</p>
                   )}
                 </div>
               )}
 
-              {isEmpty && q === "" && view !== "favorites" && !anyAccountHasOrders && (
+              {isEmpty && !empty && !anyAccountHasOrders && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
                   <Package className="h-12 w-12 opacity-40" />
                   <p className="text-sm font-medium">No orders yet</p>
@@ -346,7 +446,7 @@ export function OrdersPage() {
                 </div>
               )}
 
-              {isEmpty && q === "" && view !== "favorites" && anyAccountHasOrders && (
+              {isEmpty && !empty && anyAccountHasOrders && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
                   <Package className="h-12 w-12 opacity-40" />
                   <p className="text-sm font-medium">Nothing bundled yet</p>
@@ -356,15 +456,31 @@ export function OrdersPage() {
                 </div>
               )}
 
-              {shown.map((order) => (
-                <OrderRow
-                  key={order.id}
-                  order={order}
-                  selected={order.id === selectedId}
-                  onSelect={() => selectOrder(order.id)}
-                  onAction={runOrderAction}
-                />
-              ))}
+              {isTimeline
+                ? timelineRows.map((row) =>
+                    row.type === "today" ? (
+                      <TodayDivider key="today" today={today} />
+                    ) : (
+                      <OrderRow
+                        key={row.order.id}
+                        order={row.order}
+                        showKind={false}
+                        selected={row.order.id === selectedId}
+                        onSelect={() => selectOrder(row.order.id)}
+                        onAction={runOrderAction}
+                      />
+                    ),
+                  )
+                : shown.map((order) => (
+                    <OrderRow
+                      key={order.id}
+                      order={order}
+                      showKind={view.kind === "all"}
+                      selected={order.id === selectedId}
+                      onSelect={() => selectOrder(order.id)}
+                      onAction={runOrderAction}
+                    />
+                  ))}
             </div>
           </div>
         </div>

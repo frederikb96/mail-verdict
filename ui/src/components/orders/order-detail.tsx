@@ -2,7 +2,16 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { format, isSameDay, isSameYear } from "date-fns";
-import { CalendarDays, FileText, Lock, MoreHorizontal, Star, Ticket as TicketIcon } from "lucide-react";
+import {
+  CalendarDays,
+  FileText,
+  ImageIcon,
+  Lock,
+  MoreHorizontal,
+  Star,
+  Ticket as TicketIcon,
+  Trash2,
+} from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,16 +19,19 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AttachmentPreviewDialog } from "@/components/mail/attachment-preview-dialog";
 import { OrderMenuItems } from "@/components/orders/order-actions";
+import { OrderFacts } from "@/components/orders/order-facts";
+import { OrderFileUploadButton } from "@/components/orders/order-file-upload";
 import { OrderPickerDialog } from "@/components/orders/order-picker-dialog";
 import { OrderSummaryView } from "@/components/orders/order-summary-view";
-import { useDetachMail, useOrderDetail } from "@/hooks/use-orders";
+import { useDeleteOrderFile, useDetachMail, useOrderDetail } from "@/hooks/use-orders";
 import { useOpenMessage } from "@/hooks/use-open-message";
 import { useToast } from "@/hooks/use-toast";
-import { api } from "@/lib/api";
 import { formatRelativeDate, formatSize } from "@/lib/format";
+import { formatEventRange } from "@/lib/order-dates";
 import { clearOrderScrollAnchor, readOrderScrollAnchor } from "@/lib/order-scroll-anchor";
 import { orderIconEntry } from "@/lib/order-icon";
 import { cn } from "@/lib/utils";
@@ -36,13 +48,21 @@ function formatDateRange(first: string | null, last: string | null): string {
   return fmt((start ?? end) as Date);
 }
 
-const KIND_LABELS: Record<string, string> = {
-  order_number: "Order",
-  booking_code: "Booking",
-  tracking_number: "Tracking",
-  invoice_number: "Invoice",
-  ticket_number: "Ticket",
+const KIND_BADGES: Partial<Record<OrderListItem["kind"], string>> = {
+  ticket: "Ticket",
+  other: "Other",
 };
+
+function documentIcon(contentType: string): typeof FileText {
+  if (contentType.startsWith("image/")) return ImageIcon;
+  return DOCUMENT_ICONS[contentType] ?? FileText;
+}
+
+/** What a click on a document does: a PDF or picture previews in the app,
+ * anything else opens in a new tab. */
+function isPreviewable(contentType: string): boolean {
+  return contentType === "application/pdf" || contentType.startsWith("image/");
+}
 
 const DOCUMENT_ICONS: Record<string, typeof FileText> = {
   "application/pdf": FileText,
@@ -50,6 +70,18 @@ const DOCUMENT_ICONS: Record<string, typeof FileText> = {
   "text/calendar": CalendarDays,
   "application/ics": CalendarDays,
 };
+
+/** "2 mails · 1 file", whichever of the two the entry has. */
+function contentCounts(order: Pick<OrderListItem, "mail_count" | "file_count">): string {
+  const parts: string[] = [];
+  if (order.mail_count > 0 || order.file_count === 0) {
+    parts.push(`${order.mail_count} mail${order.mail_count === 1 ? "" : "s"}`);
+  }
+  if (order.file_count > 0) {
+    parts.push(`${order.file_count} file${order.file_count === 1 ? "" : "s"}`);
+  }
+  return parts.join(" · ");
+}
 
 interface OrderDetailProps {
   orderId: string;
@@ -84,9 +116,11 @@ export function OrderDetailPane({
   const { openMessageById } = useOpenMessage();
   const { push: pushToast } = useToast();
   const detachMail = useDetachMail();
+  const deleteFile = useDeleteOrderFile();
 
   const [movingMail, setMovingMail] = useState<OrderMail | null>(null);
   const [previewDoc, setPreviewDoc] = useState<OrderDocument | null>(null);
+  const [deletingDoc, setDeletingDoc] = useState<OrderDocument | null>(null);
 
   const mailRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   // Which anchor ("orderId:mailKey") has already been applied -- not
@@ -257,9 +291,22 @@ export function OrderDetailPane({
             >
               {order.status || (order.is_open ? "open" : "finished")}
             </span>
+            {KIND_BADGES[order.kind] && (
+              <span className="inline-flex h-6 items-center gap-1 rounded-full border px-2.5 text-sm text-muted-foreground">
+                {order.kind === "ticket" && <TicketIcon className="h-3.5 w-3.5" />}
+                {KIND_BADGES[order.kind]}
+              </span>
+            )}
+            {order.event_start && (
+              <span className="inline-flex items-center gap-1 text-sm font-medium">
+                <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+                {formatEventRange(order.event_start, order.event_end, new Date())}
+              </span>
+            )}
             <span className="text-xs text-muted-foreground">
-              {order.mail_count} mail{order.mail_count === 1 ? "" : "s"} ·{" "}
-              {formatDateRange(order.first_mail_at, order.last_mail_at)}
+              {contentCounts(order)}
+              {formatDateRange(order.first_activity_at, order.last_activity_at) &&
+                ` · ${formatDateRange(order.first_activity_at, order.last_activity_at)}`}
             </span>
             {!order.is_open && order.open_set_by === "auto" && (
               <span className="text-xs text-muted-foreground">· closed automatically</span>
@@ -292,67 +339,60 @@ export function OrderDetailPane({
         )}
       </div>
 
-      {order.identifiers.length > 0 && (
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-            Numbers
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {order.identifiers.map((identifier, i) => (
-              <button
-                key={i}
-                type="button"
-                aria-label={`Copy ${KIND_LABELS[identifier.kind] ?? identifier.kind} number ${identifier.value}`}
-                className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
-                onClick={() => {
-                  navigator.clipboard.writeText(identifier.value);
-                  pushToast("Copied", "success");
-                }}
-              >
-                <span className="text-muted-foreground">
-                  {KIND_LABELS[identifier.kind] ?? identifier.kind}
-                </span>
-                <span className="font-mono">{identifier.value}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      <OrderFacts facts={order.facts} />
 
-      {order.documents.length > 0 && (
-        <div>
-          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+      <div>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
             Documents
           </div>
+          <OrderFileUploadButton orderId={order.id} />
+        </div>
+        {order.documents.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Attachments of its mails and files you add show up here.
+          </p>
+        ) : (
           <div className="flex flex-wrap gap-2">
             {order.documents.map((doc) => {
-              const DocIcon = DOCUMENT_ICONS[doc.content_type] ?? FileText;
-              const isPdf = doc.content_type === "application/pdf";
+              const DocIcon = documentIcon(doc.content_type);
               return (
-                <button
-                  key={doc.attachment_id}
-                  type="button"
-                  className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
-                  onClick={() => {
-                    if (isPdf) {
-                      setPreviewDoc(doc);
-                    } else {
-                      window.open(
-                        api.mails.attachmentUrl(doc.message_id, doc.attachment_id),
-                        "_blank",
-                      );
-                    }
-                  }}
+                <div
+                  key={doc.id}
+                  data-testid="order-document"
+                  className="inline-flex items-stretch overflow-hidden rounded-md border text-xs"
                 >
-                  <DocIcon className="h-3.5 w-3.5" />
-                  <span>{doc.filename.slice(0, 28)}</span>
-                  <span className="text-muted-foreground">{formatSize(doc.size_bytes)}</span>
-                </button>
+                  <button
+                    type="button"
+                    disabled={doc.download_url === null}
+                    title={doc.download_url === null ? "No longer available" : undefined}
+                    className="inline-flex min-h-8 items-center gap-1.5 px-2 py-1 hover:bg-accent/50 disabled:cursor-default disabled:opacity-50"
+                    onClick={() => {
+                      if (!doc.download_url) return;
+                      if (isPreviewable(doc.content_type)) setPreviewDoc(doc);
+                      else window.open(doc.download_url, "_blank", "noopener");
+                    }}
+                  >
+                    <DocIcon className="h-3.5 w-3.5" />
+                    <span>{doc.filename.slice(0, 28)}</span>
+                    <span className="text-muted-foreground">{formatSize(doc.size_bytes)}</span>
+                  </button>
+                  {doc.source === "file" && (
+                    <button
+                      type="button"
+                      aria-label={`Delete ${doc.filename}`}
+                      className="flex w-8 items-center justify-center border-l text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => setDeletingDoc(doc)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
@@ -440,11 +480,11 @@ export function OrderDetailPane({
         }}
       />
 
-      {previewDoc && (
+      {previewDoc?.download_url && (
         <AttachmentPreviewDialog
-          messageId={previewDoc.message_id}
+          url={previewDoc.download_url}
           attachment={{
-            id: previewDoc.attachment_id,
+            id: previewDoc.id,
             filename: previewDoc.filename,
             content_type: previewDoc.content_type,
             size_bytes: previewDoc.size_bytes,
@@ -454,6 +494,21 @@ export function OrderDetailPane({
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={deletingDoc !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeletingDoc(null);
+        }}
+        title="Delete this file?"
+        description={`${deletingDoc?.filename ?? "The file"} and what was read from it are removed. An entry that holds nothing else goes with it.`}
+        confirmLabel="Delete file"
+        onConfirm={() => {
+          const target = deletingDoc;
+          setDeletingDoc(null);
+          if (target?.file_id) deleteFile.mutate({ orderId: order.id, fileId: target.file_id });
+        }}
+      />
     </div>
   );
 }

@@ -58,6 +58,8 @@ import type {
   NotificationResponse,
   OrderCatchUpResponse,
   OrderDetail,
+  OrderFileStatus,
+  OrderKind,
   OrderListResponse,
   OrderUpdateRequest,
   OutboxCreateRequest,
@@ -1031,6 +1033,11 @@ export const api = {
      * AI-written text. */
     list(params?: {
       state?: "all" | "open";
+      /** One kind, or everything including `other` when omitted. */
+      kind?: OrderKind;
+      /** `activity` (default): last mail or file first. `event`: the
+       * tickets timeline's order, latest `timeline_date` first. */
+      sort?: "activity" | "event";
       before?: string;
       limit?: number;
       /** Favorites in any state. */
@@ -1071,6 +1078,20 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ move_to: moveTo ?? null }),
       });
+    },
+    /** Adds a file by hand; answers 202 as soon as the bytes are stored.
+     * Without `orderId` the pipeline decides which entry it belongs to. */
+    uploadFile(file: File, orderId?: string): Promise<OrderFileStatus> {
+      const form = new FormData();
+      form.append("file", file, file.name);
+      if (orderId) form.append("order_id", orderId);
+      return request("/orders/files", { method: "POST", body: form, timeoutMs: 120_000 });
+    },
+    fileStatus(fileId: string): Promise<OrderFileStatus> {
+      return request(`/orders/files/${fileId}`);
+    },
+    deleteFile(orderId: string, fileId: string): Promise<void> {
+      return request(`/orders/${orderId}/files/${fileId}`, { method: "DELETE" });
     },
     catchUp(params: {
       account_id: string;

@@ -12,7 +12,6 @@ import { AttachmentImagePreview } from "@/components/mail/attachment-image-previ
 import { AttachmentPdfPreview } from "@/components/mail/attachment-pdf-preview";
 import { PreviewUnavailable } from "@/components/mail/preview-unavailable";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { api } from "@/lib/api";
 import { formatSize } from "@/lib/format";
 import type { AttachmentSummary } from "@/types/api";
 
@@ -34,15 +33,15 @@ function previewKind(contentType: string | null): PreviewKind {
 }
 
 export function AttachmentPreviewDialog({
-  messageId,
+  url,
   attachment,
   onOpenChange,
 }: {
-  messageId: string;
+  /** Where the bytes are: a mail attachment's route, or a file's. */
+  url: string;
   attachment: AttachmentSummary;
   onOpenChange: (open: boolean) => void;
 }) {
-  const url = api.mails.attachmentUrl(messageId, attachment.id);
   const filename = attachment.filename ?? "Attachment";
   const kind = previewKind(attachment.content_type);
   const tooLarge =
