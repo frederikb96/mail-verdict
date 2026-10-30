@@ -243,10 +243,21 @@ async def call_anthropic_structured(
     when a caller's own budget for a full-length response needs more room
     than the shared default allows. Left unset, the client's default holds.
     """
-    from anthropic import APIConnectionError, InternalServerError, RateLimitError
+    from anthropic import (
+        APIConnectionError,
+        InternalServerError,
+        RateLimitError,
+        transform_schema,
+    )
+
+    # The Messages API answers 400 to a raw schema carrying a keyword it does
+    # not enforce (maxItems, maxLength, minimum, ...). The SDK's transform
+    # drops those and writes each into the field's description, so the model
+    # still sees the limit; the other providers get the schema untouched.
+    api_schema = transform_schema(schema)
 
     async def _call_once() -> str:
-        output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": schema}}
+        output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": api_schema}}
         if effort:
             output_config["effort"] = effort
         kwargs: dict[str, Any] = {}

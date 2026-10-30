@@ -310,12 +310,35 @@ class TestCallAnthropicStructured:
         kwargs = client.messages.create.await_args.kwargs
         assert kwargs["model"] == "claude-opus-5-5"
         assert kwargs["output_config"] == {
-            "format": {"type": "json_schema", "schema": {"type": "object"}},
+            "format": {
+                "type": "json_schema",
+                "schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            },
             "effort": "medium",
         }
         # Thinking cannot be switched off on this model and a forced tool
         # choice is rejected: neither parameter may appear.
         assert "thinking" not in kwargs and "tool_choice" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_keywords_the_api_refuses_are_not_sent(self) -> None:
+        client = _anthropic_client()
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["items", "text"],
+            "properties": {
+                "items": {"type": "array", "maxItems": 3, "items": {"type": "string"}},
+                "text": {"type": "string", "maxLength": 200},
+            },
+        }
+        await call_anthropic_structured(
+            client, "claude-opus-5-5", None, 4000, "s", "u", schema, _fast_retry(),
+        )
+        sent = client.messages.create.await_args.kwargs["output_config"]["format"]["schema"]
+        assert "maxItems" not in sent["properties"]["items"]
+        assert "maxLength" not in sent["properties"]["text"]
+        assert "maxItems" in schema["properties"]["items"]  # the caller's schema is untouched
 
     @pytest.mark.asyncio
     async def test_the_system_prompt_is_a_cacheable_block(self) -> None:
