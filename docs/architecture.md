@@ -597,11 +597,20 @@ or not the model named it (source `code`), and one whose barcode is gone is dele
 and a `file` job to the orders queue, which reads the file like an attachment and places it: into
 the entry named at upload, else through a decide call that offers the candidates and "new" but never
 "none" — adding the file was the decision. It then joins the same flow as a mail: identifiers,
-code facts, a write job. An entry made only of files is an ordinary entry — it is written, found by
-its numbers, closed automatically and deleted when its last file goes. Limits are the
-`order_files` section of `config/config.yaml`, enforced while the upload is read. A file the queue
-fails on is marked `failed` and deleted `order_files.failed_retention_days` after it was added by an
-hourly pass (`orders/file_prune.py`).
+code facts, a write job. Any type is accepted: what no reader knows is stored and listed with
+method `none`. An entry made only of files is an ordinary entry — it is written, found by its
+numbers, closed automatically and deleted when its last file goes. Limits are the `order_files`
+section of `config/config.yaml`; the size limit is enforced while the upload is read, the per-entry
+limits only for a file added to a named entry (a file the model places is not counted). A file the
+queue fails on is marked `failed` and deleted `order_files.failed_retention_days` after it was added
+by an hourly pass (`orders/file_prune.py`); until then one added to an entry is listed there as a
+document of method `failed`, one added without an entry shows at its status route only.
+
+An entry whose text cannot be written for good (the write job fails) is not left unlisted: a
+never-written entry gets a placeholder text named after its first file or mail, a written one keeps
+its text and stops being marked stale. A rewrite reads every mail of the entry again where it is now
+— a mail that moved into the glacier is read from `glacier_messages` — and reads again documents an
+older extractor made or whose read failed (except those over the size limit).
 
 **A code is drawn on request, never stored as an image.** `GET /api/orders/{id}/codes/{fact_id}.png`
 encodes the stored payload again with zxing-cpp's writer (the one place the API process loads

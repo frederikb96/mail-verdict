@@ -81,7 +81,10 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 _MAX_FILTER_LENGTH = 200
 
 # Where an entry sits on the tickets timeline -- the one definition of the
-# date rule, used to sort, to page and to answer.
+# date rule, used to sort, to page and to answer. An entry with no event date
+# sits on the UTC day of its first activity: the server knows no zone, so a
+# client whose local day differs (an entry that arrived just after local
+# midnight) shows it a day earlier than its own calendar would.
 TIMELINE_DATE = func.coalesce(
     Order.event_start, cast(func.timezone("UTC", Order.first_activity_at), Date),
 )

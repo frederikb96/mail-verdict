@@ -25,6 +25,7 @@ from mail_verdict.orders import repository
 from mail_verdict.orders.content import AttachmentRef
 from mail_verdict.orders.documents import read_mail_documents, store_mail_documents
 from mail_verdict.orders.extract import EXTRACTOR_VERSION
+from mail_verdict.orders.extract.model import Barcode, ExtractedDocument
 from mail_verdict.orders.worker import _handle_mail_job, _handle_write_job
 from mail_verdict.pipeline.contracts import StageUnavailable
 from mail_verdict.queue.circuit import CircuitBreaker
@@ -680,3 +681,24 @@ class TestNothingIsReadWhileTheProviderIsSuspended:
             await breaker.record_success()
         assert [c["task"] for c in model_stub.calls] == ["decide"]
         assert await _order_of(migrated_db, account_id) is not None
+
+
+class TestStoringWhatWasRead:
+    async def test_a_lone_surrogate_in_a_pass_text_does_not_fail_the_insert(
+        self, migrated_db: DatabaseConnection, orders_config: None,
+    ) -> None:
+        document = ExtractedDocument(
+            filename="pass\ud800.pkpass", content_type="application/vnd.apple.pkpass",
+            size_bytes=10, sha256="x", method="pkpass", text="Gate \ud800 12\x00",
+            text_chars_total=9,
+            barcodes=(Barcode(1, "QR", b"x", "A\ud800B", None, None, None),),
+        )
+        async with migrated_db.session() as session:
+            order_id = await repository.create_order(session)
+            await store_mail_documents(
+                session, order_id=order_id, account_id=uuid.uuid4(), msg_key="k",
+                reads=[order_documents.ReadDocument(uuid.uuid4(), None, document)],
+            )
+        [stored] = await _documents(migrated_db, order_id)
+        assert stored.text == "Gate ? 12"
+        assert [b["text"] for b in stored.barcodes] == ["A?B"]
