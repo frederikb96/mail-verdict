@@ -31,6 +31,10 @@ dependencies = [
     "recurring-ical-events>=3.0.0",
     "vobject>=0.9.6.1",
     "pywebpush>=2.0.0",
+    "pypdfium2>=5.0.0",
+    "zxing-cpp>=3.1.0",
+    "pillow>=11.0.0",
+    "selectolax>=0.4.0",
 ]
 
 [project.urls]
@@ -90,5 +94,6 @@ disallow_untyped_defs = true
 module = [
     "fastmcp.*", "jinja2.*", "asyncpg", "nh3.*", "tinycss2.*",
     "recurring_ical_events.*", "vobject.*", "pywebpush.*", "py_vapid.*",
+    "pypdfium2.*", "zxingcpp.*", "selectolax.*",
 ]
 ignore_missing_imports = true

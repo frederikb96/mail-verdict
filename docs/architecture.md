@@ -512,6 +512,40 @@ another client is a different row sharing only the Message-ID header, and a purg
 mail resolves to "gone": the order keeps its snapshot (subject, sender, date, taken at attach
 time), summary and facts, shown dimmed and unopenable, until a person deletes the order itself.
 
+### Reading attachments
+
+`orders/extract/` turns an attachment into text a model can read, with no model involved:
+`extract_bytes(data, content_type, filename, limits)` returns an `ExtractedDocument` (text,
+barcodes, `method`, page count), and an unreadable file comes back as method `failed` with the
+reason rather than raising. The reader is chosen by content first and labels second.
+
+- **PDF** (`pdf.py`): the text layer through PDFium. A page with fewer than 50 text characters is
+  rendered and read by Tesseract (`ocr.py`, a subprocess with its own time limit; a page that reads
+  poorly is retried turned 180 degrees). Scanned pages are the only OCR path: HTML mail is never
+  rendered or OCR'd, since its content is text.
+- **Barcodes** (`barcodes.py`): zxing-cpp decodes QR, Aztec (Deutsche Bahn tickets), Data Matrix,
+  PDF417 and the 1D formats from the leading pages' renders, from image attachments and from
+  inline graphics of at least 100 px. The exact payload bytes are kept (a ticket's Aztec is
+  binary), with the page, the box in page points and a PNG crop. Each code appears in the text as a
+  marker (`[code b1 QR "5471205382"]`, or `[code b1 Aztec 334 bytes]` for a binary or long
+  payload) at its reading-order position: before the line of the first glyph that follows it.
+  A stored payload can be re-encoded as an image (`render_code`).
+- **Other types**: `.pkpass` (the pass's fields and its declared barcodes), `.ics` (one block per
+  event), UBL and CII e-invoices (issuer, number, dates, totals, IBAN), HTML attachments, text.
+- **Budgets** (`truncate.py`): a body or document is kept whole up to 12,000 characters, then its
+  first 8,000 and last 4,000 around an omission marker; terms and conditions get 2,000 and 1,000.
+  The tail is kept because totals, ticket codes and bank details end documents.
+- **Isolation** (`pool.py`): PDFium and Tesseract parse untrusted files, so documents are read in
+  one spawned child process with a time budget (`extraction.timeout_seconds`). A document that
+  outruns it or kills the child is recorded as `failed` (`timeout` or `crash`), the child is killed
+  and the pool starts a new one. Importing `orders.extract` stays light; the heavy libraries load
+  only in the child.
+
+Mail bodies take a different, lighter path: `orders/content.py`'s `prepare_body` uses the plain part
+unless it is a stub, a dump of HTML source, or the HTML part carries at least twice its text plus
+300 characters, and converts HTML (`html_text.py`) with table rows as `label | value` and link
+targets kept.
+
 ### Neighbour hints, and why the classifier's own verdicts never feed them
 
 Mail is repetitive — the same sender, the same template, month after month — so a new message's

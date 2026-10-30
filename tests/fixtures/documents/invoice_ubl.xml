@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ubl:Invoice xmlns:ubl="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+             xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+             xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>INV-2030-0042</cbc:ID>
+  <cbc:IssueDate>2030-03-01</cbc:IssueDate>
+  <cbc:DueDate>2030-03-15</cbc:DueDate>
+  <cbc:Note>Online order ORD-778 of 2030-02-27</cbc:Note>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cac:OrderReference>
+    <cbc:ID>not given</cbc:ID>
+    <cbc:SalesOrderID>ORD-778</cbc:SalesOrderID>
+  </cac:OrderReference>
+  <cac:AccountingSupplierParty>
+    <cac:Party><cac:PartyName><cbc:Name>Example Textiles Ltd</cbc:Name></cac:PartyName></cac:Party>
+  </cac:AccountingSupplierParty>
+  <cac:AccountingCustomerParty>
+    <cac:Party><cac:PartyName><cbc:Name>Sample Customer</cbc:Name></cac:PartyName></cac:Party>
+  </cac:AccountingCustomerParty>
+  <cac:PaymentMeans>
+    <cac:PayeeFinancialAccount><cbc:ID>DE02120300000000202051</cbc:ID></cac:PayeeFinancialAccount>
+  </cac:PaymentMeans>
+  <cac:TaxTotal><cbc:TaxAmount currencyID="EUR">3.20</cbc:TaxAmount></cac:TaxTotal>
+  <cac:LegalMonetaryTotal>
+    <cbc:TaxInclusiveAmount currencyID="EUR">20.00</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="EUR">0.00</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+</ubl:Invoice>

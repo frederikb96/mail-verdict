@@ -104,6 +104,14 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.3.0
 
+      # The OCR tests need Tesseract with every language in config.yaml's
+      # extraction.ocr_languages, as the image has.
+      - name: Install Tesseract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng tesseract-ocr-nld
+
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
 
