@@ -80,6 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the numbers of a new entry as well as of an attached one.
 - The write prompt no longer lists a mail's attachments that read as empty text (logos, spacer
   images); a file added by hand is always listed.
+- UI dependency updates: Tiptap 3.32.0, lucide-react 1.58.0, shadcn 4.22.0.
 
 ## [6.18.2] - 2026-10-24
 
