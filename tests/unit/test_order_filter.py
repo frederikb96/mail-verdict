@@ -87,8 +87,11 @@ def test_gls_the_bank_does_not_pass_on_the_carrier_pattern() -> None:
     assert result.passed is False
 
 
+_ORDERS_DEFAULTS = SETTING_DEFAULTS[SettingCategory.ORDERS]
+
+
 def test_validate_orders_settings_accepts_the_shipped_defaults() -> None:
-    validate_orders_settings({"filter": _DEFAULT_FILTER})
+    validate_orders_settings(dict(_ORDERS_DEFAULTS))
 
 
 def test_validate_orders_settings_rejects_an_uncompilable_pattern() -> None:
@@ -112,11 +115,34 @@ def test_validate_orders_settings_rejects_too_many_patterns() -> None:
         validate_orders_settings({"filter": patterns})
 
 
-def test_validate_orders_settings_rejects_an_out_of_range_reasoning_effort() -> None:
-    with pytest.raises(ValueError, match="reasoning_effort"):
-        validate_orders_settings({"reasoning_effort": "xhigh"})
+@pytest.mark.parametrize("task", ["decide", "write"])
+def test_validate_orders_settings_rejects_an_effort_the_tasks_provider_does_not_know(
+    task: str,
+) -> None:
+    with pytest.raises(ValueError, match=f"orders.{task}_reasoning_effort"):
+        validate_orders_settings({
+            **_ORDERS_DEFAULTS, f"{task}_provider": "anthropic",
+            f"{task}_reasoning_effort": "none",
+        })
 
 
-def test_validate_orders_settings_rejects_max_tokens_out_of_range() -> None:
-    with pytest.raises(ValueError, match="max_tokens"):
-        validate_orders_settings({"max_tokens": 100})
+@pytest.mark.parametrize("task", ["decide", "write"])
+def test_validate_orders_settings_rejects_max_tokens_out_of_range(task: str) -> None:
+    with pytest.raises(ValueError, match=f"orders.{task}_max_tokens"):
+        validate_orders_settings({**_ORDERS_DEFAULTS, f"{task}_max_tokens": 100})
+
+
+@pytest.mark.parametrize("task", ["decide", "write"])
+def test_validate_orders_settings_requires_a_custom_tasks_own_base_url(task: str) -> None:
+    """One task on a custom server does not give the other task one."""
+    with pytest.raises(ValueError, match=f"orders.{task}_base_url"):
+        validate_orders_settings({**_ORDERS_DEFAULTS, f"{task}_provider": "custom"})
+
+
+def test_the_two_tasks_may_sit_on_different_providers() -> None:
+    validate_orders_settings({
+        **_ORDERS_DEFAULTS,
+        "decide_provider": "custom", "decide_base_url": "https://example.test/v1",
+        "decide_reasoning_effort": "none",
+        "write_provider": "anthropic", "write_reasoning_effort": "medium",
+    })

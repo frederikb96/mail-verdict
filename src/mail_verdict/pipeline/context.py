@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import func, select
 
-from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.core.errors import ModelRefused, ProviderUnavailableError
 from mail_verdict.database.models import Folder, FolderPrefs, Verdict, VerdictSource
 from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.pipeline.contracts import (
@@ -140,6 +140,11 @@ class FolderResolver:
         return None
 
 
+# How long a suspended breaker (no key, rejected key, spent credit) waits
+# between the calls that test whether it has been fixed.
+_SUSPENDED_PROBE_INTERVAL = timedelta(minutes=5)
+
+
 class _NullCircuit:
     """A circuit breaker that never trips and never persists anything --
     used only when a ModelGateway is built with no database connection."""
@@ -155,6 +160,9 @@ class _NullCircuit:
 
     async def record_unavailable(self, *, reason: str, probe_interval: timedelta) -> None:
         return None
+
+    async def try_probe(self, *, probe_interval: timedelta) -> bool:
+        return False
 
     async def record_backoff(self, *, retry_after: timedelta, reason: str | None = None) -> None:
         return None
@@ -201,22 +209,22 @@ class ModelGateway:
         Issue one strict-schema request.
 
         The circuit breaker is keyed by `(provider, category)`, not by
-        provider name alone: `category` is the settings category the
-        caller's model/effort/budget came from ("ai", "semantic",
-        "orders"), so two categories that happen to share one provider
-        name -- both pointed at "custom", say -- each trip and clear
-        their own breaker rather than one shared row. A misconfiguration
-        specific to one category (a garbage model name in that category's
-        own settings) therefore stalls only that category's queue. A
+        provider name alone: `category` names the AI task the caller's
+        model/effort/budget came from ("ai", "semantic", "assistant",
+        "orders.decide", "orders.write"), so two tasks that happen to share
+        one provider name -- both pointed at "custom", say -- each trip and
+        clear their own breaker rather than one shared row. A
+        misconfiguration specific to one task (a garbage model name in that
+        task's own settings) therefore stalls only that task's queue. A
         genuinely broken *credential* still stalls every category that
         shares it, since each independently fails its own next call and
         opens its own breaker -- just not falsely, through a row none of
         them actually wrote to.
 
         Args:
-            category: Settings category this call's model/effort/budget
-                came from -- part of the circuit breaker's identity, never
-                used to pick the provider or credential
+            category: The AI task this call's model/effort/budget came
+                from -- part of the circuit breaker's identity, never used
+                to pick the provider or credential
             base_url: Required when provider is "custom" -- the compatible
                 server's API base. Ignored otherwise.
             timeout_seconds: Overrides the shared client's own per-request
@@ -233,9 +241,10 @@ class ModelGateway:
             (parsed response, latency in milliseconds)
 
         Raises:
-            StageUnavailable: no key configured, or the provider rejected
-                the credential outright
+            StageUnavailable: no key configured, the provider rejected the
+                credential outright, or it is out of credit or allowance
             StageThrottled: rate limited
+            StageRefused: the model declined to answer
             StageTransient: any other failure, including retries exhausted
         """
         from mail_verdict.pipeline.contracts import StageMisconfigured
@@ -254,9 +263,15 @@ class ModelGateway:
         )
         if not await self._circuit.is_available():
             status = await self._circuit.status()
-            if status.state.value == "suspended":
-                raise StageUnavailable(f"{provider} circuit suspended: {status.reason}")
-            raise StageThrottled(f"{provider} circuit open: {status.reason}")
+            # A suspended breaker clears only on a successful call, so one
+            # caller per probe interval is let through to make it -- without
+            # that, a topped-up balance or a fixed key would never be noticed.
+            if status.state.value != "suspended" or not await self._circuit.try_probe(
+                probe_interval=_SUSPENDED_PROBE_INTERVAL,
+            ):
+                if status.state.value == "suspended":
+                    raise StageUnavailable(f"{provider} circuit suspended: {status.reason}")
+                raise StageThrottled(f"{provider} circuit open: {status.reason}")
 
         from mail_verdict.core.structured_llm import (
             call_anthropic_structured,
@@ -270,7 +285,7 @@ class ModelGateway:
             client = await resolve_client(provider, self._cred_repo, base_url=base_url)
         except ProviderUnavailableError as exc:
             await self._circuit.record_unavailable(
-                reason=str(exc), probe_interval=timedelta(minutes=5),
+                reason=str(exc), probe_interval=_SUSPENDED_PROBE_INTERVAL,
             )
             raise StageUnavailable(str(exc)) from exc
 
@@ -317,16 +332,23 @@ class ModelGateway:
         against `pipeline_runs.attempts` and can eventually dead-letter a
         message a sustained throttle should have kept retrying forever.
         """
-        from mail_verdict.core.structured_llm import retry_after_from_exception
-        from mail_verdict.pipeline.contracts import StageTransient
+        from mail_verdict.core.structured_llm import exhaustion_reason, retry_after_from_exception
+        from mail_verdict.pipeline.contracts import StageRefused, StageTransient
 
         cause = exc.__cause__ if type(exc).__name__ == "RuntimeError" and exc.__cause__ else exc
         name = type(cause).__name__
-        if name == "AuthenticationError":
-            await self._circuit.record_unavailable(
-                reason=f"{provider} rejected the API key", probe_interval=timedelta(minutes=5),
+        exhausted = exhaustion_reason(cause)
+        if exhausted is not None or name in ("AuthenticationError", "PermissionDeniedError"):
+            reason = (
+                f"{provider} {exhausted}" if exhausted
+                else f"{provider} rejected the API key"
             )
-            raise StageUnavailable(f"{provider} rejected the API key") from exc
+            await self._circuit.record_unavailable(
+                reason=reason, probe_interval=_SUSPENDED_PROBE_INTERVAL,
+            )
+            raise StageUnavailable(reason) from exc
+        if isinstance(cause, ModelRefused):
+            raise StageRefused(str(cause)) from exc
         if name == "RateLimitError":
             delay = retry_after_from_exception(cause, default=timedelta(seconds=30))
             await self._circuit.record_backoff(retry_after=delay, reason=f"{provider} rate limited")

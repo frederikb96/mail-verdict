@@ -7,6 +7,7 @@ import { useToast } from "@/hooks/use-toast";
 export const settingsKeys = {
   all: ["settings"] as const,
   category: (cat: string) => ["settings", cat] as const,
+  providers: ["settings", "providers"] as const,
 };
 
 export function useAllSettings() {
@@ -14,6 +15,16 @@ export function useAllSettings() {
     queryKey: settingsKeys.all,
     queryFn: () => api.settings.getAll(),
     staleTime: 5 * 60_000,
+  });
+}
+
+/** Provider keys and the health of every AI task's breaker. Under the
+ * ["settings"] prefix, so a settings write or settings.changed refreshes it. */
+export function useProvidersStatus() {
+  return useQuery({
+    queryKey: settingsKeys.providers,
+    queryFn: () => api.settings.providers(),
+    staleTime: 30_000,
   });
 }
 

@@ -19,6 +19,13 @@ points it at the compatible server's base_url instead of api.openai.com).
 `json_object` response formatting is commonly rejected by such a server in
 favour of a declared `json_schema` -- this module never emits the former.
 
+A provider that is out of money (an exhausted Anthropic credit balance, a
+spent Infomaniak token allowance) is told apart from every other failure by
+`exhaustion_reason`: no retry inside this module can clear it, so it is
+raised at once for the gateway (pipeline/context.py) to suspend the
+provider instead. A model that declines to answer raises `ModelRefused`,
+likewise never retried.
+
 Callers never see a raw client: resolve_client() raises
 ProviderUnavailableError for the one case worth telling apart from a
 retryable failure -- there is no key to call with at all.
@@ -33,7 +40,7 @@ from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.core.errors import ModelRefused, ProviderUnavailableError
 from mail_verdict.core.retry import RetryConfig
 
 if TYPE_CHECKING:
@@ -72,6 +79,44 @@ def retry_after_from_exception(exc: BaseException, *, default: timedelta) -> tim
         except ValueError:
             pass
     return default
+
+
+def _error_text(exc: BaseException) -> str:
+    """The exception's message plus its parsed response body, lowercased --
+    where a provider names why it refused, which the SDK's exception class
+    alone does not."""
+    parts = [str(exc)]
+    body = getattr(exc, "body", None)
+    if body is not None:
+        parts.append(json.dumps(body, default=str))
+    return " ".join(parts).lower()
+
+
+def exhaustion_reason(exc: BaseException) -> str | None:
+    """
+    Why a failed call means the provider is out of money, or None.
+
+    - Anthropic: HTTP 402 or an error body of type `billing_error`, and
+      the 400 `invalid_request_error` that "Your credit balance is too low"
+      arrives as. The SDK has no exception class for any of them; it maps
+      400 to BadRequestError and leaves 402 a bare APIStatusError.
+    - An OpenAI-compatible server (Infomaniak): HTTP 429 whose body says
+      `maximum_token_reached` -- the account's token allowance is spent, not
+      a rate limit, and no backoff clears it.
+
+    Args:
+        exc: The exception a provider SDK raised
+
+    Returns:
+        A short reason for the circuit breaker, or None for any other failure
+    """
+    status = getattr(exc, "status_code", None)
+    text = _error_text(exc)
+    if status == 402 or "billing_error" in text or "credit balance" in text:
+        return "credit balance exhausted"
+    if status == 429 and "maximum_token_reached" in text:
+        return "token allowance spent"
+    return None
 
 
 async def resolve_client(
@@ -125,7 +170,9 @@ async def retry_structured_call(
 
     Malformed JSON, a schema-shape violation caught by `validate`, and
     anything in `transient_errors` (rate limits, connection drops, server
-    errors) are retried with full-jitter backoff. Any other exception --
+    errors) are retried with full-jitter backoff -- except a failure that
+    `exhaustion_reason` reads as an exhausted balance or allowance. Any
+    other exception --
     a bad request, an auth failure, an unknown model -- propagates
     immediately: retrying it would only mask a real bug.
 
@@ -160,6 +207,8 @@ async def retry_structured_call(
         except (json.JSONDecodeError, ValueError) as exc:
             last_error = exc
         except transient_errors as exc:
+            if exhaustion_reason(exc) is not None:
+                raise
             last_error = exc
 
         if attempt < retry_config.max_retries:
@@ -206,11 +255,19 @@ async def call_anthropic_structured(
         response = await client.messages.create(
             model=model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            # The system prompt is the same on every call of a task, so it is
+            # the cacheable prefix; a prompt below the model's minimum
+            # cacheable length is simply not cached.
+            system=[{
+                "type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"},
+            }],
             messages=[{"role": "user", "content": user_prompt}],
             output_config=output_config,
             **kwargs,
         )
+        if response.stop_reason == "refusal":
+            details = getattr(response, "stop_details", None)
+            raise ModelRefused(getattr(details, "category", None))
         return "".join(block.text for block in response.content if block.type == "text")
 
     return await retry_structured_call(
@@ -286,8 +343,11 @@ async def call_chat_completions_structured(
             },
             **kwargs,
         )
-        content = response.choices[0].message.content
-        return content if content is not None else ""
+        message = response.choices[0].message
+        refusal = getattr(message, "refusal", None)
+        if isinstance(refusal, str) and refusal:
+            raise ModelRefused
+        return message.content if message.content is not None else ""
 
     return await retry_structured_call(
         _call_once,

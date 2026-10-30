@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from mail_verdict.settings.ai_validation import validate_ai_settings, validate_semantic_settings
+from mail_verdict.settings.ai_validation import (
+    validate_ai_settings,
+    validate_assistant_settings,
+    validate_semantic_settings,
+    validate_task_model,
+)
 
 
 class TestValidCombinations:
@@ -89,3 +94,50 @@ class TestSemanticInvalidCombinations:
     def test_custom_provider_without_base_url_rejected(self) -> None:
         with pytest.raises(ValueError, match="semantic.base_url"):
             validate_semantic_settings({"provider": "custom"})
+
+
+class TestTaskModelWithPrefix:
+    """validate_task_model checks one prefixed key group of a category, so
+    two tasks in one category are validated independently."""
+
+    def test_each_prefix_is_read_on_its_own(self) -> None:
+        effective = {
+            "decide_provider": "custom", "decide_base_url": "https://example.test/v1",
+            "write_provider": "anthropic", "write_reasoning_effort": "medium",
+        }
+        validate_task_model("orders.decide_", effective, prefix="decide_")
+        validate_task_model("orders.write_", effective, prefix="write_")
+
+    def test_anthropic_rejects_none_effort(self) -> None:
+        """The Anthropic API has no `none` effort; thinking cannot be switched off."""
+        with pytest.raises(ValueError, match="orders.write_reasoning_effort"):
+            validate_task_model(
+                "orders.write_",
+                {"write_provider": "anthropic", "write_reasoning_effort": "none"},
+                prefix="write_",
+            )
+
+    def test_openai_accepts_none_effort(self) -> None:
+        validate_task_model(
+            "orders.write_", {"write_provider": "openai", "write_reasoning_effort": "none"},
+            prefix="write_",
+        )
+
+    def test_the_error_names_the_task_that_failed(self) -> None:
+        with pytest.raises(ValueError, match="orders.decide_provider"):
+            validate_task_model("orders.decide_", {"decide_provider": "nope"}, prefix="decide_")
+
+
+class TestAssistantValidation:
+    def test_defaults_shape_is_valid(self) -> None:
+        validate_assistant_settings(
+            {"provider": "anthropic", "reasoning_effort": "medium", "max_tokens": 8000}
+        )
+
+    def test_custom_needs_its_own_base_url(self) -> None:
+        with pytest.raises(ValueError, match="assistant.base_url"):
+            validate_assistant_settings({"provider": "custom", "max_tokens": 8000})
+
+    def test_token_budget_is_bounded(self) -> None:
+        with pytest.raises(ValueError, match="assistant.max_tokens"):
+            validate_assistant_settings({"provider": "openai", "max_tokens": 100})

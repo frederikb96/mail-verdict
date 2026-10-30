@@ -2,7 +2,14 @@
 Default values for DB-stored settings.
 
 Single source of truth for all application settings defaults.
-Categories: ai, retry, pipeline, semantic, calendar, outbox, mail.
+Categories: ai, assistant, retry, pipeline, semantic, calendar, outbox, mail,
+orders.
+
+Every AI task picks its own provider and model: "ai" (spam verdicts),
+"semantic" (embeddings), "assistant" (the rule assistant), and the
+`decide_` and `write_` key groups of "orders". A provider's API key is
+stored once per provider name (settings/credentials.py) and shared by
+every task that names it.
 
 "rules" is not one of them: a rule is a `match` stage in the pipeline
 now (see pipeline/stages/match.py), and `settings.rules` -- if a pre-
@@ -29,6 +36,7 @@ class SettingCategory(str, enum.Enum):
     """Valid setting categories."""
 
     AI = "ai"
+    ASSISTANT = "assistant"
     RETRY = "retry"
     PIPELINE = "pipeline"
     SEMANTIC = "semantic"
@@ -40,7 +48,8 @@ class SettingCategory(str, enum.Enum):
 
 SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
     SettingCategory.AI: {
-        # "openai" and "anthropic" both need their provider's API key
+        # The model that judges every incoming mail as spam or not (the
+        # classify stage). "openai" and "anthropic" both need their provider's API key
         # configured (settings/credentials.py, or the matching env var).
         # "custom" is any OpenAI-compatible chat-completions server reached
         # at ai.base_url with its own key (settings/credentials.py's
@@ -62,6 +71,20 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # openai/v1". Ignored for "openai"/"anthropic"/"fake", and required
         # by settings/ai_validation.py whenever provider is "custom".
         "base_url": None,
+    },
+    SettingCategory.ASSISTANT: {
+        # The rule assistant's model (rules/assistant.py): it reads the open
+        # mail plus the subjects and senders of the account's newest mails.
+        # Same provider vocabulary, defaults and validation as the ai
+        # category, but its own values: changing one never moves the other.
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "reasoning_effort": "none",
+        "max_tokens": 8000,
+        "base_url": None,
+        # Per-model-call timeout. The assistant retries a rejected answer
+        # up to three times, each a full call.
+        "call_timeout_seconds": 60.0,
     },
     SettingCategory.RETRY: {
         "max_retries": 5,
@@ -203,18 +226,31 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "notify_wait_seconds": 120.0,
     },
     SettingCategory.ORDERS: {
-        # The model that decides where a mail belongs and writes an
-        # order's text, called through the provider settings.ai.provider
-        # names (pipeline/context.py's ModelGateway). Empty means not
-        # chosen: an account cannot be switched on until it is (see
-        # api/accounts.py's PATCH handler).
-        "model": "",
+        # Two model tasks, each with its own provider, server address, model,
+        # reasoning effort and token budget -- same vocabulary and validation
+        # as the ai category (settings/ai_validation.py), likewise not
+        # inherited from it. Empty model means not chosen: an account cannot
+        # be switched on until both are (see api/accounts.py's PATCH handler).
+        #
+        # decide: which order does a mail belong to, or none. Reads every mail
+        # that passes the first filter.
+        "decide_provider": "openai",
+        "decide_base_url": None,
+        "decide_model": "",
         # A reasoning model thinks before it answers and pays for that
         # from max_tokens -- at a higher effort it can spend the whole
         # budget and return nothing. Raise max_tokens together with this.
-        "reasoning_effort": "none",
+        "decide_reasoning_effort": "none",
         # A ceiling, not a target -- an answer is a few hundred tokens.
-        "max_tokens": 4000,
+        "decide_max_tokens": 4000,
+        # write: an order's title, status and summary. Reads only mail that
+        # is already in an order.
+        "write_provider": "openai",
+        "write_base_url": None,
+        "write_model": "",
+        "write_reasoning_effort": "none",
+        # Thinking is paid from this budget too.
+        "write_max_tokens": 8000,
         # The language titles and summaries are written in.
         "language": "English",
         # An open order the model still owns is closed automatically
@@ -299,12 +335,12 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
             },
         },
         # Worker claim/lease mechanics -- see queue/work_queue.py.
-        "lease_seconds": 300,
+        "lease_seconds": 900,
         "poll_interval_seconds": 2.0,
         "max_attempts": 5,
         "base_delay_seconds": 5.0,
         "max_delay_seconds": 300.0,
-        # Per-model-call timeout, overriding the shared provider client's
+        # Per-model-call timeout (both tasks), overriding the shared provider client's
         # own default (core/openai_provider.py's REQUEST_TIMEOUT_SECONDS,
         # sized for classify and embeddings' much tighter leases). A
         # reasoning model can legitimately spend several thousand hidden
@@ -314,9 +350,9 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # shared 20-second default, which made retries (themselves capped
         # by that same too-short timeout) the common case rather than the
         # exception. Sized to stay under lease_seconds even in the
-        # pathological case where every one of settings.retry's
-        # max_retries attempts times out: max_retries * this value, plus
-        # their backoff delays, still leaves margin under the lease above.
-        "call_timeout_seconds": 40.0,
+        # pathological case where every attempt settings.retry allows
+        # (max_retries + 1) times out: that many of this value, plus their
+        # backoff delays, still leaves margin under the lease above.
+        "call_timeout_seconds": 120.0,
     },
 }

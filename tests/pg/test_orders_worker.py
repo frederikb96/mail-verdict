@@ -24,11 +24,13 @@ from mail_verdict.database.models import Order, OrderFact, OrderJob, OrderMail
 from mail_verdict.orders import repository
 from mail_verdict.orders.intake import enqueue_thread_follow_up
 from mail_verdict.orders.lookup import OrderLookup
-from mail_verdict.orders.worker import _handle_mail_job
+from mail_verdict.orders.worker import _handle_mail_job, _handle_write_job
 from mail_verdict.pipeline.context import BoundLog, MessageHistory, RunContext
+from mail_verdict.pipeline.contracts import StageUnavailable
 from mail_verdict.pipeline.message_view import FolderView, MessageView
 from mail_verdict.pipeline.stages.orders import OrdersConfig, OrdersStage
 from mail_verdict.postimap.listener import PostimapEvent
+from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
 
@@ -41,7 +43,7 @@ _NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 async def _settings_service(db: DatabaseConnection) -> SettingsService:
     service = SettingsService(db)
     await service.load()
-    await service.update("ai", {"provider": "fake"})
+    await service.update("orders", {"decide_provider": "fake", "write_provider": "fake"})
     return service
 
 
@@ -468,3 +470,50 @@ class TestIdentifierBackstop:
                 )
             ).all()
         assert [(k, v) for k, v in identifiers] == [("order_number", "NK-48213")]
+
+
+class TestTasksChooseTheirOwnProvider:
+    async def test_decide_on_fake_and_write_on_a_real_provider_each_follow_their_own(
+        self, migrated_db: DatabaseConnection,
+    ) -> None:
+        """The decide call is answered by the fake provider while the write
+        call goes to a real one -- here one that cannot be reached (custom,
+        no server address) so it fails without a network. Only the write
+        task's breaker trips."""
+        settings_service = await _settings_service(migrated_db)
+        await settings_service.update("orders", {"write_provider": "custom"})
+        cred_repo = ProviderCredentialRepository(migrated_db, encryption_key="")
+
+        async with migrated_db.session() as session:
+            account_id = await _seed_account(session, orders_enabled=True)
+            folder_id = await _seed_folder(session, account_id=account_id)
+            mail_id, key = await _seed_message(
+                session, account_id=account_id, folder_id=folder_id,
+                subject="Order TP-77120 confirmed",
+            )
+            mail_row = await _enqueue_mail_job(
+                session, account_id=account_id, message_id=mail_id, msg_key=key,
+            )
+
+        await _handle_mail_job(mail_row, migrated_db, cred_repo, settings_service)
+
+        async with migrated_db.session() as session:
+            write_job = (
+                await session.execute(
+                    select(OrderJob).where(OrderJob.kind == "write").order_by(
+                        OrderJob.created_at.desc(),
+                    )
+                )
+            ).scalars().first()
+        assert write_job is not None
+        write_row = {"id": write_job.id, "kind": "write", "order_id": write_job.order_id}
+
+        with pytest.raises(StageUnavailable, match="no base_url"):
+            await _handle_write_job(write_row, migrated_db, cred_repo, settings_service)
+
+        assert (await CircuitBreaker(migrated_db, "custom:orders.write").status()).state == (
+            CircuitState.SUSPENDED
+        )
+        assert (await CircuitBreaker(migrated_db, "fake:orders.decide").status()).state == (
+            CircuitState.CLOSED
+        )

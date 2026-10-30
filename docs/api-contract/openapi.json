@@ -6905,6 +6905,57 @@
         "title": "PipelineWriteRequest",
         "type": "object"
       },
+      "ProviderKeyStatus": {
+        "description": "Whether a provider's key is configured, and its last four characters.",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hint"
+          }
+        },
+        "required": [
+          "configured",
+          "hint"
+        ],
+        "title": "ProviderKeyStatus",
+        "type": "object"
+      },
+      "ProvidersStatus": {
+        "description": "What an operator needs to see about the providers in one read: the\nkeys (shared by every task naming the provider) and the breakers of the\ntasks that have called one.",
+        "properties": {
+          "breakers": {
+            "items": {
+              "$ref": "#/components/schemas/TaskBreakerStatus"
+            },
+            "title": "Breakers",
+            "type": "array"
+          },
+          "providers": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProviderKeyStatus"
+            },
+            "title": "Providers",
+            "type": "object"
+          }
+        },
+        "required": [
+          "providers",
+          "breakers"
+        ],
+        "title": "ProvidersStatus",
+        "type": "object"
+      },
       "PushSubscriptionCreate": {
         "description": "What a browser's `PushSubscription.toJSON()` provides, plus a\nlabel this application adds -- never the alert/reminder preferences,\nwhich start at their column defaults (every folder, reminders on) and\nare changed afterward through PATCH.",
         "properties": {
@@ -8650,6 +8701,63 @@
           "source"
         ],
         "title": "TagResponse",
+        "type": "object"
+      },
+      "TaskBreakerStatus": {
+        "description": "One AI task's circuit breaker, named `<provider>:<task>`.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "retry_after": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry After"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "state",
+          "reason",
+          "since",
+          "retry_after"
+        ],
+        "title": "TaskBreakerStatus",
         "type": "object"
       },
       "ThreadResponse": {
@@ -15740,6 +15848,28 @@
           }
         },
         "summary": "Import Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/settings/providers": {
+      "get": {
+        "description": "Provider key presence and the circuit breakers of the AI tasks.\n\nRegistered before `/{category}`, which would otherwise read \"providers\"\nas a category name.",
+        "operationId": "get_providers_status_settings_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Providers Status",
         "tags": [
           "settings"
         ]

@@ -25,7 +25,10 @@ from pathlib import Path
 
 import pytest
 
+from mail_verdict.core.anthropic_provider import reset_anthropic_provider
+from mail_verdict.core.openai_provider import reset_openai_provider
 from mail_verdict.core.retry import RetryConfig
+from mail_verdict.orders import prompts as orders_prompts
 from mail_verdict.pipeline.context import (
     BoundLog,
     FolderResolver,
@@ -188,3 +191,109 @@ class TestCustomProviderLive:
         assert spam_effect.is_spam is True
         assert ham_effect.is_spam is False
         assert spam_effect.reasoning and ham_effect.reasoning
+
+
+_ORDER_MAIL = {
+    "subject": "Your order NK-48213 has shipped",
+    "from_addr": "Northwind Shop <shop@northwind.example>",
+    "to_addrs": "me@example.test",
+    "received_at": "2026-05-02T09:30:00+00:00",
+    "body": (
+        "Hello,\n\nyour order NK-48213 (2 x Trail socks, 1 x Water bottle, total EUR 54.80) "
+        "has been handed to DHL. Tracking number: 00340434292135100186.\n"
+        "Expected delivery: 5 May 2026.\n\nNorthwind Shop"
+    ),
+}
+
+
+class _OrdersTasks:
+    """The two orders model calls, each through the gateway on one real
+    provider, with the shipped prompts and schemas: the decide call must
+    open a new entry for a shipping mail with no candidates, and the write
+    call must produce a validated entry for it."""
+
+    provider: str
+    model: str
+    effort: str
+    base_url: str | None = None
+    key_env: str
+
+    @pytest.fixture(autouse=True)
+    def _fresh_clients(self) -> None:
+        """Each test runs on its own event loop; a provider client cached by
+        an earlier test is bound to a loop that is already closed."""
+        reset_openai_provider()
+        reset_anthropic_provider()
+
+    def _gateway(self) -> ModelGateway:
+        cred_repo = ProviderCredentialRepository(db=None, encryption_key="")  # type: ignore[arg-type]
+        retry = RetryConfig(max_retries=2, base_delay=1.0, max_delay=5.0, exp_base=2.0)
+        return ModelGateway(db=None, cred_repo=cred_repo, retry_config=retry)  # type: ignore[arg-type]
+
+    async def _call(
+        self, category: str, max_tokens: int, schema_name: str, system_prompt: str,
+        user_prompt: str, schema: dict[str, object], validate: object,
+    ) -> dict[str, object]:
+        data, _ = await self._gateway().structured_call(
+            provider=self.provider, category=category, model=self.model, effort=self.effort,
+            max_tokens=max_tokens, schema_name=schema_name, system_prompt=system_prompt,
+            user_prompt=user_prompt, schema=schema, validate=validate, base_url=self.base_url,
+            timeout_seconds=120.0,
+        )
+        return data
+
+    @pytest.mark.asyncio
+    async def test_decide_opens_a_new_entry_for_a_shipping_mail(self) -> None:
+        _require_key(self.key_env)
+        user_prompt = orders_prompts.build_decide_user_prompt(
+            subject=_ORDER_MAIL["subject"], from_addr=_ORDER_MAIL["from_addr"],
+            to_addrs=_ORDER_MAIL["to_addrs"], received_at=_ORDER_MAIL["received_at"],
+            attachments=[], body=_ORDER_MAIL["body"], candidates=[],
+        )
+        data = await self._call(
+            "orders.decide", 4000, "order_decision", orders_prompts.load_decide_system_prompt(),
+            user_prompt, orders_prompts.build_decide_schema([]),
+            lambda d: orders_prompts.validate_decide_response(d, handles=[]),
+        )
+        assert data["target"] == "new"
+
+    @pytest.mark.asyncio
+    async def test_write_produces_a_validated_entry(self) -> None:
+        _require_key(self.key_env)
+        user_prompt = orders_prompts.build_write_user_prompt(
+            current_text=None,
+            mails=[{
+                "received_at": _ORDER_MAIL["received_at"], "from_addr": _ORDER_MAIL["from_addr"],
+                "subject": _ORDER_MAIL["subject"], "attachments": [], "body": _ORDER_MAIL["body"],
+                "body_chars": 3000,
+            }],
+        )
+        data = await self._call(
+            "orders.write", 16000, "order_text",
+            orders_prompts.build_write_system_prompt(language="English"), user_prompt,
+            orders_prompts.WRITE_SCHEMA, orders_prompts.validate_write_response,
+        )
+        assert "Northwind" in str(data["merchant"])
+        assert data["open"] is True
+        assert data["icon"] == "package"
+        assert data["summary"]
+
+
+class TestOrdersTasksOnClaudeLive(_OrdersTasks):
+    """Claude Opus 5.5 through the Messages API: thinking on and adaptive,
+    depth set by effort, the schema enforced through output_config."""
+
+    provider = "anthropic"
+    model = "claude-opus-5-5"
+    effort = "medium"
+    key_env = "ANTHROPIC_API_KEY"
+
+
+class TestOrdersTasksOnInfomaniakLive(_OrdersTasks):
+    """The production chat model on the Infomaniak (custom) provider."""
+
+    provider = "custom"
+    model = "Qwen/Qwen3.8-27B-FP8"
+    effort = "none"
+    base_url = "https://api.infomaniak.com/2/ai/111650/openai/v1"
+    key_env = "CUSTOM_AI_API_KEY"

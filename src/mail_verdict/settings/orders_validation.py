@@ -2,7 +2,9 @@
 Validates the orders settings category at write time: the filter patterns
 (each one a Python regular expression, checked for compiling before it
 can ever reach a live mail) and the model call parameters -- the same
-place validate_ai_settings guards the ai category.
+place validate_ai_settings guards the ai category. The model call
+parameters are two tasks (decide_ and write_ key groups), each checked
+like any other AI task.
 """
 
 from __future__ import annotations
@@ -10,10 +12,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from mail_verdict.settings.ai_validation import validate_task_model, validate_token_budget
+
 _FILTER_FIELDS = frozenset({"subject", "from", "body"})
 _MAX_PATTERN_LENGTH = 300
 _MAX_PATTERNS_TOTAL = 300
-_REASONING_EFFORT_LEVELS = frozenset({"none", "low", "medium", "high"})
+ORDER_TASKS = ("decide", "write")
 
 
 def _validate_filter(filter_value: Any) -> None:
@@ -70,21 +74,16 @@ def validate_orders_settings(effective: dict[str, Any]) -> None:
 
     Raises:
         ValueError: If the filter is malformed, a pattern does not
-            compile, reasoning_effort/max_tokens/auto_close_days/language is out of range
+            compile, a task's provider, reasoning effort or max_tokens, or
+            auto_close_days/language is out of range
     """
     if "filter" in effective:
         _validate_filter(effective["filter"])
 
-    effort = effective.get("reasoning_effort")
-    if effort is not None and str(effort).lower() not in _REASONING_EFFORT_LEVELS:
-        raise ValueError(
-            f"orders.reasoning_effort must be one of {sorted(_REASONING_EFFORT_LEVELS)}, "
-            f"got {effort!r}"
-        )
-
-    max_tokens = effective.get("max_tokens")
-    if max_tokens is not None and not (500 <= int(max_tokens) <= 16000):
-        raise ValueError("orders.max_tokens must be between 500 and 16000")
+    for task in ORDER_TASKS:
+        prefix = f"{task}_"
+        validate_task_model(f"orders.{prefix}", effective, prefix=prefix)
+        validate_token_budget(f"orders.{prefix}max_tokens", effective.get(f"{prefix}max_tokens"))
 
     auto_close_days = effective.get("auto_close_days")
     if auto_close_days is not None and not (0 <= int(auto_close_days) <= 3650):

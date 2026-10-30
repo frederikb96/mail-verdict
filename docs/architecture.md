@@ -277,10 +277,21 @@ classification behind its own retries, never blocks it, and the gate still buys 
 everything in the pipeline queue has a vector, which is what neighbour hints below depend on. This
 is a scheduling gate, not the availability-tracking circuit breaker each of `pipeline`, `orders`
 and `embeddings` keeps for its own provider calls (`queue/circuit.py`) — a breaker is keyed by
-`(provider, settings category)`, never by provider alone, so a misconfiguration in one category's
-own settings cannot suspend another category that happens to share a provider name. A provider outage suspends the breaker and the
+`(provider, AI task)` (`ai`, `semantic`, `assistant`, `orders.decide`, `orders.write`), never by
+provider alone, so a misconfiguration in one task's own settings cannot suspend another task that
+happens to share a provider name. A provider outage suspends the breaker and the
 queue resumes when the provider answers again; nothing switches provider or model in response —
-that is the operator's decision. Reconciliation's
+that is the operator's decision. What suspends rather than retries or fails: a missing or rejected
+key, an exhausted Anthropic credit balance (HTTP 402, a `billing_error` body, or the 400 "credit
+balance is too low" — the SDK has no exception class for any of them, so
+`core/structured_llm.py`'s `exhaustion_reason` reads status and body) and a spent Infomaniak token
+allowance (a 429 whose body says `maximum_token_reached`, which no backoff clears). The job is
+released untouched and retried, and one caller per five minutes is let through the suspended
+breaker to test whether it has been fixed (`ModelGateway.structured_call`); a refusal by the model
+fails the job at once with `refusal` as its error. `GET /api/settings/providers` lists the keys and
+every task breaker, and a breaker that stays suspended past `providers.suspended_alert_after_seconds`
+raises one `provider_unavailable` alert (`alerts/provider_health.py`, system channel, no account)
+that resolves when the provider answers again. Reconciliation's
 gap-recovery pass (a listener reconnect) respects the classify gate, so it cannot enqueue a run
 ahead of a still-pending embedding.
 
@@ -356,10 +367,13 @@ least once (`EmbeddingStatus.outstanding == 0` — done, failed, or covered indi
 shadowed sibling's row) and whether the new model's own reachable count is at least what the
 active one already reaches; `GET /api/embeddings/status` reports the same predicate
 (`cutover_ready`/`cutover_blocked_reason`), computed in the one place rather than twice. A
-provider is itself a setting per category (`ai.provider`, `semantic.provider`):
-`"openai"`, `"anthropic"` (verdicts only), `"custom"` (any OpenAI-compatible server, reached at
-that category's own `base_url` with one shared credential per provider name, `settings/
-credentials.py`), or `"fake"`. A custom server speaks chat completions only, not the Responses API
+provider is itself a setting per AI task (`ai.provider`, `semantic.provider`, `assistant.provider`,
+`orders.decide_provider`, `orders.write_provider`): `"openai"`, `"anthropic"` (not for embeddings),
+`"custom"` (any OpenAI-compatible server, reached at that task's own `base_url` with one shared
+credential per provider name, `settings/credentials.py`), or `"fake"`. Nothing is inherited from
+`ai`: each task's provider, model, reasoning effort and token budget are its own, validated per
+task (`settings/ai_validation.py`'s `validate_task_model`; Anthropic takes `low`..`max`, never
+`none`). A custom server speaks chat completions only, not the Responses API
 `structured_llm.py`'s `call_openai_structured` uses for real OpenAI — `call_chat_completions_structured`
 is the separate request shape a custom provider needs instead.
 
@@ -449,6 +463,10 @@ from a shrinking transcript rather than from what it already knew. Deciding (`or
 decide prompt, `orders/candidates.py`'s ranked list of existing orders) and writing (the same
 module's write prompt, from the order's own mails, oldest first, with the entry's current text
 handed back in) are two calls, and the second is also what a manual rewrite and a correction reuse.
+Each is its own model task (`orders/model_calls.py`): `orders.decide_*` and `orders.write_*` name a
+provider, model, reasoning effort and token budget apiece, so matching can stay on a private
+provider while the write call runs on Claude. The queue reports the write task's breaker; an
+account cannot be switched on until both tasks have a model.
 
 **A decide call that reports no identifiers is not trusted blindly.** A small model
 measurably misses a number that is plainly present in the body more often than it misses the
@@ -589,7 +607,8 @@ server's are what hold when those fail.
 
 A message can also simply stop on its way out -- an outbox row PostIMAP never picks up fails
 nothing, so it produces no notification either. A periodic pass raises an alert, once, for anything
-waiting there longer than `outbox.stalled_alert_after_seconds`.
+waiting there longer than `outbox.stalled_alert_after_seconds`. An AI provider whose breaker stays
+suspended raises its own alert the same way, after `providers.suspended_alert_after_seconds`.
 
 ## Notifications
 
@@ -1005,14 +1024,14 @@ Two separate mechanisms that must not overlap:
   environment variables and takes effect at startup. `config/config.yaml` holds every default with
   a comment and is the only place a default exists; the application fails at startup rather than
   substituting a fallback for something missing.
-- **Settings** are application behaviour — AI provider, model, reasoning effort, spam handling,
-  rules, and provider API keys. They live in the database and change at runtime through the API.
+- **Settings** are application behaviour — each AI task's provider, model and reasoning effort,
+  spam handling, rules, and provider API keys. They live in the database and change at runtime through the API.
 
 Provider API keys are write-only: settable, reportable as present with a last-four-character hint,
 never returned by any read. One key per provider name (`settings/credentials.py`'s
-`PROVIDER_ENV_VARS`) rather than per settings category — `ai.provider` and `semantic.provider` set
-to `"custom"` share the one `"custom"` key, since a compatible deployment is one account serving
-both workloads, distinguished by whichever `base_url` each category's own settings carry. Keys are
+`PROVIDER_ENV_VARS`) rather than per task — every task whose provider is `"custom"` shares the one
+`"custom"` key, since a compatible deployment is one account serving all its workloads,
+distinguished by whichever `base_url` each task's own settings carry. Keys are
 encrypted at rest with `security.encryption_key` (AES-256-GCM), the one config value in this system
 that protects a setting rather than being one itself. An environment variable (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `CUSTOM_AI_API_KEY`) is the fallback for a deployment that would rather keep a key

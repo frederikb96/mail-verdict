@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Save, Loader2, Archive, Bot, CalendarDays, Package, Repeat, Sparkles, Sun, Moon, Monitor, Workflow, Undo2 } from "lucide-react";
+import { Save, Loader2, Archive, Bot, CalendarDays, Package, Repeat, ShieldCheck, Sparkles, Sun, Moon, Monitor, Undo2, WandSparkles, Workflow } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
-import { useAllSettings, useUpdateSettings } from "@/hooks/use-settings";
+import { useAllSettings, useProvidersStatus, useUpdateSettings } from "@/hooks/use-settings";
+import type { ProviderKeyStatus } from "@/types/api";
 import { useTheme } from "@/components/theme-provider";
 import { AccountOrder } from "@/components/settings/account-order";
 import { UnifiedViewsSettings } from "@/components/settings/unified-setup";
@@ -37,9 +38,10 @@ import { DefaultCalendarSetting } from "@/components/settings/default-calendar-s
  * purpose, as the comment there explains.
  */
 const CATEGORIES = [
-  { key: "ai", label: "AI", icon: Bot },
+  { key: "ai", label: "Spam verdicts", icon: Bot },
   { key: "semantic", label: "Semantic search", icon: Sparkles },
   { key: "orders", label: "Orders", icon: Package },
+  { key: "assistant", label: "Rule assistant", icon: WandSparkles },
   { key: "retry", label: "Retry", icon: Repeat },
   { key: "pipeline", label: "Pipeline", icon: Workflow },
   { key: "outbox", label: "Outbox", icon: Undo2 },
@@ -51,7 +53,7 @@ const CATEGORIES = [
 // would silently do nothing. The key fields themselves (anthropic_api_key,
 // openai_api_key) never appear in a GET response at all -- they are
 // write-only, so the generic renderer below never draws them either way;
-// ProviderKeySettings is their own dedicated form.
+// ProvidersCard is their own dedicated form.
 const COMPUTED_SETTINGS: Record<string, string[]> = {
   ai: [
     "anthropic_api_key_configured",
@@ -109,6 +111,30 @@ const SETTING_LABELS: Record<string, string> = {
   notify_wait_seconds: "Wait before notifying (seconds)",
   language: "Language of titles and summaries",
   filter: "First filter (patterns)",
+  call_timeout_seconds: "Model call timeout (seconds)",
+  decide_provider: "Order matching: provider",
+  decide_base_url: "Order matching: server address (custom provider only)",
+  decide_model: "Order matching: model",
+  decide_reasoning_effort: "Order matching: reasoning effort",
+  decide_max_tokens: "Order matching: max tokens",
+  write_provider: "Order text: provider",
+  write_base_url: "Order text: server address (custom provider only)",
+  write_model: "Order text: model",
+  write_reasoning_effort: "Order text: reasoning effort",
+  write_max_tokens: "Order text: max tokens",
+};
+
+/** What each AI task reads, shown where its provider is chosen -- the
+ * privacy fact a person needs when picking one provider for spam and
+ * another for orders. A category is one task, except orders (two). */
+const TASK_PRIVACY: Record<string, string> = {
+  ai: "Reads every incoming mail to judge whether it is spam.",
+  semantic: "Embeds every mail for search.",
+  orders:
+    "Order matching reads every mail that passes the first filter, which includes newsletters " +
+    "that mention an order. Order text reads only mail already in an order and its attachments.",
+  assistant:
+    "Reads the open mail, plus the subjects and senders of the account's 100 newest mails.",
 };
 
 /** A raw settings key read as a sentence rather than the key itself --
@@ -274,18 +300,18 @@ function CategorySettings({
 function ProviderKeyField({
   providerKey,
   label,
-  settings,
+  status,
 }: {
   providerKey: string;
   label: string;
-  settings: Record<string, unknown>;
+  status: ProviderKeyStatus | undefined;
 }) {
   const [value, setValue] = useState("");
   const [touched, setTouched] = useState(false);
   const updateSettings = useUpdateSettings();
 
-  const configured = settings[`${providerKey}_api_key_configured`] === true;
-  const hint = settings[`${providerKey}_api_key_hint`];
+  const configured = status?.configured === true;
+  const hint = status?.hint;
   const fieldName = `${providerKey}_api_key`;
 
   const save = (nextValue: string) => {
@@ -339,27 +365,55 @@ function ProviderKeyField({
 }
 
 /** Every provider key, each its own field -- the fields `CategorySettings`
- * deliberately excludes above. One shared "custom" key serves any category
- * (AI, Semantic search) whose own provider field is set to "custom" -- a
- * compatible deployment is one account, reached at that category's own
- * server-address field. */
-function ProviderKeySettings({ settings }: { settings: Record<string, unknown> }) {
+ * deliberately excludes above. A key is stored once per provider name and
+ * shared by every task that names it, so the form sits above the task tabs.
+ * Below it, the health of each task's breaker: a task whose provider ran
+ * out of credit or was refused says so here, not only in the queue API. */
+function ProvidersCard() {
+  const { data: status } = useProvidersStatus();
   const providers: { key: string; label: string }[] = [
     { key: "anthropic", label: "Anthropic" },
     { key: "openai", label: "OpenAI" },
     { key: "custom", label: "Custom (OpenAI-compatible)" },
   ];
+  const unhealthy = (status?.breakers ?? []).filter((b) => b.state !== "closed");
   return (
-    <div className="flex flex-col gap-3 rounded-md border bg-muted/30 p-3 text-sm">
-      {providers.map(({ key, label }) => (
-        <ProviderKeyField key={key} providerKey={key} label={label} settings={settings} />
-      ))}
-      <p className="text-xs text-muted-foreground">
-        Keys are encrypted at rest and never shown again once saved -- clearing one falls back to
-        the matching environment variable, if set. The Custom key and server address are shared by
-        any category set to the Custom provider, so set them here once.
-      </p>
-    </div>
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <ShieldCheck className="h-4 w-4" />
+          Providers
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3 text-sm">
+        {providers.map(({ key, label }) => (
+          <ProviderKeyField
+            key={key}
+            providerKey={key}
+            label={label}
+            status={status?.providers[key]}
+          />
+        ))}
+        <p className="text-xs text-muted-foreground">
+          Every task below picks its own provider and model, so spam and embeddings can stay on
+          one provider while order analysis and the rule assistant use another. A key is stored
+          once per provider and shared by every task that names it. Keys are encrypted at rest and
+          never shown again once saved -- clearing one falls back to the matching environment
+          variable, if set. The Custom key is paired with each task&apos;s own server address.
+        </p>
+        {unhealthy.length > 0 && (
+          <ul className="flex flex-col gap-1 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+            {unhealthy.map((b) => (
+              <li key={b.name}>
+                <span className="font-mono">{b.name}</span>{" "}
+                {b.state === "suspended" ? "is suspended" : "is backing off"}
+                {b.reason ? `: ${b.reason}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -538,11 +592,12 @@ export function SettingsPage() {
             </Link>{" "}
             stages: a <span className="font-mono">classify</span> stage produces the verdict, a{" "}
             <span className="font-mono">match</span> stage decides what happens to it. The
-            categories below are the model that stage calls (AI), how it finds similar past
-            messages (Semantic search), how a failed step is retried (Retry), and the worker
-            mechanics behind the queue (Pipeline).
+            categories below are the model that stage calls (Spam verdicts), how it finds similar past
+            messages (Semantic search), the models behind orders and the rule assistant, how a
+            failed step is retried (Retry), and the worker mechanics behind the queue (Pipeline).
           </div>
         </div>
+        <ProvidersCard />
         <Tabs defaultValue="ai">
           <TabsList>
             {CATEGORIES.map(({ key, label, icon: Icon }) => (
@@ -556,9 +611,7 @@ export function SettingsPage() {
             <TabsContent key={key} value={key}>
               <Card>
                 <CardContent className="flex flex-col gap-4 pt-6">
-                  {key === "ai" && allSettings?.ai && (
-                    <ProviderKeySettings settings={allSettings.ai} />
-                  )}
+                  <p className="text-xs text-muted-foreground">{TASK_PRIVACY[key]}</p>
                   {key === "semantic" && allSettings?.semantic && (
                     <EmbeddingMigrationStatus settings={allSettings.semantic} />
                   )}

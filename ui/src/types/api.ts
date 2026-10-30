@@ -1492,3 +1492,22 @@ export interface OrderCatchUpResponse {
   passed: number;
   queued: number;
 }
+
+export interface ProviderKeyStatus {
+  configured: boolean;
+  hint: string | null;
+}
+
+/** One AI task's circuit breaker, named `<provider>:<task>`. */
+export interface TaskBreakerStatus {
+  name: string;
+  state: "closed" | "open" | "suspended";
+  reason: string | null;
+  since: string | null;
+  retry_after: string | null;
+}
+
+export interface ProvidersStatus {
+  providers: Record<string, ProviderKeyStatus>;
+  breakers: TaskBreakerStatus[];
+}

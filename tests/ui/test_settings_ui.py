@@ -47,8 +47,12 @@ class TestSettingsCategoriesUi:
         page.goto(f"{app_server}/settings")
 
         tablist = page.get_by_role("tablist")
-        expect(tablist.get_by_role("tab", name="AI", exact=True)).to_be_visible(timeout=15_000)
+        expect(tablist.get_by_role("tab", name="Spam verdicts", exact=True)).to_be_visible(
+            timeout=15_000,
+        )
         expect(tablist.get_by_role("tab", name="Semantic search", exact=True)).to_be_visible()
+        expect(tablist.get_by_role("tab", name="Orders", exact=True)).to_be_visible()
+        expect(tablist.get_by_role("tab", name="Rule assistant", exact=True)).to_be_visible()
         expect(tablist.get_by_role("tab", name="Retry", exact=True)).to_be_visible()
         expect(tablist.get_by_role("tab", name="Pipeline", exact=True)).to_be_visible()
 

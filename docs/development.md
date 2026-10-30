@@ -84,7 +84,7 @@ of theirs is actively running at that moment.
 | `pg` | Migrations alongside PostIMAP's schema, the contract version gate, the notification listener, and every write the contract permits | PostgreSQL, PostIMAP |
 | `e2e` | Whole flows with the application running in-process: accounts, mail actions, sending, spam, rules, search, calendars and contacts | The above plus Dovecot, Mailpit and Radicale |
 | `ui` | What the browser does with state: row/reading-pane/keyboard/bulk/drag controls, compose, drafts, SSE-driven refresh, mobile layout | The above plus a built `ui/` and Playwright's Chromium |
-| `llm` | Classification against the real model, both providers | `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. Excluded from CI (`pytest tests/unit/ -m "not llm"`); run it deliberately |
+| `llm` | Classification against the real model on each provider, and the orders decide and write calls on Claude and on Infomaniak | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `CUSTOM_AI_API_KEY`. Excluded from CI (`pytest tests/unit/ -m "not llm"`); run it deliberately |
 
 The `e2e` layer owns state reconciliation -- does an action reach PostIMAP, does a count change,
 does the Sent copy come back. The `ui` layer owns what's rendered and what a control actually

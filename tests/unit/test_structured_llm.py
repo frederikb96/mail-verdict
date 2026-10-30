@@ -5,12 +5,15 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
+import openai
 import pytest
 
-from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.core.errors import ModelRefused, ProviderUnavailableError
 from mail_verdict.core.openai_provider import reset_openai_provider
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.core.structured_llm import (
+    call_anthropic_structured,
     call_chat_completions_structured,
     resolve_client,
     retry_after_from_exception,
@@ -278,3 +281,116 @@ class TestRetryAfterFromException:
         assert retry_after_from_exception(exc, default=timedelta(seconds=30)) == timedelta(
             seconds=30
         )
+
+
+def _anthropic_client(
+    *, text: str = '{"a": 1}', stop_reason: str = "end_turn", category: str | None = None,
+) -> MagicMock:
+    """A client whose Messages API answers with one text block."""
+    response = MagicMock()
+    response.stop_reason = stop_reason
+    response.stop_details = MagicMock(category=category) if stop_reason == "refusal" else None
+    response.content = [] if stop_reason == "refusal" else [MagicMock(type="text", text=text)]
+    client = MagicMock()
+    client.messages.create = AsyncMock(return_value=response)
+    return client
+
+
+class TestCallAnthropicStructured:
+    """The Messages API request shape and its stop reasons."""
+
+    @pytest.mark.asyncio
+    async def test_request_shape(self) -> None:
+        client = _anthropic_client()
+        result = await call_anthropic_structured(
+            client, "claude-opus-5-5", "medium", 4000, "system text", "user text",
+            {"type": "object"}, _fast_retry(),
+        )
+        assert result == {"a": 1}
+        kwargs = client.messages.create.await_args.kwargs
+        assert kwargs["model"] == "claude-opus-5-5"
+        assert kwargs["output_config"] == {
+            "format": {"type": "json_schema", "schema": {"type": "object"}},
+            "effort": "medium",
+        }
+        # Thinking cannot be switched off on this model and a forced tool
+        # choice is rejected: neither parameter may appear.
+        assert "thinking" not in kwargs and "tool_choice" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_the_system_prompt_is_a_cacheable_block(self) -> None:
+        client = _anthropic_client()
+        await call_anthropic_structured(
+            client, "claude-opus-5-5", None, 4000, "system text", "user text",
+            {"type": "object"}, _fast_retry(),
+        )
+        kwargs = client.messages.create.await_args.kwargs
+        assert kwargs["system"] == [
+            {"type": "text", "text": "system text", "cache_control": {"type": "ephemeral"}}
+        ]
+        assert "effort" not in kwargs["output_config"]
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_raises_at_once_and_is_not_retried(self) -> None:
+        client = _anthropic_client(stop_reason="refusal", category="cyber")
+        with pytest.raises(ModelRefused) as exc_info:
+            await call_anthropic_structured(
+                client, "claude-opus-5-5", "medium", 4000, "s", "u", {"type": "object"},
+                _fast_retry(max_retries=3),
+            )
+        assert exc_info.value.category == "cyber"
+        assert client.messages.create.await_count == 1
+
+
+class TestExhaustionIsNeverRetried:
+    """No retry inside the loop can top up a balance or reset an allowance."""
+
+    @staticmethod
+    def _spent_allowance() -> openai.RateLimitError:
+        body = {
+            "error": {"message": "maximum_token_reached", "type": "maximum_token_reached_error"},
+        }
+        response = httpx.Response(
+            429, json=body, request=httpx.Request("POST", "https://example.test/v1/chat"),
+        )
+        return openai.RateLimitError("maximum_token_reached", response=response, body=body)
+
+    @pytest.mark.asyncio
+    async def test_a_spent_allowance_429_is_raised_on_the_first_attempt(self) -> None:
+        call_once = AsyncMock(side_effect=self._spent_allowance())
+        with pytest.raises(openai.RateLimitError):
+            await retry_structured_call(
+                call_once, _fast_retry(max_retries=5),
+                transient_errors=(openai.RateLimitError,),
+            )
+        call_once.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_429_is_still_retried(self) -> None:
+        body = {"error": {"message": "slow down", "type": "rate_limit_error"}}
+        response = httpx.Response(
+            429, json=body, request=httpx.Request("POST", "https://example.test/v1/chat"),
+        )
+        call_once = AsyncMock(
+            side_effect=[openai.RateLimitError("slow down", response=response, body=body),
+                         '{"a": 1}'],
+        )
+        result = await retry_structured_call(
+            call_once, _fast_retry(), transient_errors=(openai.RateLimitError,),
+        )
+        assert result == {"a": 1}
+        assert call_once.await_count == 2
+
+
+class TestChatCompletionsRefusal:
+    @pytest.mark.asyncio
+    async def test_a_refusal_is_raised_and_not_retried(self) -> None:
+        client = MagicMock()
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content=None, refusal="I can't help"))]
+        client.chat.completions.create = AsyncMock(return_value=response)
+        with pytest.raises(ModelRefused):
+            await call_chat_completions_structured(
+                client, "m", None, 512, "n", "s", "u", {"type": "object"}, _fast_retry(),
+            )
+        assert client.chat.completions.create.await_count == 1

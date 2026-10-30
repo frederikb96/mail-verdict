@@ -85,6 +85,7 @@ import type {
   StageTypeOut,
   StageUpdateRequest,
   StatsResponse,
+  ProvidersStatus,
   SyncStatusResponse,
   ThreadResponse,
   UnifiedFolderOrderResponse,
@@ -530,6 +531,9 @@ export const api = {
     },
     get(category: string): Promise<Record<string, unknown>> {
       return request(`/settings/${category}`);
+    },
+    providers(): Promise<ProvidersStatus> {
+      return request("/settings/providers");
     },
     update(
       category: string,
