@@ -481,7 +481,10 @@ class TestTasksChooseTheirOwnProvider:
         no server address) so it fails without a network. Only the write
         task's breaker trips."""
         settings_service = await _settings_service(migrated_db)
-        await settings_service.update("orders", {"write_provider": "custom"})
+        # An earlier module of the shared database may have left a server address.
+        await settings_service.update(
+            "orders", {"write_provider": "custom", "write_base_url": ""},
+        )
         cred_repo = ProviderCredentialRepository(migrated_db, encryption_key="")
 
         async with migrated_db.session() as session:

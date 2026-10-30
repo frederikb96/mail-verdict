@@ -114,3 +114,36 @@ def test_an_image_over_the_pixel_limit_is_refused_before_decoding() -> None:
     doc = extract_bytes(data, "image/png", "wide.png", limits(max_image_pixels=1000))
     assert doc.method == "failed"
     assert doc.error
+
+
+def test_a_file_no_reader_knows_is_stored_unread_not_failed() -> None:
+    for data, ctype, name in (
+        (b"PK\x03\x04\x14\x00\x06\x00 word/document.xml", "application/octet-stream", "a.docx"),
+        (b"\x00\x00\x00\x18ftypheic\x00\x00", "image/heic", "photo.heic"),
+        (b"\x00\x00\x00\x18ftypheic\x00\x00", "application/octet-stream", "photo.heic"),
+        (b"RIFF\x24\x00\x00\x00WAVEfmt ", "application/octet-stream", "clip.wav"),
+    ):
+        doc = extract_bytes(data, ctype, name, limits())
+        assert (doc.method, doc.text, doc.error) == ("none", "", None), name
+        assert doc.sha256
+
+
+def test_text_that_starts_like_a_bitmap_is_still_text() -> None:
+    data = b"BM is not enough to call a text an image"
+    doc = extract_bytes(data, "text/plain", "m.txt", limits())
+    assert doc.method == "text_layer"
+
+
+def test_webp_gif_and_tiff_go_through_the_image_reader() -> None:
+    import io
+
+    from PIL import Image
+
+    for fmt, ctype in (
+        ("WEBP", "application/octet-stream"), ("GIF", "application/octet-stream"),
+        ("TIFF", "application/octet-stream"), ("BMP", "image/bmp"),
+    ):
+        buffer = io.BytesIO()
+        Image.new("L", (40, 40), 255).save(buffer, format=fmt)
+        doc = extract_bytes(buffer.getvalue(), ctype, "scan", limits())
+        assert doc.method == "image", fmt

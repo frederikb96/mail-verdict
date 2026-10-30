@@ -131,7 +131,9 @@ async def add_file(
     order_id: uuid.UUID | None = Form(default=None),
 ) -> OrderFileStatus:
     """
-    Add a file to the register. It is read and placed by the orders queue:
+    Add a file of any type to the register; one that cannot be read (a
+    Word file, an archive, a HEIC photo) is stored and listed as it came, and
+    downloads under its own name. It is read and placed by the orders queue:
     into the entry `order_id` names, else into the entry the decide call
     picks or a new one (never refused as "not about an order" -- adding it
     was the person's decision). Answers at once with `pending`; poll
@@ -141,11 +143,6 @@ async def add_file(
     data = await _read_capped_attachment(file, limits.max_file_bytes)
     name = files.clean_filename(file.filename)
     file_type = files.detect_file_type(name, data[:4096])
-    if file_type is None or file_type not in limits.accepted_types:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Unsupported file; accepted types are {', '.join(limits.accepted_types)}",
-        )
     db = get_db_connection()
     async with db.session() as session:
         if order_id is not None:

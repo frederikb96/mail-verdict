@@ -29,7 +29,7 @@ from datetime import datetime
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.database.models import Attachment, Message
+from mail_verdict.database.models import Attachment, GlacierAttachment, GlacierMessage, Message
 from mail_verdict.orders.candidates import normalize_identifier, shipment_number_in_url
 from mail_verdict.orders.extract.html_text import html_to_text
 from mail_verdict.orders.extract.truncate import truncate_text
@@ -175,6 +175,7 @@ class OrderMailContent:
 
 async def load_order_mail(
     session: AsyncSession, *, account_id: uuid.UUID, msg_key: str, message_id: uuid.UUID | None,
+    include_glacier: bool = False,
 ) -> OrderMailContent | None:
     """
     Load one mail's content by its durable identity, re-resolving to
@@ -183,13 +184,19 @@ async def load_order_mail(
     Tries `message_id` (the stored join hint) first, then -- for a
     header-form msg_key -- the live row carrying that Message-ID header
     on this account, the same tie-break api/mails.py's locate_message
-    uses (imap_uid IS NULL last, newest created_at first).
+    uses (imap_uid IS NULL last, newest created_at first). With
+    `include_glacier`, a mail that has moved into the glacier is read from
+    there (its attachments from `glacier_attachments`).
+
+    Attachments come back with the non-inline ones first, so a cap on how
+    many are read can never drop a ticket in favour of a logo.
 
     Args:
         session: Session to read through
         account_id: The mail's account
         msg_key: The durable key (database/msg_key.py)
         message_id: The stored join hint, or None
+        include_glacier: Whether to fall back to the glacier copy
 
     Returns:
         The content, or None if the mail is gone
@@ -221,16 +228,36 @@ async def load_order_mail(
         )
         row = result.one_or_none()
 
+    attachment_table: type[Attachment] | type[GlacierAttachment] = Attachment
+    attachment_owner = Attachment.message_id
+    if row is None and include_glacier:
+        result = await session.execute(
+            select(
+                GlacierMessage.id, GlacierMessage.thread_id, GlacierMessage.subject,
+                GlacierMessage.from_addr, GlacierMessage.to_addrs, GlacierMessage.received_at,
+                GlacierMessage.body_text, GlacierMessage.body_html,
+            ).where(
+                GlacierMessage.account_id == account_id, GlacierMessage.msg_key == msg_key,
+                GlacierMessage.visible_at.is_not(None),
+            )
+        )
+        row = result.one_or_none()
+        attachment_table = GlacierAttachment
+        attachment_owner = GlacierAttachment.glacier_message_id
+
     if row is None:
         return None
 
     att_result = await session.execute(
         select(
-            Attachment.id, Attachment.filename, Attachment.content_type, Attachment.size_bytes,
-            Attachment.content_id,
+            attachment_table.id, attachment_table.filename, attachment_table.content_type,
+            attachment_table.size_bytes, attachment_table.content_id,
         )
-        .where(Attachment.message_id == row.id)
-        .order_by(Attachment.filename, Attachment.id)
+        .where(attachment_owner == row.id)
+        .order_by(
+            attachment_table.content_id.is_not(None), attachment_table.filename,
+            attachment_table.id,
+        )
     )
     attachments = tuple(
         AttachmentRef(

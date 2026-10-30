@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from mail_verdict.config.loader import InfraConfig
 from mail_verdict.orders.documents import (
     DECIDE_ATTACHMENTS,
     ReadDocument,
@@ -131,3 +132,18 @@ def test_a_mail_document_without_text_stays_out_of_the_write_prompt_and_its_numb
 def test_a_file_added_by_hand_is_listed_even_without_text() -> None:
     photo = _stored(None, "", name="photo.jpg")
     assert [d.name for d in assemble_write_input([_mail("m1")], [photo]).files] == ["photo.jpg"]
+
+
+def test_a_failed_read_is_repeated_unless_the_file_was_too_big_to_read(
+    test_config: InfraConfig,
+) -> None:
+    from mail_verdict.orders.documents import _needs_reading
+    from mail_verdict.orders.extract import EXTRACTOR_VERSION
+
+    limit = test_config.extraction.max_document_bytes
+    assert _needs_reading(EXTRACTOR_VERSION, "failed", 1_000)
+    assert _needs_reading(EXTRACTOR_VERSION, "failed", None)
+    assert not _needs_reading(EXTRACTOR_VERSION, "failed", limit + 1)
+    assert not _needs_reading(EXTRACTOR_VERSION, "text_layer", 1_000)
+    assert not _needs_reading(EXTRACTOR_VERSION, "none", 1_000)
+    assert _needs_reading(EXTRACTOR_VERSION - 1, "text_layer", 1_000)

@@ -22,7 +22,21 @@ from mail_verdict.orders.extract.xml_invoice import read_invoice_xml
 
 logger = logging.getLogger(__name__)
 
-_IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"RIFF", b"BM")
+_IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"II*\x00", b"MM\x00*")
+# Image types Pillow reads. Any other image/* label (HEIC, SVG, ...) is stored
+# as a document without being read, rather than failing on every attempt.
+_IMAGE_TYPES = frozenset({
+    "image/png", "image/jpeg", "image/pjpeg", "image/jpg", "image/gif", "image/webp",
+    "image/tiff", "image/bmp", "image/x-ms-bmp",
+})
+
+
+def _is_image(data: bytes, ctype: str) -> bool:
+    return (
+        data.startswith(_IMAGE_MAGIC)
+        or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")
+        or ctype in _IMAGE_TYPES
+    )
 
 
 def _kind(data: bytes, content_type: str, filename: str) -> str | None:
@@ -36,7 +50,7 @@ def _kind(data: bytes, content_type: str, filename: str) -> str | None:
         return "pkpass"
     if head.upper().startswith(b"BEGIN:VCALENDAR") or name.endswith(".ics") or "calendar" in ctype:
         return "ics"
-    if data.startswith(_IMAGE_MAGIC) or ctype.startswith("image/"):
+    if _is_image(data, ctype):
         return "image"
     if head.startswith(b"<?xml") or name.endswith(".xml") or ctype.endswith("xml"):
         return "xml"
