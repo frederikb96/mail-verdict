@@ -40,6 +40,7 @@ from mail_verdict.pipeline.contracts import RecordVerdict
 from mail_verdict.pipeline.message_view import FolderView, MessageView
 from mail_verdict.pipeline.neighbors import NeighborHint
 from mail_verdict.pipeline.stages.classify import ClassifyConfig, ClassifyStage
+from mail_verdict.rules import assistant
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 
 logger = logging.getLogger(__name__)
@@ -297,3 +298,52 @@ class TestOrdersTasksOnInfomaniakLive(_OrdersTasks):
     effort = "none"
     base_url = "https://api.infomaniak.com/2/ai/111650/openai/v1"
     key_env = "CUSTOM_AI_API_KEY"
+
+
+class TestRuleAssistantOnClaudeLive(_OrdersTasks):
+    """The rule assistant's two steps with the shipped prompts and schemas on
+    Claude Opus 5.5: the search step names searches, the change step answers
+    with edits over the rules text. The search schema carries an array limit
+    the Messages API does not accept in a raw schema."""
+
+    provider = "anthropic"
+    model = "claude-opus-5-5"
+    effort = "medium"
+    key_env = "ANTHROPIC_API_KEY"
+
+    def _model_input(self) -> dict[str, object]:
+        return {
+            "request": "Move newsletters from this sender to the Newsletters folder",
+            "mail": {
+                "account_id": str(uuid.uuid4()), "folder": "INBOX",
+                "from": "Northwind Weekly <news@northwind.example>", "to": ["me@example.test"],
+                "subject": "This week at Northwind", "list_id": "<weekly.northwind.example>",
+                "body_excerpt": "Our picks for the week. Unsubscribe at the bottom.",
+            },
+            "matched_today": [],
+            "same_sender_recent": {"total": 0, "sample": []},
+            "accounts": [], "folders": ["INBOX", "Newsletters"],
+            "rules_json": '{"stages": []}', "searches": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_step_answers_under_the_schema(self) -> None:
+        _require_key(self.key_env)
+        data = await self._call(
+            "assistant", 4000, "rule_searches", assistant.system_prompt("search"),
+            assistant.user_prompt(self._model_input()), assistant.SEARCH_SCHEMA,
+            lambda d: None,
+        )
+        assert isinstance(data["searches"], list)
+        assert len(data["searches"]) <= 3
+
+    @pytest.mark.asyncio
+    async def test_change_step_answers_under_the_schema(self) -> None:
+        _require_key(self.key_env)
+        data = await self._call(
+            "assistant", 4000, "rule_change", assistant.system_prompt("change"),
+            assistant.user_prompt(self._model_input()), assistant.CHANGE_SCHEMA,
+            lambda d: None,
+        )
+        assert isinstance(data["edits"], list)
+        assert isinstance(data["message"], str)
