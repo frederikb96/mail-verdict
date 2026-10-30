@@ -43,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   queue reads it and places it in the entry the model picks or a new one (never skipped as "not an
   order"). An entry can consist of files alone; `DELETE /api/orders/{id}/files/{file_id}` removes
   one. Limits are the `order_files` section of `config/config.yaml`.
+- The web Orders & tickets screen shows All, Orders or Tickets with one click, plus Open and
+  Favorites toggles that combine with it; the choice is remembered across reloads. Tickets are a
+  timeline around a today line (later events above, earlier below) that opens centred on today and
+  stays put while entries arrive. The order page lists Key facts instead of Numbers: tracking numbers
+  and links open in a new tab, anything else copies on a tap, and a ticket's barcodes show as
+  tiles that open a fullscreen white page for scanning. Documents include files added by hand
+  (previewed, deleted), "Add file" uploads to the open entry or, from the list header, to whichever
+  entry fits; a HEIC photo is converted to JPEG where the browser can decode it and refused with an
+  explanation otherwise. An entry's kind can be changed from its menu.
 
 ### Fixed
 

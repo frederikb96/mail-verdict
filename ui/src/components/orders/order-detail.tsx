@@ -394,77 +394,79 @@ export function OrderDetailPane({
         )}
       </div>
 
-      <div>
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
-          Mails
-        </div>
-        <div className="rounded-xl border overflow-hidden">
-          {order.mails.map((mail) => (
-            <div
-              key={mail.key}
-              ref={(el) => {
-                if (el) mailRowRefs.current.set(mail.key, el);
-                else mailRowRefs.current.delete(mail.key);
-              }}
-              data-testid="order-mail-row"
-              data-mail-key={mail.key}
-              className={cn(
-                "h-14 px-4 flex items-center gap-3 border-b last:border-b-0",
-                mail.location === "gone" && "opacity-50",
-              )}
-              title={mail.location === "gone" ? "No longer in the mailbox" : undefined}
-            >
-              <button
-                type="button"
-                disabled={mail.location === "gone"}
-                onClick={() => handleOpenMail(mail)}
-                className="min-w-0 flex-1 text-left disabled:cursor-default"
+      {order.mails.length > 0 && (
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+            Mails
+          </div>
+          <div className="rounded-xl border overflow-hidden">
+            {order.mails.map((mail) => (
+              <div
+                key={mail.key}
+                ref={(el) => {
+                  if (el) mailRowRefs.current.set(mail.key, el);
+                  else mailRowRefs.current.delete(mail.key);
+                }}
+                data-testid="order-mail-row"
+                data-mail-key={mail.key}
+                className={cn(
+                  "h-14 px-4 flex items-center gap-3 border-b last:border-b-0",
+                  mail.location === "gone" && "opacity-50",
+                )}
+                title={mail.location === "gone" ? "No longer in the mailbox" : undefined}
               >
-                <div className="flex items-center gap-2">
-                  <span
-                    className={cn(
-                      "h-2 w-2 rounded-full shrink-0",
-                      mail.is_seen === false
-                        ? "bg-sky-500"
-                        : "border border-muted-foreground/40",
-                    )}
-                  />
-                  <span className="text-sm font-medium truncate">{mail.from_addr}</span>
-                  <span className="ml-auto text-xs text-muted-foreground tabular-nums shrink-0">
-                    {formatRelativeDate(mail.received_at)}
-                  </span>
-                </div>
-                <div className="text-sm text-muted-foreground truncate">{mail.subject}</div>
-              </button>
-              {mail.location !== "gone" && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label={`Actions for ${mail.subject}`}
-                      />
-                    }
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      onClick={() => detachMail.mutate({ orderId: order.id, mailKey: mail.key })}
+                <button
+                  type="button"
+                  disabled={mail.location === "gone"}
+                  onClick={() => handleOpenMail(mail)}
+                  className="min-w-0 flex-1 text-left disabled:cursor-default"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "h-2 w-2 rounded-full shrink-0",
+                        mail.is_seen === false
+                          ? "bg-sky-500"
+                          : "border border-muted-foreground/40",
+                      )}
+                    />
+                    <span className="text-sm font-medium truncate">{mail.from_addr}</span>
+                    <span className="ml-auto text-xs text-muted-foreground tabular-nums shrink-0">
+                      {formatRelativeDate(mail.received_at)}
+                    </span>
+                  </div>
+                  <div className="text-sm text-muted-foreground truncate">{mail.subject}</div>
+                </button>
+                {mail.location !== "gone" && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={`Actions for ${mail.subject}`}
+                        />
+                      }
                     >
-                      Remove from this order
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setMovingMail(mail)}>
-                      Move to another order…
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </div>
-          ))}
+                      <MoreHorizontal className="h-4 w-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        onClick={() => detachMail.mutate({ orderId: order.id, mailKey: mail.key })}
+                      >
+                        Remove from this order
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setMovingMail(mail)}>
+                        Move to another order…
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <OrderPickerDialog
         open={movingMail !== null}
