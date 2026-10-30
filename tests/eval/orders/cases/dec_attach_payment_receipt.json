@@ -1,0 +1,66 @@
+{
+ "name": "dec_attach_payment_receipt",
+ "task": "decide",
+ "mail": {
+  "received_at": "2026-04-01T10:03:00Z",
+  "from_addr": "PayTrust <service@paytrust.example>",
+  "to_addrs": "reader@example.org",
+  "subject": "Receipt for your payment to Brewhaus Handels GmbH",
+  "body": "You paid EUR 46.80 to Brewhaus Handels GmbH. Transaction ID 9XK20417B.",
+  "documents": []
+ },
+ "candidates": [
+  {
+   "merchant": "Pagehouse",
+   "subject": "E-book purchase",
+   "status": "purchased",
+   "is_open": false,
+   "summary": "E-book bought for EUR 9.99.",
+   "mail_count": 1,
+   "first_mail_at": "2026-02-20T18:00:00Z",
+   "last_mail_at": "2026-02-20T18:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "PH-5532"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-02-20T18:00:00Z",
+     "from_addr": "receipts@pagehouse.example",
+     "subject": "Your Pagehouse receipt"
+    }
+   ]
+  },
+  {
+   "merchant": "Brewhaus",
+   "subject": "Coffee beans order",
+   "status": "ordered",
+   "is_open": true,
+   "summary": "Order BH-20418 confirmed, EUR 46.80.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T10:00:00Z",
+   "last_mail_at": "2026-04-01T10:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "BH-20418"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-01T10:00:00Z",
+     "from_addr": "shop@brewhaus.example",
+     "subject": "Order BH-20418 confirmed"
+    }
+   ]
+  }
+ ]
+}

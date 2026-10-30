@@ -1,0 +1,16 @@
+{
+ "case": "dec_new_same_shop_other_number",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "effort": "low",
+ "answer": {
+  "mail_kind": "order confirmation",
+  "reason": "Order BH-20977 is a different order from the same shop (Brewhaus) than the one in C1 (BH-20418), so it needs its own entry.",
+  "target": "new",
+  "identifiers": []
+ },
+ "markers": [],
+ "hard": [
+  "identifier 'BH-20977' missing"
+ ],
+ "soft": []
+}

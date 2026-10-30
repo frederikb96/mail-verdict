@@ -1,0 +1,14 @@
+{
+ "case": "dec_none_friend_payment",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "effort": "low",
+ "answer": {
+  "mail_kind": "personal money transfer",
+  "reason": "This is a payment sent to a named person (Jonas M.) with a personal reference ('Pizza last night'), which is a transfer between people and not tied to any specific purchase, booking or subscription.",
+  "target": "none",
+  "identifiers": []
+ },
+ "markers": [],
+ "hard": [],
+ "soft": []
+}

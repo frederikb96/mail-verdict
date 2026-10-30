@@ -1,0 +1,78 @@
+{
+ "name": "file_new_ticket",
+ "task": "file",
+ "file": {
+  "added_at": "2026-05-01T12:00:00Z",
+  "documents": [
+   {
+    "filename": "museum-ticket.pdf",
+    "content_type": "application/pdf",
+    "page_count": 1,
+    "method": "text_layer",
+    "text": "Stadtmuseum Aachen\nEintrittskarte, Dauerausstellung\nBesuch am 17.05.2026\nBestellnummer SM-22019\n[code b1 QR \"SM22019-A\"]",
+    "barcodes": [
+     {
+      "index": 1,
+      "format": "QR",
+      "text": "SM22019-A",
+      "payload_b64": ""
+     }
+    ]
+   }
+  ]
+ },
+ "candidates": [
+  {
+   "merchant": "Brewhaus",
+   "subject": "Coffee beans order",
+   "status": "shipped",
+   "is_open": true,
+   "summary": "Order BH-20418 for two bags of coffee beans, handed to the carrier.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T10:00:00Z",
+   "last_mail_at": "2026-04-02T15:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "BH-20418"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-01T10:00:00Z",
+     "from_addr": "shop@brewhaus.example",
+     "subject": "Order BH-20418 confirmed"
+    }
+   ]
+  },
+  {
+   "merchant": "Pagehouse",
+   "subject": "E-book purchase",
+   "status": "purchased",
+   "is_open": false,
+   "summary": "E-book bought for EUR 9.99.",
+   "mail_count": 1,
+   "first_mail_at": "2026-02-20T18:00:00Z",
+   "last_mail_at": "2026-02-20T18:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "PH-5532"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-02-20T18:00:00Z",
+     "from_addr": "receipts@pagehouse.example",
+     "subject": "Your Pagehouse receipt"
+    }
+   ]
+  }
+ ]
+}

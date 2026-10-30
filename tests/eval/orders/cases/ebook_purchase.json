@@ -1,0 +1,16 @@
+{
+ "name": "ebook_purchase",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-02-20T18:00:00Z",
+   "from_addr": "Pagehouse <receipts@pagehouse.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your Pagehouse receipt",
+   "body": "You bought: The Long Tide (e-book, EPUB)\nOrder: PH-5532\nPaid: EUR 9.99 with card ending 1234\nThe book is in your library.",
+   "documents": []
+  }
+ ]
+}

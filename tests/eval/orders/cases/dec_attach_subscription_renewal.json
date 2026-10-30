@@ -1,0 +1,70 @@
+{
+ "name": "dec_attach_subscription_renewal",
+ "task": "decide",
+ "mail": {
+  "received_at": "2026-03-15T03:00:00Z",
+  "from_addr": "StreamBox <billing@streambox.example>",
+  "to_addrs": "reader@example.org",
+  "subject": "Your StreamBox Plus receipt",
+  "body": "Your StreamBox Plus subscription continues.\nOrder number: SB-100999\nNext charge: 15 April 2026",
+  "documents": []
+ },
+ "candidates": [
+  {
+   "merchant": "Pagehouse",
+   "subject": "E-book purchase",
+   "status": "purchased",
+   "is_open": false,
+   "summary": "E-book bought for EUR 9.99.",
+   "mail_count": 1,
+   "first_mail_at": "2026-02-20T18:00:00Z",
+   "last_mail_at": "2026-02-20T18:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "PH-5532"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-02-20T18:00:00Z",
+     "from_addr": "receipts@pagehouse.example",
+     "subject": "Your Pagehouse receipt"
+    }
+   ]
+  },
+  {
+   "merchant": "StreamBox",
+   "subject": "StreamBox Plus subscription",
+   "status": "renewed",
+   "is_open": true,
+   "summary": "Subscription StreamBox Plus, EUR 7.99 per month.",
+   "mail_count": 1,
+   "first_mail_at": "2026-01-15T03:00:00Z",
+   "last_mail_at": "2026-02-15T03:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "SB-100231"
+    ],
+    [
+     "order_number",
+     "SB-100877"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-02-15T03:00:00Z",
+     "from_addr": "billing@streambox.example",
+     "subject": "Your StreamBox Plus receipt"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,38 @@
+{
+ "name": "return_trip_two_codes",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-08-01T07:00:00Z",
+   "from_addr": "Bahnwerk <tickets@bahnwerk.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your tickets Köln to Basel and back",
+   "body": "Your tickets are attached. Order BW-90044120.",
+   "documents": [
+    {
+     "filename": "tickets.pdf",
+     "content_type": "application/pdf",
+     "page_count": 2,
+     "method": "text_layer",
+     "text": "Outbound Köln Hbf to Basel SBB, 12 October 2026, 08:02\n[code b1 Aztec 288 bytes]\nReturn Basel SBB to Köln Hbf, 15 October 2026, 17:40\n[code b2 Aztec 288 bytes]\nTotal EUR 112.00",
+     "barcodes": [
+      {
+       "index": 1,
+       "format": "Aztec",
+       "text": null,
+       "payload_b64": "AAAA"
+      },
+      {
+       "index": 2,
+       "format": "Aztec",
+       "text": null,
+       "payload_b64": "BBBB"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

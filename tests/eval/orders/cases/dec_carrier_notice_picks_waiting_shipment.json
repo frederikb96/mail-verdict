@@ -1,0 +1,66 @@
+{
+ "name": "dec_carrier_notice_picks_waiting_shipment",
+ "task": "decide",
+ "mail": {
+  "received_at": "2026-04-06T09:00:00Z",
+  "from_addr": "DHL <noreply@dhl.example>",
+  "to_addrs": "reader@example.org",
+  "subject": "Your parcel is waiting at Packstation 12",
+  "body": "Parcel from Wollkontor is ready for pickup at Packstation 12 until 13 April.",
+  "documents": []
+ },
+ "candidates": [
+  {
+   "merchant": "Brewhaus",
+   "subject": "Coffee beans order",
+   "status": "delivered",
+   "is_open": false,
+   "summary": "Delivered on 4 April.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T10:00:00Z",
+   "last_mail_at": "2026-04-04T10:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "BH-20418"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-04T10:00:00Z",
+     "from_addr": "noreply@dhl.example",
+     "subject": "Your parcel was delivered"
+    }
+   ]
+  },
+  {
+   "merchant": "Wollkontor",
+   "subject": "Knitting yarn order",
+   "status": "shipped",
+   "is_open": true,
+   "summary": "Yarn order W-5521, shipped with DHL.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T09:00:00Z",
+   "last_mail_at": "2026-04-02T09:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "W-5521"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-02T09:00:00Z",
+     "from_addr": "shop@wollkontor.example",
+     "subject": "Shipping notice W-5521"
+    }
+   ]
+  }
+ ]
+}

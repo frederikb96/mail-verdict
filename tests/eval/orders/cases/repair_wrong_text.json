@@ -1,0 +1,21 @@
+{
+ "name": "repair_wrong_text",
+ "task": "write",
+ "language": "English",
+ "current_text": {
+  "merchant": "Bahnwerk",
+  "subject": "Train ticket",
+  "status": "ticket ready",
+  "summary": "A train ticket was ordered. The mail does not provide specific travel details, amounts or a booking number."
+ },
+ "mails": [
+  {
+   "received_at": "2026-03-02T08:10:00Z",
+   "from_addr": "Bahnwerk <tickets@bahnwerk.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your order is ready",
+   "body": "Order overview\nBerlin Hbf | Leipzig Hbf\nFriday 6 March 2026, 09:14\n1 adult\nFlex ticket, 2nd class | EUR 31.90\nOrder number | BW-77120934\nTotal | EUR 31.90",
+   "documents": []
+  }
+ ]
+}

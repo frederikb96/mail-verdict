@@ -1,0 +1,24 @@
+{
+ "name": "compensation_claim",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-02-03T10:00:00Z",
+   "from_addr": "Railcare <claims@railcare.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your claim RC-2026-5521 was received",
+   "body": "We received your claim for the delayed journey of 28 January 2026 (Hamburg to Munich). Reference RC-2026-5521.",
+   "documents": []
+  },
+  {
+   "received_at": "2026-02-20T10:00:00Z",
+   "from_addr": "Railcare <claims@railcare.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Decision on claim RC-2026-5521",
+   "body": "Your claim was approved. EUR 25.00 will be paid to your account within 5 working days.",
+   "documents": []
+  }
+ ]
+}

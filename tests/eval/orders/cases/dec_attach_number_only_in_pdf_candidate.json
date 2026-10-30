@@ -1,0 +1,74 @@
+{
+ "name": "dec_attach_number_only_in_pdf_candidate",
+ "task": "decide",
+ "mail": {
+  "received_at": "2026-04-03T08:00:00Z",
+  "from_addr": "DHL <noreply@dhl.example>",
+  "to_addrs": "reader@example.org",
+  "subject": "Your parcel is on its way",
+  "body": "Your parcel 00340434161094015902 will be delivered tomorrow.",
+  "documents": []
+ },
+ "candidates": [
+  {
+   "merchant": "Wollkontor",
+   "subject": "Knitting yarn order",
+   "status": "shipped",
+   "is_open": true,
+   "summary": "Yarn order W-5521, shipped with DHL.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T09:00:00Z",
+   "last_mail_at": "2026-04-02T09:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "W-5521"
+    ],
+    [
+     "tracking_number",
+     "00340434777788881111"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-02T09:00:00Z",
+     "from_addr": "shop@wollkontor.example",
+     "subject": "Shipping notice W-5521"
+    }
+   ]
+  },
+  {
+   "merchant": "Brewhaus",
+   "subject": "Coffee beans order",
+   "status": "shipped",
+   "is_open": true,
+   "summary": "Order BH-20418, shipped; the delivery note PDF names the DHL parcel number.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T10:00:00Z",
+   "last_mail_at": "2026-04-02T15:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "BH-20418"
+    ],
+    [
+     "tracking_number",
+     "00340434161094015902"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-02T15:00:00Z",
+     "from_addr": "shop@brewhaus.example",
+     "subject": "Your order BH-20418 has shipped"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,16 @@
+{
+ "name": "hotel_with_pin",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-05-10T12:00:00Z",
+   "from_addr": "Stayly <booking@stayly.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your booking at Hotel Lindenhof is confirmed",
+   "body": "Booking number: 5530188264\nHotel Lindenhof, Marktplatz 4, 37073 Göttingen\nCheck-in: Friday, 12 June 2026 (from 15:00)\nCheck-out: Sunday, 14 June 2026 (until 11:00)\nDouble room, breakfast included\nTotal price: EUR 238.00\nPIN: 4817 (confidential, it can be used to change or cancel your booking)\nFree cancellation until 5 June 2026.",
+   "documents": []
+  }
+ ]
+}

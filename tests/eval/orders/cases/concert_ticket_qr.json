@@ -1,0 +1,32 @@
+{
+ "name": "concert_ticket_qr",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-07-01T11:00:00Z",
+   "from_addr": "Tixly <orders@tixly.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your tickets for Noa Rivers Live",
+   "body": "Thanks for your order TX-882113. Your ticket is attached.",
+   "documents": [
+    {
+     "filename": "ticket.pdf",
+     "content_type": "application/pdf",
+     "page_count": 1,
+     "method": "text_layer",
+     "text": "[code b1 QR \"TX882113-0001\"]\nNoa Rivers Live\nSaturday 19 September 2026, doors 19:00\nFesthalle Aachen, Block C, Row 4, Seat 12\nTicket TX882113-0001\nEUR 64.50",
+     "barcodes": [
+      {
+       "index": 1,
+       "format": "QR",
+       "text": "TX882113-0001",
+       "payload_b64": ""
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

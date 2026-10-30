@@ -1,0 +1,45 @@
+{
+ "case": "invoice_only_in_pdf",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "effort": "low",
+ "answer": {
+  "merchant": "Waldklinik",
+  "subject": "Zahnreinigung",
+  "status": "invoice received",
+  "open": true,
+  "kind": "other",
+  "event_start": "",
+  "event_end": "",
+  "expected_until": "2026-09-22",
+  "icon": "food",
+  "summary": "Invoice for a dental cleaning at Waldklinik, amount 84,00 EUR, payment due 22.09.2026.\n\n- Invoice number 2026-0457, dated 08.09.2026\n- Service: Zahnreinigung\n- Total: 84,00 EUR\n- Payment deadline: 22.09.2026",
+  "facts": [
+   {
+    "kind": "invoice_number",
+    "label": "Invoice number",
+    "value": "2026-0457",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "amount",
+    "label": "Total",
+    "value": "EUR 84.00",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "date",
+    "label": "Payment due",
+    "value": "2026-09-22",
+    "carrier": "",
+    "code_ref": ""
+   }
+  ]
+ },
+ "markers": [],
+ "hard": [
+  "icon 'food', expected one of ['receipt', 'wrench']"
+ ],
+ "soft": []
+}
