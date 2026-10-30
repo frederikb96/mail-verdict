@@ -1,0 +1,40 @@
+{
+ "name": "dec_new_same_shop_other_number",
+ "task": "decide",
+ "mail": {
+  "received_at": "2026-04-20T10:00:00Z",
+  "from_addr": "Brewhaus <shop@brewhaus.example>",
+  "to_addrs": "reader@example.org",
+  "subject": "Order BH-20977 confirmed",
+  "body": "Thanks for your order BH-20977.\n1x Tea sampler\nTotal: EUR 19.90",
+  "documents": []
+ },
+ "candidates": [
+  {
+   "merchant": "Brewhaus",
+   "subject": "Coffee beans order",
+   "status": "shipped",
+   "is_open": true,
+   "summary": "Order BH-20418 for two bags of coffee beans, handed to the carrier.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T10:00:00Z",
+   "last_mail_at": "2026-04-02T15:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "BH-20418"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-01T10:00:00Z",
+     "from_addr": "shop@brewhaus.example",
+     "subject": "Order BH-20418 confirmed"
+    }
+   ]
+  }
+ ]
+}

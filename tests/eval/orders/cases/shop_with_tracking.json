@@ -1,0 +1,24 @@
+{
+ "name": "shop_with_tracking",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-04-01T10:00:00Z",
+   "from_addr": "Brewhaus <shop@brewhaus.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Order BH-20418 confirmed",
+   "body": "Thanks for your order BH-20418.\n2x Coffee beans 1 kg\nTotal: EUR 46.80",
+   "documents": []
+  },
+  {
+   "received_at": "2026-04-02T15:00:00Z",
+   "from_addr": "Brewhaus <shop@brewhaus.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your order BH-20418 has shipped",
+   "body": "Your parcel was handed to DHL.\nTracking number: 00340434161094015902\nExpected delivery: 4 April 2026",
+   "documents": []
+  }
+ ]
+}

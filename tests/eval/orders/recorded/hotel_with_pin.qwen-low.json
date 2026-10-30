@@ -1,0 +1,75 @@
+{
+ "case": "hotel_with_pin",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "effort": "low",
+ "answer": {
+  "merchant": "Stayly",
+  "subject": "Hotel Lindenhof, Göttingen",
+  "status": "confirmed",
+  "open": true,
+  "kind": "ticket",
+  "event_start": "2026-06-12",
+  "event_end": "2026-06-14",
+  "expected_until": "2026-06-14",
+  "icon": "bed",
+  "summary": "Hotel Lindenhof in Göttingen, double room with breakfast, 12–14 June 2026. Booking confirmed; free cancellation available until 5 June 2026.\n\n- Room: double, breakfast included\n- Check-in from 15:00, check-out until 11:00\n- PIN for changes or cancellation: 4817\n- Free cancellation until 2026-06-05",
+  "facts": [
+   {
+    "kind": "booking_code",
+    "label": "Booking number",
+    "value": "5530188264",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "date",
+    "label": "Check-in",
+    "value": "2026-06-12",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "time",
+    "label": "Check-in from",
+    "value": "15:00",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "amount",
+    "label": "Total price",
+    "value": "EUR 238.00",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "place",
+    "label": "Address",
+    "value": "Marktplatz 4, 37073 Göttingen",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "other",
+    "label": "PIN",
+    "value": "4817",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "other",
+    "label": "Free cancellation until",
+    "value": "2026-06-05",
+    "carrier": "",
+    "code_ref": ""
+   }
+  ]
+ },
+ "markers": [],
+ "hard": [
+  "a credential from the input was copied into the answer"
+ ],
+ "soft": [
+  "date fact repeats event_start or event_end"
+ ]
+}

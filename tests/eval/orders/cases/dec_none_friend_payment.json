@@ -1,0 +1,66 @@
+{
+ "name": "dec_none_friend_payment",
+ "task": "decide",
+ "mail": {
+  "received_at": "2026-04-05T19:00:00Z",
+  "from_addr": "PayTrust <service@paytrust.example>",
+  "to_addrs": "reader@example.org",
+  "subject": "You sent money to Jonas M.",
+  "body": "You sent EUR 25.00 to Jonas M. Reference: Pizza last night. Transaction ID 7HD83921K.",
+  "documents": []
+ },
+ "candidates": [
+  {
+   "merchant": "Brewhaus",
+   "subject": "Coffee beans order",
+   "status": "shipped",
+   "is_open": true,
+   "summary": "Order BH-20418 for two bags of coffee beans, handed to the carrier.",
+   "mail_count": 1,
+   "first_mail_at": "2026-04-01T10:00:00Z",
+   "last_mail_at": "2026-04-02T15:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "BH-20418"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-04-01T10:00:00Z",
+     "from_addr": "shop@brewhaus.example",
+     "subject": "Order BH-20418 confirmed"
+    }
+   ]
+  },
+  {
+   "merchant": "Pagehouse",
+   "subject": "E-book purchase",
+   "status": "purchased",
+   "is_open": false,
+   "summary": "E-book bought for EUR 9.99.",
+   "mail_count": 1,
+   "first_mail_at": "2026-02-20T18:00:00Z",
+   "last_mail_at": "2026-02-20T18:00:00Z",
+   "numbers": [
+    [
+     "order_number",
+     "PH-5532"
+    ]
+   ],
+   "reasons": [
+    "recent activity"
+   ],
+   "latest_mails": [
+    {
+     "received_at": "2026-02-20T18:00:00Z",
+     "from_addr": "receipts@pagehouse.example",
+     "subject": "Your Pagehouse receipt"
+    }
+   ]
+  }
+ ]
+}

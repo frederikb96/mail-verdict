@@ -1,0 +1,25 @@
+{
+ "name": "invoice_only_in_pdf",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-09-08T09:00:00Z",
+   "from_addr": "Waldklinik Verwaltung <rechnung@waldklinik.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Rechnung anbei",
+   "body": "Guten Tag, anbei die Rechnung.",
+   "documents": [
+    {
+     "filename": "Rechnung_2026-0457.pdf",
+     "content_type": "application/pdf",
+     "page_count": 1,
+     "method": "text_layer",
+     "text": "Waldklinik Verwaltung GmbH\nRechnung Nr. 2026-0457 vom 08.09.2026\nLeistung: Zahnreinigung\nGesamtbetrag: 84,00 EUR\nBitte überweisen Sie bis zum 22.09.2026 auf IBAN DE02 1203 0000 0000 2020 51.",
+     "barcodes": []
+    }
+   ]
+  }
+ ]
+}

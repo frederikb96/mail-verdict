@@ -1,0 +1,24 @@
+{
+ "name": "shipped_without_number",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-04-01T10:00:00Z",
+   "from_addr": "Brewhaus <shop@brewhaus.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Order BH-20500 confirmed",
+   "body": "Thanks for your order BH-20500.\n1x Tea sampler\nTotal: EUR 19.90",
+   "documents": []
+  },
+  {
+   "received_at": "2026-04-03T09:00:00Z",
+   "from_addr": "Brewhaus <shop@brewhaus.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your order BH-20500 has shipped",
+   "body": "Good news, your order is on its way. We will send you the tracking link as soon as the carrier has scanned it.",
+   "documents": []
+  }
+ ]
+}

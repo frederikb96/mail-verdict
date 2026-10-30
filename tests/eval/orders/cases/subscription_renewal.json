@@ -1,0 +1,24 @@
+{
+ "name": "subscription_renewal",
+ "task": "write",
+ "language": "English",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-01-15T03:00:00Z",
+   "from_addr": "StreamBox <billing@streambox.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your StreamBox Plus receipt",
+   "body": "Thank you. Your StreamBox Plus subscription has started.\nPlan: Plus, EUR 7.99 per month\nOrder number: SB-100231\nNext charge: 15 February 2026",
+   "documents": []
+  },
+  {
+   "received_at": "2026-02-15T03:00:00Z",
+   "from_addr": "StreamBox <billing@streambox.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Your StreamBox Plus receipt",
+   "body": "Your StreamBox Plus subscription continues.\nPlan: Plus, EUR 7.99 per month\nOrder number: SB-100877\nNext charge: 15 March 2026",
+   "documents": []
+  }
+ ]
+}

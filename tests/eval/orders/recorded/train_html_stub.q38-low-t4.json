@@ -1,0 +1,52 @@
+{
+ "case": "train_html_stub",
+ "model": "Qwen/Qwen3.8-27B-FP8",
+ "effort": "low",
+ "answer": {
+  "merchant": "Bahnwerk",
+  "subject": "Berlin Hbf to Leipzig Hbf",
+  "status": "ticket issued",
+  "open": true,
+  "kind": "ticket",
+  "event_start": "2026-03-06",
+  "event_end": "2026-03-06",
+  "expected_until": "2026-03-06",
+  "icon": "train",
+  "summary": "Flex ticket, 2nd class for a train from Berlin Hbf to Leipzig Hbf on 6 March 2026 at 09:14. Ticket issued.\n\n- 1 adult\n- EUR 31.90 total\n- Paid by Visa",
+  "facts": [
+   {
+    "kind": "order_number",
+    "label": "Order number",
+    "value": "BW-77120934",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "date",
+    "label": "Departure date",
+    "value": "2026-03-06",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "time",
+    "label": "Departure time",
+    "value": "09:14",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "amount",
+    "label": "Total",
+    "value": "EUR 31.90",
+    "carrier": "",
+    "code_ref": ""
+   }
+  ]
+ },
+ "markers": [],
+ "hard": [],
+ "soft": [
+  "date fact repeats event_start or event_end"
+ ]
+}

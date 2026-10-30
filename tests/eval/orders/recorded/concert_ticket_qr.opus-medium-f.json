@@ -1,0 +1,73 @@
+{
+ "case": "concert_ticket_qr",
+ "model": "claude-opus-5-5",
+ "effort": "medium",
+ "answer": {
+  "merchant": "Tixly",
+  "subject": "Noa Rivers Live",
+  "status": "ticket issued",
+  "open": true,
+  "kind": "ticket",
+  "event_start": "2026-09-19",
+  "event_end": "2026-09-19",
+  "expected_until": "2026-09-19",
+  "icon": "ticket",
+  "summary": "Concert ticket for Noa Rivers Live at Festhalle Aachen on Saturday 19 September 2026; the ticket has been issued as a PDF.\n\n- Doors open 19:00\n- Price EUR 64.50\n- Show the QR code on the ticket at the entrance",
+  "facts": [
+   {
+    "kind": "order_number",
+    "label": "Order number",
+    "value": "TX-882113",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "ticket_number",
+    "label": "Ticket number",
+    "value": "TX882113-0001",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "time",
+    "label": "Doors",
+    "value": "19:00",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "place",
+    "label": "Venue",
+    "value": "Festhalle Aachen",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "seat",
+    "label": "Seat",
+    "value": "Block C, Row 4, Seat 12",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "amount",
+    "label": "Price",
+    "value": "EUR 64.50",
+    "carrier": "",
+    "code_ref": ""
+   },
+   {
+    "kind": "code",
+    "label": "Ticket QR code",
+    "value": "",
+    "carrier": "",
+    "code_ref": "d1:b1"
+   }
+  ]
+ },
+ "markers": [
+  "d1:b1"
+ ],
+ "hard": [],
+ "soft": []
+}

@@ -1,0 +1,16 @@
+{
+ "name": "german_output",
+ "task": "write",
+ "language": "German",
+ "current_text": null,
+ "mails": [
+  {
+   "received_at": "2026-05-04T09:00:00Z",
+   "from_addr": "Kaffeerösterei Nord <shop@kaffeenord.example>",
+   "to_addrs": "reader@example.org",
+   "subject": "Ihre Bestellung KN-7712",
+   "body": "Vielen Dank für Ihre Bestellung KN-7712: 2 x Espresso 500 g, Gesamt 23,80 EUR. Lieferung in 2 bis 3 Werktagen.",
+   "documents": []
+  }
+ ]
+}
