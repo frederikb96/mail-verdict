@@ -4,6 +4,11 @@ by the first filter (orders/filter.py), the decide call and the write
 call (orders/prompts.py) -- so "what the filter matched against" and
 "what the model read" are never two different texts.
 
+Which part is the content: the plain-text part, unless it is a stub or a dump
+of markup (a plain part that is HTML source), in which case the HTML part is
+converted to text with its table rows and link targets kept (extract/
+html_text.py). The body is cut to the prompt budget (extract/truncate.py).
+
 A DHL notice's first 1,800 characters are language-switcher URLs; after
 dropping link targets that shrinks to a few hundred characters of actual
 content (observed on real mail during design). Link targets are dropped
@@ -21,17 +26,33 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
-import nh3
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.models import Attachment, Message
 from mail_verdict.orders.candidates import normalize_identifier, shipment_number_in_url
+from mail_verdict.orders.extract.html_text import html_to_text
+from mail_verdict.orders.extract.truncate import truncate_text
 
 # Below this many characters, body_text is treated as too thin to be the
 # real content (a plain-text stub next to an HTML-only message) and
 # body_html is used instead if there is one.
 _MIN_TEXT_LENGTH = 200
+
+# A plain part that is longer than this stub threshold can still be a stub
+# ("your email program does not support HTML ... follow the link"): the
+# HTML part wins when its text is at least this many times longer plus a
+# constant. On 271 real mails with both parts this switched exactly the
+# stub case and nothing else.
+_HTML_WINS_FACTOR = 2
+_HTML_WINS_MARGIN = 300
+
+# A plain part is a markup dump when it opens as an HTML document or is
+# mostly tags (a sender that put its HTML source in text/plain).
+_MARKUP_START_RE = re.compile(r"\s*<(?:!doctype|html|head|body)\b", re.IGNORECASE)
+_TAG_RE = re.compile(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]{0,300})?/?>")
+_DUMP_MIN_TAGS = 10
+_DUMP_TAG_SHARE = 0.25
 
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)]*)\)")
 # A carrier template's unfilled merge field, e.g. {DELIVERY_PARCEL_IDENTCODE}.
@@ -73,6 +94,28 @@ def _render_link(match: re.Match[str]) -> str:
     return f"{text} ({number})"
 
 
+def _is_markup_dump(text: str) -> bool:
+    """Whether a text/plain part is really HTML source."""
+    if _MARKUP_START_RE.match(text):
+        return True
+    tags = _TAG_RE.findall(text)
+    return len(tags) >= _DUMP_MIN_TAGS and sum(map(len, tags)) >= _DUMP_TAG_SHARE * len(text)
+
+
+def _clean(source: str) -> str:
+    """Links, bare URLs and image markers out, whitespace tidied."""
+    cleaned = _MD_LINK_RE.sub(_render_link, source)
+    cleaned = _BRACKETED_URL_RE.sub("", cleaned)
+    cleaned = _ANGLE_URL_RE.sub("", cleaned)
+    cleaned = _BARE_URL_RE.sub("", cleaned)
+    cleaned = _IMAGE_MARKER_RE.sub("", cleaned)
+
+    cleaned = _WHITESPACE_RUN_RE.sub(" ", cleaned)
+    lines = [line.strip() for line in cleaned.split("\n")]
+    cleaned = "\n".join(lines)
+    return _MULTI_NEWLINE_RE.sub("\n\n", cleaned).strip()
+
+
 def prepare_body(*, body_text: str | None, body_html: str | None) -> PreparedBody:
     """
     Build the text the first filter, the decide call and the write call
@@ -85,23 +128,20 @@ def prepare_body(*, body_text: str | None, body_html: str | None) -> PreparedBod
     Returns:
         PreparedBody with the cleaned text and the raw source
     """
-    raw = (body_text or "") + (body_html or "")
-    source = body_text or ""
-    if len(source) < _MIN_TEXT_LENGTH and body_html:
-        source = nh3.clean(body_html, tags=set())
+    plain = body_text or ""
+    raw = plain + (body_html or "")
 
-    cleaned = _MD_LINK_RE.sub(_render_link, source)
-    cleaned = _BRACKETED_URL_RE.sub("", cleaned)
-    cleaned = _ANGLE_URL_RE.sub("", cleaned)
-    cleaned = _BARE_URL_RE.sub("", cleaned)
-    cleaned = _IMAGE_MARKER_RE.sub("", cleaned)
+    html_source = body_html or (plain if _is_markup_dump(plain) else "")
+    cleaned = _clean(plain)
+    if html_source:
+        from_html = _clean(html_to_text(html_source))
+        dump = _is_markup_dump(plain)
+        thin = len(plain) < _MIN_TEXT_LENGTH and len(from_html) > len(cleaned)
+        richer = len(from_html) >= _HTML_WINS_FACTOR * len(cleaned) + _HTML_WINS_MARGIN
+        if dump or thin or richer:
+            cleaned = from_html
 
-    cleaned = _WHITESPACE_RUN_RE.sub(" ", cleaned)
-    lines = [line.strip() for line in cleaned.split("\n")]
-    cleaned = "\n".join(lines)
-    cleaned = _MULTI_NEWLINE_RE.sub("\n\n", cleaned).strip()
-
-    return PreparedBody(text=cleaned, raw=raw)
+    return PreparedBody(text=truncate_text(cleaned).text, raw=raw)
 
 
 @dataclass(frozen=True)

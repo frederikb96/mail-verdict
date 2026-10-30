@@ -18,6 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and tracking numbers. A tracking number with a known carrier carries a server-built tracking link.
 - The detail's `documents` list what has been read out of each attachment (extraction method, page
   and barcode counts) and links straight to the bytes; schema for files added to an order by hand.
+- A library that reads attachments for the orders pipeline (`orders/extract/`), not yet called by
+  it: PDF text, barcodes (QR, Aztec, Data Matrix, PDF417 and 1D formats) with their exact payload
+  and their place in the text, Tesseract for pages with no text layer, Apple Wallet passes,
+  calendar files, UBL and CII e-invoices and HTML. It runs in a child process with a time limit, so
+  a document that hangs or crashes the reader cannot affect the API. The container image installs
+  Tesseract with German, English and Dutch; its limits are the new `extraction` section of
+  `config/config.yaml`.
+
+### Fixed
+
+- Order mail bodies that are HTML only, or whose plain part is a one-line stub ("your email program
+  does not support HTML") or HTML source, are read from the HTML part, with entities decoded, table
+  rows as `label | value` and link targets kept.
+
+### Changed
+
+- The prepared order mail body is capped at 12,000 characters: a longer one keeps its first 8,000
+  and last 4,000 with an omission marker.
 
 ## [6.18.2] - 2026-10-24
 

@@ -330,6 +330,22 @@ class WebhooksConfig(BaseModel):
     lease_seconds: float
 
 
+class ExtractionConfig(BaseModel):
+    """Limits for reading attachments (orders/extract/) -- see config.yaml
+    for what each one bounds. Plain values only, so it crosses to the
+    extraction child process by pickle."""
+
+    max_document_bytes: int
+    timeout_seconds: float
+    max_pdf_pages: int
+    barcode_pages: int
+    ocr_pages: int
+    ocr_languages: str
+    ocr_timeout_seconds: float
+    max_image_pixels: int
+    max_text_chars: int
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -352,6 +368,7 @@ class InfraConfig(BaseModel):
     push: PushConfig
     glacier: GlacierConfig
     webhooks: WebhooksConfig
+    extraction: ExtractionConfig
 
 
 _config_instance: InfraConfig | None = None
@@ -386,6 +403,7 @@ def get_config() -> InfraConfig:
                 push=PushConfig(**(cfg.get("push") or {})),
                 glacier=GlacierConfig(**(cfg.get("glacier") or {})),
                 webhooks=WebhooksConfig(**(cfg.get("webhooks") or {})),
+                extraction=ExtractionConfig(**(cfg.get("extraction") or {})),
             )
         except ValidationError as exc:
             raise ConfigError(f"Invalid configuration: {exc}") from exc

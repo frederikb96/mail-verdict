@@ -10,6 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     gosu \
     libpq-dev \
+    tesseract-ocr \
+    tesseract-ocr-deu \
+    tesseract-ocr-eng \
+    tesseract-ocr-nld \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 appuser

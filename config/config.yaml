@@ -93,6 +93,35 @@ webhooks:
   # matters after a crash.
   lease_seconds: 120
 
+# Reading attachments for the orders pipeline (orders/extract/): PDF text,
+# barcodes, scanned pages through Tesseract, passes, calendars and invoices.
+# Every document is read in a child process (orders/extract/pool.py), so a
+# hostile file can hang or crash that process but never the API.
+extraction:
+  # Largest document read; a bigger one is recorded as failed unread.
+  max_document_bytes: 26214400
+  # Wall-clock budget for one document, covering a slow scan and a hung
+  # child alike. Past it the child is killed and the document counts as failed.
+  timeout_seconds: 90
+  # Pages of one PDF read at all (text layer or OCR).
+  max_pdf_pages: 60
+  # Leading pages scanned for barcodes. A ticket's code sits on its first
+  # pages; later pages are terms and conditions.
+  barcode_pages: 4
+  # Pages OCR'd when a PDF has pages without a text layer.
+  ocr_pages: 5
+  # Tesseract languages, `+`-joined. All of them must be installed.
+  ocr_languages: "deu+eng+nld"
+  # One Tesseract call (a page, or an image). Tesseract runs as a
+  # subprocess with its own limit inside the child.
+  ocr_timeout_seconds: 60
+  # Largest image, in pixels, that is decoded; a larger one is refused.
+  max_image_pixels: 50000000
+  # Hard ceiling on the text kept from one document, so a huge file cannot
+  # fill the child's reply. Prompt budgets (orders/extract/truncate.py) sit
+  # far below it.
+  max_text_chars: 400000
+
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10

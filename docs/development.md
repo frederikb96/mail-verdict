@@ -8,6 +8,11 @@ python3 -m venv .venv
 pip install -e '.[dev]'
 ```
 
+The orders OCR tests also need Tesseract with the languages named in `extraction.ocr_languages`
+(`config/config.yaml`); on Debian or Ubuntu that is
+`apt install tesseract-ocr tesseract-ocr-deu tesseract-ocr-eng tesseract-ocr-nld`. Those tests fail
+rather than skip when it is missing.
+
 That is enough to run the test suite. The tests start their own containers, so nothing needs to
 be running first.
 
