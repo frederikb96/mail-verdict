@@ -324,7 +324,7 @@ class TestTheWriteCallStoresKindAndFacts:
     ) -> None:
         service = await _settings_service(migrated_db)
         account_id, _, _, _, row = await _mail_with_pdf(
-            migrated_db, number, subject="Order NK-48213 confirmed",
+            migrated_db, number, subject=f"Order {number} confirmed",
         )
         await _handle_mail_job(row, migrated_db, _cred_repo(migrated_db), service)
         order_id = await _order_of(migrated_db, account_id)
@@ -345,7 +345,7 @@ class TestTheWriteCallStoresKindAndFacts:
 
         facts = [(f.kind, f.value) for f in await _facts(migrated_db, order_id)]
         assert ("invoice_number", "RE-2026-0042") in facts
-        assert ("order_number", "NK-48213") in facts
+        assert ("order_number", number) in facts
         assert ("place", "Old station") not in facts
         assert ("place", "Typed by hand") in facts
 

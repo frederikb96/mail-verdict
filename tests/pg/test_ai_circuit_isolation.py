@@ -111,6 +111,11 @@ async def test_a_broken_orders_model_does_not_open_classifys_or_embeddings_circu
     )
     await PipelineRevisionRepository(migrated_db).append(document, note="test baseline")
 
+    # The database is shared with every other test of the run; start from
+    # breakers no earlier test has tripped.
+    async with migrated_db.session() as session:
+        await session.execute(text("DELETE FROM circuit_breakers WHERE name LIKE 'custom:%'"))
+
     settings_service = SettingsService(migrated_db)
     await settings_service.load()
     await settings_service.update("ai", {"provider": "custom"})
