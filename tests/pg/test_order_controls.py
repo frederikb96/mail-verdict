@@ -25,7 +25,7 @@ from sqlalchemy import select, text, update
 
 from mail_verdict.api.orders import router
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Order, OrderIdentifier, OrderJob, OrderMail
+from mail_verdict.database.models import Order, OrderFact, OrderJob, OrderMail
 from mail_verdict.orders import repository
 from mail_verdict.orders.auto_close import auto_close_once
 from mail_verdict.orders.candidates import find_candidates
@@ -66,7 +66,7 @@ async def _written_order(
             session, order_id, merchant=merchant, subject=subject, status=status,
             is_open=is_open, icon="package", summary=summary, model="fake",
         )
-        await repository.store_identifiers(session, order_id, list(identifiers))
+        await repository.store_identifier_facts(session, order_id, list(identifiers))
         if columns:
             await session.execute(update(Order).where(Order.id == order_id).values(**columns))
     return order_id
@@ -335,12 +335,12 @@ class TestSealedOrdersAreInvisibleToTheAgent:
         )
         fresh = await _written_order(migrated_db)
         async with migrated_db.session() as session:
-            await repository.store_identifiers(session, fresh, [("tracking_number", number)])
+            await repository.store_identifier_facts(session, fresh, [("tracking_number", number)])
             held = (
                 await session.execute(
-                    select(OrderIdentifier.order_id).where(
-                        OrderIdentifier.order_id.in_([sealed, fresh]),
-                        OrderIdentifier.value == number,
+                    select(OrderFact.order_id).where(
+                        OrderFact.order_id.in_([sealed, fresh]),
+                        OrderFact.value == number,
                     )
                 )
             ).scalars().all()
@@ -368,7 +368,7 @@ class TestNoneDecision:
                 await session.execute(text("SELECT count(*) FROM orders"))
             ).scalar_one()
             identifiers_before = (
-                await session.execute(text("SELECT count(*) FROM order_identifiers"))
+                await session.execute(text("SELECT count(*) FROM order_facts"))
             ).scalar_one()
 
         assert await _handle_mail_job(row, migrated_db, cred_repo, settings_service) is None
@@ -382,7 +382,7 @@ class TestNoneDecision:
             ).scalars().all()
             orders_after = (await session.execute(text("SELECT count(*) FROM orders"))).scalar_one()
             identifiers_after = (
-                await session.execute(text("SELECT count(*) FROM order_identifiers"))
+                await session.execute(text("SELECT count(*) FROM order_facts"))
             ).scalar_one()
         assert job.outcome == "none" and job.order_id is None
         assert memberships == []
@@ -499,7 +499,7 @@ async def _delete_fixture(db: DatabaseConnection) -> tuple[uuid.UUID, uuid.UUID,
             thread_id=None, subject="s", from_addr="a@b.com", received_at=_NOW, attached_by="ai",
         )
         await repository.recompute_aggregates(session, order_id)
-        await repository.store_identifiers(session, order_id, [("order_number", "NK-12345")])
+        await repository.store_identifier_facts(session, order_id, [("order_number", "NK-12345")])
         await repository.enqueue_write_job(session, order_id, priority=50)
         await repository.enqueue_mail_job(
             session, account_id=account_id, msg_key=msg_key, message_id=None, origin="live",
@@ -520,7 +520,7 @@ async def _references(db: DatabaseConnection, order_id: uuid.UUID, msg_key: str)
             "orders": await count("SELECT count(*) FROM orders WHERE id = :id"),
             "order_mails": await count("SELECT count(*) FROM order_mails WHERE order_id = :id"),
             "identifiers": await count(
-                "SELECT count(*) FROM order_identifiers WHERE order_id = :id"
+                "SELECT count(*) FROM order_facts WHERE order_id = :id"
             ),
             "jobs_naming_it": await count("SELECT count(*) FROM order_jobs WHERE order_id = :id"),
             "mail_job_rows": await count(

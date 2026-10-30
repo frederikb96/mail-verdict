@@ -343,7 +343,7 @@ async def _handle_mail_job(
             # present -- a deterministic rescan is the floor under that,
             # never a second opinion overriding a call that did answer.
             identifiers = extract_labeled_identifiers(f"{content.subject}\n{content.body.raw}")
-        await repository.store_identifiers(session, order_id, identifiers)
+        await repository.store_identifier_facts(session, order_id, identifiers)
         await repository.recompute_aggregates(session, order_id)
         await repository.mark_text_stale(session, order_id)
         write_priority = 0 if filter_reason == "thread" else 50

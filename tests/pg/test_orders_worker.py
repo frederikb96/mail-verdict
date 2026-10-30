@@ -20,7 +20,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Order, OrderIdentifier, OrderJob, OrderMail
+from mail_verdict.database.models import Order, OrderFact, OrderJob, OrderMail
 from mail_verdict.orders import repository
 from mail_verdict.orders.intake import enqueue_thread_follow_up
 from mail_verdict.orders.lookup import OrderLookup
@@ -424,8 +424,8 @@ class TestIdentifierBackstop:
             ).scalar_one()
             identifiers = (
                 await session.execute(
-                    select(OrderIdentifier.kind, OrderIdentifier.value).where(
-                        OrderIdentifier.order_id == order_id,
+                    select(OrderFact.kind, OrderFact.value).where(
+                        OrderFact.order_id == order_id,
                     )
                 )
             ).all()
@@ -462,8 +462,8 @@ class TestIdentifierBackstop:
             ).scalar_one()
             identifiers = (
                 await session.execute(
-                    select(OrderIdentifier.kind, OrderIdentifier.value).where(
-                        OrderIdentifier.order_id == order_id,
+                    select(OrderFact.kind, OrderFact.value).where(
+                        OrderFact.order_id == order_id,
                     )
                 )
             ).all()

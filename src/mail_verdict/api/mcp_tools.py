@@ -2000,7 +2000,9 @@ async def delete_contact(contact_id: str) -> dict[str, Any]:
         "openWorldHint": False,
     },
 )
-async def list_orders(state: str = "all", limit: int = 50) -> list[dict[str, Any]]:
+async def list_orders(
+    state: str = "all", limit: int = 50, kind: str = "all",
+) -> list[dict[str, Any]]:
     """
     List orders and tickets, newest activity first -- the register
     bundling every mail about one purchase, ticket or booking across
@@ -2009,16 +2011,22 @@ async def list_orders(state: str = "all", limit: int = 50) -> list[dict[str, Any
     Args:
         state: "all" or "open" (still expecting something to happen)
         limit: Max results, 1-500 (default 50)
+        kind: "all", "ticket" (something to attend or ride on a date),
+            "order" (goods or a one-off service handed over) or "other"
+            (subscriptions, claims, service cases)
 
     Returns:
         List of orders: id, merchant, subject, status, title, is_open,
         is_favorite, is_sealed, open_set_by (ai/user/auto), expected_until,
-        icon, summary_preview, first_mail_at, last_mail_at, mail_count,
-        account_ids, text_stale, updated_at
+        icon, summary_preview, kind, kind_set_by, event_start, event_end,
+        timeline_date, first_mail_at, last_mail_at, first_activity_at,
+        last_activity_at, mail_count, file_count, account_ids, text_stale,
+        updated_at
     """
     try:
         result = await _list_orders(
             state=state, before=None, limit=min(max(limit, 1), 500), favorites=False, q=None,
+            kind=kind, sort="activity",
         )
     except HTTPException as exc:
         return [_endpoint_error(exc)]
@@ -2037,15 +2045,16 @@ async def list_orders(state: str = "all", limit: int = 50) -> list[dict[str, Any
 )
 async def get_order(order_id: str) -> dict[str, Any]:
     """
-    Get one order's full detail: title, markdown summary, numbers,
-    documents, and its mails in time order.
+    Get one order's full detail: title, markdown summary, key facts
+    (numbers, dates, places, tracking links, codes), documents, and its
+    mails in time order.
 
     Args:
         order_id: Order UUID (see list_orders)
 
     Returns:
         Everything list_orders returns for this order, plus summary,
-        identifiers, mails and documents -- or {"error": ...}
+        facts, mails and documents -- or {"error": ...}
     """
     try:
         detail = await _get_order(order_id=uuid.UUID(order_id))

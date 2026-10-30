@@ -1,6 +1,6 @@
 """
-Writes over the orders register: attach, recompute, store identifiers,
-write text, detach, move, merge, delete.
+Writes over the orders register: attach, recompute, store identifier
+facts, write text, detach, move, merge, delete.
 
 Every function takes an already-open AsyncSession rather than opening its
 own -- the worker (orders/worker.py) runs a whole mail job inside one
@@ -22,7 +22,14 @@ from sqlalchemy import case, delete, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.database.models import Order, OrderIdentifier, OrderJob, OrderMail
+from mail_verdict.database.models import (
+    Order,
+    OrderDocument,
+    OrderFact,
+    OrderFile,
+    OrderJob,
+    OrderMail,
+)
 from mail_verdict.orders.candidates import (
     ACCEPTS_MAIL,
     is_valid_identifier,
@@ -36,6 +43,22 @@ _IDENTIFIER_WINDOW_DAYS = 365
 OPEN_SET_BY_MODEL = "ai"
 OPEN_SET_BY_USER = "user"
 OPEN_SET_BY_AUTO = "auto"
+
+# Who decided an order's kind (orders.kind_set_by).
+KIND_SET_BY_MODEL = "ai"
+KIND_SET_BY_USER = "user"
+
+# The fact kinds that identify a purchase: candidate retrieval matches mail
+# text against them, and they carry value_norm. Every other fact kind is a
+# display fact.
+IDENTIFIER_FACT_KINDS = (
+    "order_number", "booking_code", "ticket_number", "invoice_number", "tracking_number",
+)
+_IDENTIFIER_LABELS = {
+    "order_number": "Order number", "booking_code": "Booking code",
+    "ticket_number": "Ticket number", "invoice_number": "Invoice number",
+    "tracking_number": "Tracking number",
+}
 
 
 async def create_order(session: AsyncSession) -> uuid.UUID:
@@ -82,58 +105,91 @@ async def attach_mail(
 
 async def recompute_aggregates(session: AsyncSession, order_id: uuid.UUID) -> int:
     """
-    Recompute mail_count/first_mail_at/last_mail_at from order_mails.
+    Recompute mail_count/first_mail_at/last_mail_at from order_mails,
+    file_count from order_files, and first/last_activity_at over both.
 
     Returns:
-        The recomputed mail_count -- callers use 0 to know an order is
-        now empty and should be deleted.
+        The recomputed mail_count + file_count -- callers use 0 to know an
+        order is now empty and should be deleted.
     """
-    agg_result = await session.execute(
+    mails = (
         select(
-            func.count(OrderMail.id), func.min(OrderMail.received_at),
-            func.max(OrderMail.received_at),
-        ).where(OrderMail.order_id == order_id)
+            func.count(OrderMail.id).label("n"), func.min(OrderMail.received_at).label("first"),
+            func.max(OrderMail.received_at).label("last"),
+        )
+        .where(OrderMail.order_id == order_id)
+        .subquery("mails")
     )
-    count, first_at, last_at = agg_result.one()
-    await session.execute(
+    files = (
+        select(
+            func.count(OrderFile.id).label("n"), func.min(OrderFile.created_at).label("first"),
+            func.max(OrderFile.created_at).label("last"),
+        )
+        .where(OrderFile.order_id == order_id)
+        .subquery("files")
+    )
+    result = await session.execute(
         update(Order)
         .where(Order.id == order_id)
         .values(
-            mail_count=count, first_mail_at=first_at, last_mail_at=last_at, updated_at=func.now(),
+            mail_count=select(mails.c.n).scalar_subquery(),
+            first_mail_at=select(mails.c.first).scalar_subquery(),
+            last_mail_at=select(mails.c.last).scalar_subquery(),
+            file_count=select(files.c.n).scalar_subquery(),
+            first_activity_at=select(func.least(mails.c.first, files.c.first)).scalar_subquery(),
+            last_activity_at=select(func.greatest(mails.c.last, files.c.last)).scalar_subquery(),
+            updated_at=func.now(),
         )
+        .returning(Order.mail_count, Order.file_count)
     )
-    return int(count)
+    row = result.one_or_none()
+    return int(row.mail_count + row.file_count) if row is not None else 0
 
 
-async def store_identifiers(
+async def store_identifier_facts(
     session: AsyncSession, order_id: uuid.UUID, identifiers: list[tuple[str, str]],
+    *, source: str = "ai",
 ) -> None:
     """
-    Store every valid identifier the model reported, skipping one already
-    held by ANOTHER order active in the last 365 days -- a duplicate
-    number is evidence the decide call chose the wrong candidate, not a
-    reason to make two orders claim the same number.
+    Store every valid identifier the model reported as an identifier-kind
+    fact, skipping one already held by ANOTHER order active in the last 365
+    days -- a duplicate number is evidence the decide call chose the wrong
+    candidate, not a reason to make two orders claim the same number.
+    Identifiers only ever accumulate here; display facts are a write call's
+    to replace.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=_IDENTIFIER_WINDOW_DAYS)
     for kind, value in identifiers:
-        if not is_valid_identifier(value):
+        if kind not in IDENTIFIER_FACT_KINDS or not is_valid_identifier(value):
             continue
         value_norm = normalize_identifier(value.strip())
         held_elsewhere = await session.execute(
-            select(OrderIdentifier.id)
-            .join(Order, Order.id == OrderIdentifier.order_id)
+            select(OrderFact.id)
+            .join(Order, Order.id == OrderFact.order_id)
             .where(
-                OrderIdentifier.value_norm == value_norm, OrderIdentifier.order_id != order_id,
-                Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff, ACCEPTS_MAIL,
+                OrderFact.value_norm == value_norm, OrderFact.order_id != order_id,
+                Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
             )
             .limit(1)
         )
         if held_elsewhere.scalar_one_or_none() is not None:
             continue
+        next_position = (
+            select(func.coalesce(func.max(OrderFact.position) + 1, 0))
+            .where(OrderFact.order_id == order_id)
+            .scalar_subquery()
+        )
         stmt = (
-            pg_insert(OrderIdentifier)
-            .values(order_id=order_id, kind=kind, value=value.strip(), value_norm=value_norm)
-            .on_conflict_do_nothing(constraint="uq_order_identifiers_order_value_norm")
+            pg_insert(OrderFact)
+            .values(
+                order_id=order_id, kind=kind, label=_IDENTIFIER_LABELS[kind],
+                value=value.strip(), value_norm=value_norm, position=next_position,
+                source=source,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["order_id", "value_norm"],
+                index_where=text("value_norm IS NOT NULL"),
+            )
         )
         await session.execute(stmt)
 
@@ -233,13 +289,19 @@ async def write_order_text(
     summary: str,
     model: str | None,
     expected_until: date | None = None,
+    kind: str | None = None,
+    event_start: date | None = None,
+    event_end: date | None = None,
 ) -> WriteResult | None:
     """
     Store a write call's answer.
 
     is_open only lands while the model owns it (open_set_by = 'ai'): once
     a person or the automatic close has decided, a rewrite leaves the
-    decision alone. expected_until is always stored.
+    decision alone. expected_until is always stored. kind lands the same
+    way (kind_set_by = 'ai'); passing kind=None leaves kind and the event
+    dates untouched, passing a kind stores event_start/event_end with it
+    (None clears them).
 
     Returns:
         None if the order no longer exists (deleted mid-flight); the
@@ -261,12 +323,24 @@ async def write_order_text(
             status=cut_status(status),
             is_open=case((Order.open_set_by == OPEN_SET_BY_MODEL, is_open), else_=Order.is_open),
             expected_until=expected_until, icon=icon,
+            **_kind_values(kind, event_start, event_end),
             summary=cut_summary(summary), summary_preview=preview,
             text_stale=False, model=model, updated_at=func.now(),
             written_at=func.coalesce(Order.written_at, func.now()),
         )
     )
     return WriteResult(order_id=order_id, created=created, summary_preview=preview)
+
+
+def _kind_values(
+    kind: str | None, event_start: date | None, event_end: date | None,
+) -> dict[str, Any]:
+    if kind is None:
+        return {}
+    return {
+        "kind": case((Order.kind_set_by == KIND_SET_BY_MODEL, kind), else_=Order.kind),
+        "event_start": event_start, "event_end": event_end,
+    }
 
 
 async def hand_open_state_to_model(session: AsyncSession, order_id: uuid.UUID) -> None:
@@ -280,11 +354,12 @@ async def hand_open_state_to_model(session: AsyncSession, order_id: uuid.UUID) -
 async def update_controls(
     session: AsyncSession, order_id: uuid.UUID, *,
     is_favorite: bool | None = None, is_open: bool | None = None, is_sealed: bool | None = None,
+    kind: str | None = None,
 ) -> bool:
     """
     Apply a person's change to an order's flags; None leaves a flag alone.
-    Setting is_open records that a person decided it. Sealing never
-    touches open/closed.
+    Setting is_open or kind records that a person decided it, which a
+    rewrite then leaves alone. Sealing never touches open/closed.
 
     Returns:
         False if the order does not exist
@@ -297,6 +372,9 @@ async def update_controls(
     if is_open is not None:
         values["is_open"] = is_open
         values["open_set_by"] = OPEN_SET_BY_USER
+    if kind is not None:
+        values["kind"] = kind
+        values["kind_set_by"] = KIND_SET_BY_USER
     if not values:
         exists = await session.execute(select(Order.id).where(Order.id == order_id))
         return exists.scalar_one_or_none() is not None
@@ -329,9 +407,11 @@ async def _release_order_jobs(session: AsyncSession, order_id: uuid.UUID) -> Non
 
 
 async def delete_order_if_empty(session: AsyncSession, order_id: uuid.UUID) -> bool:
-    """Delete an order left with no mail. Returns whether it was deleted."""
+    """Delete an order left with no mail and no file. Returns whether it was deleted."""
     empty = await session.execute(
-        select(Order.id).where(Order.id == order_id, Order.mail_count == 0)
+        select(Order.id).where(
+            Order.id == order_id, Order.mail_count == 0, Order.file_count == 0,
+        )
     )
     if empty.scalar_one_or_none() is None:
         return False
@@ -339,41 +419,84 @@ async def delete_order_if_empty(session: AsyncSession, order_id: uuid.UUID) -> b
 
 
 async def detach_mail(
-    session: AsyncSession, order_mail_id: uuid.UUID,
+    session: AsyncSession, order_mail_id: uuid.UUID, *, move_documents_to: uuid.UUID | None = None,
 ) -> uuid.UUID | None:
     """
-    Remove one mail from its order.
+    Remove one mail from its order. Its documents (and their code facts)
+    follow the mail to `move_documents_to`, or are deleted when None.
 
     Returns:
         The order_id it was removed from, or None if the row was already
         gone
     """
     result = await session.execute(
-        delete(OrderMail).where(OrderMail.id == order_mail_id).returning(OrderMail.order_id)
+        delete(OrderMail).where(OrderMail.id == order_mail_id).returning(
+            OrderMail.order_id, OrderMail.account_id, OrderMail.msg_key,
+        )
     )
     row = result.one_or_none()
-    return row[0] if row is not None else None
+    if row is None:
+        return None
+    mail_documents = select(OrderDocument.id).where(
+        OrderDocument.source == "mail", OrderDocument.order_id == row.order_id,
+        OrderDocument.account_id == row.account_id, OrderDocument.msg_key == row.msg_key,
+    )
+    if move_documents_to is None:
+        await session.execute(delete(OrderDocument).where(OrderDocument.id.in_(mail_documents)))
+    else:
+        await _move_documents(session, mail_documents, move_documents_to)
+    order_id: uuid.UUID = row.order_id
+    return order_id
+
+
+async def _move_documents(
+    session: AsyncSession, document_ids: Any, target_id: uuid.UUID,
+) -> None:
+    """Re-parent documents and the code facts that point into them."""
+    await session.execute(
+        update(OrderFact).where(OrderFact.document_id.in_(document_ids)).values(order_id=target_id)
+    )
+    await session.execute(
+        update(OrderDocument).where(OrderDocument.id.in_(document_ids)).values(order_id=target_id)
+    )
 
 
 async def merge_order(session: AsyncSession, *, source_id: uuid.UUID, target_id: uuid.UUID) -> None:
     """
-    Merge `source_id` into `target_id`: every mail and every identifier
-    moves to the target, and the source is deleted. The repair for a
-    split the model made in error.
+    Merge `source_id` into `target_id`: every mail, document, file and
+    identifier moves to the target, and the source is deleted. The source's
+    display facts are dropped -- the target's rewrite writes them. The
+    repair for a split the model made in error.
     """
     await session.execute(
         update(OrderMail).where(OrderMail.order_id == source_id).values(order_id=target_id)
     )
+    source_documents = select(OrderDocument.id).where(OrderDocument.order_id == source_id)
+    await _move_documents(session, source_documents, target_id)
+    await session.execute(
+        update(OrderFile).where(OrderFile.order_id == source_id).values(order_id=target_id)
+    )
     source_identifiers = await session.execute(
-        select(OrderIdentifier.kind, OrderIdentifier.value, OrderIdentifier.value_norm).where(
-            OrderIdentifier.order_id == source_id,
+        select(OrderFact.kind, OrderFact.label, OrderFact.value, OrderFact.value_norm).where(
+            OrderFact.order_id == source_id, OrderFact.value_norm.is_not(None),
         )
     )
-    for kind, value, value_norm in source_identifiers.all():
+    for kind, label, value, value_norm in source_identifiers.all():
+        next_position = (
+            select(func.coalesce(func.max(OrderFact.position) + 1, 0))
+            .where(OrderFact.order_id == target_id)
+            .scalar_subquery()
+        )
         stmt = (
-            pg_insert(OrderIdentifier)
-            .values(order_id=target_id, kind=kind, value=value, value_norm=value_norm)
-            .on_conflict_do_nothing(constraint="uq_order_identifiers_order_value_norm")
+            pg_insert(OrderFact)
+            .values(
+                order_id=target_id, kind=kind, label=label, value=value, value_norm=value_norm,
+                position=next_position,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["order_id", "value_norm"],
+                index_where=text("value_norm IS NOT NULL"),
+            )
         )
         await session.execute(stmt)
     await delete_order(session, source_id)
@@ -381,8 +504,9 @@ async def merge_order(session: AsyncSession, *, source_id: uuid.UUID, target_id:
 
 
 async def delete_order(session: AsyncSession, order_id: uuid.UUID) -> bool:
-    """Delete an order, its membership and numbers, and every job row that
-    names it. No mail is touched, and none is released for bundling again."""
+    """Delete an order, its membership, facts, documents and files, and
+    every job row that names it. No mail is touched, and none is released
+    for bundling again."""
     await _release_order_jobs(session, order_id)
     result = await session.execute(delete(Order).where(Order.id == order_id))
     return bool(result.rowcount)  # type: ignore[attr-defined]
@@ -392,9 +516,10 @@ async def delete_for_account(
     session: AsyncSession, account_id: uuid.UUID,
 ) -> list[tuple[uuid.UUID, str]]:
     """
-    Account deletion's cleanup: remove this account's order_mails and
-    order_jobs, delete orders left with no mail, and enqueue a write for
-    orders that lost some but still have mail from another account.
+    Account deletion's cleanup: remove this account's order_mails, their
+    documents and order_jobs, delete orders left with no mail or file, and
+    enqueue a write for orders that lost some but still have something
+    else (mail from another account, or files).
 
     Returns:
         (order_id, change) pairs -- "deleted" or "updated" -- for the
@@ -409,6 +534,11 @@ async def delete_for_account(
     order_ids = [row[0] for row in affected.all()]
 
     await session.execute(delete(OrderMail).where(OrderMail.account_id == account_id))
+    await session.execute(
+        delete(OrderDocument).where(
+            OrderDocument.source == "mail", OrderDocument.account_id == account_id,
+        )
+    )
     await session.execute(delete(OrderJob).where(OrderJob.account_id == account_id))
 
     changes: list[tuple[uuid.UUID, str]] = []

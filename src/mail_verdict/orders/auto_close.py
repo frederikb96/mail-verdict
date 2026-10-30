@@ -6,8 +6,8 @@ Two rules, by whether the write call estimated an end date
 (orders.expected_until -- an event, a trip's last day, a pickup deadline,
 about a week after a parcel shipped):
 - with a date: orders.auto_close_grace_days after the later of that date
-  and the last mail;
-- without one: orders.auto_close_days after the last mail.
+  and the last activity (mail or file);
+- without one: orders.auto_close_days after the last activity.
 orders.auto_close_days = 0 turns the whole sweep off; a grace of 0 closes
 as soon as the date has passed.
 
@@ -67,11 +67,11 @@ async def close_overdue_orders(
                   AND open_set_by = :model
                   AND written_at IS NOT NULL
                   AND NOT text_stale
-                  AND last_mail_at IS NOT NULL
+                  AND last_activity_at IS NOT NULL
                   AND CASE
                         WHEN expected_until IS NULL
-                          THEN last_mail_at < now() - make_interval(days => :days)
-                        ELSE greatest(last_mail_at, expected_until::timestamptz)
+                          THEN last_activity_at < now() - make_interval(days => :days)
+                        ELSE greatest(last_activity_at, expected_until::timestamptz)
                           < now() - make_interval(days => :grace)
                       END
                 RETURNING id

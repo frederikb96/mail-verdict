@@ -401,10 +401,30 @@ with a smaller page.
 
 ## Orders
 
-The orders register (`orders/`, tables `orders`/`order_mails`/`order_identifiers`/`order_jobs`)
-bundles every mail about one purchase, ticket or booking into one entry with an AI-written title
-and summary, across every account that has the feature switched on
+The orders register (`orders/`, tables `orders`/`order_mails`/`order_facts`/`order_documents`/
+`order_files`/`order_jobs`) bundles every mail about one purchase, ticket or booking into one entry
+with an AI-written title and summary, across every account that has the feature switched on
 (`account_prefs.orders_enabled`).
+
+**Kind, event date and activity.** `orders.kind` is `ticket` (somewhere to be on a date), `order`
+(goods or a one-off service handed over) or `other` (subscriptions, claims, service cases), written
+by the write call and overridable by a person (`kind_set_by`, the same pattern as `open_set_by`: a
+person's choice is never overwritten). `event_start`/`event_end` are the write call's dates for a
+ticket. The list's timeline date is computed once, server side (`api/orders.py`'s `TIMELINE_DATE`):
+the event start, else the UTC date of the entry's first activity. Activity (`first_activity_at`/
+`last_activity_at`) covers mails and files, where `mail_count` and `first/last_mail_at` count mails
+only; candidate windows, number ownership and the automatic close read the activity pair, and an
+entry is empty only with no mail and no file.
+
+**Key facts, documents and files.** `order_facts` holds an entry's typed facts. The five identifier
+kinds (order, booking, ticket, invoice and tracking numbers) carry `value_norm`, are what candidate
+retrieval matches mail text against, and only ever accumulate; the other kinds are display facts a
+write replaces wholesale, and a `code` fact points at one decoded barcode of an `order_documents`
+row. A tracking link is never stored: `orders/carriers.py` builds it at read time from the fact's
+carrier and number. `order_documents` rows are keyed by `(account_id, msg_key, attachment_id)` for a
+mail attachment (the attachment id is a join hint only) or by `file_id` for a file, and hold the
+extracted text and barcodes — never the bytes, which stay in PostIMAP or in `order_files`. They
+follow their mail on detach, move and merge, and go with it on account deletion.
 
 **The pipeline stage only enqueues; it never calls a model.** `pipeline/stages/orders.py` checks
 the switch, the spam verdict, the two bypass rules (a mail whose thread already belongs to an
@@ -490,7 +510,7 @@ must survive its order being deleted.
 (`orders/locate.py`), the same tie-break `api/mails.py`'s `locate_message` uses — a mail moved by
 another client is a different row sharing only the Message-ID header, and a purged or expunged
 mail resolves to "gone": the order keeps its snapshot (subject, sender, date, taken at attach
-time), summary and numbers, shown dimmed and unopenable, until a person deletes the order itself.
+time), summary and facts, shown dimmed and unopenable, until a person deletes the order itself.
 
 ### Neighbour hints, and why the classifier's own verdicts never feed them
 

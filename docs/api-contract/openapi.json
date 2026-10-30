@@ -5167,6 +5167,49 @@
         "title": "OrderCatchUpResponse",
         "type": "object"
       },
+      "OrderCodeOut": {
+        "description": "A barcode a document carries, as the fact it belongs to shows it.",
+        "properties": {
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "image_url": {
+            "title": "Image Url",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "payload_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Text"
+          }
+        },
+        "required": [
+          "format",
+          "payload_text",
+          "image_url",
+          "page"
+        ],
+        "title": "OrderCodeOut",
+        "type": "object"
+      },
       "OrderDetachRequest": {
         "properties": {
           "move_to": {
@@ -5202,6 +5245,30 @@
             "title": "Documents",
             "type": "array"
           },
+          "event_end": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event End"
+          },
+          "event_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Start"
+          },
           "expected_until": {
             "anyOf": [
               {
@@ -5213,6 +5280,29 @@
               }
             ],
             "title": "Expected Until"
+          },
+          "facts": {
+            "items": {
+              "$ref": "#/components/schemas/OrderFactOut"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "first_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Activity At"
           },
           "first_mail_at": {
             "anyOf": [
@@ -5235,13 +5325,6 @@
             "title": "Id",
             "type": "string"
           },
-          "identifiers": {
-            "items": {
-              "$ref": "#/components/schemas/OrderIdentifierOut"
-            },
-            "title": "Identifiers",
-            "type": "array"
-          },
           "is_favorite": {
             "title": "Is Favorite",
             "type": "boolean"
@@ -5253,6 +5336,35 @@
           "is_sealed": {
             "title": "Is Sealed",
             "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "ticket",
+              "order",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "kind_set_by": {
+            "enum": [
+              "ai",
+              "user"
+            ],
+            "title": "Kind Set By",
+            "type": "string"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
           },
           "last_mail_at": {
             "anyOf": [
@@ -5310,6 +5422,18 @@
             "title": "Text Stale",
             "type": "boolean"
           },
+          "timeline_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Date"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -5333,14 +5457,22 @@
           "expected_until",
           "icon",
           "summary_preview",
+          "kind",
+          "kind_set_by",
+          "event_start",
+          "event_end",
+          "timeline_date",
           "first_mail_at",
           "last_mail_at",
+          "first_activity_at",
+          "last_activity_at",
           "mail_count",
+          "file_count",
           "account_ids",
           "text_stale",
           "updated_at",
           "summary",
-          "identifiers",
+          "facts",
           "mails",
           "documents"
         ],
@@ -5350,22 +5482,83 @@
       "OrderDocumentOut": {
         "properties": {
           "attachment_id": {
-            "format": "uuid",
-            "title": "Attachment Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attachment Id"
+          },
+          "barcode_count": {
+            "title": "Barcode Count",
+            "type": "integer"
           },
           "content_type": {
             "title": "Content Type",
             "type": "string"
           },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id"
+          },
           "filename": {
             "title": "Filename",
             "type": "string"
           },
-          "message_id": {
+          "id": {
             "format": "uuid",
-            "title": "Message Id",
+            "title": "Id",
             "type": "string"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Count"
           },
           "received_at": {
             "format": "date-time",
@@ -5382,24 +5575,108 @@
               }
             ],
             "title": "Size Bytes"
+          },
+          "source": {
+            "enum": [
+              "mail",
+              "file"
+            ],
+            "title": "Source",
+            "type": "string"
           }
         },
         "required": [
+          "id",
+          "source",
           "message_id",
           "attachment_id",
+          "file_id",
           "filename",
           "content_type",
           "size_bytes",
-          "received_at"
+          "received_at",
+          "page_count",
+          "method",
+          "barcode_count",
+          "download_url"
         ],
         "title": "OrderDocumentOut",
         "type": "object"
       },
-      "OrderIdentifierOut": {
+      "OrderFactOut": {
         "properties": {
+          "carrier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carrier"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderCodeOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Id"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
           "kind": {
+            "enum": [
+              "order_number",
+              "booking_code",
+              "ticket_number",
+              "invoice_number",
+              "tracking_number",
+              "date",
+              "time",
+              "amount",
+              "place",
+              "seat",
+              "person",
+              "code",
+              "link",
+              "other"
+            ],
             "title": "Kind",
             "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "tracking_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Url"
           },
           "value": {
             "title": "Value",
@@ -5407,10 +5684,16 @@
           }
         },
         "required": [
+          "id",
           "kind",
-          "value"
+          "label",
+          "value",
+          "carrier",
+          "tracking_url",
+          "code",
+          "document_id"
         ],
-        "title": "OrderIdentifierOut",
+        "title": "OrderFactOut",
         "type": "object"
       },
       "OrderListItem": {
@@ -5424,6 +5707,30 @@
             "title": "Account Ids",
             "type": "array"
           },
+          "event_end": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event End"
+          },
+          "event_start": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Start"
+          },
           "expected_until": {
             "anyOf": [
               {
@@ -5435,6 +5742,22 @@
               }
             ],
             "title": "Expected Until"
+          },
+          "file_count": {
+            "title": "File Count",
+            "type": "integer"
+          },
+          "first_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Activity At"
           },
           "first_mail_at": {
             "anyOf": [
@@ -5468,6 +5791,35 @@
           "is_sealed": {
             "title": "Is Sealed",
             "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "ticket",
+              "order",
+              "other"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "kind_set_by": {
+            "enum": [
+              "ai",
+              "user"
+            ],
+            "title": "Kind Set By",
+            "type": "string"
+          },
+          "last_activity_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Activity At"
           },
           "last_mail_at": {
             "anyOf": [
@@ -5514,6 +5866,18 @@
             "title": "Text Stale",
             "type": "boolean"
           },
+          "timeline_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Date"
+          },
           "title": {
             "title": "Title",
             "type": "string"
@@ -5537,9 +5901,17 @@
           "expected_until",
           "icon",
           "summary_preview",
+          "kind",
+          "kind_set_by",
+          "event_start",
+          "event_end",
+          "timeline_date",
           "first_mail_at",
           "last_mail_at",
+          "first_activity_at",
+          "last_activity_at",
           "mail_count",
+          "file_count",
           "account_ids",
           "text_stale",
           "updated_at"
@@ -5696,7 +6068,7 @@
         "type": "object"
       },
       "OrderUpdateRequest": {
-        "description": "A person's change to an order's flags; an omitted field is left alone.\nSetting is_open records that a person decided it.",
+        "description": "A person's change to an order's flags and kind; an omitted field is left\nalone. Setting is_open or kind records that a person decided it.",
         "properties": {
           "is_favorite": {
             "anyOf": [
@@ -5730,6 +6102,22 @@
               }
             ],
             "title": "Is Sealed"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ticket",
+                  "order",
+                  "other"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
           }
         },
         "title": "OrderUpdateRequest",
@@ -13472,7 +13860,7 @@
     },
     "/orders": {
       "get": {
-        "description": "Orders across every enabled account, newest activity first.\n\n`favorites` keeps only favorites, in any state. `q` keeps orders where\nevery token of it (any order, typo-tolerant) matches the merchant,\nsubject, status or summary -- the same tokenizer and per-token\npredicate as the mail search's fallback tier.",
+        "description": "Orders across every enabled account, newest first.\n\n`sort=activity` (default) orders by last activity (a mail or a file);\n`sort=event` by `timeline_date` -- the event date of a ticket, else the\ndate of its first activity -- newest date first. `before` is the id of\nthe last entry of the previous page and continues in the same sort.\n`kind` keeps one kind. `favorites` keeps only favorites, in any state.\n`q` keeps orders where every token of it (any order, typo-tolerant)\nmatches the merchant, subject, status or summary -- the same tokenizer\nand per-token predicate as the mail search's fallback tier.",
         "operationId": "list_orders_orders_get",
         "parameters": [
           {
@@ -13540,6 +13928,28 @@
                 }
               ],
               "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "pattern": "^(all|ticket|order|other)$",
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "activity",
+              "pattern": "^(activity|event)$",
+              "title": "Sort",
+              "type": "string"
             }
           }
         ],
@@ -13690,7 +14100,7 @@
         ]
       },
       "patch": {
-        "description": "Favorite, open/closed and sealed. A person's open/closed decision\nsticks until the next mail arrives (see orders/repository.py).",
+        "description": "Favorite, open/closed, sealed and kind. A person's open/closed\ndecision sticks until the next mail arrives; a person's kind sticks for\ngood (see orders/repository.py).",
         "operationId": "update_order_orders__order_id__patch",
         "parameters": [
           {

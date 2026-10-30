@@ -12,7 +12,7 @@ MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   account_prefs, folder_prefs, queue_state, circuit_breakers, message_embeddings,
   identities, calendar_prefs, calendar_intake, calendar_replies,
   calendar_links_revision, pending_sends, pending_send_attachments, alerts,
-  push_subscriptions, vapid_keypair, orders, order_mails, order_identifiers,
+  push_subscriptions, vapid_keypair, orders, order_mails, order_facts, order_documents, order_files,
   order_jobs
   (created by Alembic, fully managed by MailVerdict)
 
@@ -51,6 +51,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, query_expression
 
@@ -1942,9 +1943,33 @@ class Order(Base):
     expected_until: Mapped[date | None] = mapped_column(Date, nullable=True)
     written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # What the entry is: ticket (somewhere to be on a date), order (goods or
+    # a one-off service handed over) or other (subscriptions, claims, cases).
+    # kind_set_by follows the open_set_by pattern: a person's choice is never
+    # overwritten by a rewrite.
+    kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default="order", server_default="order",
+    )
+    kind_set_by: Mapped[str] = mapped_column(
+        Text, nullable=False, default="ai", server_default="ai",
+    )
+    # The write call's date range for a ticket's trip, stay or event.
+    event_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    event_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # mail_count and the *_mail_at pair count mails only; the activity pair
+    # and file_count also cover files added by hand.
     mail_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    file_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0"),
+    )
     first_mail_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_mail_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    first_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
     )
@@ -1954,8 +1979,10 @@ class Order(Base):
 
     __table_args__ = (
         CheckConstraint("open_set_by IN ('ai', 'user', 'auto')", name="ck_orders_open_set_by"),
+        CheckConstraint("kind IN ('ticket', 'order', 'other')", name="ck_orders_kind"),
+        CheckConstraint("kind_set_by IN ('ai', 'user')", name="ck_orders_kind_set_by"),
         Index(
-            "ix_orders_list", last_mail_at.desc(), id.desc(),
+            "ix_orders_list", last_activity_at.desc(), id.desc(),
             postgresql_where=written_at.is_not(None),
         ),
     )
@@ -2000,29 +2027,150 @@ class OrderMail(Base):
     )
 
 
-class OrderIdentifier(Base):
-    """One order/booking/tracking number the model read off one of an
-    order's mails -- what candidate retrieval (orders/candidates.py)
-    matches a later mail's text against."""
+class OrderFact(Base):
+    """One typed key fact of an order. The identifier kinds (order_number,
+    booking_code, ticket_number, invoice_number, tracking_number) are what
+    candidate retrieval (orders/candidates.py) matches a later mail's text
+    against; value_norm is set for those only. The other kinds are display
+    facts a write call replaces wholesale, and 'code' facts point at one
+    decoded barcode of an order document."""
 
-    __tablename__ = "order_identifiers"
+    __tablename__ = "order_facts"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     order_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("orders.id", ondelete="CASCADE"), nullable=False,
     )
     kind: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
     value: Mapped[str] = mapped_column(Text, nullable=False)
-    value_norm: Mapped[str] = mapped_column(Text, nullable=False)
+    value_norm: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # tracking_number only; orders/carriers.py builds the link at read time.
+    carrier: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # kind 'code' only: barcode_index is the entry's "index" inside the
+    # document's barcodes array.
+    document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("order_documents.id", ondelete="CASCADE"), nullable=True,
+    )
+    barcode_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    date_value: Mapped[date | None] = mapped_column(Date, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    source: Mapped[str] = mapped_column(Text, nullable=False, default="ai", server_default="ai")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
 
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('order_number', 'booking_code', 'tracking_number', "
-            "'invoice_number', 'ticket_number')",
-            name="ck_order_identifiers_kind",
+            "kind IN ('order_number', 'booking_code', 'ticket_number', 'invoice_number', "
+            "'tracking_number', 'date', 'time', 'amount', 'place', 'seat', 'person', 'code', "
+            "'link', 'other')",
+            name="ck_order_facts_kind",
         ),
-        UniqueConstraint("order_id", "value_norm", name="uq_order_identifiers_order_value_norm"),
-        Index("idx_order_identifiers_value_norm", "value_norm"),
+        CheckConstraint("source IN ('ai', 'code', 'user')", name="ck_order_facts_source"),
+        Index(
+            "uq_order_facts_order_value_norm", "order_id", "value_norm", unique=True,
+            postgresql_where=text("value_norm IS NOT NULL"),
+        ),
+        Index(
+            "uq_order_facts_order_code", "order_id", "document_id", "barcode_index", unique=True,
+            postgresql_where=text("document_id IS NOT NULL"),
+        ),
+        Index("idx_order_facts_value_norm", "value_norm"),
+        Index("idx_order_facts_order_position", "order_id", "position"),
+    )
+
+
+class OrderDocument(Base):
+    """One document of an order -- an attachment of one of its mails, or a
+    file added by hand -- with the text and barcodes read out of it.
+
+    Mail documents are keyed (account_id, msg_key, attachment_id), never by
+    a PostIMAP row, for the reason order_mails is; attachment_id is a join
+    hint only. text is the already-budgeted text a prompt sees, so storage
+    is bounded per row; the document's bytes are never stored here (a mail
+    attachment's stay in PostIMAP, a file's in order_files).
+    """
+
+    __tablename__ = "order_documents"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    order_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("orders.id", ondelete="CASCADE"), nullable=False,
+    )
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    account_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    msg_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    attachment_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    file_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("order_files.id", ondelete="CASCADE"), nullable=True,
+    )
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    text_chars_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # [{"index", "format", "text", "bytes_b64", "page", "bbox", "text_offset", "crop_b64"}]
+    barcodes: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=sql_text("'[]'::jsonb"),
+    )
+    extractor_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint("source IN ('mail', 'file')", name="ck_order_documents_source"),
+        CheckConstraint(
+            "method IN ('text_layer', 'ocr', 'pkpass', 'ics', 'xml', 'html', 'image', "
+            "'none', 'failed')",
+            name="ck_order_documents_method",
+        ),
+        Index("idx_order_documents_order", "order_id"),
+        Index(
+            "uq_order_documents_mail", "account_id", "msg_key", "attachment_id", unique=True,
+            postgresql_where=sql_text("source = 'mail'"),
+        ),
+        Index(
+            "uq_order_documents_file", "file_id", unique=True,
+            postgresql_where=sql_text("source = 'file'"),
+        ),
+    )
+
+
+class OrderFile(Base):
+    """The bytes of a file added to the orders register by hand. order_id is
+    null until the file job has decided where it belongs. Never selected in
+    bulk: name the columns, and read data only in the download route and the
+    extractor."""
+
+    __tablename__ = "order_files"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    order_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("orders.id", ondelete="CASCADE"), nullable=True,
+    )
+    filename: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(Text, nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default="pending",
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'attached', 'failed')", name="ck_order_files_status",
+        ),
+        Index("idx_order_files_order", "order_id"),
     )
 
 
@@ -2032,8 +2180,9 @@ class OrderJob(Base):
 
     kind = 'mail': account_id/msg_key/message_id name what to decide.
     kind = 'write': order_id names what to (re)write; no foreign key, the
-    same reasoning as order_mails/order_identifiers above -- a write job
+    same reasoning as order_mails/order_facts above -- a write job
     must still exist and fail cleanly if its order is deleted mid-flight.
+    kind = 'file': file_id names the order_files row to place.
 
     Never deleted while the account exists: rows are also the durable
     "was this mail ever processed" record (uq_order_jobs_mail is the
@@ -2048,6 +2197,7 @@ class OrderJob(Base):
     msg_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     order_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    file_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     origin: Mapped[str] = mapped_column(Text, nullable=False)
     filter_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2075,9 +2225,10 @@ class OrderJob(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("kind IN ('mail', 'write')", name="ck_order_jobs_kind"),
+        CheckConstraint("kind IN ('mail', 'write', 'file')", name="ck_order_jobs_kind"),
         CheckConstraint(
-            "origin IN ('live', 'thread', 'catchup', 'manual')", name="ck_order_jobs_origin",
+            "origin IN ('live', 'thread', 'catchup', 'manual', 'upload')",
+            name="ck_order_jobs_origin",
         ),
         CheckConstraint(
             "status IN ('pending', 'claimed', 'done', 'skipped', 'failed')",
@@ -2094,6 +2245,12 @@ class OrderJob(Base):
         ),
         CheckConstraint(
             "kind <> 'write' OR order_id IS NOT NULL", name="ck_order_jobs_write_fields",
+        ),
+        CheckConstraint(
+            "kind <> 'file' OR file_id IS NOT NULL", name="ck_order_jobs_file_fields",
+        ),
+        Index(
+            "uq_order_jobs_file", "file_id", unique=True, postgresql_where=text("kind = 'file'"),
         ),
         Index(
             "uq_order_jobs_mail", "account_id", "msg_key", unique=True,

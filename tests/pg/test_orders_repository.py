@@ -16,10 +16,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mail_verdict.database.connection import DatabaseConnection
-from mail_verdict.database.models import Order, OrderIdentifier, OrderMail
+from mail_verdict.database.models import Order, OrderDocument, OrderFact, OrderFile, OrderMail
 from mail_verdict.orders import repository
 
 pytestmark = pytest.mark.asyncio
@@ -143,7 +144,7 @@ async def test_merge_moves_every_mail_and_identifier_and_deletes_the_source(
             message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
             received_at=_NOW, attached_by="ai",
         )
-        await repository.store_identifiers(session, source, [("order_number", "AB1234")])
+        await repository.store_identifier_facts(session, source, [("order_number", "AB1234")])
 
         await repository.merge_order(session, source_id=source, target_id=target)
 
@@ -161,7 +162,7 @@ async def test_merge_moves_every_mail_and_identifier_and_deletes_the_source(
         assert mails_result.scalar_one() == target
 
         ids_result = await session.execute(
-            select(OrderIdentifier.value).where(OrderIdentifier.order_id == target)
+            select(OrderFact.value).where(OrderFact.order_id == target)
         )
         assert "AB1234" in {row[0] for row in ids_result.all()}
 
@@ -203,7 +204,7 @@ async def test_an_identifier_another_recently_active_order_holds_is_not_stored(
             received_at=_NOW, attached_by="ai",
         )
         await repository.recompute_aggregates(session, order_a)
-        await repository.store_identifiers(session, order_a, [("order_number", "ZZ9999")])
+        await repository.store_identifier_facts(session, order_a, [("order_number", "ZZ9999")])
 
         await repository.attach_mail(
             session, order_id=order_b, account_id=account_id, msg_key="<b@example.com>",
@@ -212,11 +213,11 @@ async def test_an_identifier_another_recently_active_order_holds_is_not_stored(
         )
         # order_a's last_mail_at must be recent for the exclusion window
         # to apply -- recompute_aggregates above already set it to _NOW.
-        await repository.store_identifiers(session, order_b, [("order_number", "ZZ9999")])
+        await repository.store_identifier_facts(session, order_b, [("order_number", "ZZ9999")])
 
     async with migrated_db.session() as session:
         result = await session.execute(
-            select(OrderIdentifier.order_id).where(OrderIdentifier.value == "ZZ9999")
+            select(OrderFact.order_id).where(OrderFact.value == "ZZ9999")
         )
         rows = {row[0] for row in result.all()}
     assert rows == {order_a}
@@ -246,3 +247,242 @@ async def test_enqueue_write_job_is_a_no_op_when_one_is_already_pending(
         rows = result.all()
     assert len(rows) == 1
     assert rows[0].priority == 50
+
+
+async def _attach_mail_with_pdf(
+    session: AsyncSession, order_id: uuid.UUID, account_id: uuid.UUID, msg_key: str,
+    received_at: datetime,
+) -> uuid.UUID:
+    """One mail whose PDF was extracted and whose Aztec code became a fact;
+    returns the document id."""
+    await repository.attach_mail(
+        session, order_id=order_id, account_id=account_id, msg_key=msg_key,
+        message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
+        received_at=received_at, attached_by="ai",
+    )
+    document_id = (
+        await session.execute(
+            text(
+                "INSERT INTO order_documents (order_id, source, account_id, msg_key, "
+                "attachment_id, filename, method) VALUES (:order_id, 'mail', :account_id, "
+                ":msg_key, :attachment_id, 'ticket.pdf', 'text_layer') RETURNING id"
+            ),
+            {
+                "order_id": order_id, "account_id": account_id, "msg_key": msg_key,
+                "attachment_id": uuid.uuid4(),
+            },
+        )
+    ).scalar_one()
+    await session.execute(
+        text(
+            "INSERT INTO order_facts (order_id, kind, label, value, document_id, barcode_index) "
+            "VALUES (:order_id, 'code', 'Ticketcode', '', :document_id, 1)"
+        ),
+        {"order_id": order_id, "document_id": document_id},
+    )
+    return uuid.UUID(str(document_id))
+
+
+async def _file_row(session: AsyncSession, order_id: uuid.UUID, created_at: datetime) -> uuid.UUID:
+    file_id = (
+        await session.execute(
+            text(
+                "INSERT INTO order_files (order_id, filename, size_bytes, sha256, data, status, "
+                "created_at) VALUES (:order_id, 'scan.pdf', 3, 'abc', '\\x010203', 'attached', "
+                ":created_at) RETURNING id"
+            ),
+            {"order_id": order_id, "created_at": created_at},
+        )
+    ).scalar_one()
+    return uuid.UUID(str(file_id))
+
+
+async def test_activity_covers_files_and_an_order_with_only_a_file_is_not_empty(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        order_id = await repository.create_order(session)
+        await _file_row(session, order_id, _NOW - timedelta(days=3))
+        assert await repository.recompute_aggregates(session, order_id) == 1
+        assert await repository.delete_order_if_empty(session, order_id) is False
+
+        await repository.attach_mail(
+            session, order_id=order_id, account_id=uuid.uuid4(), msg_key="<act@example.com>",
+            message_id=None, thread_id=None, subject="s", from_addr="a@b.com",
+            received_at=_NOW, attached_by="ai",
+        )
+        assert await repository.recompute_aggregates(session, order_id) == 2
+
+    order = await _order_row(migrated_db, order_id)
+    assert (order.mail_count, order.file_count) == (1, 1)
+    assert order.first_mail_at == order.last_mail_at == _NOW
+    assert order.first_activity_at == _NOW - timedelta(days=3)
+    assert order.last_activity_at == _NOW
+
+
+async def test_detaching_a_mail_deletes_its_documents_and_code_facts(
+    migrated_db: DatabaseConnection,
+) -> None:
+    account_id = uuid.uuid4()
+    async with migrated_db.session() as session:
+        order_id = await repository.create_order(session)
+        kept = await _attach_mail_with_pdf(session, order_id, account_id, "<keep@x.com>", _NOW)
+        await _attach_mail_with_pdf(session, order_id, account_id, "<drop@x.com>", _NOW)
+        drop_key = (
+            await session.execute(select(OrderMail.id).where(OrderMail.msg_key == "<drop@x.com>"))
+        ).scalar_one()
+
+        await repository.detach_mail(session, drop_key)
+
+    async with migrated_db.session() as session:
+        documents = (
+            await session.execute(
+                select(OrderDocument.id).where(OrderDocument.order_id == order_id)
+            )
+        ).scalars().all()
+        codes = (
+            await session.execute(
+                select(OrderFact.document_id).where(OrderFact.order_id == order_id)
+            )
+        ).scalars().all()
+    assert list(documents) == [kept]
+    assert list(codes) == [kept]
+
+
+async def test_moving_a_mail_moves_its_documents_and_code_facts_with_it(
+    migrated_db: DatabaseConnection,
+) -> None:
+    account_id = uuid.uuid4()
+    async with migrated_db.session() as session:
+        source = await repository.create_order(session)
+        target = await repository.create_order(session)
+        document_id = await _attach_mail_with_pdf(session, source, account_id, "<mv@x.com>", _NOW)
+        mail_key = (
+            await session.execute(select(OrderMail.id).where(OrderMail.msg_key == "<mv@x.com>"))
+        ).scalar_one()
+
+        await repository.detach_mail(session, mail_key, move_documents_to=target)
+
+    async with migrated_db.session() as session:
+        document_order = (
+            await session.execute(
+                select(OrderDocument.order_id).where(OrderDocument.id == document_id)
+            )
+        ).scalar_one()
+        code_order = (
+            await session.execute(
+                select(OrderFact.order_id).where(OrderFact.document_id == document_id)
+            )
+        ).scalar_one()
+    assert document_order == code_order == target
+
+
+async def test_merge_moves_documents_files_and_code_facts_and_drops_display_facts(
+    migrated_db: DatabaseConnection,
+) -> None:
+    account_id = uuid.uuid4()
+    async with migrated_db.session() as session:
+        source = await repository.create_order(session)
+        target = await repository.create_order(session)
+        document_id = await _attach_mail_with_pdf(session, source, account_id, "<mg@x.com>", _NOW)
+        file_id = await _file_row(session, source, _NOW)
+        await session.execute(
+            text(
+                "INSERT INTO order_facts (order_id, kind, label, value) "
+                "VALUES (:id, 'place', 'Station', 'Aachen Hbf')"
+            ),
+            {"id": source},
+        )
+
+        await repository.merge_order(session, source_id=source, target_id=target)
+
+    async with migrated_db.session() as session:
+        assert (
+            await session.execute(
+                select(OrderDocument.order_id).where(OrderDocument.id == document_id)
+            )
+        ).scalar_one() == target
+        assert (
+            await session.execute(select(OrderFile.order_id).where(OrderFile.id == file_id))
+        ).scalar_one() == target
+        kinds = (
+            await session.execute(select(OrderFact.kind).where(OrderFact.order_id == target))
+        ).scalars().all()
+    assert list(kinds) == ["code"]
+    order = await _order_row(migrated_db, target)
+    assert (order.mail_count, order.file_count) == (1, 1)
+
+
+async def test_deleting_an_order_removes_its_facts_documents_and_files(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        order_id = await repository.create_order(session)
+        document_id = await _attach_mail_with_pdf(
+            session, order_id, uuid.uuid4(), "<del@x.com>", _NOW,
+        )
+        file_id = await _file_row(session, order_id, _NOW)
+
+        assert await repository.delete_order(session, order_id) is True
+
+    async with migrated_db.session() as session:
+        assert (
+            await session.execute(select(OrderDocument.id).where(OrderDocument.id == document_id))
+        ).first() is None
+        assert (
+            await session.execute(select(OrderFile.id).where(OrderFile.id == file_id))
+        ).first() is None
+        assert (
+            await session.execute(select(OrderFact.id).where(OrderFact.order_id == order_id))
+        ).first() is None
+
+
+async def test_deleting_an_account_removes_its_mail_documents_and_keeps_a_file_only_order(
+    migrated_db: DatabaseConnection,
+) -> None:
+    gone_account = uuid.uuid4()
+    async with migrated_db.session() as session:
+        mixed = await repository.create_order(session)
+        only_mail = await repository.create_order(session)
+        await _attach_mail_with_pdf(session, mixed, gone_account, "<acct1@x.com>", _NOW)
+        await _file_row(session, mixed, _NOW)
+        await repository.recompute_aggregates(session, mixed)
+        await _attach_mail_with_pdf(session, only_mail, gone_account, "<acct2@x.com>", _NOW)
+        await repository.recompute_aggregates(session, only_mail)
+
+        changes = await repository.delete_for_account(session, gone_account)
+
+    assert sorted(changes, key=str) == sorted([(mixed, "updated"), (only_mail, "deleted")], key=str)
+    async with migrated_db.session() as session:
+        assert (
+            await session.execute(select(OrderDocument.id).where(OrderDocument.order_id == mixed))
+        ).first() is None
+        remaining = await session.execute(
+            select(Order.mail_count, Order.file_count).where(Order.id == mixed)
+        )
+        assert tuple(remaining.one()) == (0, 1)
+
+
+async def test_a_user_set_kind_survives_and_a_model_kind_lands(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        order_id = await repository.create_order(session)
+        await repository.write_order_text(
+            session, order_id, merchant="m", subject="s", status="x", is_open=True,
+            icon="train", summary="s", model="fake", kind="ticket",
+            event_start=_NOW.date(), event_end=_NOW.date() + timedelta(days=1),
+        )
+    order = await _order_row(migrated_db, order_id)
+    assert (order.kind, order.kind_set_by) == ("ticket", "ai")
+    assert order.event_end == _NOW.date() + timedelta(days=1)
+
+    async with migrated_db.session() as session:
+        await repository.update_controls(session, order_id, kind="other")
+        await repository.write_order_text(
+            session, order_id, merchant="m", subject="s", status="x", is_open=True,
+            icon="train", summary="s", model="fake", kind="ticket", event_start=None,
+        )
+    order = await _order_row(migrated_db, order_id)
+    assert (order.kind, order.kind_set_by) == ("other", "user")
+    assert order.event_start is None
