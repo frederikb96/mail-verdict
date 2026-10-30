@@ -48,6 +48,7 @@ from mail_verdict.orders.candidates import (
     find_candidates,
 )
 from mail_verdict.orders.content import load_order_mail
+from mail_verdict.orders.extract.model import ExtractedDocument
 from mail_verdict.orders.fake import fake_decide, fake_write
 from mail_verdict.pipeline.context import current_verdict_for_mail
 from mail_verdict.pipeline.contracts import (
@@ -82,6 +83,12 @@ ORDERS_LOCK_KEY = 761_035_200
 _WRITE_ALL_MAILS_CEILING = 12
 
 _DEFAULT_UNAVAILABLE_DELAY_S = 60.0
+
+# The summary of an entry whose text could not be written (`_settle_failed_write`).
+_UNWRITTEN_SUMMARY = (
+    "The summary could not be written. The mails and files of this entry are all here; "
+    "Rewrite tries again."
+)
 
 
 def register_orders(
@@ -142,7 +149,8 @@ async def _handle_item(
         else:
             broadcast = await _handle_write_job(row, db, cred_repo, settings_service)
     except StageMisconfigured as exc:
-        await _fail(work_queue, item_id, worker_id, str(exc), db=db, row=row)
+        failed = await _fail(work_queue, item_id, worker_id, str(exc), db=db, row=row)
+        await _announce(db, event_ring, failed)
         return
     except StageUnavailable as exc:
         await work_queue.release_untouched(item_id, worker_id=worker_id)
@@ -159,22 +167,34 @@ async def _handle_item(
         )
         return
     except StageTransient as exc:
-        await _retry_or_fail(work_queue, item_id, worker_id, row, str(exc), settings, db=db)
+        failed = await _retry_or_fail(
+            work_queue, item_id, worker_id, row, str(exc), settings, db=db,
+        )
+        await _announce(db, event_ring, failed)
         return
     except Exception as exc:  # noqa: BLE001 -- unknown failure, retry-then-fail
-        await _retry_or_fail(
+        failed = await _retry_or_fail(
             work_queue, item_id, worker_id, row, f"unexpected: {exc}", settings, db=db,
         )
+        await _announce(db, event_ring, failed)
         return
 
     await work_queue.complete(item_id, worker_id=worker_id, status="done")
-    if broadcast is not None and event_ring is not None:
-        from mail_verdict.api.events import broadcast_event
+    await _announce(db, event_ring, broadcast)
 
-        order_id, change = broadcast
-        await broadcast_event(
-            db, event_ring, "order.updated", {"order_id": str(order_id), "change": change},
-        )
+
+async def _announce(
+    db: DatabaseConnection, event_ring: EventRing | None, broadcast: tuple[uuid.UUID, str] | None,
+) -> None:
+    """Tell open clients an order changed: (order_id, change) as the handlers return it."""
+    if broadcast is None or event_ring is None:
+        return
+    from mail_verdict.api.events import broadcast_event
+
+    order_id, change = broadcast
+    await broadcast_event(
+        db, event_ring, "order.updated", {"order_id": str(order_id), "change": change},
+    )
 
 
 def _in(seconds: float) -> datetime:
@@ -186,26 +206,100 @@ def _in(seconds: float) -> datetime:
 async def _fail(
     work_queue: Any, item_id: uuid.UUID, worker_id: str, error: str,
     *, db: DatabaseConnection, row: Mapping[str, Any],
-) -> None:
+) -> tuple[uuid.UUID, str] | None:
+    """End a job for good and leave nothing it touched invisible: a file is
+    marked failed (and listed in the entry it was added to, so it can be seen
+    and deleted); an entry whose text cannot be written is listed with a
+    placeholder text. Returns (order_id, change) for an entry that changed."""
     await work_queue.fail(item_id, worker_id=worker_id, last_error=error)
     if row["kind"] == "file":
-        # The file stays downloadable; its state says the placement failed.
-        async with db.session() as session:
+        return await _fail_file(db, row["file_id"], error)
+    if row["kind"] == "write":
+        return await _settle_failed_write(db, row["order_id"])
+    return None
+
+
+async def _fail_file(
+    db: DatabaseConnection, file_id: uuid.UUID, error: str,
+) -> tuple[uuid.UUID, str] | None:
+    """Mark a file failed. A file added to an entry gets a document row of
+    method `failed`, which is what lists it there; one with no entry yet is
+    visible only at its status route until it is pruned."""
+    async with db.session() as session:
+        await session.execute(
+            update(OrderFile).where(OrderFile.id == file_id)
+            .values(status="failed", last_error=error[:500])
+        )
+        file_row = (
             await session.execute(
-                update(OrderFile).where(OrderFile.id == row["file_id"])
-                .values(status="failed", last_error=error[:500])
+                select(
+                    OrderFile.order_id, OrderFile.filename, OrderFile.content_type,
+                    OrderFile.size_bytes, OrderFile.sha256,
+                ).where(OrderFile.id == file_id)
             )
+        ).one_or_none()
+        if file_row is None or file_row.order_id is None:
+            return None
+        await documents.store_file_document(
+            session, order_id=file_row.order_id, read=documents.ReadDocument(
+                None, file_id, ExtractedDocument(
+                    filename=file_row.filename, content_type=file_row.content_type,
+                    size_bytes=file_row.size_bytes, sha256=file_row.sha256, method="failed",
+                    error=error[:500],
+                ),
+            ),
+        )
+        return file_row.order_id, "updated"
+
+
+async def _settle_failed_write(
+    db: DatabaseConnection, order_id: uuid.UUID,
+) -> tuple[uuid.UUID, str] | None:
+    """The text of an entry could not be written. One never written would
+    stay out of every list for good, so it gets a placeholder (named after
+    its first file or mail) that lists it, shows what to do and lets it be
+    opened or deleted. One already written keeps its text, which is no
+    longer waiting for an update that is not coming."""
+    async with db.session() as session:
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ORDERS_LOCK_KEY})
+        existing = (
+            await session.execute(select(Order.written_at).where(Order.id == order_id))
+        ).one_or_none()
+        if existing is None:
+            return None
+        if existing.written_at is not None:
+            await session.execute(
+                update(Order).where(Order.id == order_id).values(text_stale=False)
+            )
+            return order_id, "updated"
+        first_file = (
+            await session.execute(
+                select(OrderFile.filename).where(OrderFile.order_id == order_id)
+                .order_by(OrderFile.created_at).limit(1)
+            )
+        ).scalar_one_or_none()
+        first_mail = (
+            await session.execute(
+                select(OrderMail.subject).where(OrderMail.order_id == order_id)
+                .order_by(OrderMail.received_at).limit(1)
+            )
+        ).scalar_one_or_none()
+        await repository.write_order_text(
+            session, order_id, merchant="", subject=first_file or first_mail or "Untitled",
+            status="Needs a look", is_open=True, icon="receipt", model=None,
+            summary=_UNWRITTEN_SUMMARY,
+        )
+        return order_id, "created"
 
 
 async def _retry_or_fail(
     work_queue: Any, item_id: uuid.UUID, worker_id: str,
     row: Mapping[str, Any], error: str, settings: Mapping[str, Any],
     *, db: DatabaseConnection,
-) -> None:
+) -> tuple[uuid.UUID, str] | None:
     max_attempts = int(settings.get("max_attempts", 5))
     if row["attempts"] >= max_attempts:
-        await _fail(work_queue, item_id, worker_id, error, db=db, row=row)
-        return
+        return await _fail(work_queue, item_id, worker_id, error, db=db, row=row)
     delay = compute_backoff(
         row["attempts"],
         base_seconds=float(settings.get("base_delay_seconds", 5.0)),
@@ -214,6 +308,7 @@ async def _retry_or_fail(
     await work_queue.retry(
         item_id, worker_id=worker_id, next_attempt_at=_in(delay), last_error=error,
     )
+    return None
 
 
 async def _decide(
@@ -303,6 +398,7 @@ async def _handle_mail_job(
             await _set_outcome(session, row["id"], outcome="attached")
             return None
 
+        await model_calls.ensure_available(db, settings_service, "decide")
         reads = await documents.read_mail_documents(session, content.attachments)
         attachment_text = documents.attachment_haystack(reads)
         candidates = await find_candidates(
@@ -409,6 +505,8 @@ async def _handle_file_job(
             await _set_outcome(session, row["id"], outcome="attached", order_id=file_row.order_id)
             return None
 
+        if file_row.order_id is None:
+            await model_calls.ensure_available(db, settings_service, "decide")
         read = await documents.read_file_document(
             session, file_id=file_id, filename=file_row.filename,
             content_type=file_row.content_type,
@@ -527,6 +625,8 @@ async def _handle_write_job(
             await _set_outcome(session, row["id"], outcome="skipped")
             return None
 
+        await model_calls.ensure_available(db, settings_service, "write")
+
         mails_result = await session.execute(
             select(
                 OrderMail.account_id, OrderMail.msg_key, OrderMail.message_id,
@@ -548,7 +648,7 @@ async def _handle_write_job(
         for mail_row in mail_rows:
             content = await load_order_mail(
                 session, account_id=mail_row.account_id, msg_key=mail_row.msg_key,
-                message_id=mail_row.message_id,
+                message_id=mail_row.message_id, include_glacier=True,
             )
             if content is not None:
                 await documents.heal_mail_documents(

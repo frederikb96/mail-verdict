@@ -360,7 +360,6 @@ class OrderFilesConfig(BaseModel):
     max_file_bytes: int
     max_files_per_order: int
     max_total_bytes_per_order: int
-    accepted_types: list[str]
     failed_retention_days: int
 
 

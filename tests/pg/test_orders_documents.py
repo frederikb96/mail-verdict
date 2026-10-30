@@ -10,20 +10,24 @@ documents existed.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pytest
 from PIL import Image
 from sqlalchemy import select, text, update
 
+from mail_verdict.config import get_config
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.database.models import Order, OrderDocument, OrderFact, OrderMail
+from mail_verdict.orders import documents as order_documents
 from mail_verdict.orders import repository
 from mail_verdict.orders.content import AttachmentRef
 from mail_verdict.orders.documents import read_mail_documents, store_mail_documents
 from mail_verdict.orders.extract import EXTRACTOR_VERSION
 from mail_verdict.orders.worker import _handle_mail_job, _handle_write_job
+from mail_verdict.pipeline.contracts import StageUnavailable
+from mail_verdict.queue.circuit import CircuitBreaker
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
 from tests.helpers.documents import make_pdf, png
@@ -53,7 +57,13 @@ def _cred_repo(db: DatabaseConnection) -> ProviderCredentialRepository:
 
 async def _stub_tasks(db: DatabaseConnection, *tasks: str) -> SettingsService:
     """Fake providers for both tasks, except the named ones, which go to a
-    custom provider the test stubs out (`model_stub`)."""
+    custom provider the test stubs out (`model_stub`). The breakers of that
+    provider start closed: an earlier test of the shared database may have
+    tripped them, and the worker consults them before reading anything."""
+    async with db.session() as session:
+        await session.execute(
+            text("DELETE FROM circuit_breakers WHERE name LIKE 'custom:orders.%'")
+        )
     service = await _settings_service(db)
     update_values: dict[str, Any] = {}
     for task in tasks:
@@ -159,7 +169,7 @@ class TestTheDecideCallReadsAttachments:
         await _handle_mail_job(row, migrated_db, _cred_repo(migrated_db), service)
 
         prompt = model_stub.last("decide")["user_prompt"]
-        assert 'attachments: "logo.png (image/png), ticket.pdf (application/pdf)"' in prompt
+        assert 'attachments: "ticket.pdf (application/pdf), logo.png (image/png)"' in prompt
         assert '<attachment n="1" name="ticket.pdf" type="application/pdf" pages=1' in prompt
         assert f"Order number {number}" in prompt
         assert '[code d1:b1 QR \\"5471205382\\"]' in prompt
@@ -478,6 +488,127 @@ class TestARewriteRepairsAnOldOrder:
         assert f"Order number {number}" in prompt
         assert [d.msg_key for d in await _documents(migrated_db, order_id)] == [key]
 
+    async def test_a_mail_that_moved_into_the_glacier_still_gives_its_body_and_documents(
+        self, migrated_db: DatabaseConnection, orders_config: None, model_stub: ModelStub,
+        number: str,
+    ) -> None:
+        service = await _stub_tasks(migrated_db, "write")
+        account_id, order_id, key, _ = await self._old_order(migrated_db, number)
+        model_stub.answers["write"] = {
+            "merchant": "Shop", "subject": "Ticket", "status": "issued", "open": True,
+            "kind": "ticket", "event_start": "", "event_end": "", "expected_until": "",
+            "icon": "ticket", "summary": "s", "facts": [],
+        }
+        glacier_attachment = uuid.uuid4()
+        data = ticket_pdf(number)
+        async with migrated_db.session() as session:
+            live = (
+                await session.execute(
+                    text("SELECT id, folder_id, thread_id FROM messages WHERE account_id = :a"),
+                    {"a": account_id},
+                )
+            ).one()
+            glacier_id = uuid.uuid4()
+            await session.execute(
+                text(
+                    "INSERT INTO glacier_messages "
+                    "(id, account_id, folder_id, thread_id, message_id, subject, from_addr, "
+                    " body_text, raw_source, size_bytes, received_at, is_seen, msg_key, state, "
+                    " visible_at, glaciered_at) "
+                    "VALUES (:id, :a, :folder, :thread, :key, 'Ticket', 'shop@example.com', "
+                    " 'Thanks for your order. See you soon.', :raw, 10, :received, false, :key, "
+                    " 'glaciered', now(), now())"
+                ),
+                {
+                    "id": glacier_id, "a": account_id, "folder": uuid.uuid4(),
+                    "thread": live.thread_id, "key": key, "raw": b"From: a@b\r\n\r\nx",
+                    "received": _NOW,
+                },
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO glacier_attachments "
+                    "(id, glacier_message_id, filename, content_type, size_bytes, data) "
+                    "VALUES (:id, :g, 'ticket.pdf', 'application/pdf', :size, :data)"
+                ),
+                {"id": glacier_attachment, "g": glacier_id, "size": len(data), "data": data},
+            )
+            await session.execute(
+                text("DELETE FROM attachments WHERE message_id = :m"), {"m": live.id}
+            )
+            await session.execute(
+                text("UPDATE messages SET expunged_at = now() WHERE id = :m"), {"m": live.id}
+            )
+
+        await _run_write(migrated_db, service, order_id)
+
+        prompt = model_stub.last("write")["user_prompt"]
+        assert "Thanks for your order" in prompt
+        assert f"Order number {number}" in prompt
+        [document] = await _documents(migrated_db, order_id)
+        assert (document.attachment_id, document.method) == (glacier_attachment, "text_layer")
+        facts = await _facts(migrated_db, order_id)
+        assert [f.value for f in facts if f.kind == "code"] == ["5471205382"]
+
+    async def test_a_failed_read_is_repeated_by_the_next_rewrite_but_an_oversize_one_is_not(
+        self, migrated_db: DatabaseConnection, orders_config: None, number: str,
+    ) -> None:
+        service = await _settings_service(migrated_db)
+        _, order_id, _, _ = await self._old_order(migrated_db, number)
+        await _run_write(migrated_db, service, order_id)
+        [first] = await _documents(migrated_db, order_id)
+        async with migrated_db.session() as session:
+            await session.execute(
+                update(OrderDocument).where(OrderDocument.id == first.id)
+                .values(method="failed", text="", barcodes=[], text_chars_total=0)
+            )
+
+        await _run_write(migrated_db, service, order_id)
+
+        [again] = await _documents(migrated_db, order_id)
+        assert (again.method, number in again.text) == ("text_layer", True)
+
+        limit = get_config().extraction.max_document_bytes
+        async with migrated_db.session() as session:
+            await session.execute(
+                update(OrderDocument).where(OrderDocument.id == first.id)
+                .values(method="failed", text="", size_bytes=limit + 1)
+            )
+
+        await _run_write(migrated_db, service, order_id)
+
+        [oversize] = await _documents(migrated_db, order_id)
+        assert (oversize.method, oversize.text) == ("failed", "")
+
+    async def test_a_failed_file_is_read_again_by_the_next_rewrite(
+        self, migrated_db: DatabaseConnection, orders_config: None, number: str,
+    ) -> None:
+        service = await _settings_service(migrated_db)
+        async with migrated_db.session() as session:
+            order_id = await repository.create_order(session)
+            file_id = (await session.execute(
+                text(
+                    "INSERT INTO order_files (order_id, filename, content_type, size_bytes, "
+                    "sha256, data, status) VALUES (:o, 'ticket.pdf', 'application/pdf', 1, :h, "
+                    ":d, 'attached') RETURNING id"
+                ),
+                {"o": order_id, "h": number, "d": ticket_pdf(number)},
+            )).scalar_one()
+            await session.execute(
+                text(
+                    "INSERT INTO order_documents (order_id, source, file_id, filename, "
+                    "content_type, size_bytes, method, extractor_version) VALUES "
+                    "(:o, 'file', :f, 'ticket.pdf', 'application/pdf', 1000, 'failed', :v)"
+                ),
+                {"o": order_id, "f": file_id, "v": EXTRACTOR_VERSION},
+            )
+            await repository.recompute_aggregates(session, order_id)
+
+        await _run_write(migrated_db, service, order_id)
+
+        [document] = await _documents(migrated_db, order_id)
+        assert (document.method, number in document.text) == ("text_layer", True)
+
 
 class TestReadingLimits:
     async def test_an_attachment_over_the_size_limit_is_recorded_failed_unread(
@@ -496,3 +627,56 @@ class TestReadingLimits:
         [document] = await _documents(migrated_db, order_id)
         assert (document.method, document.text, document.barcodes) == ("failed", "", [])
         assert document.sha256 is None
+
+
+class TestReadingOrder:
+    async def test_inline_images_never_crowd_a_ticket_out_of_the_attachments_that_are_read(
+        self, migrated_db: DatabaseConnection, orders_config: None, number: str,
+    ) -> None:
+        service = await _settings_service(migrated_db)
+        account_id, message_id, _, _, row = await _mail_with_pdf(migrated_db, number)
+        async with migrated_db.session() as session:
+            for i in range(order_documents._MAX_ATTACHMENTS_READ + 1):
+                await seed_attachment(
+                    session, message_id=message_id, filename=f"a{i:02d}.png",
+                    content_type="image/png", data=png(Image.new("L", (20, 20), 255)),
+                    content_id=f"logo{i}",
+                )
+
+        await _handle_mail_job(row, migrated_db, _cred_repo(migrated_db), service)
+
+        order_id = await _order_of(migrated_db, account_id)
+        by_name = {d.filename: d for d in await _documents(migrated_db, order_id)}
+        assert number in by_name["ticket.pdf"].text
+        assert len(by_name) == order_documents._MAX_ATTACHMENTS_READ
+
+
+class TestNothingIsReadWhileTheProviderIsSuspended:
+    async def test_a_suspended_decide_provider_releases_the_job_before_any_attachment_is_read(
+        self, migrated_db: DatabaseConnection, orders_config: None, model_stub: ModelStub,
+        monkeypatch: pytest.MonkeyPatch, number: str,
+    ) -> None:
+        service = await _stub_tasks(migrated_db, "decide")
+        model_stub.answers["decide"] = _NEW_DECISION
+        account_id, _, _, _, row = await _mail_with_pdf(migrated_db, number)
+        breaker = CircuitBreaker(migrated_db, "custom:orders.decide")
+        await breaker.record_unavailable(
+            reason="credit balance exhausted", probe_interval=timedelta(minutes=5),
+        )
+
+        def no_reading() -> None:
+            raise AssertionError("an attachment was read")
+
+        try:
+            with monkeypatch.context() as patched:
+                patched.setattr(order_documents, "extraction_pool", no_reading)
+                with pytest.raises(StageUnavailable):
+                    await _handle_mail_job(row, migrated_db, _cred_repo(migrated_db), service)
+            assert model_stub.calls == []
+
+            await breaker.record_success()
+            await _handle_mail_job(row, migrated_db, _cred_repo(migrated_db), service)
+        finally:
+            await breaker.record_success()
+        assert [c["task"] for c in model_stub.calls] == ["decide"]
+        assert await _order_of(migrated_db, account_id) is not None

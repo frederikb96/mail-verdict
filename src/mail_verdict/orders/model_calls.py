@@ -14,10 +14,13 @@ providers, and a bad model name in one task trips only that task's breaker.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.pipeline.context import ModelGateway
+from mail_verdict.pipeline.contracts import StageThrottled, StageUnavailable
+from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -44,6 +47,11 @@ class TaskModel:
         """The ModelGateway category, and so the breaker, of this task."""
         return f"orders.{self.task}"
 
+    @property
+    def circuit_name(self) -> str:
+        """The name of this task's breaker, as ModelGateway keys it."""
+        return f"{self.provider}:{self.category}"
+
     @classmethod
     def from_settings(cls, settings_service: SettingsService, task: Task) -> TaskModel:
         settings = settings_service.get("orders")
@@ -68,8 +76,37 @@ def is_fake(settings_service: SettingsService, task: Task) -> bool:
 def write_circuit_name(settings_service: SettingsService) -> str:
     """The breaker the orders queue reports: the write task's, the one
     whose suspension leaves orders without text."""
-    model = TaskModel.from_settings(settings_service, "write")
-    return f"{model.provider}:{model.category}"
+    return TaskModel.from_settings(settings_service, "write").circuit_name
+
+
+async def ensure_available(
+    db: DatabaseConnection, settings_service: SettingsService, task: Task,
+) -> None:
+    """
+    Refuse work for `task` while its breaker is not letting calls through,
+    before the job spends anything on reading attachments the call would
+    then never receive. A suspended breaker whose probe interval has passed
+    is let through: the call itself is the probe.
+
+    Raises:
+        StageUnavailable: the task's provider is suspended
+        StageThrottled: the task's provider is rate limiting
+    """
+    model = TaskModel.from_settings(settings_service, task)
+    if model.provider == "fake":
+        return
+    status = await CircuitBreaker(db, model.circuit_name).status()
+    if status.state is CircuitState.CLOSED:
+        return
+    now = datetime.now(timezone.utc)
+    if status.retry_after is not None and status.retry_after <= now:
+        return
+    if status.state is CircuitState.SUSPENDED:
+        raise StageUnavailable(f"{model.provider} circuit suspended: {status.reason}")
+    raise StageThrottled(
+        f"{model.provider} circuit open: {status.reason}",
+        retry_after=status.retry_after - now if status.retry_after is not None else None,
+    )
 
 
 async def structured_call(

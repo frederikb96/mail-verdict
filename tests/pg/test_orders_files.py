@@ -31,7 +31,7 @@ from mail_verdict.orders.auto_close import close_overdue_orders
 from mail_verdict.orders.candidates import find_candidates
 from mail_verdict.orders.lookup import OrderLookup
 from mail_verdict.orders.worker import _fail, _handle_file_job, _handle_item, _handle_mail_job
-from mail_verdict.pipeline.contracts import StageTransient
+from mail_verdict.pipeline.contracts import StageRefused, StageTransient
 from tests.helpers.orders_pg import ModelStub, ticket_pdf
 from tests.pg.test_orders_documents import (
     _cred_repo,
@@ -235,14 +235,37 @@ class TestUploadLimits:
             response = _upload(client, migrated_db, ticket_pdf())
         assert response.status_code == 413
 
-    def test_a_file_that_is_not_an_accepted_type_is_refused_whatever_its_label_says(
+    def test_any_file_is_accepted_and_one_no_reader_knows_is_stored_and_listed_unread(
         self, client: TestClient, migrated_db: DatabaseConnection, orders_config: None,
+        number: str,
     ) -> None:
-        response = _upload(client, migrated_db, b"MZ\x90\x00 program", name="ticket.pdf")
-        assert response.status_code == 415
-        heic = _upload(client, migrated_db, b"\x00\x00\x00\x18ftypheic", name="photo.heic",
-                       content_type="image/heic")
-        assert heic.status_code == 415
+        word = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        uploads = {
+            "letter.docx": (f"PK\x03\x04\x14\x00\x06\x00 {number}".encode(), word, "none"),
+            "photo.heic": (
+                b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00" + number.encode(),
+                "image/heic", "none",
+            ),
+            "program.pdf": (b"MZ\x90\x00 program " + number.encode(), "application/pdf", "none"),
+            "shared": (f"Gate 12, seat 14C, booking {number}".encode(), "", "text_layer"),
+        }
+        for name, (data, label, method) in uploads.items():
+            response = _upload(client, migrated_db, data, name=name, content_type=label)
+            assert response.status_code == 202, (name, response.text)
+            file_id = uuid.UUID(response.json()["file_id"])
+
+            order_id = client.portal.call(_place_unwritten, migrated_db, file_id)
+
+            detail = _get(client, migrated_db, f"/orders/{order_id}").json()
+            [document] = detail["documents"]
+            assert (document["filename"], document["method"]) == (name, method)
+            download = _get(client, migrated_db, document["download_url"].removeprefix("/api"))
+            assert download.status_code == 200 and download.content == data
+            assert "attachment" in download.headers["content-disposition"]
+            assert download.headers["content-type"] == (
+                "text/plain; charset=utf-8" if name == "shared" else
+                "image/heic" if name == "photo.heic" else "application/octet-stream"
+            )
 
     def test_an_entry_holds_a_bounded_number_and_volume_of_files(
         self, client: TestClient, migrated_db: DatabaseConnection, orders_config: None,
@@ -583,3 +606,116 @@ class TestTheCodeImage:
         assert _get(
             client, migrated_db, f"/orders/{order_id}/codes/{code_fact.id}.png?scale=4",
         ).status_code == 200
+
+
+class TestAFailedJobLeavesNothingInvisible:
+    def _fail_write(
+        self, client: TestClient, db: DatabaseConnection, order_id: uuid.UUID,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> _RecordingQueue:
+        """Run the entry's pending write job against a model that refuses."""
+
+        async def refuse(*args: Any, **kwargs: Any) -> None:
+            raise StageRefused("declined")
+
+        monkeypatch.setattr(worker.model_calls, "structured_call", refuse)
+        queue = _RecordingQueue()
+
+        async def run() -> None:
+            service = await _stub_tasks(db, "write")
+            async with db.session() as session:
+                job_id = (await session.execute(
+                    select(OrderJob.id).where(
+                        OrderJob.kind == "write", OrderJob.order_id == order_id,
+                        OrderJob.status == "pending",
+                    )
+                )).scalar_one()
+            await _handle_item(
+                {"id": job_id, "kind": "write", "order_id": order_id, "attempts": 1}, "w",
+                queue, db, _cred_repo(db), service, None,
+            )
+
+        client.portal.call(run)
+        return queue
+
+    def test_a_first_write_that_fails_for_good_still_lists_the_entry_and_its_file(
+        self, client: TestClient, migrated_db: DatabaseConnection, orders_config: None,
+        monkeypatch: pytest.MonkeyPatch, number: str,
+    ) -> None:
+        file_id = uuid.UUID(_upload(client, migrated_db, ticket_pdf(number)).json()["file_id"])
+        order_id = client.portal.call(_place_unwritten, migrated_db, file_id)
+        listed = _get(client, migrated_db, "/orders?limit=500").json()["items"]
+        assert str(order_id) not in [i["id"] for i in listed]
+
+        queue = self._fail_write(client, migrated_db, order_id, monkeypatch)
+
+        assert [c[0] for c in queue.calls] == ["fail"]
+        item = next(
+            i for i in _get(client, migrated_db, "/orders?limit=500").json()["items"]
+            if i["id"] == str(order_id)
+        )
+        assert (item["subject"], item["status"], item["text_stale"]) == (
+            "ticket.pdf", "Needs a look", False,
+        )
+        detail = _get(client, migrated_db, f"/orders/{order_id}").json()
+        assert [d["filename"] for d in detail["documents"]] == ["ticket.pdf"]
+        with patch("mail_verdict.api.orders.get_db_connection", return_value=migrated_db):
+            assert client.delete(f"/orders/{order_id}/files/{file_id}").status_code == 204
+
+    def test_a_rewrite_that_fails_for_good_stops_claiming_the_summary_is_being_updated(
+        self, client: TestClient, migrated_db: DatabaseConnection, orders_config: None,
+        monkeypatch: pytest.MonkeyPatch, number: str,
+    ) -> None:
+        file_id = uuid.UUID(_upload(client, migrated_db, ticket_pdf(number)).json()["file_id"])
+        order_id = client.portal.call(_place, migrated_db, file_id)
+
+        async def stale() -> str:
+            async with migrated_db.session() as session:
+                await repository.mark_text_stale(session, order_id)
+                await repository.enqueue_write_job(session, order_id, priority=10)
+                return (await session.execute(
+                    select(Order.summary).where(Order.id == order_id)
+                )).scalar_one()
+
+        written_summary = client.portal.call(stale)
+        assert _get(client, migrated_db, f"/orders/{order_id}").json()["text_stale"] is True
+
+        self._fail_write(client, migrated_db, order_id, monkeypatch)
+
+        detail = _get(client, migrated_db, f"/orders/{order_id}").json()
+        assert (detail["text_stale"], detail["summary"]) == (False, written_summary)
+
+    def test_a_file_added_to_an_entry_that_fails_is_listed_there_and_can_be_deleted(
+        self, client: TestClient, migrated_db: DatabaseConnection, orders_config: None,
+        number: str,
+    ) -> None:
+        class Queue:
+            async def fail(self, item_id: object, *, worker_id: str, last_error: str) -> None:
+                return None
+
+        async def entry() -> uuid.UUID:
+            async with migrated_db.session() as session:
+                order_id = await repository.create_order(session)
+                await repository.write_order_text(
+                    session, order_id, merchant="Rail", subject="Trip", status="ok",
+                    is_open=True, icon="train", summary="s", model="fake",
+                )
+            return order_id
+
+        order_id = client.portal.call(entry)
+        pdf = ticket_pdf(number)
+        file_id = uuid.UUID(_upload(client, migrated_db, pdf, order_id=order_id).json()["file_id"])
+
+        async def fail() -> None:
+            row = await _file_job_row(migrated_db, file_id)
+            await _fail(Queue(), row["id"], "w", "no database", db=migrated_db, row=row)
+
+        client.portal.call(fail)
+
+        detail = _get(client, migrated_db, f"/orders/{order_id}").json()
+        [document] = detail["documents"]
+        assert (document["file_id"], document["method"]) == (str(file_id), "failed")
+        download = _get(client, migrated_db, document["download_url"].removeprefix("/api"))
+        assert download.content == pdf
+        with patch("mail_verdict.api.orders.get_db_connection", return_value=migrated_db):
+            assert client.delete(f"/orders/{order_id}/files/{file_id}").status_code == 204

@@ -20,27 +20,42 @@ from mail_verdict.database.models import Order, OrderFile, OrderJob
 from mail_verdict.orders import repository
 from mail_verdict.queue.notify import WorkQueueNotifier
 
-# type name (config `order_files.accepted_types`) -> the content type stored.
+# Type name -> the content type stored. Every upload gets one: the types
+# below are the ones read for text and codes (or, `heic`, kept as the photo it
+# is), and `other` is any other file, stored and downloaded as it came.
 FILE_TYPES = {
     "pdf": "application/pdf",
     "png": "image/png",
     "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "tiff": "image/tiff",
+    "bmp": "image/bmp",
+    "heic": "image/heic",
     "pkpass": "application/vnd.apple.pkpass",
     "ics": "text/calendar",
     "txt": "text/plain",
     "html": "text/html",
     "xml": "application/xml",
+    "other": "application/octet-stream",
 }
+
+_HEIF_BRANDS = (b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1")
+
+# Control bytes that never occur in text: everything below space except
+# tab, line feed, form feed and carriage return.
+_BINARY_BYTES = bytes([*range(0, 9), 11, *range(14, 32)])
 
 _MAX_FILENAME_CHARS = 200
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _UPLOAD_PRIORITY = 5
 
 
-def detect_file_type(filename: str, head: bytes) -> str | None:
+def detect_file_type(filename: str, head: bytes) -> str:
     """
     The type of an upload (a key of FILE_TYPES), judged by its first bytes
-    and its name -- the declared content type is not trusted.
+    and its name -- the declared content type is not trusted. A file that
+    matches nothing is `other`: it is stored and listed, not read.
     """
     name = filename.lower()
     start = head.lstrip()
@@ -50,6 +65,16 @@ def detect_file_type(filename: str, head: bytes) -> str | None:
         return "png"
     if head.startswith(b"\xff\xd8\xff"):
         return "jpeg"
+    if head.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    if head.startswith((b"II*\x00", b"MM\x00*")):
+        return "tiff"
+    if head.startswith(b"BM") and name.endswith(".bmp"):
+        return "bmp"
+    if head[4:8] == b"ftyp" and head[8:12] in _HEIF_BRANDS:
+        return "heic"
     if name.endswith(".pkpass") and head.startswith(b"PK"):
         return "pkpass"
     if name.endswith(".ics") or start.upper().startswith(b"BEGIN:VCALENDAR"):
@@ -60,9 +85,15 @@ def detect_file_type(filename: str, head: bytes) -> str | None:
         (b"<!doctype html", b"<html"),
     ):
         return "html"
-    if name.endswith(".txt"):
+    if name.endswith(".txt") or _looks_like_text(head):
         return "txt"
-    return None
+    return "other"
+
+
+def _looks_like_text(head: bytes) -> bool:
+    """Whether the first bytes are text: something there, and none of the
+    control bytes a binary format carries within a few kilobytes."""
+    return bool(head) and len(head.translate(None, _BINARY_BYTES)) == len(head)
 
 
 def clean_filename(name: str | None) -> str:

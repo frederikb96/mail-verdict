@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select, text, update
+from sqlalchemy import and_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,6 +114,18 @@ async def read_file_document(
     return ReadDocument(None, file_id, document)
 
 
+def _needs_reading(version: int, method: str, size_bytes: int | None) -> bool:
+    """Whether a stored document is read again: an older extractor made it,
+    or the read failed (a timeout or crash on a busy machine) and the file is
+    small enough that reading it can succeed. A document over the size limit
+    would fail the same way every time."""
+    if version < EXTRACTOR_VERSION:
+        return True
+    return method == "failed" and (
+        size_bytes is None or size_bytes <= get_config().extraction.max_document_bytes
+    )
+
+
 def _clean(value: str) -> str:
     # PostgreSQL text and jsonb hold no NUL.
     return value.replace("\x00", "")
@@ -177,7 +189,8 @@ async def heal_mail_documents(
 ) -> int:
     """
     Make sure every live attachment of a mail of the order has a document
-    read by the current extractor. A document whose attachment id no longer
+    read by the current extractor, and read again one whose read failed
+    (`_needs_reading`). A document whose attachment id no longer
     exists (a resync gives a mail's attachments new ids) is matched by name,
     type and size and re-pointed rather than read again.
 
@@ -188,7 +201,7 @@ async def heal_mail_documents(
         select(
             OrderDocument.id, OrderDocument.attachment_id, OrderDocument.filename,
             OrderDocument.content_type, OrderDocument.size_bytes,
-            OrderDocument.extractor_version,
+            OrderDocument.extractor_version, OrderDocument.method,
         ).where(
             OrderDocument.source == "mail", OrderDocument.account_id == account_id,
             OrderDocument.msg_key == msg_key,
@@ -217,7 +230,7 @@ async def heal_mail_documents(
                     update(OrderDocument).where(OrderDocument.id == row.id)
                     .values(attachment_id=ref.id)
                 )
-        if row is None or row.extractor_version < EXTRACTOR_VERSION:
+        if row is None or _needs_reading(row.extractor_version, row.method, row.size_bytes):
             to_read.append(ref)
     if not to_read:
         return 0
@@ -229,7 +242,8 @@ async def heal_mail_documents(
 
 
 async def heal_file_documents(session: AsyncSession, order_id: uuid.UUID) -> int:
-    """Read the attached files of the order that have no current document."""
+    """Read the attached files of the order that have no current document,
+    or whose read failed (`_needs_reading`)."""
     result = await session.execute(
         select(OrderFile.id, OrderFile.filename, OrderFile.content_type)
         .outerjoin(
@@ -238,7 +252,12 @@ async def heal_file_documents(session: AsyncSession, order_id: uuid.UUID) -> int
         )
         .where(
             OrderFile.order_id == order_id, OrderFile.status == "attached",
-            (OrderDocument.id.is_(None)) | (OrderDocument.extractor_version < EXTRACTOR_VERSION),
+            (OrderDocument.id.is_(None))
+            | (OrderDocument.extractor_version < EXTRACTOR_VERSION)
+            | and_(
+                OrderDocument.method == "failed",
+                OrderDocument.size_bytes <= get_config().extraction.max_document_bytes,
+            ),
         )
     )
     healed = 0

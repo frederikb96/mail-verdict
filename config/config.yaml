@@ -138,11 +138,10 @@ order_files:
   max_files_per_order: 20
   # Total bytes of the files of one entry.
   max_total_bytes_per_order: 52428800
-  # What is accepted, judged by the file's content and name, not its
-  # declared type: pdf, png, jpeg, pkpass, ics, txt, html, xml.
-  accepted_types: [pdf, png, jpeg, pkpass, ics, txt, html, xml]
   # A file the register failed to place is deleted this many days after it
-  # was added (it stays downloadable until then).
+  # was added. Until then it is listed in the entry it was added to, where it
+  # can be downloaded or deleted; one added with no entry shows only at
+  # GET /api/orders/files/{file_id}.
   failed_retention_days: 7
 
 database:
