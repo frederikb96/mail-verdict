@@ -32,13 +32,12 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.core.retry import RetryConfig
 from mail_verdict.database.models import AccountPrefs, Order, OrderJob, OrderMail
-from mail_verdict.orders import prompts, repository
+from mail_verdict.orders import model_calls, prompts, repository
 from mail_verdict.orders.candidates import extract_labeled_identifiers, find_candidates
 from mail_verdict.orders.content import load_order_mail
 from mail_verdict.orders.fake import fake_decide, fake_write
-from mail_verdict.pipeline.context import ModelGateway, current_verdict_for_mail
+from mail_verdict.pipeline.context import current_verdict_for_mail
 from mail_verdict.pipeline.contracts import (
     StageMisconfigured,
     StageThrottled,
@@ -106,12 +105,10 @@ def register_orders(
 
     queue_manager.register(
         QUEUE_NAME, cast("Table", OrderJob.__table__), worker_body,
-        # "orders" -- not "ai" -- is the category half of the breaker name
-        # ModelGateway.structured_call actually writes to for this queue's
-        # calls (pipeline/context.py), even though the provider/key/base_url
-        # themselves come from settings.ai: a garbage settings.orders.model
-        # must not read as classify's own breaker being unavailable.
-        circuit_name=lambda: f"{settings_service.get('ai').get('provider', 'openai')}:orders",
+        # The write task's breaker: its suspension is what leaves orders
+        # without text. The decide task trips its own, listed with the
+        # others by GET /api/settings/providers.
+        circuit_name=lambda: model_calls.write_circuit_name(settings_service),
     )
 
 
@@ -194,35 +191,6 @@ async def _retry_or_fail(
     )
 
 
-async def _model_call(
-    db: DatabaseConnection,
-    cred_repo: ProviderCredentialRepository,
-    settings_service: SettingsService,
-    *, schema_name: str, system_prompt: str, user_prompt: str, schema: dict[str, Any],
-    validate: Any,
-) -> tuple[dict[str, Any], str, float]:
-    """One call through the shared gateway, provider from settings.ai,
-    model/effort/budget from settings.orders. Returns (data, model, latency_ms)."""
-    ai_settings = settings_service.get("ai")
-    orders_settings = settings_service.get("orders")
-    provider = str(ai_settings.get("provider", "openai")).lower()
-    model = str(orders_settings.get("model", ""))
-    effort = orders_settings.get("reasoning_effort") or None
-    max_tokens = int(orders_settings.get("max_tokens", 4000))
-    base_url = ai_settings.get("base_url") or None
-    call_timeout_seconds = float(orders_settings.get("call_timeout_seconds", 40.0))
-
-    retry_config = RetryConfig.from_settings(settings_service.get("retry"))
-    gateway = ModelGateway(db, cred_repo, retry_config)
-    data, latency_ms = await gateway.structured_call(
-        provider=provider, category="orders", model=model, effort=effort, max_tokens=max_tokens,
-        schema_name=schema_name, system_prompt=system_prompt, user_prompt=user_prompt,
-        schema=schema, validate=validate, base_url=base_url,
-        timeout_seconds=call_timeout_seconds,
-    )
-    return data, model, latency_ms
-
-
 async def _handle_mail_job(
     row: Mapping[str, Any],
     db: DatabaseConnection,
@@ -238,7 +206,6 @@ async def _handle_mail_job(
     message_id: uuid.UUID | None = row["message_id"]
     origin: str = row["origin"]
     filter_reason: str = row.get("filter_reason") or ""
-    ai_settings = settings_service.get("ai")
 
     async with db.session() as session:
         await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ORDERS_LOCK_KEY})
@@ -272,7 +239,7 @@ async def _handle_mail_job(
             await _set_outcome(session, row["id"], outcome="attached")
             return None
 
-        if ai_settings.get("provider", "openai") == "fake":
+        if model_calls.is_fake(settings_service, "decide"):
             candidates = await find_candidates(
                 session, account_id=account_id, thread_id=content.thread_id,
                 subject=content.subject, from_addr=content.from_addr,
@@ -293,8 +260,8 @@ async def _handle_mail_job(
                 received_at=_isoformat(content.received_at), attachments=list(content.attachments),
                 body=content.body.text[:_DECIDE_BODY_CHARS], candidates=candidates,
             )
-            decision, model_name, latency_ms = await _model_call(
-                db, cred_repo, settings_service,
+            decision, model_name, latency_ms = await model_calls.structured_call(
+                db, cred_repo, settings_service, "decide",
                 schema_name="order_decision", system_prompt=prompts.load_decide_system_prompt(),
                 user_prompt=user_prompt, schema=prompts.build_decide_schema(handles),
                 validate=lambda data: prompts.validate_decide_response(data, handles=handles),
@@ -392,7 +359,6 @@ async def _handle_write_job(
     settings_service: SettingsService,
 ) -> tuple[uuid.UUID, str] | None:
     order_id: uuid.UUID = row["order_id"]
-    ai_settings = settings_service.get("ai")
     orders_settings = settings_service.get("orders")
     language = str(orders_settings.get("language", "English"))
 
@@ -446,14 +412,14 @@ async def _handle_write_job(
                 "status": order_row.status, "summary": order_row.summary,
             }
 
-        if ai_settings.get("provider", "openai") == "fake":
+        if model_calls.is_fake(settings_service, "write"):
             answer = fake_write(mails=mails)
             model_name = "fake"
             latency_ms = 0.0
         else:
             user_prompt = prompts.build_write_user_prompt(current_text=current_text, mails=mails)
-            answer, model_name, latency_ms = await _model_call(
-                db, cred_repo, settings_service,
+            answer, model_name, latency_ms = await model_calls.structured_call(
+                db, cred_repo, settings_service, "write",
                 schema_name="order_text",
                 system_prompt=prompts.build_write_system_prompt(language=language),
                 user_prompt=user_prompt, schema=prompts.WRITE_SCHEMA,

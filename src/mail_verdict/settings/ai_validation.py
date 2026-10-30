@@ -1,7 +1,9 @@
 """
-Validates the ai/semantic provider settings at write time: the
+Validates the provider settings of every AI task at write time: the
 provider/reasoning_effort combination, and that a "custom" provider always
-carries the base_url its client construction needs.
+carries the base_url its client construction needs. A task is a settings
+category (ai, assistant, semantic) or a prefixed key group of one (orders'
+decide_ and write_), all checked by validate_task_model.
 
 The two named vendors spell reasoning effort differently and support
 different levels, so an invalid pairing is rejected here rather than
@@ -16,6 +18,10 @@ KNOWN_PROVIDERS = frozenset({"anthropic", "openai", "custom", "fake"})
 
 # No embedding model of Anthropic's own to select here, unlike ai.provider.
 SEMANTIC_KNOWN_PROVIDERS = frozenset({"openai", "custom", "fake"})
+
+# The ModelGateway category of every AI task, which is also the category
+# half of its circuit breaker name (`<provider>:<category>`).
+AI_TASK_CATEGORIES = ("ai", "semantic", "assistant", "orders.decide", "orders.write")
 
 # Anthropic's output_config.effort levels (Messages API structured outputs).
 ANTHROPIC_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
@@ -38,43 +44,59 @@ OPENAI_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high", "x
 _SKIP_EFFORT_CHECK = frozenset({"fake", "custom"})
 
 
-def _require_base_url_for_custom(category: str, provider: str, effective: dict[str, Any]) -> None:
-    if provider == "custom" and not effective.get("base_url"):
-        raise ValueError(
-            f"{category}.base_url is required when {category}.provider is 'custom'"
-        )
-
-
-def validate_ai_settings(effective: dict[str, Any]) -> None:
+def validate_task_model(label: str, effective: dict[str, Any], *, prefix: str = "") -> None:
     """
-    Validate a merged ai settings dict as it would read after a write.
+    Validate one AI task's provider, server address and reasoning effort
+    as they would read after a write.
 
     Args:
-        effective: The ai settings dict with the incoming partial update
-            already merged onto the existing values
+        label: How error messages name the task's keys, e.g. "ai." or
+            "orders.decide_" -- the dotted category plus the key prefix
+        effective: The category's settings dict with the incoming partial
+            update already merged onto the existing values
+        prefix: The key prefix inside `effective` ("decide_" for the
+            orders decide task, "" for a category that is one task)
 
     Raises:
         ValueError: If the provider is unknown, reasoning_effort is not a
             level the selected provider supports, or provider is "custom"
             with no base_url
     """
-    provider = str(effective.get("provider", "")).lower()
+    provider = str(effective.get(f"{prefix}provider", "")).lower()
     if provider not in KNOWN_PROVIDERS:
         raise ValueError(
-            f"ai.provider must be one of {sorted(KNOWN_PROVIDERS)}, got {provider!r}"
+            f"{label}provider must be one of {sorted(KNOWN_PROVIDERS)}, got {provider!r}"
         )
-    _require_base_url_for_custom("ai", provider, effective)
+    if provider == "custom" and not effective.get(f"{prefix}base_url"):
+        raise ValueError(f"{label}base_url is required when {label}provider is 'custom'")
 
-    effort = effective.get("reasoning_effort")
+    effort = effective.get(f"{prefix}reasoning_effort")
     if effort is None or provider in _SKIP_EFFORT_CHECK:
         return
 
     levels = ANTHROPIC_EFFORT_LEVELS if provider == "anthropic" else OPENAI_EFFORT_LEVELS
     if str(effort).lower() not in levels:
         raise ValueError(
-            f"ai.reasoning_effort {effort!r} is not valid for provider {provider!r}; "
+            f"{label}reasoning_effort {effort!r} is not valid for provider {provider!r}; "
             f"expected one of {sorted(levels)}"
         )
+
+
+def validate_ai_settings(effective: dict[str, Any]) -> None:
+    """Validate a merged ai settings dict as it would read after a write."""
+    validate_task_model("ai.", effective)
+
+
+def validate_assistant_settings(effective: dict[str, Any]) -> None:
+    """Validate a merged assistant settings dict as it would read after a write."""
+    validate_task_model("assistant.", effective)
+    validate_token_budget("assistant.max_tokens", effective.get("max_tokens"))
+
+
+def validate_token_budget(name: str, value: Any) -> None:
+    """The output budget of an orders or assistant task: 500 to 16000."""
+    if value is not None and not (500 <= int(value) <= 16000):
+        raise ValueError(f"{name} must be between 500 and 16000")
 
 
 def validate_semantic_settings(effective: dict[str, Any]) -> None:
@@ -95,4 +117,5 @@ def validate_semantic_settings(effective: dict[str, Any]) -> None:
             f"semantic.provider must be one of {sorted(SEMANTIC_KNOWN_PROVIDERS)}, "
             f"got {provider!r}"
         )
-    _require_base_url_for_custom("semantic", provider, effective)
+    if provider == "custom" and not effective.get("base_url"):
+        raise ValueError("semantic.base_url is required when semantic.provider is 'custom'")

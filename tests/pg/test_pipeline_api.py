@@ -104,12 +104,14 @@ async def _seed_message(
 
 
 async def _configure_fake_ai_provider(migrated_db: DatabaseConnection) -> SettingsService:
-    """A SettingsService with ai.provider='fake', persisted -- so the
-    running-on-the-portal-loop classify stage's own settings read (made
-    through this same service instance) sees it."""
+    """A SettingsService with ai.provider and assistant.provider 'fake',
+    persisted -- so the running-on-the-portal-loop classify stage's and rule
+    assistant's own settings reads (made through this same service
+    instance) see it."""
     settings_service = SettingsService(migrated_db)
     await settings_service.load()
     await settings_service.update("ai", {"provider": "fake"})
+    await settings_service.update("assistant", {"provider": "fake"})
     return settings_service
 
 

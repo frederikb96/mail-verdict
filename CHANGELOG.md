@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - An order's numbers become typed key facts (`facts` in the detail, replacing `identifiers`):
   dates, amounts, places, seats, links and barcodes alongside the order, booking, ticket, invoice
   and tracking numbers. A tracking number with a known carrier carries a server-built tracking link.
+- Every AI task uses its own provider and model, so several providers can run side by side:
+  spam verdicts (`ai`), embeddings (`semantic`), the new `assistant` category for the rule
+  assistant, and the order-matching and order-text calls (`orders.decide_*` and `orders.write_*`).
+  Anthropic Claude is selectable for each of them except embeddings; the Settings page gets a
+  Providers card with the keys and the health of each task's provider, and a note per task on
+  which mail it reads. `GET /api/settings/providers` reports the same.
+- A provider that is out of credit (Anthropic) or allowance (Infomaniak) suspends its tasks until
+  it answers again instead of failing every job after its retries; a suspended provider is tried
+  again every five minutes, one call at a time, and a provider suspended for 30 minutes raises a
+  `provider_unavailable` alert (`providers.suspended_alert_after_seconds`). A model's refusal
+  fails the job at once.
 - The detail's `documents` list what has been read out of each attachment (extraction method, page
   and barcode counts) and links straight to the bytes; schema for files added to an order by hand.
 - A library that reads attachments for the orders pipeline (`orders/extract/`), not yet called by
@@ -36,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The prepared order mail body is capped at 12,000 characters: a longer one keeps its first 8,000
   and last 4,000 with an omission marker.
+
+### Changed
+
+- `orders.model`, `orders.reasoning_effort` and `orders.max_tokens` are replaced by the
+  `decide_*` and `write_*` key groups, and the rule assistant reads its own `assistant` category
+  instead of `ai`; the upgrade copies what was stored, so every task keeps the provider, model and
+  budget it had. Anthropic reasoning effort is `low` to `max` (the API has no `none`); an order
+  call's timeout is 120 seconds and the worker lease 900.
 
 ## [6.18.2] - 2026-10-24
 

@@ -208,14 +208,21 @@ repeat it.
 
 Configuration comes from that file, then a sparse override file, then environment variables — and
 the application refuses to start on anything missing rather than quietly substituting a fallback.
-Anything that changes at runtime — the AI provider and model, spam behaviour, rules, and provider
+Anything that changes at runtime — the AI providers and models, spam behaviour, rules, and provider
 API keys — is a **setting**, stored in the database (keys encrypted) and edited through the API or
 the Settings page, not in a file.
 
-The AI provider for spam verdicts, and separately for embeddings, is one of these settings: OpenAI,
-Anthropic (verdicts only — no embedding model of its own), or any OpenAI-compatible server by its
-own address, key and model name. A custom server needs its address set (`ai.base_url` /
-`semantic.base_url`) alongside its key below.
+Every AI task has its own provider and model, so several providers can be configured at once: spam
+verdicts (`ai`), embeddings (`semantic`), the order-matching and order-text calls (`orders`'
+`decide_*` and `write_*` keys) and the rule assistant (`assistant`). A provider is OpenAI, Anthropic
+(not for embeddings — no embedding model of its own), or any OpenAI-compatible server by its own
+address, key and model name; a custom server needs its address set on the task that uses it
+(`ai.base_url`, `semantic.base_url`, `orders.decide_base_url`, ...). A key is stored once per
+provider and shared by every task that names it, so mail that must stay private can sit on one
+provider while order analysis and the rule assistant use another. Which mail each task reads is
+stated beside it on the Settings page. A provider that runs out of credit, or rejects its key,
+pauses its tasks until it answers again, and is raised as an alert if that lasts
+(`providers.suspended_alert_after_seconds`).
 
 A handful of values stay environment variables regardless, because they either gate config loading
 itself or are the fallback path for a deployment that would rather not put a key in the database:

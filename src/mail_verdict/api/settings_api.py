@@ -5,6 +5,8 @@ GET /api/settings — all settings by category
 GET /api/settings/{category} — single category
 PUT /api/settings/{category} — update category (merge)
 POST /api/settings/import — bulk import
+GET /api/settings/providers — which provider keys are configured, and the
+    health of every AI task's circuit breaker
 
 A provider API key is a write-only extension of the JSON any category
 accepts: PUT anthropic_api_key / openai_api_key / custom_api_key
@@ -28,19 +30,27 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_, select
 
 from mail_verdict.api.events import broadcast_event, get_event_ring
 from mail_verdict.database.connection import get_db_connection
+from mail_verdict.database.models import CircuitBreakerState
 from mail_verdict.embeddings.provider import (
     resolve_active_embedding_model,
     resolve_active_embedding_provider,
 )
 from mail_verdict.settings import SettingCategory, get_settings_service
-from mail_verdict.settings.ai_validation import validate_ai_settings, validate_semantic_settings
+from mail_verdict.settings.ai_validation import (
+    AI_TASK_CATEGORIES,
+    validate_ai_settings,
+    validate_assistant_settings,
+    validate_semantic_settings,
+)
 from mail_verdict.settings.credentials import (
     PROVIDER_ENV_VARS,
     EncryptionUnavailableError,
@@ -93,6 +103,32 @@ class SettingsImportRequest(BaseModel):
     """Request to bulk import settings."""
 
     data: dict[str, dict[str, Any]]
+
+
+class ProviderKeyStatus(BaseModel):
+    """Whether a provider's key is configured, and its last four characters."""
+
+    configured: bool
+    hint: str | None
+
+
+class TaskBreakerStatus(BaseModel):
+    """One AI task's circuit breaker, named `<provider>:<task>`."""
+
+    name: str
+    state: str
+    reason: str | None
+    since: datetime | None
+    retry_after: datetime | None
+
+
+class ProvidersStatus(BaseModel):
+    """What an operator needs to see about the providers in one read: the
+    keys (shared by every task naming the provider) and the breakers of the
+    tasks that have called one."""
+
+    providers: dict[str, ProviderKeyStatus]
+    breakers: list[TaskBreakerStatus]
 
 
 async def _ai_credential_status() -> dict[str, Any]:
@@ -235,6 +271,43 @@ async def get_all_settings() -> dict[str, dict[str, Any]]:
     return all_settings
 
 
+@router.get("/providers", response_model=ProvidersStatus)
+async def get_providers_status() -> ProvidersStatus:
+    """Provider key presence and the circuit breakers of the AI tasks.
+
+    Registered before `/{category}`, which would otherwise read "providers"
+    as a category name.
+    """
+    cred_repo = get_provider_credential_repo()
+    providers = {
+        provider: ProviderKeyStatus(**await cred_repo.status(provider))  # type: ignore[arg-type]
+        for provider in PROVIDER_ENV_VARS
+    }
+    suffixes = [CircuitBreakerState.name.like(f"%:{task}") for task in AI_TASK_CATEGORIES]
+    async with get_db_connection().session() as session:
+        rows = (
+            await session.execute(
+                select(
+                    CircuitBreakerState.name, CircuitBreakerState.state,
+                    CircuitBreakerState.reason, CircuitBreakerState.since,
+                    CircuitBreakerState.retry_after,
+                )
+                .where(or_(*suffixes))
+                .order_by(CircuitBreakerState.name)
+            )
+        ).all()
+    return ProvidersStatus(
+        providers=providers,
+        breakers=[
+            TaskBreakerStatus(
+                name=row.name, state=row.state, reason=row.reason, since=row.since,
+                retry_after=row.retry_after,
+            )
+            for row in rows
+        ],
+    )
+
+
 @router.get("/{category}")
 async def get_settings(category: str) -> dict[str, Any]:
     """Get settings for a single category."""
@@ -270,6 +343,13 @@ async def update_settings(category: str, request: SettingsUpdateRequest) -> dict
         effective = {**service.get("ai"), **data}
         try:
             validate_ai_settings(effective)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if category == "assistant":
+        effective = {**service.get("assistant"), **data}
+        try:
+            validate_assistant_settings(effective)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -324,6 +404,13 @@ async def import_settings(request: SettingsImportRequest) -> dict[str, dict[str,
         effective = {**get_settings_service().get("ai"), **data["ai"]}
         try:
             validate_ai_settings(effective)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if "assistant" in data:
+        effective = {**get_settings_service().get("assistant"), **data["assistant"]}
+        try:
+            validate_assistant_settings(effective)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

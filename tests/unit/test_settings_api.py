@@ -534,3 +534,72 @@ class TestImportSettings:
         imported = service.bulk_import.await_args.args[0]  # type: ignore[union-attr]
         assert "custom_api_key" not in imported["semantic"]
         cred_repo.set_key.assert_not_awaited()
+
+
+class TestPerTaskModels:
+    """Every AI task validates against its own provider, never another's."""
+
+    def test_assistant_is_a_category_with_its_own_defaults(self, client: TestClient) -> None:
+        resp = client.get("/settings/assistant")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert {"provider", "model", "reasoning_effort", "max_tokens", "base_url"} <= set(body)
+        assert body["call_timeout_seconds"] == 60.0
+
+    def test_assistant_effort_is_checked_against_its_own_provider(
+        self, client: TestClient,
+    ) -> None:
+        resp = client.put("/settings/assistant", json={"data": {"provider": "anthropic"}})
+        assert resp.status_code == 400
+        assert "assistant.reasoning_effort" in resp.json()["detail"]
+
+        resp = client.put(
+            "/settings/assistant",
+            json={"data": {
+                "provider": "anthropic", "model": "claude-opus-5-5",
+                "reasoning_effort": "medium",
+            }},
+        )
+        assert resp.status_code == 200
+
+    def test_assistant_custom_provider_needs_its_own_base_url(self, client: TestClient) -> None:
+        client.put(
+            "/settings/ai",
+            json={"data": {"provider": "custom", "base_url": "https://ai.example.test/v1"}},
+        )
+        resp = client.put("/settings/assistant", json={"data": {"provider": "custom"}})
+        assert resp.status_code == 400
+        assert "assistant.base_url" in resp.json()["detail"]
+
+    def test_the_assistant_is_validated_on_import_too(self, client: TestClient) -> None:
+        resp = client.post(
+            "/settings/import", json={"data": {"assistant": {"provider": "nope"}}},
+        )
+        assert resp.status_code == 400
+
+    def test_one_orders_task_can_move_to_anthropic_while_the_other_stays(
+        self, client: TestClient,
+    ) -> None:
+        resp = client.put(
+            "/settings/orders",
+            json={"data": {
+                "write_provider": "anthropic", "write_model": "claude-opus-5-5",
+                "write_reasoning_effort": "medium",
+            }},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["write_provider"] == "anthropic"
+        assert body["decide_provider"] == "openai"
+
+    def test_an_orders_task_is_rejected_on_its_own_effort_vocabulary(
+        self, client: TestClient,
+    ) -> None:
+        """Anthropic has no `none` effort, which the write task still holds."""
+        resp = client.put("/settings/orders", json={"data": {"write_provider": "anthropic"}})
+        assert resp.status_code == 400
+        assert "orders.write_reasoning_effort" in resp.json()["detail"]
+
+    def test_the_old_shared_orders_keys_are_gone(self, client: TestClient) -> None:
+        body = client.get("/settings/orders").json()
+        assert not {"model", "reasoning_effort", "max_tokens"} & set(body)

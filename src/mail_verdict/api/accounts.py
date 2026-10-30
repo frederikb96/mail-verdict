@@ -190,9 +190,15 @@ async def update_account(
     prefs_values = {k: v for k, v in all_values.items() if k in prefs_fields}
 
     if prefs_values.get("orders_enabled") is True:
-        if not str(get_settings_service().get("orders").get("model") or "").strip():
+        orders_settings = get_settings_service().get("orders")
+        unset = [
+            task for task in ("decide", "write")
+            if not str(orders_settings.get(f"{task}_model") or "").strip()
+        ]
+        if unset:
             raise HTTPException(
-                status_code=409, detail="Set the orders model in Settings first",
+                status_code=409,
+                detail=f"Set the orders {' and '.join(unset)} model in Settings first",
             )
 
     credentials_changed = "imap_password" in account_values or "smtp_password" in account_values

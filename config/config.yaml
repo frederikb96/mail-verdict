@@ -47,6 +47,12 @@ outbox:
   # A healthy send takes seconds; this catches the one that stopped.
   stalled_alert_after_seconds: 600
 
+# An AI provider whose circuit breaker has stayed suspended (no key, a
+# rejected key, spent credit or allowance) this long is raised as an alert
+# rather than left waiting silently; it clears once the provider answers.
+providers:
+  suspended_alert_after_seconds: 1800
+
 mail_actions:
   # How long the idempotency key of a message action or bulk action is
   # remembered. A client retrying within this window is answered with the

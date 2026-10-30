@@ -12,9 +12,9 @@ against controlled data rather than a real or fake model call, which
 tests/pg/test_order_worker.py and the design's own real-model check cover
 elsewhere. The tests that need the model to actually run -- the catch-up
 sweep, the summary rewrite, and the one proving a removed mail is left
-alone by a later sweep -- switch settings.ai.provider to "fake"
-(orders/fake.py), the same role that provider plays for the classify
-stage: deterministic and requiring no key.
+alone by a later sweep -- run on the "fake" provider
+(orders/fake.py), set per task in the orders settings by the
+orders_switched_on fixture: deterministic and requiring no key.
 
 Test functions run in file order and lean on that: the two empty-state
 tests need to run before any order or enabled account exists, and every
@@ -224,12 +224,18 @@ def orders_account(api_client: httpx.Client) -> dict[str, Any]:
 
 @pytest.fixture(scope="module")
 def orders_switched_on(api_client: httpx.Client, orders_account: dict[str, Any]) -> dict[str, Any]:
-    """orders_account, with settings.orders.model set and its own
+    """orders_account, with both orders tasks on the fake provider and its own
     orders_enabled switched on through the API -- the state every test
     after the two empty-state ones needs. Requested only from there on, so
     the "no account enabled" state is still true when
     test_no_account_enabled_shows_the_no_orders_yet_state runs first."""
-    resp = api_client.put("/api/settings/orders", json={"data": {"model": "fake"}})
+    resp = api_client.put(
+        "/api/settings/orders",
+        json={"data": {
+            "decide_provider": "fake", "decide_model": "fake",
+            "write_provider": "fake", "write_model": "fake",
+        }},
+    )
     assert resp.status_code == 200, resp.text
     resp = api_client.patch(
         f"/api/accounts/{orders_account['id']}", json={"orders_enabled": True},
@@ -744,8 +750,6 @@ def test_catch_up_preview_then_start_creates_orders_from_mail_already_there(
     orders_switched_on: dict[str, Any],
 ) -> None:
     account = orders_switched_on
-    resp = api_client.put("/api/settings/ai", json={"data": {"provider": "fake"}})
-    assert resp.status_code == 200, resp.text
 
     host, _imap_port, lmtp_port = dovecot_endpoint
     subject = f"Order confirmation {uuid.uuid4().hex[:8]}"
@@ -838,9 +842,9 @@ def test_phone_width_shows_list_then_detail_then_back(
 
 
 # The four corrections below share the module's own account and run after
-# the catch-up test, so settings.ai.provider is already "fake" -- every
-# correction enqueues a rewrite of the order it touched, and with a
-# provider configured the worker actually performs it. Each assertion is
+# the catch-up test, on the same fake provider -- every correction
+# enqueues a rewrite of the order it touched, and the worker actually
+# performs it. Each assertion is
 # therefore on a count or on a row's presence rather than on model-written
 # text, except the rewrite test, which is about exactly that text.
 
@@ -1012,8 +1016,6 @@ def test_rewriting_a_summary_replaces_the_orders_own_text(
     """Rewrite hands the order to the model again. With the fake provider
     that answers a fixed status of its own, so the pill changing from the
     seeded status is the proof the rewrite ran end to end."""
-    resp = api_client.put("/api/settings/ai", json={"data": {"provider": "fake"}})
-    assert resp.status_code == 200, resp.text
 
     order_id, _ = _seed_order(
         postgres_url, account_id=uuid.UUID(orders_switched_on["id"]),
@@ -1050,8 +1052,6 @@ def test_a_mail_taken_out_of_an_order_is_not_bundled_again_by_a_catch_up(
     off a sweep that demonstrably ran rather than off a wait that expired.
     """
     account = orders_switched_on
-    resp = api_client.put("/api/settings/ai", json={"data": {"provider": "fake"}})
-    assert resp.status_code == 200, resp.text
 
     removed = _deliver_and_sync(
         api_client, dovecot_endpoint, account, sender="shop@ostsee.example",

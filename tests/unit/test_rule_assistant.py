@@ -496,3 +496,36 @@ class TestControlSet:
         scene = _scene([stage])
         candidate = _run(scene, _rewrite(scene, [_with(stage, when=SENDER)]))
         assert assistant._preview(scene, candidate) is None
+
+
+class _StaticSettings:
+    def __init__(self, categories: dict[str, dict[str, Any]]) -> None:
+        self._categories = categories
+
+    def get(self, category: str) -> dict[str, Any]:
+        return dict(self._categories[category])
+
+
+def test_the_assistant_reads_its_own_settings_not_the_spam_models() -> None:
+    from mail_verdict.settings.defaults import SETTING_DEFAULTS
+
+    settings = _StaticSettings({
+        "ai": {**SETTING_DEFAULTS["ai"], "provider": "custom", "model": "spam-model",
+               "base_url": "https://spam.example.test/v1"},
+        "assistant": {
+            **SETTING_DEFAULTS["assistant"], "provider": "anthropic",
+            "model": "claude-opus-5-5", "reasoning_effort": "medium", "max_tokens": 12000,
+            "call_timeout_seconds": 90.0,
+        },
+        "retry": SETTING_DEFAULTS["retry"],
+    })
+
+    async def _connected() -> bool:
+        return False
+
+    model = assistant._Model(None, settings, None, _connected)  # type: ignore[arg-type]
+
+    assert (model.provider, model.name) == ("anthropic", "claude-opus-5-5")
+    assert model._effort == "medium"
+    assert model._base_url is None
+    assert (model._max_tokens, model._timeout_seconds) == (12000, 90.0)

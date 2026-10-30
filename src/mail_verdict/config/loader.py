@@ -279,6 +279,13 @@ class OutboxConfig(BaseModel):
     stalled_alert_after_seconds: int
 
 
+class ProvidersConfig(BaseModel):
+    """How long an AI provider may stay suspended before it is alerted on
+    (alerts/provider_health.py)."""
+
+    suspended_alert_after_seconds: int
+
+
 class SearchConfig(BaseModel):
     """Semantic search settings -- see config.yaml's own comments."""
 
@@ -362,6 +369,7 @@ class InfraConfig(BaseModel):
     server: ServerConfig
     security: SecurityConfig
     outbox: OutboxConfig
+    providers: ProvidersConfig
     mail_actions: MailActionsConfig
     database: DatabaseConfig
     search: SearchConfig
@@ -397,6 +405,7 @@ def get_config() -> InfraConfig:
                 server=ServerConfig(**(cfg.get("server") or {})),
                 security=SecurityConfig(**(cfg.get("security") or {})),
                 outbox=OutboxConfig(**(cfg.get("outbox") or {})),
+                providers=ProvidersConfig(**(cfg.get("providers") or {})),
                 mail_actions=MailActionsConfig(**(cfg.get("mail_actions") or {})),
                 database=DatabaseConfig(**database_cfg),
                 search=SearchConfig(**(cfg.get("search") or {})),

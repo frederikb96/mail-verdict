@@ -91,10 +91,6 @@ logger = logging.getLogger(__name__)
 _CONTROL_SIZE = 100
 _MAX_SEARCHES = 3
 _MAX_ATTEMPTS = 3
-# The settings.ai budget is sized for a one-word verdict; edits quoting and
-# re-emitting several rules need more.
-_MAX_TOKENS = 8000
-_CALL_TIMEOUT_SECONDS = 60.0
 _BODY_EXCERPT_CHARS = 1200
 _SEARCH_SAMPLE_SIZE = 8
 _SEARCH_TERM_CHARS = 100
@@ -665,11 +661,13 @@ class _Model:
         cred_repo: ProviderCredentialRepository,
         is_disconnected: Callable[[], Awaitable[bool]],
     ) -> None:
-        ai = settings_service.get("ai")
-        self.provider = str(ai.get("provider", "openai")).lower()
-        self.name = "fake" if self.provider == "fake" else str(ai.get("model", ""))
-        self._effort = ai.get("reasoning_effort") or None
-        self._base_url = ai.get("base_url") or None
+        assistant = settings_service.get("assistant")
+        self.provider = str(assistant["provider"]).lower()
+        self.name = "fake" if self.provider == "fake" else str(assistant["model"])
+        self._effort = assistant["reasoning_effort"] or None
+        self._base_url = assistant["base_url"] or None
+        self._max_tokens = int(assistant["max_tokens"])
+        self._timeout_seconds = float(assistant["call_timeout_seconds"])
         self._gateway = ModelGateway(
             db, cred_repo, RetryConfig.from_settings(settings_service.get("retry")),
         )
@@ -684,9 +682,9 @@ class _Model:
         self.calls += 1
         data, _ = await self._gateway.structured_call(
             provider=self.provider, category="assistant", model=self.name, effort=self._effort,
-            max_tokens=_MAX_TOKENS, schema_name=schema_name, system_prompt=system_prompt(step),
+            max_tokens=self._max_tokens, schema_name=schema_name, system_prompt=system_prompt(step),
             user_prompt=user_prompt(model_input), schema=schema, base_url=self._base_url,
-            timeout_seconds=_CALL_TIMEOUT_SECONDS,
+            timeout_seconds=self._timeout_seconds,
         )
         return data
 

@@ -194,6 +194,12 @@ class StageMisconfigured(StageError):
         self.stage_id = stage_id
 
 
+class StageRefused(StageMisconfigured):
+    """The model declined to answer. The same request would be declined
+    again, so the item fails at once with the refusal as its error instead
+    of burning its retries."""
+
+
 # --- The stage protocol ---------------------------------------------------
 
 

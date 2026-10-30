@@ -1,9 +1,7 @@
 """
-The circuit breaker each of the three AI-backed queues (pipeline, orders,
-embeddings) actually trips, proven independent even when their settings
-categories share one provider name -- the shape a "custom" deployment
-almost always is, since ai/semantic/orders orders itself all reuse
-settings.ai's provider, key and base_url.
+The circuit breaker each of the AI-backed queues (pipeline, orders,
+embeddings) actually trips, proven independent even when their tasks share
+one provider name -- the shape a "custom" deployment almost always is.
 
 Registration alone cannot prove this: `QueueManager.summary()` merely
 reads back whatever name a queue's `circuit_name` resolver reports, so a
@@ -33,7 +31,7 @@ from mail_verdict.pipeline.contracts import StageUnavailable
 from mail_verdict.pipeline.revisions import PipelineRevisionRepository, build_migrated_definition
 from mail_verdict.pipeline.runner import QUEUE_NAME as PIPELINE_QUEUE_NAME
 from mail_verdict.pipeline.runner import PipelineRunner
-from mail_verdict.queue.circuit import CircuitState
+from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.queue.manager import QueueManager
 from mail_verdict.settings.credentials import ProviderCredentialRepository
 from mail_verdict.settings.service import SettingsService
@@ -103,12 +101,11 @@ async def _seed_order_mail_job(
 async def test_a_broken_orders_model_does_not_open_classifys_or_embeddings_circuit(
     migrated_db: DatabaseConnection,
 ) -> None:
-    """settings.ai and settings.semantic both name provider "custom" --
-    the same provider settings.orders' calls resolve to as well, since
-    orders has no provider setting of its own. A call that only orders'
-    own settings would make failing (no base_url configured, so
-    ModelGateway's resolve_client fails deterministically with no
-    network) must trip only the orders queue's own breaker."""
+    """settings.ai, settings.semantic and both orders tasks name provider
+    "custom". A decide call that only the orders settings would make
+    failing (no base_url configured, so ModelGateway's resolve_client fails
+    deterministically with no network) must trip only the decide task's own
+    breaker -- not classify's, not embeddings', and not the write task's."""
     document = build_migrated_definition(
         raw_rules=[], spam_settings={"enabled": True, "auto_move_to_junk": True},
     )
@@ -118,6 +115,9 @@ async def test_a_broken_orders_model_does_not_open_classifys_or_embeddings_circu
     await settings_service.load()
     await settings_service.update("ai", {"provider": "custom"})
     await settings_service.update("semantic", {"provider": "custom"})
+    await settings_service.update(
+        "orders", {"decide_provider": "custom", "write_provider": "custom"},
+    )
 
     cred_repo = ProviderCredentialRepository(migrated_db, encryption_key="")
     manager = QueueManager(migrated_db)
@@ -135,6 +135,10 @@ async def test_a_broken_orders_model_does_not_open_classifys_or_embeddings_circu
     with pytest.raises(StageUnavailable):
         await _handle_mail_job(row, migrated_db, cred_repo, settings_service)
 
-    assert (await manager.summary(ORDERS_QUEUE_NAME)).circuit.state == CircuitState.SUSPENDED
+    assert (await CircuitBreaker(migrated_db, "custom:orders.decide").status()).state == (
+        CircuitState.SUSPENDED
+    )
+    # The queue reports the write task's breaker, which the decide call never touched.
+    assert (await manager.summary(ORDERS_QUEUE_NAME)).circuit.state == CircuitState.CLOSED
     assert (await manager.summary(PIPELINE_QUEUE_NAME)).circuit.state == CircuitState.CLOSED
     assert (await manager.summary(_EMBEDDINGS_QUEUE_NAME)).circuit.state == CircuitState.CLOSED

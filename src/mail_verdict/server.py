@@ -77,6 +77,7 @@ _pipeline_notifier: Any | None = None
 _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
 _stalled_outbox_timer: Any | None = None
+_provider_alert_timer: Any | None = None
 _action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
@@ -149,7 +150,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _liveness_server, _liveness_thread, _pending_send_timer
     global _mail_alert_finalizer, _retention_sweeper, _read_state_reconciler, _glacier_sweeper
     global _order_auto_closer
-    global _stalled_outbox_timer, _action_submission_pruner
+    global _stalled_outbox_timer, _action_submission_pruner, _provider_alert_timer
 
     config = get_config()
 
@@ -315,6 +316,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timedelta(seconds=config.outbox.stalled_alert_after_seconds),
     )
     await _stalled_outbox_timer.start()
+
+    from mail_verdict.alerts.provider_health import build_provider_alert_timer
+
+    _provider_alert_timer = build_provider_alert_timer(
+        db, event_ring, vapid_repo,
+        timedelta(seconds=config.providers.suspended_alert_after_seconds),
+    )
+    await _provider_alert_timer.start()
 
     from mail_verdict.mail_actions.submissions import build_submission_prune_timer
 
@@ -496,6 +505,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _mail_alert_finalizer.stop()
     if _stalled_outbox_timer:
         await _stalled_outbox_timer.stop()
+    if _provider_alert_timer:
+        await _provider_alert_timer.stop()
     if _action_submission_pruner:
         await _action_submission_pruner.stop()
     if _retention_sweeper:
@@ -520,6 +531,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pipeline_reconciler = None
     _pending_send_timer = None
     _stalled_outbox_timer = None
+    _provider_alert_timer = None
     _action_submission_pruner = None
     _mail_alert_finalizer = None
     _retention_sweeper = None
