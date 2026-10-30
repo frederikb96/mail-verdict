@@ -74,7 +74,7 @@ jobs:
         with:
           python-version: "3.15"
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
@@ -102,7 +102,7 @@ jobs:
         with:
           python-version: "3.15"
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
 
       # The OCR tests need Tesseract with every language in config.yaml's
       # extraction.ocr_languages, as the image has.
@@ -134,7 +134,7 @@ jobs:
         with:
           python-version: "3.15"
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
@@ -167,7 +167,7 @@ jobs:
         with:
           python-version: "3.15"
 
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]"
