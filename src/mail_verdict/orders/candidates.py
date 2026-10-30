@@ -4,7 +4,7 @@ existing orders a new mail might belong to, ranked and capped at 8.
 
 An order qualifies through any of the rules below; its rank is the best
 (lowest-numbered) rule that matched, and within a rank the order with the
-newest last_mail_at sorts first. Every reason that matched an order is
+newest last_activity_at sorts first. Every reason that matched an order is
 kept and shown to the model, not just the best one -- see prompts.py for
 how a Candidate is rendered into the decide prompt.
 
@@ -27,7 +27,7 @@ from urllib.parse import parse_qsl, urlsplit
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.database.models import Order, OrderIdentifier, OrderMail
+from mail_verdict.database.models import Order, OrderFact, OrderMail
 
 _MAX_CANDIDATES = 8
 
@@ -270,7 +270,7 @@ async def find_candidates(
     cutoff = now - timedelta(days=_LOAD_WINDOW_DAYS)
     windowed_result = await session.execute(
         select(Order).where(
-            Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff, ACCEPTS_MAIL,
+            Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
         )
     )
     windowed_orders = list(windowed_result.scalars().all())
@@ -332,7 +332,7 @@ def rank_orders(
             (kind, value) for kind, value, value_norm in order_numbers
             if _number_matches(value, value_norm, haystack_upper, haystack_norm)
         ]
-        if matched_numbers and _within_days(order.last_mail_at, now, _NUMBER_WINDOW_DAYS):
+        if matched_numbers and _within_days(order.last_activity_at, now, _NUMBER_WINDOW_DAYS):
             for kind, value in matched_numbers:
                 reasons.append(f"mail contains {kind} {value}")
             best_rank = min(best_rank, 1)
@@ -341,12 +341,12 @@ def rank_orders(
         if (
             len(merchant) >= _MIN_MERCHANT_LENGTH
             and merchant.lower() in f"{subject}\n{haystack_raw}".lower()
-            and _within_days(order.last_mail_at, now, _MERCHANT_WINDOW_DAYS)
+            and _within_days(order.last_activity_at, now, _MERCHANT_WINDOW_DAYS)
         ):
             reasons.append("mail names the merchant")
             best_rank = min(best_rank, 2)
 
-        if _within_hours(order.last_mail_at, now, _RECENT_WINDOW_HOURS):
+        if _within_hours(order.last_activity_at, now, _RECENT_WINDOW_HOURS):
             reasons.append("active in the last two days")
             best_rank = min(best_rank, 3)
 
@@ -354,12 +354,12 @@ def rank_orders(
         order_domains = {d for d in (_sender_domain(a) for a in order_froms) if d}
         if (
             sender_domain is not None and sender_domain in order_domains
-            and _within_days(order.last_mail_at, now, _SENDER_DOMAIN_WINDOW_DAYS)
+            and _within_days(order.last_activity_at, now, _SENDER_DOMAIN_WINDOW_DAYS)
         ):
             reasons.append("same sender domain")
             best_rank = min(best_rank, 4)
 
-        if _within_days(order.last_mail_at, now, _STATUS_WINDOW_DAYS):
+        if _within_days(order.last_activity_at, now, _STATUS_WINDOW_DAYS):
             if order.is_open:
                 reasons.append("active in the last two weeks")
                 best_rank = min(best_rank, 5)
@@ -382,7 +382,11 @@ def rank_orders(
             )
         )
 
-    ranked.sort(key=lambda c: (c.rank, -(c.last_mail_at or now).timestamp()))
+    ranked.sort(
+        key=lambda c: (
+            c.rank, -(order_by_id[c.order_id].last_activity_at or now).timestamp(),
+        )
+    )
     return ranked[:_MAX_CANDIDATES]
 
 
@@ -403,12 +407,12 @@ async def _load_identifiers(
 ) -> dict[uuid.UUID, list[tuple[str, str, str]]]:
     result = await session.execute(
         select(
-            OrderIdentifier.order_id, OrderIdentifier.kind,
-            OrderIdentifier.value, OrderIdentifier.value_norm,
-        ).where(OrderIdentifier.order_id.in_(order_ids))
+            OrderFact.order_id, OrderFact.kind, OrderFact.value, OrderFact.value_norm,
+        ).where(OrderFact.order_id.in_(order_ids), OrderFact.value_norm.is_not(None))
     )
     out: dict[uuid.UUID, list[tuple[str, str, str]]] = defaultdict(list)
     for order_id, kind, value, value_norm in result.all():
+        assert value_norm is not None  # filtered in the query
         out[order_id].append((kind, value, value_norm))
     return out
 

@@ -30,6 +30,7 @@ def _order(
         id=order_id or uuid.uuid4(), merchant=merchant, subject=subject, status=status,
         is_open=is_open, summary=summary, mail_count=mail_count,
         first_mail_at=last_mail_at, last_mail_at=last_mail_at,
+        first_activity_at=last_mail_at, last_activity_at=last_mail_at,
     )
 
 
@@ -160,3 +161,11 @@ def test_a_candidate_holding_a_linked_number_ranks_first() -> None:
     )
     assert candidates[0].order_id == held.id
     assert any("00340000000000000001" in reason for reason in candidates[0].reasons)
+
+
+def test_an_order_active_only_through_a_file_still_ranks_as_recent() -> None:
+    order = _order(last_mail_at=None)
+    order.last_activity_at = _NOW - timedelta(hours=1)
+    ranked = _rank([order])
+    assert [c.order_id for c in ranked] == [order.id]
+    assert ranked[0].rank == 3

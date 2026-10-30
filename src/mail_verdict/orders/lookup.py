@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mail_verdict.database.models import Order, OrderIdentifier, OrderMail
+from mail_verdict.database.models import Order, OrderFact, OrderMail
 from mail_verdict.orders.candidates import ACCEPTS_MAIL, normalize_identifier
 
 if TYPE_CHECKING:
@@ -78,10 +78,12 @@ class OrderLookup:
             return False
         cutoff = datetime.now(timezone.utc) - timedelta(days=_NUMBER_WINDOW_DAYS)
         result = await session.execute(
-            select(OrderIdentifier.value_norm)
-            .join(Order, Order.id == OrderIdentifier.order_id)
+            select(OrderFact.value_norm)
+            .join(Order, Order.id == OrderFact.order_id)
             .where(
-                Order.last_mail_at.is_not(None), Order.last_mail_at >= cutoff, ACCEPTS_MAIL,
+                OrderFact.value_norm.is_not(None),
+                Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff,
+                ACCEPTS_MAIL,
             )
         )
         for (value_norm,) in result.all():

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Orders and tickets carry a kind (`ticket`, `order` or `other`) that the model sets and a person
+  can override, an event date range for tickets, and activity timestamps that also cover files.
+  `GET /api/orders` takes `kind` and `sort=event` (ordering by the entry's timeline date, paged by
+  `before`), and `PATCH /api/orders/{id}` takes `kind`.
+- An order's numbers become typed key facts (`facts` in the detail, replacing `identifiers`):
+  dates, amounts, places, seats, links and barcodes alongside the order, booking, ticket, invoice
+  and tracking numbers. A tracking number with a known carrier carries a server-built tracking link.
+- The detail's `documents` list what has been read out of each attachment (extraction method, page
+  and barcode counts) and links straight to the bytes; schema for files added to an order by hand.
+
 ## [6.18.2] - 2026-10-24
 
 ### Changed

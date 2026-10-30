@@ -2116,9 +2116,20 @@ class OrderListItem(BaseModel):
     expected_until: date | None
     icon: str
     summary_preview: str
+    kind: Literal["ticket", "order", "other"]
+    kind_set_by: Literal["ai", "user"]
+    event_start: date | None
+    event_end: date | None
+    # Where the entry sits on the tickets timeline: event_start, else the
+    # UTC date of its first activity. Computed by the server, never by a
+    # client.
+    timeline_date: date | None
     first_mail_at: datetime | None
     last_mail_at: datetime | None
+    first_activity_at: datetime | None
+    last_activity_at: datetime | None
     mail_count: int
+    file_count: int
     account_ids: list[uuid.UUID]
     text_stale: bool
     updated_at: datetime
@@ -2130,9 +2141,29 @@ class OrderListResponse(BaseModel):
     next_cursor: str | None = None
 
 
-class OrderIdentifierOut(BaseModel):
-    kind: str
+class OrderCodeOut(BaseModel):
+    """A barcode a document carries, as the fact it belongs to shows it."""
+
+    format: str
+    # The decoded text when it is printable, else null (binary payloads).
+    payload_text: str | None
+    image_url: str
+    page: int | None
+
+
+class OrderFactOut(BaseModel):
+    id: uuid.UUID
+    kind: Literal[
+        "order_number", "booking_code", "ticket_number", "invoice_number", "tracking_number",
+        "date", "time", "amount", "place", "seat", "person", "code", "link", "other",
+    ]
+    label: str
     value: str
+    carrier: str | None
+    # Built by code from carrier and value; null without a public tracking page.
+    tracking_url: str | None
+    code: OrderCodeOut | None
+    document_id: uuid.UUID | None
 
 
 class OrderMailOut(BaseModel):
@@ -2150,28 +2181,38 @@ class OrderMailOut(BaseModel):
 
 
 class OrderDocumentOut(BaseModel):
-    message_id: uuid.UUID
-    attachment_id: uuid.UUID
+    id: uuid.UUID
+    source: Literal["mail", "file"]
+    message_id: uuid.UUID | None
+    attachment_id: uuid.UUID | None
+    file_id: uuid.UUID | None
     filename: str
     content_type: str
     size_bytes: int | None
     received_at: datetime
+    page_count: int | None
+    method: str
+    barcode_count: int
+    # Where the bytes are; null when a mail document's attachment cannot be
+    # found any more.
+    download_url: str | None
 
 
 class OrderDetail(OrderListItem):
     summary: str
-    identifiers: list[OrderIdentifierOut]
+    facts: list[OrderFactOut]
     mails: list[OrderMailOut]
     documents: list[OrderDocumentOut]
 
 
 class OrderUpdateRequest(BaseModel):
-    """A person's change to an order's flags; an omitted field is left alone.
-    Setting is_open records that a person decided it."""
+    """A person's change to an order's flags and kind; an omitted field is left
+    alone. Setting is_open or kind records that a person decided it."""
 
     is_favorite: bool | None = None
     is_open: bool | None = None
     is_sealed: bool | None = None
+    kind: Literal["ticket", "order", "other"] | None = None
 
     @model_validator(mode="after")
     def _no_explicit_nulls(self) -> OrderUpdateRequest:
