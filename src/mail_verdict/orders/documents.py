@@ -347,7 +347,10 @@ def assemble_write_input(
     for doc in documents:
         if doc.source == "file":
             file_documents.append(doc)
-        else:
+        elif doc.text.strip():
+            # A mail's logos and spacer images read as empty text: listing
+            # them only numbers blank blocks. A file added by hand stays, so
+            # the model knows it exists.
             by_mail.setdefault((doc.account_id, doc.msg_key), []).append(doc)
     file_documents.sort(key=lambda d: (d.added_at or datetime.min, d.filename))
 

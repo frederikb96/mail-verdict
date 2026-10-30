@@ -117,3 +117,17 @@ def test_the_first_and_the_newest_mail_are_never_dropped() -> None:
         [_mail("old", "x" * 5_000), _mail("new", "y" * 5_000)], [], ceiling=10,
     )
     assert [m["msg_key"] for m in result.mails] == ["old", "new"]
+
+
+def test_a_mail_document_without_text_stays_out_of_the_write_prompt_and_its_numbering() -> None:
+    logo = _stored("m1", "", name="logo.png")
+    ticket = _stored("m1", "[code b1 QR \"7\"]\nTicket", name="ticket.pdf")
+    result = assemble_write_input([_mail("m1")], [logo, ticket])
+    shown = result.mails[0]["documents"]
+    assert [(d.index, d.name) for d in shown] == [(1, "ticket.pdf")]
+    assert list(result.code_map) == ["d1:b1"]
+
+
+def test_a_file_added_by_hand_is_listed_even_without_text() -> None:
+    photo = _stored(None, "", name="photo.jpg")
+    assert [d.name for d in assemble_write_input([_mail("m1")], [photo]).files] == ["photo.jpg"]
