@@ -127,8 +127,9 @@ def _needs_reading(version: int, method: str, size_bytes: int | None) -> bool:
 
 
 def _clean(value: str) -> str:
-    # PostgreSQL text and jsonb hold no NUL.
-    return value.replace("\x00", "")
+    # PostgreSQL text and jsonb hold no NUL, and the driver cannot encode a
+    # lone surrogate (a JSON `\ud800` escape in a pass yields one).
+    return value.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
 def _row_values(read: ReadDocument) -> dict[str, Any]:

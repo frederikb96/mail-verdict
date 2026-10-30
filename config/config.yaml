@@ -134,7 +134,8 @@ extraction:
 order_files:
   # Largest single file; enforced while the upload is read.
   max_file_bytes: 26214400
-  # Files one entry may hold.
+  # Files one entry may hold. Checked when a file is added to a named entry
+  # (as is the total below); a file the model places is not counted.
   max_files_per_order: 20
   # Total bytes of the files of one entry.
   max_total_bytes_per_order: 52428800

@@ -38,11 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   child process with a time limit, so a document that hangs or crashes the reader cannot affect
   the API. The container image installs Tesseract with German, English and Dutch; its limits are
   the `extraction` section of `config/config.yaml`.
-- Files can be added to the orders register by hand: `POST /api/orders/files` takes a PDF, image,
-  Wallet pass, calendar file, text, HTML or XML file, optionally for a chosen entry, and the orders
-  queue reads it and places it in the entry the model picks or a new one (never skipped as "not an
-  order"). An entry can consist of files alone; `DELETE /api/orders/{id}/files/{file_id}` removes
-  one. Limits are the `order_files` section of `config/config.yaml`.
+- Files can be added to the orders register by hand: `POST /api/orders/files` takes a file of any
+  type, optionally for a chosen entry, and the orders queue reads it and places it in the entry the
+  model picks or a new one (never skipped as "not an order"). PDFs, images, Wallet passes, calendar
+  files, text, HTML and XML are read; any other file (a Word document, an archive, a HEIC photo)
+  is stored and listed with extraction method `none`, and downloads as it came. An entry can consist
+  of files alone; `DELETE /api/orders/{id}/files/{file_id}` removes one. A file that could not be
+  placed stays listed in the entry it was added to until it is pruned. Limits are the
+  `order_files` section of `config/config.yaml`.
 - The web Orders & tickets screen shows All, Orders or Tickets with one click, plus Open and
   Favorites toggles that combine with it; the choice is remembered across reloads. Tickets are a
   timeline around a today line (later events above, earlier below) that opens centred on today and
@@ -58,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The rule assistant works on Claude: structured requests to Anthropic no longer send JSON-schema
+  keywords the Messages API refuses (`maxItems`, string and number limits); the limit moves into
+  the field's description.
+- An entry whose text cannot be written is listed with a placeholder text instead of staying out of
+  every list, and an entry whose rewrite fails stops showing "Updating the summary...".
+- A rewrite reads mail that has moved into the glacier (body and attachments), reads a mail's
+  non-inline attachments before the twelve-attachment cap applies, reads again a document whose
+  read failed (a timeout, say; one over the size limit stays unread), and no attachment is read
+  while the task's provider is suspended.
+- A Wallet pass carrying a lone UTF-16 surrogate no longer fails its job at the database insert.
 - Order mail bodies that are HTML only, or whose plain part is a one-line stub ("your email program
   does not support HTML") or HTML source, are read from the HTML part, with entities decoded, table
   rows as `label | value` and link targets kept.

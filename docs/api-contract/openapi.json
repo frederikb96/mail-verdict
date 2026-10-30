@@ -14207,7 +14207,7 @@
     },
     "/orders/files": {
       "post": {
-        "description": "Add a file to the register. It is read and placed by the orders queue:\ninto the entry `order_id` names, else into the entry the decide call\npicks or a new one (never refused as \"not about an order\" -- adding it\nwas the person's decision). Answers at once with `pending`; poll\n`GET /orders/files/{file_id}`, or wait for the entry's `order.updated`.",
+        "description": "Add a file of any type to the register; one that cannot be read (a\nWord file, an archive, a HEIC photo) is stored and listed as it came, and\ndownloads under its own name. It is read and placed by the orders queue:\ninto the entry `order_id` names, else into the entry the decide call\npicks or a new one (never refused as \"not about an order\" -- adding it\nwas the person's decision). Answers at once with `pending`; poll\n`GET /orders/files/{file_id}`, or wait for the entry's `order.updated`.",
         "operationId": "add_file_orders_files_post",
         "requestBody": {
           "content": {
