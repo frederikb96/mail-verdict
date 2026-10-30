@@ -353,6 +353,17 @@ class ExtractionConfig(BaseModel):
     max_text_chars: int
 
 
+class OrderFilesConfig(BaseModel):
+    """Limits on files added to the orders register by hand -- see
+    config.yaml for what each one bounds."""
+
+    max_file_bytes: int
+    max_files_per_order: int
+    max_total_bytes_per_order: int
+    accepted_types: list[str]
+    failed_retention_days: int
+
+
 class InfraConfig(BaseModel):
     """
     Infrastructure configuration (file-based, requires restart).
@@ -377,6 +388,7 @@ class InfraConfig(BaseModel):
     glacier: GlacierConfig
     webhooks: WebhooksConfig
     extraction: ExtractionConfig
+    order_files: OrderFilesConfig
 
 
 _config_instance: InfraConfig | None = None
@@ -413,6 +425,7 @@ def get_config() -> InfraConfig:
                 glacier=GlacierConfig(**(cfg.get("glacier") or {})),
                 webhooks=WebhooksConfig(**(cfg.get("webhooks") or {})),
                 extraction=ExtractionConfig(**(cfg.get("extraction") or {})),
+                order_files=OrderFilesConfig(**(cfg.get("order_files") or {})),
             )
         except ValidationError as exc:
             raise ConfigError(f"Invalid configuration: {exc}") from exc

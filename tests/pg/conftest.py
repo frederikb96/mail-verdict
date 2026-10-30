@@ -7,8 +7,9 @@ conftest's pytest_collection_modifyitems.
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import (
     Column,
@@ -27,6 +28,9 @@ from testcontainers.core.container import DockerContainer
 
 from mail_verdict.config.loader import reset_config
 from mail_verdict.database.connection import DatabaseConnection, close_database, init_database
+from mail_verdict.orders import model_calls
+from mail_verdict.orders.documents import close_extraction_pool
+from tests.helpers.orders_pg import ModelStub
 from tests.setup.containers import POSTGRES_DB
 from tests.setup.migrations import run_migrations
 
@@ -158,3 +162,30 @@ async def throwaway_queue_table(migrated_db: DatabaseConnection) -> AsyncIterato
     finally:
         async with migrated_db.engine.begin() as conn:
             await conn.run_sync(table.metadata.drop_all)
+
+
+@pytest.fixture()
+def orders_config(monkeypatch: pytest.MonkeyPatch, postgres_url: str) -> Iterator[None]:
+    """The infrastructure configuration `get_config()` needs (its database
+    url) for code that reads it, and a fresh extraction pool for the test."""
+    monkeypatch.setenv("MAIL_VERDICT_DATABASE_URL", postgres_url)
+    reset_config()
+    yield
+    close_extraction_pool()
+    reset_config()
+
+
+@pytest.fixture()
+def model_stub(monkeypatch: pytest.MonkeyPatch) -> ModelStub:
+    """The orders model calls answered by the test (`ModelStub.answers`),
+    recording the prompts they were given."""
+    stub = ModelStub()
+    monkeypatch.setattr(model_calls, "structured_call", stub)
+    return stub
+
+
+@pytest.fixture()
+def number() -> str:
+    """An order number no other test in this run uses: the database is
+    shared, and the same number in two orders would join them."""
+    return f"E{uuid.uuid4().int % 10**9:09d}"

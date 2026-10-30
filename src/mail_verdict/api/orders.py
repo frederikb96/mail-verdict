@@ -9,6 +9,11 @@ POST   /api/orders/{id}/rewrite                      -- re-run the write call
 POST   /api/orders/{id}/merge                        -- merge into another order
 POST   /api/orders/{id}/mails/{mail_key}/detach       -- remove or move one mail
 POST   /api/orders/catch-up                           -- sweep recent mail
+POST   /api/orders/files                              -- add a file by hand
+GET    /api/orders/files/{file_id}                    -- where an added file stands
+GET    /api/orders/{id}/files/{file_id}               -- download an added file
+DELETE /api/orders/{id}/files/{file_id}               -- delete an added file
+GET    /api/orders/{id}/codes/{fact_id}.png           -- a code fact rendered as an image
 
 An order is hidden from the list until it has been written once
 (written_at is not null) -- see orders/repository.py's own write path.
@@ -18,15 +23,18 @@ the durable msg_key text (see database/models.py's OrderMail docstring).
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import logging
 import uuid
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from sqlalchemy import Date, and_, cast, desc, func, or_, select
 
 from mail_verdict.api.events import broadcast_event, get_event_ring
+from mail_verdict.api.outbox import _read_capped_attachment
 from mail_verdict.api.schemas import (
     OrderCatchUpRequest,
     OrderCatchUpResponse,
@@ -35,12 +43,15 @@ from mail_verdict.api.schemas import (
     OrderDetail,
     OrderDocumentOut,
     OrderFactOut,
+    OrderFileStatus,
     OrderListItem,
     OrderListResponse,
     OrderMailOut,
     OrderMergeRequest,
     OrderUpdateRequest,
 )
+from mail_verdict.config import get_config
+from mail_verdict.core.content_disposition import content_disposition
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.fuzzy import (
     fuzzy_token_predicate,
@@ -56,7 +67,7 @@ from mail_verdict.database.models import (
     OrderFile,
     OrderMail,
 )
-from mail_verdict.orders import repository
+from mail_verdict.orders import files, repository
 from mail_verdict.orders.carriers import tracking_url
 from mail_verdict.orders.catch_up import run_catch_up
 from mail_verdict.orders.locate import resolve_mails
@@ -111,6 +122,67 @@ def _list_item(
         first_activity_at=order.first_activity_at, last_activity_at=order.last_activity_at,
         mail_count=order.mail_count, file_count=order.file_count, account_ids=account_ids,
         text_stale=order.text_stale, updated_at=order.updated_at,
+    )
+
+
+@router.post("/files", response_model=OrderFileStatus, status_code=202)
+async def add_file(
+    file: UploadFile = File(...),
+    order_id: uuid.UUID | None = Form(default=None),
+) -> OrderFileStatus:
+    """
+    Add a file to the register. It is read and placed by the orders queue:
+    into the entry `order_id` names, else into the entry the decide call
+    picks or a new one (never refused as "not about an order" -- adding it
+    was the person's decision). Answers at once with `pending`; poll
+    `GET /orders/files/{file_id}`, or wait for the entry's `order.updated`.
+    """
+    limits = get_config().order_files
+    data = await _read_capped_attachment(file, limits.max_file_bytes)
+    name = files.clean_filename(file.filename)
+    file_type = files.detect_file_type(name, data[:4096])
+    if file_type is None or file_type not in limits.accepted_types:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported file; accepted types are {', '.join(limits.accepted_types)}",
+        )
+    db = get_db_connection()
+    async with db.session() as session:
+        if order_id is not None:
+            if not await files.order_exists(session, order_id):
+                raise HTTPException(status_code=404, detail="Order not found")
+            count, total = await files.entry_usage(session, order_id)
+            if count + 1 > limits.max_files_per_order:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"An entry holds at most {limits.max_files_per_order} files",
+                )
+            if total + len(data) > limits.max_total_bytes_per_order:
+                raise HTTPException(
+                    status_code=413, detail="The files of one entry exceed the total size limit",
+                )
+        state = await files.create_file(
+            session, filename=name, content_type=files.FILE_TYPES[file_type], data=data,
+            order_id=order_id,
+        )
+    return OrderFileStatus(
+        file_id=state.file_id, order_id=state.order_id,
+        status=state.status,  # type: ignore[arg-type]
+        last_error=state.last_error,
+    )
+
+
+@router.get("/files/{file_id}", response_model=OrderFileStatus)
+async def get_file_status(file_id: uuid.UUID) -> OrderFileStatus:
+    db = get_db_connection()
+    async with db.session() as session:
+        state = await files.file_state(session, file_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return OrderFileStatus(
+        file_id=state.file_id, order_id=state.order_id,
+        status=state.status,  # type: ignore[arg-type]
+        last_error=state.last_error,
     )
 
 
@@ -314,6 +386,15 @@ async def _load_documents(
         )
         .outerjoin(OrderFile, OrderFile.id == OrderDocument.file_id)
         .where(OrderDocument.order_id == order_id)
+        # A mail's logo or tracking pixel that held nothing readable is not a document.
+        .where(
+            or_(
+                OrderDocument.source == "file",
+                OrderDocument.content_type.not_like("image/%"),
+                OrderDocument.text_chars_total > 0,
+                func.jsonb_array_length(OrderDocument.barcodes) > 0,
+            )
+        )
         .order_by(desc("received_at"), OrderDocument.filename, OrderDocument.id)
     )
     rows = result.all()
@@ -389,6 +470,82 @@ async def get_order(order_id: uuid.UUID) -> OrderDetail:
     if detail is None:
         raise HTTPException(status_code=404, detail="Order not found")
     return detail
+
+
+@router.get("/{order_id}/files/{file_id}")
+async def download_file(order_id: uuid.UUID, file_id: uuid.UUID) -> Response:
+    """Stream a file added to the register, with its content type and a
+    download disposition."""
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(OrderFile.filename, OrderFile.content_type, OrderFile.data).where(
+                OrderFile.id == file_id, OrderFile.order_id == order_id,
+            )
+        )
+        row = result.first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return Response(
+        content=row.data, media_type=row.content_type or "application/octet-stream",
+        headers={"Content-Disposition": content_disposition(row.filename)},
+    )
+
+
+@router.delete("/{order_id}/files/{file_id}", status_code=204)
+async def delete_file(order_id: uuid.UUID, file_id: uuid.UUID) -> None:
+    """Delete a file of an entry, with its document and codes. The entry is
+    deleted when nothing else is left of it, otherwise rewritten. Mail
+    attachments are never touched."""
+    db = get_db_connection()
+    async with db.session() as session:
+        order_deleted = await files.delete_file(session, order_id, file_id)
+    if order_deleted is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    await _announce(order_id, "deleted" if order_deleted else "updated")
+
+
+@router.get("/{order_id}/codes/{fact_id}.png")
+async def get_code_image(
+    order_id: uuid.UUID, fact_id: uuid.UUID, scale: int = Query(default=8, ge=1, le=16),
+) -> Response:
+    """A code fact as a PNG a gate scanner reads: the stored payload encoded
+    again at `scale` pixels per module, else the crop of the code taken from
+    the document when the format has no writer."""
+    db = get_db_connection()
+    async with db.session() as session:
+        result = await session.execute(
+            select(OrderFact.document_id, OrderFact.barcode_index).where(
+                OrderFact.id == fact_id, OrderFact.order_id == order_id, OrderFact.kind == "code",
+            )
+        )
+        fact = result.first()
+        entry = None
+        if fact is not None and fact.document_id is not None:
+            barcodes = (
+                await session.execute(
+                    select(OrderDocument.barcodes).where(OrderDocument.id == fact.document_id)
+                )
+            ).scalar_one_or_none() or []
+            entry = next((b for b in barcodes if b.get("index") == fact.barcode_index), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Code not found")
+
+    from mail_verdict.orders.extract.barcodes import render_code
+
+    shown = entry.get("text")
+    image = await asyncio.to_thread(
+        render_code, base64.b64decode(entry.get("bytes_b64") or ""),
+        str(entry.get("format", "")), shown if isinstance(shown, str) else None, scale,
+    )
+    if image is None and entry.get("crop_b64"):
+        image = base64.b64decode(entry["crop_b64"])
+    if image is None:
+        raise HTTPException(status_code=404, detail="Code cannot be drawn")
+    return Response(
+        content=image, media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.patch("/{order_id}", response_model=OrderDetail)

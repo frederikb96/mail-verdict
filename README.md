@@ -104,7 +104,10 @@ mirror, which is what keeps it simple.
   already in flight; a mail is attached to an existing entry or opens a new one, never split
   between two afterwards. When the bundling goes wrong, a mail can be moved to another entry or
   removed, two entries merged, or the summary rewritten by hand. Each entry is a ticket, an order
-  or something else (a subscription, a claim), set by the model and overridable by hand. Entries
+  or something else (a subscription, a claim), set by the model and overridable by hand. What an
+  entry's mails attach is read too — the text of PDFs (scans by OCR), Wallet passes, calendar files,
+  e-invoices and images, and every QR, Aztec or bar code, which the entry shows as an image to scan —
+  and a file can be added to an entry directly (or opened as a new one) without any mail. Entries
   can be marked as favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
   the agent adds no more mail to them; an open entry nothing is expected of any more is closed
   automatically, a few days (7 by default) after the date the model estimates it is over, or 30

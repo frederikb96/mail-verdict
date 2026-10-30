@@ -12,7 +12,7 @@ import re
 _PREVIEW_MAX_CHARS = 240
 _SUBJECT_MAX_CHARS = 80
 _STATUS_MAX_CHARS = 60
-_SUMMARY_MAX_CHARS = 1_500
+_SUMMARY_MAX_CHARS = 2_000
 
 _BOLD_RE = re.compile(r"\*\*(.*?)\*\*")
 _BULLET_PREFIX_RE = re.compile(r"^[-*]\s+")

@@ -29,13 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   fails the job at once.
 - The detail's `documents` list what has been read out of each attachment (extraction method, page
   and barcode counts) and links straight to the bytes; schema for files added to an order by hand.
-- A library that reads attachments for the orders pipeline (`orders/extract/`), not yet called by
-  it: PDF text, barcodes (QR, Aztec, Data Matrix, PDF417 and 1D formats) with their exact payload
-  and their place in the text, Tesseract for pages with no text layer, Apple Wallet passes,
-  calendar files, UBL and CII e-invoices and HTML. It runs in a child process with a time limit, so
-  a document that hangs or crashes the reader cannot affect the API. The container image installs
-  Tesseract with German, English and Dutch; its limits are the new `extraction` section of
-  `config/config.yaml`.
+- The orders pipeline reads what a mail attaches: PDFs (scans by OCR), Wallet passes, calendar
+  files, e-invoices, HTML and images, and every QR, Aztec or bar code, which becomes a `code` fact
+  with an image at `GET /api/orders/{id}/codes/{fact_id}.png`. The text reaches the matching call
+  and the number search (a carrier's number that only a PDF names now finds its order) and the
+  write call, which also sets the entry's kind, a ticket's event dates and up to twelve typed key
+  facts. Rewriting an order written earlier reads its documents first. Documents are read in a
+  child process with a time limit, so a document that hangs or crashes the reader cannot affect
+  the API. The container image installs Tesseract with German, English and Dutch; its limits are
+  the `extraction` section of `config/config.yaml`.
+- Files can be added to the orders register by hand: `POST /api/orders/files` takes a PDF, image,
+  Wallet pass, calendar file, text, HTML or XML file, optionally for a chosen entry, and the orders
+  queue reads it and places it in the entry the model picks or a new one (never skipped as "not an
+  order"). An entry can consist of files alone; `DELETE /api/orders/{id}/files/{file_id}` removes
+  one. Limits are the `order_files` section of `config/config.yaml`.
 
 ### Fixed
 
@@ -47,9 +54,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The prepared order mail body is capped at 12,000 characters: a longer one keeps its first 8,000
   and last 4,000 with an omission marker.
-
-### Changed
-
+- A subscription is one entry that its renewals join, instead of being left out; transfers between
+  people, rent, bank statements and authority notices stay out. The entry's summary may be up to
+  2,000 characters.
 - `orders.model`, `orders.reasoning_effort` and `orders.max_tokens` are replaced by the
   `decide_*` and `write_*` key groups, and the rule assistant reads its own `assistant` category
   instead of `ai`; the upgrade copies what was stored, so every task keeps the provider, model and

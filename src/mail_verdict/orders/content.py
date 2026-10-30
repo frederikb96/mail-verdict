@@ -145,11 +145,23 @@ def prepare_body(*, body_text: str | None, body_html: str | None) -> PreparedBod
 
 
 @dataclass(frozen=True)
+class AttachmentRef:
+    """An attachment as listed on a mail: what it is, never its bytes."""
+
+    id: uuid.UUID
+    filename: str
+    content_type: str
+    size_bytes: int | None
+    is_inline: bool
+
+
+@dataclass(frozen=True)
 class OrderMailContent:
     """One mail's content, as loaded for a decide or write call -- an
     explicit column list, never raw_source and never an attachment's own
     data (the same OOM-under-concurrency guard pipeline/message_view.py's
-    module docstring explains)."""
+    module docstring explains). The bytes of an attachment are read only
+    by orders/extract/source.py."""
 
     message_id: uuid.UUID
     thread_id: uuid.UUID
@@ -158,7 +170,7 @@ class OrderMailContent:
     to_addrs: str
     received_at: datetime | None
     body: PreparedBody
-    attachments: tuple[tuple[str, str], ...]
+    attachments: tuple[AttachmentRef, ...]
 
 
 async def load_order_mail(
@@ -213,12 +225,19 @@ async def load_order_mail(
         return None
 
     att_result = await session.execute(
-        select(Attachment.filename, Attachment.content_type).where(
-            Attachment.message_id == row.id,
+        select(
+            Attachment.id, Attachment.filename, Attachment.content_type, Attachment.size_bytes,
+            Attachment.content_id,
         )
+        .where(Attachment.message_id == row.id)
+        .order_by(Attachment.filename, Attachment.id)
     )
     attachments = tuple(
-        (name or "", ctype or "") for name, ctype in att_result.all()
+        AttachmentRef(
+            id=att.id, filename=att.filename or "", content_type=att.content_type or "",
+            size_bytes=att.size_bytes, is_inline=bool(att.content_id),
+        )
+        for att in att_result.all()
     )
 
     prepared = prepare_body(body_text=row.body_text, body_html=row.body_html)

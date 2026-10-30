@@ -19,6 +19,10 @@ HEAD_CHARS = 8_000
 TAIL_CHARS = 4_000
 TERMS_HEAD_CHARS = 2_000
 TERMS_TAIL_CHARS = 1_000
+# What a document contributes to the decide call: the identifiers a mail
+# carries sit at the end of a document as often as at its start.
+EXCERPT_HEAD_CHARS = 2_000
+EXCERPT_TAIL_CHARS = 1_000
 
 # A cut moves up to this far to land on a line or word boundary.
 _SNAP_CHARS = 200
@@ -79,7 +83,22 @@ def truncate_text(text: str, *, terms_like: bool = False) -> Truncated:
         The text as the model reads it and the number of characters left out
     """
     head, tail = (TERMS_HEAD_CHARS, TERMS_TAIL_CHARS) if terms_like else (HEAD_CHARS, TAIL_CHARS)
-    limit = head + tail if terms_like else WHOLE_CHARS
+    return _head_and_tail(text, head, tail, limit=head + tail if terms_like else WHOLE_CHARS)
+
+
+def excerpt(text: str) -> Truncated:
+    """
+    The short form of a document the decide call reads: whole up to head plus
+    tail, else the first `EXCERPT_HEAD_CHARS` and the last `EXCERPT_TAIL_CHARS`
+    with an omission marker between.
+    """
+    return _head_and_tail(
+        text, EXCERPT_HEAD_CHARS, EXCERPT_TAIL_CHARS,
+        limit=EXCERPT_HEAD_CHARS + EXCERPT_TAIL_CHARS,
+    )
+
+
+def _head_and_tail(text: str, head: int, tail: int, *, limit: int) -> Truncated:
     if len(text) <= limit:
         return Truncated(text, 0)
     head_end = _head_cut(text, head)

@@ -8,9 +8,9 @@ docs/architecture.md's "Orders" section for what that measurement found.
 A reworded prompt is not the same prompt: do not "clean up" the wording
 in those templates without re-measuring.
 
-Untrusted content (a mail's subject, sender, body, and a candidate's own
-summary) is JSON-encoded and has every `<`/`>` replaced by its unicode
-escape before being placed inside the `<new_mail>`/`<candidates>`/
+Untrusted content (a mail's subject, sender, body, the text of its
+attachments, and a candidate's own summary) is JSON-encoded and has every
+`<`/`>` replaced by its unicode escape before being placed inside the `<new_mail>`/`<candidates>`/
 `<mail n="...">` delimiters below -- the same defence
 pipeline/stages/classify.py's _escape_delimiter_breakout uses, so a body
 containing the literal string "</new_mail>" cannot close the fence early.
@@ -19,11 +19,13 @@ containing the literal string "</new_mail>" cannot close the fence early.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
 from mail_verdict.core.prompts import load_static_prompt, render_prompt
 from mail_verdict.orders.candidates import Candidate
+from mail_verdict.orders.carriers import CARRIERS
 
 # --- Escaping, shared by both calls -----------------------------------
 
@@ -38,6 +40,32 @@ def _json_field(value: Any) -> str:
     return _escape_delimiter_breakout(json.dumps(value, ensure_ascii=False))
 
 
+@dataclass(frozen=True)
+class PromptDocument:
+    """A document as a prompt shows it: its text is already cut to the
+    prompt budget and its code markers carry the prompt's document number
+    (`[code d2:b1 ...]`). `added` is the day a file was added by hand."""
+
+    index: int
+    name: str
+    content_type: str
+    page_count: int | None
+    method: str
+    text: str
+    added: str = ""
+
+
+def _document_block(tag: str, document: PromptDocument) -> str:
+    pages = f" pages={document.page_count}" if document.page_count else ""
+    added = f" added={document.added}" if document.added else ""
+    return (
+        f"<{tag} n=\"{document.index}\" name={_json_field(document.name)} "
+        f"type={_json_field(document.content_type)}{pages} method={document.method}{added}>\n"
+        f"{_json_field(document.text)}\n"
+        f"</{tag}>"
+    )
+
+
 # --- Decide call --------------------------------------------------------
 
 _IDENTIFIER_KINDS = (
@@ -49,13 +77,14 @@ def load_decide_system_prompt() -> str:
     return load_static_prompt("orders_decide_system.md.j2")
 
 
-def build_decide_schema(handles: list[str]) -> dict[str, Any]:
+def build_decide_schema(handles: list[str], *, allow_none: bool = True) -> dict[str, Any]:
     """The decide answer schema, built per call: `target`'s enum only
     ever offers the handles actually shown in this call's candidate list,
-    plus "none" and "new" -- so a wrong handle is unrepresentable rather
-    than merely discouraged (observed during design: with a free-text
-    field the model wrote the order number into it instead of the handle
-    in roughly half the answers that chose a candidate)."""
+    plus "new" and, for a mail, "none" -- so a wrong handle is
+    unrepresentable rather than merely discouraged (observed during design:
+    with a free-text field the model wrote the order number into it instead
+    of the handle in roughly half the answers that chose a candidate). A
+    file the person added on purpose is never "none"."""
     return {
         "type": "object",
         "properties": {
@@ -63,7 +92,9 @@ def build_decide_schema(handles: list[str]) -> dict[str, Any]:
                 "type": "string", "description": "A few words naming what the mail is.",
             },
             "reason": {"type": "string", "description": "One sentence: why this decision."},
-            "target": {"type": "string", "enum": ["none", "new", *handles]},
+            "target": {
+                "type": "string", "enum": [*(["none"] if allow_none else []), "new", *handles],
+            },
             "identifiers": {
                 "type": "array",
                 "items": {
@@ -82,11 +113,13 @@ def build_decide_schema(handles: list[str]) -> dict[str, Any]:
     }
 
 
-def validate_decide_response(data: dict[str, Any], *, handles: list[str]) -> None:
+def validate_decide_response(
+    data: dict[str, Any], *, handles: list[str], allow_none: bool = True,
+) -> None:
     """Defence in depth, mirroring classify.py's own _validate_shape --
     the schema should already guarantee this."""
     target = data.get("target")
-    if target not in {"none", "new", *handles}:
+    if target not in {*(["none"] if allow_none else []), "new", *handles}:
         raise ValueError(f"Invalid target {target!r}, expected one of none/new/{handles}")
     if not isinstance(data.get("reason"), str) or not data["reason"]:
         raise ValueError("Missing or empty 'reason' in response")
@@ -123,24 +156,31 @@ def _format_candidate_block(handle: str, candidate: Candidate) -> str:
     return "\n".join(lines)
 
 
-def build_decide_user_prompt(
-    *,
-    subject: str, from_addr: str, to_addrs: str, received_at: str,
-    attachments: list[tuple[str, str]], body: str, candidates: list[Candidate],
-) -> str:
-    """
-    Args:
-        candidates: Already ranked and capped (orders/candidates.py);
-            handles C1..Cn are assigned here, in the order given
-    """
+def _candidate_blocks(candidates: list[Candidate]) -> str:
     handles = [f"C{i + 1}" for i in range(len(candidates))]
-    candidate_blocks = (
+    return (
         "\n".join(
             _format_candidate_block(handle, cand) for handle, cand in zip(handles, candidates)
         )
         if candidates else "(no candidate entries)"
     )
+
+
+def build_decide_user_prompt(
+    *,
+    subject: str, from_addr: str, to_addrs: str, received_at: str,
+    attachments: list[tuple[str, str]], body: str, candidates: list[Candidate],
+    documents: list[PromptDocument] | None = None,
+) -> str:
+    """
+    Args:
+        candidates: Already ranked and capped (orders/candidates.py);
+            handles C1..Cn are assigned here, in the order given
+        documents: The new mail's attachments that carry text or codes,
+            already cut to the decide excerpt (orders/documents.py)
+    """
     attachment_text = ", ".join(f"{name} ({ctype})" for name, ctype in attachments[:6]) or "none"
+    blocks = "".join(f"\n{_document_block('attachment', d)}" for d in documents or [])
     new_mail = (
         f"<new_mail>\n"
         f"received: {received_at}\n"
@@ -148,11 +188,26 @@ def build_decide_user_prompt(
         f"to: {_json_field(to_addrs)}\n"
         f"subject: {_json_field(subject)}\n"
         f"attachments: {_json_field(attachment_text)}\n"
-        f"body: {_json_field(body[:3000])}\n"
+        f"body: {_json_field(body)}"
+        f"{blocks}\n"
         f"</new_mail>"
     )
     return render_prompt(
-        "orders_decide_user.md.j2", new_mail=new_mail, candidate_blocks=candidate_blocks,
+        "orders_decide_user.md.j2", new_mail=new_mail,
+        candidate_blocks=_candidate_blocks(candidates),
+    )
+
+
+def build_decide_file_prompt(
+    *, added_at: str, documents: list[PromptDocument], candidates: list[Candidate],
+) -> str:
+    """The decide prompt for a file added by hand: the same shape as for a
+    mail, with no sender or subject."""
+    blocks = "".join(f"\n{_document_block('attachment', d)}" for d in documents)
+    new_file = f"<new_file>\nadded: {added_at}{blocks}\n</new_file>"
+    return render_prompt(
+        "orders_decide_user.md.j2", new_mail=new_file,
+        candidate_blocks=_candidate_blocks(candidates),
     )
 
 
@@ -162,6 +217,14 @@ WRITE_ICONS = (
     "package", "ticket", "train", "plane", "bus", "car", "bed", "food",
     "download", "wrench", "receipt",
 )
+WRITE_KINDS = ("ticket", "order", "other")
+FACT_KINDS = (
+    "order_number", "booking_code", "ticket_number", "invoice_number", "tracking_number",
+    "date", "time", "amount", "place", "seat", "person", "code", "link", "other",
+)
+# "" for a fact that is not a tracking number.
+FACT_CARRIERS = ("", *CARRIERS)
+MAX_FACTS = 12
 
 WRITE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -170,14 +233,44 @@ WRITE_SCHEMA: dict[str, Any] = {
         "subject": {"type": "string", "description": "At most 60 characters."},
         "status": {"type": "string", "description": "One to five words."},
         "open": {"type": "boolean"},
+        "kind": {"type": "string", "enum": list(WRITE_KINDS)},
+        "event_start": {
+            "type": "string",
+            "description": "YYYY-MM-DD the trip, stay or event starts, or ''.",
+        },
+        "event_end": {
+            "type": "string", "description": "YYYY-MM-DD it ends, or ''.",
+        },
         "expected_until": {
             "type": "string",
             "description": "YYYY-MM-DD when the entry is naturally over (estimate), or ''.",
         },
         "icon": {"type": "string", "enum": list(WRITE_ICONS)},
-        "summary": {"type": "string", "description": "Markdown, at most 900 characters."},
+        "summary": {"type": "string", "description": "Markdown, at most 1200 characters."},
+        "facts": {
+            "type": "array",
+            "description": f"At most {MAX_FACTS} typed key facts, most important first.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": list(FACT_KINDS)},
+                    "label": {"type": "string", "description": "At most 30 characters."},
+                    "value": {"type": "string"},
+                    "carrier": {"type": "string", "enum": list(FACT_CARRIERS)},
+                    "code_ref": {
+                        "type": "string",
+                        "description": "For a code: the marker in the text, e.g. d2:b1. Else ''.",
+                    },
+                },
+                "required": ["kind", "label", "value", "carrier", "code_ref"],
+                "additionalProperties": False,
+            },
+        },
     },
-    "required": ["merchant", "subject", "status", "open", "expected_until", "icon", "summary"],
+    "required": [
+        "merchant", "subject", "status", "open", "kind", "event_start", "event_end",
+        "expected_until", "icon", "summary", "facts",
+    ],
     "additionalProperties": False,
 }
 
@@ -189,11 +282,22 @@ def validate_write_response(data: dict[str, Any]) -> None:
         raise ValueError("Missing or empty 'status' in response")
     if not isinstance(data.get("summary"), str) or not data["summary"]:
         raise ValueError("Missing or empty 'summary' in response")
+    if data.get("kind") not in WRITE_KINDS:
+        raise ValueError(f"Invalid kind {data.get('kind')!r}, expected one of {WRITE_KINDS}")
+    facts = data.get("facts")
+    if not isinstance(facts, list):
+        raise ValueError("Missing or non-list 'facts' in response")
+    for fact in facts:
+        if not isinstance(fact, dict) or fact.get("kind") not in FACT_KINDS:
+            raise ValueError(f"Invalid fact {fact!r}")
+        if not isinstance(fact.get("value"), str) or not isinstance(fact.get("label"), str):
+            raise ValueError(f"Fact without label or value: {fact!r}")
 
 
-def parse_expected_until(value: Any) -> date | None:
-    """The write call's expected_until as a date; the empty string it uses
-    for "none", and anything that is not an ISO date, read as None."""
+def parse_iso_date(value: Any) -> date | None:
+    """A date the write call gave (expected_until, event_start, event_end);
+    the empty string it uses for "none", and anything that is not an ISO
+    date, read as None."""
     if not isinstance(value, str):
         return None
     try:
@@ -210,16 +314,19 @@ def build_write_user_prompt(
     *,
     current_text: dict[str, str] | None,
     mails: list[dict[str, Any]],
+    files: list[PromptDocument] | None = None,
 ) -> str:
     """
     Args:
         current_text: {"merchant", "subject", "status", "summary"} when
             the order has been written before, else None
         mails: Oldest first, each `{"received_at", "from_addr", "subject",
-            "attachments": [(name, type), ...], "body", "body_chars"}` --
-            body already cut by the caller to the per-mail budget (3000
-            for the newest of at most 12, 1500 otherwise; see orders/
-            worker.py, which decides which mails to include at all)
+            "body", "documents": [PromptDocument, ...]}` -- body and
+            documents already cut to their budgets (orders/documents.py,
+            which also decides which mails to include at all)
+        files: Files added to the entry by hand, after the mails; document
+            numbers run on from the mails' so a code reference names one
+            document only
     """
     parts = []
     if current_text is not None:
@@ -232,16 +339,18 @@ def build_write_user_prompt(
             "</current_text>"
         )
     for i, mail in enumerate(mails, start=1):
-        attachment_text = ", ".join(
-            f"{name} ({ctype})" for name, ctype in mail.get("attachments", [])[:6]
-        ) or "none"
+        names = ", ".join(f"{d.name} ({d.content_type})" for d in mail.get("documents", [])[:6])
+        blocks = "".join(f"\n{_document_block('attachment', d)}" for d in mail.get("documents", []))
         parts.append(
             f'<mail n="{i}">\n'
             f"received: {mail['received_at']}\n"
             f"from: {_json_field(mail['from_addr'])}\n"
             f"subject: {_json_field(mail['subject'])}\n"
-            f"attachments: {_json_field(attachment_text)}\n"
-            f"body: {_json_field(mail['body'][: mail['body_chars']])}\n"
+            f"attachments: {_json_field(names or 'none')}\n"
+            f"body: {_json_field(mail['body'])}"
+            f"{blocks}\n"
             f"</mail>"
         )
+    for document in files or []:
+        parts.append(_document_block("file", document))
     return render_prompt("orders_write_user.md.j2", mail_blocks="\n\n".join(parts))

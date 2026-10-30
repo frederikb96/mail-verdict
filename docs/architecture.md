@@ -476,7 +476,9 @@ deterministically rescans the mail's subject and raw body for the same order/tra
 invoice labels `orders/filter.py`'s first pass already looks for and takes the identifier-shaped
 token that follows one (`orders/candidates.py`'s `extract_labeled_identifiers`) — never overriding
 an answer the model did give, only filling in one it gave nothing for, so a later mail carrying the
-same number still finds the order rather than opening a duplicate.
+same number still finds the order rather than opening a duplicate. The attachments' text is always
+rescanned, whatever the model answered: a carrier's number that only a shop's shipping PDF names is
+what the carrier's own mail is matched on later.
 
 **A shipment number inside a link target is made visible.** Some carrier templates ship an unfilled
 merge field as the link text and put the real number only in the link's query string, so after link
@@ -563,6 +565,48 @@ Mail bodies take a different, lighter path: `orders/content.py`'s `prepare_body`
 unless it is a stub, a dump of HTML source, or the HTML part carries at least twice its text plus
 300 characters, and converts HTML (`html_text.py`) with table rows as `label | value` and link
 targets kept.
+
+### Documents in the pipeline
+
+**A mail job reads the mail's attachments before it decides.** The worker reads each attachment
+(at most twelve) in the extraction pool (`orders/documents.py`), so the number search sees the
+attachments' whole text beside the body, and the decide prompt shows the model an excerpt of up to
+six (the first 2,000 and last 1,000 characters of each, as `<attachment>` blocks inside the
+`<new_mail>`). The result is stored (`order_documents`) only when the mail joins an order, together
+with a `code` fact for every barcode found. Only an order mail is ever read: a mail the first
+filter or the decide call turns down costs no extraction.
+
+**A write job first makes every document current.** For each mail of the order that still exists,
+an attachment with no stored document, or one read by an older `EXTRACTOR_VERSION`, is read now; a
+stored document whose attachment id changed in a resync is matched by name, type and size and kept.
+That is what lets rewriting an order written before documents existed repair it, and a mail that is
+gone keeps the documents it left. The prompt then shows each mail with its documents' stored text
+and the files added by hand, numbered across the whole prompt, with each code marker rewritten to
+its document's number (`[code d2:b1 ...]`) so the model can reference a code as `d2:b1`. Over
+120,000 characters the middle mails drop first, taking their documents with them.
+
+**What the write call stores.** `kind`, `event_start`/`event_end` and at most twelve typed facts,
+each with a label and a value as the source writes it. Identifier facts are added or relabelled,
+never removed; display facts (`date`, `time`, `amount`, `place`, `seat`, `person`, `link`, `other`)
+are replaced wholesale, except those a person typed; a `code` fact takes the model's label and is
+tied to its barcode by `code_ref`. Every barcode of the order's documents has a code fact whether
+or not the model named it (source `code`), and one whose barcode is gone is deleted. A person's
+`kind` is never overwritten. The facts are put in the model's order.
+
+**Files added by hand** (`orders/files.py`, `POST /api/orders/files`). The bytes go to `order_files`
+and a `file` job to the orders queue, which reads the file like an attachment and places it: into
+the entry named at upload, else through a decide call that offers the candidates and "new" but never
+"none" — adding the file was the decision. It then joins the same flow as a mail: identifiers,
+code facts, a write job. An entry made only of files is an ordinary entry — it is written, found by
+its numbers, closed automatically and deleted when its last file goes. Limits are the
+`order_files` section of `config/config.yaml`, enforced while the upload is read. A file the queue
+fails on is marked `failed` and deleted `order_files.failed_retention_days` after it was added by an
+hourly pass (`orders/file_prune.py`).
+
+**A code is drawn on request, never stored as an image.** `GET /api/orders/{id}/codes/{fact_id}.png`
+encodes the stored payload again with zxing-cpp's writer (the one place the API process loads
+it; nothing is parsed there), falling back to the crop taken from the document for a format with no
+writer.
 
 ### Neighbour hints, and why the classifier's own verdicts never feed them
 
