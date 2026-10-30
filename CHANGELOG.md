@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (previewed, deleted), "Add file" uploads to the open entry or, from the list header, to whichever
   entry fits; a HEIC photo is converted to JPEG where the browser can decode it and refused with an
   explanation otherwise. An entry's kind can be changed from its menu.
+- An evaluation harness for the orders prompts (`scripts/eval_orders.py`, `tests/eval/orders`):
+  synthetic known-answer cases for the decide and write calls, a scorer that CI runs offline against
+  recorded answers, and the measured comparison of Infomaniak and Claude per task.
 
 ### Fixed
 
@@ -71,6 +74,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   instead of `ai`; the upgrade copies what was stored, so every task keeps the provider, model and
   budget it had. Anthropic reasoning effort is `low` to `max` (the API has no `none`); an order
   call's timeout is 120 seconds and the worker lease 900.
+- The orders write prompt never copies a password, PIN or other access credential from a mail into
+  the entry, names what each icon is for, accepts a tracking number only when a mail states one, and
+  counts e-books, audiobooks, apps and games bought for good as orders. The decide prompt asks for
+  the numbers of a new entry as well as of an attached one.
+- The write prompt no longer lists a mail's attachments that read as empty text (logos, spacer
+  images); a file added by hand is always listed.
 
 ## [6.18.2] - 2026-10-24
 

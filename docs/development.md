@@ -96,6 +96,10 @@ fails immediately, naming the build command, if `ui/build` doesn't exist or is o
 
 The `llm` layer asserts its keys are present and fails loudly without them.
 
+The orders prompts are measured separately, by hand: `scripts/eval_orders.py` runs known-answer cases
+against real models and `tests/eval/orders/README.md` explains the harness and how to change a prompt
+with it. CI scores the recorded answers offline (`tests/unit/test_eval_scorer.py`).
+
 ## Running the application
 
 ```bash

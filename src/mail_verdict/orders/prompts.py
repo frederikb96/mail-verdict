@@ -6,7 +6,7 @@ The system and user prompts live in config/prompts/orders_*.md.j2,
 reproduced verbatim from measurement against real mail -- see
 docs/architecture.md's "Orders" section for what that measurement found.
 A reworded prompt is not the same prompt: do not "clean up" the wording
-in those templates without re-measuring.
+in those templates without re-measuring (tests/eval/orders).
 
 Untrusted content (a mail's subject, sender, body, the text of its
 attachments, and a candidate's own summary) is JSON-encoded and has every
