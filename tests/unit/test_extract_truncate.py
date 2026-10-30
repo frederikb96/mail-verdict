@@ -69,3 +69,18 @@ def test_terms_are_recognised_by_name_or_opening_text() -> None:
     assert not t.is_terms_like("Rechnung.pdf", "Rechnung Nr. 1")
     far = "Rechnung " + "x" * 700 + " AGB"
     assert not t.is_terms_like("Rechnung.pdf", far)
+
+
+def test_an_excerpt_is_whole_up_to_head_plus_tail() -> None:
+    text = "y " * ((t.EXCERPT_HEAD_CHARS + t.EXCERPT_TAIL_CHARS) // 2)
+    assert t.excerpt(text) == t.Truncated(text, 0)
+
+
+def test_a_longer_excerpt_keeps_the_first_two_thousand_and_the_last_thousand() -> None:
+    text = _numbered(2_000)
+    cut = t.excerpt(text)
+    assert cut.text.startswith("line 00000 ")
+    assert cut.text.endswith("line 01999 of the document")
+    head, _, tail = cut.text.partition(f"\n[... {cut.omitted} characters omitted ...]\n")
+    assert t.EXCERPT_HEAD_CHARS - 250 < len(head) <= t.EXCERPT_HEAD_CHARS
+    assert t.EXCERPT_TAIL_CHARS - 250 < len(tail) <= t.EXCERPT_TAIL_CHARS

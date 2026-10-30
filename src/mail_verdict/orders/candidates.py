@@ -231,7 +231,7 @@ class Candidate:
 async def find_candidates(
     session: AsyncSession,
     *,
-    account_id: uuid.UUID,
+    account_id: uuid.UUID | None,
     thread_id: uuid.UUID | None,
     subject: str,
     from_addr: str,
@@ -243,9 +243,9 @@ async def find_candidates(
 
     Args:
         session: Session to read through
-        account_id: The mail's account
+        account_id: The mail's account (None for a file, which has no thread)
         thread_id: The mail's thread, if any
-        subject: The mail's Subject header
+        subject: The mail's Subject header (a file's name)
         from_addr: The mail's From address
         haystack_raw: Untouched text (subject + raw body) a number search
             scans -- see orders/content.py's PreparedBody.raw
@@ -257,7 +257,7 @@ async def find_candidates(
     now = now or datetime.now(timezone.utc)
 
     thread_order_ids: set[uuid.UUID] = set()
-    if thread_id is not None:
+    if thread_id is not None and account_id is not None:
         result = await session.execute(
             select(OrderMail.order_id.distinct())
             .join(Order, Order.id == OrderMail.order_id)

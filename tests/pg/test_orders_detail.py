@@ -289,3 +289,47 @@ async def test_facts_come_out_in_order_with_tracking_links_and_codes(
     assert ticket_code.image_url == f"/api/orders/{order_id}/codes/{by_label['Ticketcode'].id}.png"
     return_code = by_label["Return"].code
     assert return_code is not None and return_code.payload_text is None
+
+
+async def test_an_empty_inline_image_is_not_listed_but_a_readable_one_and_every_file_are(
+    migrated_db: DatabaseConnection,
+) -> None:
+    async with migrated_db.session() as session:
+        order_id = await repository.create_order(session)
+        account_id = uuid.uuid4()
+        for filename, content_type, source, extracted, barcodes in (
+            ("logo.png", "image/png", "mail", 0, []),
+            ("receipt.png", "image/png", "mail", 120, []),
+            ("code.png", "image/png", "mail", 0, [{"index": 1}]),
+            ("terms.pdf", "application/pdf", "mail", 0, []),
+            ("photo.png", "image/png", "file", 0, []),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO order_documents (order_id, source, account_id, msg_key, "
+                    "attachment_id, filename, content_type, method, text_chars_total, barcodes) "
+                    "VALUES (:order_id, :source, :account_id, :msg_key, :attachment_id, "
+                    ":filename, :content_type, 'image', :chars, CAST(:barcodes AS jsonb))"
+                ),
+                {
+                    "order_id": order_id, "source": source, "filename": filename,
+                    "account_id": account_id if source == "mail" else None,
+                    "msg_key": "k" if source == "mail" else None,
+                    "attachment_id": uuid.uuid4() if source == "mail" else None,
+                    "content_type": content_type, "chars": extracted,
+                    "barcodes": json.dumps(barcodes),
+                },
+            )
+        await repository.recompute_aggregates(session, order_id)
+        await repository.write_order_text(
+            session, order_id, merchant="Shop", subject="Order", status="open",
+            is_open=True, icon="receipt", summary="s", model="fake",
+        )
+
+    async with migrated_db.session() as session:
+        detail = await _load_detail(session, order_id)
+
+    assert detail is not None
+    assert sorted(d.filename for d in detail.documents) == [
+        "code.png", "photo.png", "receipt.png", "terms.pdf",
+    ]

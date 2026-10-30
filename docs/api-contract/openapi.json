@@ -876,6 +876,32 @@
         "title": "AttachmentSummary",
         "type": "object"
       },
+      "Body_add_file_orders_files_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_add_file_orders_files_post",
+        "type": "object"
+      },
       "BulkActionRequest": {
         "description": "Request to apply one action to many messages, by id list or by scope.",
         "properties": {
@@ -5694,6 +5720,55 @@
           "document_id"
         ],
         "title": "OrderFactOut",
+        "type": "object"
+      },
+      "OrderFileStatus": {
+        "description": "Where a file added to the register stands: `pending` until the file\njob has placed it, `attached` once it belongs to an entry (`order_id`),\n`failed` with `last_error` when placing it failed.",
+        "properties": {
+          "file_id": {
+            "format": "uuid",
+            "title": "File Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "order_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Id"
+          },
+          "status": {
+            "enum": [
+              "pending",
+              "attached",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_id",
+          "order_id",
+          "status"
+        ],
+        "title": "OrderFileStatus",
         "type": "object"
       },
       "OrderListItem": {
@@ -14130,6 +14205,91 @@
         ]
       }
     },
+    "/orders/files": {
+      "post": {
+        "description": "Add a file to the register. It is read and placed by the orders queue:\ninto the entry `order_id` names, else into the entry the decide call\npicks or a new one (never refused as \"not about an order\" -- adding it\nwas the person's decision). Answers at once with `pending`; poll\n`GET /orders/files/{file_id}`, or wait for the entry's `order.updated`.",
+        "operationId": "add_file_orders_files_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_add_file_orders_files_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderFileStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add File",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/files/{file_id}": {
+      "get": {
+        "operationId": "get_file_status_orders_files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderFileStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get File Status",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
     "/orders/{order_id}": {
       "delete": {
         "description": "Delete an order. No mail is touched.",
@@ -14255,6 +14415,167 @@
           }
         },
         "summary": "Update Order",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{order_id}/codes/{fact_id}.png": {
+      "get": {
+        "description": "A code fact as a PNG a gate scanner reads: the stored payload encoded\nagain at `scale` pixels per module, else the crop of the code taken from\nthe document when the format has no writer.",
+        "operationId": "get_code_image_orders__order_id__codes__fact_id__png_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Fact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scale",
+            "required": false,
+            "schema": {
+              "default": 8,
+              "maximum": 16,
+              "minimum": 1,
+              "title": "Scale",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Code Image",
+        "tags": [
+          "orders"
+        ]
+      }
+    },
+    "/orders/{order_id}/files/{file_id}": {
+      "delete": {
+        "description": "Delete a file of an entry, with its document and codes. The entry is\ndeleted when nothing else is left of it, otherwise rewritten. Mail\nattachments are never touched.",
+        "operationId": "delete_file_orders__order_id__files__file_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete File",
+        "tags": [
+          "orders"
+        ]
+      },
+      "get": {
+        "description": "Stream a file added to the register, with its content type and a\ndownload disposition.",
+        "operationId": "download_file_orders__order_id__files__file_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Order Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "File Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download File",
         "tags": [
           "orders"
         ]

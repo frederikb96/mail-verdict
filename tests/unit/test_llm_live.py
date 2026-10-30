@@ -264,8 +264,7 @@ class _OrdersTasks:
             current_text=None,
             mails=[{
                 "received_at": _ORDER_MAIL["received_at"], "from_addr": _ORDER_MAIL["from_addr"],
-                "subject": _ORDER_MAIL["subject"], "attachments": [], "body": _ORDER_MAIL["body"],
-                "body_chars": 3000,
+                "subject": _ORDER_MAIL["subject"], "body": _ORDER_MAIL["body"], "documents": [],
             }],
         )
         data = await self._call(
@@ -276,6 +275,7 @@ class _OrdersTasks:
         assert "Northwind" in str(data["merchant"])
         assert data["open"] is True
         assert data["icon"] == "package"
+        assert data["kind"] == "order"
         assert data["summary"]
 
 

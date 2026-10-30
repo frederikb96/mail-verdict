@@ -128,6 +128,23 @@ extraction:
   # far below it.
   max_text_chars: 400000
 
+# Files a person adds to the orders register by hand (POST /api/orders/files).
+# Every file is held whole in memory while it is read, so the per-file and
+# per-entry totals bound the process as much as the stored size.
+order_files:
+  # Largest single file; enforced while the upload is read.
+  max_file_bytes: 26214400
+  # Files one entry may hold.
+  max_files_per_order: 20
+  # Total bytes of the files of one entry.
+  max_total_bytes_per_order: 52428800
+  # What is accepted, judged by the file's content and name, not its
+  # declared type: pdf, png, jpeg, pkpass, ics, txt, html, xml.
+  accepted_types: [pdf, png, jpeg, pkpass, ics, txt, html, xml]
+  # A file the register failed to place is deleted this many days after it
+  # was added (it stays downloadable until then).
+  failed_retention_days: 7
+
 database:
   url: "${MAIL_VERDICT_DATABASE_URL}"
   pool_size: 10

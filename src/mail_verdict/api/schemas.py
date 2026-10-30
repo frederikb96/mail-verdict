@@ -2205,6 +2205,17 @@ class OrderDetail(OrderListItem):
     documents: list[OrderDocumentOut]
 
 
+class OrderFileStatus(BaseModel):
+    """Where a file added to the register stands: `pending` until the file
+    job has placed it, `attached` once it belongs to an entry (`order_id`),
+    `failed` with `last_error` when placing it failed."""
+
+    file_id: uuid.UUID
+    order_id: uuid.UUID | None
+    status: Literal["pending", "attached", "failed"]
+    last_error: str | None = None
+
+
 class OrderUpdateRequest(BaseModel):
     """A person's change to an order's flags and kind; an omitted field is left
     alone. Setting is_open or kind records that a person decided it."""

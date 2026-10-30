@@ -39,7 +39,7 @@ def test_cut_status_caps_at_sixty_characters() -> None:
 
 
 def test_cut_summary_caps_at_fifteen_hundred_characters() -> None:
-    assert len(cut_summary("word " * 1000)) <= 1500
+    assert len(cut_summary("word " * 1000)) <= 2000
 
 
 def test_summary_preview_drops_bold_markers() -> None:

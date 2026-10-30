@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import case, delete, func, insert, select, text, update
+from sqlalchemy import case, delete, func, insert, select, text, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -136,8 +136,12 @@ async def recompute_aggregates(session: AsyncSession, order_id: uuid.UUID) -> in
             first_mail_at=select(mails.c.first).scalar_subquery(),
             last_mail_at=select(mails.c.last).scalar_subquery(),
             file_count=select(files.c.n).scalar_subquery(),
-            first_activity_at=select(func.least(mails.c.first, files.c.first)).scalar_subquery(),
-            last_activity_at=select(func.greatest(mails.c.last, files.c.last)).scalar_subquery(),
+            first_activity_at=select(func.least(mails.c.first, files.c.first))
+            .select_from(mails.join(files, true()))
+            .scalar_subquery(),
+            last_activity_at=select(func.greatest(mails.c.last, files.c.last))
+            .select_from(mails.join(files, true()))
+            .scalar_subquery(),
             updated_at=func.now(),
         )
         .returning(Order.mail_count, Order.file_count)
@@ -146,52 +150,84 @@ async def recompute_aggregates(session: AsyncSession, order_id: uuid.UUID) -> in
     return int(row.mail_count + row.file_count) if row is not None else 0
 
 
+async def upsert_identifier_fact(
+    session: AsyncSession, order_id: uuid.UUID, *, kind: str, value: str,
+    label: str | None = None, carrier: str | None = None, source: str = "ai",
+    update_existing: bool = False,
+) -> uuid.UUID | None:
+    """
+    Store one identifier-kind fact, unless the value is not a plausible
+    identifier or is held by ANOTHER order active in the last 365 days -- a
+    duplicate number is evidence the decide call chose the wrong candidate,
+    not a reason to make two orders claim the same number.
+
+    Args:
+        update_existing: Whether a fact this order already holds takes the
+            new kind, label and carrier (the write call's) rather than
+            keeping its own (the decide call's)
+
+    Returns:
+        The fact's id, or None when it was refused
+    """
+    if kind not in IDENTIFIER_FACT_KINDS or not is_valid_identifier(value):
+        return None
+    value = value.strip()
+    value_norm = normalize_identifier(value)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_IDENTIFIER_WINDOW_DAYS)
+    held_elsewhere = await session.execute(
+        select(OrderFact.id)
+        .join(Order, Order.id == OrderFact.order_id)
+        .where(
+            OrderFact.value_norm == value_norm, OrderFact.order_id != order_id,
+            Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
+        )
+        .limit(1)
+    )
+    if held_elsewhere.scalar_one_or_none() is not None:
+        return None
+    next_position = (
+        select(func.coalesce(func.max(OrderFact.position) + 1, 0))
+        .where(OrderFact.order_id == order_id)
+        .scalar_subquery()
+    )
+    shown_label = label or _IDENTIFIER_LABELS[kind]
+    insert_stmt = pg_insert(OrderFact).values(
+        order_id=order_id, kind=kind, label=shown_label, value=value,
+        value_norm=value_norm, carrier=carrier, position=next_position, source=source,
+    )
+    arbiter = ["order_id", "value_norm"]
+    stmt = (
+        insert_stmt.on_conflict_do_update(
+            index_elements=arbiter, index_where=text("value_norm IS NOT NULL"),
+            set_={"kind": kind, "label": shown_label, "carrier": carrier},
+        )
+        if update_existing
+        else insert_stmt.on_conflict_do_nothing(
+            index_elements=arbiter, index_where=text("value_norm IS NOT NULL"),
+        )
+    )
+    await session.execute(stmt)
+    existing = await session.execute(
+        select(OrderFact.id).where(
+            OrderFact.order_id == order_id, OrderFact.value_norm == value_norm,
+        )
+    )
+    return existing.scalar_one()
+
+
 async def store_identifier_facts(
     session: AsyncSession, order_id: uuid.UUID, identifiers: list[tuple[str, str]],
     *, source: str = "ai",
 ) -> None:
     """
-    Store every valid identifier the model reported as an identifier-kind
-    fact, skipping one already held by ANOTHER order active in the last 365
-    days -- a duplicate number is evidence the decide call chose the wrong
-    candidate, not a reason to make two orders claim the same number.
-    Identifiers only ever accumulate here; display facts are a write call's
-    to replace.
+    Store every valid identifier the decide call reported (or the
+    deterministic backstop found) as an identifier-kind fact. Identifiers
+    only ever accumulate here; display facts are a write call's to replace.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_IDENTIFIER_WINDOW_DAYS)
     for kind, value in identifiers:
-        if kind not in IDENTIFIER_FACT_KINDS or not is_valid_identifier(value):
-            continue
-        value_norm = normalize_identifier(value.strip())
-        held_elsewhere = await session.execute(
-            select(OrderFact.id)
-            .join(Order, Order.id == OrderFact.order_id)
-            .where(
-                OrderFact.value_norm == value_norm, OrderFact.order_id != order_id,
-                Order.last_activity_at.is_not(None), Order.last_activity_at >= cutoff, ACCEPTS_MAIL,
-            )
-            .limit(1)
+        await upsert_identifier_fact(
+            session, order_id, kind=kind, value=value, source=source,
         )
-        if held_elsewhere.scalar_one_or_none() is not None:
-            continue
-        next_position = (
-            select(func.coalesce(func.max(OrderFact.position) + 1, 0))
-            .where(OrderFact.order_id == order_id)
-            .scalar_subquery()
-        )
-        stmt = (
-            pg_insert(OrderFact)
-            .values(
-                order_id=order_id, kind=kind, label=_IDENTIFIER_LABELS[kind],
-                value=value.strip(), value_norm=value_norm, position=next_position,
-                source=source,
-            )
-            .on_conflict_do_nothing(
-                index_elements=["order_id", "value_norm"],
-                index_where=text("value_norm IS NOT NULL"),
-            )
-        )
-        await session.execute(stmt)
 
 
 async def enqueue_mail_job(
@@ -393,7 +429,7 @@ async def mark_text_stale(session: AsyncSession, order_id: uuid.UUID) -> None:
 async def _release_order_jobs(session: AsyncSession, order_id: uuid.UUID) -> None:
     """Remove what the order_jobs table (which has no foreign key onto
     orders) still says about an order about to be deleted: its write jobs
-    go, and a mail job's recorded outcome stops pointing at it. The mail
+    go, and a mail or file job's recorded outcome stops pointing at it. The mail
     job rows themselves stay -- they are the never-twice gate that keeps a
     catch-up from bundling the same mail again."""
     await session.execute(
@@ -401,7 +437,7 @@ async def _release_order_jobs(session: AsyncSession, order_id: uuid.UUID) -> Non
     )
     await session.execute(
         update(OrderJob)
-        .where(OrderJob.kind == "mail", OrderJob.order_id == order_id)
+        .where(OrderJob.kind.in_(("mail", "file")), OrderJob.order_id == order_id)
         .values(order_id=None)
     )
 
