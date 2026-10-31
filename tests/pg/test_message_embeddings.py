@@ -762,6 +762,20 @@ async def _seed_production_shaped_table(
     return account_id
 
 
+async def _drop_production_shaped_table(db: DatabaseConnection, models: tuple[str, str]) -> None:
+    """Delete the table _seed_production_shaped_table made and vacuum it:
+    deleted vectors stay in the HNSW graph until a vacuum, and an index scan
+    of a later test then misses vectors inserted beside them."""
+    async with db.session() as session:
+        await session.execute(
+            text("DELETE FROM message_embeddings WHERE model = ANY(:models)"),
+            {"models": list(models)},
+        )
+    async with db.engine.connect() as connection:
+        await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await connection.execute(text("VACUUM message_embeddings"))
+
+
 @pytest.mark.asyncio
 async def test_the_index_query_is_answered_by_the_hnsw_index_not_by_a_scan_of_the_vectors(
     migrated_db: DatabaseConnection,
@@ -787,13 +801,29 @@ async def test_the_index_query_is_answered_by_the_hnsw_index_not_by_a_scan_of_th
             await _apply_index_settings(session, 400)
             plan = "\n".join(row[0] for row in await session.execute(text(f"EXPLAIN {statement}")))
     finally:
-        async with migrated_db.session() as session:
-            await session.execute(
-                text("DELETE FROM message_embeddings WHERE model = ANY(:models)"),
-                {"models": list(models)},
-            )
+        await _drop_production_shaped_table(migrated_db, models)
 
     assert "Index Scan using ix_message_embeddings_hnsw" in plan, plan
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_production_shaped_table_leaves_the_index_able_to_find_new_vectors(
+    migrated_db: DatabaseConnection,
+) -> None:
+    """The database is shared by every test after this one. Vectors deleted
+    but not yet vacuumed stay in the HNSW graph, and a vector inserted among
+    them can end up unreachable by the index scan, which made the glacier
+    tests of the index path fail whenever this table had been seeded before
+    them."""
+    models = (_unique_model(), _unique_model())
+    await _seed_production_shaped_table(migrated_db, models)
+    await _drop_production_shaped_table(migrated_db, models)
+
+    for _ in range(3):
+        model = _unique_model()
+        account_id, ids = await _seed_scored_pool(migrated_db, model, _SCORES, [None] * 8)
+        found = await _search(migrated_db, model, _INDEX, account_id=account_id, k=10)
+        assert {message_id for message_id, _ in found} == set(ids[:4])
 
 
 @pytest.mark.asyncio
