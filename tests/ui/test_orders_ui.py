@@ -835,7 +835,7 @@ def test_phone_width_shows_list_then_detail_then_back(
     expect(page.get_by_role("heading", name="Phone width order", exact=True)).to_be_visible(
         timeout=15_000,
     )
-    expect(row).to_have_count(0)  # the list pane is not rendered while the detail is showing
+    expect(row).not_to_be_visible()  # the list stays laid out underneath, invisible
 
     back_button.click()
     expect(row).to_be_visible(timeout=15_000)

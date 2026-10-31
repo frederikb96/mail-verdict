@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.1.0] - 2026-10-31
+
+### Added
+
+- A Today button on the ticket timeline.
+
+### Fixed
+
+- On a phone, going back from an order or a contact keeps your place in the list. The ticket
+  timeline no longer jumps to today on the way back.
+
 ### Changed
 
 - The compose files run PostIMAP 1.11.15, which moves to Node.js 26 and updates its IMAP client

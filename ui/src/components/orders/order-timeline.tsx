@@ -54,10 +54,10 @@ interface TimelineScrollArgs {
 /**
  * Keeps the timeline where it should be.
  *
- * Opening it, and every change of the filters, centres the today line --
- * arithmetic, since every row has one fixed height -- and holds that while
- * the layout settles (the viewport can still change size), until the first
- * gesture or a short timeout. After that the reader owns the position: an
+ * Opening it, every change of the filters and `jumpToToday` centre the today
+ * line -- arithmetic, since every row has one fixed height -- and hold that
+ * while the layout settles (the viewport can still change size), until the
+ * first gesture or a short timeout. After that the reader owns the position: an
  * entry arriving above them moves nothing they can see, because the row at
  * the viewport's top edge is remembered by id and offset and scrollTop is
  * corrected by exactly the delta that row moved. All writes go through
@@ -105,30 +105,49 @@ export function useTimelineScroll({
     if (scrollEl) recordAnchor(scrollEl);
   }, [scrollEl, recordAnchor]);
 
-  // A new timeline -- or the same one back on screen after the detail
-  // covered it on a phone: hold the centre again.
-  useLayoutEffect(() => {
-    if (!active) return;
+  const centre = useCallback(
+    (el: HTMLElement) => {
+      const { items: current, splitIndex: split } = latestRef.current;
+      write(
+        el,
+        timelineCenterTop({
+          splitIndex: split,
+          itemCount: current.length,
+          rowHeight,
+          dividerHeight: TIMELINE_DIVIDER_HEIGHT,
+          viewportHeight: el.clientHeight,
+        }),
+      );
+    },
+    [rowHeight, write],
+  );
+
+  const hold = useCallback(() => {
     holdingRef.current = true;
     anchorRef.current = null;
     if (holdTimerRef.current !== null) {
       window.clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
-  }, [active, resetKey, scrollEl]);
+  }, []);
+
+  // A new timeline: hold the centre.
+  useLayoutEffect(() => {
+    if (active) hold();
+  }, [active, resetKey, hold]);
+
+  const jumpToToday = useCallback(() => {
+    if (!scrollEl) return;
+    hold();
+    centre(scrollEl);
+    holdTimerRef.current = window.setTimeout(release, HOLD_MS);
+  }, [scrollEl, hold, centre, release]);
 
   // Place the position on every change of the rows or the viewport.
   useLayoutEffect(() => {
     if (!active || !scrollEl || !ready) return;
     if (holdingRef.current) {
-      const top = timelineCenterTop({
-        splitIndex,
-        itemCount: items.length,
-        rowHeight,
-        dividerHeight: TIMELINE_DIVIDER_HEIGHT,
-        viewportHeight: scrollEl.clientHeight,
-      });
-      write(scrollEl, top);
+      centre(scrollEl);
       if (holdTimerRef.current === null) {
         holdTimerRef.current = window.setTimeout(release, HOLD_MS);
       }
@@ -139,7 +158,7 @@ export function useTimelineScroll({
     const target = scrollTopForAnchor(items, anchor, geometry(splitIndex));
     if (target !== null && Math.abs(target - scrollEl.scrollTop) >= 1) write(scrollEl, target);
     recordAnchor(scrollEl);
-  }, [active, scrollEl, ready, items, splitIndex, rowHeight, resetKey, write, release, geometry, recordAnchor]);
+  }, [active, scrollEl, ready, items, splitIndex, resetKey, centre, write, release, geometry, recordAnchor]);
 
   // The viewport changing size (a phone's address bar, rotation) while the
   // hold is on re-centres; the reader's gestures end the hold; scrolling
@@ -147,18 +166,7 @@ export function useTimelineScroll({
   useLayoutEffect(() => {
     if (!active || !scrollEl) return;
     const onResize = () => {
-      if (!holdingRef.current || !ready) return;
-      const { items: current, splitIndex: split } = latestRef.current;
-      write(
-        scrollEl,
-        timelineCenterTop({
-          splitIndex: split,
-          itemCount: current.length,
-          rowHeight,
-          dividerHeight: TIMELINE_DIVIDER_HEIGHT,
-          viewportHeight: scrollEl.clientHeight,
-        }),
-      );
+      if (holdingRef.current && ready) centre(scrollEl);
     };
     const onScroll = () => {
       if (!holdingRef.current) recordAnchor(scrollEl);
@@ -173,7 +181,7 @@ export function useTimelineScroll({
       for (const type of gestures) scrollEl.removeEventListener(type, release);
       scrollEl.removeEventListener("scroll", onScroll);
     };
-  }, [active, scrollEl, ready, rowHeight, write, release, recordAnchor]);
+  }, [active, scrollEl, ready, centre, release, recordAnchor]);
 
   // Leaving the timeline drops the hold and its timer.
   useLayoutEffect(
@@ -184,5 +192,5 @@ export function useTimelineScroll({
     [],
   );
 
-  return { release };
+  return { release, jumpToToday };
 }

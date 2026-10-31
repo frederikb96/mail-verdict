@@ -128,7 +128,7 @@ export function OrdersPage() {
 
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   // The list's scroll container as state as well: the timeline hook has to
-  // see it appear and disappear (it is unmounted under the detail on a phone).
+  // see it appear.
   const [listScrollEl, setListScrollEl] = useState<HTMLDivElement | null>(null);
   const setListScroll = useCallback((el: HTMLDivElement | null) => {
     listScrollRef.current = el;
@@ -221,7 +221,7 @@ export function OrdersPage() {
     () => (isTimeline && items.length > 0 ? buildTimelineRows(items, today) : []),
     [isTimeline, items, today],
   );
-  const { release: releaseTimelineHold } = useTimelineScroll({
+  const { release: releaseTimelineHold, jumpToToday } = useTimelineScroll({
     active: isTimeline,
     scrollEl: listScrollEl,
     items,
@@ -330,167 +330,189 @@ export function OrdersPage() {
     };
   }, [selectedId, listItems, rowTopOf, releaseTimelineHold]);
 
+  // On a phone the detail covers the list rather than replacing it: the list
+  // stays laid out underneath, only made invisible, so going back finds it
+  // exactly where the reader left it.
   const showDetailOnly = isMobile && selectedId !== null;
-  const showListOnly = isMobile && selectedId === null;
 
   const anyAccountHasOrders = (accounts ?? []).some((a) => a.orders_enabled);
   const isEmpty = !isLoading && listItems.length === 0;
   const empty = emptyMessage(view, q);
 
   return (
-    <div className="flex h-full">
-      {(!isMobile || showListOnly) && (
-        <div className="flex h-full w-full flex-col md:w-[400px] md:min-w-[320px] md:max-w-[480px] md:border-r">
-          <div className="flex h-12 items-center gap-2 border-b px-4">
-            <span className="text-sm font-semibold">Orders & tickets</span>
-            <OrderFileUploadButton className="ml-auto h-7 px-2 text-xs" />
-          </div>
-
-          <div className="flex items-center gap-2 border-b px-3 py-2">
-            <Tabs
-              value={view.kind}
-              onValueChange={(next) => changeView({ kind: next as OrderKindFilter })}
-              className="min-w-0 flex-1"
-            >
-              <TabsList className="w-full" aria-label="Show">
-                <TabsTrigger value="all">All</TabsTrigger>
-                <TabsTrigger value="order">Orders</TabsTrigger>
-                <TabsTrigger value="ticket">Tickets</TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <Button
-              variant={view.open ? "secondary" : "ghost"}
-              size="sm"
-              className={cn("h-8 px-2.5 text-xs", view.open && "ring-1 ring-foreground/10")}
-              aria-pressed={view.open}
-              onClick={() => changeView({ open: !view.open })}
-            >
-              Open
-            </Button>
-            <Button
-              variant={view.favorites ? "secondary" : "ghost"}
-              size="sm"
-              className={cn("h-8 px-2.5", view.favorites && "ring-1 ring-foreground/10")}
-              aria-label="Favorites"
-              aria-pressed={view.favorites}
-              title="Favorites"
-              onClick={() => changeView({ favorites: !view.favorites })}
-            >
-              <Star className="h-3.5 w-3.5" fill={view.favorites ? "currentColor" : "none"} />
-            </Button>
-          </div>
-
-          <div className="relative border-b px-3 py-2">
-            <Search className="pointer-events-none absolute left-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={filterText}
-              onChange={(e) => setFilterText(e.target.value)}
-              placeholder="Filter orders…"
-              aria-label="Filter orders by merchant, subject, status or summary"
-              data-testid="orders-filter"
-              className="h-8 pl-7 text-sm"
-              maxLength={200}
-            />
-          </div>
-
-          <div className="relative flex-1 overflow-hidden">
-            {held.length > 0 && (
-              <button
-                type="button"
-                data-testid="orders-new-activity-pill"
-                onClick={takeOverFresh}
-                className="absolute left-1/2 top-2 z-10 inline-flex h-7 -translate-x-1/2 items-center rounded-full bg-primary px-3 text-xs text-primary-foreground shadow"
+    <div className="relative flex h-full overflow-hidden">
+      <div
+        className={cn(
+          "flex h-full w-full flex-col md:w-[400px] md:min-w-[320px] md:max-w-[480px] md:border-r",
+          showDetailOnly && "invisible",
+        )}
+        aria-hidden={showDetailOnly ? true : undefined}
+      >
+        <div className="flex h-12 items-center gap-2 border-b px-4">
+          <span className="text-sm font-semibold">Orders & tickets</span>
+          <div className="ml-auto flex items-center gap-1">
+            {isTimeline && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                data-testid="orders-today-button"
+                onClick={jumpToToday}
               >
-                New activity
-              </button>
+                Today
+              </Button>
             )}
-            <div
-              ref={setListScroll}
-              data-testid="orders-list-scroll"
-              className="h-full overflow-y-auto [overflow-anchor:none]"
-              onScroll={handleListScroll}
-            >
-              {isLoading &&
-                Array.from({ length: 6 }).map((_, i) => (
-                  <div key={i} className="h-[124px] border-b px-4 py-3">
-                    <Skeleton className="h-full w-full animate-none" />
-                  </div>
-                ))}
-
-              {isEmpty && empty && (
-                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-                  <Package className="h-12 w-12 opacity-40" />
-                  <p className="text-sm font-medium">{empty.title}</p>
-                  {empty.hint && (
-                    <p className="max-w-[320px] text-sm text-muted-foreground">{empty.hint}</p>
-                  )}
-                </div>
-              )}
-
-              {isEmpty && !empty && !anyAccountHasOrders && (
-                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-                  <Package className="h-12 w-12 opacity-40" />
-                  <p className="text-sm font-medium">No orders yet</p>
-                  <p className="max-w-[320px] text-sm text-muted-foreground">
-                    Mail about purchases, tickets and bookings is bundled here. Switch it on for
-                    an account first.
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="mt-2"
-                    render={<Link href="/accounts" />}
-                  >
-                    Open accounts
-                  </Button>
-                </div>
-              )}
-
-              {isEmpty && !empty && anyAccountHasOrders && (
-                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-                  <Package className="h-12 w-12 opacity-40" />
-                  <p className="text-sm font-medium">Nothing bundled yet</p>
-                  <p className="max-w-[320px] text-sm text-muted-foreground">
-                    Order mail appears here within a minute of arriving.
-                  </p>
-                </div>
-              )}
-
-              {isTimeline
-                ? timelineRows.map((row) =>
-                    row.type === "today" ? (
-                      <TodayDivider key="today" today={today} />
-                    ) : (
-                      <OrderRow
-                        key={row.order.id}
-                        order={row.order}
-                        showKind={false}
-                        selected={row.order.id === selectedId}
-                        onSelect={() => selectOrder(row.order.id)}
-                        onAction={runOrderAction}
-                      />
-                    ),
-                  )
-                : shown.map((order) => (
-                    <OrderRow
-                      key={order.id}
-                      order={order}
-                      showKind={view.kind === "all"}
-                      selected={order.id === selectedId}
-                      onSelect={() => selectOrder(order.id)}
-                      onAction={runOrderAction}
-                    />
-                  ))}
-            </div>
+            <OrderFileUploadButton className="h-7 px-2 text-xs" />
           </div>
         </div>
-      )}
+
+        <div className="flex items-center gap-2 border-b px-3 py-2">
+          <Tabs
+            value={view.kind}
+            onValueChange={(next) => changeView({ kind: next as OrderKindFilter })}
+            className="min-w-0 flex-1"
+          >
+            <TabsList className="w-full" aria-label="Show">
+              <TabsTrigger value="all">All</TabsTrigger>
+              <TabsTrigger value="order">Orders</TabsTrigger>
+              <TabsTrigger value="ticket">Tickets</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <Button
+            variant={view.open ? "secondary" : "ghost"}
+            size="sm"
+            className={cn("h-8 px-2.5 text-xs", view.open && "ring-1 ring-foreground/10")}
+            aria-pressed={view.open}
+            onClick={() => changeView({ open: !view.open })}
+          >
+            Open
+          </Button>
+          <Button
+            variant={view.favorites ? "secondary" : "ghost"}
+            size="sm"
+            className={cn("h-8 px-2.5", view.favorites && "ring-1 ring-foreground/10")}
+            aria-label="Favorites"
+            aria-pressed={view.favorites}
+            title="Favorites"
+            onClick={() => changeView({ favorites: !view.favorites })}
+          >
+            <Star className="h-3.5 w-3.5" fill={view.favorites ? "currentColor" : "none"} />
+          </Button>
+        </div>
+
+        <div className="relative border-b px-3 py-2">
+          <Search className="pointer-events-none absolute left-5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+            placeholder="Filter orders…"
+            aria-label="Filter orders by merchant, subject, status or summary"
+            data-testid="orders-filter"
+            className="h-8 pl-7 text-sm"
+            maxLength={200}
+          />
+        </div>
+
+        <div className="relative flex-1 overflow-hidden">
+          {held.length > 0 && (
+            <button
+              type="button"
+              data-testid="orders-new-activity-pill"
+              onClick={takeOverFresh}
+              className="absolute left-1/2 top-2 z-10 inline-flex h-7 -translate-x-1/2 items-center rounded-full bg-primary px-3 text-xs text-primary-foreground shadow"
+            >
+              New activity
+            </button>
+          )}
+          <div
+            ref={setListScroll}
+            data-testid="orders-list-scroll"
+            className="h-full overflow-y-auto [overflow-anchor:none]"
+            onScroll={handleListScroll}
+          >
+            {isLoading &&
+              Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="h-[124px] border-b px-4 py-3">
+                  <Skeleton className="h-full w-full animate-none" />
+                </div>
+              ))}
+
+            {isEmpty && empty && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+                <Package className="h-12 w-12 opacity-40" />
+                <p className="text-sm font-medium">{empty.title}</p>
+                {empty.hint && (
+                  <p className="max-w-[320px] text-sm text-muted-foreground">{empty.hint}</p>
+                )}
+              </div>
+            )}
+
+            {isEmpty && !empty && !anyAccountHasOrders && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+                <Package className="h-12 w-12 opacity-40" />
+                <p className="text-sm font-medium">No orders yet</p>
+                <p className="max-w-[320px] text-sm text-muted-foreground">
+                  Mail about purchases, tickets and bookings is bundled here. Switch it on for
+                  an account first.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2"
+                  render={<Link href="/accounts" />}
+                >
+                  Open accounts
+                </Button>
+              </div>
+            )}
+
+            {isEmpty && !empty && anyAccountHasOrders && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+                <Package className="h-12 w-12 opacity-40" />
+                <p className="text-sm font-medium">Nothing bundled yet</p>
+                <p className="max-w-[320px] text-sm text-muted-foreground">
+                  Order mail appears here within a minute of arriving.
+                </p>
+              </div>
+            )}
+
+            {isTimeline
+              ? timelineRows.map((row) =>
+                  row.type === "today" ? (
+                    <TodayDivider key="today" today={today} />
+                  ) : (
+                    <OrderRow
+                      key={row.order.id}
+                      order={row.order}
+                      showKind={false}
+                      selected={row.order.id === selectedId}
+                      onSelect={() => selectOrder(row.order.id)}
+                      onAction={runOrderAction}
+                    />
+                  ),
+                )
+              : shown.map((order) => (
+                  <OrderRow
+                    key={order.id}
+                    order={order}
+                    showKind={view.kind === "all"}
+                    selected={order.id === selectedId}
+                    onSelect={() => selectOrder(order.id)}
+                    onAction={runOrderAction}
+                  />
+                ))}
+          </div>
+        </div>
+      </div>
 
       {(!isMobile || showDetailOnly) && (
         <div
           ref={setDetailScrollEl}
           data-testid="order-detail-scroll"
-          className="flex-1 overflow-y-auto [overflow-anchor:none]"
+          className={cn(
+            "overflow-y-auto [overflow-anchor:none]",
+            showDetailOnly ? "absolute inset-0 z-20 bg-background" : "flex-1",
+          )}
         >
           {showDetailOnly && (
             <div className="flex h-11 items-center gap-2 border-b px-2">
