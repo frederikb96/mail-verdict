@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The compose files run PostIMAP 1.11.15, which moves to Node.js 26 and updates its IMAP client
+  (imapflow).
+
 ## [7.0.0] - 2026-10-31
 
 The order detail's `identifiers` becomes `facts` and `documents` changes shape, so clients of the
