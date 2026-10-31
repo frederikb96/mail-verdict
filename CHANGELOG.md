@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.0.0] - 2026-10-31
+
+The order detail's `identifiers` becomes `facts` and `documents` changes shape, so clients of the
+orders API update with this release. Migrations 0047 and 0048 run at startup.
+
 ### Added
 
 - Orders and tickets carry a kind (`ticket`, `order` or `other`) that the model sets and a person
