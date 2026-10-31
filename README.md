@@ -116,7 +116,7 @@ mirror, which is what keeps it simple.
   press), and on a touch screen a row swipes: right to left for favorite, left to right for closed
   or open. The screen shows all entries, only orders or only tickets (one click), with Open and
   Favorites toggles on top; the choice is remembered. Tickets form a timeline around a today line,
-  later events above and earlier ones below. A ticket's codes open fullscreen on a white page for
+  later events above and earlier ones below, with a Today button to jump back to it. A ticket's codes open fullscreen on a white page for
   scanning. Recent mail can be looked through after switching the feature on for an account.
 - **Rules** — conditions over incoming mail with actions that move, tag, flag or delete it, or send
   it to a webhook: the message's raw source is posted to a URL, with a header that can take its value

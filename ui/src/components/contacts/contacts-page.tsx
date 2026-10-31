@@ -7,6 +7,7 @@ import { ContactDetail } from "@/components/contacts/contact-detail";
 import { ContactEditor } from "@/components/contacts/contact-editor";
 import { useContactSelection } from "@/hooks/use-contacts";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 export function ContactsPage() {
@@ -16,9 +17,23 @@ export function ContactsPage() {
 
   if (isMobile) {
     return (
-      <div className="flex h-full flex-col overflow-hidden">
-        {selectedId ? (
-          <>
+      <div className="relative h-full overflow-hidden">
+        {/* Stays laid out underneath an open contact, only made invisible, so
+            going back finds it exactly where the reader left it. */}
+        <div
+          className={cn("flex h-full flex-col overflow-hidden", selectedId && "invisible")}
+          aria-hidden={selectedId ? true : undefined}
+        >
+          <div className="flex items-center justify-end border-b px-2 py-1">
+            <Button variant="ghost" size="sm" className="gap-1" onClick={() => setNewOpen(true)}>
+              <Plus className="h-4 w-4" />
+              New contact
+            </Button>
+          </div>
+          <ContactList />
+        </div>
+        {selectedId && (
+          <div className="absolute inset-0 z-20 flex flex-col overflow-hidden bg-background">
             <div className="flex items-center border-b px-2 py-1">
               <Button variant="ghost" size="sm" className="gap-1" onClick={() => selectContact(null)}>
                 <ArrowLeft className="h-4 w-4" />
@@ -26,17 +41,7 @@ export function ContactsPage() {
               </Button>
             </div>
             <ContactDetail contactId={selectedId} />
-          </>
-        ) : (
-          <>
-            <div className="flex items-center justify-end border-b px-2 py-1">
-              <Button variant="ghost" size="sm" className="gap-1" onClick={() => setNewOpen(true)}>
-                <Plus className="h-4 w-4" />
-                New contact
-              </Button>
-            </div>
-            <ContactList />
-          </>
+          </div>
         )}
         <ContactEditor open={newOpen} onOpenChange={setNewOpen} />
       </div>
