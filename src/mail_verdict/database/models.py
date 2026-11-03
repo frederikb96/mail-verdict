@@ -13,7 +13,7 @@ MailVerdict-owned tables: verdicts, mail_tags, settings, image_exceptions,
   identities, calendar_prefs, calendar_intake, calendar_replies,
   calendar_links_revision, pending_sends, pending_send_attachments, alerts,
   push_subscriptions, vapid_keypair, orders, order_mails, order_facts, order_documents, order_files,
-  order_jobs
+  order_jobs, llm_usage, usage_export_state
   (created by Alembic, fully managed by MailVerdict)
 
 Owned tables never carry a foreign key onto a PostIMAP-owned table: the
@@ -2358,3 +2358,47 @@ class WebhookDelivery(Base):
             postgresql_where=text("status = 'pending'"),
         ),
     )
+
+
+class LlmUsage(Base):
+    """One paid model response and the tokens it was billed for -- written
+    by usage/recorder.py as each response arrives, retries included, and
+    pushed to Elasticsearch by usage/export.py.
+
+    `provider` is who bills the call (usage/tokens.py's provider_label),
+    not the provider setting: a "custom" server at Infomaniak is
+    `infomaniak`. `input_tokens` includes the cached subsets
+    `cache_read_tokens` and `cache_write_tokens`.
+    """
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_read_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    cache_write_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    __table_args__ = (Index("ix_llm_usage_created_at", "created_at"),)
+
+
+class UsageExportState(Base):
+    """Where usage/export.py stands, one row per destination: the last
+    llm_usage id delivered, and the outcome of the last pass for
+    GET /api/settings/providers to report."""
+
+    __tablename__ = "usage_export_state"
+
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    last_id: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

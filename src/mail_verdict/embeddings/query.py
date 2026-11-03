@@ -31,6 +31,7 @@ import openai
 
 from mail_verdict.config import get_config
 from mail_verdict.core.errors import ProviderUnavailableError
+from mail_verdict.database.connection import get_db_connection
 from mail_verdict.embeddings.provider import (
     resolve_active_embedding_model,
     resolve_active_embedding_provider,
@@ -38,6 +39,7 @@ from mail_verdict.embeddings.provider import (
 )
 from mail_verdict.settings.credentials import get_provider_credential_repo
 from mail_verdict.settings.service import get_settings_service
+from mail_verdict.usage.recorder import QUERY_EMBEDDING_PURPOSE, UsageRecorder
 
 if TYPE_CHECKING:
     from mail_verdict.embeddings.provider import EmbeddingProvider
@@ -148,6 +150,7 @@ async def embed_search_query(text: str) -> tuple[str, list[float]]:
     try:
         provider = resolve_embedding_provider(
             provider_name, get_provider_credential_repo(), base_url=base_url,
+            usage=UsageRecorder(get_db_connection(), QUERY_EMBEDDING_PURPOSE),
         )
     except ValueError as exc:
         raise SemanticUnavailableError(str(exc)) from exc

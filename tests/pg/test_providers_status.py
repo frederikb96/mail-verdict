@@ -19,7 +19,11 @@ from fastapi.testclient import TestClient
 from mail_verdict.api.settings_api import router
 from mail_verdict.database.connection import DatabaseConnection
 from mail_verdict.queue.circuit import CircuitBreaker
-from mail_verdict.settings.credentials import PROVIDER_ENV_VARS, ProviderCredentialRepository
+from mail_verdict.settings.credentials import (
+    CREDENTIAL_ENV_VARS,
+    PROVIDER_ENV_VARS,
+    ProviderCredentialRepository,
+)
 
 
 @pytest.fixture()
@@ -92,3 +96,15 @@ def test_the_breakers_of_the_ai_tasks_are_listed_with_their_state(
     assert breakers[f"{prefix}:orders.write"]["retry_after"] is not None
     assert breakers[f"{prefix}:orders.decide"]["state"] == "closed"
     assert breakers[f"{prefix}:semantic"]["state"] == "open"
+
+
+def test_the_usage_export_reports_its_key_and_what_waits(
+    client: TestClient, migrated_db: DatabaseConnection, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(CREDENTIAL_ENV_VARS["elastic_usage"], "ZWxhc3RpYy1rZXk=")
+
+    export = _get(client, migrated_db)["usage_export"]
+
+    assert export["key"] == {"configured": True, "hint": "ZXk="}
+    assert "ZWxhc3RpYy1rZXk" not in str(export)
+    assert isinstance(export["pending"], int)

@@ -230,12 +230,18 @@ stated beside it on the Settings page. A provider that runs out of credit, or re
 pauses its tasks until it answers again, and is raised as an alert if that lasts
 (`providers.suspended_alert_after_seconds`).
 
+The tokens of every paid model response — every task, retries, embeddings and search queries —
+are recorded locally with their purpose, provider and model, cache reads and writes included, and
+pushed to an Elasticsearch data stream once an API key for it is stored (`elastic_usage_api_key`,
+written and reported like a provider key; destination and retention under `usage_export`). The
+Settings page shows how the push is going.
+
 A handful of values stay environment variables regardless, because they either gate config loading
 itself or are the fallback path for a deployment that would rather not put a key in the database:
 
 | Variable | Purpose |
 |----------|---------|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CUSTOM_AI_API_KEY` | Fallback provider keys, used only when nothing is stored via the Settings API |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `CUSTOM_AI_API_KEY` / `ELASTIC_USAGE_API_KEY` | Fallback provider and usage export keys, used only when nothing is stored via the Settings API |
 | `MAIL_VERDICT_DATABASE_URL` | PostgreSQL connection, shared with PostIMAP |
 | `POSTGRES_PASSWORD` | Database password, used by compose |
 | `ENCRYPTION_KEY` | Encrypts provider keys stored via the Settings API, PostIMAP's own credential-at-rest encryption, and this server's Web Push signing key (generated on first use, never provisioned) — one key shared by all three. Optional; without it, provider keys can only come from the two env vars above, and push notifications are unavailable |

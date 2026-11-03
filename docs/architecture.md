@@ -377,6 +377,19 @@ task (`settings/ai_validation.py`'s `validate_task_model`; Anthropic takes `low`
 `structured_llm.py`'s `call_openai_structured` uses for real OpenAI — `call_chat_completions_structured`
 is the separate request shape a custom provider needs instead.
 
+Every provider response is billed, so each one is recorded as an `llm_usage` row as it arrives —
+retries and malformed answers included — with its purpose (`verdict`, `assistant`,
+`orders.decide`, `orders.write`, `embedding`, `embedding.query`), who bills it (`anthropic`,
+`openai`, `infomaniak` for a custom server at Infomaniak, else `custom`), the model and its tokens,
+cache reads and writes as subsets of the input (`usage/tokens.py` reads each provider's own field
+names). The two places a call leaves the process record it: `ModelGateway.structured_call`, for
+every task's structured call, and `embeddings/provider.py`, for stored messages and search
+queries. An advisory-locked pass (`usage/export.py`) pushes new rows to an Elasticsearch data
+stream as `_bulk` creates with their own `_id`, so a resend answers 409 and counts as delivered;
+it keeps its position in `usage_export_state`, stops at the first refused document, sends a row
+only a minute after it was written (an id becomes visible at commit, not in id order), sends
+nothing without the `elastic_usage` credential, and deletes rows past `usage_export.retention_days`.
+
 Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`, one function behind both:
 `embeddings/service.py`) embeds the query text and takes the 400 nearest messages by cosine
 distance. The vectors are `halfvec(1536)`, and each embedding row carries a copy of its message's

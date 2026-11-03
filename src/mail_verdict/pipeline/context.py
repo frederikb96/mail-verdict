@@ -30,6 +30,7 @@ from mail_verdict.pipeline.contracts import (
 )
 from mail_verdict.pipeline.neighbors import NeighborService
 from mail_verdict.queue.circuit import CircuitBreaker
+from mail_verdict.usage.recorder import UsageRecorder, gateway_purpose
 
 if TYPE_CHECKING:
     from mail_verdict.database.connection import DatabaseConnection
@@ -174,8 +175,8 @@ class ModelGateway:
     than captured at construction.
 
     Every stage-level model call goes through here so retry, provider
-    resolution and the circuit breaker are implemented once. A stage never
-    imports structured_llm directly.
+    resolution, the circuit breaker and usage recording are implemented
+    once. A stage never imports structured_llm directly.
     """
 
     def __init__(
@@ -223,8 +224,10 @@ class ModelGateway:
 
         Args:
             category: The AI task this call's model/effort/budget came
-                from -- part of the circuit breaker's identity, never used
-                to pick the provider or credential
+                from -- part of the circuit breaker's identity and, through
+                usage/recorder.py's gateway_purpose, the purpose its usage
+                is recorded under;
+                never used to pick the provider or credential
             base_url: Required when provider is "custom" -- the compatible
                 server's API base. Ignored otherwise.
             timeout_seconds: Overrides the shared client's own per-request
@@ -289,12 +292,20 @@ class ModelGateway:
             )
             raise StageUnavailable(str(exc)) from exc
 
+        on_usage = (
+            UsageRecorder(self._db, gateway_purpose(category)).for_call(
+                provider=provider, base_url=base_url, model=model,
+            )
+            if self._db is not None
+            else None
+        )
+
         try:
             if provider == "anthropic":
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=timeout_seconds, on_usage=on_usage,
                 )
             elif provider == "custom":
                 # A compatible server serves chat completions only, not
@@ -303,13 +314,13 @@ class ModelGateway:
                 data = await call_chat_completions_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=timeout_seconds, on_usage=on_usage,
                 )
             else:
                 data = await call_openai_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=timeout_seconds, on_usage=on_usage,
                 )
         except Exception as exc:
             await self._map_and_raise(provider, exc)

@@ -1579,7 +1579,18 @@ export interface TaskBreakerStatus {
   retry_after: string | null;
 }
 
+/** The token usage export to Elasticsearch: its key, the last delivery,
+ * the last request's error if it failed, and the rows waiting to be sent. */
+export interface UsageExportStatus {
+  key: ProviderKeyStatus;
+  last_success_at: string | null;
+  last_error: string | null;
+  last_error_at: string | null;
+  pending: number;
+}
+
 export interface ProvidersStatus {
   providers: Record<string, ProviderKeyStatus>;
   breakers: TaskBreakerStatus[];
+  usage_export: UsageExportStatus;
 }

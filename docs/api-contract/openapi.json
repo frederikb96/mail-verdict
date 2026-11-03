@@ -7007,7 +7007,7 @@
         "type": "object"
       },
       "ProvidersStatus": {
-        "description": "What an operator needs to see about the providers in one read: the\nkeys (shared by every task naming the provider) and the breakers of the\ntasks that have called one.",
+        "description": "What an operator needs to see about the providers in one read: the\nkeys (shared by every task naming the provider), the breakers of the\ntasks that have called one, and the export of their token usage.",
         "properties": {
           "breakers": {
             "items": {
@@ -7022,11 +7022,15 @@
             },
             "title": "Providers",
             "type": "object"
+          },
+          "usage_export": {
+            "$ref": "#/components/schemas/UsageExportStatus"
           }
         },
         "required": [
           "providers",
-          "breakers"
+          "breakers",
+          "usage_export"
         ],
         "title": "ProvidersStatus",
         "type": "object"
@@ -9083,6 +9087,62 @@
           }
         },
         "title": "UnifiedViewUpdate",
+        "type": "object"
+      },
+      "UsageExportStatus": {
+        "description": "The token usage export (usage/export.py): its key, when a request\nlast delivered documents, the error of the last request if it failed,\nand how many usage rows wait to be sent.",
+        "properties": {
+          "key": {
+            "$ref": "#/components/schemas/ProviderKeyStatus"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_error_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "last_success_at",
+          "last_error",
+          "last_error_at",
+          "pending"
+        ],
+        "title": "UsageExportStatus",
         "type": "object"
       },
       "ValidationError": {
@@ -16176,7 +16236,7 @@
     },
     "/settings/providers": {
       "get": {
-        "description": "Provider key presence and the circuit breakers of the AI tasks.\n\nRegistered before `/{category}`, which would otherwise read \"providers\"\nas a category name.",
+        "description": "Provider key presence, the circuit breakers of the AI tasks and the\ntoken usage export.\n\nRegistered before `/{category}`, which would otherwise read \"providers\"\nas a category name.",
         "operationId": "get_providers_status_settings_providers_get",
         "responses": {
           "200": {
