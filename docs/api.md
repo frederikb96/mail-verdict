@@ -358,6 +358,9 @@ are deliberately not evented); the two things a client integrating against it ne
   list below: it only proves the connection is alive, which a client that hides SSE comment lines
   (a browser's `EventSource` does) cannot learn from a plain keep-alive. Treat a stream that has
   pinged and then goes silent for a few intervals as dead and reconnect with the last event id.
+- Every stream opens with a 2 KiB SSE comment, before any event. Apple's `URLSession` delivers
+  neither the response nor its body until it holds 512 bytes, so without it a reconnect with
+  nothing to replay would not reach an iOS client until enough pings had accumulated.
 
 Every event name the stream can carry is listed in
 [`api-contract/sse-events.json`](api-contract/sse-events.json).

@@ -79,6 +79,15 @@ _event_ring: EventRing | None = None
 KEEPALIVE_INTERVAL_S = 15
 PING_FRAME = "event: ping\ndata: {}\n\n"
 
+# Apple's URLSession holds back a streamed response -- the response callback
+# and the body alike -- until it has 512 bytes, unless the content type is
+# one it trusts (JSON). A reconnect with nothing to replay sends no bytes at
+# all and a fresh one a single short `connected` frame, so an iOS client
+# would sit "connecting" until enough pings piled up, minutes later. A
+# comment this size, sent before anything else, pushes every stream past
+# that threshold at once; EventSource and every SSE parser ignore comments.
+STREAM_PREAMBLE = ":" + " " * 2048 + "\n\n"
+
 
 def init_event_ring(ring: EventRing) -> None:
     """
@@ -287,6 +296,22 @@ async def _sse_generator(
         event_ring.unregister_waiter(waiter, account_id)
 
 
+async def _with_preamble(stream: AsyncGenerator[str, None]) -> AsyncGenerator[str, None]:
+    """
+    Yield STREAM_PREAMBLE, then everything `stream` yields.
+
+    Closes `stream` when this generator is closed, so its own cleanup (the
+    ring waiter) runs on a client disconnect rather than whenever it is
+    garbage-collected.
+    """
+    try:
+        yield STREAM_PREAMBLE
+        async for chunk in stream:
+            yield chunk
+    finally:
+        await stream.aclose()
+
+
 async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
     """
     SSE endpoint handler.
@@ -327,7 +352,7 @@ async def sse_endpoint(request: Request) -> StreamingResponse | JSONResponse:
         last_event_id = FOREIGN_EVENT_ID if parsed is None else parsed
 
     return StreamingResponse(
-        _sse_generator(_event_ring, filter_account_id, last_event_id, request),
+        _with_preamble(_sse_generator(_event_ring, filter_account_id, last_event_id, request)),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

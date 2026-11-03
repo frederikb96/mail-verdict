@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.1.1] - 2026-11-03
+
+### Fixed
+
+- The iPhone app no longer shows "Connecting…" and "Server unreachable" for minutes after coming
+  back to the foreground while mail is loading fine. Every live-update stream now opens with
+  enough bytes for iOS to hand it to the app at once.
+
 ## [7.1.0] - 2026-10-31
 
 ### Added
