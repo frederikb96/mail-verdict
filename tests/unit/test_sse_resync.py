@@ -124,7 +124,8 @@ class TestSSEEventIdsNameTheirRing:
         response = await events_module.sse_endpoint(request)  # type: ignore[arg-type]
         chunks = [chunk async for chunk in response.body_iterator]  # type: ignore[attr-defined]
 
-        assert chunks and "event: resync" in chunks[0], chunks
+        assert chunks[0] == events_module.STREAM_PREAMBLE
+        assert len(chunks) > 1 and "event: resync" in chunks[1], chunks
 
     @pytest.mark.asyncio
     async def test_every_id_handed_out_names_this_ring(self) -> None:
@@ -151,3 +152,31 @@ class TestSSEEventIdsNameTheirRing:
         assert ring.parse_event_id(other.format_event_id(7)) is None
         assert ring.parse_event_id("7") is None
         assert ring.parse_event_id("not-an-id") is None
+
+
+class TestSSEStreamPreamble:
+    """URLSession delivers neither the response nor any body of a stream
+    until it holds 512 bytes, so every stream has to open with at least that
+    much -- including a reconnect with nothing to replay, which sends no
+    event at all until the first ping."""
+
+    @pytest.mark.asyncio
+    async def test_a_reconnect_with_nothing_missed_still_opens_with_512_bytes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ring = EventRing()
+        account_id = uuid.uuid4()
+        last_id = await ring.add(account_id, "mail.new", {"n": 1})
+        monkeypatch.setattr(events_module, "_event_ring", ring)
+
+        request = _StubRequest({"Last-Event-ID": ring.format_event_id(last_id)})
+        response = await events_module.sse_endpoint(request)  # type: ignore[arg-type]
+        chunks = [chunk async for chunk in response.body_iterator]  # type: ignore[attr-defined]
+
+        assert chunks, "the stream sent nothing"
+        first = chunks[0]
+        assert len(first.encode()) >= 512, len(first.encode())
+        # An SSE comment: every line starts with ':' and the frame ends a block.
+        assert first.startswith(":") and first.endswith("\n\n")
+        assert all(line.startswith(":") for line in first.split("\n") if line)
