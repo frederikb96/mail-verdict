@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.2.0] - 2026-11-03
+
 ### Added
 
 - The token usage of every paid model call is recorded: spam verdicts, order matching and
