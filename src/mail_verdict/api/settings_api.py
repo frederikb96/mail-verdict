@@ -5,8 +5,8 @@ GET /api/settings — all settings by category
 GET /api/settings/{category} — single category
 PUT /api/settings/{category} — update category (merge)
 POST /api/settings/import — bulk import
-GET /api/settings/providers — which provider keys are configured, and the
-    health of every AI task's circuit breaker
+GET /api/settings/providers — which provider keys are configured, the
+    health of every AI task's circuit breaker, and the token usage export
 
 A provider API key is a write-only extension of the JSON any category
 accepts: PUT anthropic_api_key / openai_api_key / custom_api_key
@@ -17,7 +17,9 @@ read reports only anthropic_api_key_configured / anthropic_api_key_hint
 (_CREDENTIAL_FIELD_PATTERN below) rather than by which category the
 request names, so a key-shaped field is stripped -- never merged into a
 category's JSONB blob, never returned -- whichever category it is sent
-to or read from, not only "ai".
+to or read from, not only "ai". The Elasticsearch key of the token usage
+export is written the same way, as elastic_usage_api_key, and reported
+only by GET /api/settings/providers.
 
 A write to "semantic" that changes model, provider or base_url freezes the
 identity that was actually serving search into active_model/active_provider
@@ -52,11 +54,14 @@ from mail_verdict.settings.ai_validation import (
     validate_semantic_settings,
 )
 from mail_verdict.settings.credentials import (
+    CREDENTIAL_ENV_VARS,
     PROVIDER_ENV_VARS,
     EncryptionUnavailableError,
     get_provider_credential_repo,
 )
 from mail_verdict.settings.orders_validation import validate_orders_settings
+from mail_verdict.usage.export import CREDENTIAL as USAGE_EXPORT_CREDENTIAL
+from mail_verdict.usage.export import export_status
 
 logger = logging.getLogger(__name__)
 
@@ -122,13 +127,26 @@ class TaskBreakerStatus(BaseModel):
     retry_after: datetime | None
 
 
+class UsageExportStatus(BaseModel):
+    """The token usage export (usage/export.py): its key, when a request
+    last delivered documents, the error of the last request if it failed,
+    and how many usage rows wait to be sent."""
+
+    key: ProviderKeyStatus
+    last_success_at: datetime | None
+    last_error: str | None
+    last_error_at: datetime | None
+    pending: int
+
+
 class ProvidersStatus(BaseModel):
     """What an operator needs to see about the providers in one read: the
-    keys (shared by every task naming the provider) and the breakers of the
-    tasks that have called one."""
+    keys (shared by every task naming the provider), the breakers of the
+    tasks that have called one, and the export of their token usage."""
 
     providers: dict[str, ProviderKeyStatus]
     breakers: list[TaskBreakerStatus]
+    usage_export: UsageExportStatus
 
 
 async def _ai_credential_status() -> dict[str, Any]:
@@ -217,7 +235,7 @@ async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
 
     An empty string clears the stored key; anything else (over)writes it.
     A key-shaped field for a provider this server doesn't know how to
-    store (not in PROVIDER_ENV_VARS) is dropped rather than stored or
+    store (not in CREDENTIAL_ENV_VARS) is dropped rather than stored or
     raised on -- there is nowhere safe to put it, and the alternative is
     persisting it in the clear.
 
@@ -236,14 +254,14 @@ async def _apply_credential_writes(data: dict[str, Any]) -> dict[str, Any]:
         data: Raw PUT body for any settings category
 
     Returns:
-        data with anthropic_api_key / openai_api_key / custom_api_key and
-        the read-only computed status fields popped out
+        data with every `<credential>_api_key` and the read-only computed
+        status fields popped out
 
     Raises:
         HTTPException: 400 if a key is set with no ENCRYPTION_KEY configured
     """
     present = [
-        provider for provider in PROVIDER_ENV_VARS if f"{provider}_api_key" in data
+        provider for provider in CREDENTIAL_ENV_VARS if f"{provider}_api_key" in data
     ]
     if present:
         cred_repo = get_provider_credential_repo()
@@ -273,7 +291,8 @@ async def get_all_settings() -> dict[str, dict[str, Any]]:
 
 @router.get("/providers", response_model=ProvidersStatus)
 async def get_providers_status() -> ProvidersStatus:
-    """Provider key presence and the circuit breakers of the AI tasks.
+    """Provider key presence, the circuit breakers of the AI tasks and the
+    token usage export.
 
     Registered before `/{category}`, which would otherwise read "providers"
     as a category name.
@@ -296,8 +315,16 @@ async def get_providers_status() -> ProvidersStatus:
                 .order_by(CircuitBreakerState.name)
             )
         ).all()
+    export = await export_status(get_db_connection())
     return ProvidersStatus(
         providers=providers,
+        usage_export=UsageExportStatus(
+            key=ProviderKeyStatus(**await cred_repo.status(USAGE_EXPORT_CREDENTIAL)),  # type: ignore[arg-type]
+            last_success_at=export.last_success_at,
+            last_error=export.last_error,
+            last_error_at=export.last_error_at,
+            pending=export.pending,
+        ),
         breakers=[
             TaskBreakerStatus(
                 name=row.name, state=row.state, reason=row.reason, since=row.since,

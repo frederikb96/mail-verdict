@@ -29,6 +29,11 @@ likewise never retried.
 Callers never see a raw client: resolve_client() raises
 ProviderUnavailableError for the one case worth telling apart from a
 retryable failure -- there is no key to call with at all.
+
+Every response that arrives, whatever becomes of it afterwards (parsed,
+refused, retried as malformed), is billed, so each is handed to the
+caller's `on_usage` with its token counts before anything else is done
+with it (usage/tokens.py).
 """
 
 from __future__ import annotations
@@ -42,11 +47,19 @@ from typing import TYPE_CHECKING, Any
 
 from mail_verdict.core.errors import ModelRefused, ProviderUnavailableError
 from mail_verdict.core.retry import RetryConfig
+from mail_verdict.usage.tokens import (
+    TokenUsage,
+    from_anthropic,
+    from_chat_completions,
+    from_responses,
+)
 
 if TYPE_CHECKING:
     from mail_verdict.settings.credentials import ProviderCredentialRepository
 
 logger = logging.getLogger(__name__)
+
+OnUsage = Callable[[TokenUsage], Awaitable[None]]
 
 
 def retry_after_from_exception(exc: BaseException, *, default: timedelta) -> timedelta:
@@ -235,6 +248,7 @@ async def call_anthropic_structured(
     retry_config: RetryConfig,
     validate: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
+    on_usage: OnUsage | None = None,
 ) -> dict[str, Any]:
     """Issue a strict-schema request against the Anthropic Messages API.
 
@@ -242,6 +256,8 @@ async def call_anthropic_structured(
     (anthropic_provider.py's REQUEST_TIMEOUT_SECONDS) for this call alone,
     when a caller's own budget for a full-length response needs more room
     than the shared default allows. Left unset, the client's default holds.
+
+    on_usage receives every response's token counts as it arrives.
     """
     from anthropic import (
         APIConnectionError,
@@ -276,6 +292,8 @@ async def call_anthropic_structured(
             output_config=output_config,
             **kwargs,
         )
+        if on_usage is not None:
+            await on_usage(from_anthropic(response))
         if response.stop_reason == "refusal":
             details = getattr(response, "stop_details", None)
             raise ModelRefused(getattr(details, "category", None))
@@ -301,6 +319,7 @@ async def call_chat_completions_structured(
     retry_config: RetryConfig,
     validate: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
+    on_usage: OnUsage | None = None,
 ) -> dict[str, Any]:
     """
     Issue a strict-schema request against an OpenAI-compatible Chat
@@ -331,6 +350,8 @@ async def call_chat_completions_structured(
     embeddings' tighter leases) for this call alone, when a caller's own
     budget for a full-length response needs more room. Left unset, the
     client's default holds.
+
+    on_usage receives every response's token counts as it arrives.
     """
     from openai import APIConnectionError, InternalServerError, RateLimitError
 
@@ -354,6 +375,8 @@ async def call_chat_completions_structured(
             },
             **kwargs,
         )
+        if on_usage is not None:
+            await on_usage(from_chat_completions(response))
         message = response.choices[0].message
         refusal = getattr(message, "refusal", None)
         if isinstance(refusal, str) and refusal:
@@ -380,11 +403,13 @@ async def call_openai_structured(
     retry_config: RetryConfig,
     validate: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
+    on_usage: OnUsage | None = None,
 ) -> dict[str, Any]:
     """Issue a strict-schema request against the OpenAI Responses API.
 
     timeout_seconds overrides the client's own per-request timeout for
     this call alone; see call_chat_completions_structured's docstring.
+    on_usage receives every response's token counts as it arrives.
     """
     from openai import APIConnectionError, InternalServerError, RateLimitError
 
@@ -412,6 +437,8 @@ async def call_openai_structured(
             },
             **kwargs,
         )
+        if on_usage is not None:
+            await on_usage(from_responses(response))
         return str(response.output_text)
 
     return await retry_structured_call(

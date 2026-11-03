@@ -13,7 +13,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 
 import { useAllSettings, useProvidersStatus, useUpdateSettings } from "@/hooks/use-settings";
-import type { ProviderKeyStatus } from "@/types/api";
+import type { ProviderKeyStatus, UsageExportStatus } from "@/types/api";
+import { formatRelativeAgo } from "@/lib/format";
 import { useTheme } from "@/components/theme-provider";
 import { AccountOrder } from "@/components/settings/account-order";
 import { UnifiedViewsSettings } from "@/components/settings/unified-setup";
@@ -368,7 +369,9 @@ function ProviderKeyField({
  * deliberately excludes above. A key is stored once per provider name and
  * shared by every task that names it, so the form sits above the task tabs.
  * Below it, the health of each task's breaker: a task whose provider ran
- * out of credit or was refused says so here, not only in the queue API. */
+ * out of credit or was refused says so here, not only in the queue API.
+ * Last, the Elasticsearch key the token usage of these calls is pushed with,
+ * and how that push is going. */
 function ProvidersCard() {
   const { data: status } = useProvidersStatus();
   const providers: { key: string; label: string }[] = [
@@ -412,8 +415,44 @@ function ProvidersCard() {
             ))}
           </ul>
         )}
+        <ProviderKeyField
+          providerKey="elastic_usage"
+          label="Elastic usage export"
+          status={status?.usage_export.key}
+        />
+        <UsageExportLine status={status?.usage_export} />
       </CardContent>
     </Card>
+  );
+}
+
+/** How the token usage push to Elasticsearch is going: nothing while it has
+ * no key, the last request's error while it fails, else the last delivery. */
+function UsageExportLine({ status }: { status: UsageExportStatus | undefined }) {
+  if (!status?.key.configured) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        The token usage of every model call is recorded; it is pushed to Elasticsearch once an
+        API key is stored here.
+      </p>
+    );
+  }
+  if (status.last_error) {
+    return (
+      <p className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+        Usage export failing ({formatRelativeAgo(status.last_error_at)}, {status.pending} waiting):{" "}
+        {status.last_error}
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-muted-foreground">
+      Usage export:{" "}
+      {status.last_success_at
+        ? `last delivered ${formatRelativeAgo(status.last_success_at)}`
+        : "nothing delivered yet"}
+      , {status.pending} waiting.
+    </p>
   );
 }
 

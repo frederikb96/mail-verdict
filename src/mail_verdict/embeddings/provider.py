@@ -12,7 +12,9 @@ its own documentation points at a third-party partner for this -- so it is
 never one of the names `semantic.provider` accepts. "custom" is any
 OpenAI-compatible embeddings endpoint (settings.semantic.base_url), the
 same request shape as "openai" -- both are OpenAIEmbeddingProvider,
-differing only in which client the resolved base_url points at.
+differing only in which client the resolved base_url points at. Each of
+its responses is recorded with its token count (usage/recorder.py) by the
+recorder its caller hands in.
 """
 
 from __future__ import annotations
@@ -26,9 +28,11 @@ from typing import TYPE_CHECKING, Any
 from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.core.structured_llm import resolve_client
 from mail_verdict.database.models import EMBEDDING_DIMENSIONS
+from mail_verdict.usage.tokens import from_embeddings
 
 if TYPE_CHECKING:
     from mail_verdict.settings.credentials import ProviderCredentialRepository
+    from mail_verdict.usage.recorder import UsageRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -128,16 +132,19 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
     def __init__(
         self, cred_repo: ProviderCredentialRepository,
         *, provider: str = "openai", base_url: str | None = None,
+        usage: UsageRecorder | None = None,
     ) -> None:
         """
         Args:
             cred_repo: Provider API key repository, read fresh per call
             provider: "openai" or "custom" -- which credential to resolve
             base_url: Required when provider is "custom"; ignored otherwise
+            usage: Records each response's tokens; None records nothing
         """
         self._cred_repo = cred_repo
         self._provider = provider
         self._base_url = base_url
+        self._usage = usage
 
     async def embed_batch(
         self, texts: list[str], *, model: str, timeout: float | None = None,
@@ -156,6 +163,11 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             model=model, input=texts, dimensions=EMBEDDING_DIMENSIONS,
             **({} if timeout is None else {"timeout": timeout}),
         )
+        if self._usage is not None:
+            await self._usage.record(
+                provider=self._provider, base_url=self._base_url, model=model,
+                tokens=from_embeddings(response),
+            )
         logger.debug(
             "Embedded batch",
             extra={"provider": self._provider, "model": model, "count": len(texts)},
@@ -192,6 +204,7 @@ def _fake_vector(text: str) -> list[float]:
 
 def resolve_embedding_provider(
     provider_name: str, cred_repo: ProviderCredentialRepository, *, base_url: str | None = None,
+    usage: UsageRecorder | None = None,
 ) -> EmbeddingProvider:
     """
     Resolve a provider instance by name.
@@ -201,6 +214,7 @@ def resolve_embedding_provider(
         cred_repo: Provider API key repository
         base_url: Required when provider_name is "custom"; ignored
             otherwise
+        usage: Records each response's tokens; None records nothing
 
     Returns:
         A provider instance
@@ -209,7 +223,9 @@ def resolve_embedding_provider(
         ValueError: provider_name is not recognized
     """
     if provider_name in ("openai", "custom"):
-        return OpenAIEmbeddingProvider(cred_repo, provider=provider_name, base_url=base_url)
+        return OpenAIEmbeddingProvider(
+            cred_repo, provider=provider_name, base_url=base_url, usage=usage,
+        )
     if provider_name == "fake":
         return FakeEmbeddingProvider()
     raise ValueError(f"Unknown embedding provider {provider_name!r}")

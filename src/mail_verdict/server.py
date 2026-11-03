@@ -78,6 +78,7 @@ _pipeline_reconciler: Any | None = None
 _pending_send_timer: Any | None = None
 _stalled_outbox_timer: Any | None = None
 _provider_alert_timer: Any | None = None
+_usage_exporter: Any | None = None
 _action_submission_pruner: Any | None = None
 _mail_alert_finalizer: Any | None = None
 _retention_sweeper: Any | None = None
@@ -153,6 +154,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _order_auto_closer
     global _order_file_pruner
     global _stalled_outbox_timer, _action_submission_pruner, _provider_alert_timer
+    global _usage_exporter
 
     config = get_config()
 
@@ -326,6 +328,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         timedelta(seconds=config.providers.suspended_alert_after_seconds),
     )
     await _provider_alert_timer.start()
+
+    from mail_verdict.usage.export import build_usage_export_timer
+
+    _usage_exporter = build_usage_export_timer(db, cred_repo, config.usage_export)
+    await _usage_exporter.start()
 
     from mail_verdict.mail_actions.submissions import build_submission_prune_timer
 
@@ -514,6 +521,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _stalled_outbox_timer.stop()
     if _provider_alert_timer:
         await _provider_alert_timer.stop()
+    if _usage_exporter:
+        await _usage_exporter.stop()
     if _action_submission_pruner:
         await _action_submission_pruner.stop()
     if _retention_sweeper:
@@ -544,6 +553,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _pending_send_timer = None
     _stalled_outbox_timer = None
     _provider_alert_timer = None
+    _usage_exporter = None
     _action_submission_pruner = None
     _mail_alert_finalizer = None
     _retention_sweeper = None

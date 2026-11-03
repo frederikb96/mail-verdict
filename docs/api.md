@@ -133,9 +133,14 @@ curl -X PUT localhost:8080/api/settings/ai -H 'content-type: application/json' -
 ```
 
 `GET /api/settings/providers` answers `{"providers": {"anthropic": {"configured", "hint"}, ...},
-"breakers": [{"name", "state", "reason", "since", "retry_after"}]}`: which keys are configured, and
-the circuit breaker of every AI task that has called a provider (`<provider>:<task>`, `state`
-`closed`, `open` or `suspended` — a suspended one is a provider out of credit or rejecting its key).
+"breakers": [{"name", "state", "reason", "since", "retry_after"}], "usage_export": {"key",
+"last_success_at", "last_error", "last_error_at", "pending"}}`: which keys are configured, the
+circuit breaker of every AI task that has called a provider (`<provider>:<task>`, `state`
+`closed`, `open` or `suspended` — a suspended one is a provider out of credit or rejecting its key),
+and the token usage export to Elasticsearch — its key, the last delivery, the last request's error
+while it fails, and how many usage rows wait to be sent. The export's key is written like a
+provider key, as `elastic_usage_api_key` (an Elasticsearch encoded API key), and appears only here,
+never in a category's own fields.
 
 `settings/defaults.py` documents every other setting category (`ai`, `assistant`, `orders`, `retry`,
 `pipeline`, `semantic`) and its default with a comment — that file is the authoritative list, not repeated

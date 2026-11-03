@@ -11,6 +11,10 @@ fallback for a deployment that prefers keeping the key out of the database
 entirely. "custom" is one credential shared by whichever settings category
 (ai, semantic) has its provider set to "custom" -- a compatible deployment
 is one account, reached at that category's own base_url.
+
+The same store holds the key of the one service that is not an AI
+provider: `elastic_usage`, the Elasticsearch API key the token usage
+export (usage/export.py) sends with.
 """
 
 from __future__ import annotations
@@ -35,15 +39,22 @@ PROVIDER_ENV_VARS: dict[str, str] = {
     "custom": "CUSTOM_AI_API_KEY",
 }
 
+# Every credential the store holds: the AI providers and the services that
+# are not one. Settings writes accept `<name>_api_key` for each.
+CREDENTIAL_ENV_VARS: dict[str, str] = {
+    **PROVIDER_ENV_VARS,
+    "elastic_usage": "ELASTIC_USAGE_API_KEY",
+}
+
 
 class EncryptionUnavailableError(Exception):
     """Raised when storing a key is attempted with no encryption_key configured."""
 
 
 def _require_known_provider(provider: str) -> None:
-    if provider not in PROVIDER_ENV_VARS:
+    if provider not in CREDENTIAL_ENV_VARS:
         raise ValueError(
-            f"Unknown provider {provider!r}, expected one of {sorted(PROVIDER_ENV_VARS)}"
+            f"Unknown provider {provider!r}, expected one of {sorted(CREDENTIAL_ENV_VARS)}"
         )
 
 
@@ -143,7 +154,7 @@ class ProviderCredentialRepository:
         db_key = await self._get_db_key(provider)
         if db_key:
             return db_key
-        return os.environ.get(PROVIDER_ENV_VARS[provider]) or None
+        return os.environ.get(CREDENTIAL_ENV_VARS[provider]) or None
 
     async def status(self, provider: str) -> dict[str, str | bool | None]:
         """

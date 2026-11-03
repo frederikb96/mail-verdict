@@ -18,7 +18,8 @@ export function useAllSettings() {
   });
 }
 
-/** Provider keys and the health of every AI task's breaker. Under the
+/** Provider keys, the health of every AI task's breaker and the token usage
+ * export. Under the
  * ["settings"] prefix, so a settings write or settings.changed refreshes it. */
 export function useProvidersStatus() {
   return useQuery({

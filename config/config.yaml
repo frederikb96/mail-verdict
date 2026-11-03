@@ -53,6 +53,21 @@ outbox:
 providers:
   suspended_alert_after_seconds: 1800
 
+# Token usage of every paid model call (usage/): one row per provider
+# response, pushed to an Elasticsearch data stream once the elastic_usage
+# API key is stored through the settings API. Without the key rows are
+# still recorded and pruned, and nothing is sent.
+usage_export:
+  elasticsearch_url: "https://elastic.frederikberg.com"
+  data_stream: "logs-llm.usage-default"
+  # How often the export runs, per process (one replica at a time).
+  interval_seconds: 60
+  # Documents per _bulk request.
+  batch_size: 500
+  request_timeout_seconds: 30
+  # Usage rows older than this are deleted, sent or not.
+  retention_days: 90
+
 mail_actions:
   # How long the idempotency key of a message action or bulk action is
   # remembered. A client retrying within this window is answered with the

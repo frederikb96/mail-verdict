@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The token usage of every paid model call is recorded: spam verdicts, order matching and
+  writing, the rule assistant, embeddings and search queries, each retry included, with provider,
+  model and cache reads and writes. Once an Elasticsearch API key is stored
+  (`elastic_usage_api_key`, set like a provider key, or on the Settings page), the records are
+  pushed to the data stream `logs-llm.usage-default`; `usage_export` in `config/config.yaml` sets
+  the destination and how long records are kept. The Settings page and
+  `GET /api/settings/providers` show how the push is going.
+
 ## [7.1.1] - 2026-11-03
 
 ### Fixed

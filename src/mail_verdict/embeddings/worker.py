@@ -40,6 +40,7 @@ from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 from mail_verdict.queue.manager import QueueManager
 from mail_verdict.queue.notify import ReconciliationTimer
 from mail_verdict.queue.worker_loop import heartbeat_while
+from mail_verdict.usage.recorder import EMBEDDING_PURPOSE, UsageRecorder
 
 if TYPE_CHECKING:
     from sqlalchemy import Table
@@ -407,7 +408,10 @@ async def _handle_one(
     )
 
     try:
-        provider = resolve_embedding_provider(provider_name, cred_repo, base_url=base_url)
+        provider = resolve_embedding_provider(
+            provider_name, cred_repo, base_url=base_url,
+            usage=UsageRecorder(db, EMBEDDING_PURPOSE),
+        )
         vectors = await provider.embed_batch([embedding_input.text], model=model)
     except ProviderUnavailableError as exc:
         await circuit.record_unavailable(reason=str(exc), probe_interval=PROBE_INTERVAL)

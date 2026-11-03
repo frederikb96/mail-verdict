@@ -220,6 +220,21 @@ class TestUpdateSettings:
         assert "sk-custom-secret" not in resp.text
         assert data["custom_api_key_configured"] is True
 
+    def test_elastic_usage_key_is_stored_and_kept_out_of_every_category(
+        self, client: TestClient, cred_repo: MagicMock,
+    ) -> None:
+        """The usage export's key goes to the credential store like a
+        provider key, and the ai category does not report it: the clients'
+        settings forms draw every unknown field of a category as editable."""
+        resp = client.put(
+            "/settings/ai", json={"data": {"elastic_usage_api_key": "ZWxhc3RpYy1rZXk="}},
+        )
+        assert resp.status_code == 200
+        assert cred_repo._stored["elastic_usage"] == "ZWxhc3RpYy1rZXk="
+        fetched = client.get("/settings/ai").text
+        assert "elastic_usage" not in resp.text
+        assert "elastic_usage" not in fetched
+
 
 class TestSemanticSettings:
     """Semantic category: provider validation and the active-model freeze

@@ -286,6 +286,18 @@ class ProvidersConfig(BaseModel):
     suspended_alert_after_seconds: int
 
 
+class UsageExportConfig(BaseModel):
+    """Where token usage is pushed and how long it is kept locally
+    (usage/export.py) -- see config.yaml."""
+
+    elasticsearch_url: str
+    data_stream: str
+    interval_seconds: float
+    batch_size: int
+    request_timeout_seconds: float
+    retention_days: int
+
+
 class SearchConfig(BaseModel):
     """Semantic search settings -- see config.yaml's own comments."""
 
@@ -380,6 +392,7 @@ class InfraConfig(BaseModel):
     security: SecurityConfig
     outbox: OutboxConfig
     providers: ProvidersConfig
+    usage_export: UsageExportConfig
     mail_actions: MailActionsConfig
     database: DatabaseConfig
     search: SearchConfig
@@ -417,6 +430,7 @@ def get_config() -> InfraConfig:
                 security=SecurityConfig(**(cfg.get("security") or {})),
                 outbox=OutboxConfig(**(cfg.get("outbox") or {})),
                 providers=ProvidersConfig(**(cfg.get("providers") or {})),
+                usage_export=UsageExportConfig(**(cfg.get("usage_export") or {})),
                 mail_actions=MailActionsConfig(**(cfg.get("mail_actions") or {})),
                 database=DatabaseConfig(**database_cfg),
                 search=SearchConfig(**(cfg.get("search") or {})),
