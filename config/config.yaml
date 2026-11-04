@@ -142,6 +142,13 @@ extraction:
   # fill the child's reply. Prompt budgets (orders/extract/truncate.py) sit
   # far below it.
   max_text_chars: 400000
+  # An image whose OCR reads below this mean word confidence (0-100) is
+  # transcribed by the orders `read` model instead, when one is set: a
+  # photographed ticket (light text on a dark print, a dark table behind it)
+  # reads around 45, a clean scan 86 to 95.
+  vision_below_confidence: 70
+  # Long side, in pixels, of the copy of such an image the read model gets.
+  vision_max_side: 1600
 
 # Files a person adds to the orders register by hand (POST /api/orders/files).
 # Every file is held whole in memory while it is read, so the per-file and

@@ -106,7 +106,8 @@ mirror, which is what keeps it simple.
   removed, two entries merged, or the summary rewritten by hand. Each entry is a ticket, an order
   or something else (a subscription, a claim), set by the model and overridable by hand. What an
   entry's mails attach is read too — the text of PDFs (scans by OCR), Wallet passes, calendar files,
-  e-invoices and images, and every QR, Aztec or bar code, which the entry shows as an image to scan —
+  e-invoices and images (a photo OCR cannot read, such as a photographed ticket, is transcribed by
+  a vision model when one is set), and every QR, Aztec or bar code, which the entry shows as an image to scan —
   and a file can be added to an entry directly (or opened as a new one) without any mail. Entries
   can be marked as favorites, narrowed by a typo-tolerant text filter, closed or reopened by hand, and sealed so
   the agent adds no more mail to them; an open entry nothing is expected of any more is closed
@@ -219,8 +220,8 @@ API keys — is a **setting**, stored in the database (keys encrypted) and edite
 the Settings page, not in a file.
 
 Every AI task has its own provider and model, so several providers can be configured at once: spam
-verdicts (`ai`), embeddings (`semantic`), the order-matching and order-text calls (`orders`'
-`decide_*` and `write_*` keys) and the rule assistant (`assistant`). A provider is OpenAI, Anthropic
+verdicts (`ai`), embeddings (`semantic`), the order-matching, order-text and image-reading calls
+(`orders`' `decide_*`, `write_*` and `read_*` keys) and the rule assistant (`assistant`). A provider is OpenAI, Anthropic
 (not for embeddings — no embedding model of its own), or any OpenAI-compatible server by its own
 address, key and model name; a custom server needs its address set on the task that uses it
 (`ai.base_url`, `semantic.base_url`, `orders.decide_base_url`, ...). A key is stored once per

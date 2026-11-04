@@ -1,6 +1,7 @@
 """
-The two model calls the orders worker makes: decide (which order, new, or
-none) and write (the order's title, status and summary, from its mails).
+The model calls the orders worker makes: decide (which order, new, or
+none), write (the order's title, status and summary, from its mails) and
+read (the text of an image OCR could not read).
 
 The system and user prompts live in config/prompts/orders_*.md.j2,
 reproduced verbatim from measurement against real mail -- see
@@ -64,6 +65,30 @@ def _document_block(tag: str, document: PromptDocument) -> str:
         f"{_json_field(document.text)}\n"
         f"</{tag}>"
     )
+
+
+# --- Read call ----------------------------------------------------------
+
+READ_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"text": {"type": "string"}},
+    "required": ["text"],
+    "additionalProperties": False,
+}
+
+
+def load_read_system_prompt() -> str:
+    return load_static_prompt("orders_read_system.md.j2")
+
+
+def build_read_user_prompt(filename: str) -> str:
+    """The read call's text beside the image: only the file's name."""
+    return f"Transcribe the image. Its file name: {_json_field(filename)}"
+
+
+def validate_read_response(data: dict[str, Any]) -> None:
+    if not isinstance(data.get("text"), str):
+        raise ValueError("read response has no text")
 
 
 # --- Decide call --------------------------------------------------------

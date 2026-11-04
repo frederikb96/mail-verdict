@@ -34,14 +34,19 @@ Every response that arrives, whatever becomes of it afterwards (parsed,
 refused, retried as malformed), is billed, so each is handed to the
 caller's `on_usage` with its token counts before anything else is done
 with it (usage/tokens.py).
+
+A call may carry images (`PromptImage`): they go in the user message ahead
+of its text, in each API's own content-block shape.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +65,50 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OnUsage = Callable[[TokenUsage], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class PromptImage:
+    """One image sent with a call's user message."""
+
+    media_type: str
+    data: bytes
+
+    @property
+    def base64(self) -> str:
+        return base64.b64encode(self.data).decode("ascii")
+
+
+def _anthropic_content(user_prompt: str, images: Sequence[PromptImage]) -> Any:
+    if not images:
+        return user_prompt
+    blocks: list[dict[str, Any]] = [
+        {"type": "image", "source": {
+            "type": "base64", "media_type": image.media_type, "data": image.base64,
+        }}
+        for image in images
+    ]
+    return [*blocks, {"type": "text", "text": user_prompt}]
+
+
+def _chat_content(user_prompt: str, images: Sequence[PromptImage]) -> Any:
+    if not images:
+        return user_prompt
+    blocks: list[dict[str, Any]] = [
+        {"type": "image_url", "image_url": {"url": f"data:{i.media_type};base64,{i.base64}"}}
+        for i in images
+    ]
+    return [*blocks, {"type": "text", "text": user_prompt}]
+
+
+def _responses_content(user_prompt: str, images: Sequence[PromptImage]) -> Any:
+    if not images:
+        return user_prompt
+    blocks: list[dict[str, Any]] = [
+        {"type": "input_image", "image_url": f"data:{i.media_type};base64,{i.base64}"}
+        for i in images
+    ]
+    return [*blocks, {"type": "input_text", "text": user_prompt}]
 
 
 def retry_after_from_exception(exc: BaseException, *, default: timedelta) -> timedelta:
@@ -249,6 +298,7 @@ async def call_anthropic_structured(
     validate: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
     on_usage: OnUsage | None = None,
+    images: Sequence[PromptImage] = (),
 ) -> dict[str, Any]:
     """Issue a strict-schema request against the Anthropic Messages API.
 
@@ -288,7 +338,7 @@ async def call_anthropic_structured(
             system=[{
                 "type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"},
             }],
-            messages=[{"role": "user", "content": user_prompt}],
+            messages=[{"role": "user", "content": _anthropic_content(user_prompt, images)}],
             output_config=output_config,
             **kwargs,
         )
@@ -320,6 +370,7 @@ async def call_chat_completions_structured(
     validate: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
     on_usage: OnUsage | None = None,
+    images: Sequence[PromptImage] = (),
 ) -> dict[str, Any]:
     """
     Issue a strict-schema request against an OpenAI-compatible Chat
@@ -367,7 +418,7 @@ async def call_chat_completions_structured(
             model=model,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": _chat_content(user_prompt, images)},
             ],
             response_format={
                 "type": "json_schema",
@@ -404,6 +455,7 @@ async def call_openai_structured(
     validate: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
     on_usage: OnUsage | None = None,
+    images: Sequence[PromptImage] = (),
 ) -> dict[str, Any]:
     """Issue a strict-schema request against the OpenAI Responses API.
 
@@ -425,7 +477,7 @@ async def call_openai_structured(
             model=model,
             input=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": _responses_content(user_prompt, images)},
             ],
             text={
                 "format": {

@@ -1,25 +1,33 @@
 """
-The orders queue's two model tasks, each resolved from its own settings.
+The orders queue's model tasks, each resolved from its own settings.
 
-`decide` (which order does a mail belong to, or none) and `write` (an
-order's text) each name their own provider, server address, model,
-reasoning effort and token budget in the `orders` settings category, as
-`decide_*` and `write_*` keys. Every call reads them fresh, so a change
-takes effect on the next job. Both go through the one ModelGateway, under
-the breaker categories `orders.decide` and `orders.write`: a provider
-failing one task never stalls the other when they sit on different
-providers, and a bad model name in one task trips only that task's breaker.
+`decide` (which order does a mail belong to, or none), `write` (an order's
+text) and `read` (the text of an image OCR read poorly) each name their own
+provider, server address, model, reasoning effort and token budget in the
+`orders` settings category, as `decide_*`, `write_*` and `read_*` keys.
+Every call reads them fresh, so a change takes effect on the next job. All
+go through the one ModelGateway, under the breaker categories
+`orders.decide`, `orders.write` and `orders.read`: a provider failing one
+task never stalls another when they sit on different providers, and a bad
+model name in one task trips only that task's breaker.
+
+`read` is optional: with no model set, a poorly read image keeps its OCR
+text. Its result feeds the decide call, so it reads what decide reads.
 """
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal
 
 from mail_verdict.core.retry import RetryConfig
+from mail_verdict.core.structured_llm import PromptImage
+from mail_verdict.orders import prompts
 from mail_verdict.pipeline.context import ModelGateway
-from mail_verdict.pipeline.contracts import StageThrottled, StageUnavailable
+from mail_verdict.pipeline.contracts import StageError, StageThrottled, StageUnavailable
 from mail_verdict.queue.circuit import CircuitBreaker, CircuitState
 
 if TYPE_CHECKING:
@@ -27,7 +35,9 @@ if TYPE_CHECKING:
     from mail_verdict.settings.credentials import ProviderCredentialRepository
     from mail_verdict.settings.service import SettingsService
 
-Task = Literal["decide", "write"]
+logger = logging.getLogger(__name__)
+
+Task = Literal["decide", "write", "read"]
 
 
 @dataclass(frozen=True)
@@ -115,7 +125,7 @@ async def structured_call(
     settings_service: SettingsService,
     task: Task,
     *, schema_name: str, system_prompt: str, user_prompt: str, schema: dict[str, Any],
-    validate: Any,
+    validate: Any, images: Sequence[PromptImage] = (),
 ) -> tuple[dict[str, Any], str, float]:
     """One call of `task` through the shared gateway.
 
@@ -131,5 +141,47 @@ async def structured_call(
         effort=model.effort, max_tokens=model.max_tokens, schema_name=schema_name,
         system_prompt=system_prompt, user_prompt=user_prompt, schema=schema,
         validate=validate, base_url=model.base_url, timeout_seconds=model.timeout_seconds,
+        images=images,
     )
     return data, model.model, latency_ms
+
+
+async def read_image(
+    db: DatabaseConnection,
+    cred_repo: ProviderCredentialRepository,
+    settings_service: SettingsService,
+    image: bytes, *, filename: str,
+) -> str | None:
+    """
+    Transcribe one image (a JPEG) with the `read` task.
+
+    Never raises: a document is still stored with its OCR text when the
+    read model is not set, is the fake provider, or fails -- the failure is
+    logged, and the provider's breaker records it as for any call.
+
+    Returns:
+        The transcription, or None
+    """
+    model = TaskModel.from_settings(settings_service, "read")
+    if not model.model.strip() or model.provider == "fake":
+        return None
+    try:
+        data, _, latency_ms = await structured_call(
+            db, cred_repo, settings_service, "read", schema_name="document_text",
+            system_prompt=prompts.load_read_system_prompt(),
+            user_prompt=prompts.build_read_user_prompt(filename), schema=prompts.READ_SCHEMA,
+            validate=prompts.validate_read_response,
+            images=[PromptImage("image/jpeg", image)],
+        )
+    except StageError as exc:
+        logger.warning(
+            "Orders read of %r on %s %s failed, keeping its OCR text: %s: %s",
+            filename, model.provider, model.model, type(exc).__name__, exc,
+        )
+        return None
+    text = str(data["text"]).strip()
+    logger.info(
+        "Orders read %r on %s %s: %d characters in %.0f ms",
+        filename, model.provider, model.model, len(text), latency_ms,
+    )
+    return text or None

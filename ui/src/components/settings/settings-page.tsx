@@ -123,6 +123,11 @@ const SETTING_LABELS: Record<string, string> = {
   write_model: "Order text: model",
   write_reasoning_effort: "Order text: reasoning effort",
   write_max_tokens: "Order text: max tokens",
+  read_provider: "Image reading: provider",
+  read_base_url: "Image reading: server address (custom provider only)",
+  read_model: "Image reading: model (takes images; empty = OCR only)",
+  read_reasoning_effort: "Image reading: reasoning effort",
+  read_max_tokens: "Image reading: max tokens",
 };
 
 /** What each AI task reads, shown where its provider is chosen -- the
@@ -133,7 +138,8 @@ const TASK_PRIVACY: Record<string, string> = {
   semantic: "Embeds every mail for search.",
   orders:
     "Order matching reads every mail that passes the first filter, which includes newsletters " +
-    "that mention an order. Order text reads only mail already in an order and its attachments.",
+    "that mention an order. Order text reads only mail already in an order and its attachments. " +
+    "Image reading sees the images of those same mails, and files added by hand, whose OCR read poorly.",
   assistant:
     "Reads the open mail, plus the subjects and senders of the account's 100 newest mails.",
 };

@@ -7,7 +7,7 @@ orders.
 
 Every AI task picks its own provider and model: "ai" (spam verdicts),
 "semantic" (embeddings), "assistant" (the rule assistant), and the
-`decide_` and `write_` key groups of "orders". A provider's API key is
+`decide_`, `write_` and `read_` key groups of "orders". A provider's API key is
 stored once per provider name (settings/credentials.py) and shared by
 every task that names it.
 
@@ -226,11 +226,12 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "notify_wait_seconds": 120.0,
     },
     SettingCategory.ORDERS: {
-        # Two model tasks, each with its own provider, server address, model,
+        # Three model tasks, each with its own provider, server address, model,
         # reasoning effort and token budget -- same vocabulary and validation
         # as the ai category (settings/ai_validation.py), likewise not
         # inherited from it. Empty model means not chosen: an account cannot
-        # be switched on until both are (see api/accounts.py's PATCH handler).
+        # be switched on until decide and write are (see api/accounts.py's
+        # PATCH handler); read is optional.
         #
         # decide: which order does a mail belong to, or none. Reads every mail
         # that passes the first filter.
@@ -251,6 +252,15 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "write_reasoning_effort": "none",
         # Thinking is paid from this budget too.
         "write_max_tokens": 8000,
+        # read: transcribes an image whose OCR read poorly (a photographed
+        # ticket), so its text reaches decide and write. Reads what decide
+        # reads, and needs a model that takes images. Unset, such an image
+        # keeps its OCR text.
+        "read_provider": "openai",
+        "read_base_url": None,
+        "read_model": "",
+        "read_reasoning_effort": "none",
+        "read_max_tokens": 3000,
         # The language titles and summaries are written in.
         "language": "English",
         # An open order the model still owns is closed automatically

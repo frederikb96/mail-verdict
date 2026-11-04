@@ -56,7 +56,12 @@ class ExtractedDocument:
     """What one attachment gave. `text` holds the whole readable text up to the
     configured hard ceiling, with a code marker at each barcode's reading-order
     position; `text_chars_total` is its length before that ceiling. Prompt
-    budgets are applied separately (`truncate.py`)."""
+    budgets are applied separately (`truncate.py`).
+
+    `ocr_confidence` is the mean word confidence of an OCR'd image.
+    `vision_image` is a downscaled JPEG of an image whose OCR read poorly,
+    for the read model to transcribe (orders/documents.py); it is never
+    stored."""
 
     filename: str
     content_type: str
@@ -68,6 +73,8 @@ class ExtractedDocument:
     text_chars_total: int = 0
     barcodes: tuple[Barcode, ...] = field(default_factory=tuple)
     error: str | None = None
+    ocr_confidence: float | None = None
+    vision_image: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -79,3 +86,5 @@ class Read:
     text: str
     page_count: int | None = None
     barcodes: tuple[Barcode, ...] = field(default_factory=tuple)
+    ocr_confidence: float | None = None
+    vision_image: bytes | None = None

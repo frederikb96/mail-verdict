@@ -130,6 +130,7 @@ def extract_bytes(
     return build(
         method=read.method, page_count=read.page_count, text=kept,
         text_chars_total=len(text), barcodes=barcodes,
+        ocr_confidence=read.ocr_confidence, vision_image=read.vision_image,
     )
 
 

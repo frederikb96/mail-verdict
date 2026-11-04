@@ -1,7 +1,8 @@
 """
 Image attachments and inline graphics: a barcode scan always (a DHL return
 label is a PNG with a QR code), OCR only for images big enough to hold a
-document rather than a logo.
+document rather than a logo. An image OCR reads poorly also yields a small
+JPEG copy for the read model (`vision_below_confidence` in config.yaml).
 """
 
 from __future__ import annotations
@@ -62,4 +63,22 @@ def read_image(data: bytes, limits: ExtractionConfig) -> Read:
     if placed:
         anchors = ocr_result.anchors() if ocr_result and not ocr_result.rotated else []
         text = bc.insert_markers(text, anchors, placed)
-    return Read(method="image", text=text, page_count=1, barcodes=book.with_offsets(text))
+    confidence = ocr_result.confidence if ocr_result else None
+    vision_image = (
+        vision_copy(image, limits.vision_max_side)
+        if confidence is not None and confidence < limits.vision_below_confidence else None
+    )
+    return Read(
+        method="image", text=text, page_count=1, barcodes=book.with_offsets(text),
+        ocr_confidence=confidence, vision_image=vision_image,
+    )
+
+
+def vision_copy(image: Image.Image, max_side: int) -> bytes:
+    """The image as a JPEG no longer than `max_side` on either side -- small
+    enough for every vision API, large enough to read a ticket's fine print."""
+    copy = image.convert("RGB")
+    copy.thumbnail((max_side, max_side))
+    buffer = io.BytesIO()
+    copy.save(buffer, format="JPEG", quality=85)
+    return buffer.getvalue()
