@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.3.0] - 2026-11-04
+
 ### Added
 
 - A photo or scan that OCR cannot read (a photographed concert ticket, light print on a dark
