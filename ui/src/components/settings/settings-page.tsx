@@ -104,6 +104,7 @@ const SETTING_LABELS: Record<string, string> = {
   batch_size: "Backfill batch size",
   neighbor_k: "Similar past messages consulted",
   neighbor_min_similarity: "Minimum similarity",
+  query_instructions: "Search query instruction per embedding model",
   default_event_duration_minutes: "Default event duration (minutes)",
   default_reminder_minutes: "Default reminder (minutes)",
   undo_send_seconds: "Undo window after Send (seconds)",
@@ -128,6 +129,7 @@ const SETTING_LABELS: Record<string, string> = {
   read_model: "Image reading: model (takes images; empty = OCR only)",
   read_reasoning_effort: "Image reading: reasoning effort",
   read_max_tokens: "Image reading: max tokens",
+  read_below_confidence: "Image reading: when OCR confidence is below (0-100)",
 };
 
 /** What each AI task reads, shown where its provider is chosen -- the

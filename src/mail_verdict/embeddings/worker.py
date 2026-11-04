@@ -29,7 +29,6 @@ from mail_verdict.database.models import MessageEmbedding
 from mail_verdict.database.repository import MessageRepository
 from mail_verdict.embeddings.content import build_embedding_input
 from mail_verdict.embeddings.provider import (
-    DEFAULT_EMBEDDING_MODEL,
     resolve_active_embedding_model,
     resolve_embedding_provider,
 )
@@ -140,7 +139,7 @@ def register_embeddings(
         settings = settings_service.get("semantic")
         if not settings.get("enabled", True):
             return
-        model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+        model = str(settings["model"])
         # How many rows this sweep inserts, not how many the worker claims
         # per iteration -- the worker always claims one row at a time (see
         # _run_worker), independent of this setting.

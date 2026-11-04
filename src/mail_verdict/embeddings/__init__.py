@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from mail_verdict.embeddings.content import EmbeddingInput, build_embedding_input
 from mail_verdict.embeddings.provider import (
-    DEFAULT_EMBEDDING_MODEL,
     EmbeddingProvider,
     FakeEmbeddingProvider,
     OpenAIEmbeddingProvider,
@@ -26,7 +25,6 @@ from mail_verdict.embeddings.search import (
 from mail_verdict.embeddings.worker import EmbeddingComponents, register_embeddings
 
 __all__ = [
-    "DEFAULT_EMBEDDING_MODEL",
     "EmbeddingComponents",
     "EmbeddingInput",
     "EmbeddingProvider",

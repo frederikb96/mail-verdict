@@ -97,6 +97,7 @@ async def test_an_image_is_read_on_the_read_tasks_own_model() -> None:
     with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
         text = await model_calls.read_image(
             None, None, _READ, b"jpeg", filename="IMG_1.jpg",  # type: ignore[arg-type]
+            ocr_confidence=45.0,
         )
 
     assert text == "EXAMPLE BAND"
@@ -114,6 +115,7 @@ async def test_no_read_model_means_no_call() -> None:
     with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
         assert await model_calls.read_image(
             None, None, _Settings(), b"jpeg", filename="x.jpg",  # type: ignore[arg-type]
+            ocr_confidence=45.0,
         ) is None
     gateway_call.assert_not_awaited()
 
@@ -126,4 +128,17 @@ async def test_a_failed_read_keeps_the_ocr_text_instead_of_failing_the_job() -> 
     with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
         assert await model_calls.read_image(
             None, None, _READ, b"jpeg", filename="x.jpg",  # type: ignore[arg-type]
+            ocr_confidence=45.0,
         ) is None
+
+
+@pytest.mark.asyncio
+async def test_an_image_ocr_read_well_is_not_read_again() -> None:
+    gateway_call = AsyncMock()
+    settings = _Settings(**{**_READ.get("orders"), "read_below_confidence": 70})
+    with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
+        assert await model_calls.read_image(
+            None, None, settings, b"jpeg", filename="scan.png",  # type: ignore[arg-type]
+            ocr_confidence=91.0,
+        ) is None
+    gateway_call.assert_not_awaited()

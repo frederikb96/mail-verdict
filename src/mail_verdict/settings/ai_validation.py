@@ -121,3 +121,9 @@ def validate_semantic_settings(effective: dict[str, Any]) -> None:
         )
     if provider == "custom" and not effective.get("base_url"):
         raise ValueError("semantic.base_url is required when semantic.provider is 'custom'")
+    instructions = effective.get("query_instructions")
+    if instructions is not None and not (
+        isinstance(instructions, dict)
+        and all(isinstance(k, str) and isinstance(v, str) for k, v in instructions.items())
+    ):
+        raise ValueError("semantic.query_instructions must map model names to strings")

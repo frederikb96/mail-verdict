@@ -10,7 +10,6 @@ import pytest
 
 from mail_verdict.database.models import EMBEDDING_DIMENSIONS
 from mail_verdict.embeddings.provider import (
-    DEFAULT_EMBEDDING_MODEL,
     FakeEmbeddingProvider,
     OpenAIEmbeddingProvider,
     resolve_active_embedding_model,
@@ -94,9 +93,6 @@ class TestResolveActiveEmbeddingModel:
         assert resolve_active_embedding_model({"model": "text-embedding-3-small"}) == (
             "text-embedding-3-small"
         )
-
-    def test_falls_back_to_default_when_nothing_set(self) -> None:
-        assert resolve_active_embedding_model({}) == DEFAULT_EMBEDDING_MODEL
 
     def test_frozen_active_model_wins_over_the_migration_target(self) -> None:
         """Mid-migration, active_model differs from model -- and it is

@@ -363,7 +363,6 @@ class ExtractionConfig(BaseModel):
     ocr_timeout_seconds: float
     max_image_pixels: int
     max_text_chars: int
-    vision_below_confidence: float
     vision_max_side: int
 
 

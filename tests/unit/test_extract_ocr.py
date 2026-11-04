@@ -89,15 +89,11 @@ def test_a_logo_sized_image_is_not_sent_to_ocr() -> None:
     assert doc.text == ""
 
 
-def test_an_image_ocr_reads_poorly_carries_a_small_copy_for_the_read_model() -> None:
+def test_an_ocrd_image_carries_its_confidence_and_a_small_copy_for_the_read_model() -> None:
     from PIL import Image
 
     page = text_image(_LINES + ["", "", ""], width=2400)
-    # A threshold above any confidence makes every OCR'd image "poorly read".
-    doc = extract_bytes(
-        png(page), "image/png", "ticket.png",
-        limits(vision_below_confidence=101, vision_max_side=800),
-    )
+    doc = extract_bytes(png(page), "image/png", "ticket.png", limits(vision_max_side=800))
     assert doc.ocr_confidence is not None and doc.ocr_confidence > 0
     assert doc.vision_image is not None
     with Image.open(io.BytesIO(doc.vision_image)) as copy:
@@ -105,9 +101,7 @@ def test_an_image_ocr_reads_poorly_carries_a_small_copy_for_the_read_model() -> 
         assert max(copy.size) == 800
 
 
-def test_an_image_ocr_reads_well_carries_no_copy() -> None:
-    page = text_image(_LINES + ["", "", ""])
-    doc = extract_bytes(png(page), "image/png", "scan.png", limits())
-    assert doc.ocr_confidence is not None
-    assert doc.ocr_confidence >= limits().vision_below_confidence
-    assert doc.vision_image is None
+def test_an_image_too_small_for_ocr_carries_no_copy() -> None:
+    small = text_image(["Logo"], size=20, width=300)
+    doc = extract_bytes(png(small), "image/png", "logo.png", limits())
+    assert (doc.ocr_confidence, doc.vision_image) == (None, None)

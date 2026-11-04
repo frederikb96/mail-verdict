@@ -1356,12 +1356,11 @@ async def get_semantic_status(account_id: str | None = None) -> dict[str, Any]:
     Returns:
         model, in_scope, encoded, pending, failed, coverage (0-1)
     """
-    from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
     from mail_verdict.embeddings.repository import EmbeddingRepository
     from mail_verdict.settings.service import get_settings_service
 
     settings = get_settings_service().get("semantic")
-    model = str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    model = str(settings["model"])
     aid = uuid.UUID(account_id) if account_id else None
     status = await EmbeddingRepository(get_db_connection()).status(model=model, account_id=aid)
     return {

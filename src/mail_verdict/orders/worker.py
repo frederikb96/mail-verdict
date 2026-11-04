@@ -590,9 +590,10 @@ def _image_reader(
     cred_repo: ProviderCredentialRepository,
     settings_service: SettingsService,
 ) -> documents.ReadImage:
-    async def read(image: bytes, filename: str) -> str | None:
+    async def read(image: bytes, filename: str, confidence: float) -> str | None:
         return await model_calls.read_image(
             db, cred_repo, settings_service, image, filename=filename,
+            ocr_confidence=confidence,
         )
 
     return read

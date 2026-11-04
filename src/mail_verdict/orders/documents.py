@@ -11,10 +11,11 @@ Stored text is already cut to the prompt budget, so storage is bounded per
 row. Bytes are never stored here: a mail attachment's stay in PostIMAP, a
 file's in order_files.
 
-An image the pool's OCR read poorly comes back with a small JPEG copy;
-every read here hands that to the caller's `ReadImage` (the orders `read`
-model, orders/model_calls.py), and its transcription replaces the OCR text
-before anything sees or stores the document.
+An OCR'd image comes back with a small JPEG copy and its OCR confidence;
+every read here hands both to the caller's `ReadImage` (the orders `read`
+model, orders/model_calls.py, which transcribes it when the confidence is
+low), and a transcription replaces the OCR text before anything sees or
+stores the document.
 """
 
 from __future__ import annotations
@@ -54,8 +55,9 @@ WRITE_PROMPT_CEILING_CHARS = 120_000
 
 _pool: ExtractionPool | None = None
 
-# (JPEG bytes, file name) -> the image's text, or None to keep the OCR text.
-ReadImage = Callable[[bytes, str], Awaitable[str | None]]
+# (JPEG bytes, file name, OCR confidence) -> the image's text, or None to keep
+# the OCR text.
+ReadImage = Callable[[bytes, str, float], Awaitable[str | None]]
 
 
 def extraction_pool() -> ExtractionPool:
@@ -86,20 +88,15 @@ class ReadDocument:
 async def _extract(
     data: bytes, content_type: str, filename: str, read_image: ReadImage | None,
 ) -> ExtractedDocument:
-    """Read one document in the pool, then hand a poorly OCR'd image to
+    """Read one document in the pool, then hand an OCR'd image to
     `read_image`."""
     document = await extraction_pool().extract(data, content_type, filename)
     if document.vision_image is None:
         return document
     image, document = document.vision_image, replace(document, vision_image=None)
-    logger.warning(
-        "OCR of %r read poorly (confidence %.0f, %d characters)%s", filename,
-        document.ocr_confidence or 0.0, len(document.text),
-        "; reading it with the read model" if read_image else "; no read model is set",
-    )
     if read_image is None:
         return document
-    text = await read_image(image, filename)
+    text = await read_image(image, filename, document.ocr_confidence or 0.0)
     return with_transcription(document, text) if text else document
 
 
