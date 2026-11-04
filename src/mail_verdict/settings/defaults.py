@@ -171,6 +171,14 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         # vector space is actually complete.
         "active_model": None,
         "active_provider": None,
+        # Embedding model -> the one-line task description a model trained
+        # to embed a search query differently from the documents it searches
+        # takes in front of the query (documents are embedded bare). A model
+        # not listed gets the query as it is.
+        "query_instructions": {
+            "Qwen/Qwen3-Embedding-8B":
+                "Given a search query, retrieve the emails that are relevant to it",
+        },
         "active_base_url": None,
     },
     SettingCategory.CALENDAR: {
@@ -261,6 +269,11 @@ SETTING_DEFAULTS: dict[str, dict[str, Any]] = {
         "read_model": "",
         "read_reasoning_effort": "none",
         "read_max_tokens": 3000,
+        # An image is read by the model when its OCR mean word confidence
+        # (0-100) is below this: a photographed ticket (light print on dark,
+        # a table behind it) scores around 30 to 45, a clean scan 86 to 95.
+        # 100 reads every image large enough to be OCR'd; 0 never reads one.
+        "read_below_confidence": 70,
         # The language titles and summaries are written in.
         "language": "English",
         # An open order the model still owns is closed automatically

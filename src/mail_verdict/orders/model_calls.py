@@ -12,7 +12,9 @@ task never stalls another when they sit on different providers, and a bad
 model name in one task trips only that task's breaker.
 
 `read` is optional: with no model set, a poorly read image keeps its OCR
-text. Its result feeds the decide call, so it reads what decide reads.
+text. It runs when an image's OCR confidence is below
+`read_below_confidence` (100: every OCR'd image), and its result feeds the
+decide call, so it reads what decide reads.
 """
 
 from __future__ import annotations
@@ -150,20 +152,29 @@ async def read_image(
     db: DatabaseConnection,
     cred_repo: ProviderCredentialRepository,
     settings_service: SettingsService,
-    image: bytes, *, filename: str,
+    image: bytes, *, filename: str, ocr_confidence: float,
 ) -> str | None:
     """
-    Transcribe one image (a JPEG) with the `read` task.
+    Transcribe one OCR'd image (a JPEG) with the `read` task, when its OCR
+    confidence is below `read_below_confidence`.
 
     Never raises: a document is still stored with its OCR text when the
-    read model is not set, is the fake provider, or fails -- the failure is
-    logged, and the provider's breaker records it as for any call.
+    OCR read well, the read model is not set, is the fake provider, or
+    fails -- the failure is logged, and the provider's breaker records it as
+    for any call.
 
     Returns:
         The transcription, or None
     """
+    threshold = float(settings_service.get("orders")["read_below_confidence"])
+    if ocr_confidence >= threshold:
+        return None
     model = TaskModel.from_settings(settings_service, "read")
     if not model.model.strip() or model.provider == "fake":
+        logger.warning(
+            "OCR of %r read poorly (confidence %.0f) and no read model is set",
+            filename, ocr_confidence,
+        )
         return None
     try:
         data, _, latency_ms = await structured_call(
@@ -181,7 +192,7 @@ async def read_image(
         return None
     text = str(data["text"]).strip()
     logger.info(
-        "Orders read %r on %s %s: %d characters in %.0f ms",
-        filename, model.provider, model.model, len(text), latency_ms,
+        "Orders read %r (OCR confidence %.0f) on %s %s: %d characters in %.0f ms",
+        filename, ocr_confidence, model.provider, model.model, len(text), latency_ms,
     )
     return text or None

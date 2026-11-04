@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [7.4.0] - 2026-11-04
+
+### Changed
+
+- When an image is read by the vision model is a live setting,
+  `orders.read_below_confidence`, instead of `extraction.vision_below_confidence` in
+  `config/config.yaml`: 100 sends every image large enough to be OCR'd to the model.
+- The query instruction an embedding model gets in front of a search is the setting
+  `semantic.query_instructions` (model name to text), so a new embedding model needs no code
+  change. The Qwen3 embedding model keeps its instruction as the default.
+- `usage_export.elasticsearch_url` is empty by default: token usage is pushed only once a
+  deployment sets its own Elasticsearch address and stores the key.
+
 ## [7.3.0] - 2026-11-04
 
 ### Added

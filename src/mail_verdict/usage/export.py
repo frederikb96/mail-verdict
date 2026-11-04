@@ -190,6 +190,8 @@ async def export_once(
     Returns:
         How many documents were delivered
     """
+    if not cfg.elasticsearch_url:
+        return 0
     key = await cred_repo.resolve_key(CREDENTIAL)
     if not key:
         return 0

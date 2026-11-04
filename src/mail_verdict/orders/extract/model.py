@@ -58,10 +58,9 @@ class ExtractedDocument:
     position; `text_chars_total` is its length before that ceiling. Prompt
     budgets are applied separately (`truncate.py`).
 
-    `ocr_confidence` is the mean word confidence of an OCR'd image.
-    `vision_image` is a downscaled JPEG of an image whose OCR read poorly,
-    for the read model to transcribe (orders/documents.py); it is never
-    stored."""
+    `ocr_confidence` is the mean word confidence of an OCR'd image and
+    `vision_image` a downscaled JPEG of it, for the read model to transcribe
+    when that confidence is low (orders/documents.py); it is never stored."""
 
     filename: str
     content_type: str

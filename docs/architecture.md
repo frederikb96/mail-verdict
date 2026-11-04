@@ -389,7 +389,7 @@ queries. An advisory-locked pass (`usage/export.py`) pushes new rows to an Elast
 stream as `_bulk` creates with their own `_id`, so a resend answers 409 and counts as delivered;
 it keeps its position in `usage_export_state`, stops at the first refused document, sends a row
 only a minute after it was written (an id becomes visible at commit, not in id order), sends
-nothing without the `elastic_usage` credential, and deletes rows past `usage_export.retention_days`.
+nothing without `usage_export.elasticsearch_url` and the `elastic_usage` credential, and deletes rows past `usage_export.retention_days`.
 
 Search (`GET /api/embeddings/search`, MCP `semantic_search_mail`, one function behind both:
 `embeddings/service.py`) embeds the query text and takes the 400 nearest messages by cosine
@@ -411,9 +411,10 @@ tiering. Only the messages that land in a tier are loaded, through the narrow pr
 `database/projection.py` (no bodies, no raw source), which full-text search shares for its result
 rows.
 
-The query is embedded with the model's query instruction (`QUERY_INSTRUCTIONS` in
-`embeddings/query.py`; stored messages are embedded bare) and its vector is kept in a small
-in-process cache keyed by provider, endpoint, model and the normalised text. A search never waits
+The query is embedded with the model's query instruction (the setting
+`semantic.query_instructions`, model name to text; stored messages are embedded bare) and its
+vector is kept in a small in-process cache keyed by provider, endpoint, model, instruction and the
+normalised text. A search never waits
 out a provider's backoff: a rate limit is retried once after a second, and a second one, a
 provider error, a timeout or a missing credential answers `503` with the detail
 `semantic_unavailable`, on which clients keep their text results.
@@ -566,13 +567,14 @@ reason rather than raising. The reader is chosen by content first and labels sec
   payload) at its reading-order position: before the line of the first glyph that follows it.
   A stored payload can be re-encoded as an image (`render_code`).
 - **Images** (`images.py`): barcodes always, OCR when the image is large enough to be a document.
-  An image whose OCR mean word confidence is below `extraction.vision_below_confidence` (a
-  photographed ticket: light print on dark, a table behind it) also yields a JPEG copy of at most
-  `extraction.vision_max_side`; `orders/documents.py` hands it to the `orders.read` model task,
-  whose word-for-word transcription replaces the OCR text before decide, write or storage see the
-  document, the code markers kept after it. Without a read model, or when the call fails, the OCR
-  text stands and a warning is logged. The read task sees what decide sees, so it belongs on the
-  same provider.
+  An OCR'd image also yields a JPEG copy of at most `extraction.vision_max_side`.
+  `orders/documents.py` hands it to the `orders.read` model task when the OCR mean word confidence
+  is below the setting `orders.read_below_confidence` (a photographed ticket, light print on dark
+  with a table behind it, scores 30 to 45; 100 reads every image), and the word-for-word
+  transcription replaces the OCR text before decide, write or storage see the document, the code
+  markers kept after it. Without a read model, or when the call fails, the OCR text stands and a
+  warning is logged. The read task sees every image decide sees, which is what its provider is
+  chosen by.
 - **Other types**: `.pkpass` (the pass's fields and its declared barcodes), `.ics` (one block per
   event), UBL and CII e-invoices (issuer, number, dates, totals, IBAN), HTML attachments, text.
 - **Budgets** (`truncate.py`): a body or document is kept whole up to 12,000 characters, then its

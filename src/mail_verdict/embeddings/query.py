@@ -7,9 +7,10 @@ toggling semantic search off and on, and returning to the page with Back
 all re-submit a query that was just embedded. Only queries go through here
 -- stored message embeddings are always computed fresh from what is stored.
 
-A vector is keyed by provider, endpoint, model and the whitespace-collapsed,
-case-folded text: two spellings of one search are one search to a person,
-while the same text under another model or endpoint is a different vector.
+A vector is keyed by provider, endpoint, model, the model's query instruction
+(`semantic.query_instructions`) and the whitespace-collapsed, case-folded
+text: two spellings of one search are one search to a person, while the same
+text under another model, endpoint or instruction is a different vector.
 The normalised text is also what gets embedded, so a vector never depends on
 which spelling arrived first.
 
@@ -46,17 +47,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CacheKey = tuple[str, str, str, str]
+_CacheKey = tuple[str, str, str, str, str]
 
 _cache: OrderedDict[_CacheKey, list[float]] = OrderedDict()
-
-# Models trained to embed a search query differently from the documents it
-# searches for take a one-line task description in front of the query; the
-# documents themselves are embedded bare.
-QUERY_INSTRUCTIONS: dict[str, str] = {
-    "Qwen/Qwen3-Embedding-8B": "Given a search query, retrieve the emails that are relevant to it",
-}
-
 
 class SemanticUnavailableError(Exception):
     """The query could not be embedded quickly enough to search by meaning."""
@@ -67,10 +60,9 @@ def normalise_query(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
-def format_query(model: str, normalised: str) -> str:
+def format_query(instruction: str, normalised: str) -> str:
     """The text sent to the provider: the model's query instruction, if it
     has one, then the query."""
-    instruction = QUERY_INSTRUCTIONS.get(model)
     return f"Instruct: {instruction}\nQuery: {normalised}" if instruction else normalised
 
 
@@ -94,6 +86,7 @@ async def embed_query_cached(
     base_url: str | None,
     model: str,
     text: str,
+    instruction: str = "",
     max_entries: int,
     timeout: float,
     retry_delay: float,
@@ -109,14 +102,14 @@ async def embed_query_cached(
             within `timeout`, even after one retry of a rate limit
     """
     normalised = normalise_query(text)
-    key = (provider_name, base_url or "", model, normalised)
+    key = (provider_name, base_url or "", model, instruction, normalised)
     cached = _cache.get(key)
     if cached is not None:
         _cache.move_to_end(key)
         return cached
     try:
         vector = await _embed_once_retrying_rate_limit(
-            provider, format_query(model, normalised), model=model,
+            provider, format_query(instruction, normalised), model=model,
             timeout=timeout, retry_delay=retry_delay,
         )
     except (openai.OpenAIError, ProviderUnavailableError) as exc:
@@ -156,6 +149,7 @@ async def embed_search_query(text: str) -> tuple[str, list[float]]:
         raise SemanticUnavailableError(str(exc)) from exc
     vector = await embed_query_cached(
         provider, provider_name=provider_name, base_url=base_url, model=model, text=text,
+        instruction=str(settings["query_instructions"].get(model) or ""),
         max_entries=search_config.query_cache_size,
         timeout=search_config.query_timeout_seconds,
         retry_delay=search_config.query_rate_limit_retry_seconds,

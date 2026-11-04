@@ -233,8 +233,9 @@ pauses its tasks until it answers again, and is raised as an alert if that lasts
 
 The tokens of every paid model response — every task, retries, embeddings and search queries —
 are recorded locally with their purpose, provider and model, cache reads and writes included, and
-pushed to an Elasticsearch data stream once an API key for it is stored (`elastic_usage_api_key`,
-written and reported like a provider key; destination and retention under `usage_export`). The
+pushed to an Elasticsearch data stream once its address is set (`usage_export.elasticsearch_url`,
+empty by default) and an API key for it is stored (`elastic_usage_api_key`, written and reported
+like a provider key; retention under `usage_export` too). The
 Settings page shows how the push is going.
 
 A handful of values stay environment variables regardless, because they either gate config loading

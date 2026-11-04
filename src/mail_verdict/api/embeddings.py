@@ -31,10 +31,7 @@ from mail_verdict.api.schemas import (
 )
 from mail_verdict.database.connection import get_db_connection
 from mail_verdict.database.repository import list_row_marks
-from mail_verdict.embeddings.provider import (
-    DEFAULT_EMBEDDING_MODEL,
-    resolve_active_embedding_model,
-)
+from mail_verdict.embeddings.provider import resolve_active_embedding_model
 from mail_verdict.embeddings.query import SemanticUnavailableError
 from mail_verdict.embeddings.repository import EmbeddingRepository
 from mail_verdict.embeddings.service import search_by_meaning
@@ -59,7 +56,7 @@ _BACKFILL_BATCH_SIZE = 500
 def _current_model() -> str:
     """The embedding model currently configured, read fresh."""
     settings = get_settings_service().get("semantic")
-    return str(settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    return str(settings["model"])
 
 
 async def _status_response(

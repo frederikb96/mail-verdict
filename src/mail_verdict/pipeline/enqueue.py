@@ -46,8 +46,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import text
 
 from mail_verdict.database.msg_key import compute_msg_key
-from mail_verdict.embeddings.provider import DEFAULT_EMBEDDING_MODEL
 from mail_verdict.queue.notify import ReconciliationTimer, WorkQueueNotifier
+from mail_verdict.settings.defaults import SETTING_DEFAULTS, SettingCategory
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,9 +99,10 @@ async def enqueue_live_arrival(
         return
 
     semantic_settings = (
-        settings_service.get("semantic") if settings_service.has_category("semantic") else {}
+        settings_service.get("semantic") if settings_service.has_category("semantic")
+        else SETTING_DEFAULTS[SettingCategory.SEMANTIC]
     )
-    model = str(semantic_settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    model = str(semantic_settings["model"])
 
     embedding_repo = EmbeddingRepository(db)
     inserted = await embedding_repo.enqueue_one(
@@ -348,9 +349,10 @@ async def _reconcile_once(db: DatabaseConnection, settings_service: SettingsServ
     )
     max_age_days = int(pipeline_settings.get("live_max_age_days", 7))
     semantic_settings = (
-        settings_service.get("semantic") if settings_service.has_category("semantic") else {}
+        settings_service.get("semantic") if settings_service.has_category("semantic")
+        else SETTING_DEFAULTS[SettingCategory.SEMANTIC]
     )
-    embedding_model = str(semantic_settings.get("model", DEFAULT_EMBEDDING_MODEL))
+    embedding_model = str(semantic_settings["model"])
 
     async with db.session() as session:
         rows = await session.execute(

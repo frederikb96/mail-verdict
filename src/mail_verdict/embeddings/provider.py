@@ -36,9 +36,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
-
-
 def resolve_active_embedding_model(settings: Mapping[str, Any]) -> str:
     """
     The embedding model actually serving search and neighbour hints right
@@ -59,7 +56,7 @@ def resolve_active_embedding_model(settings: Mapping[str, Any]) -> str:
     Returns:
         The model name to embed a search query or neighbour lookup with
     """
-    return str(settings.get("active_model") or settings.get("model") or DEFAULT_EMBEDDING_MODEL)
+    return str(settings.get("active_model") or settings["model"])
 
 
 def resolve_active_embedding_provider(settings: Mapping[str, Any]) -> tuple[str, str | None]:
@@ -232,7 +229,6 @@ def resolve_embedding_provider(
 
 
 __all__ = [
-    "DEFAULT_EMBEDDING_MODEL",
     "EmbeddingProvider",
     "FakeEmbeddingProvider",
     "OpenAIEmbeddingProvider",

@@ -54,11 +54,11 @@ providers:
   suspended_alert_after_seconds: 1800
 
 # Token usage of every paid model call (usage/): one row per provider
-# response, pushed to an Elasticsearch data stream once the elastic_usage
-# API key is stored through the settings API. Without the key rows are
-# still recorded and pruned, and nothing is sent.
+# response, pushed to an Elasticsearch data stream once both the URL below is
+# set and the elastic_usage API key is stored through the settings API.
+# Without either, rows are still recorded and pruned, and nothing is sent.
 usage_export:
-  elasticsearch_url: "https://elastic.frederikberg.com"
+  elasticsearch_url: ""
   data_stream: "logs-llm.usage-default"
   # How often the export runs, per process (one replica at a time).
   interval_seconds: 60
@@ -142,12 +142,8 @@ extraction:
   # fill the child's reply. Prompt budgets (orders/extract/truncate.py) sit
   # far below it.
   max_text_chars: 400000
-  # An image whose OCR reads below this mean word confidence (0-100) is
-  # transcribed by the orders `read` model instead, when one is set: a
-  # photographed ticket (light text on a dark print, a dark table behind it)
-  # reads around 45, a clean scan 86 to 95.
-  vision_below_confidence: 70
-  # Long side, in pixels, of the copy of such an image the read model gets.
+  # Long side, in pixels, of the copy of an OCR'd image the orders `read`
+  # model may get (when it reads, is the setting orders.read_below_confidence).
   vision_max_side: 1600
 
 # Files a person adds to the orders register by hand (POST /api/orders/files).

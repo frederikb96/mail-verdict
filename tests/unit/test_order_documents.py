@@ -184,31 +184,31 @@ class _Pool:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("answer", ["EXAMPLE BAND ticket", None])
-async def test_a_poorly_read_image_goes_to_the_read_model_and_its_copy_is_dropped(
+async def test_an_ocrd_image_goes_to_the_read_model_and_its_copy_is_dropped(
     monkeypatch: pytest.MonkeyPatch, answer: str | None,
 ) -> None:
     ocr_text = 'ieee\n[code b1 ITF "0629"]'
     monkeypatch.setattr(documents, "_pool", _Pool(_poor_image(ocr_text)))
-    seen: list[tuple[bytes, str]] = []
+    seen: list[tuple[bytes, str, float]] = []
 
-    async def read_image(image: bytes, filename: str) -> str | None:
-        seen.append((image, filename))
+    async def read_image(image: bytes, filename: str, confidence: float) -> str | None:
+        seen.append((image, filename, confidence))
         return answer
 
     doc = await documents._extract(b"raw", "image/jpeg", "IMG_1.jpg", read_image)
-    assert seen == [(b"jpeg", "IMG_1.jpg")]
+    assert seen == [(b"jpeg", "IMG_1.jpg", 45.0)]
     assert doc.vision_image is None
     assert doc.text.startswith("EXAMPLE BAND") if answer else doc.text == ocr_text
 
 
 @pytest.mark.asyncio
-async def test_a_well_read_document_never_reaches_the_read_model(
+async def test_a_document_without_ocr_never_reaches_the_read_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clean = _read("a.pdf", "Invoice 42").document
     monkeypatch.setattr(documents, "_pool", _Pool(clean))
 
-    async def read_image(image: bytes, filename: str) -> str | None:
-        raise AssertionError("not a poorly read image")
+    async def read_image(image: bytes, filename: str, confidence: float) -> str | None:
+        raise AssertionError("not an OCR'd image")
 
     assert await documents._extract(b"raw", "application/pdf", "a.pdf", read_image) == clean

@@ -10,14 +10,13 @@ from mail_verdict.core.errors import ProviderUnavailableError
 from mail_verdict.embeddings import query as query_module
 from mail_verdict.embeddings.provider import EmbeddingProvider
 from mail_verdict.embeddings.query import (
-    QUERY_INSTRUCTIONS,
     SemanticUnavailableError,
     embed_query_cached,
     format_query,
     normalise_query,
 )
 
-QWEN = "Qwen/Qwen3-Embedding-8B"
+_INSTRUCTION = "Given a search query, retrieve the emails that are relevant to it"
 
 
 def _rate_limit() -> openai.RateLimitError:
@@ -52,10 +51,11 @@ def _empty_cache() -> None:
 
 async def _embed(
     provider: EmbeddingProvider, text: str, *, model: str = "m", size: int = 8,
+    instruction: str = "",
 ) -> list[float]:
     return await embed_query_cached(
         provider, provider_name="custom", base_url="http://x", model=model, text=text,
-        max_entries=size, timeout=10.0, retry_delay=0.0,
+        instruction=instruction, max_entries=size, timeout=10.0, retry_delay=0.0,
     )
 
 
@@ -109,11 +109,12 @@ async def test_a_failed_embedding_is_not_cached() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_model_with_a_query_instruction_gets_it_before_the_query() -> None:
+async def test_a_query_instruction_goes_before_the_query_and_is_part_of_the_cache_key() -> None:
     provider = ScriptedProvider()
-    await _embed(provider, "Invoice  Garage", model=QWEN)
-    assert provider.texts == [f"Instruct: {QUERY_INSTRUCTIONS[QWEN]}\nQuery: invoice garage"]
-    assert format_query("text-embedding-3-small", "invoice") == "invoice"
+    await _embed(provider, "Invoice  Garage", instruction=_INSTRUCTION)
+    await _embed(provider, "Invoice  Garage")
+    assert provider.texts == [f"Instruct: {_INSTRUCTION}\nQuery: invoice garage", "invoice garage"]
+    assert format_query("", "invoice") == "invoice"
 
 
 @pytest.mark.asyncio
