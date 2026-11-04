@@ -105,7 +105,8 @@ curl -X POST localhost:8080/api/addressbooks -H 'content-type: application/json'
 ### Set a provider key
 
 Every AI task needs a key for whichever provider it names — `ai.provider`, `semantic.provider`,
-`assistant.provider`, `orders.decide_provider` and `orders.write_provider` (`openai`, `anthropic`
+`assistant.provider`, `orders.decide_provider`, `orders.write_provider` and `orders.read_provider`
+(`openai`, `anthropic`
 — not for embeddings — or `custom`; a bare-metal deployment can also fall
 back to the `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`CUSTOM_AI_API_KEY` environment variables instead
 of storing one). Through the API, a key is write-only — it can be set and its presence checked,
@@ -123,7 +124,7 @@ curl localhost:8080/api/settings/ai
 
 An empty string clears a stored key. `provider: "custom"` also needs `base_url` set to the
 compatible server's API base, on whichever task selects it (`base_url`, or `decide_base_url` /
-`write_base_url` for orders) — the credential is shared by provider name, so one `custom_api_key`
+`write_base_url` / `read_base_url` for orders) — the credential is shared by provider name, so one `custom_api_key`
 write covers every task:
 
 ```bash
@@ -335,7 +336,7 @@ code. Everything is under `/api` and every id is a UUID unless noted.
 | Pipeline runs | `/runs`, `/mails/{id}/runs` | Per-message pipeline execution history and trace — "why did this message get that treatment"; retry a failed run |
 | Queues | `/queues` | Every registered background queue's state (embedding, pipeline), live concurrency control |
 | Embeddings | `/embeddings` | Coverage status, on-demand backfill, semantic search (see above) |
-| Settings | `/settings` | Every runtime-configurable behaviour by category (each AI task — `ai`, `semantic`, `assistant`, and `orders`' `decide_*`/`write_*` keys — names its own provider and model), the write-only provider-key extension (accepted on any category), and `GET /settings/providers` for key presence and the task breakers — see [Config and settings never overlap](../README.md#configuration). `PUT /settings/{category}` takes the fields to change wrapped as `{"data": {...}}`, not the bare object — the "Set a provider key" example above shows the shape; a bare dict is a `422` |
+| Settings | `/settings` | Every runtime-configurable behaviour by category (each AI task — `ai`, `semantic`, `assistant`, and `orders`' `decide_*`/`write_*`/`read_*` keys — names its own provider and model), the write-only provider-key extension (accepted on any category), and `GET /settings/providers` for key presence and the task breakers — see [Config and settings never overlap](../README.md#configuration). `PUT /settings/{category}` takes the fields to change wrapped as `{"data": {...}}`, not the bare object — the "Set a provider key" example above shows the shape; a bare dict is a `422` |
 | Image exceptions | `/accounts/{id}/image-exceptions` | Per-sender/per-domain allowlist for remote image loading |
 | Alerts | `/alerts` | The durable, in-app alert list (`kind` is `mail` for new mail, `outbox_stalled` for a message stuck on its way out, `webhook_failed` for a webhook delivery that gave up, `provider_unavailable` for an AI provider that stayed suspended) and its dismiss surface, scoped to the caller's own folder preference the same way the SSE and push paths already are: `folder_ids` plus `folder_scoped=true` restricts it, omitted or `folder_scoped=false` leaves it unrestricted; `GET /alerts/unseen-count` reports the unseen total and `by_kind`, and `POST /alerts/dismiss-all` takes repeatable `kind` parameters to dismiss only those kinds; `GET /alerts/vapid-public-key` and `/alerts/subscriptions` are the Web Push half — the applicationServerKey a browser passes to `PushManager.subscribe()`, and registering, updating (`alert_folder_ids`, `muted_channels`) or removing that browser's own subscription. `available: false` on the VAPID endpoint means no `ENCRYPTION_KEY` is configured server-side, the same condition that keeps a provider API key from being stored. The native half: `GET /alerts/native-push` says whether a native app can register here and through which relays (`reason` when not), `POST /alerts/subscriptions/native` registers or refreshes a device under its `installation_id` (the relay ticket and a base64 32-byte content key, both write-only; `400` for a relay not in `push.apns_relay_urls`, `503` when native push is unavailable), and `POST /alerts/subscriptions/{id}/test` sends one device a test push (`410` if it turned out to be gone, `502` if refused). A subscription's `transport` is `webpush` or `apns`. `GET /alerts/badge` is the notification badge — `?subscription_id=` for a registered device's own scope, or `folder_ids`/`folder_scoped` as on the list — and `POST /alerts/lookup` returns which of up to 200 alert ids still exist, dismissed or not. See [architecture.md](architecture.md#alerts-and-push-notifications) |
 | Notifications | `/accounts/{id}/notifications`, `/notifications` | The durable, acknowledgeable record of a write that never reached the server — see [architecture.md](architecture.md#notifications). `GET /notifications` lists every account's at once, inactive accounts included, newest first |

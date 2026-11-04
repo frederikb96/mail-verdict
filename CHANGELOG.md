@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- A photo or scan that OCR cannot read (a photographed concert ticket, light print on a dark
+  background) is transcribed by a vision model before the order register files it, so it opens
+  the right entry instead of being matched on a stray barcode. It is a fourth orders model task,
+  `orders.read_*` (provider, model, effort, budget), optional: without a model set, OCR text is
+  used as before. When it kicks in is `extraction.vision_below_confidence` in
+  `config/config.yaml`.
+
+### Changed
+
+- The log names every file added to the register by hand: what was read from it, which entry it
+  joined and why, and warns when an image's OCR read poorly.
+
 ## [7.2.0] - 2026-11-03
 
 ### Added

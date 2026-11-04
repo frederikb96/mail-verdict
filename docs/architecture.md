@@ -277,7 +277,8 @@ classification behind its own retries, never blocks it, and the gate still buys 
 everything in the pipeline queue has a vector, which is what neighbour hints below depend on. This
 is a scheduling gate, not the availability-tracking circuit breaker each of `pipeline`, `orders`
 and `embeddings` keeps for its own provider calls (`queue/circuit.py`) — a breaker is keyed by
-`(provider, AI task)` (`ai`, `semantic`, `assistant`, `orders.decide`, `orders.write`), never by
+`(provider, AI task)` (`ai`, `semantic`, `assistant`, `orders.decide`, `orders.write`,
+`orders.read`), never by
 provider alone, so a misconfiguration in one task's own settings cannot suspend another task that
 happens to share a provider name. A provider outage suspends the breaker and the
 queue resumes when the provider answers again; nothing switches provider or model in response —
@@ -368,7 +369,7 @@ shadowed sibling's row) and whether the new model's own reachable count is at le
 active one already reaches; `GET /api/embeddings/status` reports the same predicate
 (`cutover_ready`/`cutover_blocked_reason`), computed in the one place rather than twice. A
 provider is itself a setting per AI task (`ai.provider`, `semantic.provider`, `assistant.provider`,
-`orders.decide_provider`, `orders.write_provider`): `"openai"`, `"anthropic"` (not for embeddings),
+`orders.decide_provider`, `orders.write_provider`, `orders.read_provider`): `"openai"`, `"anthropic"` (not for embeddings),
 `"custom"` (any OpenAI-compatible server, reached at that task's own `base_url` with one shared
 credential per provider name, `settings/credentials.py`), or `"fake"`. Nothing is inherited from
 `ai`: each task's provider, model, reasoning effort and token budget are its own, validated per
@@ -379,7 +380,7 @@ is the separate request shape a custom provider needs instead.
 
 Every provider response is billed, so each one is recorded as an `llm_usage` row as it arrives —
 retries and malformed answers included — with its purpose (`verdict`, `assistant`,
-`orders.decide`, `orders.write`, `embedding`, `embedding.query`), who bills it (`anthropic`,
+`orders.decide`, `orders.write`, `orders.read`, `embedding`, `embedding.query`), who bills it (`anthropic`,
 `openai`, `infomaniak` for a custom server at Infomaniak, else `custom`), the model and its tokens,
 cache reads and writes as subsets of the input (`usage/tokens.py` reads each provider's own field
 names). The two places a call leaves the process record it: `ModelGateway.structured_call`, for
@@ -479,7 +480,8 @@ handed back in) are two calls, and the second is also what a manual rewrite and 
 Each is its own model task (`orders/model_calls.py`): `orders.decide_*` and `orders.write_*` name a
 provider, model, reasoning effort and token budget apiece, so matching can stay on a private
 provider while the write call runs on Claude. The queue reports the write task's breaker; an
-account cannot be switched on until both tasks have a model.
+account cannot be switched on until both tasks have a model. A third, optional task,
+`orders.read_*`, transcribes images OCR could not read (*Reading attachments* below).
 
 **A decide call that reports no identifiers is not trusted blindly.** A small model
 measurably misses a number that is plainly present in the body more often than it misses the
@@ -554,8 +556,8 @@ reason rather than raising. The reader is chosen by content first and labels sec
 
 - **PDF** (`pdf.py`): the text layer through PDFium. A page with fewer than 50 text characters is
   rendered and read by Tesseract (`ocr.py`, a subprocess with its own time limit; a page that reads
-  poorly is retried turned 180 degrees). Scanned pages are the only OCR path: HTML mail is never
-  rendered or OCR'd, since its content is text.
+  poorly is retried turned 180 degrees). HTML mail is never rendered or OCR'd, since its content is
+  text.
 - **Barcodes** (`barcodes.py`): zxing-cpp decodes QR, Aztec (Deutsche Bahn tickets), Data Matrix,
   PDF417 and the 1D formats from the leading pages' renders, from image attachments and from
   inline graphics of at least 100 px. The exact payload bytes are kept (a ticket's Aztec is
@@ -563,6 +565,14 @@ reason rather than raising. The reader is chosen by content first and labels sec
   marker (`[code b1 QR "5471205382"]`, or `[code b1 Aztec 334 bytes]` for a binary or long
   payload) at its reading-order position: before the line of the first glyph that follows it.
   A stored payload can be re-encoded as an image (`render_code`).
+- **Images** (`images.py`): barcodes always, OCR when the image is large enough to be a document.
+  An image whose OCR mean word confidence is below `extraction.vision_below_confidence` (a
+  photographed ticket: light print on dark, a table behind it) also yields a JPEG copy of at most
+  `extraction.vision_max_side`; `orders/documents.py` hands it to the `orders.read` model task,
+  whose word-for-word transcription replaces the OCR text before decide, write or storage see the
+  document, the code markers kept after it. Without a read model, or when the call fails, the OCR
+  text stands and a warning is logged. The read task sees what decide sees, so it belongs on the
+  same provider.
 - **Other types**: `.pkpass` (the pass's fields and its declared barcodes), `.ics` (one block per
   event), UBL and CII e-invoices (issuer, number, dates, totals, IBAN), HTML attachments, text.
 - **Budgets** (`truncate.py`): a body or document is kept whole up to 12,000 characters, then its

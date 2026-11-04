@@ -10,6 +10,11 @@ what lets a rewrite repair an order written before documents existed.
 Stored text is already cut to the prompt budget, so storage is bounded per
 row. Bytes are never stored here: a mail attachment's stay in PostIMAP, a
 file's in order_files.
+
+An image the pool's OCR read poorly comes back with a small JPEG copy;
+every read here hands that to the caller's `ReadImage` (the orders `read`
+model, orders/model_calls.py), and its transcription replaces the OCR text
+before anything sees or stores the document.
 """
 
 from __future__ import annotations
@@ -17,8 +22,8 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -30,7 +35,7 @@ from mail_verdict.config import get_config
 from mail_verdict.database.models import OrderDocument, OrderFile
 from mail_verdict.orders.content import AttachmentRef
 from mail_verdict.orders.extract import EXTRACTOR_VERSION
-from mail_verdict.orders.extract.model import ExtractedDocument
+from mail_verdict.orders.extract.model import CODE_MARKER_RE, ExtractedDocument
 from mail_verdict.orders.extract.pool import ExtractionPool
 from mail_verdict.orders.extract.source import read_mail_attachment, read_order_file
 from mail_verdict.orders.extract.truncate import excerpt, is_terms_like, truncate_text
@@ -48,6 +53,9 @@ DECIDE_ATTACHMENTS = 6
 WRITE_PROMPT_CEILING_CHARS = 120_000
 
 _pool: ExtractionPool | None = None
+
+# (JPEG bytes, file name) -> the image's text, or None to keep the OCR text.
+ReadImage = Callable[[bytes, str], Awaitable[str | None]]
 
 
 def extraction_pool() -> ExtractionPool:
@@ -75,6 +83,39 @@ class ReadDocument:
     document: ExtractedDocument
 
 
+async def _extract(
+    data: bytes, content_type: str, filename: str, read_image: ReadImage | None,
+) -> ExtractedDocument:
+    """Read one document in the pool, then hand a poorly OCR'd image to
+    `read_image`."""
+    document = await extraction_pool().extract(data, content_type, filename)
+    if document.vision_image is None:
+        return document
+    image, document = document.vision_image, replace(document, vision_image=None)
+    logger.warning(
+        "OCR of %r read poorly (confidence %.0f, %d characters)%s", filename,
+        document.ocr_confidence or 0.0, len(document.text),
+        "; reading it with the read model" if read_image else "; no read model is set",
+    )
+    if read_image is None:
+        return document
+    text = await read_image(image, filename)
+    return with_transcription(document, text) if text else document
+
+
+def with_transcription(document: ExtractedDocument, transcription: str) -> ExtractedDocument:
+    """The document with `transcription` as its text, the code markers of
+    its OCR text kept after it so every placed barcode stays placed."""
+    markers = [m.group(0) for m in CODE_MARKER_RE.finditer(document.text)]
+    text = "\n\n".join([transcription.strip(), *(["\n".join(markers)] if markers else [])])
+    offsets = {m.group(1): m.start() for m in CODE_MARKER_RE.finditer(text)}
+    barcodes = tuple(
+        replace(b, text_offset=offsets.get(str(b.index))) if b.text_offset is not None else b
+        for b in document.barcodes
+    )
+    return replace(document, text=text, text_chars_total=len(text), barcodes=barcodes)
+
+
 def _unread(ref: AttachmentRef, error: str) -> ExtractedDocument:
     return ExtractedDocument(
         filename=ref.filename, content_type=ref.content_type, size_bytes=ref.size_bytes or 0,
@@ -84,6 +125,7 @@ def _unread(ref: AttachmentRef, error: str) -> ExtractedDocument:
 
 async def read_mail_documents(
     session: AsyncSession, attachments: Sequence[AttachmentRef],
+    read_image: ReadImage | None = None,
 ) -> list[ReadDocument]:
     """Read a mail's attachments one after the other, in the pool's child."""
     limit = get_config().extraction.max_document_bytes
@@ -95,7 +137,7 @@ async def read_mail_documents(
         data = await read_mail_attachment(session, ref.id)
         if data is None:
             continue
-        document = await extraction_pool().extract(data, ref.content_type, ref.filename)
+        document = await _extract(data, ref.content_type, ref.filename, read_image)
         reads.append(ReadDocument(ref.id, None, document))
     if len(attachments) > _MAX_ATTACHMENTS_READ:
         logger.warning("A mail has %d attachments; reading the first %d", len(attachments),
@@ -105,12 +147,13 @@ async def read_mail_documents(
 
 async def read_file_document(
     session: AsyncSession, *, file_id: uuid.UUID, filename: str, content_type: str,
+    read_image: ReadImage | None = None,
 ) -> ReadDocument | None:
     """Read an uploaded file; None when its row is gone."""
     data = await read_order_file(session, file_id)
     if data is None:
         return None
-    document = await extraction_pool().extract(data, content_type, filename)
+    document = await _extract(data, content_type, filename, read_image)
     return ReadDocument(None, file_id, document)
 
 
@@ -186,7 +229,7 @@ async def store_file_document(
 
 async def heal_mail_documents(
     session: AsyncSession, *, order_id: uuid.UUID, account_id: uuid.UUID, msg_key: str,
-    attachments: Sequence[AttachmentRef],
+    attachments: Sequence[AttachmentRef], read_image: ReadImage | None = None,
 ) -> int:
     """
     Make sure every live attachment of a mail of the order has a document
@@ -235,14 +278,16 @@ async def heal_mail_documents(
             to_read.append(ref)
     if not to_read:
         return 0
-    reads = await read_mail_documents(session, to_read)
+    reads = await read_mail_documents(session, to_read, read_image)
     await store_mail_documents(
         session, order_id=order_id, account_id=account_id, msg_key=msg_key, reads=reads,
     )
     return len(reads)
 
 
-async def heal_file_documents(session: AsyncSession, order_id: uuid.UUID) -> int:
+async def heal_file_documents(
+    session: AsyncSession, order_id: uuid.UUID, read_image: ReadImage | None = None,
+) -> int:
     """Read the attached files of the order that have no current document,
     or whose read failed (`_needs_reading`)."""
     result = await session.execute(
@@ -265,6 +310,7 @@ async def heal_file_documents(session: AsyncSession, order_id: uuid.UUID) -> int
     for file_id, filename, content_type in result.all():
         read = await read_file_document(
             session, file_id=file_id, filename=filename, content_type=content_type,
+            read_image=read_image,
         )
         if read is not None:
             await store_file_document(session, order_id=order_id, read=read)

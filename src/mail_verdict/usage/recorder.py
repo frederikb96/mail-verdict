@@ -36,7 +36,7 @@ QUERY_EMBEDDING_PURPOSE = "embedding.query"
 
 def gateway_purpose(category: str) -> str:
     """The purpose a ModelGateway call of `category` is recorded under:
-    `verdict`, `assistant`, `orders.decide`, `orders.write`."""
+    `verdict`, `assistant`, `orders.decide`, `orders.write`, `orders.read`."""
     return _RENAMED_CATEGORIES.get(category, category)
 
 

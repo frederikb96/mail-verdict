@@ -7,6 +7,7 @@ write (title, status, summary, kind, key facts) for a `write` job.
 A `mail` or `file` job reads the new item's attachments first, in the
 extraction pool (orders/documents.py); their text reaches the decide call
 and the number search, and is stored with the item once it joins an order.
+An image the OCR read poorly is transcribed by the `read` model first.
 A `write` job first makes sure every document of the order has been read by
 the current extractor, so rewriting an order written before documents
 existed repairs it.
@@ -399,7 +400,9 @@ async def _handle_mail_job(
             return None
 
         await model_calls.ensure_available(db, settings_service, "decide")
-        reads = await documents.read_mail_documents(session, content.attachments)
+        reads = await documents.read_mail_documents(
+            session, content.attachments, _image_reader(db, cred_repo, settings_service),
+        )
         attachment_text = documents.attachment_haystack(reads)
         candidates = await find_candidates(
             session, account_id=account_id, thread_id=content.thread_id,
@@ -510,6 +513,7 @@ async def _handle_file_job(
         read = await documents.read_file_document(
             session, file_id=file_id, filename=file_row.filename,
             content_type=file_row.content_type,
+            read_image=_image_reader(db, cred_repo, settings_service),
         )
         if read is None:
             await _set_outcome(session, row["id"], outcome="skipped", last_error="file gone")
@@ -566,12 +570,32 @@ async def _handle_file_job(
         await repository.recompute_aggregates(session, order_id)
         await repository.mark_text_stale(session, order_id)
         await repository.enqueue_write_job(session, order_id, priority=5, origin="upload")
+        outcome = "created" if was_new else "attached"
         await _set_outcome(
-            session, row["id"], outcome="created" if was_new else "attached",
+            session, row["id"], outcome=outcome,
             decision=decision or None, model=model_name, latency_ms=int(latency_ms),
             order_id=order_id,
         )
+        logger.info(
+            "Orders file %s %r (%s, %d characters, %d codes) %s order %s: %s", file_id,
+            file_row.filename, read.document.method, len(read.document.text),
+            len(read.document.barcodes), outcome, order_id,
+            decision.get("reason") or "added to this entry by hand",
+        )
         return (order_id, "updated") if already_written else None
+
+
+def _image_reader(
+    db: DatabaseConnection,
+    cred_repo: ProviderCredentialRepository,
+    settings_service: SettingsService,
+) -> documents.ReadImage:
+    async def read(image: bytes, filename: str) -> str | None:
+        return await model_calls.read_image(
+            db, cred_repo, settings_service, image, filename=filename,
+        )
+
+    return read
 
 
 def _isoformat(value: datetime | None) -> str:
@@ -636,6 +660,7 @@ async def _handle_write_job(
             .order_by(OrderMail.received_at)
         )
         mail_rows = mails_result.all()
+        read_image = _image_reader(db, cred_repo, settings_service)
         included = (
             list(mail_rows[:3]) + list(mail_rows[-9:])
             if len(mail_rows) > _WRITE_ALL_MAILS_CEILING else list(mail_rows)
@@ -654,6 +679,7 @@ async def _handle_write_job(
                 await documents.heal_mail_documents(
                     session, order_id=order_id, account_id=mail_row.account_id,
                     msg_key=mail_row.msg_key, attachments=content.attachments,
+                    read_image=read_image,
                 )
             if (mail_row.account_id, mail_row.msg_key) in included_keys:
                 mails.append({
@@ -663,7 +689,7 @@ async def _handle_write_job(
                     "subject": content.subject if content else (mail_row.subject or ""),
                     "body": content.body.text if content else "",
                 })
-        await documents.heal_file_documents(session, order_id)
+        await documents.heal_file_documents(session, order_id, read_image)
         write_input = documents.assemble_write_input(
             mails, await documents.load_stored_documents(session, order_id),
         )

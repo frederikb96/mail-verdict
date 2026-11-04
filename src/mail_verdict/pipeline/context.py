@@ -33,6 +33,7 @@ from mail_verdict.queue.circuit import CircuitBreaker
 from mail_verdict.usage.recorder import UsageRecorder, gateway_purpose
 
 if TYPE_CHECKING:
+    from mail_verdict.core.structured_llm import PromptImage
     from mail_verdict.database.connection import DatabaseConnection
     from mail_verdict.settings.credentials import ProviderCredentialRepository
 
@@ -205,6 +206,7 @@ class ModelGateway:
         validate: Any = None,
         base_url: str | None = None,
         timeout_seconds: float | None = None,
+        images: Sequence[PromptImage] = (),
     ) -> tuple[dict[str, Any], float]:
         """
         Issue one strict-schema request.
@@ -212,7 +214,7 @@ class ModelGateway:
         The circuit breaker is keyed by `(provider, category)`, not by
         provider name alone: `category` names the AI task the caller's
         model/effort/budget came from ("ai", "semantic", "assistant",
-        "orders.decide", "orders.write"), so two tasks that happen to share
+        "orders.decide", "orders.write", "orders.read"), so two tasks that happen to share
         one provider name -- both pointed at "custom", say -- each trip and
         clear their own breaker rather than one shared row. A
         misconfiguration specific to one task (a garbage model name in that
@@ -239,6 +241,7 @@ class ModelGateway:
                 legitimately take longer than that shared default, passes
                 its own budget here rather than the default being widened
                 for everyone.
+            images: Sent with the user message, for a vision-capable model
 
         Returns:
             (parsed response, latency in milliseconds)
@@ -305,7 +308,7 @@ class ModelGateway:
                 data = await call_anthropic_structured(
                     client, model, effort, max_tokens, system_prompt, user_prompt,
                     schema, self._retry_config, validate=validate,
-                    timeout_seconds=timeout_seconds, on_usage=on_usage,
+                    timeout_seconds=timeout_seconds, on_usage=on_usage, images=images,
                 )
             elif provider == "custom":
                 # A compatible server serves chat completions only, not
@@ -314,13 +317,13 @@ class ModelGateway:
                 data = await call_chat_completions_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
-                    timeout_seconds=timeout_seconds, on_usage=on_usage,
+                    timeout_seconds=timeout_seconds, on_usage=on_usage, images=images,
                 )
             else:
                 data = await call_openai_structured(
                     client, model, effort, max_tokens, schema_name, system_prompt,
                     user_prompt, schema, self._retry_config, validate=validate,
-                    timeout_seconds=timeout_seconds, on_usage=on_usage,
+                    timeout_seconds=timeout_seconds, on_usage=on_usage, images=images,
                 )
         except Exception as exc:
             await self._map_and_raise(provider, exc)

@@ -83,3 +83,47 @@ async def test_a_call_reaches_the_gateway_with_its_own_task_settings(
     )
     assert kwargs["base_url"] == base_url
     assert kwargs["timeout_seconds"] == 120.0
+
+
+_READ = _Settings(
+    read_provider="custom", read_base_url="https://ai.example.test/v1",
+    read_model="mistralai/Mistral-Small-4-119B-2603", read_reasoning_effort="none",
+)
+
+
+@pytest.mark.asyncio
+async def test_an_image_is_read_on_the_read_tasks_own_model() -> None:
+    gateway_call = AsyncMock(return_value=({"text": " EXAMPLE BAND "}, 900.0))
+    with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
+        text = await model_calls.read_image(
+            None, None, _READ, b"jpeg", filename="IMG_1.jpg",  # type: ignore[arg-type]
+        )
+
+    assert text == "EXAMPLE BAND"
+    kwargs = gateway_call.await_args.kwargs
+    assert (kwargs["category"], kwargs["model"]) == (
+        "orders.read", "mistralai/Mistral-Small-4-119B-2603",
+    )
+    assert [(i.media_type, i.data) for i in kwargs["images"]] == [("image/jpeg", b"jpeg")]
+    assert "IMG_1.jpg" in kwargs["user_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_no_read_model_means_no_call() -> None:
+    gateway_call = AsyncMock()
+    with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
+        assert await model_calls.read_image(
+            None, None, _Settings(), b"jpeg", filename="x.jpg",  # type: ignore[arg-type]
+        ) is None
+    gateway_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_keeps_the_ocr_text_instead_of_failing_the_job() -> None:
+    from mail_verdict.pipeline.contracts import StageUnavailable
+
+    gateway_call = AsyncMock(side_effect=StageUnavailable("custom circuit suspended"))
+    with patch("mail_verdict.orders.model_calls.ModelGateway.structured_call", gateway_call):
+        assert await model_calls.read_image(
+            None, None, _READ, b"jpeg", filename="x.jpg",  # type: ignore[arg-type]
+        ) is None

@@ -3,8 +3,8 @@ Validates the orders settings category at write time: the filter patterns
 (each one a Python regular expression, checked for compiling before it
 can ever reach a live mail) and the model call parameters -- the same
 place validate_ai_settings guards the ai category. The model call
-parameters are two tasks (decide_ and write_ key groups), each checked
-like any other AI task.
+parameters are three tasks (decide_, write_ and read_ key groups), each
+checked like any other AI task.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from mail_verdict.settings.ai_validation import validate_task_model, validate_to
 _FILTER_FIELDS = frozenset({"subject", "from", "body"})
 _MAX_PATTERN_LENGTH = 300
 _MAX_PATTERNS_TOTAL = 300
-ORDER_TASKS = ("decide", "write")
+ORDER_TASKS = ("decide", "write", "read")
 
 
 def _validate_filter(filter_value: Any) -> None:

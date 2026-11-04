@@ -9,7 +9,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+import pytest
+
 from mail_verdict.config.loader import InfraConfig
+from mail_verdict.orders import documents
 from mail_verdict.orders.documents import (
     DECIDE_ATTACHMENTS,
     ReadDocument,
@@ -17,6 +20,7 @@ from mail_verdict.orders.documents import (
     assemble_write_input,
     attachment_haystack,
     decide_documents,
+    with_transcription,
 )
 from mail_verdict.orders.extract.model import Barcode, ExtractedDocument
 
@@ -147,3 +151,64 @@ def test_a_failed_read_is_repeated_unless_the_file_was_too_big_to_read(
     assert not _needs_reading(EXTRACTOR_VERSION, "text_layer", 1_000)
     assert not _needs_reading(EXTRACTOR_VERSION, "none", 1_000)
     assert _needs_reading(EXTRACTOR_VERSION - 1, "text_layer", 1_000)
+
+
+def _poor_image(text: str) -> ExtractedDocument:
+    return ExtractedDocument(
+        filename="IMG_1.jpg", content_type="image/jpeg", size_bytes=10, sha256="x",
+        method="image", page_count=1, text=text, ocr_confidence=45.0,
+        barcodes=(Barcode(1, "ITF", b"0629", "0629", 1, None, text.index("[code b1")),),
+        vision_image=b"jpeg",
+    )
+
+
+def test_a_transcription_replaces_the_ocr_text_and_keeps_its_code_marker() -> None:
+    doc = with_transcription(
+        _poor_image('ieee = Old\n[code b1 ITF "0629"]'),
+        "EXAMPLE BAND\nFriday, 06.Nov.30, 19:00\nShows: a concert ticket",
+    )
+    assert doc.text.startswith("EXAMPLE BAND")
+    assert "ieee" not in doc.text
+    offset = doc.barcodes[0].text_offset
+    assert offset is not None and doc.text[offset:].startswith('[code b1 ITF "0629"]')
+    assert doc.text_chars_total == len(doc.text)
+
+
+class _Pool:
+    def __init__(self, document: ExtractedDocument) -> None:
+        self.document = document
+
+    async def extract(self, data: bytes, content_type: str, filename: str) -> ExtractedDocument:
+        return self.document
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["EXAMPLE BAND ticket", None])
+async def test_a_poorly_read_image_goes_to_the_read_model_and_its_copy_is_dropped(
+    monkeypatch: pytest.MonkeyPatch, answer: str | None,
+) -> None:
+    ocr_text = 'ieee\n[code b1 ITF "0629"]'
+    monkeypatch.setattr(documents, "_pool", _Pool(_poor_image(ocr_text)))
+    seen: list[tuple[bytes, str]] = []
+
+    async def read_image(image: bytes, filename: str) -> str | None:
+        seen.append((image, filename))
+        return answer
+
+    doc = await documents._extract(b"raw", "image/jpeg", "IMG_1.jpg", read_image)
+    assert seen == [(b"jpeg", "IMG_1.jpg")]
+    assert doc.vision_image is None
+    assert doc.text.startswith("EXAMPLE BAND") if answer else doc.text == ocr_text
+
+
+@pytest.mark.asyncio
+async def test_a_well_read_document_never_reaches_the_read_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clean = _read("a.pdf", "Invoice 42").document
+    monkeypatch.setattr(documents, "_pool", _Pool(clean))
+
+    async def read_image(image: bytes, filename: str) -> str | None:
+        raise AssertionError("not a poorly read image")
+
+    assert await documents._extract(b"raw", "application/pdf", "a.pdf", read_image) == clean

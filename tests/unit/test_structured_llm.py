@@ -13,8 +13,10 @@ from mail_verdict.core.errors import ModelRefused, ProviderUnavailableError
 from mail_verdict.core.openai_provider import reset_openai_provider
 from mail_verdict.core.retry import RetryConfig
 from mail_verdict.core.structured_llm import (
+    PromptImage,
     call_anthropic_structured,
     call_chat_completions_structured,
+    call_openai_structured,
     resolve_client,
     retry_after_from_exception,
     retry_structured_call,
@@ -417,3 +419,59 @@ class TestChatCompletionsRefusal:
                 client, "m", None, 512, "n", "s", "u", {"type": "object"}, _fast_retry(),
             )
         assert client.chat.completions.create.await_count == 1
+
+
+class TestImages:
+    """An image goes ahead of the user text, in each API's own block shape."""
+
+    _IMAGE = PromptImage("image/jpeg", b"\xff\xd8\xff")
+
+    @pytest.mark.asyncio
+    async def test_anthropic_gets_a_base64_image_block(self) -> None:
+        client = _anthropic_client()
+        await call_anthropic_structured(
+            client, "claude-opus-5-5", None, 4000, "sys", "usr", {"type": "object"},
+            _fast_retry(), images=[self._IMAGE],
+        )
+        content = client.messages.create.await_args.kwargs["messages"][0]["content"]
+        assert content == [
+            {"type": "image", "source": {
+                "type": "base64", "media_type": "image/jpeg", "data": "/9j/",
+            }},
+            {"type": "text", "text": "usr"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_get_a_data_url(self) -> None:
+        client = TestCallChatCompletionsStructured()._client('{"a": 1}')
+        await call_chat_completions_structured(
+            client, "m", None, 512, "s", "sys", "usr", {"type": "object"}, _fast_retry(),
+            images=[self._IMAGE],
+        )
+        content = client.chat.completions.create.await_args.kwargs["messages"][1]["content"]
+        assert content == [
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/"}},
+            {"type": "text", "text": "usr"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_responses_api_gets_an_input_image(self) -> None:
+        client = MagicMock()
+        client.responses.create = AsyncMock(return_value=MagicMock(output_text='{"a": 1}'))
+        await call_openai_structured(
+            client, "m", None, 512, "s", "sys", "usr", {"type": "object"}, _fast_retry(),
+            images=[self._IMAGE],
+        )
+        content = client.responses.create.await_args.kwargs["input"][1]["content"]
+        assert content == [
+            {"type": "input_image", "image_url": "data:image/jpeg;base64,/9j/"},
+            {"type": "input_text", "text": "usr"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_without_images_the_user_message_stays_plain_text(self) -> None:
+        client = _anthropic_client()
+        await call_anthropic_structured(
+            client, "m", None, 4000, "sys", "usr", {"type": "object"}, _fast_retry(),
+        )
+        assert client.messages.create.await_args.kwargs["messages"][0]["content"] == "usr"

@@ -3,7 +3,7 @@ Validates the provider settings of every AI task at write time: the
 provider/reasoning_effort combination, and that a "custom" provider always
 carries the base_url its client construction needs. A task is a settings
 category (ai, assistant, semantic) or a prefixed key group of one (orders'
-decide_ and write_), all checked by validate_task_model.
+decide_, write_ and read_), all checked by validate_task_model.
 
 The two named vendors spell reasoning effort differently and support
 different levels, so an invalid pairing is rejected here rather than
@@ -21,7 +21,9 @@ SEMANTIC_KNOWN_PROVIDERS = frozenset({"openai", "custom", "fake"})
 
 # The ModelGateway category of every AI task, which is also the category
 # half of its circuit breaker name (`<provider>:<category>`).
-AI_TASK_CATEGORIES = ("ai", "semantic", "assistant", "orders.decide", "orders.write")
+AI_TASK_CATEGORIES = (
+    "ai", "semantic", "assistant", "orders.decide", "orders.write", "orders.read",
+)
 
 # Anthropic's output_config.effort levels (Messages API structured outputs).
 ANTHROPIC_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh", "max"})
