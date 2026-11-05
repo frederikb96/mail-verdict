@@ -58,7 +58,10 @@ Every feature, area by area: [docs/features.md](docs/features.md).
 ## How it fits together
 
 ```
-browser, iPhone app, MCP client  →  MailVerdict  →  PostgreSQL  ←  PostIMAP  →  IMAP, SMTP, CalDAV, CardDAV
+browser, iPhone app, MCP client
+              │
+              ▼
+         MailVerdict  →  PostgreSQL  ←  PostIMAP  →  IMAP, SMTP, CalDAV, CardDAV
 ```
 
 MailVerdict does not speak IMAP. [PostIMAP](https://github.com/frederikb96/postimap) mirrors your
